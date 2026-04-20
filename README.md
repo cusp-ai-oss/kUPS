@@ -1,60 +1,136 @@
+<div align="center">
+
 # *k*UPS
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+<img src="media/video/boltzmann_k_cell.gif" width="300" alt="kUPS demo">
 
-A toolkit for building high-performance molecular simulations on JAX. *k*UPS provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-powered-orange.svg)](https://github.com/google/jax)
+
+**A toolkit for building high-performance molecular simulations on JAX**
+
+*k*UPS provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
+
+[Documentation](https://cusp-ai-oss.github.io/kups/) | [Quick Start](#quick-start) | [Features](#features) | [Examples](#examples)
+
+</div>
+
+---
 
 ## Installation
 
-```sh
+<table>
+<tr>
+<td><b>Standard Installation</b></td>
+<td>
+
+```bash
 pip install kups
 ```
 
-For GPU support:
+</td>
+</tr>
+<tr>
+<td><b>GPU Support</b></td>
+<td>
 
-```sh
+```bash
 pip install kups[cuda]
 ```
 
-For development from source:
+</td>
+</tr>
+<tr>
+<td><b>Development</b></td>
+<td>
 
-```sh
+```bash
 git clone https://github.com/cusp-ai-oss/kups.git
 cd kups
 uv sync
 ```
 
+</td>
+</tr>
+</table>
+
 ## Quick Start
 
-The repository includes example applications built with *k*UPS. To try them, run from the `examples/` directory:
+> [!TIP]
+> The repository includes example applications built with *k*UPS in the `examples/` directory.
 
-```sh
+<details>
+<summary><b>Monte Carlo Simulation (GCMC)</b></summary>
+
+```bash
 cd examples
 kups_mcmc_rigid --config gcmc_co2_30box.yaml
 ```
 
-```sh
+</details>
+
+<details>
+<summary><b>Molecular Dynamics (Lennard-Jones)</b></summary>
+
+```bash
 cd examples
 kups_md_lj --config md_lj_argon_nvt.yaml
 ```
 
+</details>
+
 ## Features
 
-- **Composable** — every operation is a propagator with a shared interface; methods and potentials snap together freely
+<table>
+<tr>
+<td width="50%">
+
+**Simulation Methods**
 - **Monte Carlo** — NVT and GCMC ensembles with translation, rotation, reinsertion, and exchange moves
-- **Molecular dynamics** — NVE, NVT, NPT ensembles
-- **Geometry optimization** — FIRE and L-BFGS relaxation
-- **Force fields** — Lennard-Jones, Coulomb (Ewald summation), harmonic bonds/angles, Morse, MACE, UMA
-- **Differentiable** — full automatic differentiation through simulations via JAX
-- **Batched** — run thousands of independent simulations as a single vectorized computation
+- **Molecular Dynamics** — NVE, NVT, NPT ensembles
+- **Geometry Optimization** — FIRE and L-BFGS relaxation
+
+</td>
+<td width="50%">
+
+**Force Fields & Potentials**
+- **Lennard-Jones** potential
+- **Coulomb** interactions (Ewald summation)
+- **Harmonic** bonds and angles
+- **Morse** potential
+- **MACE** and **UMA** ML force fields
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Core Capabilities**
+- **Composable** — shared propagator interface; methods and potentials snap together freely
+- **Batched** — run thousands of independent simulations as vectorized computations
+
+</td>
+<td width="50%">
+
+**Performance & Integration**
 - **GPU-native** — JIT-compiled on CPU, GPU, and TPU with no code changes
-- **PyTorch interop** — bring any PyTorch model into JAX via [Tojax](https://github.com/cusp-ai-oss/tojax)
+- **Differentiable** — full automatic differentiation via JAX
+- **PyTorch interop** — bring PyTorch models into JAX via [Tojax](https://github.com/cusp-ai-oss/tojax)
+
+</td>
+</tr>
+</table>
 
 ## Documentation
 
-Full documentation is available at [cusp-ai-oss.github.io/kups](https://cusp-ai-oss.github.io/kups/).
+Full documentation is available at **[cusp-ai-oss.github.io/kups](https://cusp-ai-oss.github.io/kups/)**.
+
+---
 
 ## Citation
+
+If you use *k*UPS in your research, please cite:
 
 ```bibtex
 @software{kups2026,
@@ -64,6 +140,8 @@ Full documentation is available at [cusp-ai-oss.github.io/kups](https://cusp-ai-
   url = {https://github.com/cusp-ai-oss/kups}
 }
 ```
+
+---
 
 ## License
 
