@@ -1,6 +1,6 @@
 inp_files:
   - host/argon_fcc.cif
-model_path: mlffs/uma-s-1p2_omat.zip
+model_path: hf://CuspAI/kUPS-uma-jax/uma-s-1p2_omat.zip
 md:
   temperature: 400         # K
   time_step: 0.1           # fs
