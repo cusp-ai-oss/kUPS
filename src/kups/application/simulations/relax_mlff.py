@@ -31,6 +31,7 @@ from kups.application.relaxation.simulation import (
     make_relax_propagator,
     run_relax,
 )
+from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
@@ -85,7 +86,8 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxMlffState:
     Returns:
         Initial relaxation state.
     """
-    jaxified_model = TojaxedMliap.from_zip_file(config.model_path)
+    model_path = get_model_path(config.model_path)
+    jaxified_model = TojaxedMliap.from_zip_file(model_path)
     all_particles, all_systems = [], []
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")

@@ -26,6 +26,7 @@ from kups.application.md.data import (
     md_state_from_ase,
 )
 from kups.application.md.simulation import make_md_propagator, run_md
+from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
@@ -82,7 +83,8 @@ def init_state(key: Array, config: Config) -> MlffMdState:
     Returns:
         Fully constructed MLFF MD state.
     """
-    jaxified_model = TojaxedMliap.from_zip_file(config.model_path)
+    model_path = get_model_path(config.model_path)
+    jaxified_model = TojaxedMliap.from_zip_file(model_path)
     mb_key = key if config.md.initialize_momenta else None
     all_particles, all_systems = [], []
     for inp_file in config.inp_files:

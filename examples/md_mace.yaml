@@ -1,6 +1,6 @@
 inp_files:
   - host/argon_fcc.cif
-model_path: mlffs/mace-mpa-0-medium_64.zip
+model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
 md:
   temperature: 400         # K
   time_step: 0.1           # fs

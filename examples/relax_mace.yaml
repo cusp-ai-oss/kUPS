@@ -1,6 +1,6 @@
 inp_files:
   - host/RUBTAK.cif
-model_path: mlffs/mace-mpa-0-medium_32.zip
+model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
 relax:
   optimizer:
     - transform: scale_by_ase_lbfgs
