@@ -1,0 +1,10 @@
+critical_temperature: 282.4
+critical_pressure: 5_060_000
+acentric_factor: 0.089
+positions:
+  - [0, 0, 0]
+  - [1.33, 0, 0]
+symbols:
+  - "CH2"
+  - "CH2"
+charges: [0.0, 0.0]

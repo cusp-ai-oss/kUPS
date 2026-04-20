@@ -1,0 +1,120 @@
+# Generates stakeholder summary from week's GitHub activity.
+# Posts to Discussions under "Weekly Updates" category and Slack.
+# Requires: ANTHROPIC_API_KEY secret, "Weekly Updates" discussion category
+# Optional: SLACK_WEBHOOK_URL secret for Slack notifications
+
+name: Weekly Summary
+
+on:
+  schedule:
+    - cron: '0 16 * * 2'  # Tuesday 4pm UTC (before Wednesday meetings)
+  workflow_dispatch:      # Manual trigger for testing
+
+jobs:
+  generate-summary:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read       # Read ROADMAP.md for context
+      discussions: write   # Post summary
+      issues: read         # Gather issue activity
+      pull-requests: read  # Gather PR activity
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate summary
+        id: summary
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const script = require('./.github/scripts/weekly-summary.js');
+            await script({ github, context, core });
+
+      - name: Post to Discussions
+        id: discussion
+        if: steps.summary.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUMMARY_BODY: ${{ steps.summary.outputs.summary }}
+        run: |
+          # Calculate week start date for title
+          WEEK_OF=$(date -d "last friday" +"%Y-%m-%d" 2>/dev/null || date -v-fri +"%Y-%m-%d")
+          TITLE="Weekly Summary - Week of ${WEEK_OF}"
+
+          # Get repository and category IDs via GraphQL (REST API doesn't work for discussions)
+          REPO_ID=$(gh api graphql -f query='query { repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { id } }' --jq '.data.repository.id')
+          CATEGORY_ID=$(gh api graphql -f query='query { repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { discussionCategory(slug:"weekly-updates") { id } } }' --jq '.data.repository.discussionCategory.id' 2>/dev/null || echo '')
+
+          if [ -z "$CATEGORY_ID" ] || [ "$CATEGORY_ID" = "null" ]; then
+            echo "Warning: 'Weekly Updates' discussion category not found. Create it at:"
+            echo "https://github.com/${{ github.repository }}/discussions/categories"
+            exit 0
+          fi
+
+          # Create discussion
+          gh api graphql -f query='
+            mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+              createDiscussion(input: {
+                repositoryId: $repositoryId,
+                categoryId: $categoryId,
+                title: $title,
+                body: $body
+              }) {
+                clientMutationId
+              }
+            }
+          ' \
+            -f repositoryId="$REPO_ID" \
+            -f categoryId="$CATEGORY_ID" \
+            -f title="$TITLE" \
+            -f body="$SUMMARY_BODY"
+
+          # Find the discussion we just created to get its URL
+          DISCUSSION_URL=$(gh api graphql -f query='
+            query($owner: String!, $repo: String!) {
+              repository(owner: $owner, name: $repo) {
+                discussions(first: 1, orderBy: {field: CREATED_AT, direction: DESC}) {
+                  nodes { url }
+                }
+              }
+            }
+          ' \
+            -f owner="${{ github.repository_owner }}" \
+            -f repo="${{ github.event.repository.name }}" \
+            --jq '.data.repository.discussions.nodes[0].url')
+
+          echo "url=$DISCUSSION_URL" >> $GITHUB_OUTPUT
+          echo "Posted weekly summary to $DISCUSSION_URL"
+
+      - name: Post to Slack
+        if: steps.summary.outputs.skip != 'true' && steps.discussion.outputs.url != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_TEASER: ${{ steps.summary.outputs.slack_teaser }}
+          DISCUSSION_URL: ${{ steps.discussion.outputs.url }}
+        run: |
+          # Skip if no webhook configured
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "No Slack webhook configured, skipping"
+            exit 0
+          fi
+
+          WEEK_OF=$(date -d "last friday" +"%Y-%m-%d" 2>/dev/null || date -v-fri +"%Y-%m-%d")
+
+          curl -X POST -H 'Content-type: application/json' "$SLACK_WEBHOOK_URL" \
+            --data "$(jq -n \
+              --arg teaser "$SLACK_TEASER" \
+              --arg week "$WEEK_OF" \
+              --arg url "$DISCUSSION_URL" \
+              '{
+                blocks: [
+                  {type: "header", text: {type: "plain_text", text: "Weekly Update", emoji: true}},
+                  {type: "section", text: {type: "mrkdwn", text: $teaser}},
+                  {type: "divider"},
+                  {type: "context", elements: [{type: "mrkdwn", text: ("Week of " + $week + " | <" + $url + "|View full summary>")}]}
+                ]
+              }')"
+
+          echo "Posted teaser to Slack"

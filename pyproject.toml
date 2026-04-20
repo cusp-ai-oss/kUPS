@@ -1,0 +1,91 @@
+[project]
+name = "kups"
+version = "0.1.1"
+description = "A toolkit for building high-performance molecular simulations on JAX."
+readme = "README.md"
+authors = [
+    { name = "Nicholas Gao", email = "nicholas@cusp.ai" },
+    { name = "Jonas Köhler", email = "jonas@cusp.ai" },
+    { name = "CuspAI OpenSource Team", email = "opensource@cusp.ai" },
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.12, <3.15"
+dependencies = [
+    "ase>=3.24.0",
+    "einops>=0.8.1",
+    "etils>=1.13.0",
+    "flatbuffers>=25.2.10",
+    "h5py>=3.15.0",
+    "jax>=0.7.2",
+    "jsonargparse>=4.41.0",
+    "optax>=0.2.6",
+    "packaging>=24.2",
+    "pint>=0.24.4",
+    "tqdm>=4.67.1",
+    "rich>=13.0",
+    "msgpack>=1.1.2",
+    "nanoargs>=0.1.1",
+    "slub>=0.1.1",
+]
+[project.scripts]
+kups_md_mlff = "kups.application.simulations.md_mlff:main"
+kups_relax_mlff = "kups.application.simulations.relax_mlff:main"
+kups_mcmc_rigid = "kups.application.simulations.mcmc_rigid:main"
+kups_md_lj = "kups.application.simulations.md_lj:main"
+kups_relax_lj = "kups.application.simulations.relax_lj:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+cuda = ["jax[cuda]>=0.7.2; sys_platform == 'linux'"]
+notebook = [
+    "matplotlib>=3.10.1",
+    "ipywidgets>=8.1.7",
+    "ipykernel>=6.29.5",
+    "ipympl>=0.9.7",
+    "nglview>=3.1.4",
+]
+docs = [
+    "mkdocs-material>=9.7.0",
+    "mkdocstrings-python>=1.19.0",
+    "mkdocs-jupyter>=0.25.1",
+    "mkdocs-api-autonav>=0.4.0",
+    "zensical>=0.0.33",
+]
+dev = [
+    "ruff>=0.15",
+    "ty>=0.0.1a26",
+    "pytest>=8.3.5",
+    "pytest-xdist>=3.8.0",
+    "pytest-env>=1.1.5",
+    "pre-commit>=4.2.0",
+    "pytest-cov>=6.2.1",
+    "pytest-testmon>=2.1.3",
+    "pyright>=1.1.408",
+]
+
+[tool.uv]
+default-groups = "all"
+
+[tool.uv.sources]
+tinyargs = { workspace = true, editable = true }
+weft = { workspace = true, editable = true }
+
+[project.optional-dependencies]
+test = ["pytest", "ase"]
+
+[tool.pytest_env]
+JAX_PLATFORMS = "cpu"
+JAX_ENABLE_X64 = "True"
+
+[tool.pytest.ini_options]
+addopts = "-n auto --durations=10 --dist worksteal -v --color=yes --cov=kups"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff.lint]
+ignore = ["E741"]

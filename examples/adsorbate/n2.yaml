@@ -1,0 +1,12 @@
+critical_temperature: 126.192
+critical_pressure: 3_395_800
+acentric_factor: 0.0372
+positions:
+  - [0, 0, 0.55]
+  - [0, 0, 0]
+  - [0, 0, -0.55]
+symbols:
+  - "N_n2"
+  - "M_n2"
+  - "N_n2"
+charges: [-0.482, 0.964, -0.482]

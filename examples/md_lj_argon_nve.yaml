@@ -1,0 +1,26 @@
+run:
+  out_file: md_lj_argon.h5
+  num_steps: 10_000
+  num_warmup_steps: 10_000
+  seed: 42
+
+md:
+  temperature: 100.0
+  time_step: 0.1
+  friction_coefficient: 0.0
+  thermostat_time_constant: 1.0e10
+  target_pressure: 1.0
+  pressure_coupling_time: 1.0e10
+  compressibility: 4.5e-5
+  minimum_scale_factor: 1.0
+  integrator: "verlet"
+  initialize_momenta: false
+
+lj:
+  tail_correction: true
+  cutoff: 10.0
+  parameters:
+    Ar: [3.405, 0.01032356174398622]  # (sigma [A], epsilon [eV])
+  mixing_rule: "lorentz_berthelot"
+
+inp_file: host/argon_fcc.cif

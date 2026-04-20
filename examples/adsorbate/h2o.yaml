@@ -1,0 +1,14 @@
+critical_temperature: 647.16
+critical_pressure: 22_055_000
+acentric_factor: 0.3449
+positions:
+  - [0, 0, 0]
+  - [0, 0.75695, 0.58588]
+  - [0, -0.75695, 0.58588]
+  - [0, 0, 0.155]
+symbols:
+  - "Ow"
+  - "Hw"
+  - "Hw"
+  - "Mw"
+charges: [0.0, 0.5564, 0.5564, -1.1128]

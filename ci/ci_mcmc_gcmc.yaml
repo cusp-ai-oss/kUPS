@@ -1,0 +1,47 @@
+adsorbates:
+  - critical_temperature: 303.75
+    critical_pressure: 7_840_000
+    acentric_factor: 0.22394
+    positions:
+      - [0, 0, 0]
+      - [-1.16, 0, 0]
+      - [1.16, 0, 0]
+    symbols:
+      - "C_co2"
+      - "O_co2"
+      - "O_co2"
+    charges: [0.7, -0.35, -0.35]
+
+hosts:
+  - cif_file: empty.cif
+    pressure: 10_000   # Pa (10 bar)
+    temperature: 298.15   # K
+    init_adsorbates: [0]
+    unitcell_replication: 2
+
+lj:
+  tail_correction: true
+  cutoff: 12.0
+  mixing_rule: lorentz_berthelot
+  parameters:
+    O_co2:
+    - 3.05
+    - 0.006807690966401598
+    C_co2:
+    - 2.8
+    - 0.0023266791910486473
+    X1: # psuedo type for an empty cell
+    - null
+    - null
+
+ewald:
+  real_cutoff: 12.0
+  precision: 1.e-6
+
+run:
+  out_file: ci_gcmc.h5
+  num_cycles: 10
+  num_warmup_cycles: 0
+  min_cycle_length: 1
+  seed: 42
+max_num_adsorbates: 100

@@ -1,0 +1,37 @@
+# Syncs GitHub milestones with ROADMAP.md objectives.
+# Requires: ANTHROPIC_API_KEY secret
+#
+# Output:
+# - Creates milestone for each new roadmap objective (format: "Q1 2026: Objective Title")
+# - Updates milestone title/description if objective was renamed
+# - Closes milestones with [stale] prefix if objective removed from roadmap
+# - Notifies open issues when their milestone is marked stale
+
+name: Sync Milestones from Roadmap
+
+on:
+  push:
+    paths:
+      - 'ROADMAP.md'
+    branches:
+      - main
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # Read ROADMAP.md
+      issues: write    # Create/update/close milestones
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync milestones with roadmap
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const script = require('./.github/scripts/sync-milestones.js');
+            await script({ github, context, core });

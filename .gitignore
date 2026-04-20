@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+*.egg-info/
+dist/
+build/
+site/
+.pants.d/
+.TF_DATA_DIR/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+!docs/notebooks/*.ipynb
+!examples/notebooks/*.ipynb
+!notebooks/*.ipynb
+!notebooks/examples/*.ipynb
+
+# uv
+.venv/
+
+# vscode
+*.code-workspace
+
+# cmake
+build/
+
+# dist
+dist/
+lib/
+
+# molsim
+*.h5
+*.pkl
+.DS_Store
+*.jax
+**/mace/*.yaml
+kups.zip
+.testmondata
+*.gz
+*.typ
+*.zip
+*.png
+.claude/
+.cache/
+docs/notebooks/*.md
+docs/reference
+*.build.yml
+.vscode/

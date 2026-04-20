@@ -1,0 +1,29 @@
+{
+  "_comment": "Anthropic model configuration for GitHub Actions. Update when new models are released.",
+  "_docs": "https://docs.anthropic.com/en/docs/about-claude/models",
+  "_updated": "2025-12",
+
+  "issue_labeling": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 256,
+    "reason": "Fast classification task, Haiku 4.5 matches Sonnet 4 on structured output"
+  },
+
+  "milestone_sync": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 2048,
+    "reason": "Semantic matching task, Haiku 4.5 sufficient for JSON transformation"
+  },
+
+  "weekly_summary": {
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1500,
+    "reason": "Needs synthesis and writing quality, Sonnet 4.5 best balance"
+  },
+
+  "pr_review": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 512,
+    "reason": "Structured analysis task, Haiku 4.5 sufficient for suggestions"
+  }
+}

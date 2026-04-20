@@ -1,0 +1,15 @@
+simulation_type: gcmc
+hdf5_output: gcmc_co2_rubtak.h5
+observables:
+  energy:
+    expected_mean: -2746.58544921875
+    expected_sem: 0.05559893324971199
+  loading:
+    expected_mean: 9.567808151245117
+    expected_sem: 0.21863365173339844
+  heat_of_adsorption:
+    expected_mean: -0.263386607170105
+    expected_sem: 0.001555628958158195
+  total_heat_of_adsorption:
+    expected_mean: -0.263386607170105
+    expected_sem: 0.001555628958158195

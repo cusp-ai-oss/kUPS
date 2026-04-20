@@ -1,0 +1,26 @@
+name: Statistical Validation
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: nvidia-t4-runners
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Nvidia smi
+        run: nvidia-smi
+      - name: Run statistical validation
+        run: uv run --no-default-groups --group cuda python validate.py
+        working-directory: ci/statistical
+      - name: Validate NVE ensemble
+        run: uv run --no-default-groups --group cuda python validate_nve_physics.py
+        working-directory: ci/statistical
+      - name: Validate NVT ensemble
+        run: uv run --no-default-groups --group cuda python validate_nvt_physics.py
+        working-directory: ci/statistical
+      - name: Validate NPT ensemble
+        run: uv run --no-default-groups --group cuda python validate_npt_physics.py
+        working-directory: ci/statistical

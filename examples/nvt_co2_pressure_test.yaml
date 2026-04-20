@@ -1,0 +1,44 @@
+adsorbates:
+  - critical_temperature: 303.75
+    critical_pressure: 7_840_000
+    acentric_factor: 0.22394
+    positions:
+      - [0, 0, 0]
+      - [-1.16, 0, 0]
+      - [1.16, 0, 0]
+    symbols:
+      - "C_co2"
+      - "O_co2"
+      - "O_co2"
+    charges: [0.7, -0.35, -0.35]
+
+hosts:
+  - cif_file: host/empty.cif
+    pressure: 10_000
+    temperature: 298.15
+    init_adsorbates: [50]
+    unitcell_replication: 1
+
+lj:
+  cutoff: 12.0
+  tail_correction: true
+  mixing_rule: lorentz_berthelot
+  parameters:
+    O_co2: [3.05, 0.006807690966401598]
+    C_co2: [2.8, 0.0023266791910486473]
+    X1: [null, null]
+
+ewald:
+  real_cutoff: 12.0
+  precision: 1.e-6
+
+run:
+  out_file: nvt_co2_pressure.h5
+  num_cycles: 10000
+  num_warmup_cycles: 2000
+  min_cycle_length: 1
+  seed: 42
+  exchange_prob: 0
+
+max_num_adsorbates: 100
+compute_stress: false

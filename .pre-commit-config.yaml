@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-case-conflict
+      - id: check-toml
+      - id: check-xml
+      - id: check-added-large-files
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff # Run the linter.
+        args: [--fix]
+      - id: ruff # Sort imports
+        name: sort imports with ruff
+        args: [--select, I, --fix]
+      - id: ruff-format # Run the formatter.
+
+  - repo: local # Run pyright type checker
+    hooks:
+      - id: pyright
+        name: pyright check
+        entry: uv run pyright src/
+        language: system
+        types: [python]
+        files: ^src/
+        pass_filenames: false
+
+      - id: clear-notebook-output
+        name: clear notebook output
+        entry: jupyter nbconvert --clear-output --inplace
+        language: system
+        files: ^docs/notebooks/.*\.ipynb$
+        types: [jupyter]

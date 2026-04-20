@@ -1,0 +1,33 @@
+adsorbates:
+  - critical_temperature: 303.75
+    critical_pressure: 7_840_000
+    acentric_factor: 0.22394
+    positions:
+      - [0, 0, 0]
+      - [-1.16, 0, 0]
+      - [1.16, 0, 0]
+    symbols: [C_co2, O_co2, O_co2]
+    charges: [0.7, -0.35, -0.35]
+
+hosts:
+  - cif_file: ../host/empty_30.cif
+    pressure: 10_000
+    temperature: 298.15
+    init_adsorbates: [50]
+
+run:
+  out_file: ../../nvt_50co2_30box_ref.h5
+  num_warmup_cycles: 10_000
+  num_cycles: 20_000
+  min_cycle_length: 20
+  seed: 42
+  exchange_prob: 0
+
+lj: !import [../lennard_jones/trappe.yaml]
+
+ewald:
+  real_cutoff: 12.0
+  precision: 1.e-6
+
+max_num_adsorbates: 50
+compute_stress: true

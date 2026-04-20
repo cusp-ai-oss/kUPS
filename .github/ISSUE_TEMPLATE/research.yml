@@ -1,0 +1,30 @@
+name: Research Proposal
+description: Exploratory work or algorithmic investigation
+labels: ["type: research"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What are we trying to achieve or learn?
+    validations:
+      required: true
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: What do you expect to work and why?
+
+  - type: textarea
+    id: success
+    attributes:
+      label: Success Criteria
+      description: How will we know if this worked?
+
+  - type: input
+    id: timebox
+    attributes:
+      label: Time Box
+      description: How long before we evaluate? (e.g., "1 week", "3 days")
+      placeholder: "1 week"

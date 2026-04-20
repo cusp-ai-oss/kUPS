@@ -1,0 +1,17 @@
+name: Documentation
+description: Improvements to docs, examples, or tutorials
+labels: ["type: docs"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs documenting?
+      description: Describe what's missing, unclear, or incorrect
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Where?
+      description: File path, section, or "new page needed"

@@ -1,0 +1,14 @@
+name: "Setup"
+description: "Setup kUPS environment"
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: /tmp/jax_cache
+        key: ${{ runner.os }}-${{ github.job }}-jax-${{ hashFiles('**/uv.lock') }}
+    - name: Install uv
+      uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57
+      with:
+        enable-cache: true
+        prune-cache: false

@@ -1,0 +1,46 @@
+# Validates PR titles follow conventional commits format.
+# Format: type(scope): description
+# Types: feat, fix, refactor, docs, test, chore, perf, ci, build, style, research
+#
+# Output:
+# - Pass: PR title matches pattern, check succeeds
+# - Fail: PR title invalid, blocks merge with example format
+
+name: PR Title Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+jobs:
+  check-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title format
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+
+            // Conventional commit pattern: type(scope): description
+            // type is required, scope is optional
+            const pattern = /^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|research)(\(.+\))?: .{3,}/;
+
+            if (!pattern.test(title)) {
+              core.setFailed(`PR title doesn't follow conventional commits format.
+
+            Expected: type(scope): description
+            Examples:
+              feat: add parallel tempering for MCMC
+              fix(lens): resolve type inference issue
+              refactor(core): simplify propagator interface
+              docs: update README with installation instructions
+              research: document caching strategy findings
+
+            Types: feat, fix, refactor, docs, test, chore, perf, ci, build, style, research
+            Scope: optional, e.g. (lens), (mcmc), (core)
+
+            Got: "${title}"`);
+            } else {
+              console.log(`✓ PR title is valid: "${title}"`);
+            }

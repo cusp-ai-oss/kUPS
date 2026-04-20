@@ -1,0 +1,34 @@
+# Auto-labels new issues with type/priority/area and assigns to milestone.
+# Uses Claude to classify based on MANIFESTO.md labels and ROADMAP.md milestones.
+# Requires: ANTHROPIC_API_KEY secret
+
+name: Issue Labeling
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to label (leave empty to label all unlabeled)'
+        required: false
+        type: string
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # Read MANIFESTO.md for label definitions
+      issues: write    # Apply labels and assign milestones
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Label issue
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const script = require('./.github/scripts/label-issue.js');
+            await script({ github, context });

@@ -1,0 +1,8 @@
+critical_temperature: 190.564
+critical_pressure: 4_599_200
+acentric_factor: 0.01142
+positions:
+  - [0, 0, 0]
+symbols:
+  - "CH4"
+charges: [0.0]

@@ -1,0 +1,18 @@
+simulation_type: md
+hdf5_output: md_npt_lj_argon.h5
+observables:
+  potential_energy:
+    expected_mean: -17.558120727539062
+    expected_sem: 0.02548999711871147
+  kinetic_energy:
+    expected_mean: 3.2848732471466064
+    expected_sem: 0.02990766614675522
+  total_energy:
+    expected_mean: -14.273247718811035
+    expected_sem: 0.047554757446050644
+  temperature:
+    expected_mean: 99.65852355957031
+    expected_sem: 0.9073580503463745
+  pressure:
+    expected_mean: 0.00010134257172467187
+    expected_sem: 1.4312365237856284e-05

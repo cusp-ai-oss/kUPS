@@ -1,0 +1,25 @@
+inp_file: ../host/argon_fcc.cif
+
+run:
+  out_file: ../../md_nvt_lj_argon.h5
+  num_warmup_steps: 5_000
+  num_steps: 5_000
+  seed: 42
+
+md:
+  temperature: 100.0
+  time_step: 2.0
+  friction_coefficient: 1.0
+  thermostat_time_constant: 100.0
+  target_pressure: 1.0
+  pressure_coupling_time: 1.0e10
+  compressibility: 4.5e-5
+  minimum_scale_factor: 1.0
+  integrator: baoab_langevin
+
+lj:
+  tail_correction: false
+  cutoff: 10.0
+  mixing_rule: lorentz_berthelot
+  parameters:
+    Ar: [3.405, 0.01032356174398622]

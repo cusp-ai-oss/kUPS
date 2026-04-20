@@ -1,0 +1,17 @@
+name: Chore
+description: Maintenance, refactoring, or dependency updates
+labels: ["type: chore"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs to be done?
+      description: Describe the maintenance task
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why?
+      description: Why is this maintenance needed?

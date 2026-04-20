@@ -1,0 +1,29 @@
+# NVT Molecular Dynamics for Lennard-Jones Argon fluid
+# BAOAB Langevin thermostat for canonical ensemble sampling
+
+run:
+  out_file: md_nvt_lj_argon.h5
+  num_steps: 20_000
+  num_warmup_steps: 20_000
+  seed: 42
+
+md:
+  temperature: 100.0           # Target temperature (K)
+  time_step: 2.0               # Timestep (fs)
+  friction_coefficient: 1.0    # Friction coefficient (1/fs) for Langevin dynamics
+  thermostat_time_constant: 100.0
+  target_pressure: 1.0
+  pressure_coupling_time: 1.0e10   # Disabled (NVT, not NPT)
+  compressibility: 4.5e-5
+  minimum_scale_factor: 1.0
+  integrator: "baoab_langevin"
+  initialize_momenta: true
+
+lj:
+  tail_correction: false
+  cutoff: 10.0
+  parameters:
+    Ar: [3.405, 0.010326]  # (sigma [A], epsilon [eV]) -- 119.8 K = 0.010326 eV
+  mixing_rule: "lorentz_berthelot"
+
+inp_file: host/argon_fcc.cif

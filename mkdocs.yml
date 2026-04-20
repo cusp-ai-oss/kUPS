@@ -1,0 +1,137 @@
+site_name: <em>k</em>UPS Docs
+site_url: https://github.com/cusp-ai-oss/kUPS
+repo_url: https://github.com/cusp-ai-oss/kUPS
+repo_name: cusp-ai-oss/kUPS
+edit_uri: edit/main/docs/
+theme:
+  name: material
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+  icon:
+    logo: material/cup
+    repo: fontawesome/brands/github
+
+  features:
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - header.autohide
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+plugins:
+  - search
+  - mkdocstrings
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      auto_append:
+        - includes/abbreviations.md
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/cusp-ai-oss/kUPS
+      name: kUPS on GitHub
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/kups/
+      name: kUPS on PyPI
+
+copyright: Copyright &copy; 2025 Cusp-AI
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+  - javascripts/mermaid.js
+
+nav:
+  - Home: index.md
+  - Simulations: simulations.md
+  - Handbook:
+    - 1. Tables: notebooks/tables.md
+    - 2. Lenses: notebooks/lens.md
+    - 3. Runtime Assertions: notebooks/runtime_assertions.md
+    - 4. Propagators: notebooks/propagators.md
+    - 5. Conventions: notebooks/conventions.md
+    - 6. Patches: notebooks/patches.md
+    - 7. Potentials: notebooks/potentials.md
+  - Units: units.md
+  - Troubleshooting: troubleshooting.md
+

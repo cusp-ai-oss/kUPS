@@ -1,0 +1,34 @@
+name: Bug Report
+description: Something isn't working correctly
+labels: ["type: bug"]
+body:
+  - type: textarea
+    id: broke
+    attributes:
+      label: What broke?
+      description: Describe the bug clearly and concisely
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Steps or minimal code to trigger the issue
+      render: python
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (optional)
+      placeholder: |
+        - kUPS version:
+        - JAX version:
+        - Python:
+        - OS:
