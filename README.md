@@ -1,18 +1,24 @@
 <div align="center">
 
-# *k*UPS
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/logo/logo-dark.svg">
+  <img src="docs/media/logo/logo.svg" alt="kUPS" width="240">
+</picture>
 
-<img src="media/video/boltzmann_k_cell.gif" width="300" alt="kUPS demo">
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-powered-orange.svg)](https://github.com/google/jax)
+<img src="docs/media/video/boltzmann_k_cell.gif" width="300" alt="kUPS demo">
+
 
 **A toolkit for building high-performance molecular simulations on JAX**
 
 *k*UPS provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
 
 [Documentation](https://cusp-ai-oss.github.io/kups/) | [Quick Start](#quick-start) | [Features](#features) | [Examples](#examples)
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-powered-orange.svg)](https://github.com/google/jax)
+
 
 </div>
 
@@ -125,6 +131,25 @@ kups_md_lj --config md_lj_argon_nvt.yaml
 ## Documentation
 
 Full documentation is available at **[cusp-ai-oss.github.io/kups](https://cusp-ai-oss.github.io/kups/)**.
+
+### Building the docs locally
+
+Always go through `./docs/scripts/build.sh`. Do **not** run `mkdocs` or `zensical` directly — the script executes and converts `docs/notebooks/*.ipynb` to markdown, generates the API reference pages and a derived config (`mkdocs.build.yml`), and then invokes `zensical`.
+
+```bash
+./docs/scripts/build.sh                            # build into site/
+./docs/scripts/build.sh --serve                    # live-reload server on http://127.0.0.1:8000
+./docs/scripts/build.sh -f mkdocs.yml.dev --serve  # alternate config
+```
+
+Requires `uv sync` to have been run; the `docs` dependency group is pulled in by default (`default-groups = "all"` in `pyproject.toml`).
+
+If `--serve` fails with `OSError: [Errno 48] Address already in use`, a previous server is still holding port 8000 — find and kill it:
+
+```bash
+lsof -iTCP:8000 -sTCP:LISTEN -n -P   # shows PID
+kill <pid>
+```
 
 ---
 
