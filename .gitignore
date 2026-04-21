@@ -52,3 +52,4 @@ docs/notebooks/*.md
 docs/reference
 *.build.yml
 .vscode/
+papers

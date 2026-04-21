@@ -1,11 +1,13 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
+import pytest
 
-from kups.core.constants import BAR, PASCAL
+from kups.core.constants import BAR, KELVIN, PASCAL
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 
 
@@ -171,3 +173,50 @@ class TestPengRobinsonFugacityMixtures:
         npt.assert_allclose(
             mix.compressibility[0], pure.compressibility[0], rtol=1e-10, atol=1e-10
         )
+
+
+class TestPengRobinsonAutodiff:
+    """Gradients of log_fugacity must be finite and match central differences.
+
+    Regression guard: `jnp.linalg.eigvals` has pathological gradients that
+    return NaN. The custom JVP on
+    [`cubic_roots`][kups.core.utils.math.cubic_roots] plus the double-where
+    sanitisation in
+    [`_peng_robinson_log_fugacity`][kups.mcmc.fugacity._peng_robinson_log_fugacity]
+    together keep autodiff clean.
+    """
+
+    @staticmethod
+    def _pure_log_f(P_pa: float, T_k: float) -> jax.Array:
+        result = peng_robinson_log_fugacity(
+            jnp.asarray(P_pa * PASCAL),
+            jnp.asarray(T_k * KELVIN),
+            jnp.atleast_1d(jnp.asarray(7.38e6 * PASCAL)),
+            jnp.atleast_1d(jnp.asarray(304.2 * KELVIN)),
+            jnp.atleast_1d(jnp.asarray(0.228)),
+        )
+        return result.log_fugacity[0]
+
+    @pytest.mark.parametrize(
+        "P_pa,T_k",
+        [
+            (1e4, 300.0),   # low pressure, near-ideal gas
+            (1e5, 300.0),   # ambient
+            (1e6, 300.0),   # 10 bar, still gas
+            (5e6, 320.0),   # supercritical CO2
+        ],
+    )
+    def test_gradients_finite_and_match_finite_differences(
+        self, P_pa: float, T_k: float
+    ):
+        dP_ad = float(jax.grad(self._pure_log_f, argnums=0)(P_pa, T_k))
+        dT_ad = float(jax.grad(self._pure_log_f, argnums=1)(P_pa, T_k))
+        assert np.isfinite(dP_ad), "∂log_f/∂P must be finite (autodiff regression)"
+        assert np.isfinite(dT_ad), "∂log_f/∂T must be finite (autodiff regression)"
+
+        # Central-difference oracle. Step sizes chosen to avoid catastrophic
+        # cancellation while staying in a locally-linear regime.
+        dP_fd = (self._pure_log_f(P_pa + 1.0, T_k) - self._pure_log_f(P_pa - 1.0, T_k)) / 2.0
+        dT_fd = (self._pure_log_f(P_pa, T_k + 0.01) - self._pure_log_f(P_pa, T_k - 0.01)) / 0.02
+        npt.assert_allclose(dP_ad, float(dP_fd), rtol=1e-5)
+        npt.assert_allclose(dT_ad, float(dT_fd), rtol=1e-5)
