@@ -168,7 +168,7 @@ If you use *k*UPS in your research, please cite:
     and de Haan, Pim
     and Openshaw, Hannah
     and Welling, Max},
-  title = {kUPS},
+  title = {kUPS - a universal particle simulation toolkit},
   year = {2026},
   url = {https://github.com/cusp-ai-oss/kups}
 }
