@@ -53,6 +53,7 @@ docs = [
     "mkdocs-jupyter>=0.25.1",
     "mkdocs-api-autonav>=0.4.0",
     "zensical>=0.0.33",
+    "jupyter>=1.1.1",
 ]
 dev = [
     "ruff>=0.15",

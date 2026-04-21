@@ -131,7 +131,8 @@ nav:
     - 4. Propagators: notebooks/propagators.md
     - 5. Conventions: notebooks/conventions.md
     - 6. Patches: notebooks/patches.md
-    - 7. Potentials: notebooks/potentials.md
+    - 7. Neighbor Lists: notebooks/neighborlist.md
+    - 8. Potentials: notebooks/potentials.md
   - Units: units.md
   - Troubleshooting: troubleshooting.md
 
