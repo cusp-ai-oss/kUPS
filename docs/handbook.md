@@ -1,44 +1,42 @@
 # Handbook
 
-The handbook is a tour of *why* <em>k</em>UPS is shaped the way it is. Each chapter introduces one primitive, motivates it from the gap left by the previous chapter, and ends with the reader able to read and extend that layer of the framework's own code.
+The handbook works through the primitives <em>k</em>UPS is built from, one chapter per primitive. Each chapter covers what the primitive is, what forced it into the design, and what the next chapter will assume.
 
-This is not an API reference — for function signatures and class attributes, use the API Reference tab. For CLI-ready, packaged simulations, see [Simulations](simulations.md). All code here uses the unit system described in [Units](units.md), and assumes you are comfortable with JAX pytrees and `jax.jit`.
+It is not an API reference. Function signatures live under the API Reference tab, and CLI-ready packaged simulations under [Simulations](simulations.md). Code samples assume familiarity with [JAX pytrees](https://docs.jax.dev/en/latest/pytrees.html) and [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html). They follow the unit system described in [Units](units.md).
 
 ## Three requirements that usually fight
 
-Molecular simulation has to satisfy three things simultaneously, and each one alone rules out solutions that would satisfy the others:
+A molecular-simulation framework has to satisfy three things at once, and the naive solution to each breaks the other two.
 
-- **Hardware acceleration.** Force evaluations dominate cost. They have to run on CPU, GPU, and TPU with one set of kernels — which rules out a Python object per particle.
-- **Composability.** Real research mixes MD with MC, custom potentials, online analysis, and new ensembles. Methods have to snap together — which rules out a monolithic simulator per ensemble.
-- **JIT correctness.** JAX compiles to fixed-shape computation graphs. Simulations have variable data — particles inserted and deleted, neighbor lists that grow and shrink — which rules out naive dynamic allocation.
+- **Hardware acceleration.** Force evaluations dominate cost, so they have to run on CPU, GPU, and TPU from one set of kernels. A Python object per particle will not compile.
+- **Composability.** Real research mixes MD with MC, custom potentials, online analysis, and new ensembles. A monolithic simulator per ensemble would require a fork per method.
+- **JIT correctness.** [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html) compiles against fixed-shape computation graphs, but simulations insert and delete particles, and their neighbor lists grow and shrink. Dynamic resize inside the traced graph is not possible.
 
-<em>k</em>UPS is a chain of small primitives that resolve all three together. The rest of the handbook walks that chain.
+<em>k</em>UPS resolves the three together through a small set of composable primitives. The chapters below cover them in order.
 
 ## The chain
 
-Each chapter uses only the vocabulary of the ones before it. Read in order on the first pass.
+1. **[Tables](notebooks/tables.md).** Keyed containers and typed foreign-key indices. Flat arrays compile to a single kernel but lose the relational structure that tells you which particle belongs to which system; [`Table`][kups.core.data.table.Table] and [`Index`][kups.core.data.index.Index] put that structure back at compile time. [`Table.union`][kups.core.data.table.Table.union] flattens many independent systems into one vectorized computation, the basis for the batched chains that appear in every later chapter. [`Buffered`][kups.core.data.buffered.Buffered] pre-allocates free slots inside a fixed-capacity array so GCMC can insert and delete without recompiling.
 
-1. **[Tables](notebooks/tables.md)** — keyed containers and typed foreign-key indices. Flat arrays get hardware acceleration for free but lose relationships; [`Table`][kups.core.data.table.Table] and [`Index`][kups.core.data.index.Index] restore them at compile time. [`Table.union`][kups.core.data.table.Table.union] flattens many independent systems into one vectorized computation — the batched-chains thread that runs through the rest of the handbook. [`Buffered`][kups.core.data.buffered.Buffered] pre-allocates free slots inside a fixed-capacity array so GCMC can insert and delete without recompilation.
+2. **[Lenses](notebooks/lens.md).** Get-and-update pairs. Tables fix the shape of the data, but each primitive still has to work against user-defined state layouts. Lenses let generic code read and write specific fields without reaching into the layout.
 
-2. **[Lenses](notebooks/lens.md)** — get-and-update pairs. Tables fix the data model, but every primitive still has to work against user-defined state layouts. Lenses adapt generic code to specific fields without mutation, so state layout and algorithm stay decoupled.
+3. **[Runtime Assertions](notebooks/runtime_assertions.md).** Side-channel checks that survive JIT. Buffer sizes cannot always be known in advance; [`runtime_assert`][kups.core.assertion.runtime_assert] fails cleanly from inside a compiled kernel, and the host-side retry loop [`propagate_and_fix`][kups.core.propagator.propagate_and_fix] resizes the buffer and re-enters.
 
-3. **[Runtime Assertions](notebooks/runtime_assertions.md)** — side-channel checks inside JIT. Buffer sizes can't always be known ahead of time; [`runtime_assert`][kups.core.assertion.runtime_assert] fails cleanly from inside compiled kernels, and the host-side retry loop [`propagate_and_fix`][kups.core.propagator.propagate_and_fix] resizes and re-enters.
+4. **[Propagators](notebooks/propagators.md).** The evolution primitive, `(key, state) → state`. MD integrators, MC moves, neighbor-list refreshes, and logging steps all share this signature. A full MD step is a sequential composition of momentum, position, and potential primitives.
 
-4. **[Propagators](notebooks/propagators.md)** — the evolution primitive: `(key, state) → state`. MD integrators, MC moves, neighbor-list refreshes, and logging all share this shape. Sequential, loop, and switch composition build a full MD step from momentum-step and position-step primitives.
+5. **[Conventions](notebooks/conventions.md).** `Has*` and `Is*` protocols, plain dataclasses, `make_*_from_state` factories, and `@property` for derived quantities. There is no framework base class; a state satisfies the protocols it needs structurally, and carries only the fields it uses.
 
-5. **[Conventions](notebooks/conventions.md)** — `Has*`/`Is*` protocols, dataclasses, `make_*_from_state` factories, `@property` for derived quantities. Instead of a framework base class, states structurally satisfy protocols — so new simulations keep exactly the fields they need.
+6. **[Patches](notebooks/patches.md).** Conditional local state changes: "if accepted, write these bytes here." Patches make incremental Monte Carlo possible. Build the patch, score it, accept or reject, and commit the change together with its cache dependencies atomically. Each batched chain decides independently.
 
-6. **[Patches](notebooks/patches.md)** — conditional local state changes: "if accepted, write these bytes here." Patches make incremental Monte Carlo possible — build the patch, score it, accept or reject, and commit the change together with its cache dependencies atomically, per batched chain independently.
+7. **[Neighbor Lists](notebooks/neighborlist.md).** Which particle pairs sit within `r_cut`. Naive search is O(N²) and also breaks the fixed-shape contract. The neighbor-list layer hides cell lists, refinement, capacity growth, and incremental updates behind a single protocol.
 
-7. **[Neighbor Lists](notebooks/neighborlist.md)** — which pairs sit within `r_cut`. Naively O(N²) and breaks the JIT fixed-shape contract. The neighbor-list layer hides cell lists, refinement, capacity growth, and incremental updates behind one protocol.
+8. **[Potentials](notebooks/potentials.md).** Energy as a composable object. Potentials compose by summation (LJ + Coulomb + bonded); propagators compose by sequencing. [`CachedPotential`][kups.core.potential.CachedPotential] stores the last full evaluation; when it sees a patch, it only evaluates the delta. This is what makes a production-sized Metropolis-Hastings step cheap.
 
-8. **[Potentials](notebooks/potentials.md)** — energy as a composable object. Potentials compose by *summation* (LJ + Coulomb + bonded); propagators compose by *sequencing*. [`CachedPotential`][kups.core.potential.CachedPotential] stores the last full evaluation and evaluates only the delta when it sees a patch, which is how a Metropolis-Hastings step over thousands of particles stays cheap.
-
-That's the chain. Every <em>k</em>UPS simulation — MD, MC, relaxation, batched GCMC, ML-potential dynamics — is built from these concepts.
+MD, MC, relaxation, batched GCMC, and ML-potential dynamics are all assembled from these pieces.
 
 ## A worked example: `md_lj`
 
-The shortest complete simulation in the repo is [`kups.application.simulations.md_lj`][kups.application.simulations.md_lj], CLI-exposed as `kups_md_lj`. The file is about a hundred lines end-to-end; its `run` function is ten of them. Every concept above appears once.
+The simulation in [`kups.application.simulations.md_lj`][kups.application.simulations.md_lj] (CLI: `kups_md_lj`) is the shortest complete one in the repo. The file is about a hundred lines; the `run` function is ten of them. The four blocks below trace it through the chain.
 
 **State definition.** The user picks the fields; nothing inherits from a framework base.
 
@@ -52,9 +50,9 @@ class LjMdState:
     lj_parameters: LennardJonesParameters
 ```
 
-Structurally satisfies `IsMdState` (ch. 5); the `Table[ParticleId, ...]` and `Table[SystemId, ...]` carry relational data with typed foreign-key indices (ch. 1); `neighborlist_params` is what the retry loop grows when buffers overflow (ch. 3, ch. 7); `lj_parameters` is the potential's parameters (ch. 8).
+The state structurally satisfies `IsMdState` (ch. 5). Both tables carry relational data via typed foreign-key indices (ch. 1). `neighborlist_params` is resized by the retry loop on overflow (ch. 3, ch. 7), and `lj_parameters` holds the LJ parameters (ch. 8).
 
-**State construction.** Read a standard file, build the two tables, estimate initial capacities.
+**State construction.** Read a standard file, build the two tables, pick initial capacities.
 
 ```python
 particles, systems = md_state_from_ase(config.inp_file, config.md, key=mb_key)
@@ -63,9 +61,9 @@ neighborlist_params = UniversalNeighborlistParameters.estimate(
 )
 ```
 
-`md_state_from_ase` accepts xyz, cif, or lammps input; [`UniversalNeighborlistParameters.estimate`][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] guesses initial capacities from geometry (ch. 7). Nothing here has to be exact — warmup will grow what is too small via the fix-and-retry loop (ch. 3).
+`md_state_from_ase` accepts xyz, cif, or lammps input. [`UniversalNeighborlistParameters.estimate`][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] guesses initial capacities from geometry (ch. 7); it does not have to be exact, because warmup grows what is too small via the fix-and-retry loop (ch. 3).
 
-**Wiring potential and propagator.** One lens, one factory, one composed propagator.
+**Wiring potential and propagator.** Factories take a single state lens and fan it out to the fields they need.
 
 ```python
 state_lens = identity_lens(LjMdState)
@@ -75,7 +73,7 @@ potential = make_lennard_jones_from_state(
 propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 ```
 
-[`make_lennard_jones_from_state`][kups.potential.classical.lennard_jones.make_lennard_jones_from_state] is a convention-following factory that reads particles, systems, and LJ parameters through a single state lens (ch. 2, ch. 5). [`make_md_propagator`][kups.application.md.simulation.make_md_propagator] composes a [`PotentialAsPropagator`][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [`ResetOnErrorPropagator`][kups.core.propagator.ResetOnErrorPropagator] — all in one [`SequentialPropagator`][kups.core.propagator.SequentialPropagator] (ch. 4).
+[`make_lennard_jones_from_state`][kups.potential.classical.lennard_jones.make_lennard_jones_from_state] reads particles, systems, and LJ parameters through the state lens (ch. 2, ch. 5). [`make_md_propagator`][kups.application.md.simulation.make_md_propagator] composes a [`PotentialAsPropagator`][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [`ResetOnErrorPropagator`][kups.core.propagator.ResetOnErrorPropagator] inside one [`SequentialPropagator`][kups.core.propagator.SequentialPropagator] (ch. 4).
 
 **Running.** The loop lives on the host side.
 
@@ -83,10 +81,8 @@ propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 state = run_md(next(chain), propagator, state, config.run)
 ```
 
-`run_md` does two things: a warmup phase calls [`propagate_and_fix`][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize (ch. 3); a production phase then runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call; buffer donation lets JAX reuse the input state's memory for the output so allocation stays flat.
+`run_md` has two phases. Warmup calls [`propagate_and_fix`][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize (ch. 3). Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
 
-Every line in the file reaches into one chapter, and the chapters fit together because they share the same primitives.
+## Where to go next
 
-## Where to go from here
-
-Run a packaged simulation from [Simulations](simulations.md) and trace it back against this handbook. If GPU utilization, GPU memory, or a <em>k</em>UPS-specific error gets in the way, [Troubleshooting](troubleshooting.md) covers the sharp edges.
+Run a packaged simulation from [Simulations](simulations.md) and trace it back through the chapters. [Troubleshooting](troubleshooting.md) covers the GPU and JIT errors that come up most often.
