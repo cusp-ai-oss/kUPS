@@ -18,6 +18,29 @@ A molecular-simulation framework has to satisfy three things at once, and the na
 
 ## The chain
 
+```mermaid
+graph LR
+  T["1. Tables"]
+  L["2. Lenses"]
+  R["3. Runtime<br/>Assertions"]
+  P["4. Propagators"]
+  C["5. Conventions"]
+  Pt["6. Patches"]
+  N["7. Neighbor<br/>Lists"]
+  Po["8. Potentials"]
+
+  T --> L --> R --> P --> C --> Pt --> N --> Po
+
+  click T "notebooks/tables/"
+  click L "notebooks/lens/"
+  click R "notebooks/runtime_assertions/"
+  click P "notebooks/propagators/"
+  click C "notebooks/conventions/"
+  click Pt "notebooks/patches/"
+  click N "notebooks/neighborlist/"
+  click Po "notebooks/potentials/"
+```
+
 1. **[Tables](notebooks/tables.md).** Keyed containers and typed foreign-key indices. Flat arrays compile to a single kernel but lose the relational structure that tells you which particle belongs to which system; [`Table`](reference/kups/core/data/table.md#kups.core.data.table.Table) and [`Index`](reference/kups/core/data/index_py.md#kups.core.data.index.Index) put that structure back at compile time. [`Table.union`](reference/kups/core/data/table.md#kups.core.data.table.Table.union) flattens many independent systems into one vectorized computation, the basis for the batched chains that appear in every later chapter. [`Buffered`](reference/kups/core/data/buffered.md#kups.core.data.buffered.Buffered) pre-allocates free slots inside a fixed-capacity array so GCMC can insert and delete without recompiling.
 
 2. **[Lenses](notebooks/lens.md).** Get-and-update pairs. Tables fix the shape of the data, but each primitive still has to work against user-defined state layouts. Lenses let generic code read and write specific fields without reaching into the layout.

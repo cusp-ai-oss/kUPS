@@ -18,6 +18,12 @@
   --md-accent-fg-color--light: #7BE3F0;
   --md-accent-fg-color--dark: #1FA8BC;
   --md-accent-fg-color--transparent: rgba(70, 210, 230, 0.1);
+
+  --md-mermaid-node-bg-color: #9FE066;
+  --md-mermaid-node-fg-color: #3F7A20;
+  --md-mermaid-edge-color: #C5F598;
+  --md-mermaid-label-bg-color: rgba(0, 0, 0, 0.6);
+  --md-mermaid-label-fg-color: #1a1a1a;
 }
 
 [data-md-color-scheme="default"] {
@@ -28,6 +34,12 @@
   --md-accent-fg-color--light: #1FA8BC;
   --md-accent-fg-color--dark: #085F6E;
   --md-accent-fg-color--transparent: rgba(14, 138, 158, 0.1);
+
+  --md-mermaid-node-bg-color: #DEFBC6;
+  --md-mermaid-node-fg-color: #3F7A20;
+  --md-mermaid-edge-color: #5a6775;
+  --md-mermaid-label-bg-color: #ffffff;
+  --md-mermaid-label-fg-color: #1a1a1a;
 }
 
 [data-md-color-scheme="slate"] .kups-logo {
