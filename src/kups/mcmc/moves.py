@@ -913,12 +913,8 @@ def _sched(params_lens: Lens) -> PropertyScheduler:
     return PropertyScheduler(params_lens, Table.transform(acceptance_target_schedule))
 
 
-def make_group_translation_mcmc_propagator[
-    State,
-    InState: IsTranslationState,
-    Move: Patch,
-](
-    state: Lens[State, InState],
+def make_group_translation_mcmc_propagator[State, Move: Patch](
+    state: Lens[State, IsTranslationState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
 ) -> MCMCPropagator[State, ParticlePositionChanges, Move]:
@@ -941,12 +937,8 @@ def make_group_translation_mcmc_propagator[
     )
 
 
-def make_group_rotation_mcmc_propagator[
-    State,
-    InState: IsRotationState,
-    Move: Patch,
-](
-    state: Lens[State, InState],
+def make_group_rotation_mcmc_propagator[State, Move: Patch](
+    state: Lens[State, IsRotationState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
 ) -> MCMCPropagator[State, ParticlePositionChanges, Move]:
@@ -968,12 +960,8 @@ def make_group_rotation_mcmc_propagator[
     )
 
 
-def make_reinsertion_mcmc_propagator[
-    State,
-    InState: IsReinsertionState,
-    Move: Patch,
-](
-    state: Lens[State, InState],
+def make_reinsertion_mcmc_propagator[State, Move: Patch](
+    state: Lens[State, IsReinsertionState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
 ) -> MCMCPropagator[State, ParticlePositionChanges, Move]:
@@ -992,12 +980,8 @@ def make_reinsertion_mcmc_propagator[
     )
 
 
-def make_displacement_mcmc_propagator[
-    State,
-    InState: IsDisplacementState,
-    Move: Patch,
-](
-    state: Lens[State, InState],
+def make_displacement_mcmc_propagator[State, Move: Patch](
+    state: Lens[State, IsDisplacementState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
     *,
@@ -1070,12 +1054,8 @@ def make_displacement_mcmc_propagator[
     )
 
 
-def make_exchange_mcmc_propagator[
-    State,
-    InState: IsExchangeState,
-    Move: Patch,
-](
-    state: Lens[State, InState],
+def make_exchange_mcmc_propagator[State, Move: Patch](
+    state: Lens[State, IsExchangeState],
     patch_fn: PatchFn[State, ExchangeChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
 ) -> MCMCPropagator[State, ExchangeChanges, Move]:
@@ -1095,12 +1075,8 @@ def make_exchange_mcmc_propagator[
     )
 
 
-def make_gcmc_mcmc_propagator[
-    State,
-    InState: IsGCMCState,
-    Move: Patch,
-](
-    state: Lens[State, InState],
+def make_gcmc_mcmc_propagator[State, Move: Patch](
+    state: Lens[State, IsGCMCState],
     patch_fn: PatchFn[State, ExchangeChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
     *,

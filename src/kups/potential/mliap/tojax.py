@@ -231,16 +231,16 @@ class IsTojaxedState(Protocol):
 
 
 @overload
-def make_tojaxed_from_state[State, InState: IsTojaxedState](
-    state: Lens[State, InState],
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedState],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
 @overload
-def make_tojaxed_from_state[State, InState: IsTojaxedState](
-    state: Lens[State, InState],
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedState],
     *,
     compute_position_and_unitcell_gradients: Literal[True],
 ) -> Potential[State, PositionAndUnitCell, EmptyType, Any]: ...

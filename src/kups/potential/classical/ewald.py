@@ -50,6 +50,7 @@ from kups.core.typing import (
     HasCharges,
     HasUnitCell,
     InclusionId,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -1036,11 +1037,8 @@ class IsEwaldState[Params](Protocol):
 
 
 @overload
-def make_ewald_from_state[
-    State,
-    InState: IsEwaldState[EwaldParameters | HasCache[EwaldParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_ewald_from_state[State](
+    state: Lens[State, IsEwaldState[MaybeCached[EwaldParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -1049,11 +1047,8 @@ def make_ewald_from_state[
 
 
 @overload
-def make_ewald_from_state[
-    State,
-    InState: IsEwaldState[EwaldParameters | HasCache[EwaldParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_ewald_from_state[State](
+    state: Lens[State, IsEwaldState[MaybeCached[EwaldParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -1062,12 +1057,10 @@ def make_ewald_from_state[
 
 
 @overload
-def make_ewald_from_state[
-    State,
-    InState: IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]],
-    P: Patch,
-](
-    state: Lens[State, InState],
+def make_ewald_from_state[State, P: Patch](
+    state: Lens[
+        State, IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
+    ],
     probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -1076,14 +1069,13 @@ def make_ewald_from_state[
 
 
 @overload
-def make_ewald_from_state[
-    State,
-    InState: IsEwaldState[
-        HasCache[EwaldParameters, EwaldCache[PositionAndUnitCell, EmptyType]]
+def make_ewald_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsEwaldState[
+            HasCache[EwaldParameters, EwaldCache[PositionAndUnitCell, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
     *,
     compute_position_and_unitcell_gradients: Literal[True],

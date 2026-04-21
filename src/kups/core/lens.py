@@ -126,8 +126,8 @@ _NOT_SET = _NOT_SET_TYPE.OBJ
 
 
 S = TypeVar("S", covariant=True)
-R = TypeVar("R")
-R2 = TypeVar("R2")
+R = TypeVar("R", covariant=True)
+R2 = TypeVar("R2", covariant=True)
 
 
 @runtime_checkable
@@ -151,14 +151,14 @@ class Lens(Protocol[S, R]):
     """
 
     @overload
-    def __call__[S2](self: Lens[S2, R], state: S2, /, value: R) -> S2: ...
+    def __call__[S2, R2](self: Lens[S2, R2], state: S2, /, value: R2) -> S2: ...
 
     @overload
-    def __call__[S2](self: Lens[S2, R], state: S2, /) -> R: ...
+    def __call__[S2, R2](self: Lens[S2, R2], state: S2, /) -> R2: ...
 
-    def __call__[S2](
-        self: Lens[S2, R], state: S2, /, value: R | _NOT_SET_TYPE = _NOT_SET
-    ) -> S2 | R:
+    def __call__[S2, R2](
+        self: Lens[S2, R2], state: S2, /, value: R2 | _NOT_SET_TYPE = _NOT_SET
+    ) -> S2 | R2:
         """Get or set the focused value, satisfying View and Update protocols.
 
         When called with one argument, acts as a View and returns the focused value.
@@ -195,7 +195,7 @@ class Lens(Protocol[S, R]):
         """
         ...
 
-    def set[S2](self: Lens[S2, R], state: S2, /, value: R) -> S2:
+    def set[S2, R2](self: Lens[S2, R2], state: S2, /, value: R2) -> S2:
         """Set the focused value in the data structure.
 
         Args:
@@ -207,7 +207,7 @@ class Lens(Protocol[S, R]):
         """
         ...
 
-    def apply[S2](self: Lens[S2, R], state: S2, /, modifier: Modifier[R]) -> S2:
+    def apply[S2, R2](self: Lens[S2, R2], state: S2, /, modifier: Modifier[R2]) -> S2:
         """Apply a modifier function to the focused value.
 
         Args:
@@ -256,7 +256,7 @@ class Lens(Protocol[S, R]):
         """
         ...
 
-    def nest[U](self, other: Lens[R, U]) -> Lens[S, U]:
+    def nest[U, S2, R2](self: Lens[S2, R2], other: Lens[R2, U]) -> Lens[S2, U]:
         """Nest another lens or view within this lens.
 
         This provides an alternative to focus() that works with both lenses and views.
@@ -290,12 +290,14 @@ class BoundLens(Protocol[S, R]):
     """
 
     @overload
-    def __call__(self, value: R) -> S: ...
+    def __call__[R2](self: BoundLens[S, R2], value: R2) -> S: ...
 
     @overload
     def __call__(self) -> R: ...
 
-    def __call__(self, value: R | _NOT_SET_TYPE = _NOT_SET) -> S | R:
+    def __call__[R2](
+        self: BoundLens[S, R2], value: R2 | _NOT_SET_TYPE = _NOT_SET
+    ) -> S | R2:
         """Get or set the focused value in the bound state.
 
         When called with no arguments, returns the focused value.
@@ -309,7 +311,9 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def focus[B](self, where: Callable[[R], B]) -> BoundLens[S, B]:
+    def focus[B, R2](
+        self: BoundLens[S, R2], where: Callable[[R2], B]
+    ) -> BoundLens[S, B]:
         """Focus this bound lens on a deeper part of the data structure.
 
         Args:
@@ -328,7 +332,7 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def set(self, value: R) -> S:
+    def set[R2](self: BoundLens[S, R2], value: R2) -> S:
         """Set the focused value in the bound data structure.
 
         Args:
@@ -339,7 +343,7 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def apply(self, modifier: Modifier[R]) -> S:
+    def apply[R2](self: BoundLens[S, R2], modifier: Modifier[R2]) -> S:
         """Apply a modifier function to the focused value in the bound data structure.
 
         Args:
@@ -366,9 +370,9 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def merge[S2, R2](
-        self: BoundLens[S2, R], other: Lens[S2, R2]
-    ) -> BoundLens[S2, tuple[R, R2]]:
+    def merge[S2, R2, R3](
+        self: BoundLens[S2, R2], other: Lens[S2, R3]
+    ) -> BoundLens[S2, tuple[R2, R3]]:
         """Merge this lens with another lens to access multiple values.
 
         Args:
@@ -379,7 +383,7 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def nest[U](self, other: Lens[R, U]) -> BoundLens[S, U]:
+    def nest[U, R2](self: BoundLens[S, R2], other: Lens[R2, U]) -> BoundLens[S, U]:
         """Nest another lens or view within this bound lens.
 
         This provides an alternative to focus() that works with both lenses and views.
@@ -395,7 +399,7 @@ class BoundLens(Protocol[S, R]):
         ...
 
 
-class BaseLens(Lens[S, R]):
+class BaseLens(Lens[S, R], abc.ABC):
     """Base class for lens implementations."""
 
     def focus[B](self, where: Callable[[R], B]) -> Lens[S, B]:
@@ -418,21 +422,21 @@ class BaseLens(Lens[S, R]):
     ) -> Lens[S2, tuple[R, R2]]:
         return MergedLens(self, other)
 
-    def nest[U](self, other: Lens[R, U]) -> Lens[S, U]:
+    def nest[U, R2](self: Lens[S, R2], other: Lens[R2, U]) -> Lens[S, U]:
         view_func = other.get if isinstance(other, Lens) else other
         return self.focus(view_func)
 
     @overload
-    def __call__[S2](self: Lens[S2, R], state: S2, /, value: R) -> S2: ...
+    def __call__[S2, R2](self: Lens[S2, R2], state: S2, /, value: R2) -> S2: ...
 
     @overload
-    def __call__[S2](
-        self: Lens[S2, R], state: S2, /, value: _NOT_SET_TYPE = _NOT_SET
-    ) -> R: ...
+    def __call__[S2, R2](
+        self: Lens[S2, R2], state: S2, /, value: _NOT_SET_TYPE = _NOT_SET
+    ) -> R2: ...
 
-    def __call__[S2](
-        self: Lens[S2, R], state: S2, /, value: R | _NOT_SET_TYPE = _NOT_SET
-    ) -> S2 | R:
+    def __call__[S2, R2](
+        self: Lens[S2, R2], state: S2, /, value: R2 | _NOT_SET_TYPE = _NOT_SET
+    ) -> S2 | R2:
         if value is _NOT_SET:
             return self.get(state)
         else:
@@ -458,7 +462,7 @@ class SimpleLens(BaseLens[S, R]):
         """Get the focused value using the provided view function."""
         return self._get(state)
 
-    def set[S2](self: SimpleLens[S2, R], state: S2, value: R) -> S2:
+    def set[S2, R2](self: SimpleLens[S2, R2], state: S2, value: R2) -> S2:
         """Set the focused value using traversal lens."""
         try:
             return _traversal_lens(self.get, cls=type(state)).set(state, value)
@@ -479,7 +483,7 @@ class ConstLens(BaseLens[S, R]):
     def get[S2](self: ConstLens[S2, R], state: S2) -> R:
         return self.value
 
-    def set[S2](self: ConstLens[S2, R], state: S2, value: R) -> S2:
+    def set[S2, R2](self: ConstLens[S2, R2], state: S2, value: R2) -> S2:
         return state
 
 
@@ -502,7 +506,11 @@ class MergedLens(BaseLens[S, tuple[R, R2]]):
     def get[S2](self: MergedLens[S2, R, R2], state: S2) -> tuple[R, R2]:
         return self.left.get(state), self.right.get(state)
 
-    def set[S2](self: MergedLens[S2, R, R2], state: S2, value: tuple[R, R2]) -> S2:
+    # pyright throws: "object*" is not assignable to "tuple[R3@set, R4@set]"
+    # It sounds like an inference issue as I cannot follow where object* is inferred.
+    def set[S2, R3, R4](  # type: ignore[reportIncompatibleMethodOverride]
+        self: MergedLens[S2, R3, R4], state: S2, /, value: tuple[R3, R4]
+    ) -> S2:
         state = self.left.set(state, value[0])
         return self.right.set(state, value[1])
 
@@ -523,7 +531,7 @@ class NestedLens(BaseLens[S, R2], Generic[S, R, R2]):
         """Get value by applying outer lens then inner lens."""
         return self.inner.get(self.outer.get(state))
 
-    def set[S2](self: NestedLens[S2, R, R2], state: S2, value: R2) -> S2:
+    def set[S2, R3](self: NestedLens[S2, R, R3], state: S2, value: R3) -> S2:
         """Set value by getting outer value, setting inner value, then setting outer."""
         inner = self.inner.set(self.outer.get(state), value)
         return self.outer.set(state, inner)
@@ -548,7 +556,7 @@ class SimpleBoundLens(BoundLens[S, R]):
         """Get the focused value from the bound target."""
         return self.lens.get(self.target)
 
-    def set(self, value: R) -> S:
+    def set[R2](self: SimpleBoundLens[S, R2], value: R2) -> S:
         """Set the focused value in the bound target."""
         return self.lens.set(self.target, value)
 
@@ -566,17 +574,21 @@ class SimpleBoundLens(BoundLens[S, R]):
         """Merge this bound lens with another lens to access multiple values."""
         return self.lens.merge(other).bind(self.target)
 
-    def nest[U](self, other: Lens[R, U]) -> BoundLens[S, U]:
+    def nest[U, R2](
+        self: SimpleBoundLens[S, R2], other: Lens[R2, U]
+    ) -> BoundLens[S, U]:
         """Nest another lens or view within this bound lens."""
         return self.lens.nest(other).bind(self.target)
 
     @overload
-    def __call__(self, value: R) -> S: ...
+    def __call__[R2](self: SimpleBoundLens[S, R2], value: R2) -> S: ...
 
     @overload
     def __call__(self, value: _NOT_SET_TYPE = _NOT_SET) -> R: ...
 
-    def __call__(self, value: R | _NOT_SET_TYPE = _NOT_SET) -> S | R:
+    def __call__[R2](
+        self: SimpleBoundLens[S, R2], value: R2 | _NOT_SET_TYPE = _NOT_SET
+    ) -> S | R2:
         if value is _NOT_SET:
             return self.get()
         else:
@@ -598,7 +610,7 @@ class LambdaLens(BaseLens[S, R]):
         """Get the focused value using the custom getter function."""
         return self._get(state)
 
-    def set[S2](self: LambdaLens[S2, R], state: S2, value: R) -> S2:
+    def set[S2, R2](self: LambdaLens[S2, R2], state: S2, value: R2) -> S2:
         """Set the focused value using the custom setter function."""
         return self._set(state, value)
 
@@ -640,7 +652,7 @@ class IndexLens(BaseLens[S, R]):
             is_leaf=lambda x: isinstance(x, (Array, HasScatterArgs)),
         )
 
-    def set[S2](self: IndexLens[S2, R], state: S2, value: R) -> S2:
+    def set[S2, R2](self: IndexLens[S2, R2], state: S2, value: R2) -> S2:
         """Set values by applying array indexing to the focused data."""
         return self.lens.set(
             state, tree_scatter_set(self.lens.get(state), value, self.idxs, self.args)

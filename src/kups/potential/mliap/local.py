@@ -57,6 +57,7 @@ from kups.core.typing import (
     HasPositionsAndAtomicNumbers,
     HasSystemIndex,
     HasUnitCell,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -603,13 +604,8 @@ class IsLocalMLIAPState[Model](Protocol):
 
 
 @overload
-def make_local_mliap_from_state[
-    State,
-    InState: IsLocalMLIAPState[LocalMLIAPData],
-    Gradient,
-    Hessian,
-](
-    state: Lens[State, InState],
+def make_local_mliap_from_state[State, Gradient, Hessian](
+    state: Lens[State, IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]],
     probe: None = None,
     gradient_lens: Lens[LocalMLIAPInput, Gradient] = EMPTY_LENS,
     hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
@@ -619,30 +615,8 @@ def make_local_mliap_from_state[
 
 
 @overload
-def make_local_mliap_from_state[
-    State,
-    InState: IsLocalMLIAPState[HasCache[LocalMLIAPData, Any]],
-    Gradient,
-    Hessian,
-](
-    state: Lens[State, InState],
-    probe: None = None,
-    gradient_lens: Lens[LocalMLIAPInput, Gradient] = EMPTY_LENS,
-    hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
-    hessian_idx_view: Lens[State, Hessian] = EMPTY_LENS,
-    out_idx_view: None = None,
-) -> Potential[State, Gradient, Hessian, Patch]: ...
-
-
-@overload
-def make_local_mliap_from_state[
-    State,
-    InState: IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut]],
-    Ptch: Patch,
-    Gradient,
-    Hessian,
-](
-    state: Lens[State, InState],
+def make_local_mliap_from_state[State, Ptch: Patch, Gradient, Hessian](
+    state: Lens[State, IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut]]],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsLocalMLIAPGraphParticles]],
     gradient_lens: Lens[LocalMLIAPInput, Gradient] = EMPTY_LENS,
     hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,

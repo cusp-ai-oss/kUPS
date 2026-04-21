@@ -45,6 +45,7 @@ from kups.core.typing import (
     HasSystemIndex,
     HasUnitCell,
     Label,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -288,13 +289,11 @@ class IsCosineAngleState[Params](Protocol):
 
 
 @overload
-def make_cosine_angle_from_state[
-    State,
-    InState: IsCosineAngleState[
-        CosineAngleParameters | HasCache[CosineAngleParameters, Any]
+def make_cosine_angle_from_state[State](
+    state: Lens[
+        State,
+        IsCosineAngleState[MaybeCached[CosineAngleParameters, Any]],
     ],
-](
-    state: Lens[State, InState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -302,13 +301,11 @@ def make_cosine_angle_from_state[
 
 
 @overload
-def make_cosine_angle_from_state[
-    State,
-    InState: IsCosineAngleState[
-        CosineAngleParameters | HasCache[CosineAngleParameters, Any]
+def make_cosine_angle_from_state[State](
+    state: Lens[
+        State,
+        IsCosineAngleState[MaybeCached[CosineAngleParameters, Any]],
     ],
-](
-    state: Lens[State, InState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -316,14 +313,13 @@ def make_cosine_angle_from_state[
 
 
 @overload
-def make_cosine_angle_from_state[
-    State,
-    InState: IsCosineAngleState[
-        HasCache[CosineAngleParameters, PotentialOut[EmptyType, EmptyType]]
+def make_cosine_angle_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsCosineAngleState[
+            HasCache[CosineAngleParameters, PotentialOut[EmptyType, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,
@@ -335,14 +331,15 @@ def make_cosine_angle_from_state[
 
 
 @overload
-def make_cosine_angle_from_state[
-    State,
-    InState: IsCosineAngleState[
-        HasCache[CosineAngleParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_cosine_angle_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsCosineAngleState[
+            HasCache[
+                CosineAngleParameters, PotentialOut[PositionAndUnitCell, EmptyType]
+            ]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,

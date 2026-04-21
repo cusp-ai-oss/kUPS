@@ -159,11 +159,8 @@ class IsCoulombVacuumState(Protocol):
 
 
 @overload
-def make_coulomb_vacuum_from_state[
-    State,
-    InState: IsCoulombVacuumState,
-](
-    state: Lens[State, InState],
+def make_coulomb_vacuum_from_state[State](
+    state: Lens[State, IsCoulombVacuumState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -171,11 +168,8 @@ def make_coulomb_vacuum_from_state[
 
 
 @overload
-def make_coulomb_vacuum_from_state[
-    State,
-    InState: IsCoulombVacuumState,
-](
-    state: Lens[State, InState],
+def make_coulomb_vacuum_from_state[State](
+    state: Lens[State, IsCoulombVacuumState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -183,12 +177,8 @@ def make_coulomb_vacuum_from_state[
 
 
 @overload
-def make_coulomb_vacuum_from_state[
-    State,
-    InState: IsCoulombVacuumState,
-    P: Patch,
-](
-    state: Lens[State, InState],
+def make_coulomb_vacuum_from_state[State, P: Patch](
+    state: Lens[State, IsCoulombVacuumState],
     probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -196,12 +186,8 @@ def make_coulomb_vacuum_from_state[
 
 
 @overload
-def make_coulomb_vacuum_from_state[
-    State,
-    InState: IsCoulombVacuumState,
-    P: Patch,
-](
-    state: Lens[State, InState],
+def make_coulomb_vacuum_from_state[State, P: Patch](
+    state: Lens[State, IsCoulombVacuumState],
     probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
     *,
     compute_position_and_unitcell_gradients: Literal[True],
