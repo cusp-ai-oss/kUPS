@@ -1,6 +1,6 @@
 # 📐 Units & Constants
 
-*k*UPS uses a consistent unit system optimized for molecular simulations:
+<em>k</em>UPS uses a consistent unit system optimized for molecular simulations:
 
 | Physical Quantity | Unit | Symbol |
 |-------------------|------|---------|
