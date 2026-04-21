@@ -1519,7 +1519,7 @@ wheels = [
 
 [[package]]
 name = "kups"
-version = "0.1.1"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "ase" },
@@ -1537,6 +1537,14 @@ dependencies = [
     { name = "rich" },
     { name = "slub" },
     { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+cuda = [
+    { name = "jax", extra = ["cuda"], marker = "sys_platform == 'linux'" },
+]
+hf = [
+    { name = "huggingface-hub" },
 ]
 
 [package.dev-dependencies]
@@ -1580,7 +1588,9 @@ requires-dist = [
     { name = "etils", specifier = ">=1.13.0" },
     { name = "flatbuffers", specifier = ">=25.2.10" },
     { name = "h5py", specifier = ">=3.15.0" },
+    { name = "huggingface-hub", marker = "extra == 'hf'", specifier = ">=1.11.0" },
     { name = "jax", specifier = ">=0.7.2" },
+    { name = "jax", extras = ["cuda"], marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.7.2" },
     { name = "jsonargparse", specifier = ">=4.41.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nanoargs", specifier = ">=0.1.1" },
@@ -1591,6 +1601,7 @@ requires-dist = [
     { name = "slub", specifier = ">=0.1.1" },
     { name = "tqdm", specifier = ">=4.67.1" },
 ]
+provides-extras = ["cuda", "hf"]
 
 [package.metadata.requires-dev]
 cuda = [{ name = "jax", extras = ["cuda"], marker = "sys_platform == 'linux'", specifier = ">=0.7.2" }]
