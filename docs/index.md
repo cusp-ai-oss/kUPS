@@ -1,7 +1,7 @@
 # kUPS { .visually-hidden }
 
 <p align="center">
-  <img src="media/logo/logo.svg" alt="kUPS" width="240">
+  <img src="media/logo/logo.svg" alt="kUPS" width="240" class="kups-logo">
 </p>
 
 <em>k</em>UPS is a toolkit for building high-performance molecular simulations on JAX. It provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
