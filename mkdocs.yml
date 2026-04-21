@@ -133,6 +133,7 @@ nav:
     - 6. Patches: notebooks/patches.md
     - 7. Neighbor Lists: notebooks/neighborlist.md
     - 8. Potentials: notebooks/potentials.md
+    - 9. Monte Carlo Moves: notebooks/mc_moves.md
   - Units: units.md
   - Troubleshooting: troubleshooting.md
 
