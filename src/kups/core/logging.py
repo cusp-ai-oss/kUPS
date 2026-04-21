@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 
 import jax.profiler
-import tqdm
+import tqdm.auto as tqdm
 
 from kups.core.lens import View
 
