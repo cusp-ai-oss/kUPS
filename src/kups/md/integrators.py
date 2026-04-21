@@ -160,7 +160,7 @@ class _PositionStepData(
 
 
 @dataclass
-class PositionStep[State, Data: _PositionStepData](Propagator[State]):
+class PositionStep[State](Propagator[State]):
     """Update positions using velocities in molecular dynamics.
 
     Implements the 'A' operator in splitting schemes, propagating positions
@@ -175,7 +175,6 @@ class PositionStep[State, Data: _PositionStepData](Propagator[State]):
 
     Type Parameters:
         State: Simulation state type
-        Data: Particle data type (must have momenta, positions, masses, system index)
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, positions $\\mathbf{r}$, masses $m$)
@@ -183,7 +182,7 @@ class PositionStep[State, Data: _PositionStepData](Propagator[State]):
         flow: Flow operator defining how positions evolve (handles boundary conditions)
     """
 
-    particles: Lens[State, Table[ParticleId, Data]] = field(static=True)
+    particles: Lens[State, Table[ParticleId, _PositionStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
     flow: Flow[State, Array] = field(static=True)
 
@@ -216,7 +215,7 @@ class IsMomentumStepData(HasMomenta, HasForces, HasSystemIndex, Protocol): ...
 
 
 @dataclass
-class MomentumStep[State, Data: IsMomentumStepData](Propagator[State]):
+class MomentumStep[State](Propagator[State]):
     """Update momenta using forces according to Newton's second law.
 
     Implements the 'B' operator in splitting schemes, applying forces to
@@ -231,14 +230,13 @@ class MomentumStep[State, Data: IsMomentumStepData](Propagator[State]):
 
     Type Parameters:
         State: Simulation state type
-        Data: Particle data type (must have momenta, forces, system index)
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, forces $\\mathbf{F}$)
         systems: View to extract system data with time step $\\Delta t$
     """
 
-    particles: Lens[State, Table[ParticleId, Data]] = field(static=True)
+    particles: Lens[State, Table[ParticleId, IsMomentumStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -272,8 +270,8 @@ class _MDParticleData(
     def position_gradients(self) -> Array: ...
 
 
-def make_velocity_verlet_step[State, Data: _MDParticleData](
-    particles: Lens[State, Table[ParticleId, Data]],
+def make_velocity_verlet_step[State](
+    particles: Lens[State, Table[ParticleId, _MDParticleData]],
     systems: View[State, Table[SystemId, HasTimeStep]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -330,7 +328,7 @@ class _StochasticSysData(
 
 
 @dataclass
-class StochasticStep[State, Data: IsStochasticParticleData](Propagator[State]):
+class StochasticStep[State](Propagator[State]):
     """Langevin thermostat stochastic step with exact Ornstein-Uhlenbeck solution.
 
     Implements the 'O' operator in the BAOAB splitting scheme. This step
@@ -347,7 +345,6 @@ class StochasticStep[State, Data: IsStochasticParticleData](Propagator[State]):
 
     Type Parameters:
         State: Simulation state type
-        Data: Particle data type (must have momenta, masses, system index)
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, masses $m$)
@@ -361,7 +358,9 @@ class StochasticStep[State, Data: IsStochasticParticleData](Propagator[State]):
         DOI: 10.1093/amrx/abs010
     """
 
-    particles: Lens[State, Table[ParticleId, Data]] = field(static=True)
+    particles: Lens[State, Table[ParticleId, IsStochasticParticleData]] = field(
+        static=True
+    )
     system: View[State, Table[SystemId, _StochasticSysData]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -403,8 +402,8 @@ class StochasticStep[State, Data: IsStochasticParticleData](Propagator[State]):
         )
 
 
-def make_baoab_langevin_step[State, Data: _MDParticleData](
-    particles: Lens[State, Table[ParticleId, Data]],
+def make_baoab_langevin_step[State](
+    particles: Lens[State, Table[ParticleId, _MDParticleData]],
     systems: View[State, Table[SystemId, _StochasticSysData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -468,10 +467,7 @@ class IsCSVRParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
 
 
 @dataclass
-class CSVRStep[
-    State,
-    Data: IsCSVRParticleData,
-](Propagator[State]):
+class CSVRStep[State](Propagator[State]):
     r"""Canonical Sampling through Velocity Rescaling (CSVR) thermostat step.
 
     Implements the Bussi-Donadio-Parrinello algorithm for canonical sampling
@@ -496,7 +492,6 @@ class CSVRStep[
 
     Type Parameters:
         State: Simulation state type
-        Data: Particle data type (must have momenta, masses, system index)
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, masses $m$)
@@ -509,7 +504,7 @@ class CSVRStep[
         DOI: 10.1063/1.2408420
     """
 
-    particles: Lens[State, Table[ParticleId, Data]] = field(static=True)
+    particles: Lens[State, Table[ParticleId, IsCSVRParticleData]] = field(static=True)
     systems: View[State, Table[SystemId, _CSVRSystemData]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -590,8 +585,8 @@ class CSVRStep[
         )
 
 
-def make_csvr_step[State, Data: _MDParticleData](
-    particles: Lens[State, Table[ParticleId, Data]],
+def make_csvr_step[State](
+    particles: Lens[State, Table[ParticleId, _MDParticleData]],
     systems: View[State, Table[SystemId, _CSVRSystemData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -659,11 +654,7 @@ class _BarostatParticleData(_MDParticleData, Protocol): ...
 
 
 @dataclass
-class StochasticCellRescalingStep[
-    State,
-    Data: _BarostatParticleData,
-    SData: _StochasticCellRescalingSystemData,
-](Propagator[State]):
+class StochasticCellRescalingStep[State](Propagator[State]):
     """Stochastic cell rescaling barostat for NPT ensemble sampling.
 
     Implements the isotropic stochastic cell rescaling algorithm (Bernetti & Bussi, 2020)
@@ -695,8 +686,6 @@ class StochasticCellRescalingStep[
 
     Type Parameters:
         State: Simulation state type
-        Data: Particle data type (must have positions, momenta, masses, system index)
-        SData: System data type with barostat parameters
 
     Attributes:
         particles: Lens to get/set indexed particle data (positions $\\mathbf{r}$, momenta $\\mathbf{p}$, masses $m$)
@@ -710,8 +699,12 @@ class StochasticCellRescalingStep[
         DOI: 10.1063/5.0020514
     """
 
-    particles: Lens[State, Table[ParticleId, Data]] = field(static=True)
-    systems: Lens[State, Table[SystemId, SData]] = field(static=True)
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
+        static=True
+    )
+    systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
+        static=True
+    )
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply stochastic cell rescaling for pressure control.
@@ -833,13 +826,9 @@ class IsCSVRNPTSystemData(
     def unitcell_gradients(self) -> UnitCell: ...
 
 
-def make_csvr_npt_step[
-    State,
-    Data: _BarostatParticleData,
-    SData: IsCSVRNPTSystemData,
-](
-    particles: Lens[State, Table[ParticleId, Data]],
-    systems: Lens[State, Table[SystemId, SData]],
+def make_csvr_npt_step[State](
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]],
+    systems: Lens[State, Table[SystemId, IsCSVRNPTSystemData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
 ) -> SequentialPropagator[State]:
@@ -882,8 +871,10 @@ def make_csvr_npt_step[
              stochastic cell rescaling. J. Chem. Phys., 153(11), 114107.
              DOI: 10.1063/5.0020514
     """
-    sys_view: View[State, Table[SystemId, SData]] = systems.get
-    sys_half_view: View[State, Table[SystemId, SData]] = pipe(systems.get, _half_time)
+    sys_view: View[State, Table[SystemId, IsCSVRNPTSystemData]] = systems.get
+    sys_half_view: View[State, Table[SystemId, IsCSVRNPTSystemData]] = pipe(
+        systems.get, _half_time
+    )
     return SequentialPropagator(
         (
             CSVRStep(particles, sys_view),
@@ -910,8 +901,8 @@ class IsMDState(Protocol):
     def systems(self) -> Table[SystemId, IsMDSystem]: ...
 
 
-def make_md_step_from_state[State, InpState: IsMDState](
-    state: Lens[State, InpState],
+def make_md_step_from_state[State](
+    state: Lens[State, IsMDState],
     derivative_computation: Propagator[State],
     integrator: Integrator,
 ) -> Propagator[State]:

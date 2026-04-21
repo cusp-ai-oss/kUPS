@@ -292,8 +292,8 @@ class IsMuVTState(Protocol):
     def systems(self) -> Table[SystemId, MuVTSystems]: ...
 
 
-def make_boltzmann_probability_ratio[State, InpState: IsBoltzmannState, Move: Patch](
-    state: Lens[State, InpState], potential: Potential[State, Any, Any, Move]
+def make_boltzmann_probability_ratio[State, Move: Patch](
+    state: Lens[State, IsBoltzmannState], potential: Potential[State, Any, Any, Move]
 ) -> tuple[
     CachedPotential[State, EmptyType, EmptyType, Move],
     BoltzmannLogProbabilityRatio[State, Move],
@@ -331,8 +331,8 @@ def make_boltzmann_probability_ratio[State, InpState: IsBoltzmannState, Move: Pa
     )
 
 
-def make_fugacity_probability_ratio[State, InpState: IsFugacityState, Move: Patch](
-    state: Lens[State, InpState],
+def make_fugacity_probability_ratio[State, Move: Patch](
+    state: Lens[State, IsFugacityState],
 ) -> LogFugacityRatio[State, Any]:
     """Build the fugacity (chemical potential) acceptance criterion for GCMC.
 
@@ -366,8 +366,8 @@ def make_fugacity_probability_ratio[State, InpState: IsFugacityState, Move: Patc
     )
 
 
-def make_muvt_probability_ratio[State, InpState: IsMuVTState, Move: Patch](
-    state: Lens[State, InpState], potential: Potential[State, Any, Any, Move]
+def make_muvt_probability_ratio[State, Move: Patch](
+    state: Lens[State, IsMuVTState], potential: Potential[State, Any, Any, Move]
 ) -> tuple[
     CachedPotential[State, EmptyType, EmptyType, Move],
     MuVTLogProbabilityRatio[State, Move],
