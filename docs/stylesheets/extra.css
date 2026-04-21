@@ -29,3 +29,7 @@
   --md-accent-fg-color--dark: #085F6E;
   --md-accent-fg-color--transparent: rgba(14, 138, 158, 0.1);
 }
+
+[data-md-color-scheme="slate"] .kups-logo {
+  filter: invert(1);
+}
