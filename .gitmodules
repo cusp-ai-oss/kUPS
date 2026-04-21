@@ -1,6 +1,0 @@
-[submodule "packages/weft"]
-	path = packages/weft
-	url = ../weft
-[submodule "packages/tinyargs"]
-	path = packages/tinyargs
-  url = ../tinyargs
