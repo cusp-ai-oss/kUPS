@@ -159,7 +159,15 @@ If you use *k*UPS in your research, please cite:
 
 ```bibtex
 @software{kups2026,
-  author = {{Cusp AI}},
+  author = {Gao, Nicholas
+    and K{\"o}hler, Jonas
+    and Ramanan, Anita
+    and Hanke, Felix
+    and Moubarak, Elias
+    and Morrow, Joe
+    and de Haan, Pim
+    and Openshaw, Hannah
+    and Welling, Max},
   title = {kUPS},
   year = {2026},
   url = {https://github.com/cusp-ai-oss/kups}
