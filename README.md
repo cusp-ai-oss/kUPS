@@ -1,9 +1,10 @@
 <div align="center">
 
-<img src="docs/media/logo/logo-readme.svg" alt="kUPS" width="240">
-
-
 <img src="docs/media/video/boltzmann_k_cell.gif" width="300" alt="kUPS demo">
+
+<br>
+
+<img src="docs/media/logo/logo-readme.svg" alt="kUPS" width="240">
 
 
 **A toolkit for building high-performance molecular simulations on JAX**
