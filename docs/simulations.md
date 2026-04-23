@@ -83,12 +83,17 @@ CuspAI publishes JAX exports of MACE, UMA, and Orb on the Hugging Face Hub — o
 
 These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream. UMA inherits Meta's gated distribution: request access on both the [upstream page](https://huggingface.co/facebook/UMA) and [CuspAI/kUPS-uma-jax](https://huggingface.co/CuspAI/kUPS-uma-jax), then `huggingface-cli login` before downloading.
 
-Any `model_path:` field accepts an `hf://<owner>/<repo>/<filename>` URI, which is fetched via `huggingface_hub.hf_hub_download` and cached on first use:
+Any `model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (fetched via `huggingface_hub.hf_hub_download` and cached on first use) or a local filesystem path to a Tojax-exported `.zip`:
 
 ```yaml
+# Remote (HF Hub, requires pip install kups[hf])
 model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
 model_path: hf://CuspAI/kUPS-uma-jax/uma-s-1p2_omat.zip        # heads: oc20, odac, omat, omc, omol
 model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
+
+# Local (anything readable by TojaxedMliap.from_zip_file)
+model_path: ./my_model.zip
+model_path: /absolute/path/to/my_model.zip
 ```
 
-Requires the optional `huggingface_hub` dependency: `pip install kups[hf]`.
+The `hf://` scheme requires the optional `huggingface_hub` dependency: `pip install kups[hf]`. Local paths work without it.
