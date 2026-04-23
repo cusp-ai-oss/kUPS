@@ -67,7 +67,7 @@ uv sync
 
 ```bash
 cd examples
-kups_mcmc_rigid gcmc_co2_30box.yaml
+kups_mcmc_rigid mcmc_rigid.yaml
 ```
 
 </details>
