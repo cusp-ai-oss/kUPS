@@ -12,10 +12,10 @@
 pip install kups
 ```
 
-For GPU support, install JAX with CUDA separately:
+For GPU support (Linux only):
 
 ```sh
-pip install jax[cuda]
+pip install kups[cuda]
 ```
 
 ## Quick Start
