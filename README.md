@@ -147,8 +147,8 @@ If you use *k*UPS in your research, please cite:
 @software{kups2026,
   author = {Gao, Nicholas
     and K{\"o}hler, Jonas
-    and Ramanan, Anita
     and Hanke, Felix
+    and Ramanan, Anita
     and Moubarak, Elias
     and Morrow, Joe
     and de Haan, Pim
