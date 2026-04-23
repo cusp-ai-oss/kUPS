@@ -67,7 +67,7 @@ hf = ["huggingface-hub>=1.11.0"]
 homepage = "https://github.com/cusp-ai-oss/kups"
 source = "https://github.com/cusp-ai-oss/kups"
 issues = "https://github.com/cusp-ai-oss/kups/issues"
-documentation = "https://cusp-ai-oss.github.io/kups/"
+documentation = "https://cusp-ai-oss.github.io/kUPS/"
 
 [project.scripts]
 kups_md_mlff = "kups.application.simulations.md_mlff:main"
