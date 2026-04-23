@@ -9,7 +9,7 @@
 
 *k*UPS provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
 
-[Documentation](https://cusp-ai-oss.github.io/kUPS/) | [Quick Start](#quick-start) | [Features](#features) | [Examples](#examples)
+[Documentation](https://cusp-ai-oss.github.io/kUPS/) | [Quick Start](#quick-start) | [Features](#features) | [Examples](examples/)
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
