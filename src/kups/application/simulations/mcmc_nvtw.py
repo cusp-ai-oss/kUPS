@@ -285,7 +285,7 @@ class EnergyMomentsObserver[S](Propagator[S]):
         energy = state.systems.data.potential_energy  # type: ignore[attr-defined]
         new_moments = state.energy_moments.data.update(energy)  # type: ignore[attr-defined]
         return replace(
-            state,
+            state,  # type: ignore[type-var]
             energy_moments=Table(state.energy_moments.keys, new_moments),  # type: ignore[attr-defined]
         )
 
