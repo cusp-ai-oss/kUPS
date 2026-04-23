@@ -145,8 +145,17 @@ If you use *k*UPS in your research, please cite:
 
 ```bibtex
 @software{kups2026,
-  author = {{Cusp AI}},
-  title = {kUPS},
+  author = {Gao, Nicholas
+    and K{\"o}hler, Jonas
+    and Ramanan, Anita
+    and Hanke, Felix
+    and Moubarak, Elias
+    and Morrow, Joe
+    and de Haan, Pim
+    and Openshaw, Hannah
+    and Welling, Max
+    and CuspAI Team},
+  title = {kUPS - a universal particle simulation toolkit},
   year = {2026},
   url = {https://github.com/cusp-ai-oss/kups}
 }
