@@ -1,8 +1,9 @@
-site_name: <em>k</em>UPS Docs
+site_name: kUPS Docs
 site_url: https://github.com/cusp-ai-oss/kUPS
 repo_url: https://github.com/cusp-ai-oss/kUPS
 repo_name: cusp-ai-oss/kUPS
 edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2024-2026 CuspAI
 theme:
   name: material
   palette:

@@ -1,18 +1,20 @@
 <div align="center">
 
-# *k*UPS
+<img src="docs/media/logo/logo-readme.svg" alt="kUPS" width="240">
+<br>
+<img src="docs/media/video/boltzmann_k_cell.gif" width="300" alt="kUPS demo">
 
-<img src="media/video/boltzmann_k_cell.gif" width="300" alt="kUPS demo">
-
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-powered-orange.svg)](https://github.com/google/jax)
 
 **A toolkit for building high-performance molecular simulations on JAX**
 
 *k*UPS provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
 
 [Documentation](https://cusp-ai-oss.github.io/kups/) | [Quick Start](#quick-start) | [Features](#features) | [Examples](#examples)
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-powered-orange.svg)](https://github.com/google/jax)
+
 
 </div>
 
@@ -125,6 +127,15 @@ kups_md_lj --config md_lj_argon_nvt.yaml
 ## Documentation
 
 Full documentation is available at **[cusp-ai-oss.github.io/kups](https://cusp-ai-oss.github.io/kups/)**.
+
+### Building docs locally
+
+To build the docs locally run `./docs/scripts/build.sh`, which executes and renders all documentation notebooks and generates API pages in markdown.
+
+```bash
+./docs/scripts/build.sh           # build into site/
+./docs/scripts/build.sh --serve   # serve with live updates on http://127.0.0.1:8000
+```
 
 ---
 
