@@ -200,10 +200,10 @@ class TestPengRobinsonAutodiff:
     @pytest.mark.parametrize(
         "P_pa,T_k",
         [
-            (1e4, 300.0),   # low pressure, near-ideal gas
-            (1e5, 300.0),   # ambient
-            (1e6, 300.0),   # 10 bar, still gas
-            (5e6, 320.0),   # supercritical CO2
+            (1e4, 300.0),  # low pressure, near-ideal gas
+            (1e5, 300.0),  # ambient
+            (1e6, 300.0),  # 10 bar, still gas
+            (5e6, 320.0),  # supercritical CO2
         ],
     )
     def test_gradients_finite_and_match_finite_differences(
@@ -216,7 +216,11 @@ class TestPengRobinsonAutodiff:
 
         # Central-difference oracle. Step sizes chosen to avoid catastrophic
         # cancellation while staying in a locally-linear regime.
-        dP_fd = (self._pure_log_f(P_pa + 1.0, T_k) - self._pure_log_f(P_pa - 1.0, T_k)) / 2.0
-        dT_fd = (self._pure_log_f(P_pa, T_k + 0.01) - self._pure_log_f(P_pa, T_k - 0.01)) / 0.02
+        dP_fd = (
+            self._pure_log_f(P_pa + 1.0, T_k) - self._pure_log_f(P_pa - 1.0, T_k)
+        ) / 2.0
+        dT_fd = (
+            self._pure_log_f(P_pa, T_k + 0.01) - self._pure_log_f(P_pa, T_k - 0.01)
+        ) / 0.02
         npt.assert_allclose(dP_ad, float(dP_fd), rtol=1e-5)
         npt.assert_allclose(dT_ad, float(dT_fd), rtol=1e-5)

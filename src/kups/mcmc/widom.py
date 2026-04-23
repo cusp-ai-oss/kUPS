@@ -161,7 +161,7 @@ class TransitionStatistics:
         )
 
     def update_insertion(self, ln_alpha: LogAcceptanceRatio) -> TransitionStatistics:
-        """Accumulate a ghost-insertion ln α. Trial count is incremented unconditionally."""
+        r"""Accumulate a ghost-insertion $\ln\alpha$. Trial count is incremented unconditionally."""
         acceptance = jnp.minimum(1.0, jnp.exp(ln_alpha))
         return TransitionStatistics(
             acceptance_insertion=self.acceptance_insertion + acceptance,
@@ -175,11 +175,11 @@ class TransitionStatistics:
         ln_alpha: LogAcceptanceRatio,
         macrostate_n: ParticleCount,
     ) -> TransitionStatistics:
-        """Accumulate a ghost-deletion ln α; zero contribution when N = 0.
+        r"""Accumulate a ghost-deletion $\ln\alpha$; zero contribution when $N = 0$.
 
         The trial count always increments — the fraction of accepted deletions
-        at N = 0 is zero, but the denominator still counts the trial, so
-        P(0 → 1) is not inflated.
+        at $N = 0$ is zero, but the denominator still counts the trial, so
+        $P(0 \to 1)$ is not inflated.
         """
         acceptance = jnp.minimum(1.0, jnp.exp(ln_alpha))
         acceptance = jnp.where(macrostate_n > 0, acceptance, 0.0)
@@ -205,7 +205,7 @@ class EnergyCumulants:
         variance: $\kappa_2 = \langle (E - \langle E\rangle)^2 \rangle$ [energy$^2$].
         third: $\kappa_3 = -\langle (E - \langle E\rangle)^3 \rangle$ [energy$^3$].
         fourth: $\kappa_4 = \langle (E - \langle E\rangle)^4 \rangle - 3\,\mathrm{Var}^2$
-            (excess kurtosis × variance$^2$) [energy$^4$].
+            (excess kurtosis $\times$ variance$^2$) [energy$^4$].
     """
 
     mean: Energy
@@ -286,11 +286,7 @@ class EnergyMoments:
             + 6.0 * delta_n_sq * self.m2
             - 4.0 * delta_n * self.m3
         )
-        new_m3 = (
-            self.m3
-            + term1 * delta_n * (nf - 2.0)
-            - 3.0 * delta_n * self.m2
-        )
+        new_m3 = self.m3 + term1 * delta_n * (nf - 2.0) - 3.0 * delta_n * self.m2
         new_m2 = self.m2 + term1
 
         return EnergyMoments(
@@ -353,9 +349,7 @@ class WidomStatistics:
             n_samples=jnp.zeros_like(self.n_samples),
         )
 
-    def update(
-        self, ln_alpha: LogAcceptanceRatio, energy: Energy
-    ) -> WidomStatistics:
+    def update(self, ln_alpha: LogAcceptanceRatio, energy: Energy) -> WidomStatistics:
         r"""Accumulate $W = \exp\ln\alpha$ and $U \cdot W$ from one ghost insertion."""
         boltzmann = jnp.exp(ln_alpha)
         return WidomStatistics(

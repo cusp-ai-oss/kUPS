@@ -50,11 +50,11 @@ from kups.application.utils.propagate import (
     run_simulation_cycles,
     run_warmup_cycles,
 )
-from kups.core.logging import TqdmLogger
 from kups.core.data import Table, WithCache
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
 from kups.core.lens import identity_lens, lens
+from kups.core.logging import TqdmLogger
 from kups.core.neighborlist import (
     UniversalNeighborlistParameters,
 )
@@ -154,8 +154,6 @@ class NVTWidomState(MCMCState):
     transition_statistics: Table[SystemId, TransitionStatistics]
     energy_moments: Table[SystemId, EnergyMoments]
     macrostate_n: Array
-
-
 
 
 def build_tmmc_state(
@@ -268,7 +266,11 @@ def build_tmmc_state(
 def init_state(key: Array, config: Config) -> NVTWidomState:
     """Build the batched $NVT\\!+\\!W$ state via :func:`build_tmmc_state`."""
     return build_tmmc_state(
-        key, config.host, config.adsorbates, config.lj, config.ewald,
+        key,
+        config.host,
+        config.adsorbates,
+        config.lj,
+        config.ewald,
         config.run.n_max,
     )
 
@@ -283,25 +285,24 @@ class EnergyMomentsObserver[S](Propagator[S]):
         energy = state.systems.data.potential_energy  # type: ignore[attr-defined]
         new_moments = state.energy_moments.data.update(energy)  # type: ignore[attr-defined]
         return replace(
-            state, energy_moments=Table(state.energy_moments.keys, new_moments)  # type: ignore[attr-defined]
+            state,
+            energy_moments=Table(state.energy_moments.keys, new_moments),  # type: ignore[attr-defined]
         )
 
 
 def update_insertion_stats(
     _state: Any, stats: TransitionStatistics, ln_alpha: Array
 ) -> TransitionStatistics:
-    """Ghost-probe insertion hook: accumulate ln α into the TMMC C-matrix."""
+    r"""Ghost-probe insertion hook: accumulate $\ln\alpha$ into the TMMC C-matrix."""
     return stats.update_insertion(ln_alpha)
 
 
 def update_deletion_stats(
     state: Any, stats: TransitionStatistics, ln_alpha: Array
 ) -> TransitionStatistics:
-    """Ghost-probe deletion hook: ln α accumulator, with N=0 masking via
+    r"""Ghost-probe deletion hook: $\ln\alpha$ accumulator, with $N=0$ masking via
     ``state.macrostate_n``."""
     return stats.update_deletion(ln_alpha, state.macrostate_n)
-
-
 
 
 def make_propagator(
@@ -322,9 +323,7 @@ def make_propagator(
     # No-op probe: we don't exploit incremental updates here — the probe is
     # just the "enable the cache path" flag for LJ/Ewald. Typed locally so it
     # implements the narrow probe protocol the two potentials expect.
-    def probe(
-        state: NVTWidomState, update: MCMCStateUpdate
-    ) -> MCMCStateUpdate:
+    def probe(state: NVTWidomState, update: MCMCStateUpdate) -> MCMCStateUpdate:
         del state
         return update
 
@@ -332,8 +331,10 @@ def make_propagator(
     # even if all charges are zero. Skipping the term for neutral adsorbates
     # is a 2-3x per-step speedup without any numerical change.
     ewald_term = (
-        make_ewald_from_state(state_lens, probe, include_exclusion_mask=True),
-    ) if ewald_enabled else ()
+        (make_ewald_from_state(state_lens, probe, include_exclusion_mask=True),)
+        if ewald_enabled
+        else ()
+    )
     potential = sum_potentials(
         *ewald_term,
         make_lennard_jones_from_state(state_lens, probe),

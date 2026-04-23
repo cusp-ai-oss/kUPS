@@ -291,8 +291,10 @@ def make_propagator(
     # even if all charges are zero. Skipping the term for neutral adsorbates
     # is a 2-3x per-step speedup without any numerical change.
     ewald_term = (
-        make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True),
-    ) if ewald_enabled else ()
+        (make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True),)
+        if ewald_enabled
+        else ()
+    )
     potential = sum_potentials(
         *ewald_term,
         make_lennard_jones_from_state(state_lens, _probe),

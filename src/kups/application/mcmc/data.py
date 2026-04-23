@@ -81,9 +81,7 @@ class AdsorbateConfig(BaseModel):
                         "united-atom pseudo-symbols like CH4, CH3). Pass "
                         "`masses=(...)` explicitly in AdsorbateConfig."
                     )
-                data["masses"] = tuple(
-                    float(ase.data.atomic_masses[z]) for z in zs
-                )
+                data["masses"] = tuple(float(ase.data.atomic_masses[z]) for z in zs)
             if not data.get("atomic_numbers"):
                 data["atomic_numbers"] = tuple(zs)
         return data
@@ -493,7 +491,9 @@ def place_adsorbates(
         idx = Index.integer(np.array([motif_idx]), label=MotifId)
         for _ in range(n_init):
             key, subkey = jax.random.split(key)
-            mol_p, mol_g = _make_molecule(prepared.motifs, idx, prepared.unitcell, subkey)
+            mol_p, mol_g = _make_molecule(
+                prepared.motifs, idx, prepared.unitcell, subkey
+            )
             ads_parts.append(mol_p)
             ads_groups.append(mol_g)
 

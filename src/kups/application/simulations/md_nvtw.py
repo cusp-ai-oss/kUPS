@@ -26,6 +26,7 @@ from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
+import optax
 import rich
 from jax import Array
 from nanoargs.cli import NanoArgs
@@ -38,24 +39,16 @@ from kups.application.mcmc.data import (
     MCMCParticles,
     MotifParticles,
 )
-from kups.core.data.buffered import system_view
-from kups.core.data.wrappers import WithIndices
-from kups.core.neighborlist import (
-    Edges,
-    RefineMaskNeighborList,
-    neighborlist_changes,
-)
-from kups.core.patch import Accept
 from kups.application.md.data import MDSystems
-from kups.application.simulations.mcmc_rigid import (
-    EwaldConfig,
-    LJConfig,
-)
 from kups.application.simulations.mcmc_nvtw import (
     EnergyMomentsObserver,
     build_tmmc_state,
     update_deletion_stats,
     update_insertion_stats,
+)
+from kups.application.simulations.mcmc_rigid import (
+    EwaldConfig,
+    LJConfig,
 )
 from kups.application.utils.propagate import (
     run_simulation_cycles,
@@ -63,10 +56,19 @@ from kups.application.utils.propagate import (
 )
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Buffered, Table, WithCache
+from kups.core.data.buffered import system_view
+from kups.core.data.wrappers import WithIndices
+from kups.core.lens import bind as lens_bind
 from kups.core.lens import identity_lens, lens
 from kups.core.logging import TqdmLogger
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import (
+    Edges,
+    RefineMaskNeighborList,
+    UniversalNeighborlistParameters,
+    neighborlist_changes,
+)
 from kups.core.parameter_scheduler import ParameterSchedulerState
+from kups.core.patch import Accept
 from kups.core.potential import PotentialAsPropagator, PotentialOut, sum_potentials
 from kups.core.propagator import (
     LoopPropagator,
@@ -75,7 +77,6 @@ from kups.core.propagator import (
     SequentialPropagator,
     propagate_and_fix,
 )
-from kups.core.lens import bind as lens_bind
 from kups.core.result import as_result_function
 from kups.core.typing import (
     GroupId,
@@ -84,10 +85,6 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
-import optax
-
-from kups.md.integrators import make_md_step_from_state
-from kups.relaxation.optax import make_optimizer
 from kups.mcmc.moves import (
     ExchangeMove,
     ParticlePositionChanges,
@@ -100,6 +97,7 @@ from kups.mcmc.widom import (
     GhostProbe,
     TransitionStatistics,
 )
+from kups.md.integrators import make_md_step_from_state
 from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldParameters,
@@ -109,6 +107,7 @@ from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
     make_lennard_jones_from_state,
 )
+from kups.relaxation.optax import make_optimizer
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -148,7 +147,7 @@ class MDMCMCParticles(MCMCParticles):
 
 @dataclass
 class MDMCMCSystems(MDSystems):
-    r"""MD systems with an added ``log_fugacity`` for μVT Widom probes.
+    r"""MD systems with an added ``log_fugacity`` for $\mu\text{VT}$ Widom probes.
 
     All MD thermostat / barostat fields come through from
     :class:`~kups.application.md.data.MDSystems`. The reservoir log-fugacity
@@ -162,9 +161,9 @@ class MDMCMCSystems(MDSystems):
     @property
     def log_activity(self) -> Array:
         """$\\ln(f / k_B T)$, shape ``(n_systems, n_species)``."""
-        return self.log_fugacity - jnp.log(
-            self.temperature * BOLTZMANN_CONSTANT
-        )[:, None]
+        return (
+            self.log_fugacity - jnp.log(self.temperature * BOLTZMANN_CONSTANT)[:, None]
+        )
 
 
 # -- config / state ----------------------------------------------------
@@ -203,7 +202,7 @@ class MDNVTWidomRunConfig(BaseModel):
     energies (e.g. very high density or a small cell).
     """
     minimization_max_step: float = 0.1
-    """Per-step max atomic displacement in Å when FIRE is enabled."""
+    r"""Per-step max atomic displacement in $\text{\AA}$ when FIRE is enabled."""
     num_md_steps_per_cycle: int = 50
     """MD integration steps between ghost-probe batches."""
     num_widom_per_cycle: int = 5
@@ -372,9 +371,7 @@ class MDNVTWidomStateUpdate:
 # -- state construction ------------------------------------------------
 
 
-def _maxwell_boltzmann_momenta(
-    key: Array, masses: Array, temperature: float
-) -> Array:
+def _maxwell_boltzmann_momenta(key: Array, masses: Array, temperature: float) -> Array:
     """Sample $p_i \\sim \\mathcal{N}(0, \\sqrt{m_i k_B T})$, zero COM drift."""
     std = jnp.sqrt(masses * temperature * BOLTZMANN_CONSTANT)
     n = masses.shape[0]
@@ -395,7 +392,11 @@ def init_state(key: Array, config: Config) -> MDNVTWidomState:
     """
     chain = key_chain(key)
     base = build_tmmc_state(
-        next(chain), config.host, config.adsorbates, config.lj, config.ewald,
+        next(chain),
+        config.host,
+        config.adsorbates,
+        config.lj,
+        config.ewald,
         config.run.n_max,
     )
 
@@ -405,10 +406,15 @@ def init_state(key: Array, config: Config) -> MDNVTWidomState:
         next(chain), mcmc_p.masses, config.host.temperature
     )
     md_particles_data = MDMCMCParticles(
-        positions=mcmc_p.positions, masses=mcmc_p.masses,
-        atomic_numbers=mcmc_p.atomic_numbers, charges=mcmc_p.charges,
-        labels=mcmc_p.labels, system=mcmc_p.system, group=mcmc_p.group,
-        motif=mcmc_p.motif, momenta=momenta,
+        positions=mcmc_p.positions,
+        masses=mcmc_p.masses,
+        atomic_numbers=mcmc_p.atomic_numbers,
+        charges=mcmc_p.charges,
+        labels=mcmc_p.labels,
+        system=mcmc_p.system,
+        group=mcmc_p.group,
+        motif=mcmc_p.motif,
+        momenta=momenta,
     )
     # Buffered zeroes non-viewed leaves (positions, momenta, masses) for
     # unoccupied slots. The BAOAB A-step computes v = p/m = 0/0 = NaN there,
@@ -497,8 +503,10 @@ def make_propagator(
     )
 
     mc_ewald_term = (
-        make_ewald_from_state(state_lens, probe, include_exclusion_mask=True),
-    ) if ewald_enabled else ()
+        (make_ewald_from_state(state_lens, probe, include_exclusion_mask=True),)
+        if ewald_enabled
+        else ()
+    )
     mc_potential = sum_potentials(
         *mc_ewald_term,
         make_lennard_jones_from_state(state_lens, probe),
@@ -512,7 +520,9 @@ def make_propagator(
     # our Buffered + MDMCMC state.
     md_force_fn: Propagator[MDNVTWidomState] = PotentialAsPropagator(md_potential)
     md_step: Propagator[MDNVTWidomState] = make_md_step_from_state(
-        state_lens, md_force_fn, "baoab_langevin"  # type: ignore[arg-type]
+        state_lens,
+        md_force_fn,
+        "baoab_langevin",  # type: ignore[arg-type]
     )
     md_loop: Propagator[MDNVTWidomState] = LoopPropagator(
         md_step, config.num_md_steps_per_cycle

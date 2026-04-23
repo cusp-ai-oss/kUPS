@@ -28,7 +28,6 @@ from kups.mcmc.flat_histogram import (
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 from kups.mcmc.widom import EnergyCumulants
 
-
 # CO2-like EOS parameters for integration tests.
 _CO2 = AdsorbateEOS(
     critical_pressure=7.38e6,  # Pa
@@ -76,9 +75,7 @@ class TestReconstructLogPartitionFn:
         p_ins_core = beta * beta_f * jnp.exp(delta_true) * p_del[1:]
         p_ins_full = jnp.concatenate([p_ins_core, jnp.zeros(1)])
 
-        reconstructed = reconstruct_log_partition_fn(
-            p_ins_full, p_del, beta, log_f
-        )
+        reconstructed = reconstruct_log_partition_fn(p_ins_full, p_del, beta, log_f)
         npt.assert_allclose(reconstructed, ln_qc_true, rtol=1e-10, atol=1e-12)
 
     def test_anchors_to_zero_at_N0(self):
@@ -113,7 +110,10 @@ class TestExtrapolate:
         log_qc_sim = jnp.asarray(true_log_qc(beta_0))
         for beta_target in [2.0, 2.1, 1.8, 3.0]:
             result = extrapolate_log_partition_fn(
-                log_qc_sim, cumulants, jnp.asarray(beta_0), jnp.asarray(beta_target),
+                log_qc_sim,
+                cumulants,
+                jnp.asarray(beta_0),
+                jnp.asarray(beta_target),
                 order=3,
             )
             npt.assert_allclose(
@@ -143,7 +143,10 @@ class TestExtrapolate:
         )
         with pytest.raises(ValueError):
             extrapolate_log_partition_fn(
-                jnp.array([0.0]), cumulants, jnp.asarray(1.0), jnp.asarray(1.0),
+                jnp.array([0.0]),
+                cumulants,
+                jnp.asarray(1.0),
+                jnp.asarray(1.0),
                 order=order,
             )
 
@@ -154,9 +157,7 @@ class TestExtrapolate:
 class TestMacrostateDistribution:
     def test_normalises_to_unity(self):
         log_qc = jnp.array([0.0, -1.0, -0.5, -2.0])
-        dist = macrostate_distribution(
-            log_qc, jnp.asarray(1.0), jnp.asarray(-1.0)
-        )
+        dist = macrostate_distribution(log_qc, jnp.asarray(1.0), jnp.asarray(-1.0))
         npt.assert_allclose(float(jnp.sum(dist)), 1.0, rtol=1e-12)
         assert jnp.all(dist >= 0)
 
@@ -165,9 +166,7 @@ class TestMacrostateDistribution:
         ln_qc = jnp.array([0.0, 0.7])
         beta = 2.0
         log_f = -1.5
-        dist = macrostate_distribution(
-            ln_qc, jnp.asarray(beta), jnp.asarray(log_f)
-        )
+        dist = macrostate_distribution(ln_qc, jnp.asarray(beta), jnp.asarray(log_f))
         # log-weights: N=0 → 0, N=1 → (log_f + log β)·1 + 0.7
         log_w = np.array([0.0, log_f + np.log(beta) + 0.7])
         expected = np.exp(log_w) / np.exp(log_w).sum()
@@ -187,9 +186,13 @@ class TestIsotherm:
         log_qc = jnp.array([0.0, -1.0, -2.0, -2.5])
         pressures = jnp.array([1e4, 1e5, 1e6])
         loadings = isotherm(
-            log_qc, jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
-            pressures, jnp.asarray(300.0),
-            _CO2.critical_pressure, _CO2.critical_temperature, _CO2.acentric_factor,
+            log_qc,
+            jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
+            pressures,
+            jnp.asarray(300.0),
+            _CO2.critical_pressure,
+            _CO2.critical_temperature,
+            _CO2.acentric_factor,
         )
         assert loadings.shape == (3,)
         assert jnp.all(loadings >= 0)
@@ -200,9 +203,13 @@ class TestIsotherm:
         log_qc = jnp.linspace(0.0, -10.0, 6)  # increasingly favourable binding
         pressures = jnp.logspace(3, 7, 10)
         loadings = isotherm(
-            log_qc, jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
-            pressures, jnp.asarray(300.0),
-            _CO2.critical_pressure, _CO2.critical_temperature, _CO2.acentric_factor,
+            log_qc,
+            jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
+            pressures,
+            jnp.asarray(300.0),
+            _CO2.critical_pressure,
+            _CO2.critical_temperature,
+            _CO2.acentric_factor,
         )
         diffs = jnp.diff(loadings)
         assert jnp.all(diffs >= -1e-10), f"loadings non-monotonic: {loadings}"
@@ -224,9 +231,14 @@ class TestIsostericHeat:
         pressures = jnp.array([1e4, 1e5, 1e6])
 
         q = isosteric_heat(
-            log_qc_sim, cumulants, beta_sim,
-            pressures, jnp.asarray(300.0),
-            _CO2.critical_pressure, _CO2.critical_temperature, _CO2.acentric_factor,
+            log_qc_sim,
+            cumulants,
+            beta_sim,
+            pressures,
+            jnp.asarray(300.0),
+            _CO2.critical_pressure,
+            _CO2.critical_temperature,
+            _CO2.acentric_factor,
             order=2,
         )
         assert q.shape == (3,)
@@ -258,12 +270,19 @@ class TestIsostericHeat:
         log_P = float(jnp.log(P_test))
 
         def loading(t: float, lp: float) -> float:
-            return float(_loading_from_T_logP(
-                jnp.asarray(t), jnp.asarray(lp),
-                log_qc_sim, cumulants, beta_sim, 2,
-                _CO2.critical_pressure, _CO2.critical_temperature,
-                _CO2.acentric_factor,
-            ))
+            return float(
+                _loading_from_T_logP(
+                    jnp.asarray(t),
+                    jnp.asarray(lp),
+                    log_qc_sim,
+                    cumulants,
+                    beta_sim,
+                    2,
+                    _CO2.critical_pressure,
+                    _CO2.critical_temperature,
+                    _CO2.acentric_factor,
+                )
+            )
 
         h_T = 0.1
         h_lp = 1e-3
@@ -272,9 +291,14 @@ class TestIsostericHeat:
         q_fd = BOLTZMANN_CONSTANT * T**2 * dT_fd / dlogP_fd
 
         q_ad = isosteric_heat(
-            log_qc_sim, cumulants, beta_sim,
-            jnp.array([P_test]), jnp.asarray(T),
-            _CO2.critical_pressure, _CO2.critical_temperature, _CO2.acentric_factor,
+            log_qc_sim,
+            cumulants,
+            beta_sim,
+            jnp.array([P_test]),
+            jnp.asarray(T),
+            _CO2.critical_pressure,
+            _CO2.critical_temperature,
+            _CO2.acentric_factor,
             order=2,
         )
         npt.assert_allclose(float(q_ad[0]), q_fd, rtol=1e-3)
@@ -295,10 +319,16 @@ class TestWorkingCapacity:
         )
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         n_wc = working_capacity(
-            log_qc_sim, cumulants, beta_sim,
-            jnp.asarray(300.0), jnp.asarray(1e6),  # adsorption at high P
-            jnp.asarray(300.0), jnp.asarray(1e3),  # desorption at low P
-            _CO2.critical_pressure, _CO2.critical_temperature, _CO2.acentric_factor,
+            log_qc_sim,
+            cumulants,
+            beta_sim,
+            jnp.asarray(300.0),
+            jnp.asarray(1e6),  # adsorption at high P
+            jnp.asarray(300.0),
+            jnp.asarray(1e3),  # desorption at low P
+            _CO2.critical_pressure,
+            _CO2.critical_temperature,
+            _CO2.acentric_factor,
             order=1,
         )
         # Positive because ads P > des P and the material is attractive.
@@ -364,13 +394,21 @@ class TestAnalyticalLangmuirRoundTrip:
 
         # Cumulants aren't exercised here (β_target == β_sim); pass zeros.
         cumulants = EnergyCumulants(
-            mean=jnp.zeros(M + 1), variance=jnp.zeros(M + 1),
-            third=jnp.zeros(M + 1), fourth=jnp.zeros(M + 1),
+            mean=jnp.zeros(M + 1),
+            variance=jnp.zeros(M + 1),
+            third=jnp.zeros(M + 1),
+            fourth=jnp.zeros(M + 1),
         )
         summary = TMMCSummary.from_transition_statistics(
-            acc_ins, acc_del, n_trials, n_trials,
-            cumulants=cumulants, beta_sim=jnp.asarray(beta),
-            log_fugacity_sim=log_f_sim, adsorbate=_CO2, order=1,
+            acc_ins,
+            acc_del,
+            n_trials,
+            n_trials,
+            cumulants=cumulants,
+            beta_sim=jnp.asarray(beta),
+            log_fugacity_sim=log_f_sim,
+            adsorbate=_CO2,
+            order=1,
         )
 
         # ln Q_c must round-trip exactly.
@@ -426,9 +464,15 @@ class TestTMMCSummary:
             fourth=jnp.zeros(4),
         )
         summary = TMMCSummary.from_transition_statistics(
-            acc_ins, acc_del, n_trials, n_trials,
-            cumulants=cumulants, beta_sim=beta, log_fugacity_sim=log_f,
-            adsorbate=_CO2, order=1,
+            acc_ins,
+            acc_del,
+            n_trials,
+            n_trials,
+            cumulants=cumulants,
+            beta_sim=beta,
+            log_fugacity_sim=log_f,
+            adsorbate=_CO2,
+            order=1,
         )
         npt.assert_allclose(
             summary.log_partition_fn_sim, ln_qc_true, rtol=1e-10, atol=1e-10
@@ -455,7 +499,11 @@ class TestTMMCSummary:
         via_method = summary.isotherm(pressures, jnp.asarray(300.0))
         via_function = isotherm(
             summary.extrapolate(beta_sim),
-            beta_sim, pressures, jnp.asarray(300.0),
-            _CO2.critical_pressure, _CO2.critical_temperature, _CO2.acentric_factor,
+            beta_sim,
+            pressures,
+            jnp.asarray(300.0),
+            _CO2.critical_pressure,
+            _CO2.critical_temperature,
+            _CO2.acentric_factor,
         )
         npt.assert_allclose(via_method, via_function, rtol=1e-10)

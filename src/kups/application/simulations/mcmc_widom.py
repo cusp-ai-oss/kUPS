@@ -43,11 +43,11 @@ from kups.application.utils.propagate import (
     run_simulation_cycles,
     run_warmup_cycles,
 )
-from kups.core.logging import TqdmLogger
 from kups.core.data import Table, WithCache
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
 from kups.core.lens import identity_lens, lens
+from kups.core.logging import TqdmLogger
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.parameter_scheduler import ParameterSchedulerState
 from kups.core.potential import (
@@ -231,8 +231,10 @@ def make_propagator(
     state_lens = identity_lens(WidomState)
 
     ewald_term = (
-        make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True),
-    ) if ewald_enabled else ()
+        (make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True),)
+        if ewald_enabled
+        else ()
+    )
     potential = sum_potentials(
         *ewald_term,
         make_lennard_jones_from_state(state_lens, _probe),
@@ -283,9 +285,7 @@ def make_propagator(
         widom_probe, config.num_widom_per_cycle
     )
 
-    production = SequentialPropagator(
-        (ResetOnErrorPropagator(nvt_loop), widom_loop)
-    )
+    production = SequentialPropagator((ResetOnErrorPropagator(nvt_loop), widom_loop))
     init_prop = ResetOnErrorPropagator(PotentialAsPropagator(cached_potential))
     return init_prop, production
 
@@ -329,9 +329,7 @@ def main() -> None:
     rich.print(config)
     state = run(config)
     temperature = state.systems.data.temperature
-    volume = jnp.asarray(
-        [float(u.volume) for u in state.systems.data.unitcell[:]]
-    )
+    volume = jnp.asarray([float(u.volume) for u in state.systems.data.unitcell[:]])
     result = finalize_widom(state.widom_statistics.data, temperature, volume)
     rich.print("Widom statistics:", state.widom_statistics)
     rich.print("μ_ex [eV]:", result.excess_chemical_potential)

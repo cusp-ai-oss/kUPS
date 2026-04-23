@@ -167,14 +167,10 @@ class TestTransitionStatistics:
         updated = stats.update_insertion(ln_alpha)
         expected_acc = jnp.minimum(1.0, jnp.exp(ln_alpha))
         npt.assert_allclose(updated.acceptance_insertion, expected_acc, rtol=1e-10)
-        npt.assert_array_equal(
-            updated.n_trials_insertion, jnp.ones(3, dtype=jnp.int32)
-        )
+        npt.assert_array_equal(updated.n_trials_insertion, jnp.ones(3, dtype=jnp.int32))
         # Deletion side untouched
         npt.assert_array_equal(updated.acceptance_deletion, jnp.zeros(3))
-        npt.assert_array_equal(
-            updated.n_trials_deletion, jnp.zeros(3, dtype=jnp.int32)
-        )
+        npt.assert_array_equal(updated.n_trials_deletion, jnp.zeros(3, dtype=jnp.int32))
 
     def test_update_deletion_masks_at_N0_but_increments_trial(self):
         stats = TransitionStatistics.zeros(3)
@@ -186,9 +182,7 @@ class TestTransitionStatistics:
         expected_acc = jnp.where(macrostate_n > 0, expected_acc, 0.0)
         npt.assert_allclose(updated.acceptance_deletion, expected_acc, rtol=1e-10)
         # Trial count always increments — this is the PR bug fix.
-        npt.assert_array_equal(
-            updated.n_trials_deletion, jnp.ones(3, dtype=jnp.int32)
-        )
+        npt.assert_array_equal(updated.n_trials_deletion, jnp.ones(3, dtype=jnp.int32))
 
     def test_repeated_updates_accumulate(self):
         stats = TransitionStatistics.zeros(2)
@@ -283,9 +277,7 @@ class TestWidomStatistics:
 
         result = finalize_widom(stats, temperature, volume)
         # ⟨W⟩ = exp(-β ΔU), μ_ex = -kT ln⟨W⟩ = ΔU
-        npt.assert_allclose(
-            result.excess_chemical_potential[0], delta_U, rtol=1e-9
-        )
+        npt.assert_allclose(result.excess_chemical_potential[0], delta_U, rtol=1e-9)
         # K_H = V ⟨W⟩ / kT = V exp(-β ΔU) / kT
         npt.assert_allclose(
             result.henry_coefficient[0],

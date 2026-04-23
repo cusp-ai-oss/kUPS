@@ -273,11 +273,15 @@ def isotherm(
         $\langle N \rangle$ at each pressure, shape ``(n_pressures,)``.
     """
     log_fugacities = _log_fugacity_at_pressures(
-        pressures, temperature,
-        critical_pressure, critical_temperature, acentric_factor,
+        pressures,
+        temperature,
+        critical_pressure,
+        critical_temperature,
+        acentric_factor,
     )
     distributions = jax.vmap(
-        macrostate_distribution, in_axes=(None, None, 0),
+        macrostate_distribution,
+        in_axes=(None, None, 0),
     )(log_partition_fn, beta, log_fugacities)
     return jax.vmap(average_loading)(distributions)
 
@@ -301,12 +305,19 @@ def _loading_from_T_logP(
     """
     beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
     log_qc = extrapolate_log_partition_fn(
-        log_partition_fn_sim, cumulants, beta_sim, beta, order,
+        log_partition_fn_sim,
+        cumulants,
+        beta_sim,
+        beta,
+        order,
     )
     pressure = jnp.exp(log_pressure_pa)
     log_fugacity = _log_fugacity_at_pressures(
-        jnp.atleast_1d(pressure), temperature,
-        critical_pressure, critical_temperature, acentric_factor,
+        jnp.atleast_1d(pressure),
+        temperature,
+        critical_pressure,
+        critical_temperature,
+        acentric_factor,
     )[0]
     return average_loading(macrostate_distribution(log_qc, beta, log_fugacity))
 
@@ -353,9 +364,15 @@ def isosteric_heat(
 
     def loading_fn(t: Array, log_p: Array) -> Array:
         return _loading_from_T_logP(
-            t, log_p,
-            log_partition_fn_sim, cumulants, beta_sim, order,
-            critical_pressure, critical_temperature, acentric_factor,
+            t,
+            log_p,
+            log_partition_fn_sim,
+            cumulants,
+            beta_sim,
+            order,
+            critical_pressure,
+            critical_temperature,
+            acentric_factor,
         )
 
     dN_dT = jax.grad(loading_fn, argnums=0)
@@ -394,11 +411,20 @@ def working_capacity(
     def loading(t: Array, p: Array) -> Array:
         beta = 1.0 / (BOLTZMANN_CONSTANT * t)
         log_qc = extrapolate_log_partition_fn(
-            log_partition_fn_sim, cumulants, beta_sim, beta, order,
+            log_partition_fn_sim,
+            cumulants,
+            beta_sim,
+            beta,
+            order,
         )
         return isotherm(
-            log_qc, beta, jnp.atleast_1d(p), t,
-            critical_pressure, critical_temperature, acentric_factor,
+            log_qc,
+            beta,
+            jnp.atleast_1d(p),
+            t,
+            critical_pressure,
+            critical_temperature,
+            acentric_factor,
         )[0]
 
     return loading(temperature_ads, pressure_ads) - loading(
@@ -474,8 +500,11 @@ class TMMCSummary:
     def extrapolate(self, beta_target: Array) -> LogPartitionFunction:
         r"""$\ln Q_c$ at a target inverse temperature via Taylor expansion."""
         return extrapolate_log_partition_fn(
-            self.log_partition_fn_sim, self.cumulants,
-            self.beta_sim, beta_target, self.order,
+            self.log_partition_fn_sim,
+            self.cumulants,
+            self.beta_sim,
+            beta_target,
+            self.order,
         )
 
     def isotherm(self, pressures: Array, temperature: Array) -> Loading:
@@ -483,7 +512,10 @@ class TMMCSummary:
         beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
         log_qc = self.extrapolate(beta)
         return isotherm(
-            log_qc, beta, pressures, temperature,
+            log_qc,
+            beta,
+            pressures,
+            temperature,
             self.adsorbate.critical_pressure,
             self.adsorbate.critical_temperature,
             self.adsorbate.acentric_factor,
@@ -492,8 +524,11 @@ class TMMCSummary:
     def isosteric_heat(self, pressures: Array, temperature: Array) -> IsostericHeat:
         r"""Autodiff Clausius--Clapeyron heat across a pressure grid."""
         return isosteric_heat(
-            self.log_partition_fn_sim, self.cumulants, self.beta_sim,
-            pressures, temperature,
+            self.log_partition_fn_sim,
+            self.cumulants,
+            self.beta_sim,
+            pressures,
+            temperature,
             self.adsorbate.critical_pressure,
             self.adsorbate.critical_temperature,
             self.adsorbate.acentric_factor,
@@ -509,8 +544,13 @@ class TMMCSummary:
     ) -> Array:
         r"""Working capacity between adsorption and desorption conditions."""
         return working_capacity(
-            self.log_partition_fn_sim, self.cumulants, self.beta_sim,
-            temperature_ads, pressure_ads, temperature_des, pressure_des,
+            self.log_partition_fn_sim,
+            self.cumulants,
+            self.beta_sim,
+            temperature_ads,
+            pressure_ads,
+            temperature_des,
+            pressure_des,
             self.adsorbate.critical_pressure,
             self.adsorbate.critical_temperature,
             self.adsorbate.acentric_factor,
