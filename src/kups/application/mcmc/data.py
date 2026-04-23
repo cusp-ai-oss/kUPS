@@ -73,9 +73,15 @@ class AdsorbateConfig(BaseModel):
         if not data.get("masses") or not data.get("atomic_numbers"):
             zs = [ase.data.atomic_numbers.get(s.split("_")[0], 0) for s in symbols]
             if not data.get("masses"):
-                data["masses"] = tuple(
-                    float(ase.data.atomic_masses[z]) if z > 0 else 0.0 for z in zs
-                )
+                unknown = [s for s, z in zip(symbols, zs, strict=True) if z == 0]
+                if unknown:
+                    raise ValueError(
+                        "Cannot derive masses from unrecognised symbols "
+                        f"{unknown!r} (ASE doesn't know these — typical for "
+                        "united-atom pseudo-symbols like CH4, CH3). Pass "
+                        "`masses=(...)` explicitly in AdsorbateConfig."
+                    )
+                data["masses"] = tuple(float(ase.data.atomic_masses[z]) for z in zs)
             if not data.get("atomic_numbers"):
                 data["atomic_numbers"] = tuple(zs)
         return data
@@ -338,29 +344,53 @@ def _make_molecule(
     return particles, group
 
 
-def mcmc_state_from_config(
-    key: Array,
+@dataclass
+class PreparedHost:
+    """Host + motif data prepared once per host, reused for every adsorbate count.
+
+    Holds everything that does not depend on the number of adsorbates placed
+    in a particular macrostate: the parsed host framework, its supercell, the
+    combined adsorbate motif templates, and the reservoir log-fugacity. Callers
+    that need to build multiple single-system states for the same host (e.g.
+    the flat-histogram ``mcmc_nvtw`` entry point that fans out over
+    macrostates $N = 0, \\ldots, N_{\\max}$) pay the CIF parse and
+    Peng--Robinson evaluation exactly once.
+
+    Attributes:
+        motifs: Concatenated motif templates for all adsorbate species.
+        unitcell: Simulation cell after optional supercell replication.
+        host_particles: Per-atom host data with sentinel system/group indices
+            (``system=Index.zeros(n_host)``). Must be re-emitted when the
+            number of systems is known.
+        host_groups: Empty group table (host atoms have no groups).
+        log_fugacity: Per-species log-fugacity at the host's $(T, P)$,
+            shape ``(n_adsorbates,)``.
+        temperature: Host temperature [K].
+        n_adsorbate_species: Number of adsorbate species (for sizing indices).
+    """
+
+    motifs: Table[MotifParticleId, MotifParticles]
+    unitcell: UnitCell
+    host_particles: Table[ParticleId, MCMCParticles]
+    host_groups: Table[GroupId, MCMCGroup]
+    log_fugacity: Array
+    temperature: float = field(static=True)
+    n_adsorbate_species: int = field(static=True)
+
+
+def prepare_host(
     host: HostConfig,
     adsorbates: tuple[AdsorbateConfig, ...],
-) -> tuple[
-    Table[ParticleId, MCMCParticles],
-    Table[GroupId, MCMCGroup],
-    Table[SystemId, MCMCSystems],
-    Table[MotifParticleId, MotifParticles],
-]:
-    """Build per-host MCMC state from ASE Atoms and adsorbate configs.
-
-    Host atoms get one group each (sentinel motif). Initial adsorbates
-    from ``host.init_adsorbates`` are placed randomly within the unit cell.
-    Log activity is computed internally via Peng-Robinson EOS.
+) -> PreparedHost:
+    """Perform the expensive per-host work once: CIF parse, supercell, motifs, fugacity.
 
     Args:
-        key: JAX PRNG key for random adsorbate placement.
-        host: Host configuration.
+        host: Host configuration (CIF path, $T$, $P$, supercell, ...).
         adsorbates: Adsorbate species configurations.
 
     Returns:
-        Tuple of ``(particles, groups, system, motifs)``.
+        A :class:`PreparedHost` bundle ready to be fed into
+        :func:`place_adsorbates` any number of times.
     """
     hp, unitcell, _ = particles_from_ase(host.cif_file)
     p = hp.data
@@ -391,17 +421,6 @@ def mcmc_state_from_config(
         jnp.asarray(host.adsorbate_interaction),
     )
 
-    # Host
-    system = Table.arange(
-        MCMCSystems(
-            unitcell=unitcell[None],
-            temperature=jnp.array([host.temperature]),
-            potential_energy=jnp.zeros(1),
-            log_fugacity=result.log_fugacity[None],
-        ),
-        label=SystemId,
-    )
-    # Particles
     host_particles = Table.arange(
         MCMCParticles(
             positions=p.positions,
@@ -425,23 +444,93 @@ def mcmc_state_from_config(
         label=GroupId,
     )
 
-    # Place initial adsorbates
+    return PreparedHost(
+        motifs=motifs,
+        unitcell=unitcell,
+        host_particles=host_particles,
+        host_groups=host_groups,
+        log_fugacity=result.log_fugacity,
+        temperature=host.temperature,
+        n_adsorbate_species=n_ads,
+    )
+
+
+def place_adsorbates(
+    key: Array,
+    prepared: PreparedHost,
+    init_adsorbates: tuple[int, ...],
+) -> tuple[
+    Table[ParticleId, MCMCParticles],
+    Table[GroupId, MCMCGroup],
+    Table[SystemId, MCMCSystems],
+]:
+    """Place ``init_adsorbates`` per species in a prepared host, yielding a single-system state.
+
+    Args:
+        key: JAX PRNG key for random adsorbate placement.
+        prepared: Output of :func:`prepare_host`.
+        init_adsorbates: Number of adsorbates to place per species.
+
+    Returns:
+        ``(particles, groups, system)`` for a single-system build. The caller
+        is responsible for unioning multiple such triples into a batched state.
+    """
+    system = Table.arange(
+        MCMCSystems(
+            unitcell=prepared.unitcell[None],
+            temperature=jnp.array([prepared.temperature]),
+            potential_energy=jnp.zeros(1),
+            log_fugacity=prepared.log_fugacity[None],
+        ),
+        label=SystemId,
+    )
+
     ads_parts: list[Table[ParticleId, MCMCParticles]] = []
     ads_groups: list[Table[GroupId, MCMCGroup]] = []
-    for motif_idx, n_init in enumerate(host.init_adsorbates):
+    for motif_idx, n_init in enumerate(init_adsorbates):
         idx = Index.integer(np.array([motif_idx]), label=MotifId)
         for _ in range(n_init):
             key, subkey = jax.random.split(key)
-            mol_p, mol_g = _make_molecule(motifs, idx, unitcell, subkey)
+            mol_p, mol_g = _make_molecule(
+                prepared.motifs, idx, prepared.unitcell, subkey
+            )
             ads_parts.append(mol_p)
             ads_groups.append(mol_g)
 
-    # Merge host + adsorbate parts
     particles, groups = Table.union(
-        [host_particles, *ads_parts], [host_groups, *ads_groups]
+        [prepared.host_particles, *ads_parts],
+        [prepared.host_groups, *ads_groups],
     )
-    # Store the maximum motif size
     particles = bind(
         particles, lambda x: (x.data.motif.keys, x.data.group.max_count)
-    ).set((motifs.keys, motifs.data.motif.max_count))
-    return particles, groups, system, motifs
+    ).set((prepared.motifs.keys, prepared.motifs.data.motif.max_count))
+    return particles, groups, system
+
+
+def mcmc_state_from_config(
+    key: Array,
+    host: HostConfig,
+    adsorbates: tuple[AdsorbateConfig, ...],
+) -> tuple[
+    Table[ParticleId, MCMCParticles],
+    Table[GroupId, MCMCGroup],
+    Table[SystemId, MCMCSystems],
+    Table[MotifParticleId, MotifParticles],
+]:
+    """Build per-host MCMC state from ASE Atoms and adsorbate configs.
+
+    Thin composition of :func:`prepare_host` and :func:`place_adsorbates`.
+    Kept as the stable, single-call entry point for rigid-body GCMC
+    (:mod:`kups.application.simulations.mcmc_rigid`).
+
+    Args:
+        key: JAX PRNG key for random adsorbate placement.
+        host: Host configuration.
+        adsorbates: Adsorbate species configurations.
+
+    Returns:
+        ``(particles, groups, system, motifs)``.
+    """
+    prepared = prepare_host(host, adsorbates)
+    particles, groups, system = place_adsorbates(key, prepared, host.init_adsorbates)
+    return particles, groups, system, prepared.motifs

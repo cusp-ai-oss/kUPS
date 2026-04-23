@@ -57,6 +57,7 @@ def _ch4_config() -> AdsorbateConfig:
         acentric_factor=0.011,
         positions=((0.0, 0.0, 0.0),),
         symbols=("CH4_sp3",),
+        masses=(16.043,),
     )
 
 

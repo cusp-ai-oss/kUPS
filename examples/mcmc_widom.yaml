@@ -1,0 +1,28 @@
+adsorbates:
+  - !import ["adsorbate/co2.yaml"]
+
+hosts:
+  - cif_file: host/RUBTAK.cif
+    pressure: 100_000   # Pa (1 bar)
+    temperature: 298.15   # K
+    init_adsorbates: [0]
+    unitcell_replication: 3
+
+lj: !import ["lennard_jones/trappe.yaml"]
+
+ewald:
+  real_cutoff: 12.0
+  precision: 1.e-6
+
+run:
+  out_file: mcmc_widom.msgpack
+  num_cycles: 500
+  num_warmup_cycles: 100
+  num_displacements_per_cycle: 20
+  num_widom_per_cycle: 10
+  translation_prob: 0.333
+  rotation_prob: 0.333
+  reinsertion_prob: 0.333
+  seed: 42
+
+max_num_adsorbates: 200
