@@ -1,0 +1,18 @@
+inp_files:
+  - host/RUBTAK.cif
+model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
+relax:
+  optimizer:
+    - transform: scale_by_ase_lbfgs
+      memory_size: 100
+      alpha: 70
+    - transform: max_step_size
+      max_step_size: 0.2
+    - transform: scale
+      step_size: -1
+  optimize_cell: false
+run:
+  out_file: relax_orb.h5
+  max_steps: 1000
+  force_tolerance: 0.001   # eV/Å
+  seed: null

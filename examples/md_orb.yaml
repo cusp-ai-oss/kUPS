@@ -1,0 +1,18 @@
+inp_files:
+  - host/argon_fcc.cif
+model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
+md:
+  temperature: 400         # K
+  time_step: 0.1           # fs
+  friction_coefficient: 0.001      # 1/fs
+  thermostat_time_constant: 100.0  # fs
+  target_pressure: 0.0             # Pa
+  pressure_coupling_time: 1000.0   # fs
+  compressibility: 4.57e-10        # 1/Pa
+  minimum_scale_factor: 1.0
+  integrator: baoab_langevin
+run:
+  out_file: md_orb.h5
+  num_steps: 1000
+  num_warmup_steps: 0
+  seed: null
