@@ -1,10 +1,10 @@
 # Handbook
 
-A tour of the primitives *k*UPS is built from. Each chapter covers one primitive: what it is and why it's included in the design.
+A tour of the primitives <em>k</em>UPS is built from. Each chapter covers one primitive: what it is and why it's included in the design.
 
 This is not an API reference. Function signatures live under the API Reference tab, and CLI-ready packaged simulations under [Simulations](simulations.md). Code samples assume familiarity with [JAX pytrees](https://docs.jax.dev/en/latest/pytrees.html) and [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html), and use the conventions in [Units](units.md).
 
-*k*UPS is a toolkit for batched, differentiable molecular simulations on GPU. One composable interface covers molecular dynamics, Monte Carlo, geometry optimization, classical force fields, and machine-learning potentials (via [Tojax](https://github.com/cusp-ai-oss/tojax)), with thousands of independent systems running as a single vectorized computation.
+<em>k</em>UPS is a toolkit for batched, differentiable molecular simulations on GPU. One composable interface covers molecular dynamics, Monte Carlo, geometry optimization, classical force fields, and machine-learning potentials (via [Tojax](https://github.com/cusp-ai-oss/tojax)), with thousands of independent systems running as a single vectorized computation.
 
 ## Three requirements that usually fight
 
@@ -14,7 +14,7 @@ A molecular-simulation framework has to satisfy three things at once, and the na
 - **Composability.** Real research mixes MD with MC, custom potentials, online analysis, and new ensembles. A monolithic simulator per ensemble forks the code for every new method and inherits no performance work from the others. The price: a shared abstraction every method has to express itself through, even when a hand-tuned one-off would be faster.
 - **Per-step latency.** Step N+1 reads step N's state, so a simulation is sequential by construction and per-step latency sets the wall-clock cost. Compiling the whole step into a single [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html) kernel brings it down to what classical C++ engines deliver. The price: shapes are fixed at compile time, with every buffer, neighbor list, and loop count sized up front.
 
-*k*UPS resolves the three together. The primitives below compose freely, operate on batched arrays, and fit inside a fixed-shape compiled kernel, all at once.
+<em>k</em>UPS resolves the three together. The primitives below compose freely, operate on batched arrays, and fit inside a fixed-shape compiled kernel, all at once.
 
 ## Primitives
 
