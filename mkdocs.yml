@@ -126,6 +126,7 @@ nav:
   - Home: index.md
   - Simulations: simulations.md
   - Handbook:
+    - Overview: handbook.md
     - 1. Tables: notebooks/tables.md
     - 2. Lenses: notebooks/lens.md
     - 3. Runtime Assertions: notebooks/runtime_assertions.md
