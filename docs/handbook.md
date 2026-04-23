@@ -1,6 +1,6 @@
 # Handbook
 
-A tour of the primitives *k*UPS is built from. Each chapter covers one primitive: what it is and what forced it into the design.
+A tour of the primitives *k*UPS is built from. Each chapter covers one primitive: what it is and why it's included in the design.
 
 This is not an API reference. Function signatures live under the API Reference tab, and CLI-ready packaged simulations under [Simulations](simulations.md). Code samples assume familiarity with [JAX pytrees](https://docs.jax.dev/en/latest/pytrees.html) and [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html), and use the conventions in [Units](units.md).
 
