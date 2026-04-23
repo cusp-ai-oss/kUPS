@@ -24,12 +24,12 @@ The repository includes example applications built with <em>k</em>UPS. To try th
 
 ```sh
 cd examples
-kups_mcmc_rigid --config gcmc_co2_30box.yaml
+kups_mcmc_rigid gcmc_co2_30box.yaml
 ```
 
 ```sh
 cd examples
-kups_md_lj --config md_lj_argon_nvt.yaml
+kups_md_lj md_lj_argon_nvt.yaml
 ```
 
 See the [examples/](https://github.com/cusp-ai-oss/kups/tree/main/examples) directory for more configurations.
