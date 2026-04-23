@@ -1,0 +1,35 @@
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #C5F598;
+  --md-primary-fg-color--light: #DEFBC6;
+  --md-primary-fg-color--dark: #9FE066;
+  --md-accent-fg-color: #46D2E6;
+  --md-accent-fg-color--light: #7BE3F0;
+  --md-accent-fg-color--dark: #1FA8BC;
+  --md-accent-fg-color--transparent: rgba(70, 210, 230, 0.1);
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #5FA03A;
+  --md-primary-fg-color--light: #7DB85A;
+  --md-primary-fg-color--dark: #3F7A20;
+  --md-accent-fg-color: #0E8A9E;
+  --md-accent-fg-color--light: #1FA8BC;
+  --md-accent-fg-color--dark: #085F6E;
+  --md-accent-fg-color--transparent: rgba(14, 138, 158, 0.1);
+}
+
+[data-md-color-scheme="slate"] .kups-logo {
+  filter: invert(1);
+}

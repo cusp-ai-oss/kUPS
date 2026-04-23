@@ -1,6 +1,10 @@
-# <em>k</em>UPS
+# kUPS { .visually-hidden }
 
-A toolkit for building high-performance molecular simulations on JAX. <em>k</em>UPS provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
+<p align="center">
+  <img src="media/logo/logo.svg" alt="kUPS" width="240" class="kups-logo">
+</p>
+
+<em>k</em>UPS is a toolkit for building high-performance molecular simulations on JAX. It provides composable, differentiable primitives — samplers, potentials, and propagators — with hardware acceleration on CPU, GPU, and TPU.
 
 ## Installation
 
@@ -20,12 +24,12 @@ The repository includes example applications built with <em>k</em>UPS. To try th
 
 ```sh
 cd examples
-kups_mcmc_rigid --config gcmc_co2_30box.yaml
+kups_mcmc_rigid mcmc_rigid.yaml
 ```
 
 ```sh
 cd examples
-kups_md_lj --config md_lj_argon_nvt.yaml
+kups_md_lj md_lj_argon_nvt.yaml
 ```
 
 See the [examples/](https://github.com/cusp-ai-oss/kups/tree/main/examples) directory for more configurations.

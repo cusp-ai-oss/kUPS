@@ -51,6 +51,7 @@ from kups.core.typing import (
     HasSystemIndex,
     HasUnitCell,
     Label,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -410,11 +411,8 @@ class IsLJState[Params](HasLJParticlesAndSystems, Protocol):
 
 
 @overload
-def make_lennard_jones_from_state[
-    State,
-    InState: IsLJState[LennardJonesParameters | HasCache[LennardJonesParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_lennard_jones_from_state[State](
+    state: Lens[State, IsLJState[MaybeCached[LennardJonesParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -422,11 +420,8 @@ def make_lennard_jones_from_state[
 
 
 @overload
-def make_lennard_jones_from_state[
-    State,
-    InState: IsLJState[LennardJonesParameters | HasCache[LennardJonesParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_lennard_jones_from_state[State](
+    state: Lens[State, IsLJState[MaybeCached[LennardJonesParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -434,12 +429,11 @@ def make_lennard_jones_from_state[
 
 
 @overload
-def make_lennard_jones_from_state[
-    State,
-    InState: IsLJState[HasCache[LennardJonesParameters, PotentialOut]],
-    P: Patch,
-](
-    state: Lens[State, InState],
+def make_lennard_jones_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]],
+    ],
     probe: Probe[State, P, IsRadiusGraphProbe],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -447,14 +441,15 @@ def make_lennard_jones_from_state[
 
 
 @overload
-def make_lennard_jones_from_state[
-    State,
-    InState: IsLJState[
-        HasCache[LennardJonesParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_lennard_jones_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsLJState[
+            HasCache[
+                LennardJonesParameters, PotentialOut[PositionAndUnitCell, EmptyType]
+            ]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[State, P, IsRadiusGraphProbe],
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -600,8 +595,7 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
 
 
 type IsGlobalTailCorrectedIsLJState = IsLJState[
-    GlobalTailCorrectedLennardJonesParameters
-    | HasCache[GlobalTailCorrectedLennardJonesParameters, PotentialOut]
+    MaybeCached[GlobalTailCorrectedLennardJonesParameters, PotentialOut]
 ]
 
 

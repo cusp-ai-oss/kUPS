@@ -19,7 +19,7 @@ integrate with JAX transformations while maintaining runtime validation.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol, Self
+from typing import Any, Callable, Generic, Protocol, Self, TypeVar
 
 import jax
 from jax import Array
@@ -143,16 +143,19 @@ class Addable(Protocol):
     def __add__(self, other: Self) -> Self: ...
 
 
+T_Data = TypeVar("T_Data", covariant=True)
+T_Patch = TypeVar("T_Patch", bound=Patch[Any], covariant=True)
+
+
 @dataclass
-class WithPatch[T_Data, T_Patch: Patch]:
+class WithPatch(Generic[T_Data, T_Patch]):
     """Generic wrapper pairing data with a patch.
 
     This class provides a unified pattern for operations that return both
-    a result (data) and a side-effect (patch).
-
-    Type Parameters:
-        T_Data: The data type being wrapped (e.g., Energy, PotentialOut, Array)
-        T_Patch: The patch type (must satisfy the Patch protocol)
+    a result (data) and a side-effect (patch). It is parameterized by
+    ``T_Data`` (the wrapped data type, e.g. ``Energy``, ``PotentialOut``,
+    ``Array``) and ``T_Patch`` (the patch type, which must satisfy the
+    ``Patch`` protocol).
 
     Attributes:
         data: The primary data result

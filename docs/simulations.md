@@ -1,6 +1,6 @@
 # Packaged Simulations
 
-<em>k</em>UPS ships with several ready-to-use simulation applications as CLI tools. Each is a thin layer built on the core primitives (propagators, potentials, lenses, tables) and serves as both a useful tool and a reference implementation. All commands take a YAML configuration file via `--config` and use [nanoargs](https://github.com/cusp-ai-oss/nanoargs) for argument parsing, so any configuration value can also be overridden from the command line. Example configurations are provided in the [`examples/`](https://github.com/cusp-ai-oss/kups/tree/main/examples) directory and should be run from there.
+<em>k</em>UPS ships with several ready-to-use simulation applications as CLI tools. Each is a thin layer built on the core primitives (propagators, potentials, lenses, tables) and serves as both a useful tool and a reference implementation. All commands take a YAML configuration file via and use [nanoargs](https://github.com/cusp-ai-oss/nanoargs) for argument parsing, so any configuration value can also be overridden from the command line. Example configurations are provided in the [`examples/`](https://github.com/cusp-ai-oss/kups/tree/main/examples) directory and should be run from there.
 
 ## Molecular Dynamics
 
@@ -13,10 +13,10 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble.
 
 ```sh
 cd examples
-kups_md_lj --config md_lj_argon_nvt.yaml
-kups_md_lj --config md_lj_argon_nve.yaml
-kups_md_mlff --config md_mace.yaml
-kups_md_mlff --config md_uma.yaml
+kups_md_lj md_lj_argon_nvt.yaml
+kups_md_lj md_lj_argon_nve.yaml
+kups_md_mlff md_mace.yaml
+kups_md_mlff md_uma.yaml
 ```
 
 **Ensembles and integrators:**
@@ -38,7 +38,7 @@ Relax atomic positions (and optionally lattice vectors) to a local energy minimu
 
 ```sh
 cd examples
-kups_relax_mlff --config relax_mace.yaml
+kups_relax_mlff relax_mace.yaml
 ```
 
 **Optimizers:**
@@ -59,7 +59,7 @@ Simulate adsorption of rigid molecules in a host framework at constant chemical 
 
 ```sh
 cd examples
-kups_mcmc_rigid --config mcmc_rigid.yaml
+kups_mcmc_rigid mcmc_rigid.yaml
 ```
 
 **Monte Carlo moves:**

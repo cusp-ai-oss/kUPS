@@ -30,7 +30,7 @@ repos:
 
       - id: clear-notebook-output
         name: clear notebook output
-        entry: jupyter nbconvert --clear-output --inplace
+        entry: uv run jupyter nbconvert --clear-output --inplace
         language: system
         files: ^docs/notebooks/.*\.ipynb$
         types: [jupyter]

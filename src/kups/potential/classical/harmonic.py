@@ -34,6 +34,7 @@ from kups.core.typing import (
     HasSystemIndex,
     HasUnitCell,
     Label,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -299,13 +300,11 @@ class IsHarmonicBondState[Params](HasBondedParticlesAndSystems, Protocol):
 
 
 @overload
-def make_harmonic_bond_from_state[
-    State,
-    InState: IsHarmonicBondState[
-        HarmonicBondParameters | HasCache[HarmonicBondParameters, Any]
+def make_harmonic_bond_from_state[State](
+    state: Lens[
+        State,
+        IsHarmonicBondState[MaybeCached[HarmonicBondParameters, Any]],
     ],
-](
-    state: Lens[State, InState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -313,13 +312,11 @@ def make_harmonic_bond_from_state[
 
 
 @overload
-def make_harmonic_bond_from_state[
-    State,
-    InState: IsHarmonicBondState[
-        HarmonicBondParameters | HasCache[HarmonicBondParameters, Any]
+def make_harmonic_bond_from_state[State](
+    state: Lens[
+        State,
+        IsHarmonicBondState[MaybeCached[HarmonicBondParameters, Any]],
     ],
-](
-    state: Lens[State, InState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -327,14 +324,13 @@ def make_harmonic_bond_from_state[
 
 
 @overload
-def make_harmonic_bond_from_state[
-    State,
-    InState: IsHarmonicBondState[
-        HasCache[HarmonicBondParameters, PotentialOut[EmptyType, EmptyType]]
+def make_harmonic_bond_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsHarmonicBondState[
+            HasCache[HarmonicBondParameters, PotentialOut[EmptyType, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -342,14 +338,15 @@ def make_harmonic_bond_from_state[
 
 
 @overload
-def make_harmonic_bond_from_state[
-    State,
-    InState: IsHarmonicBondState[
-        HasCache[HarmonicBondParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_harmonic_bond_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsHarmonicBondState[
+            HasCache[
+                HarmonicBondParameters, PotentialOut[PositionAndUnitCell, EmptyType]
+            ]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -429,13 +426,11 @@ class IsHarmonicAngleState[Params](HasBondedParticlesAndSystems, Protocol):
 
 
 @overload
-def make_harmonic_angle_from_state[
-    State,
-    InState: IsHarmonicAngleState[
-        HarmonicAngleParameters | HasCache[HarmonicAngleParameters, Any]
+def make_harmonic_angle_from_state[State](
+    state: Lens[
+        State,
+        IsHarmonicAngleState[MaybeCached[HarmonicAngleParameters, Any]],
     ],
-](
-    state: Lens[State, InState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -443,13 +438,11 @@ def make_harmonic_angle_from_state[
 
 
 @overload
-def make_harmonic_angle_from_state[
-    State,
-    InState: IsHarmonicAngleState[
-        HarmonicAngleParameters | HasCache[HarmonicAngleParameters, Any]
+def make_harmonic_angle_from_state[State](
+    state: Lens[
+        State,
+        IsHarmonicAngleState[MaybeCached[HarmonicAngleParameters, Any]],
     ],
-](
-    state: Lens[State, InState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -457,14 +450,13 @@ def make_harmonic_angle_from_state[
 
 
 @overload
-def make_harmonic_angle_from_state[
-    State,
-    InState: IsHarmonicAngleState[
-        HasCache[HarmonicAngleParameters, PotentialOut[EmptyType, EmptyType]]
+def make_harmonic_angle_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsHarmonicAngleState[
+            HasCache[HarmonicAngleParameters, PotentialOut[EmptyType, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -472,14 +464,15 @@ def make_harmonic_angle_from_state[
 
 
 @overload
-def make_harmonic_angle_from_state[
-    State,
-    InState: IsHarmonicAngleState[
-        HasCache[HarmonicAngleParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_harmonic_angle_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsHarmonicAngleState[
+            HasCache[
+                HarmonicAngleParameters, PotentialOut[PositionAndUnitCell, EmptyType]
+            ]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     compute_position_and_unitcell_gradients: Literal[True],

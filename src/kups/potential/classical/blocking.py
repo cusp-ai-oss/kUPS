@@ -311,11 +311,8 @@ class IsBlockingSpheresState(Protocol):
 
 
 @overload
-def make_blocking_spheres_from_state[
-    State,
-    InState: IsBlockingSpheresState,
-](
-    state: Lens[State, InState],
+def make_blocking_spheres_from_state[State](
+    state: Lens[State, IsBlockingSpheresState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -323,11 +320,8 @@ def make_blocking_spheres_from_state[
 
 
 @overload
-def make_blocking_spheres_from_state[
-    State,
-    InState: IsBlockingSpheresState,
-](
-    state: Lens[State, InState],
+def make_blocking_spheres_from_state[State](
+    state: Lens[State, IsBlockingSpheresState],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -335,12 +329,8 @@ def make_blocking_spheres_from_state[
 
 
 @overload
-def make_blocking_spheres_from_state[
-    State,
-    InState: IsBlockingSpheresState,
-    P: Patch,
-](
-    state: Lens[State, InState],
+def make_blocking_spheres_from_state[State, P: Patch](
+    state: Lens[State, IsBlockingSpheresState],
     probe: Probe[State, P, IsBlockingSpheresProbe],
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -348,12 +338,8 @@ def make_blocking_spheres_from_state[
 
 
 @overload
-def make_blocking_spheres_from_state[
-    State,
-    InState: IsBlockingSpheresState,
-    P: Patch,
-](
-    state: Lens[State, InState],
+def make_blocking_spheres_from_state[State, P: Patch](
+    state: Lens[State, IsBlockingSpheresState],
     probe: Probe[State, P, IsBlockingSpheresProbe],
     *,
     compute_position_and_unitcell_gradients: Literal[True],

@@ -40,6 +40,7 @@ from kups.core.typing import (
     HasSystemIndex,
     HasUnitCell,
     Label,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -237,11 +238,8 @@ class IsMorseBondState[Params](Protocol):
 
 
 @overload
-def make_morse_bond_from_state[
-    State,
-    InState: IsMorseBondState[MorseBondParameters | HasCache[MorseBondParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_morse_bond_from_state[State](
+    state: Lens[State, IsMorseBondState[MaybeCached[MorseBondParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -249,11 +247,8 @@ def make_morse_bond_from_state[
 
 
 @overload
-def make_morse_bond_from_state[
-    State,
-    InState: IsMorseBondState[MorseBondParameters | HasCache[MorseBondParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_morse_bond_from_state[State](
+    state: Lens[State, IsMorseBondState[MaybeCached[MorseBondParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -261,14 +256,13 @@ def make_morse_bond_from_state[
 
 
 @overload
-def make_morse_bond_from_state[
-    State,
-    InState: IsMorseBondState[
-        HasCache[MorseBondParameters, PotentialOut[EmptyType, EmptyType]]
+def make_morse_bond_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsMorseBondState[
+            HasCache[MorseBondParameters, PotentialOut[EmptyType, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,
@@ -280,14 +274,13 @@ def make_morse_bond_from_state[
 
 
 @overload
-def make_morse_bond_from_state[
-    State,
-    InState: IsMorseBondState[
-        HasCache[MorseBondParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_morse_bond_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsMorseBondState[
+            HasCache[MorseBondParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,

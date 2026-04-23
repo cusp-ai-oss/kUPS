@@ -43,6 +43,7 @@ from kups.core.typing import (
     HasSystemIndex,
     HasUnitCell,
     Label,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -343,11 +344,8 @@ class IsDihedralState[Params](Protocol):
 
 
 @overload
-def make_dihedral_from_state[
-    State,
-    InState: IsDihedralState[DihedralParameters | HasCache[DihedralParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_dihedral_from_state[State](
+    state: Lens[State, IsDihedralState[MaybeCached[DihedralParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -355,11 +353,8 @@ def make_dihedral_from_state[
 
 
 @overload
-def make_dihedral_from_state[
-    State,
-    InState: IsDihedralState[DihedralParameters | HasCache[DihedralParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_dihedral_from_state[State](
+    state: Lens[State, IsDihedralState[MaybeCached[DihedralParameters, Any]]],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -367,14 +362,13 @@ def make_dihedral_from_state[
 
 
 @overload
-def make_dihedral_from_state[
-    State,
-    InState: IsDihedralState[
-        HasCache[DihedralParameters, PotentialOut[EmptyType, EmptyType]]
+def make_dihedral_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsDihedralState[
+            HasCache[DihedralParameters, PotentialOut[EmptyType, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,
@@ -386,14 +380,13 @@ def make_dihedral_from_state[
 
 
 @overload
-def make_dihedral_from_state[
-    State,
-    InState: IsDihedralState[
-        HasCache[DihedralParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_dihedral_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsDihedralState[
+            HasCache[DihedralParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,

@@ -401,6 +401,9 @@ class HasCache[Data, Cache](Protocol):
     def cache(self) -> Cache: ...
 
 
+type MaybeCached[P, C] = P | HasCache[P, C]
+
+
 @runtime_checkable
 class HasMotifAndSystemIndex(HasMotifIndex, HasSystemIndex, Protocol):
     """Protocol for entities with both motif and system indices."""

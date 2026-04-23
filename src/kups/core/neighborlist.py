@@ -952,8 +952,8 @@ class DenseNearestNeighborList:
         )
 
     @classmethod
-    def from_state[P: IsDenseNeighborlistParams](
-        cls, state: IsNeighborListState[P]
+    def from_state(
+        cls, state: IsNeighborListState[IsDenseNeighborlistParams]
     ) -> DenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params))
 

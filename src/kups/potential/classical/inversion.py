@@ -56,6 +56,7 @@ from kups.core.typing import (
     HasSystemIndex,
     HasUnitCell,
     Label,
+    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -277,11 +278,11 @@ class IsInversionState[Params](Protocol):
 
 
 @overload
-def make_inversion_from_state[
-    State,
-    InState: IsInversionState[InversionParameters | HasCache[InversionParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_inversion_from_state[State](
+    state: Lens[
+        State,
+        IsInversionState[MaybeCached[InversionParameters, Any]],
+    ],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[False] = ...,
@@ -289,11 +290,11 @@ def make_inversion_from_state[
 
 
 @overload
-def make_inversion_from_state[
-    State,
-    InState: IsInversionState[InversionParameters | HasCache[InversionParameters, Any]],
-](
-    state: Lens[State, InState],
+def make_inversion_from_state[State](
+    state: Lens[
+        State,
+        IsInversionState[MaybeCached[InversionParameters, Any]],
+    ],
     probe: None = None,
     *,
     compute_position_and_unitcell_gradients: Literal[True],
@@ -301,14 +302,13 @@ def make_inversion_from_state[
 
 
 @overload
-def make_inversion_from_state[
-    State,
-    InState: IsInversionState[
-        HasCache[InversionParameters, PotentialOut[EmptyType, EmptyType]]
+def make_inversion_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsInversionState[
+            HasCache[InversionParameters, PotentialOut[EmptyType, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,
@@ -320,14 +320,13 @@ def make_inversion_from_state[
 
 
 @overload
-def make_inversion_from_state[
-    State,
-    InState: IsInversionState[
-        HasCache[InversionParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+def make_inversion_from_state[State, P: Patch](
+    state: Lens[
+        State,
+        IsInversionState[
+            HasCache[InversionParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+        ],
     ],
-    P: Patch,
-](
-    state: Lens[State, InState],
     probe: Probe[
         State,
         P,

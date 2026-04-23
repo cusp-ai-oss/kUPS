@@ -1,8 +1,9 @@
-site_name: <em>k</em>UPS Docs
+site_name: kUPS Docs
 site_url: https://github.com/cusp-ai-oss/kUPS
 repo_url: https://github.com/cusp-ai-oss/kUPS
 repo_name: cusp-ai-oss/kUPS
 edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2024-2026 CuspAI
 theme:
   name: material
   palette:
@@ -15,8 +16,8 @@ theme:
     # Palette toggle for light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: deep purple
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
@@ -24,8 +25,8 @@ theme:
     # Palette toggle for dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: deep purple
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to system preference
@@ -111,7 +112,7 @@ extra:
       link: https://pypi.org/project/kups/
       name: kUPS on PyPI
 
-copyright: Copyright &copy; 2025 Cusp-AI
+copyright: Copyright &copy; 2024-2026 CuspAI
 
 extra_css:
   - stylesheets/extra.css
@@ -125,13 +126,17 @@ nav:
   - Home: index.md
   - Simulations: simulations.md
   - Handbook:
+    - Overview: handbook.md
     - 1. Tables: notebooks/tables.md
     - 2. Lenses: notebooks/lens.md
     - 3. Runtime Assertions: notebooks/runtime_assertions.md
     - 4. Propagators: notebooks/propagators.md
     - 5. Conventions: notebooks/conventions.md
     - 6. Patches: notebooks/patches.md
-    - 7. Potentials: notebooks/potentials.md
+    - 7. Neighbor Lists: notebooks/neighborlist.md
+    - 8. Potentials: notebooks/potentials.md
+    - 9. Monte Carlo Moves: notebooks/mc_moves.md
+    - 10. Logging: notebooks/logging.md
   - Units: units.md
   - Troubleshooting: troubleshooting.md
 
