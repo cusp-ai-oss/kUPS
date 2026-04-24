@@ -37,6 +37,8 @@ class MDParticles(Particles):
     Attributes:
         position_gradients: Energy gradient w.r.t. positions, shape ``(n_atoms, 3)``.
         momenta: Particle momenta, shape ``(n_atoms, 3)``.
+        exclusion: Per-particle exclusion index (defaults to one group per
+            atom via :func:`default_exclusion` if not supplied).
     """
 
     position_gradients: Array
@@ -77,7 +79,10 @@ class MDSystems:
         pressure_coupling_time: Barostat coupling time (time), shape ``(n_systems,)``.
         compressibility: Isothermal compressibility (length^3/energy), shape ``(n_systems,)``.
         minimum_scale_factor: Minimum barostat scale factor, shape ``(n_systems,)``.
-        lattice_gradient: Energy gradient w.r.t. lattice vectors, shape ``(n_systems, 3, 3)``.
+        unitcell_gradients: Energy gradient w.r.t. the unit cell, stored as a
+            :class:`UnitCell` (the ``lattice_vectors`` leaf holds the
+            shape-``(n_systems, 3, 3)`` gradient used by
+            :attr:`stress_tensor`).
         potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
     """
 
