@@ -17,6 +17,7 @@ kups_md_lj md_lj_argon_nvt.yaml
 kups_md_lj md_lj_argon_nve.yaml
 kups_md_mlff md_mace.yaml
 kups_md_mlff md_uma.yaml
+kups_md_mlff md_orb.yaml
 ```
 
 **Ensembles and integrators:**
@@ -39,6 +40,7 @@ Relax atomic positions (and optionally lattice vectors) to a local energy minimu
 ```sh
 cd examples
 kups_relax_mlff relax_mace.yaml
+kups_relax_mlff relax_orb.yaml
 ```
 
 **Optimizers:**
