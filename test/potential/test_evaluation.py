@@ -6,10 +6,10 @@
 import jax
 import jax.numpy as jnp
 
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.lennard_jones import (
     LennardJonesParameters,
@@ -32,7 +32,7 @@ class _Particles:
 
 @dataclass
 class _Systems:
-    unitcell: UnitCell
+    cell: Cell
 
 
 def test_evaluate_radius_graph_potential_lj():
@@ -53,7 +53,7 @@ def test_evaluate_radius_graph_potential_lj():
         label=ParticleId,
     )
     systems = Table.arange(
-        _Systems(unitcell=TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)),
+        _Systems(cell=TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)),
         label=SystemId,
     )
     lj_params = LennardJonesParameters(

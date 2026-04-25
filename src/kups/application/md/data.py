@@ -18,10 +18,10 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
+from kups.core.cell import Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, ParticleId, SystemId
-from kups.core.unitcell import UnitCell
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
 from kups.md.observables import particle_kinetic_energy
@@ -70,7 +70,7 @@ class MDSystems:
     """Per-system state for molecular dynamics simulations.
 
     Attributes:
-        unitcell: Unit cell geometry for each system.
+        cell: Cell geometry for each system.
         temperature: Target temperature (K), shape ``(n_systems,)``.
         time_step: Integration timestep (internal time units), shape ``(n_systems,)``.
         friction_coefficient: Langevin friction (1/time), shape ``(n_systems,)``.
@@ -79,14 +79,14 @@ class MDSystems:
         pressure_coupling_time: Barostat coupling time (time), shape ``(n_systems,)``.
         compressibility: Isothermal compressibility (length^3/energy), shape ``(n_systems,)``.
         minimum_scale_factor: Minimum barostat scale factor, shape ``(n_systems,)``.
-        unitcell_gradients: Energy gradient w.r.t. the unit cell, stored as a
-            :class:`UnitCell` (the ``lattice_vectors`` leaf holds the
+        cell_gradients: Energy gradient w.r.t. the cell, stored as a
+            :class:`Cell` (the ``lattice_vectors`` leaf holds the
             shape-``(n_systems, 3, 3)`` gradient used by
             :attr:`stress_tensor`).
         potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
     """
 
-    unitcell: UnitCell
+    cell: Cell
     temperature: Array
     time_step: Array
     friction_coefficient: Array
@@ -95,15 +95,15 @@ class MDSystems:
     pressure_coupling_time: Array
     compressibility: Array
     minimum_scale_factor: Array
-    unitcell_gradients: UnitCell
+    cell_gradients: Cell
     potential_energy: Array
 
     @property
     def stress_tensor(self) -> Array:
         """Virial stress tensor, shape ``(n_systems, 3, 3)``."""
         return (
-            -self.unitcell_gradients.lattice_vectors
-            / self.unitcell.volume[..., None, None]
+            -self.cell_gradients.lattice_vectors
+            / self.cell.volume[..., None, None]
         )
 
 
@@ -164,7 +164,7 @@ def md_state_from_ase(
     Returns:
         Tuple of (particles, systems) ready for use with MD integrators.
     """
-    base, unitcell, _ = particles_from_ase(atoms)
+    base, cell, _ = particles_from_ase(atoms)
     p = base.data
     n_atoms = p.positions.shape[0]
 
@@ -191,10 +191,10 @@ def md_state_from_ase(
         label=ParticleId,
     )
 
-    unitcell = unitcell[None]  # Add system dimension
+    cell = cell[None]  # Add system dimension
     systems = Table.arange(
         MDSystems(
-            unitcell=unitcell,
+            cell=cell,
             temperature=jnp.array([config.temperature]),
             time_step=jnp.array([config.time_step * FEMTO_SECOND]),
             friction_coefficient=jnp.array(
@@ -209,7 +209,7 @@ def md_state_from_ase(
             ),
             compressibility=jnp.array([config.compressibility / PASCAL]),
             minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
-            unitcell_gradients=tree_zeros_like(unitcell),
+            cell_gradients=tree_zeros_like(cell),
             potential_energy=jnp.array([0.0]),
         ),
         label=SystemId,

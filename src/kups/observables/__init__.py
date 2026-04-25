@@ -49,7 +49,7 @@ pressure = ideal_gas_pressure(counts, systems)
 
 # For offline analysis
 from kups.observables.radial_distribution_function import offline_radial_distribution_function
-rdf = offline_radial_distribution_function(positions, unitcell, rmax=10.0, bins=200)
+rdf = offline_radial_distribution_function(positions, cell, rmax=10.0, bins=200)
 ```
 
 See individual module documentation for detailed API references:

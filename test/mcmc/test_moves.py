@@ -9,6 +9,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import CapacityError, LensCapacity
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data import WithIndices
 from kups.core.data.buffered import Buffered, system_view
 from kups.core.data.index import Index
@@ -16,7 +17,6 @@ from kups.core.data.table import Table
 from kups.core.lens import bind, lens
 from kups.core.result import as_result_function
 from kups.core.typing import GroupId, MotifId, ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass, key_chain
 from kups.core.utils.position import center_of_mass, to_relative_positions
 from kups.mcmc.moves import (
@@ -82,10 +82,10 @@ class PositionSystemData:
 
 
 @dataclass
-class UnitCellData:
-    """System data with unit cell."""
+class CellData:
+    """System data with cell."""
 
-    unitcell: UnitCell
+    cell: Cell
 
 
 @dataclass
@@ -229,9 +229,9 @@ class TestRandomRotateGroups:
         )
 
     @staticmethod
-    def _make_systems(unitcell):
-        """Build Table systems from a UnitCell."""
-        return Table.arange(UnitCellData(unitcell=unitcell), label=SystemId)
+    def _make_systems(cell):
+        """Build Table systems from a Cell."""
+        return Table.arange(CellData(cell=cell), label=SystemId)
 
     @classmethod
     def setup_class(cls):
@@ -239,7 +239,7 @@ class TestRandomRotateGroups:
         cls.n_particles_per_sys = 6
 
         lattice_vecs = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        cls.unitcell = TriclinicUnitCell.from_matrix(
+        cls.cell = TriclinicCell.from_matrix(
             jnp.broadcast_to(lattice_vecs, (cls.n_sys, 3, 3))
         )
         cls.jit_rotate = staticmethod(jax.jit(random_rotate_groups))
@@ -273,7 +273,7 @@ class TestRandomRotateGroups:
             cls.system_ids,
         )
         cls.particles = cls._make_particles(cls.positions, cls.system_ids, cls.n_sys)
-        cls.systems = cls._make_systems(cls.unitcell)
+        cls.systems = cls._make_systems(cls.cell)
 
     def _make_mass_particles(self, positions):
         """Build GroupSystemDataWithMass Table from positions."""
@@ -301,23 +301,23 @@ class TestRandomRotateGroups:
         # Zero step width preserves relative positions (identity rotation)
         zero_sw = jnp.zeros(self.n_sys)
         particles_m = self._make_mass_particles(self.positions)
-        orig_com = center_of_mass(particles_m, self.unitcell)
-        orig_rel = to_relative_positions(particles_m, self.unitcell, orig_com)
+        orig_com = center_of_mass(particles_m, self.cell)
+        orig_rel = to_relative_positions(particles_m, self.cell, orig_com)
         rot_zero = self.jit_rotate(
             jax.random.key(1), self.particles, self.systems, zero_sw
         )
         rot_m = self._make_mass_particles(rot_zero)
-        rot_com = center_of_mass(rot_m, self.unitcell)
-        rot_rel = to_relative_positions(rot_m, self.unitcell, rot_com)
+        rot_com = center_of_mass(rot_m, self.cell)
+        rot_rel = to_relative_positions(rot_m, self.cell, rot_com)
         npt.assert_allclose(orig_rel, rot_rel, atol=1e-10)
 
         # COM preservation with non-zero step width
-        com_before = center_of_mass(self.particles, self.unitcell)
+        com_before = center_of_mass(self.particles, self.cell)
         rot2 = self.jit_rotate(
             jax.random.key(2), self.particles, self.systems, self.step_width
         )
         com_after = center_of_mass(
-            self._make_particles(rot2, self.system_ids, self.n_sys), self.unitcell
+            self._make_particles(rot2, self.system_ids, self.n_sys), self.cell
         )
         npt.assert_allclose(com_after, com_before)
 
@@ -326,8 +326,8 @@ class TestRandomRotateGroups:
             jax.random.key(3), self.particles, self.systems, self.step_width
         )
         rot3_m = self._make_mass_particles(rot3)
-        rot3_com = center_of_mass(rot3_m, self.unitcell)
-        rot3_rel = to_relative_positions(rot3_m, self.unitcell, rot3_com)
+        rot3_com = center_of_mass(rot3_m, self.cell)
+        rot3_rel = to_relative_positions(rot3_m, self.cell, rot3_com)
         npt.assert_allclose(
             jnp.linalg.norm(orig_rel, axis=1),
             jnp.linalg.norm(rot3_rel, axis=1),
@@ -378,7 +378,7 @@ class TestRandomRotateGroups:
         lattice_vecs = jnp.array(
             [[1.0, 0.0, 0.0], [0.5, jnp.sqrt(3) / 2, 0.0], [0.0, 0.0, 1.0]]
         )
-        hex_uc = TriclinicUnitCell.from_matrix(
+        hex_uc = TriclinicCell.from_matrix(
             jnp.broadcast_to(lattice_vecs, (self.n_sys, 3, 3))
         )
         hex_sys = self._make_systems(hex_uc)
@@ -392,7 +392,7 @@ class TestRandomRotateGroups:
     def test_single_system(self):
         key = jax.random.key(8)
         n_particles = 4
-        single_unitcell = TriclinicUnitCell.from_matrix(
+        single_cell = TriclinicCell.from_matrix(
             jnp.array([[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]]),
         )
         single_positions = jnp.array(
@@ -401,7 +401,7 @@ class TestRandomRotateGroups:
         single_system_ids = jnp.zeros(n_particles, dtype=int)
         single_step_width = jnp.array([0.5])
         single_particles = self._make_particles(single_positions, single_system_ids, 1)
-        single_systems = self._make_systems(single_unitcell)
+        single_systems = self._make_systems(single_cell)
         rotated = self.jit_rotate(
             key, single_particles, single_systems, single_step_width
         )
@@ -412,7 +412,7 @@ class TestRandomRotateGroups:
 
 class TestTranslateGroups:
     @staticmethod
-    def _call(jit_fn, translations, positions, unitcell, system_ids):
+    def _call(jit_fn, translations, positions, cell, system_ids):
         """Wrap raw arrays into Table types and call translate_groups."""
         n_sys = translations.shape[0]
         trans = Table.arange(translations, label=SystemId)
@@ -423,7 +423,7 @@ class TestTranslateGroups:
             ),
             label=ParticleId,
         )
-        systems = Table.arange(UnitCellData(unitcell=unitcell), label=SystemId)
+        systems = Table.arange(CellData(cell=cell), label=SystemId)
         return jit_fn(trans, particles, systems)
 
     @classmethod
@@ -431,7 +431,7 @@ class TestTranslateGroups:
         cls.n_sys = 3
         cls.n_particles_per_sys = 4
         lattice_vecs = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        cls.unitcell = TriclinicUnitCell.from_matrix(
+        cls.cell = TriclinicCell.from_matrix(
             jnp.broadcast_to(lattice_vecs, (cls.n_sys, 3, 3))
         )
         cls.jit_translate = staticmethod(jax.jit(translate_groups))
@@ -460,10 +460,10 @@ class TestTranslateGroups:
             ]
         )
 
-    def _assert_per_system(self, translations, positions=None, unitcell=None):
+    def _assert_per_system(self, translations, positions=None, cell=None):
         """Translate and verify per-system expected positions (cubic wrap)."""
         pos = positions if positions is not None else self.positions
-        uc = unitcell if unitcell is not None else self.unitcell
+        uc = cell if cell is not None else self.cell
         translated = self._call(
             self.jit_translate, translations, pos, uc, self.system_ids
         )
@@ -484,7 +484,7 @@ class TestTranslateGroups:
         # Zero translation
         zero = jnp.zeros((self.n_sys, 3))
         t_zero = self._call(
-            self.jit_translate, zero, self.positions, self.unitcell, self.system_ids
+            self.jit_translate, zero, self.positions, self.cell, self.system_ids
         )
         npt.assert_allclose(t_zero, (self.positions + 0.5) % 1.0 - 0.5, atol=1e-15)
 
@@ -512,7 +512,7 @@ class TestTranslateGroups:
         # Exact position verification (precise per-particle check)
         precise = jnp.array([[0.2, 0.0, 0.0], [0.0, 0.25, 0.0], [0.0, 0.0, 0.15]])
         t_precise = self._call(
-            self.jit_translate, precise, self.positions, self.unitcell, self.system_ids
+            self.jit_translate, precise, self.positions, self.cell, self.system_ids
         )
         for i, (pos, sid) in enumerate(zip(self.positions, self.system_ids)):
             expected = (pos + precise[sid] + 0.5) % 1.0 - 0.5
@@ -524,7 +524,7 @@ class TestTranslateGroups:
             self.jit_translate,
             rel_trans,
             self.positions,
-            self.unitcell,
+            self.cell,
             self.system_ids,
         )
         for sys_id in range(self.n_sys):
@@ -544,7 +544,7 @@ class TestTranslateGroups:
         lattice_vecs = jnp.array(
             [[1.0, 0.0, 0.0], [0.5, jnp.sqrt(3) / 2, 0.0], [0.0, 0.0, 1.0]]
         )
-        hex_uc = TriclinicUnitCell.from_matrix(
+        hex_uc = TriclinicCell.from_matrix(
             jnp.broadcast_to(lattice_vecs, (self.n_sys, 3, 3))
         )
         small = jnp.array([[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])
@@ -567,7 +567,7 @@ class TestTranslateGroups:
             self.jit_translate,
             self.translations,
             self.positions,
-            self.unitcell,
+            self.cell,
             self.system_ids,
         )
         npt.assert_allclose(function_result, manual_result, atol=1e-15)
@@ -601,7 +601,7 @@ class TestTranslateGroups:
             self.jit_translate,
             boundary_translations,
             boundary_positions,
-            self.unitcell,
+            self.cell,
             boundary_system_ids,
         )
         for i, (pos, sys_id) in enumerate(zip(boundary_positions, boundary_system_ids)):
@@ -613,14 +613,14 @@ class TestTranslateGroups:
                 atol=1e-15,
                 err_msg=f"Boundary crossing translation failed for particle {i}",
             )
-            assert jnp.all(translated[i] >= -0.5) and jnp.all(translated[i] < 0.5), (
-                f"Particle {i} position {translated[i]} is outside valid range [-0.5, 0.5)"
-            )
+            assert (
+                jnp.all(translated[i] >= -0.5) and jnp.all(translated[i] < 0.5)
+            ), f"Particle {i} position {translated[i]} is outside valid range [-0.5, 0.5)"
 
     def test_single_system(self):
         """Non-unit 2x2x2 cubic cell where Cartesian-to-fractional conversion matters."""
         lattice_vecs = 2.0 * jnp.eye(3)
-        uc = TriclinicUnitCell.from_matrix(lattice_vecs[None])
+        uc = TriclinicCell.from_matrix(lattice_vecs[None])
         positions = jnp.array([[0.1, 0.2, 0.3], [0.4, 0.1, 0.2]])
         system_ids = jnp.array([0, 0])
         translations = jnp.array([[0.3, 0.0, 0.0]])
@@ -689,7 +689,7 @@ def _make_motifs(positions, motif_ids, n_motifs, max_motif_size):
 class TestExchangeMove:
     @classmethod
     def setup_class(cls):
-        cls.systems = TriclinicUnitCell.from_matrix(jnp.eye(3))[None]
+        cls.systems = TriclinicCell.from_matrix(jnp.eye(3))[None]
 
         if "move" not in _exchange_move_cache:
             move_fn = jax.jit(
@@ -698,7 +698,7 @@ class TestExchangeMove:
                         positions=lambda state: state["particles"],
                         groups=lambda state: state["groups"],
                         motifs=lambda state: state["motifs"],
-                        unitcell=lambda state: Table.arange(
+                        cell=lambda state: Table.arange(
                             state["systems"], label=SystemId
                         ),
                         capacity=lambda state: state["capacity"],
@@ -918,9 +918,9 @@ class TestExchangeMove:
             assert np.all(
                 (proposal.groups.data.data.system.indices == 2) | g_insert_mask
             )
-        assert 0.1 < n_inserts / (n_iters * 2) < 0.9, (
-            f"Unexpected insert ratio: {n_inserts / (n_iters * 2)}"
-        )
+        assert (
+            0.1 < n_inserts / (n_iters * 2) < 0.9
+        ), f"Unexpected insert ratio: {n_inserts / (n_iters * 2)}"
 
     def test_multiple_motifs(self):
         chain = key_chain(jax.random.key(5))
@@ -1022,13 +1022,13 @@ class TestExchangeMove:
             p_insert_mask = proposal.particles.data.data.system.indices < 1
             n_insertions = jnp.sum(p_insert_mask)
             if n_insertions > 0:
-                assert n_insertions == 5, (
-                    f"Expected 5 particles in insertion, got {n_insertions}"
-                )
+                assert (
+                    n_insertions == 5
+                ), f"Expected 5 particles in insertion, got {n_insertions}"
                 group_ids = proposal.particles.data.data.group.indices[p_insert_mask]
-                assert jnp.all(group_ids == group_ids[0]), (
-                    "Inserted particles should belong to same group"
-                )
+                assert jnp.all(
+                    group_ids == group_ids[0]
+                ), "Inserted particles should belong to same group"
 
     def test_capacity_larger_than_motif_times_systems(self):
         chain = key_chain(jax.random.key(7))
@@ -1085,18 +1085,18 @@ class TestExchangeMove:
                 insert_system_ids = proposal.particles.data.data.system.indices[
                     p_insert_mask
                 ]
-                assert jnp.all(insert_system_ids < 2), (
-                    f"Invalid system IDs: {insert_system_ids}"
-                )
+                assert jnp.all(
+                    insert_system_ids < 2
+                ), f"Invalid system IDs: {insert_system_ids}"
                 for sys_id in range(2):
                     sys_insertions = jnp.sum(insert_system_ids == sys_id)
                     if sys_insertions > 0:
-                        assert sys_insertions <= 4, (
-                            f"Too many insertions for system {sys_id}, got {sys_insertions}"
-                        )
-        assert 0.1 < n_inserts / (n_inserts + n_dels) < 0.9, (
-            f"Unexpected insert/delete ratio: {n_inserts}/{n_dels}"
-        )
+                        assert (
+                            sys_insertions <= 4
+                        ), f"Too many insertions for system {sys_id}, got {sys_insertions}"
+        assert (
+            0.1 < n_inserts / (n_inserts + n_dels) < 0.9
+        ), f"Unexpected insert/delete ratio: {n_inserts}/{n_dels}"
 
     def test_mixed_motif_sizes(self):
         chain = key_chain(jax.random.key(8))
@@ -1163,9 +1163,9 @@ class TestExchangeMove:
                         motif_usage = motif_usage.at[motif_id].add(1)
                 n_inserted_particles = jnp.sum(p_insert_mask)
                 if n_inserted_particles > 0:
-                    assert n_inserted_particles <= 10, (
-                        f"Too many particles inserted: {n_inserted_particles}"
-                    )
+                    assert (
+                        n_inserted_particles <= 10
+                    ), f"Too many particles inserted: {n_inserted_particles}"
         assert jnp.sum(motif_usage) > 0, f"No motifs were used: {motif_usage}"
 
     def test_high_capacity_multiple_motifs(self):
@@ -1219,9 +1219,9 @@ class TestExchangeMove:
             n_no_ops = jnp.sum(no_op_mask)
             total_no_ops += int(n_no_ops)
             total_ops = n_valid_ops + n_no_ops
-            assert total_ops == state["capacity"].size, (
-                f"Expected {state['capacity'].size} total operations, got {total_ops}"
-            )
+            assert (
+                total_ops == state["capacity"].size
+            ), f"Expected {state['capacity'].size} total operations, got {total_ops}"
             p_insert_mask = (
                 proposal.particles.data.data.system.indices < 2
             ) & valid_particle_mask
@@ -1231,29 +1231,29 @@ class TestExchangeMove:
             )
             if jnp.any(no_op_mask):
                 no_op_particle_ids = particle_ids[no_op_mask]
-                assert jnp.all(no_op_particle_ids == positions.shape[0]), (
-                    f"No-op particle IDs should be {positions.shape[0]}, got {no_op_particle_ids}"
-                )
+                assert jnp.all(
+                    no_op_particle_ids == positions.shape[0]
+                ), f"No-op particle IDs should be {positions.shape[0]}, got {no_op_particle_ids}"
             if n_inserted > 0:
                 insert_system_ids = proposal.particles.data.data.system.indices[
                     p_insert_mask
                 ]
-                assert jnp.all(insert_system_ids < 2), (
-                    f"Invalid system IDs: {insert_system_ids}"
-                )
+                assert jnp.all(
+                    insert_system_ids < 2
+                ), f"Invalid system IDs: {insert_system_ids}"
                 insert_group_ids = proposal.particles.data.data.group.indices[
                     p_insert_mask
                 ]
-                assert jnp.all(insert_group_ids < groups.size), (
-                    f"Invalid group IDs: {insert_group_ids}"
-                )
-        assert max_particles_per_proposal >= 3, (
-            f"Expected at least motif-sized proposals with high capacity, max was {max_particles_per_proposal}"
-        )
+                assert jnp.all(
+                    insert_group_ids < groups.size
+                ), f"Invalid group IDs: {insert_group_ids}"
+        assert (
+            max_particles_per_proposal >= 3
+        ), f"Expected at least motif-sized proposals with high capacity, max was {max_particles_per_proposal}"
         avg_no_ops_per_proposal = total_no_ops / n_iters
-        assert avg_no_ops_per_proposal >= 8, (
-            f"Expected significant no-ops with high capacity, avg was {avg_no_ops_per_proposal}"
-        )
+        assert (
+            avg_no_ops_per_proposal >= 8
+        ), f"Expected significant no-ops with high capacity, avg was {avg_no_ops_per_proposal}"
 
 
 @dataclass
@@ -1293,7 +1293,7 @@ def _exchange_state():
     )
     motif_data = _Motifs(jnp.zeros((1, 3)), _make_index(MotifId, [0], 1, max_count=1))
     motifs = Table.arange(motif_data, label=MotifParticleId)
-    uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10)
+    uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10)
     return particles, groups, motifs, Table.arange(uc, label=SystemId)
 
 

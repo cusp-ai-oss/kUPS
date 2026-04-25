@@ -5,10 +5,10 @@
 
 import jax
 
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 
 
@@ -25,7 +25,7 @@ class PointCloudParticles:
 class SystemData:
     """Simple system data for testing."""
 
-    unitcell: UnitCell
+    cell: Cell
 
 
 def make_particles(
@@ -39,5 +39,5 @@ def make_particles(
 
 
 def make_systems(lattice_vectors: jax.Array) -> Table[SystemId, SystemData]:
-    unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
-    return Table.arange(SystemData(unitcell), label=SystemId)
+    cell = TriclinicCell.from_matrix(lattice_vectors)
+    return Table.arange(SystemData(cell), label=SystemId)

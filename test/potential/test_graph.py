@@ -7,6 +7,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import FixedCapacity
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data import WithIndices
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -16,7 +17,6 @@ from kups.core.neighborlist import (
     Edges,
 )
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass, key_chain
 from kups.potential.common.graph import (
     EdgeSetGraphConstructor,
@@ -44,7 +44,7 @@ class _PointData:
 
 @dataclass
 class _SystemData:
-    unitcell: UnitCell
+    cell: Cell
     cutoff: jax.Array
 
 
@@ -71,8 +71,8 @@ def _make_particles(
 def _make_systems(
     lattice_vectors: jax.Array, cutoff: jax.Array
 ) -> Table[SystemId, _SystemData]:
-    unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
-    data = _SystemData(unitcell, cutoff)
+    cell = TriclinicCell.from_matrix(lattice_vectors)
+    data = _SystemData(cell, cutoff)
     return Table.arange(data, label=SystemId)
 
 
@@ -153,7 +153,7 @@ class TestHyperGraph:
 
         # Edge 0→1: no shift
         npt.assert_allclose(edge_shifts[0, 0], positions[1] - positions[0])
-        # Edge 1→2: with unit cell shift [5, 0, 0]
+        # Edge 1→2: with cell shift [5, 0, 0]
         npt.assert_allclose(
             edge_shifts[1, 0], positions[2] - positions[1] + jnp.array([5.0, 0.0, 0.0])
         )

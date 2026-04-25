@@ -54,7 +54,7 @@ from kups.core.typing import (
     HasCache,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -63,9 +63,9 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndUnitCell,
+    PositionAndCell,
     PotentialFromEnergy,
-    position_and_unitcell_idx_view,
+    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     EdgeSetGraphConstructor,
@@ -129,7 +129,7 @@ class InversionParameters:
 
 
 type InversionInput = GraphPotentialInput[
-    InversionParameters, IsBondedParticles, HasUnitCell, Literal[4]
+    InversionParameters, IsBondedParticles, HasCell, Literal[4]
 ]
 
 
@@ -145,9 +145,9 @@ def inversion_energy(
         Total inversion energy per system
     """
     graph = inp.graph
-    assert graph.edges.indices.indices.shape[1] == 4, (
-        "Inversion potential requires 4-body interactions (order=4)."
-    )
+    assert (
+        graph.edges.indices.indices.shape[1] == 4
+    ), "Inversion potential requires 4-body interactions (order=4)."
     edg = graph.particles[graph.edges.indices]
     edg_species = edg.labels.indices_in(inp.parameters.labels)
     # Edge indices: [:, 0] = center j, [:, 1] = i, [:, 2] = k, [:, 3] = l
@@ -215,7 +215,7 @@ def make_inversion_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edges_view: View[State, Edges[Literal[4]]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell]],
     parameter_view: View[State, InversionParameters],
     probe: Probe[State, Ptch, IsEdgeSetGraphProbe[IsBondedParticles, Literal[4]]]
     | None,
@@ -230,7 +230,7 @@ def make_inversion_potential[
     Args:
         particles_view: Extracts particle data (positions, species) with system index
         edges_view: Extracts inversion connectivity (4-tuples: center + 3 neighbors)
-        systems_view: Extracts indexed system data (unit cell)
+        systems_view: Extracts indexed system data (cell)
         parameter_view: Extracts [InversionParameters][kups.potential.classical.inversion.InversionParameters]
         probe: Grouped probe for incremental updates (particles, edges, capacity)
         gradient_lens: Specifies gradients to compute
@@ -270,7 +270,7 @@ class IsInversionState[Params](Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def inversion_edges(self) -> Edges[Literal[4]]: ...
     @property
@@ -285,7 +285,7 @@ def make_inversion_from_state[State](
     ],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch]: ...
 
 
@@ -297,8 +297,8 @@ def make_inversion_from_state[State](
     ],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, Patch]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
 @overload
@@ -315,7 +315,7 @@ def make_inversion_from_state[State, P: Patch](
         IsEdgeSetGraphProbe[IsBondedParticles, Literal[4]],
     ],
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -324,7 +324,7 @@ def make_inversion_from_state[State, P: Patch](
     state: Lens[
         State,
         IsInversionState[
-            HasCache[InversionParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+            HasCache[InversionParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[
@@ -333,24 +333,24 @@ def make_inversion_from_state[State, P: Patch](
         IsEdgeSetGraphProbe[IsBondedParticles, Literal[4]],
     ],
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, P]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, P]: ...
 
 
 def make_inversion_from_state(
     state: Any,
     probe: Any = None,
     *,
-    compute_position_and_unitcell_gradients: bool = False,
+    compute_position_and_cell_gradients: bool = False,
 ) -> Any:
     """Create an inversion potential, optionally with incremental updates.
 
     Args:
-        state: Lens into the sub-state providing particles, unit cell, edges,
+        state: Lens into the sub-state providing particles, cell, edges,
             and inversion parameters.
         probe: Detects which particles and edges changed since the last step.
             None for no incremental updates.
-        compute_position_and_unitcell_gradients: When True, computes gradients
+        compute_position_and_cell_gradients: When True, computes gradients
             w.r.t. particle positions and lattice vectors.
 
     Returns:
@@ -358,14 +358,14 @@ def make_inversion_from_state(
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_unitcell_gradients:
-        gradient_lens = SimpleLens[InversionInput, PositionAndUnitCell](
-            lambda x: PositionAndUnitCell(
+    if compute_position_and_cell_gradients:
+        gradient_lens = SimpleLens[InversionInput, PositionAndCell](
+            lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.unitcell),
+                x.graph.systems.map_data(lambda s: s.cell),
             )
         )
-        patch_idx_view = position_and_unitcell_idx_view
+        patch_idx_view = position_and_cell_idx_view
     param_view = state.focus(
         lambda x: (
             x.inversion_parameters.data

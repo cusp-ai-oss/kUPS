@@ -1,13 +1,18 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Periodic unit cell representations for molecular simulations.
+"""Simulation cell representations for molecular simulations.
 
-Defines a [UnitCell][kups.core.unitcell.UnitCell] protocol and two concrete
+Defines a [Cell][kups.core.cell.Cell] protocol and two concrete
 implementations with minimal stored data:
 
-- [TriclinicUnitCell][kups.core.unitcell.TriclinicUnitCell]: 6 DOF (lower-triangular elements)
-- [OrthorhombicUnitCell][kups.core.unitcell.OrthorhombicUnitCell]: 3 DOF (lengths)
+- [TriclinicCell][kups.core.cell.TriclinicCell]: 6 DOF (lower-triangular elements)
+- [OrthogonalCell][kups.core.cell.OrthogonalCell]: 3 DOF (lengths)
+
+A cell carries lattice geometry plus a per-axis ``periodic`` mask. Setting an
+axis to ``False`` disables wrap, MIC, and supercell replication along that
+axis; bulk crystals (`(True, True, True)`), slabs (`(True, True, False)`), and
+bounded non-periodic domains (`(False, False, False)`) all share the same type.
 
 All derived quantities (lattice vectors, volume, inverse) are computed on demand
 from the stored parameters. Lattice vectors follow row convention:
@@ -19,7 +24,7 @@ from __future__ import annotations
 import math
 from enum import Enum
 from functools import partial
-from typing import Any, Protocol, Self, runtime_checkable
+from typing import Any, Protocol, Self, TypeGuard, overload, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -28,7 +33,7 @@ from jax import Array
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, field
 from kups.core.utils.math import triangular_3x3_det_and_inverse, triangular_3x3_matmul
 
 
@@ -44,6 +49,12 @@ class CoordinateSpace(Enum):
     FRACTIONAL = "fractional"
 
 
+class FullyPeriodic: ...
+class Vacuum: ...
+class Slab: ...
+type BoundaryMode = FullyPeriodic | Vacuum | Slab
+
+
 class TriclinicMap(Protocol):
     """Mapping between orthogonal and triclinic coordinate frames."""
 
@@ -51,36 +62,14 @@ class TriclinicMap(Protocol):
 
 
 @runtime_checkable
-class BoundaryCondition(Protocol):
-    """Trait: knows how to handle spatial boundaries.
-
-    Any simulation domain satisfies this — from vacuum (identity wrap)
-    to fully periodic unit cells. Code that only needs wrapping accepts this.
-    """
-
-    @property
-    def periodic(self) -> tuple[bool, bool, bool]: ...
-
-    def wrap(
-        self,
-        r: Array,
-        *,
-        input_space: CoordinateSpace = CoordinateSpace.REAL,
-        output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array: ...
-
-
-@runtime_checkable
-class UnitCell(BoundaryCondition, Protocol):
-    """3D lattice geometry with boundary behavior. Extends BoundaryCondition.
-
-    Adds lattice vectors, volume, and other geometric properties to the
-    base boundary condition trait. Ewald, neighbor lists, and stress
-    calculations require this.
-    """
+class Cell[M: BoundaryMode = BoundaryMode](Protocol):
+    """3D lattice geometry with per-axis boundary semantics."""
 
     @property
     def lattice_vectors(self) -> Array: ...
+
+    @property
+    def periodic(self) -> tuple[bool, bool, bool]: ...
 
     @property
     def inverse_lattice_vectors(self) -> Array: ...
@@ -90,6 +79,14 @@ class UnitCell(BoundaryCondition, Protocol):
 
     @property
     def perpendicular_lengths(self) -> Array: ...
+
+    def wrap(
+        self,
+        r: Array,
+        *,
+        input_space: CoordinateSpace = CoordinateSpace.REAL,
+        output_space: CoordinateSpace = CoordinateSpace.REAL,
+    ) -> Array: ...
 
     def __mul__(self, other: Array | float | int) -> Self: ...
 
@@ -172,7 +169,7 @@ def _wrap(
 
 
 def _perpendicular_lengths(lattice_vectors: Array, volume: Array) -> Array:
-    """Compute perpendicular distances between opposing faces of the unit cell.
+    """Compute perpendicular distances between opposing faces of the cell.
 
     For each axis, the perpendicular length is `V / |cross(v_j, v_k)|` where
     `v_j, v_k` are the other two lattice vectors.
@@ -193,20 +190,20 @@ def _perpendicular_lengths(lattice_vectors: Array, volume: Array) -> Array:
     return jnp.stack([Lx, Ly, Lz], axis=-1)
 
 
-def _multiply[T, T2, Cell: UnitCell](
-    cell: Cell,
-    make_scaled: _MakeScaled[Cell],
+def _multiply[T, T2, C: Cell](
+    cell: C,
+    make_scaled: _MakeScaled[C],
     multiplicities: tuple[int, int, int] | int,
     to_replicate: T,
     to_shift: Lens[T, T2],
-) -> tuple[Cell, T]:
-    """Create a supercell by replicating the unit cell along each axis.
+) -> tuple[C, T]:
+    """Create a supercell by replicating the cell along each axis.
 
     Tiles the cell according to `multiplicities`, replicates the data, and
     shifts coordinates into the expanded cell using periodic wrapping.
 
     Args:
-        cell: Unit cell to replicate.
+        cell: Cell to replicate.
         make_scaled: Factory that produces a scaled cell from multiplicities.
         multiplicities: Replication counts `(nx, ny, nz)` or a single int.
         to_replicate: Data to replicate (e.g., positions).
@@ -244,13 +241,13 @@ def _multiply[T, T2, Cell: UnitCell](
     return new_cell, replicated
 
 
-class _MakeScaled[Cell](Protocol):
-    def __call__(self, multiplicities: tuple[int, int, int]) -> Cell: ...
+class _MakeScaled[C](Protocol):
+    def __call__(self, multiplicities: tuple[int, int, int]) -> C: ...
 
 
 @dataclass
-class TriclinicUnitCell(Sliceable):
-    """General triclinic unit cell with 6 degrees of freedom.
+class TriclinicCell[M: BoundaryMode = BoundaryMode](Sliceable):
+    """General triclinic cell with 6 degrees of freedom.
 
     Stores the 6 independent elements of the lower-triangular lattice matrix.
     Lattice vectors are a linear function of these parameters, making them
@@ -266,7 +263,7 @@ class TriclinicUnitCell(Sliceable):
 
     Example:
         ```python
-        cell = TriclinicUnitCell.from_matrix(jnp.eye(3) * 10.0)
+        cell = TriclinicCell.from_matrix(jnp.eye(3) * 10.0)
         cell.volume  # 1000.0
         cell.wrap(positions)  # enforce periodic boundaries
         ```
@@ -274,43 +271,34 @@ class TriclinicUnitCell(Sliceable):
 
     tril: Array
 
-    @property
-    def periodic(self) -> tuple[bool, bool, bool]:
-        return (True, True, True)
+    periodic: tuple[bool, bool, bool] = field(default=(True, True, True), static=True)
 
     @classmethod
-    def from_matrix(cls, vecs: Array) -> TriclinicUnitCell:
-        """Construct from a lower-triangular lattice matrix.
+    def from_matrix(cls, vecs: Array) -> TriclinicCell[FullyPeriodic]:
+        """Construct a fully-periodic triclinic cell from a lattice matrix.
 
-        Extracts the 6 independent elements from the lower triangle.
+        Lattice vectors describe a periodic crystal, so the result is branded
+        ``TriclinicCell[FullyPeriodic]``. For a slab or non-periodic triclinic
+        domain, narrow further with :func:`make_slab` or :func:`make_vacuum`.
 
         Args:
             vecs: Lower-triangular lattice vectors as rows, shape `(..., 3, 3)`.
-
-        Returns:
-            TriclinicUnitCell with the 6 independent elements.
         """
         vecs = jnp.asarray(vecs)
-        return cls(vecs[..., *np.tril_indices(3)])
+        return TriclinicCell(vecs[..., *np.tril_indices(3)])
 
     @classmethod
     def from_lengths_and_angles(
         cls, lengths: Array, angles: Array
-    ) -> TriclinicUnitCell:
-        """Construct from crystallographic parameters.
-
-        Builds the lower-triangular lattice matrix from lengths and angles,
-        then stores the 6 independent elements.
+    ) -> TriclinicCell[FullyPeriodic]:
+        """Construct a fully-periodic triclinic cell from crystallographic parameters.
 
         Args:
             lengths: Lattice lengths `[a, b, c]` in Angstroms, shape `(..., 3)`.
             angles: Lattice angles `[alpha, beta, gamma]` in degrees, shape `(..., 3)`.
                 alpha = angle(b, c), beta = angle(a, c), gamma = angle(a, b).
-
-        Returns:
-            TriclinicUnitCell with tril derived from the parameters.
         """
-        return cls.from_matrix(_build_lattice_vectors(lengths, angles))
+        return TriclinicCell.from_matrix(_build_lattice_vectors(lengths, angles))
 
     @property
     def lattice_vectors(self) -> Array:
@@ -377,12 +365,12 @@ class TriclinicUnitCell(Sliceable):
 
     def __mul__(self, other: Array | float | int) -> Self:
         scaled_tril = self.tril * jnp.asarray(other)[..., None]
-        return type(self)(scaled_tril)
+        return type(self)(scaled_tril, periodic=self.periodic)
 
 
 @dataclass
-class OrthorhombicUnitCell(Sliceable):
-    """Orthogonal unit cell with 3 degrees of freedom.
+class OrthogonalCell[M: BoundaryMode = BoundaryMode](Sliceable):
+    """Orthogonal cell with 3 degrees of freedom.
 
     Exploits the diagonal structure for cheaper volume, inverse, and wrap
     operations compared to the general triclinic path.
@@ -392,16 +380,14 @@ class OrthorhombicUnitCell(Sliceable):
 
     Example:
         ```python
-        cell = OrthorhombicUnitCell(lengths=jnp.array([30., 30., 30.]))
+        cell = OrthogonalCell(lengths=jnp.array([30., 30., 30.]))
         cell.volume  # 27000.0
         ```
     """
 
     lengths: Array
 
-    @property
-    def periodic(self) -> tuple[bool, bool, bool]:
-        return (True, True, True)
+    periodic: tuple[bool, bool, bool] = field(default=(True, True, True), static=True)
 
     @property
     def lattice_vectors(self) -> Array:
@@ -439,32 +425,10 @@ class OrthorhombicUnitCell(Sliceable):
 
     def __mul__(self, other: Array | float | int) -> Self:
         scaled_lengths = self.lengths * jnp.asarray(other)[..., None]
-        return type(self)(scaled_lengths)
+        return type(self)(scaled_lengths, periodic=self.periodic)
 
 
-@dataclass
-class Vacuum:
-    """Non-periodic domain with no lattice geometry.
-
-    Satisfies BoundaryCondition but not UnitCell. Wrap is identity.
-    """
-
-    @property
-    def periodic(self) -> tuple[bool, bool, bool]:
-        return (False, False, False)
-
-    def wrap(
-        self,
-        r: Array,
-        *,
-        input_space: CoordinateSpace = CoordinateSpace.REAL,
-        output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array:
-        del input_space, output_space
-        return r
-
-
-def min_multiplicity(cell: UnitCell, cutoff: float | Array) -> Array:
+def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
     """Minimum supercell replication per axis for a given cutoff.
 
     Returns 1 for non-periodic axes (no replication needed).
@@ -474,13 +438,13 @@ def min_multiplicity(cell: UnitCell, cutoff: float | Array) -> Array:
     return jnp.where(mask, computed, 1)
 
 
-def make_supercell[T, T2, Cell: UnitCell](
-    cell: Cell,
+def make_supercell[T, T2, C: Cell](
+    cell: C,
     multiplicities: tuple[int, int, int] | int,
     to_replicate: T,
     to_shift: Lens[T, T2],
-) -> tuple[Cell, T]:
-    """Replicate a unit cell, clamping non-periodic axes to 1."""
+) -> tuple[C, T]:
+    """Replicate a cell, clamping non-periodic axes to 1."""
     if isinstance(multiplicities, int):
         multiplicities = (multiplicities, multiplicities, multiplicities)
     clamped: tuple[int, int, int] = (
@@ -489,21 +453,89 @@ def make_supercell[T, T2, Cell: UnitCell](
         multiplicities[2] if cell.periodic[2] else 1,
     )
 
-    def make_scaled(multiplicities: tuple[int, int, int]) -> Cell:
-        if isinstance(cell, TriclinicUnitCell):
+    def make_scaled(multiplicities: tuple[int, int, int]) -> C:
+        if isinstance(cell, TriclinicCell):
             m = jnp.asarray(multiplicities)
             scale = jnp.array([m[0], m[1], m[1], m[2], m[2], m[2]])
-            return TriclinicUnitCell(  # pyright: ignore[reportReturnType]
-                cell.tril * scale
+            return TriclinicCell(  # pyright: ignore[reportReturnType]
+                cell.tril * scale, periodic=cell.periodic
             )
-        if isinstance(cell, OrthorhombicUnitCell):
-            return OrthorhombicUnitCell(  # pyright: ignore[reportReturnType]
-                cell.lengths * jnp.asarray(multiplicities)
+        if isinstance(cell, OrthogonalCell):
+            return OrthogonalCell(  # pyright: ignore[reportReturnType]
+                cell.lengths * jnp.asarray(multiplicities), periodic=cell.periodic
             )
         msg = f"Unsupported cell type: {type(cell)}"
         raise TypeError(msg)
 
     return _multiply(cell, make_scaled, clamped, to_replicate, to_shift)
+
+
+@overload
+def make_vacuum(cell: OrthogonalCell) -> OrthogonalCell[Vacuum]: ...
+@overload
+def make_vacuum(cell: TriclinicCell) -> TriclinicCell[Vacuum]: ...
+def make_vacuum(cell):
+    """Brand a cell as vacuum — sets ``periodic = (False, False, False)``."""
+    if isinstance(cell, OrthogonalCell):
+        return OrthogonalCell(lengths=cell.lengths, periodic=(False, False, False))
+    if isinstance(cell, TriclinicCell):
+        return TriclinicCell(tril=cell.tril, periodic=(False, False, False))
+    msg = f"Unsupported cell type: {type(cell)}"
+    raise TypeError(msg)
+
+
+@overload
+def make_fully_periodic(cell: OrthogonalCell) -> OrthogonalCell[FullyPeriodic]: ...
+@overload
+def make_fully_periodic(cell: TriclinicCell) -> TriclinicCell[FullyPeriodic]: ...
+def make_fully_periodic(cell):
+    """Brand a cell as fully periodic — sets ``periodic = (True, True, True)``."""
+    if isinstance(cell, OrthogonalCell):
+        return OrthogonalCell(lengths=cell.lengths, periodic=(True, True, True))
+    if isinstance(cell, TriclinicCell):
+        return TriclinicCell(tril=cell.tril, periodic=(True, True, True))
+    msg = f"Unsupported cell type: {type(cell)}"
+    raise TypeError(msg)
+
+
+@overload
+def make_slab(
+    cell: OrthogonalCell, periodic: tuple[bool, bool, bool]
+) -> OrthogonalCell[Slab]: ...
+@overload
+def make_slab(
+    cell: TriclinicCell, periodic: tuple[bool, bool, bool]
+) -> TriclinicCell[Slab]: ...
+def make_slab(cell, periodic):
+    """Brand a cell as a slab with the given per-axis ``periodic`` mask."""
+    if isinstance(cell, OrthogonalCell):
+        return OrthogonalCell(lengths=cell.lengths, periodic=periodic)
+    if isinstance(cell, TriclinicCell):
+        return TriclinicCell(tril=cell.tril, periodic=periodic)
+    msg = f"Unsupported cell type: {type(cell)}"
+    raise TypeError(msg)
+
+
+@overload
+def is_vacuum(cell: OrthogonalCell) -> TypeGuard[OrthogonalCell[Vacuum]]: ...
+@overload
+def is_vacuum(cell: TriclinicCell) -> TypeGuard[TriclinicCell[Vacuum]]: ...
+def is_vacuum(cell):
+    """``True`` iff the cell's ``periodic`` mask is ``(False, False, False)``."""
+    return tuple(cell.periodic) == (False, False, False)
+
+
+@overload
+def is_fully_periodic(
+    cell: OrthogonalCell,
+) -> TypeGuard[OrthogonalCell[FullyPeriodic]]: ...
+@overload
+def is_fully_periodic(
+    cell: TriclinicCell,
+) -> TypeGuard[TriclinicCell[FullyPeriodic]]: ...
+def is_fully_periodic(cell):
+    """``True`` iff every axis of ``periodic`` is ``True``."""
+    return all(cell.periodic)
 
 
 def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:

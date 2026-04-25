@@ -18,6 +18,7 @@ from jax import Array
 from pydantic import BaseModel, model_validator
 
 from kups.application.utils.particles import Particles, particles_from_ase
+from kups.core.cell import Cell, make_supercell
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
 from kups.core.data import Index, Table
 from kups.core.data.buffered import Buffered
@@ -32,7 +33,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell, make_supercell
 from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
 from kups.core.utils.quaternion import Quaternion
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
@@ -123,7 +123,7 @@ class HostConfig(BaseModel):
     """Mole fractions for each adsorbate component (must sum to 1)."""
     adsorbate_interaction: tuple[tuple[float, ...], ...] = ((0.0,),)
     """Binary interaction parameters k_ij (n_ads x n_ads)."""
-    unitcell_replication: int | tuple[int, int, int] | None = None
+    cell_replication: int | tuple[int, int, int] | None = None
     """(nx, ny, nz) replication of the unit cell. Auto-computed if None."""
 
 
@@ -264,22 +264,22 @@ class MCMCSystems:
     """Per-system thermodynamic state for MCMC simulations.
 
     Attributes:
-        unitcell: Unit cell geometry, batched shape ``(n_systems,)``.
+        cell: Cell geometry, batched shape ``(n_systems,)``.
         temperature: Temperature (K), shape ``(n_systems,)``.
         potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
         log_fugacity: Log fugacity per species (dimensionless), shape ``(n_systems, n_species)``.
     """
 
-    unitcell: UnitCell
+    cell: Cell
     temperature: Array
     potential_energy: Array
     log_fugacity: Array
-    unitcell_gradients: UnitCell = field(default=None)  # type: ignore[assignment]
+    cell_gradients: Cell = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self):
-        if self.unitcell_gradients is None:
+        if self.cell_gradients is None:
             object.__setattr__(
-                self, "unitcell_gradients", tree_zeros_like(self.unitcell)
+                self, "cell_gradients", tree_zeros_like(self.cell)
             )
 
     @property
@@ -293,7 +293,7 @@ class MCMCSystems:
 def _make_molecule(
     motifs: Table[MotifParticleId, MotifParticles],
     species_idx: Index[MotifId],
-    unitcell: UnitCell,
+    cell: Cell,
     key: Array,
 ) -> tuple[Table[ParticleId, MCMCParticles], Table[GroupId, MCMCGroup]]:
     """Place one adsorbate molecule at a random position within the unit cell.
@@ -304,7 +304,7 @@ def _make_molecule(
     Args:
         motifs: Concatenated motif particle templates for all species.
         species_idx: Index selecting which adsorbate species to place.
-        unitcell: Unit cell defining the simulation box.
+        cell: Unit cell defining the simulation box.
         key: JAX PRNG key for random placement.
 
     Returns:
@@ -314,7 +314,7 @@ def _make_molecule(
     motif_index = Index(motifs.keys, motifs.data.motif.where_flat(species_idx))
     com = (
         jax.random.uniform(next(chain), (3,), minval=-0.5, maxval=0.5)
-        @ unitcell.lattice_vectors
+        @ cell.lattice_vectors
     )
     rot = Quaternion.random(next(chain))
     tpl = motifs[motif_index]
@@ -362,13 +362,13 @@ def mcmc_state_from_config(
     Returns:
         Tuple of ``(particles, groups, system, motifs)``.
     """
-    hp, unitcell, _ = particles_from_ase(host.cif_file)
+    hp, cell, _ = particles_from_ase(host.cif_file)
     p = hp.data
     n_host = len(hp.keys)
-    if host.unitcell_replication is not None:
+    if host.cell_replication is not None:
         pos_lens = lens(lambda x: x.positions, cls=Particles)
-        p = pos_lens.apply(p, unitcell.wrap)
-        unitcell, p = make_supercell(unitcell, host.unitcell_replication, p, pos_lens)
+        p = pos_lens.apply(p, cell.wrap)
+        cell, p = make_supercell(cell, host.cell_replication, p, pos_lens)
         n_host = len(p.positions)
     n_ads = len(adsorbates)
 
@@ -394,7 +394,7 @@ def mcmc_state_from_config(
     # Host
     system = Table.arange(
         MCMCSystems(
-            unitcell=unitcell[None],
+            cell=cell[None],
             temperature=jnp.array([host.temperature]),
             potential_energy=jnp.zeros(1),
             log_fugacity=result.log_fugacity[None],
@@ -432,7 +432,7 @@ def mcmc_state_from_config(
         idx = Index.integer(np.array([motif_idx]), label=MotifId)
         for _ in range(n_init):
             key, subkey = jax.random.split(key)
-            mol_p, mol_g = _make_molecule(motifs, idx, unitcell, subkey)
+            mol_p, mol_g = _make_molecule(motifs, idx, cell, subkey)
             ads_parts.append(mol_p)
             ads_groups.append(mol_g)
 

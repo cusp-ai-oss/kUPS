@@ -13,8 +13,8 @@ from typing import Any, Protocol, Union, runtime_checkable
 import numpy as np
 from jax import Array
 
+from kups.core.cell import BoundaryMode, Cell
 from kups.core.data import Index, Table
-from kups.core.unitcell import UnitCell
 
 DType = np.dtype
 type PyTree = Any
@@ -260,15 +260,15 @@ class HasLogActivity(Protocol):
 
 
 @runtime_checkable
-class HasUnitCell(Protocol):
-    """Protocol for entities with unit cell parameters.
+class HasCell[M: BoundaryMode = BoundaryMode](Protocol):
+    """Protocol for entities with cell parameters.
 
     Attributes:
-        unitcell: Unit cell parameters for each system (lattice vectors, volume).
+        cell: Cell parameters for each system (lattice vectors, volume).
     """
 
     @property
-    def unitcell(self) -> UnitCell: ...
+    def cell(self) -> Cell[M]: ...
 
 
 @runtime_checkable

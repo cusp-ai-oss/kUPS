@@ -56,7 +56,7 @@ from kups.core.typing import (
     HasCache,
     HasPositionsAndAtomicNumbers,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     MaybeCached,
     ParticleId,
     SystemId,
@@ -238,7 +238,7 @@ class LocalMLIAPData:
 class LocalMLIAPInput[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ]:
     """Input bundle for local MLIAP energy computation.
 
@@ -248,7 +248,7 @@ class LocalMLIAPInput[
     Type Parameters:
         State: Simulation state type
         P: Particle data type (positions, atomic numbers, system, inclusion/exclusion)
-        S: System data type (must have unit cell)
+        S: System data type (must have cell)
 
     Attributes:
         point_cloud: Current particle positions and systems
@@ -310,7 +310,7 @@ class LocalMLIAPPatch[State](Patch[State]):
 def local_mliap_energy_full[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     inp: LocalMLIAPInput[State, P, S],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -357,7 +357,7 @@ def local_mliap_energy_full[
 def local_mliap_energy_update[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     inp: LocalMLIAPInput[State, P, S],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -432,7 +432,7 @@ def local_mliap_energy_update[
 def local_mliap_energy[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     inp: LocalMLIAPInput[State, P, S],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -457,7 +457,7 @@ def local_mliap_energy[
 class LocalMLIAPComposer[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasUnitCell,
+    S: HasCell,
     Ptch: Patch,
 ]:
     """Composes simulation state into LocalMLIAP input.
@@ -468,7 +468,7 @@ class LocalMLIAPComposer[
     Type Parameters:
         State: Simulation state type
         P: Particle data type (positions + system + inclusion/exclusion + atomic numbers)
-        S: System data type (unit cell + cutoff)
+        S: System data type (cell + cutoff)
         Ptch: Patch type for incremental updates
 
     Attributes:
@@ -533,7 +533,7 @@ def make_local_mliap_potential[
     Gradients,
     Hessians,
     P: IsLocalMLIAPGraphParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
@@ -554,7 +554,7 @@ def make_local_mliap_potential[
 
     Args:
         particles_view: Extracts indexed particle data (positions, atomic numbers)
-        systems_view: Extracts indexed system data (unit cell)
+        systems_view: Extracts indexed system data (cell)
         cutoffs_view: Extracts cutoffs as ``Indexed[SystemId, Array]``
         neighborlist_view: Extracts full neighbor list
         model_lens: Lens to access [LocalMLIAPData][kups.potential.mliap.local.LocalMLIAPData]
@@ -596,7 +596,7 @@ class IsLocalMLIAPState[Model](Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsLocalMLIAPGraphParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def neighborlist(self) -> NearestNeighborList: ...
     @property
@@ -643,7 +643,7 @@ def make_local_mliap_from_state(
     efficient incremental caching across Monte Carlo steps.
 
     Args:
-        state: Lens into the sub-state providing particles, unit cell, neighbor list,
+        state: Lens into the sub-state providing particles, cell, neighbor list,
             and local MLIAP model.
         probe: Detects which particles and neighbor-list edges changed since the last
             step. ``None`` for full-only computation.

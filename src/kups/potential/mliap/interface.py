@@ -46,7 +46,7 @@ from kups.core.patch import Patch, WithPatch
 from kups.core.potential import EMPTY_LENS, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
     HasPositionsAndSystemIndex,
-    HasUnitCell,
+    HasCell,
     ParticleId,
     SystemId,
 )
@@ -62,7 +62,7 @@ from kups.potential.common.graph import (
 type MLIAPInput[
     Model,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
 ] = GraphPotentialInput[Model, P, S, Literal[2]]
 
 
@@ -79,7 +79,7 @@ class ModelFunction[
     Gradients,
     Hessians,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
     Ptch: Patch,
 ](Protocol):
     """Protocol for MLIAP model functions.
@@ -102,7 +102,7 @@ def make_mliap_potential[
     Gradients,
     Hessians,
     P: IsRadiusGraphPoints,
-    S: HasUnitCell,
+    S: HasCell,
     Ptch: Patch,
 ](
     model_fn: ModelFunction[Model, EmptyType, EmptyType, P, S, Ptch],
@@ -126,7 +126,7 @@ def make_mliap_potential[
     State,
     Gradients,
     P: IsRadiusGraphPoints,
-    S: HasUnitCell,
+    S: HasCell,
     Ptch: Patch,
 ](
     model_fn: ModelFunction[Model, EmptyType, EmptyType, P, S, Ptch],
@@ -149,7 +149,7 @@ def make_mliap_potential[
     Gradients,
     Hessians,
     P: IsRadiusGraphPoints,
-    S: HasUnitCell,
+    S: HasCell,
     Ptch: Patch,
 ](
     model_fn: ModelFunction[Model, Gradients, Hessians, P, S, Ptch],
@@ -188,7 +188,7 @@ def make_mliap_potential(
         model_fn: Function returning PotentialOut with energy (and optionally
             gradients).
         particles_view: View to extract particles from state.
-        systems_view: View to extract systems (unit cell) from state.
+        systems_view: View to extract systems (cell) from state.
         neighborlist_view: View to extract neighbor list from state.
         model_view: View to extract model from state.
         cutoffs_view: View to extract cutoffs as ``Indexed[SystemId, Array]``.

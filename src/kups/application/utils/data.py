@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from jax import Array
 
-from kups.core.unitcell import UnitCell
+from kups.core.cell import Cell
 from kups.core.utils.jax import dataclass
 
 
@@ -53,11 +53,11 @@ class Host:
 
     Attributes:
         atoms: Per-atom data for the host framework.
-        unitcell: Periodic unit cell describing the simulation box.
+        cell: Periodic cell describing the simulation box.
     """
 
     atoms: Atoms
-    unitcell: UnitCell
+    cell: Cell
 
 
 @dataclass

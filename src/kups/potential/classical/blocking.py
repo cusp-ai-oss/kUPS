@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import Edges, NearestNeighborList
@@ -35,22 +36,21 @@ from kups.core.typing import (
     HasInclusionIndex,
     HasMotifIndex,
     HasPositionsAndSystemIndex,
-    HasUnitCell,
+    HasCell,
     InclusionId,
     MotifId,
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell
 from kups.core.utils.jax import dataclass, field
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndUnitCell,
+    PositionAndCell,
     PotentialFromEnergy,
     Sum,
     SumComposer,
     Summand,
-    position_and_unitcell_idx_view,
+    position_and_cell_idx_view,
 )
 
 
@@ -110,26 +110,26 @@ class IsBlockingSpheresProbe(Protocol):
 @dataclass
 class BlockingSpheresPotentialInput[
     Points: _BlockingParticles,
-    MaybeUnitCell: UnitCell | None,
+    MaybeCell: Cell | None,
 ]:
     """Input for blocking spheres energy calculation.
 
     Attributes:
         parameters: Blocking sphere positions and radii
         particles: Indexed particle data with positions, system, and motif index
-        unitcell: Optional unit cell for periodic boundary conditions
+        cell: Optional cell for periodic boundary conditions
         edges: Particle-sphere pairs to check for blocking
     """
 
     parameters: BlockingSpheresParameters
     particles: Table[ParticleId, Points]
-    unitcell: MaybeUnitCell
+    cell: MaybeCell
     edges: Edges[Literal[2]]
 
 
 def blocking_spheres_energy[
     Points: _BlockingParticles,
-    UC: UnitCell | None,
+    UC: Cell | None,
 ](
     inp: BlockingSpheresPotentialInput[Points, UC],
 ) -> WithPatch[Table[SystemId, Energy], IdPatch]:
@@ -149,8 +149,8 @@ def blocking_spheres_energy[
     diffs = (
         inp.particles.data.positions[particle_idx] - inp.parameters.positions[sph_idx]
     )
-    if inp.unitcell is not None:
-        cell = inp.unitcell[batch_data]
+    if inp.cell is not None:
+        cell = inp.cell[batch_data]
         diffs = cell.wrap(diffs)
     dists = jnp.linalg.norm(diffs, axis=-1)
     radii = inp.parameters.radii[sph_idx]
@@ -172,9 +172,9 @@ def blocking_spheres_energy[
 class BlockingSpheresSumComposer[
     State,
     Ptch: Patch,
-    S: HasUnitCell,
+    S: HasCell,
     Points: _BlockingParticles,
-](SumComposer[State, BlockingSpheresPotentialInput[Points, UnitCell], Ptch]):
+](SumComposer[State, BlockingSpheresPotentialInput[Points, Cell], Ptch]):
     """Composer for blocking spheres potential in energy summation.
 
     Attributes:
@@ -232,10 +232,10 @@ class BlockingSpheresSumComposer[
         )
 
         edges = neighborlist(particles, spheres, systems, cutoffs)
-        unitcell = systems.data.unitcell
+        cell = systems.data.cell
         return Sum(
             Summand(
-                BlockingSpheresPotentialInput(parameters, particles, unitcell, edges)
+                BlockingSpheresPotentialInput(parameters, particles, cell, edges)
             )
         )
 
@@ -246,20 +246,20 @@ def make_blocking_spheres_potential[
     Hessians,
     Ptch: Patch,
     Points: _BlockingParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     particles_view: View[State, Table[ParticleId, Points]],
     systems_view: View[State, Table[SystemId, S]],
     parameters_view: View[State, BlockingSpheresParameters],
     neighborlist_view: View[State, NearestNeighborList],
     probe: Probe[State, Ptch, IsBlockingSpheresProbe] | None,
-    gradient_lens: Lens[BlockingSpheresPotentialInput[Points, UnitCell], Gradients],
+    gradient_lens: Lens[BlockingSpheresPotentialInput[Points, Cell], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
 ) -> PotentialFromEnergy[
     State,
-    BlockingSpheresPotentialInput[Points, UnitCell],
+    BlockingSpheresPotentialInput[Points, Cell],
     Gradients,
     Hessians,
     Ptch,
@@ -303,7 +303,7 @@ class IsBlockingSpheresState(Protocol):
     @property
     def particles(self) -> Table[ParticleId, _BlockingParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def blocking_spheres_parameters(self) -> BlockingSpheresParameters: ...
     @property
@@ -315,7 +315,7 @@ def make_blocking_spheres_from_state[State](
     state: Lens[State, IsBlockingSpheresState],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
@@ -324,8 +324,8 @@ def make_blocking_spheres_from_state[State](
     state: Lens[State, IsBlockingSpheresState],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, Any]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
 
 
 @overload
@@ -333,7 +333,7 @@ def make_blocking_spheres_from_state[State, P: Patch](
     state: Lens[State, IsBlockingSpheresState],
     probe: Probe[State, P, IsBlockingSpheresProbe],
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -342,15 +342,15 @@ def make_blocking_spheres_from_state[State, P: Patch](
     state: Lens[State, IsBlockingSpheresState],
     probe: Probe[State, P, IsBlockingSpheresProbe],
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, P]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, P]: ...
 
 
 def make_blocking_spheres_from_state(
     state: Any,
     probe: Any = None,
     *,
-    compute_position_and_unitcell_gradients: bool = False,
+    compute_position_and_cell_gradients: bool = False,
 ) -> Any:
     """Create a blocking spheres potential, optionally with incremental updates.
 
@@ -359,7 +359,7 @@ def make_blocking_spheres_from_state(
             parameters, and neighbor list.
         probe: Probe returning a IsBlockingSpheresProbe; ``None`` for full
             recomputation.
-        compute_position_and_unitcell_gradients: When ``True``, compute gradients
+        compute_position_and_cell_gradients: When ``True``, compute gradients
             w.r.t. particle positions and lattice vectors.
 
     Returns:
@@ -367,14 +367,14 @@ def make_blocking_spheres_from_state(
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_unitcell_gradients:
-        gradient_lens = SimpleLens[BlockingSpheresPotentialInput, PositionAndUnitCell](
-            lambda x: PositionAndUnitCell(
+    if compute_position_and_cell_gradients:
+        gradient_lens = SimpleLens[BlockingSpheresPotentialInput, PositionAndCell](
+            lambda x: PositionAndCell(
                 x.particles.map_data(lambda p: p.positions),
-                Table(x.particles.data.system.keys, x.unitcell),
+                Table(x.particles.data.system.keys, x.cell),
             )
         )
-        patch_idx_view = position_and_unitcell_idx_view
+        patch_idx_view = position_and_cell_idx_view
     if probe is not None:
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_blocking_spheres_potential(

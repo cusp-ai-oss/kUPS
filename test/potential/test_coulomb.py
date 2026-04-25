@@ -4,12 +4,12 @@
 import jax
 import jax.numpy as jnp
 
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.neighborlist import Edges
 from kups.core.patch import WithPatch
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.coulomb import (
     coulomb_vacuum_energy,
@@ -29,7 +29,7 @@ class PointCloudParticles:
 
 @dataclass
 class _SystemData:
-    unitcell: UnitCell
+    cell: Cell
     cutoff: jax.Array
 
 
@@ -47,9 +47,9 @@ def _make_particles(
 def _make_systems(
     lattice_vectors: jax.Array,
 ) -> Table[SystemId, _SystemData]:
-    unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+    cell = TriclinicCell.from_matrix(lattice_vectors)
     cutoff = jnp.full((lattice_vectors.shape[0],), 100.0)
-    return Table.arange(_SystemData(unitcell, cutoff), label=SystemId)
+    return Table.arange(_SystemData(cell, cutoff), label=SystemId)
 
 
 def _make_graph(

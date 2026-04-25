@@ -13,6 +13,7 @@ from kups.application.md.data import (
 )
 from kups.application.md.logging import MDLoggedData
 from kups.application.utils.propagate import run_simulation_cycles, run_warmup_cycles
+from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import Lens, lens
@@ -34,7 +35,6 @@ from kups.core.propagator import (
 )
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import UnitCell
 from kups.core.utils.functools import identity
 from kups.core.utils.jax import key_chain
 from kups.md.integrators import Integrator, make_md_step_from_state
@@ -45,13 +45,13 @@ class IsMdGradients(Protocol):
 
     Attributes:
         positions: Position gradients as Table[ParticleId, Array].
-        unitcell: Unit cell gradients as Table[SystemId, UnitCell].
+        cell: Cell gradients as Table[SystemId, Cell].
     """
 
     @property
     def positions(self) -> Table[ParticleId, Array]: ...
     @property
-    def unitcell(self) -> Table[SystemId, UnitCell]: ...
+    def cell(self) -> Table[SystemId, Cell]: ...
 
 
 class IsMdState(Protocol):
@@ -59,7 +59,7 @@ class IsMdState(Protocol):
 
     Attributes:
         particles: Per-particle data (positions, momenta, forces, etc.).
-        systems: Per-system data (unit cell, thermostat parameters, etc.).
+        systems: Per-system data (cell, thermostat parameters, etc.).
         step: Current simulation step counter.
     """
 
@@ -87,7 +87,7 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         Propagator that advances the state by one MD step.
     """
     mapped_potential = MappedPotential(
-        potential, lambda x: (x.positions.data, x.unitcell.data), identity
+        potential, lambda x: (x.positions.data, x.cell.data), identity
     )
     derivative_computation = PotentialAsPropagator(
         CachedPotential(
@@ -97,7 +97,7 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
                     x.systems.map_data(lambda x: x.potential_energy),
                     (
                         x.particles.data.position_gradients,
-                        x.systems.data.unitcell_gradients,
+                        x.systems.data.cell_gradients,
                     ),
                     EMPTY,
                 )

@@ -93,8 +93,8 @@ from kups.potential.classical.lennard_jones import (
     make_lennard_jones_tail_correction_from_state,
 )
 from kups.potential.common.energy import (
-    PositionAndUnitCell,
-    position_and_unitcell_idx_view,
+    PositionAndCell,
+    position_and_cell_idx_view,
 )
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
@@ -354,7 +354,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
         system,
         tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
-    min_half_box = float(system.data.unitcell.perpendicular_lengths.min() / 2)
+    min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
     return MCMCState(
         particles=particles,
         groups=groups,
@@ -391,14 +391,14 @@ def make_guest_stress() -> StateProperty[
     potential = sum_potentials(
         make_ewald_from_state(
             state_lens,
-            compute_position_and_unitcell_gradients=True,
+            compute_position_and_cell_gradients=True,
             include_exclusion_mask=True,
         ),
         make_lennard_jones_from_state(
-            state_lens, compute_position_and_unitcell_gradients=True
+            state_lens, compute_position_and_cell_gradients=True
         ),
         make_lennard_jones_tail_correction_from_state(
-            state_lens, compute_position_and_unitcell_gradients=True
+            state_lens, compute_position_and_cell_gradients=True
         ),
     )
     potential = CachedPotential(
@@ -406,14 +406,14 @@ def make_guest_stress() -> StateProperty[
         lens(
             lambda x: PotentialOut(
                 x.systems.map_data(lambda s: s.potential_energy),
-                PositionAndUnitCell(
+                PositionAndCell(
                     x.particles.map_data(lambda p: p.position_gradients),
-                    x.systems.map_data(lambda s: s.unitcell_gradients),
+                    x.systems.map_data(lambda s: s.cell_gradients),
                 ),
                 EMPTY,
             )
         ),
-        position_and_unitcell_idx_view,
+        position_and_cell_idx_view,
     )
     propagator = PotentialAsPropagator(potential)
 

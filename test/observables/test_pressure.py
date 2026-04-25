@@ -10,10 +10,10 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.observables.pressure import ideal_gas_pressure, pressure_from_stress
 
@@ -21,7 +21,7 @@ from kups.observables.pressure import ideal_gas_pressure, pressure_from_stress
 @dataclass
 class _Systems:
     temperature: Array
-    unitcell: UnitCell
+    cell: Cell
 
 
 def _make_systems(
@@ -30,10 +30,10 @@ def _make_systems(
     lv = jnp.eye(3)[None] * box_size
     if n > 1:
         lv = jnp.tile(lv, (n, 1, 1))
-    uc = TriclinicUnitCell.from_matrix(lv)
+    uc = TriclinicCell.from_matrix(lv)
     t = jnp.broadcast_to(jnp.asarray(temperature), (n,))
     keys = tuple(SystemId(i) for i in range(n))
-    return Table(keys, _Systems(temperature=t, unitcell=uc))
+    return Table(keys, _Systems(temperature=t, cell=uc))
 
 
 class TestPressureFromStress:

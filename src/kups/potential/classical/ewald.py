@@ -29,6 +29,7 @@ import scipy.special
 from jax import Array
 from scipy.special import erfc
 
+from kups.core.cell import Cell, FullyPeriodic
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
@@ -48,26 +49,25 @@ from kups.core.typing import (
     ExclusionId,
     HasCache,
     HasCharges,
-    HasUnitCell,
+    HasCell,
     InclusionId,
     MaybeCached,
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_zeros_like
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
-from kups.potential.classical.coulomb import coulomb_vacuum_energy
+from kups.potential.classical.coulomb import _pairwise_coulomb_energy
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndUnitCell,
+    PositionAndCell,
     PotentialFromEnergy,
     Sum,
     SumComposer,
     Summand,
-    position_and_unitcell_idx_view,
+    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     GraphPotentialInput,
@@ -172,7 +172,7 @@ class EwaldParameters:
     def make(
         cls,
         charges: Table[ParticleId, IsEwaldPointData],
-        unitcell: Table[SystemId, HasUnitCell],
+        cell: Table[SystemId, HasCell[FullyPeriodic]],
         epsilon_total: float = 1e-8,
         real_cutoff: float | None = None,
     ) -> EwaldParameters:
@@ -183,7 +183,7 @@ class EwaldParameters:
 
         Args:
             charges: Indexed particles with charges and system assignment.
-            unitcell: Indexed systems with unit cells.
+            cell: Indexed systems with cells.
             epsilon_total: Target total accuracy for the Ewald sum.
             real_cutoff: Optional real-space cutoff override; estimated if not given.
 
@@ -191,20 +191,20 @@ class EwaldParameters:
             ``EwaldParameters`` with estimated physics parameters.
         """
         # Unpack Indexed into per-system lists
-        n_systems = len(unitcell.keys)
+        n_systems = len(cell.keys)
         sys_idx = charges.data.system.indices
         charges_list = [charges.data.charges[sys_idx == i] for i in range(n_systems)]
-        unitcell_list = [unitcell.data.unitcell[i] for i in range(n_systems)]
+        cell_list = [cell.data.cell[i] for i in range(n_systems)]
 
         estimates_list = [
             estimate_ewald_parameters(
                 c, u, real_cutoff=real_cutoff, epsilon_total=epsilon_total
             )
-            for c, u in zip(charges_list, unitcell_list)
+            for c, u in zip(charges_list, cell_list)
         ]
         shifts_list = [
             kvecs_from_kmax(u, est.k_max)
-            for u, est in zip(unitcell_list, estimates_list)
+            for u, est in zip(cell_list, estimates_list)
         ]
         max_n_kvecs = max(len(s) for s in shifts_list)
         padded_shifts = jnp.stack(
@@ -212,14 +212,14 @@ class EwaldParameters:
         )
         return cls(
             alpha=Table(
-                unitcell.keys,
+                cell.keys,
                 jnp.asarray([est.alpha for est in estimates_list]),
             ),
             cutoff=Table(
-                unitcell.keys,
+                cell.keys,
                 jnp.asarray([est.real_cutoff for est in estimates_list]),
             ),
-            reciprocal_lattice_shifts=Table(unitcell.keys, padded_shifts),
+            reciprocal_lattice_shifts=Table(cell.keys, padded_shifts),
         )
 
 
@@ -230,12 +230,12 @@ class IsEwaldPointData(HasCharges, IsRadiusGraphPoints, Protocol):
 
 
 type EwaldShortRangeInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasUnitCell, Literal[2]
+    EwaldParameters, IsEwaldPointData, HasCell[FullyPeriodic], Literal[2]
 ]
 """Input type for the real-space short-range Ewald energy."""
 
 type EwaldSelfInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasUnitCell, Any
+    EwaldParameters, IsEwaldPointData, HasCell[FullyPeriodic], Any
 ]
 """Input type for the Ewald self-interaction correction."""
 
@@ -252,7 +252,7 @@ class EwaldLongRangeInput[State]:
         changes_from_prev: Changed particles for incremental structure factor updates.
     """
 
-    point_cloud: PointCloud[IsEwaldPointData, HasUnitCell]
+    point_cloud: PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]]
     parameters: EwaldParameters
     cache: EwaldCache | None = None
     cache_lens: Lens[State, EwaldCache[Any, Any]] | None = None
@@ -260,13 +260,13 @@ class EwaldLongRangeInput[State]:
 
     @property
     def volume(self) -> Array:
-        return self.point_cloud.systems.data.unitcell.volume
+        return self.point_cloud.systems.data.cell.volume
 
     @property
     def kvecs(self) -> Array:
         sys_idx = Index.new(list(self.point_cloud.systems.keys))
         return triangular_3x3_matmul(
-            self.point_cloud.systems.data.unitcell.inverse_lattice_vectors.mT[:, None]
+            self.point_cloud.systems.data.cell.inverse_lattice_vectors.mT[:, None]
             * 2
             * jnp.pi,
             self.parameters.reciprocal_lattice_shifts[sys_idx],
@@ -340,7 +340,7 @@ def exclusion_correction_energy(
         jax.tree.map(
             jnp.subtract,
             ewald_short_range_energy(inp).data,
-            coulomb_vacuum_energy(inp).data,
+            _pairwise_coulomb_energy(inp).data,
         ),
         IdPatch(),
     )
@@ -594,9 +594,9 @@ def ewald_long_range_energy[State](
     """
     structure_out, patch = structure_factor(inp)
     energy = long_range(inp, structure_out)
-    assert energy.shape == (inp.point_cloud.batch_size,), (
-        f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
-    )
+    assert energy.shape == (
+        inp.point_cloud.batch_size,
+    ), f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     energy = energy * TO_STANDARD_UNITS
     return WithPatch(Table.arange(energy, label=SystemId), patch)
 
@@ -615,7 +615,7 @@ class EwaldLongRangeComposer[
     """
 
     particles: View[State, Table[ParticleId, IsEwaldPointData]] = field(static=True)
-    systems: View[State, Table[SystemId, HasUnitCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[FullyPeriodic]]] = field(static=True)
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = field(
         static=True
     )
@@ -691,11 +691,11 @@ def make_ewald_short_range_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
     neighborlist_view: View[State, NearestNeighborList],
     parameter_view: View[State, EwaldParameters],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
-    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasUnitCell], Gradients],
+    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
@@ -733,12 +733,12 @@ def make_ewald_long_range_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasUnitCell], Gradients
+        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
     ] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
@@ -774,11 +774,11 @@ def make_ewald_self_interaction_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
     parameter_view: View[State, EwaldParameters],
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasUnitCell], Gradients
+        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
     ] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
@@ -814,12 +814,12 @@ def make_ewald_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
     neighborlist_view: View[State, NearestNeighborList],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
-    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasUnitCell], Gradients],
+    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
@@ -844,7 +844,7 @@ def make_ewald_potential[
 
     Args:
         particles_view: Indexed particle data (positions, charges, system index).
-        systems_view: Indexed system data (unit cell).
+        systems_view: Indexed system data (cell).
         neighborlist_view: Full neighbor list.
         parameter_lens: Lens to EwaldParameters.
         cache_lens: Lens to EwaldCache, or ``None``.
@@ -1029,7 +1029,7 @@ class IsEwaldState[Params](Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsEwaldPointData]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell[FullyPeriodic]]: ...
     @property
     def neighborlist(self) -> NearestNeighborList: ...
     @property
@@ -1041,7 +1041,7 @@ def make_ewald_from_state[State](
     state: Lens[State, IsEwaldState[MaybeCached[EwaldParameters, Any]]],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch]: ...
 
@@ -1051,9 +1051,9 @@ def make_ewald_from_state[State](
     state: Lens[State, IsEwaldState[MaybeCached[EwaldParameters, Any]]],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
+    compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,
-) -> EwaldPotential[State, PositionAndUnitCell, EmptyType, Patch]: ...
+) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
 @overload
@@ -1063,7 +1063,7 @@ def make_ewald_from_state[State, P: Patch](
     ],
     probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
 ) -> EwaldPotential[State, EmptyType, EmptyType, P]: ...
 
@@ -1073,21 +1073,21 @@ def make_ewald_from_state[State, P: Patch](
     state: Lens[
         State,
         IsEwaldState[
-            HasCache[EwaldParameters, EwaldCache[PositionAndUnitCell, EmptyType]]
+            HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
+    compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,
-) -> EwaldPotential[State, PositionAndUnitCell, EmptyType, P]: ...
+) -> EwaldPotential[State, PositionAndCell, EmptyType, P]: ...
 
 
 def make_ewald_from_state(
     state: Any,
     probe: Any = None,
     *,
-    compute_position_and_unitcell_gradients: bool = False,
+    compute_position_and_cell_gradients: bool = False,
     include_exclusion_mask: bool = False,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
@@ -1102,29 +1102,29 @@ def make_ewald_from_state(
             neighborlist, and ewald_parameters).
         probe: Probe for incremental updates. ``None`` for a static
             potential.
-        compute_position_and_unitcell_gradients: When ``True``, the
+        compute_position_and_cell_gradients: When ``True``, the
             returned potential computes gradients w.r.t. particle
             positions and lattice vectors (for forces / stress).
-            Gradient type becomes ``PositionAndUnitCell``.
+            Gradient type becomes ``PositionAndCell``.
         include_exclusion_mask: Whether to include the exclusion
             correction term in the returned potential.
 
     Returns:
         An ``EwaldPotential`` combining short-range, long-range,
         self-energy, and (optionally) exclusion-correction terms.
-        Gradient type is ``PositionAndUnitCell`` when gradients are
+        Gradient type is ``PositionAndCell`` when gradients are
         requested, ``EmptyType`` otherwise.
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view = empty_patch_idx_view
-    if compute_position_and_unitcell_gradients:
-        gradient_lens = SimpleLens[PointCloud, PositionAndUnitCell](
-            lambda pc: PositionAndUnitCell(
+    if compute_position_and_cell_gradients:
+        gradient_lens = SimpleLens[PointCloud, PositionAndCell](
+            lambda pc: PositionAndCell(
                 pc.particles.map_data(lambda p: p.positions),
-                pc.systems.map_data(lambda s: s.unitcell),
+                pc.systems.map_data(lambda s: s.cell),
             )
         )
-        patch_idx_view = position_and_unitcell_idx_view
+        patch_idx_view = position_and_cell_idx_view
     param_view = state.focus(
         lambda x: (
             x.ewald_parameters.data
@@ -1166,7 +1166,7 @@ class EwaldParameterEstimates:
 @no_jax_tracing
 def estimate_ewald_parameters(
     charges: Array,
-    unitcell: UnitCell,
+    cell: Cell,
     /,
     real_cutoff: float | None = None,
     alpha: float | None = None,
@@ -1179,7 +1179,7 @@ def estimate_ewald_parameters(
 
     Args:
         charges: Particle charges [e], shape `(n_particles,)`.
-        unitcell: Unit cell parameters.
+        cell: Cell parameters.
         real_cutoff: Real-space cutoff [Ang]; optimized if ``None``.
         alpha: Screening parameter [1/Ang]; optimized if ``None``.
         epsilon_total: Target total error (split equally between real/reciprocal).
@@ -1190,17 +1190,17 @@ def estimate_ewald_parameters(
     # Note: only runs on a single system, not a batch of systems.
     # Input validation
     charges_np = np.asarray(charges)
-    volume = np.asarray(unitcell.volume)
+    volume = np.asarray(cell.volume)
     Q2 = np.vdot(charges_np, charges_np)
     N = charges.size
 
-    # smallest side length spanned by the unit cell
-    max_radius = np.min(unitcell.perpendicular_lengths, axis=0) / 2
+    # smallest side length spanned by the cell
+    max_radius = np.min(cell.perpendicular_lengths, axis=0) / 2
 
     # Split error budget equally
     eps_target = epsilon_total / 2
 
-    # Length of a box shaped like the unit cell
+    # Length of a box shaped like the cell
     lattice_length = volume ** (1 / 3)
 
     def minimize(
@@ -1295,7 +1295,7 @@ def estimate_ewald_parameters(
             k_max=kmax,
             error_real=real_space_error(real_cutoff, alpha_opt),
             error_recip=recip_space_error(kmax, alpha_opt),
-            kvecs=kvecs_from_kmax(unitcell, kmax),
+            kvecs=kvecs_from_kmax(cell, kmax),
         )
 
     if alpha is None:
@@ -1315,22 +1315,22 @@ def estimate_ewald_parameters(
         k_max=kc_opt,
         error_real=real_space_error(rc_opt, alpha_opt),
         error_recip=recip_space_error(kc_opt, alpha_opt),
-        kvecs=kvecs_from_kmax(unitcell, kc_opt),
+        kvecs=kvecs_from_kmax(cell, kc_opt),
     )
 
 
 @no_jax_tracing
-def kvecs_from_kmax(unitcell: UnitCell, kmax: float) -> Array:
+def kvecs_from_kmax(cell: Cell, kmax: float) -> Array:
     """Generate integer k-vector coefficients within a sphere of radius ``kmax``.
 
     Args:
-        unitcell: Unit cell defining the reciprocal lattice.
+        cell: Cell defining the reciprocal lattice.
         kmax: Maximum k-vector magnitude cutoff.
 
     Returns:
         Integer k-vector coefficients, shape ``(n_kvecs, 3)``.
     """
-    rvecs = unitcell.inverse_lattice_vectors.mT * 2 * jnp.pi
+    rvecs = cell.inverse_lattice_vectors.mT * 2 * jnp.pi
     min_length = jnp.min(jnp.linalg.svd(rvecs)[1])
     n = jnp.ceil(kmax / min_length).astype(int)
     lattice = (jnp.arange(0, n + 1), jnp.arange(-n, n + 1), jnp.arange(-n, n + 1))

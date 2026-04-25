@@ -11,18 +11,18 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.typing import (
     GroupId,
     HasGroupIndex,
     HasPositions,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     IsState,
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell
 from kups.core.utils.math import triangular_3x3_matmul
 
 
@@ -35,11 +35,11 @@ class IsVirialParticles(HasPositions, HasSystemIndex, Protocol):
 
 
 @runtime_checkable
-class IsVirialSystems(HasUnitCell, Protocol):
-    """Systems with unit cell gradients ∂U/∂h."""
+class IsVirialSystems(HasCell, Protocol):
+    """Systems with cell gradients ∂U/∂h."""
 
     @property
-    def unitcell_gradients(self) -> UnitCell: ...
+    def cell_gradients(self) -> Cell: ...
 
 
 @runtime_checkable
@@ -87,26 +87,26 @@ def _molecular_stress_via_virial_theorem(
     lattice_vector_gradients: Array,
     positions: Array,
     group: Index[GroupId],
-    group_unitcells: UnitCell,
+    group_cells: Cell,
     system: Index[SystemId],
     system_lattice_vectors: Array,
     system_volume: Array,
 ) -> Array:
     """Molecular virial stress using center-of-mass positions (RASPA convention)."""
     num_groups = group.num_labels
-    batched_unitcells = group_unitcells[group.indices]
+    batched_cells = group_cells[group.indices]
     ref_idx = (
         jnp.zeros(num_groups, dtype=int)
         .at[group.indices]
         .set(jnp.arange(group.indices.shape[0]), mode="drop")
     )
     offsets = positions[ref_idx]
-    rel = batched_unitcells.wrap(positions - offsets[group.indices])
+    rel = batched_cells.wrap(positions - offsets[group.indices])
     com = jax.ops.segment_sum(rel, group.indices, num_groups)
     counts = jnp.bincount(group.indices, length=num_groups)[:, None]
     com = com / jnp.maximum(counts, 1) + offsets
-    com = group_unitcells.wrap(com)
-    rel_pos = batched_unitcells.wrap(
+    com = group_cells.wrap(com)
+    rel_pos = batched_cells.wrap(
         positions - com.at[group.indices].get(mode="fill", fill_value=0)
     )
     stress = -system.sum_over(
@@ -124,14 +124,14 @@ def stress_via_lattice_vector_gradients(
     """Compute stress from energy gradients w.r.t. lattice vectors.
 
     Args:
-        systems: Per-system unit cell and unit cell gradients.
+        systems: Per-system cell and cell gradients.
 
     Returns:
         Stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
     stress = _stress_via_lattice_vector_gradients(
-        systems.data.unitcell_gradients.lattice_vectors,
-        systems.data.unitcell.volume,
+        systems.data.cell_gradients.lattice_vectors,
+        systems.data.cell.volume,
     )
     return Table(systems.keys, stress)
 
@@ -144,16 +144,16 @@ def stress_via_virial_theorem(
 
     Args:
         particles: Per-particle positions, system index, and position gradients.
-        systems: Per-system unit cell and unit cell gradients.
+        systems: Per-system cell and cell gradients.
 
     Returns:
         Stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
     stress = _stress_via_virial_theorem(
         particles.data.position_gradients,
-        systems.data.unitcell_gradients.lattice_vectors,
+        systems.data.cell_gradients.lattice_vectors,
         particles.data.positions,
-        systems.data.unitcell.lattice_vectors,
+        systems.data.cell.lattice_vectors,
         particles.data.system,
     )
     return Table(systems.keys, stress)
@@ -171,21 +171,21 @@ def molecular_stress_via_virial_theorem(
     Args:
         particles: Per-particle positions, group/system index, and gradients.
         groups: Per-group system assignment.
-        systems: Per-system unit cell and unit cell gradients.
+        systems: Per-system cell and cell gradients.
 
     Returns:
         Symmetrized stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
-    group_unitcells = systems[groups.data.system].unitcell
+    group_cells = systems[groups.data.system].cell
     stress = _molecular_stress_via_virial_theorem(
         particles.data.position_gradients,
-        systems.data.unitcell_gradients.lattice_vectors,
+        systems.data.cell_gradients.lattice_vectors,
         particles.data.positions,
         particles.data.group,
-        group_unitcells,
+        group_cells,
         particles.data.system,
-        systems.data.unitcell.lattice_vectors,
-        systems.data.unitcell.volume,
+        systems.data.cell.lattice_vectors,
+        systems.data.cell.volume,
     )
     return Table(systems.keys, stress)
 

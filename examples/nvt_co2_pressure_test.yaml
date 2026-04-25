@@ -17,7 +17,7 @@ hosts:
     pressure: 10_000
     temperature: 298.15
     init_adsorbates: [50]
-    unitcell_replication: 1
+    cell_replication: 1
 
 lj:
   cutoff: 12.0

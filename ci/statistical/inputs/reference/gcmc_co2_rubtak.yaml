@@ -13,7 +13,7 @@ hosts:
   - cif_file: ../host/RUBTAK.cif
     pressure: 10_000
     temperature: 298.15
-    unitcell_replication: 2
+    cell_replication: 2
 
 run:
   out_file: ../../gcmc_co2_rubtak_ref.h5

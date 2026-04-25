@@ -41,6 +41,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.lens import View, lens
 from kups.core.neighborlist import (
@@ -57,7 +58,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell
 from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing
 
 
@@ -111,7 +111,7 @@ def radial_distribution_function(
 
     Args:
         positions: Indexed particle positions with system assignments.
-        systems: Indexed system data (unit cells, cutoffs).
+        systems: Indexed system data (cells, cutoffs).
         rmax: Maximum distance to consider (cutoff radius).
         bins: Number of histogram bins for $g(r)$.
         neighborlist: Neighbor list algorithm for finding pairs.
@@ -123,7 +123,7 @@ def radial_distribution_function(
 
     Note:
         - Excludes self-pairs automatically via neighbor list construction
-        - Uses periodic boundary conditions from unitcell
+        - Uses periodic boundary conditions from cell
         - Assumes uniform density within each system
     """
     nnl_positions = _to_nnlist_points(positions)
@@ -145,7 +145,7 @@ def radial_distribution_function(
 
     rr = jnp.linspace(dr / 2, rmax - dr / 2, bins)
     segment_sizes = system_index.counts.data
-    phi = segment_sizes / systems.data.unitcell.volume
+    phi = segment_sizes / systems.data.cell.volume
     norm = 4.0 * jnp.pi * dr * phi * segment_sizes
     rdf = rdf[:, 1:] / (norm[:, None] * (rr * rr + (dr * dr / 12)))
     return rdf
@@ -205,7 +205,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
 @no_jax_tracing
 def offline_radial_distribution_function(
     positions: Array,
-    unitcell: UnitCell,
+    cell: Cell,
     rmax: float,
     bins: int,
     *,
@@ -225,7 +225,7 @@ def offline_radial_distribution_function(
     Args:
         positions: Particle positions, shape `(..., n_frames, n_particles, 3)`.
             Batch dimensions are preserved in output.
-        unitcell: Unit cell for periodic boundary conditions (shared across frames)
+        cell: Cell for periodic boundary conditions (shared across frames)
         rmax: Maximum distance for RDF calculation (cutoff radius)
         bins: Number of histogram bins
         batch_size: Number of frames to process simultaneously in jax.lax.map.
@@ -243,11 +243,11 @@ def offline_radial_distribution_function(
         # Load trajectory from file
         with h5py.File("trajectory.h5", "r") as f:
             positions = f["positions"][:]  # Shape: (n_frames, n_particles, 3)
-            unitcell = TriclinicUnitCell.from_matrix(f["unitcell"][()])
+            cell = TriclinicCell.from_matrix(f["cell"][()])
 
         # Compute time-averaged RDF
         g_r = offline_radial_distribution_function(
-            positions, unitcell, rmax=10.0, bins=200, batch_size=100
+            positions, cell, rmax=10.0, bins=200, batch_size=100
         )  # Shape: (n_frames, 200)
 
         # Average over trajectory
@@ -278,9 +278,9 @@ def offline_radial_distribution_function(
                 _RDFParticles(jnp.asarray(pos), system),
                 label=ParticleId,
             )
-            _SystemData = namedtuple("_SystemData", ["unitcell", "cutoff"])
+            _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])
             sys_data = Table.arange(
-                _SystemData(unitcell, jnp.array([rmax])),
+                _SystemData(cell, jnp.array([rmax])),
                 label=SystemId,
             )
             return radial_distribution_function(

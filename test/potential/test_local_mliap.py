@@ -11,6 +11,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import FixedCapacity
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import bind, lens
@@ -19,7 +20,6 @@ from kups.core.patch import Accept, Patch
 from kups.core.potential import PotentialOut
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.potential.mliap.local import (
     LocalMLIAPCache,
@@ -43,7 +43,7 @@ class AtomData:
 
 @dataclass
 class SystemData:
-    unitcell: UnitCell
+    cell: Cell
     cutoff: Array
 
 
@@ -104,7 +104,7 @@ def simple_system():
     # Spread atoms far apart to minimize edges
     positions = jnp.array([[i * 3.0, 0.0, 0.0] for i in range(n_atoms)], dtype=float)
     atomic_numbers = jnp.zeros((n_atoms,), dtype=int)
-    unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 30.0)
+    cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 30.0)
 
     init_fn, edge_fn, readout_fn = make_simple_model(embed_dim)
 
@@ -122,7 +122,7 @@ def simple_system():
         label=ParticleId,
     )
     systems = Table.arange(
-        SystemData(unitcell=unitcell, cutoff=jnp.array([2.5])),
+        SystemData(cell=cell, cutoff=jnp.array([2.5])),
         label=SystemId,
     )
 

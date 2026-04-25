@@ -30,7 +30,7 @@ class InitData:
 
     Attributes:
         atoms: Indexed particle data (positions, momenta, etc.).
-        systems: Indexed system data (unit cell, temperature, etc.).
+        systems: Indexed system data (cell, temperature, etc.).
     """
 
     atoms: Table[ParticleId, MDParticles]

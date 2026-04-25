@@ -47,7 +47,7 @@ class TestInversionEnergy:
 
     @classmethod
     def setup_class(cls):
-        cls.unitcells_lv = jnp.eye(3)[None] * 10.0
+        cls.cells_lv = jnp.eye(3)[None] * 10.0
         cls.species = ["A", "A", "A", "A"]
         cls.system_ids = [0, 0, 0, 0]
         shape = (2, 2, 2, 2)
@@ -57,7 +57,7 @@ class TestInversionEnergy:
 
     def _make_graph(self, positions):
         particles = make_particles(positions, self.species, self.system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
             shifts=jnp.zeros((1, 3, 3)),
@@ -149,7 +149,7 @@ class TestInversionEnergy:
         species = ["A", "A", "A"]
         system_ids = [0, 0, 0]
         particles = make_particles(positions, species, system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2]])),
             shifts=jnp.zeros((1, 2, 3)),
@@ -163,7 +163,7 @@ class TestInversionEnergy:
         system_ids = [0, 0, 0, 0]
         positions = _make_positions(0.0)
         particles = make_particles(positions, species, system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
             shifts=jnp.zeros((1, 3, 3)),
@@ -177,7 +177,7 @@ class TestInversionEnergy:
     def test_multiple_inversions(self):
         positions = _make_positions(0.2)
         particles = make_particles(positions, self.species, self.system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(
                 particles.keys,

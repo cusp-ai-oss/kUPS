@@ -28,17 +28,18 @@ from kups.core.potential import (
     PotentialOut,
     empty_patch_idx_view,
 )
+from kups.core.cell import Vacuum
 from kups.core.typing import (
     HasCharges,
     HasPositionsAndSystemIndex,
-    HasUnitCell,
+    HasCell,
     ParticleId,
     SystemId,
 )
 from kups.potential.common.energy import (
-    PositionAndUnitCell,
+    PositionAndCell,
     PotentialFromEnergy,
-    position_and_unitcell_idx_view,
+    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     GraphPotentialInput,
@@ -57,30 +58,43 @@ class IsCoulombGraphParticles(
 
 
 type CoulombVacuumInput = GraphPotentialInput[
-    Any, IsCoulombGraphParticles, HasUnitCell, Literal[2]
+    Any, IsCoulombGraphParticles, HasCell[Vacuum], Literal[2]
+]
+
+# Boundary-mode-agnostic alias used by Ewald's exclusion-correction term,
+# which calls the pairwise sum on a periodic cell where CoulombVacuumInput
+# would not type-check.
+type _PairwiseCoulombInput = GraphPotentialInput[
+    Any, IsCoulombGraphParticles, HasCell, Literal[2]
 ]
 
 
-def coulomb_vacuum_energy(
-    inp: CoulombVacuumInput,
+def _pairwise_coulomb_energy(
+    inp: _PairwiseCoulombInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch]:
-    """Compute Coulomb electrostatic energy for all charge pairs.
-
-    Calculates pairwise electrostatic energy using Coulomb's law and sums
-    over all systems. Accounts for double counting.
-
-    Args:
-        inp: Graph potential input
-
-    Returns:
-        Total electrostatic energy per system
-    """
     edg = inp.graph.particles[inp.graph.edges.indices]
     qij = edg.charges[:, 0] * edg.charges[:, 1]
     dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
     energies = inp.graph.edge_batch_mask.sum_over(qij / dists) / 2 * TO_STANDARD_UNITS
     assert len(energies) == inp.graph.batch_size
     return WithPatch(energies, IdPatch())
+
+
+def coulomb_vacuum_energy(
+    inp: CoulombVacuumInput,
+) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+    """Compute Coulomb electrostatic energy for vacuum systems.
+
+    Calculates pairwise electrostatic energy using Coulomb's law over all
+    charge pairs in each (vacuum) system. Accounts for double counting.
+
+    Args:
+        inp: Graph potential input.
+
+    Returns:
+        Total electrostatic energy per system.
+    """
+    return _pairwise_coulomb_energy(inp)
 
 
 def make_coulomb_vacuum_potential[
@@ -90,7 +104,7 @@ def make_coulomb_vacuum_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsCoulombGraphParticles]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell[Vacuum]]],
     cutoffs_view: View[State, Table[SystemId, Array]],
     neighborlist_view: View[State, NearestNeighborList],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsCoulombGraphParticles]] | None,
@@ -109,7 +123,7 @@ def make_coulomb_vacuum_potential[
 
     Args:
         particles_view: Extracts indexed particle data (positions, charges, system index)
-        systems_view: Extracts indexed system data (unit cell)
+        systems_view: Extracts indexed system data (cell)
         cutoffs_view: Extracts cutoff array from state
         neighborlist_view: Extracts neighbor list
         probe: Grouped probe for incremental updates (particles, neighborlist_after, neighborlist_before)
@@ -151,7 +165,7 @@ class IsCoulombVacuumState(Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsCoulombGraphParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell[Vacuum]]: ...
     @property
     def neighborlist(self) -> NearestNeighborList: ...
     @property
@@ -163,7 +177,7 @@ def make_coulomb_vacuum_from_state[State](
     state: Lens[State, IsCoulombVacuumState],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
@@ -172,8 +186,8 @@ def make_coulomb_vacuum_from_state[State](
     state: Lens[State, IsCoulombVacuumState],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, Any]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
 
 
 @overload
@@ -181,7 +195,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch](
     state: Lens[State, IsCoulombVacuumState],
     probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -190,15 +204,15 @@ def make_coulomb_vacuum_from_state[State, P: Patch](
     state: Lens[State, IsCoulombVacuumState],
     probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, P]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, P]: ...
 
 
 def make_coulomb_vacuum_from_state(
     state: Any,
     probe: Any = None,
     *,
-    compute_position_and_unitcell_gradients: bool = False,
+    compute_position_and_cell_gradients: bool = False,
 ) -> Any:
     """Create a Coulomb vacuum potential from a typed state, optionally with incremental updates.
 
@@ -212,7 +226,7 @@ def make_coulomb_vacuum_from_state(
         state: Lens into the sub-state providing particles, systems, and neighbor list.
         probe: Detects which particles and neighbor-list edges changed since the last step.
             Pass ``None`` (default) for a non-incremental potential.
-        compute_position_and_unitcell_gradients: When ``True``, compute gradients
+        compute_position_and_cell_gradients: When ``True``, compute gradients
             w.r.t. particle positions and lattice vectors.
 
     Returns:
@@ -220,14 +234,14 @@ def make_coulomb_vacuum_from_state(
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_unitcell_gradients:
-        gradient_lens = SimpleLens[CoulombVacuumInput, PositionAndUnitCell](
-            lambda x: PositionAndUnitCell(
+    if compute_position_and_cell_gradients:
+        gradient_lens = SimpleLens[CoulombVacuumInput, PositionAndCell](
+            lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.unitcell),
+                x.graph.systems.map_data(lambda s: s.cell),
             )
         )
-        patch_idx_view = position_and_unitcell_idx_view
+        patch_idx_view = position_and_cell_idx_view
     if probe is not None:
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_coulomb_vacuum_potential(

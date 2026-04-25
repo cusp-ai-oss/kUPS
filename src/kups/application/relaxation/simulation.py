@@ -16,6 +16,7 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import run_simulation_cycles
+from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import Lens, View, lens
@@ -36,7 +37,6 @@ from kups.core.propagator import (
 )
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import UnitCell
 from kups.core.utils.functools import identity
 from kups.relaxation.propagator import RelaxationPropagator
 
@@ -60,7 +60,7 @@ class IsRelaxGradients(Protocol):
     @property
     def positions(self) -> Table[ParticleId, Array]: ...
     @property
-    def unitcell(self) -> Table[SystemId, UnitCell]: ...
+    def cell(self) -> Table[SystemId, Cell]: ...
 
 
 class OptInit(Protocol):
@@ -73,7 +73,7 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     state_lens: Lens[State, State],
     potential: Potential[State, Gradients, EmptyType, Any],
     optimizer: optax.GradientTransformationExtraArgs,
-    optimize_unitcell: bool = False,
+    optimize_cell: bool = False,
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
 
@@ -81,7 +81,7 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
         state_lens: Lens focusing on the relaxation sub-state.
         potential: Potential whose gradients drive the optimisation.
         optimizer: Optax gradient transformation (e.g. FIRE, Adam, L-BFGS).
-        optimize_unitcell: If True, optimise both positions and lattice vectors;
+        optimize_cell: If True, optimise both positions and lattice vectors;
             otherwise optimise positions only.
 
     Returns:
@@ -91,14 +91,14 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     # Cache the gradient and forces within the state
     pot = CachedPotential(
         MappedPotential(
-            potential, lambda x: (x.positions.data, x.unitcell.data), identity
+            potential, lambda x: (x.positions.data, x.cell.data), identity
         ),
         lens(
             lambda x: PotentialOut(
                 x.systems.map_data(lambda x: x.potential_energy),
                 (
                     x.particles.data.position_gradients,
-                    x.systems.data.unitcell_gradients,
+                    x.systems.data.cell_gradients,
                 ),
                 EMPTY,
             )
@@ -110,9 +110,9 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
         ),  # type: ignore
     )
 
-    def relax_prop_and_opt_init[T](prop_view: View[tuple[Array, UnitCell], T]):
+    def relax_prop_and_opt_init[T](prop_view: View[tuple[Array, Cell], T]):
         prop_lens = state_lens.focus(
-            lambda x: prop_view((x.particles.data.positions, x.systems.data.unitcell))
+            lambda x: prop_view((x.particles.data.positions, x.systems.data.cell))
         )
         return RelaxationPropagator(
             potential=MappedPotential(pot, prop_view, identity),
@@ -123,7 +123,7 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
 
     relax_prop, opt_init = (
         relax_prop_and_opt_init(lens(identity))
-        if optimize_unitcell
+        if optimize_cell
         else relax_prop_and_opt_init(lens(lambda x: x[0]))
     )
     step_prop = step_counter_propagator(state_lens.focus(lambda x: x.step))

@@ -6,7 +6,7 @@ hosts:
     pressure: 10_000   # Pa (10 bar)
     temperature: 298.15   # K
     init_adsorbates: [0]
-    unitcell_replication: 3
+    cell_replication: 3
 
 
 lj: !import ["lennard_jones/trappe.yaml"]

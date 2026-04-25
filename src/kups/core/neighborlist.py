@@ -103,7 +103,7 @@ from kups.core.typing import (
     HasPositions,
     HasPositionsAndSystemIndex,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     ParticleId,
     SystemId,
 )
@@ -120,7 +120,7 @@ class Edges[Degree: int](Sliceable):
     interactions (bonds), degree=3 represents three-body interactions (angles), etc.
 
     For periodic systems, edges include shift vectors that indicate how many
-    unit cells to traverse when computing distances between connected particles.
+    cells to traverse when computing distances between connected particles.
 
     Type Parameters:
         Degree: Number of particles connected by each edge (static type check)
@@ -149,22 +149,22 @@ class Edges[Degree: int](Sliceable):
         raw = self.indices.indices if isinstance(self.indices, Index) else self.indices
         if not isinstance(raw, Array):
             return
-        assert jnp.issubdtype(raw.dtype, jnp.integer), (
-            f"Indices must be of integer type, got {raw.dtype}"
-        )
+        assert jnp.issubdtype(
+            raw.dtype, jnp.integer
+        ), f"Indices must be of integer type, got {raw.dtype}"
         target_shape = (
             *self.indices.shape[:-1],
             self.indices.shape[-1] - 1 if self.indices.shape[-1] > 1 else 0,
             3,
         )
-        assert self.shifts.shape == target_shape, (
-            f"Shifts must have shape {target_shape}, got {self.shifts.shape}"
-        )
+        assert (
+            self.shifts.shape == target_shape
+        ), f"Shifts must have shape {target_shape}, got {self.shifts.shape}"
 
     def difference_vectors(
         self,
         particles: Table[ParticleId, HasPositionsAndSystemIndex],
-        systems: Table[SystemId, HasUnitCell],
+        systems: Table[SystemId, HasCell],
     ) -> Array:
         """Compute difference vectors between connected particles.
 
@@ -173,7 +173,7 @@ class Edges[Degree: int](Sliceable):
 
         Args:
             particles: Particle positions with system index information.
-            systems: System data with unit cell for periodic boundary conditions.
+            systems: System data with cell for periodic boundary conditions.
 
         Returns:
             Array of shape `(n_edges, Degree-1, 3)` containing difference vectors.
@@ -186,7 +186,7 @@ class Edges[Degree: int](Sliceable):
     def absolute_shifts(
         self,
         particles: Table[ParticleId, HasPositionsAndSystemIndex],
-        systems: Table[SystemId, HasUnitCell],
+        systems: Table[SystemId, HasCell],
     ) -> Array:
         """Compute absolute shift vectors for all particles in each edge.
 
@@ -194,12 +194,12 @@ class Edges[Degree: int](Sliceable):
 
         Args:
             particles: Particle data with system index information.
-            systems: System data with unit cell for periodic boundary conditions.
+            systems: System data with cell for periodic boundary conditions.
 
         Returns:
             Array of shape `(n_edges, Degree-1, 3)` containing absolute shift vectors.
         """
-        lattice = systems.map_data(lambda x: x.unitcell.lattice_vectors)
+        lattice = systems.map_data(lambda x: x.cell.lattice_vectors)
         vecs = lattice[particles[self.indices[:, 0]].system]
         return triangular_3x3_matmul(vecs[:, None], self.shifts)
 
@@ -220,7 +220,7 @@ class NeighborListPoints(
 ): ...
 
 
-class NeighborListSystems(HasUnitCell, Protocol): ...
+class NeighborListSystems(HasCell, Protocol): ...
 
 
 class NearestNeighborList(Protocol):
@@ -243,7 +243,7 @@ class NearestNeighborList(Protocol):
         Args:
             lh: Left-hand particles to find neighbors for
             rh: Right-hand particles to search within (or None for self-neighbors)
-            systems: Indexed system data with unit cell information
+            systems: Indexed system data with cell information
             cutoffs: Indexed cutoff data per system
             rh_index_remap: Optional index mapping rh particles back to lh
                 particle IDs for self-interaction exclusion. When ``None``,
@@ -285,7 +285,7 @@ def _num_cells(
     eps: float = 1e-6,
 ) -> Array:
     inv_norms: jax.Array = jnp.linalg.norm(
-        systems.unitcell.inverse_lattice_vectors, axis=-1
+        systems.cell.inverse_lattice_vectors, axis=-1
     )
     face_lengths = 1.0 / jnp.where(inv_norms < eps, jnp.ones_like(inv_norms), inv_norms)
     num_bins = jnp.maximum((face_lengths / cutoff[..., None]).astype(int), 1)
@@ -457,8 +457,8 @@ def _get_candidate_images(
     cutoffs: Array,
     out_size: Capacity[int],
 ) -> tuple[Array, Array, Array]:
-    unitcells = systems.data.unitcell
-    images = jnp.ceil(2 * cutoffs[..., None] / unitcells.perpendicular_lengths).astype(
+    cells = systems.data.cell
+    images = jnp.ceil(2 * cutoffs[..., None] / cells.perpendicular_lengths).astype(
         int
     )
     images = jnp.where(jnp.isfinite(cutoffs[..., None]), images, 1)
@@ -550,7 +550,7 @@ def _compute_distances_pbc_sq(
 
     If ``shifts`` is None, minimum-image shifts are computed via rounding.
     """
-    lattice_vecs = systems.map_data(lambda s: s.unitcell.lattice_vectors)
+    lattice_vecs = systems.map_data(lambda s: s.cell.lattice_vectors)
     vecs = lattice_vecs[lh.data.system[candidates.lhs.indices]]
     deltas = (
         lh.data.positions[candidates.lhs.indices]
@@ -639,7 +639,7 @@ def _compute_distances_and_apply_cutoff(
     if max_image_candidates is None:
         max_image_candidates = FixedCapacity(
             candidates.lhs.size,
-            "Cutoff is larger than half the unit cell length, "
+            "Cutoff is larger than half the cell length, "
             "we need to generate additional images. "
             "Please provide a editable max_candidates.",
         )
@@ -758,13 +758,13 @@ def basic_neighborlist(
         rh = lh
 
     # Transform coordinates to fractional using per-particle system data
-    lh_inv = systems[lh.data.system].unitcell.inverse_lattice_vectors
+    lh_inv = systems[lh.data.system].cell.inverse_lattice_vectors
     lh = (
         bind(lh)
         .focus(lambda x: x.data.positions)
         .apply(lambda r: triangular_3x3_matmul(lh_inv, r))
     )
-    rh_inv = systems[rh.data.system].unitcell.inverse_lattice_vectors
+    rh_inv = systems[rh.data.system].cell.inverse_lattice_vectors
     rh = (
         bind(rh)
         .focus(lambda x: x.data.positions)
@@ -990,7 +990,7 @@ class CellListNeighborList:
     the box size. It divides space into a grid of cells and only checks pairs in
     neighboring cells, achieving linear scaling with system size.
 
-    **Requires periodic boundary conditions** (UnitCell).
+    **Requires periodic boundary conditions** (Cell).
 
     Complexity: O(N) for well-distributed particles where cutoff << box size.
     Efficiency improves as cutoff/box ratio decreases.
@@ -1233,7 +1233,7 @@ def all_connected_neighborlist(
 
     Connects every particle pair that belongs to the same inclusion segment and has
     differing exclusion segment IDs. The cutoff is ignored for neighbor selection;
-    the unit cell is used only to compute minimum-image shifts.
+    the cell is used only to compute minimum-image shifts.
 
     Requires ``max_count`` to be set on the inclusion ``Index``.
     """
@@ -1269,10 +1269,10 @@ def all_connected_neighborlist(
         mask &= ~lh_idx.isin(rh_index_remap) | (lh_i >= rh_i)
 
     lh_frac = triangular_3x3_matmul(
-        lh_sys.unitcell.inverse_lattice_vectors, lh.data.positions
+        lh_sys.cell.inverse_lattice_vectors, lh.data.positions
     )
     rh_frac = triangular_3x3_matmul(
-        rh_sys.unitcell.inverse_lattice_vectors, rh.data.positions
+        rh_sys.cell.inverse_lattice_vectors, rh.data.positions
     )
     shifts = jnp.round(lh_frac[lh_idx.indices] - rh_frac[rh_idx.indices]).astype(int)
     return _compact_edges(
@@ -1389,7 +1389,7 @@ class UniversalNeighborlistParameters:
 
         Args:
             particles_per_system: Number of particles per system.
-            systems: System data with unit cell information.
+            systems: System data with cell information.
             cutoffs: Cutoff distance per system.
             base: Base for power-of rounding (default 2).
             multiplier: Safety factor applied to the estimate (default 1.0).
@@ -1403,7 +1403,7 @@ class UniversalNeighborlistParameters:
             num_cells = _num_cells(s, c).prod()
             total_candidates += min(n_p / num_cells * (3**3), n_p)
             total_edges += _estimate_avg_num_edges(
-                n_p, s.unitcell.volume, c, base, multiplier
+                n_p, s.cell.volume, c, base, multiplier
             )
             max_cells = max(num_cells, max_cells)
         total_candidates = next_higher_power(
@@ -1442,7 +1442,7 @@ def neighborlist_changes(
         lh: Full original particle table.
         rh: Proposed changes — ``rh.indices`` maps entries to particle IDs
             in ``lh``, ``rh.data`` holds the new particle data.
-        systems: Per-system data (unit cells, etc.).
+        systems: Per-system data (cells, etc.).
         cutoffs: Per-system cutoff distances.
         compaction: Fraction of total edges allocated per output (0–1).
             0.5 means each of added/removed gets half the buffer.

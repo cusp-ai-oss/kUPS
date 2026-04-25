@@ -30,6 +30,7 @@ from jax import Array
 
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity
+from kups.core.cell import Cell
 from kups.core.data import Buffered, Index, Table, WithIndices, subselect
 from kups.core.lens import Lens, View, bind
 from kups.core.parameter_scheduler import (
@@ -55,13 +56,12 @@ from kups.core.typing import (
     HasPositions,
     HasPositionsAndSystemIndex,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     MotifId,
     MotifParticleId,
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, key_chain, tree_map
 from kups.core.utils.math import triangular_3x3_matmul
@@ -158,7 +158,7 @@ class _RotPositions:
 def random_rotate_groups(
     key: Array,
     particles: Table[ParticleId, HasPositionsGroupSystem],
-    systems: Table[SystemId, HasUnitCell],
+    systems: Table[SystemId, HasCell],
     step_width: Array,
 ) -> Array:
     """Rotate molecular groups around their centers of mass.
@@ -166,7 +166,7 @@ def random_rotate_groups(
     Args:
         key: JAX PRNG key.
         particles: Indexed particles with positions, group, and system indices.
-        systems: Indexed systems with unit cell data.
+        systems: Indexed systems with cell data.
         step_width: Rotation step size (0=no rotation, 1=full random rotation).
 
     Returns:
@@ -174,7 +174,7 @@ def random_rotate_groups(
     """
     positions = particles.data.positions
     system_ids = particles.data.system.indices
-    unitcell = systems.data.unitcell
+    cell = systems.data.cell
     chain = key_chain(key)
     n_sys = len(systems)
     rotations = Quaternion.random(next(chain), (n_sys,)) ** step_width
@@ -184,14 +184,14 @@ def random_rotate_groups(
     )
     data = _RotPositions(positions=positions, group=group_index)
     rot_particles = Table.arange(data, label=ParticleId)
-    center_of_masses = center_of_mass(rot_particles, unitcell)
-    rel_positions = to_relative_positions(rot_particles, unitcell, center_of_masses)
+    center_of_masses = center_of_mass(rot_particles, cell)
+    rel_positions = to_relative_positions(rot_particles, cell, center_of_masses)
     rel_positions = rel_positions @ rotations[system_ids]
     new_data = _RotPositions(positions=rel_positions, group=group_index)
     new_rot_particles = Table.arange(new_data, label=ParticleId)
     new_abs_positions = to_absolute_positions(
         new_rot_particles,
-        unitcell,
+        cell,
         center_of_masses,
     )
     return new_abs_positions
@@ -200,22 +200,22 @@ def random_rotate_groups(
 def translate_groups(
     translations: Table[SystemId, Array],
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
-    systems: Table[SystemId, HasUnitCell],
+    systems: Table[SystemId, HasCell],
 ) -> Array:
     """Apply rigid body translations to particles with periodic wrapping.
 
     Args:
         translations: Per-system translation vectors, shape `(n_systems, 3)`.
         particles: Indexed particles with positions and system index.
-        systems: Indexed systems with unit cell data.
+        systems: Indexed systems with cell data.
 
     Returns:
         Translated and wrapped particle positions.
     """
     system_ids = particles.data.system
     new_positions = particles.data.positions + translations[system_ids]
-    batched_unitcells = systems[system_ids].unitcell
-    new_positions = batched_unitcells.wrap(new_positions)
+    batched_cells = systems[system_ids].cell
+    new_positions = batched_cells.wrap(new_positions)
     return new_positions
 
 
@@ -223,7 +223,7 @@ def propose_group_translation(
     key: Array,
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
-    systems: Table[SystemId, HasUnitCell],
+    systems: Table[SystemId, HasCell],
     step_width: Table[SystemId, Array],
     capacity: Capacity[int],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
@@ -248,7 +248,7 @@ def propose_group_rotation(
     key: Array,
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
-    systems: Table[SystemId, HasUnitCell],
+    systems: Table[SystemId, HasCell],
     step_width: Table[SystemId, Array],
     capacity: Capacity[int],
 ) -> ParticlePositionChanges:
@@ -269,7 +269,7 @@ def propose_reinsertion(
     key: Array,
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
-    systems: Table[SystemId, HasUnitCell],
+    systems: Table[SystemId, HasCell],
     capacity: Capacity[int],
 ) -> ParticlePositionChanges:
     """Propose a random reinsertion (new position + rotation) of one group per system."""
@@ -289,7 +289,7 @@ def propose_reinsertion(
     rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
     abs_offsets = Table(
         systems.keys,
-        triangular_3x3_matmul(systems.data.unitcell.lattice_vectors, rel_offsets),
+        triangular_3x3_matmul(systems.data.cell.lattice_vectors, rel_offsets),
     )
     new_positions = translate_groups(abs_offsets, rotated_particles, systems)
     return ParticlePositionChanges(particle_ids=selected, new_positions=new_positions)
@@ -298,7 +298,7 @@ def propose_reinsertion(
 def propose_particle_translation(
     key: Array,
     particles: BatchedPositions,
-    systems: Table[SystemId, HasUnitCell],
+    systems: Table[SystemId, HasCell],
     step_width: Table[SystemId, Array],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
 ) -> ParticlePositionChanges:
@@ -318,7 +318,7 @@ def propose_particle_translation(
     )
     selected_data = particles[particle_ids]
     new_positions = selected_data.positions + translation
-    cells = systems[selected_data.system].unitcell
+    cells = systems[selected_data.system].cell
     new_positions = cells.wrap(new_positions)
     return ParticlePositionChanges(
         particle_ids=particle_ids, new_positions=new_positions
@@ -331,13 +331,13 @@ class ParticleTranslationMove[State](MonteCarloMove[State, ParticlePositionChang
 
     Attributes:
         positions: Lens to particle positions in state.
-        systems: Lens to indexed systems with unit cells.
+        systems: Lens to indexed systems with cells.
         step_width: Lens to maximum displacement magnitude (tunable).
         distribution: Symmetric distribution for displacements (default: normal).
     """
 
     positions: View[State, BatchedPositions] = field(static=True)
-    systems: View[State, Table[SystemId, HasUnitCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
     step_width: View[State, Table[SystemId, Array]] = field(static=True)
     distribution: SymmetricTranslationDistribution = field(
         static=True, default=jax.random.normal
@@ -365,7 +365,7 @@ class GroupTranslationMove[State](MonteCarloMove[State, ParticlePositionChanges]
     Attributes:
         particles: Lens to particle positions.
         groups: Lens to groups eligible for moves.
-        systems: Lens to indexed systems with unit cells.
+        systems: Lens to indexed systems with cells.
         step_width: Lens to maximum translation magnitude.
         capacity: Lens to capacity constraints.
         distribution: Symmetric distribution for displacements (default: normal).
@@ -373,7 +373,7 @@ class GroupTranslationMove[State](MonteCarloMove[State, ParticlePositionChanges]
 
     particles: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
-    systems: View[State, Table[SystemId, HasUnitCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
     step_width: View[State, Table[SystemId, Array]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
     distribution: SymmetricTranslationDistribution = field(
@@ -403,14 +403,14 @@ class GroupRotationMove[State](MonteCarloMove[State, ParticlePositionChanges]):
     Attributes:
         particles: Lens to particle positions.
         groups: Lens to groups eligible for moves.
-        systems: Lens to indexed systems with unit cell data.
+        systems: Lens to indexed systems with cell data.
         step_width: Lens to rotation magnitude (0=no rotation, 1=full).
         capacity: Lens to capacity constraints.
     """
 
     particles: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
-    systems: View[State, Table[SystemId, HasUnitCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
     step_width: View[State, Table[SystemId, Array]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
 
@@ -436,13 +436,13 @@ class ReinsertionMove[State](MonteCarloMove[State, ParticlePositionChanges]):
     Attributes:
         positions: Lens to particle positions.
         groups: Lens to groups eligible for moves.
-        systems: Lens to indexed systems with unit cell data.
+        systems: Lens to indexed systems with cell data.
         capacity: Lens to capacity constraints.
     """
 
     positions: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
-    systems: View[State, Table[SystemId, HasUnitCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
 
     def __call__(
@@ -575,7 +575,7 @@ def insert_random_motif(
     motifs: Table[MotifParticleId, IsMotifData],
     particles: Buffered[ParticleId, HasPositionsGroupSystem],
     groups: Buffered[GroupId, HasMotifAndSystemIndex],
-    unitcell: Table[SystemId, UnitCell],
+    cell: Table[SystemId, Cell],
     capacity: Capacity[int],
 ) -> ExchangeChanges:
     """Generate a GCMC insertion move for random molecular motifs.
@@ -585,7 +585,7 @@ def insert_random_motif(
         motifs: Indexed molecular templates for insertion.
         particles: Current buffered particle positions.
         groups: Current buffered group metadata.
-        unitcell: Per-system unit cell parameters.
+        cell: Per-system cell parameters.
         capacity: Capacity constraints for state arrays.
 
     Returns:
@@ -610,13 +610,13 @@ def insert_random_motif(
     new_positions = motifs.data.positions[particle_idx]
     # Rotate and translate
     rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
-    abs_offsets = triangular_3x3_matmul(unitcell.data.lattice_vectors, rel_offsets)
+    abs_offsets = triangular_3x3_matmul(cell.data.lattice_vectors, rel_offsets)
     rotations = Quaternion.random(next(chain), (n_sys,))
-    sys_idx = Index(unitcell.keys, ins_system_ids)
+    sys_idx = Index(cell.keys, ins_system_ids)
     new_positions = (
         new_positions @ rotations[ins_system_ids] + abs_offsets[ins_system_ids]
     )
-    new_positions = unitcell[sys_idx].wrap(new_positions)
+    new_positions = cell[sys_idx].wrap(new_positions)
 
     # Find free particle slots using Buffered.select_free
     n_free_particles = (~particles.occupation).sum()
@@ -784,7 +784,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
         positions: Lens to buffered particle positions.
         groups: Lens to buffered molecular groups.
         motifs: Lens to molecular templates available for insertion.
-        unitcell: Lens to unit cell parameters.
+        cell: Lens to cell parameters.
         capacity: Lens to capacity constraints.
     """
 
@@ -793,7 +793,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     )
     groups: View[State, Buffered[GroupId, HasMotifAndSystemIndex]] = field(static=True)
     motifs: View[State, Table[MotifParticleId, IsMotifData]] = field(static=True)
-    unitcell: View[State, Table[SystemId, UnitCell]] = field(static=True)
+    cell: View[State, Table[SystemId, Cell]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
 
     def _zero_ratio(self, state: State) -> LogProbabilityRatio:
@@ -808,7 +808,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
             self.motifs(state),
             self.positions(state),
             self.groups(state),
-            self.unitcell(state),
+            self.cell(state),
             self.capacity(state),
         )
         return changes, self._zero_ratio(state)
@@ -843,7 +843,7 @@ class IsMCMCMoveState(Protocol):
     @property
     def groups(self) -> Table[GroupId, HasSystemIndex]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def move_capacity(self) -> Capacity[int]: ...
 
@@ -1064,7 +1064,7 @@ def make_exchange_mcmc_propagator[State, Move: Patch](
         positions=state.focus(lambda x: x.particles),
         groups=state.focus(lambda x: x.groups),
         motifs=state.focus(lambda x: x.motifs),
-        unitcell=state.focus(lambda x: x.systems.map_data(lambda d: d.unitcell)),
+        cell=state.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
         capacity=state.focus(lambda x: x.move_capacity),
     )
     return MCMCPropagator(
@@ -1204,7 +1204,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch](
                 inner.motifs,
                 inner.particles,
                 inner.groups,
-                inner.systems.map_data(lambda d: d.unitcell),
+                inner.systems.map_data(lambda d: d.cell),
                 inner.move_capacity,
             )
             deletion = delete_random_motif(

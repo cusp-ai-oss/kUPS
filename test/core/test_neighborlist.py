@@ -10,6 +10,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import CapacityError, FixedCapacity
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.data.wrappers import WithIndices
@@ -24,7 +25,6 @@ from kups.core.neighborlist import (
 )
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 
 
@@ -53,7 +53,7 @@ class SamplePoints:
 class SampleSystems:
     """Concrete NeighborListSystems for testing."""
 
-    unitcell: UnitCell
+    cell: Cell
 
 
 def _make_lh(positions, batch_mask, exclusion_ids=None):
@@ -76,21 +76,21 @@ def _make_lh(positions, batch_mask, exclusion_ids=None):
 
 
 def _make_systems(lattice_or_uc, cutoffs):
-    """Create Table systems from unit cell, alongside cutoffs.
+    """Create Table systems from cell, alongside cutoffs.
 
     Returns:
         A tuple of (Table systems, Table cutoffs).
     """
     n = len(cutoffs)
-    if isinstance(lattice_or_uc, UnitCell):
+    if isinstance(lattice_or_uc, Cell):
         uc = lattice_or_uc
     else:
         lv = jnp.asarray(lattice_or_uc)
         if lv.shape[0] == 1 and n > 1:
             lv = jnp.repeat(lv, n, axis=0)
-        uc = TriclinicUnitCell.from_matrix(lv)
+        uc = TriclinicCell.from_matrix(lv)
     sys_keys = tuple(SystemId(i) for i in range(n))
-    indexed_systems = Table(sys_keys, SampleSystems(unitcell=uc))
+    indexed_systems = Table(sys_keys, SampleSystems(cell=uc))
     indexed_cutoffs = Table(sys_keys, cutoffs)
     return indexed_systems, indexed_cutoffs
 
@@ -253,7 +253,7 @@ class TestNearestNeighborListImplementations:
         default_params = {
             "positions": jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]),
             "batch_mask": jnp.array([0, 0, 0]),
-            "unitcells": jnp.eye(3)[None] * 10.0,
+            "cells": jnp.eye(3)[None] * 10.0,
             "cutoffs": jnp.array([1.5]),
             "extras": {"candidates": 9, "edges": 4, "cells": 256},
         }
@@ -284,7 +284,7 @@ class TestNearestNeighborListImplementations:
             rh_batch_mask = params.get("rh_batch_mask", params["batch_mask"])
             rh, rh_remap = _make_rh(lh, rh_pos, rh_batch_mask, rh_idx)
 
-        systems, cutoffs = _make_systems(params["unitcells"], params["cutoffs"])
+        systems, cutoffs = _make_systems(params["cells"], params["cutoffs"])
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=rh,
@@ -311,9 +311,9 @@ class TestNearestNeighborListImplementations:
         # Check specific edges exist
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
         expected_edges = {(0, 1), (1, 0), (1, 2), (2, 1)}
-        assert expected_edges.issubset(edge_set), (
-            f"Missing edges: {expected_edges - edge_set}"
-        )
+        assert expected_edges.issubset(
+            edge_set
+        ), f"Missing edges: {expected_edges - edge_set}"
 
     def test_capacity_management(self, neighbor_list_impl):
         """Test capacity management for any implementation."""
@@ -349,9 +349,9 @@ class TestNearestNeighborListImplementations:
         valid_edges = valid_edges[valid_edges[:, 1] < 2]
 
         # The implementation uses < cutoff, so particles exactly at cutoff should not be neighbors
-        assert len(valid_edges) == 0, (
-            f"Found unexpected edges at exact cutoff: {valid_edges}"
-        )
+        assert (
+            len(valid_edges) == 0
+        ), f"Found unexpected edges at exact cutoff: {valid_edges}"
 
     def test_periodic_boundary_conditions(self, neighbor_list_impl):
         """Test neighbor search with periodic boundary conditions."""
@@ -359,7 +359,7 @@ class TestNearestNeighborListImplementations:
             neighbor_list_impl,
             positions=jnp.array([[0.1, 0.0, 0.0], [2.9, 0.0, 0.0]]),
             batch_mask=jnp.array([0, 0]),
-            unitcells=jnp.eye(3)[None] * 3.0,
+            cells=jnp.eye(3)[None] * 3.0,
             cutoffs=jnp.array([1.0]),
         )
         result.raise_assertion()
@@ -382,7 +382,7 @@ class TestNearestNeighborListImplementations:
                 ]
             ),
             batch_mask=jnp.array([0, 0, 1, 1]),
-            unitcells=jnp.eye(3)[None].repeat(2, axis=0) * 10.0,
+            cells=jnp.eye(3)[None].repeat(2, axis=0) * 10.0,
             cutoffs=jnp.array([1.5, 1.5]),
             capacity=20,
         )
@@ -459,7 +459,7 @@ class TestNearestNeighborListImplementations:
             batch_mask=lh_batch,
             rh_batch_mask=jnp.array([0, 1]),
             rh_index_remap=jnp.array([1, 3]),
-            unitcells=uc,
+            cells=uc,
             cutoffs=cutoffs,
             capacity=20,
         )
@@ -472,9 +472,9 @@ class TestNearestNeighborListImplementations:
         for i in range(valid_pos.shape[0]):
             lh_idx, rh_idx = valid_pos[i]
             if lh_idx < 4 and rh_idx < 4:
-                assert lh_batch[lh_idx] == lh_batch[rh_idx], (
-                    f"Edge ({lh_idx}, {rh_idx}) crosses batch boundary"
-                )
+                assert (
+                    lh_batch[lh_idx] == lh_batch[rh_idx]
+                ), f"Edge ({lh_idx}, {rh_idx}) crosses batch boundary"
 
         # Negative case: rh in swapped systems, cross-system edges blocked
         result_neg = self._run_neighbor_search_test(
@@ -484,7 +484,7 @@ class TestNearestNeighborListImplementations:
             batch_mask=lh_batch,
             rh_batch_mask=jnp.array([1, 0]),  # swapped
             rh_index_remap=jnp.array([3, 1]),
-            unitcells=uc,
+            cells=uc,
             cutoffs=cutoffs,
             capacity=20,
         )
@@ -652,7 +652,7 @@ class TestNearestNeighborListImplementations:
             batch_mask=jnp.array([0, 1, 0]),
             rh_batch_mask=jnp.array([0, 1, 0]),
             rh_index_remap=rh_index_remap,
-            unitcells=jnp.eye(3)[None].repeat(2, axis=0) * 10.0,
+            cells=jnp.eye(3)[None].repeat(2, axis=0) * 10.0,
             cutoffs=jnp.array([1.5, 1.5]),
             capacity=20,
         )
@@ -680,7 +680,7 @@ class TestNearestNeighborListImplementations:
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=0.0, maxval=10.0
         )
-        unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -694,7 +694,7 @@ class TestNearestNeighborListImplementations:
             jnp.arange(N),
         )
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         while (
             result := as_result_function(neighbor_list_instance)(
                 lh, None, systems=_sys, cutoffs=_cut
@@ -705,21 +705,21 @@ class TestNearestNeighborListImplementations:
         actual_edges = {tuple(map(int, edge)) for edge in result.value.indices.indices}
 
         diffs = positions[:, None] - positions[None, :]
-        diffs = unitcell.wrap(diffs)
+        diffs = cell.wrap(diffs)
         dists = jnp.linalg.norm(diffs, axis=-1)
         mask = (dists < cutoff) & ~jnp.eye(N, dtype=bool)
         edges = jnp.stack(jnp.where(mask), axis=-1)
         edges = {tuple(map(int, edge)) for edge in edges}
 
         for edge in edges:
-            assert edge in actual_edges, (
-                f"Edge {edge} not found in actual edges with distance {dists[edge[0], edge[1]]}."
-            )
+            assert (
+                edge in actual_edges
+            ), f"Edge {edge} not found in actual edges with distance {dists[edge[0], edge[1]]}."
         for edge in actual_edges:
             if edge not in edges:
-                assert edge[0] == edge[1] == N, (
-                    f"Unexpected edge {edge} found in actual edges with distance {dists[edge[0], edge[1]]}."
-                )
+                assert (
+                    edge[0] == edge[1] == N
+                ), f"Unexpected edge {edge} found in actual edges with distance {dists[edge[0], edge[1]]}."
 
     def test_compare_to_naive_update(self, neighbor_list_impl):
         N = 15
@@ -727,7 +727,7 @@ class TestNearestNeighborListImplementations:
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=-5.0, maxval=5.0
         )
-        unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -747,7 +747,7 @@ class TestNearestNeighborListImplementations:
         )
         rh, rh_remap = _make_rh(lh, new_positions, jnp.array([0] * M), rh_indices)
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
@@ -762,7 +762,7 @@ class TestNearestNeighborListImplementations:
         actual_edges = {tuple(map(int, edge)) for edge in result.value.indices.indices}
 
         diffs = positions[:, None] - new_positions[None, :]
-        diffs = unitcell.wrap(diffs)
+        diffs = cell.wrap(diffs)
         dists = jnp.linalg.norm(diffs, axis=-1)
         mask = dists < cutoff
         mask = mask.at[rh_indices].min(~jnp.eye(M, dtype=bool))
@@ -770,13 +770,13 @@ class TestNearestNeighborListImplementations:
         for i in range(N):
             for j in range(M):
                 if mask[i, j]:
-                    assert (i, int(rh_indices[j])) in actual_edges, (
-                        f"Missing edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
-                    )
+                    assert (
+                        (i, int(rh_indices[j])) in actual_edges
+                    ), f"Missing edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
                 else:
-                    assert (i, int(rh_indices[j])) not in actual_edges, (
-                        f"Unexpected edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
-                    )
+                    assert (
+                        (i, int(rh_indices[j])) not in actual_edges
+                    ), f"Unexpected edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
 
     # --- Small cell periodic image tests ---
 
@@ -796,9 +796,9 @@ class TestNearestNeighborListImplementations:
         within_cutoff = (dists < cutoff).any(axis=-1)
         return within_cutoff & ~jnp.eye(n, dtype=bool)
 
-    def _compute_naive_neighbors(self, positions, unitcell, cutoff):
+    def _compute_naive_neighbors(self, positions, cell, cutoff):
         """Compute neighbors by explicitly checking all periodic images."""
-        mask = self._compute_neighbor_mask(positions, unitcell.lattice_vectors, cutoff)
+        mask = self._compute_neighbor_mask(positions, cell.lattice_vectors, cutoff)
         i_idx, j_idx = jnp.where(mask)
         return {(int(i), int(j)) for i, j in zip(i_idx, j_idx)}
 
@@ -811,7 +811,7 @@ class TestNearestNeighborListImplementations:
         positions_1 = jnp.array([[0.0, 0.0, 0.0], [0.4, 0.0, 0.0]])
         batch_mask_1 = jnp.array([0, 0])
         lv_1 = jnp.diag(jnp.array([1.0, 10.0, 10.0]))[None]
-        uc_1 = TriclinicUnitCell.from_matrix(lv_1)
+        uc_1 = TriclinicCell.from_matrix(lv_1)
         nl_1 = instance_factory(
             candidates=10, edges=10, cells=256, image_candidates=200
         )
@@ -833,7 +833,7 @@ class TestNearestNeighborListImplementations:
         positions_2 = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.3, 0.3]])
         batch_mask_2 = jnp.array([0, 0])
         lv_2 = jnp.eye(3)[None] * 1.0
-        uc_2 = TriclinicUnitCell.from_matrix(lv_2)
+        uc_2 = TriclinicCell.from_matrix(lv_2)
         nl_2 = instance_factory(candidates=4, edges=53, cells=8, image_candidates=600)
         lh_2 = _make_lh(positions_2, batch_mask_2, jnp.arange(len(batch_mask_2)))
         _sys_2, _cut_2 = _make_systems(uc_2, jnp.array([cutoff]))
@@ -857,7 +857,7 @@ class TestNearestNeighborListImplementations:
         )
         batch_mask = jnp.zeros(N, dtype=int)
         lattice_vectors = jnp.eye(3)[None] * 1.5
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
         cutoff = 1.2
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -871,7 +871,7 @@ class TestNearestNeighborListImplementations:
             jnp.arange(N),
         )
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
@@ -888,7 +888,7 @@ class TestNearestNeighborListImplementations:
             for e in result.value.indices.indices
             if e[0] < N and e[1] < N
         }
-        expected = self._compute_naive_neighbors(positions, unitcell, cutoff)
+        expected = self._compute_naive_neighbors(positions, cell, cutoff)
         for edge in expected:
             assert edge in actual_edges, f"Missing edge {edge}"
 
@@ -909,7 +909,7 @@ class TestNearestNeighborListImplementations:
                 jnp.eye(3) * 10.0,
             ]
         )
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
         cutoffs = jnp.array([0.8, 1.5])
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -925,7 +925,7 @@ class TestNearestNeighborListImplementations:
             ),
         )
 
-        _sys, _cut = _make_systems(unitcell, cutoffs)
+        _sys, _cut = _make_systems(cell, cutoffs)
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -966,9 +966,7 @@ class TestNearestNeighborListImplementations:
             ]
         )
         batch_mask = jnp.array([0, 0, 1, 1, 2, 2])
-        unitcell = TriclinicUnitCell.from_matrix(
-            jnp.eye(3)[None].repeat(3, axis=0) * 1.0
-        )
+        cell = TriclinicCell.from_matrix(jnp.eye(3)[None].repeat(3, axis=0) * 1.0)
         cutoffs = jnp.array([0.8, 0.8, 0.8])  # > 0.5 triggers images
 
         # Shuffle particles across systems: [S0, S1, S0, S2, S1, S2]
@@ -983,7 +981,7 @@ class TestNearestNeighborListImplementations:
             jnp.arange(6),
         )
 
-        _sys, _cut = _make_systems(unitcell, cutoffs)
+        _sys, _cut = _make_systems(cell, cutoffs)
 
         def get_edges(idx_order):
             rev_order = np.argsort(idx_order)
@@ -1017,7 +1015,7 @@ class TestNearestNeighborListImplementations:
                 ]
             ]
         )
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
         cutoff = 0.8
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1033,7 +1031,7 @@ class TestNearestNeighborListImplementations:
             ),
         )
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1047,10 +1045,10 @@ class TestNearestNeighborListImplementations:
             for e in result.value.indices.indices
             if e[0] < len(positions) and e[1] < len(positions)
         }
-        expected = self._compute_naive_neighbors(positions, unitcell, cutoff)
-        assert len(expected.difference(valid_edges)) == 0, (
-            f"Missing edges: {expected - valid_edges}"
-        )
+        expected = self._compute_naive_neighbors(positions, cell, cutoff)
+        assert (
+            len(expected.difference(valid_edges)) == 0
+        ), f"Missing edges: {expected - valid_edges}"
 
     def test_self_interactions_with_periodic_images(self, neighbor_list_impl):
         """Verify self-interactions with images are included while non-image self-interactions are excluded."""
@@ -1061,7 +1059,7 @@ class TestNearestNeighborListImplementations:
         # Cell size 0.5 Å, cutoff 0.55 Å => nearest self-images (distance 0.5) are within cutoff
         cell_size = 0.5
         lattice_vectors = jnp.eye(3)[None] * cell_size
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
         cutoff = 0.55
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1075,7 +1073,7 @@ class TestNearestNeighborListImplementations:
             jnp.array([0]),
         )
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1111,9 +1109,9 @@ class TestNearestNeighborListImplementations:
         assert (0, 0, (0, 0, 0)) not in edge_set
 
         # All expected self-image edges should be present
-        assert edge_set == expected_edges, (
-            f"Could not find edges {expected_edges - edge_set} or found unexpected edges {edge_set - expected_edges}"
-        )
+        assert (
+            edge_set == expected_edges
+        ), f"Could not find edges {expected_edges - edge_set} or found unexpected edges {edge_set - expected_edges}"
 
     def test_no_replication_with_infinite_cutoff(self, neighbor_list_impl):
         """Verify no periodic images are generated when cutoff is infinite."""
@@ -1121,7 +1119,7 @@ class TestNearestNeighborListImplementations:
         batch_mask = jnp.array([0, 0])
 
         lattice_vectors = jnp.eye(3)[None] * 1.0
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
         cutoff = jnp.inf
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1135,7 +1133,7 @@ class TestNearestNeighborListImplementations:
             jnp.array([0, 1]),
         )
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1158,9 +1156,9 @@ class TestNearestNeighborListImplementations:
         # Expected: only direct neighbors (0,1) and (1,0) with zero shift, no periodic images
         expected_edges = {(0, 1, (0, 0, 0)), (1, 0, (0, 0, 0))}
 
-        assert edge_set == expected_edges, (
-            f"Expected edges {expected_edges}, got {edge_set}"
-        )
+        assert (
+            edge_set == expected_edges
+        ), f"Expected edges {expected_edges}, got {edge_set}"
 
     def test_exclusion_only_applies_to_minimum_image(self, neighbor_list_impl):
         """Verify exclusion segments only exclude the minimum image convention interaction.
@@ -1177,7 +1175,7 @@ class TestNearestNeighborListImplementations:
         # The minimum image is (-1,0,0) with distance 0.2
         cell_size = 0.5
         lattice_vectors = jnp.eye(3)[None] * cell_size
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
         cutoff = 0.4
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1188,7 +1186,7 @@ class TestNearestNeighborListImplementations:
         # Same exclusion segment for both particles
         lh = _make_lh(positions, batch_mask, jnp.array([0, 0]))
 
-        _sys, _cut = _make_systems(unitcell, jnp.array([cutoff]))
+        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1279,21 +1277,21 @@ class TestRefineCutoffNeighborList:
         ]
 
         if len(valid_distances) > 0:
-            assert jnp.all(valid_distances <= cutoffs[0] + 1e-6), (
-                "All distances should be within cutoff"
-            )
+            assert jnp.all(
+                valid_distances <= cutoffs[0] + 1e-6
+            ), "All distances should be within cutoff"
 
-    def test_with_unitcells(self):
+    def test_with_cells(self):
         """Test refinement with periodic boundary conditions."""
-        # Create a 2x2x2 grid in a 3x3x3 unit cell
+        # Create a 2x2x2 grid in a 3x3x3 cell
         positions = jnp.array(
             [[0.5, 0.5, 0.5], [2.5, 0.5, 0.5], [0.5, 2.5, 0.5], [2.5, 2.5, 0.5]]
         )
         lh = self._create_test_pointset(positions)
 
-        # Lattice vectors for 3x3x3 unit cell
+        # Lattice vectors for 3x3x3 cell
         lattice_vectors = jnp.eye(3)[None] * 3.0
-        unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
+        cell = TriclinicCell.from_matrix(lattice_vectors)
 
         # Create candidates including some that need PBC
         lh_indices = jnp.array([0, 1, 2, 3])
@@ -1308,7 +1306,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(10)
         )
 
-        _sys, _cut = _make_systems(unitcell, cutoffs)
+        _sys, _cut = _make_systems(cell, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=None,
@@ -1561,7 +1559,7 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
         systems, cutoffs = _make_systems(uc, jnp.array([3.0]))
         nl = self._make_nl()
 
@@ -1621,7 +1619,7 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
         systems, cutoffs = _make_systems(uc, jnp.array([1.5]))
         nl = self._make_nl()
 
@@ -1658,7 +1656,7 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.array([0, 0, 1, 1])
-        uc = TriclinicUnitCell.from_matrix(
+        uc = TriclinicCell.from_matrix(
             jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
         )
         systems, cutoffs = _make_systems(uc, jnp.array([1.5, 1.5]))
@@ -1685,7 +1683,7 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
         systems, cutoffs = _make_systems(uc, jnp.array([1.5]))
         nl = self._make_nl()
 
@@ -1712,7 +1710,7 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
         systems, cutoffs = _make_systems(uc, jnp.array([3.0]))
         nl = self._make_nl(capacity=64)
 

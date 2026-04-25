@@ -230,7 +230,7 @@ def main() -> int:
 
     positions = np.asarray(init_data.atoms.data.positions)
     dof = int(3 * positions.shape[0] - 3)
-    lattice = np.asarray(init_data.systems.data.unitcell.lattice_vectors[0])
+    lattice = np.asarray(init_data.systems.data.cell.lattice_vectors[0])
     potential_energy = np.asarray(step_data.potential_energy).flatten()
     kinetic_energy = np.asarray(step_data.kinetic_energy).flatten()
 

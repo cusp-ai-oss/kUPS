@@ -35,14 +35,14 @@ class TestCosineAngleEnergy:
 
     @classmethod
     def setup_class(cls):
-        cls.unitcells_lv = jnp.eye(3)[None] * 10.0
+        cls.cells_lv = jnp.eye(3)[None] * 10.0
         cls.species = ["A", "A", "A"]
         cls.system_ids = [0, 0, 0]
         cls.k = jnp.ones((2, 2, 2))
 
     def _make_graph(self, positions):
         particles = make_particles(positions, self.species, self.system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2]])),
             shifts=jnp.array([[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]),
@@ -113,7 +113,7 @@ class TestCosineAngleEnergy:
         particles = make_particles(
             _positions_for_angle(jnp.pi / 2), self.species, self.system_ids
         )
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1]])),
             shifts=jnp.array([[[0.0, 0.0, 0.0]]]),
@@ -132,7 +132,7 @@ class TestCosineAngleEnergy:
         species = ["A", "A", "A", "A"]
         system_ids = [0, 0, 0, 0]
         particles = make_particles(positions, species, system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2], [3, 0, 2]])),
             shifts=jnp.array(

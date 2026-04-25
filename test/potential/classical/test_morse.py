@@ -38,7 +38,7 @@ class TestMorseBondEnergy:
     def setup_class(cls):
         cls.species = ["A", "B"]
         cls.system_ids = [0, 0]
-        cls.unitcells_lv = jnp.eye(3)[None] * 10.0
+        cls.cells_lv = jnp.eye(3)[None] * 10.0
         cls.r0 = jnp.array([[1.5, 1.2], [1.2, 1.8]])
         cls.D = jnp.array([[2.0, 1.5], [1.5, 2.5]])
         cls.alpha = jnp.array([[2.0, 1.8], [1.8, 2.2]])
@@ -48,7 +48,7 @@ class TestMorseBondEnergy:
 
     def _make_graph(self, positions):
         particles = make_particles(positions, self.species, self.system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1]])),
             shifts=jnp.array([[[0.0, 0.0, 0.0]]]),
@@ -135,7 +135,7 @@ class TestMorseBondEnergy:
     def test_assertion_wrong_order(self):
         positions = _positions_for_distance(1.0)
         particles = make_particles(positions, self.species, self.system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 0]])),
             shifts=jnp.array([[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]),

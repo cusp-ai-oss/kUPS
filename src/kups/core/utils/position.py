@@ -12,15 +12,15 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.typing import HasPositionsAndGroupIndex, HasWeights, ParticleId
-from kups.core.unitcell import UnitCell
 from kups.core.utils.jax import jit
 
 
 @jit
 def center_of_mass[P: HasPositionsAndGroupIndex](
-    particles: Table[ParticleId, P], unitcells: UnitCell
+    particles: Table[ParticleId, P], cells: Cell
 ) -> Array:
     """Compute center of mass for indexed particle groups.
 
@@ -30,13 +30,13 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     in each group before averaging.
 
     Warning:
-        Assumes each molecular structure is smaller than half the unit cell size.
+        Assumes each molecular structure is smaller than half the cell size.
         Molecules spanning more than half the box may yield incorrect results.
 
     Args:
         particles: Indexed particles, optionally supporting `HasWeights` for mass weighting.
-        unitcells: Unit cell(s) defining periodic boundary conditions. Must have
-            one unit cell per group.
+        cells: Cell(s) defining periodic boundary conditions. Must have
+            one cell per group.
 
     Returns:
         Shape `(num_groups, 3)` containing center-of-mass positions for each group.
@@ -49,11 +49,11 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     """
     group_ids = particles.data.group.indices
     num_groups = particles.data.group.num_labels
-    # TODO: This function assumes that the structure is less than half the size of the unit cell!
-    assert unitcells.lattice_vectors.shape[0] == num_groups, (
-        f"Unit cells must match the number of groups. Got {unitcells.lattice_vectors.shape[0]} for {num_groups} groups."
-    )
-    batched_unitcells = unitcells[group_ids]
+    # TODO: This function assumes that the structure is less than half the size of the cell!
+    assert (
+        cells.lattice_vectors.shape[0] == num_groups
+    ), f"Cells must match the number of groups. Got {cells.lattice_vectors.shape[0]} for {num_groups} groups."
+    batched_cells = cells[group_ids]
     # Index any particle in each group
     ref_idx = (
         jnp.zeros((num_groups,), dtype=int)
@@ -67,7 +67,7 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
         weight = jnp.ones_like(positions[:, 0])[:, None]
     offsets = positions[ref_idx]
     rel_positions = positions - offsets[group_ids]
-    rel_positions = batched_unitcells.wrap(rel_positions)
+    rel_positions = batched_cells.wrap(rel_positions)
     center_of_masses = jax.ops.segment_sum(
         rel_positions * weight,
         group_ids,
@@ -80,14 +80,14 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     )
     center_of_masses /= total_mass
     center_of_masses += offsets
-    center_of_masses = unitcells.wrap(center_of_masses)
+    center_of_masses = cells.wrap(center_of_masses)
     return center_of_masses
 
 
 @jit
 def to_relative_positions[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P],
-    unitcells: UnitCell,
+    cells: Cell,
     center_of_masses: Array | None = None,
 ) -> Array:
     """Calculate particle positions relative to their group's center of mass.
@@ -98,7 +98,7 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
     Args:
         particles: Indexed particles with position and group index data. Supports
             `HasWeights` if center of mass needs to be computed.
-        unitcells: Unit cell(s) defining periodic boundaries.
+        cells: Cell(s) defining periodic boundaries.
         center_of_masses: Optional precomputed centers of mass. If `None`,
             will be computed automatically.
 
@@ -112,19 +112,19 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
     """
     group_ids = particles.data.group.indices
     if center_of_masses is None:
-        center_of_masses = center_of_mass(particles, unitcells)
+        center_of_masses = center_of_mass(particles, cells)
     positions = particles.data.positions
     rel_positions = positions - center_of_masses.at[group_ids].get(
         mode="fill", fill_value=0
     )
-    rel_positions = unitcells[group_ids].wrap(rel_positions)
+    rel_positions = cells[group_ids].wrap(rel_positions)
     return rel_positions
 
 
 @jit
 def to_absolute_positions[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P],
-    unitcells: UnitCell,
+    cells: Cell,
     center_of_masses: Array,
 ) -> Array:
     """Calculate absolute positions from relative positions and group COMs.
@@ -135,7 +135,7 @@ def to_absolute_positions[P: HasPositionsAndGroupIndex](
 
     Args:
         particles: Indexed particles with relative positions and group index.
-        unitcells: Unit cell(s) defining periodic boundaries.
+        cells: Cell(s) defining periodic boundaries.
         center_of_masses: Centers of mass for each group, shape `(num_groups, 3)`.
 
     Returns:
@@ -151,5 +151,5 @@ def to_absolute_positions[P: HasPositionsAndGroupIndex](
     abs_positions = positions + center_of_masses.at[group_ids].get(
         mode="fill", fill_value=0
     )
-    abs_positions = unitcells[group_ids].wrap(abs_positions)
+    abs_positions = cells[group_ids].wrap(abs_positions)
     return abs_positions

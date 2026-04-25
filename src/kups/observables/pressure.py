@@ -14,14 +14,14 @@ from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import (
     HasTemperature,
-    HasUnitCell,
+    HasCell,
     SystemId,
 )
 
 
 @runtime_checkable
-class IsIdealGasSystems(HasTemperature, HasUnitCell, Protocol):
-    """Systems with temperature and unit cell for ideal gas pressure."""
+class IsIdealGasSystems(HasTemperature, HasCell, Protocol):
+    """Systems with temperature and cell for ideal gas pressure."""
 
 
 def _pressure_from_stress(stress: Array) -> Array:
@@ -48,7 +48,7 @@ def ideal_gas_pressure(
     Args:
         counts: Number of independent bodies per system (e.g. molecules
             for rigid-body MCMC, atoms for MD).
-        systems: Per-system temperature and unit cell.
+        systems: Per-system temperature and cell.
 
     Returns:
         Ideal gas pressure per system, shape ``(n_systems,)``.
@@ -56,5 +56,5 @@ def ideal_gas_pressure(
     return Table.transform(_ideal_gas_pressure)(
         counts,
         systems.map_data(lambda s: s.temperature),
-        systems.map_data(lambda s: s.unitcell.volume),
+        systems.map_data(lambda s: s.cell.volume),
     )

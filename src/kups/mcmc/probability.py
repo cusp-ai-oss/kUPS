@@ -49,7 +49,7 @@ from kups.core.typing import (
     HasMotifAndSystemIndex,
     HasPotentialEnergy,
     HasTemperature,
-    HasUnitCell,
+    HasCell,
     SystemId,
 )
 from kups.core.utils.functools import pipe
@@ -266,7 +266,7 @@ class IsBoltzmannState(Protocol):
     def systems(self) -> Table[SystemId, IsBoltzmannSystems]: ...
 
 
-class IsFugacitySystems(HasLogActivity, HasUnitCell, Protocol): ...
+class IsFugacitySystems(HasLogActivity, HasCell, Protocol): ...
 
 
 class IsFugacityState(Protocol):
@@ -279,7 +279,7 @@ class IsFugacityState(Protocol):
 
 
 class MuVTSystems(
-    HasLogActivity, HasUnitCell, HasTemperature, HasPotentialEnergy, Protocol
+    HasLogActivity, HasCell, HasTemperature, HasPotentialEnergy, Protocol
 ): ...
 
 
@@ -344,7 +344,7 @@ def make_fugacity_probability_ratio[State, Move: Patch](
     Args:
         state: Lens into the sub-state satisfying
             [IsFugacityState][kups.mcmc.probability.IsFugacityState] (needs
-            ``groups``, ``systems.log_activity``, and ``systems.unitcell.volume``).
+            ``groups``, ``systems.log_activity``, and ``systems.cell.volume``).
 
     Returns:
         [LogFugacityRatio][kups.mcmc.probability.LogFugacityRatio]
@@ -360,7 +360,7 @@ def make_fugacity_probability_ratio[State, Move: Patch](
 
     return LogFugacityRatio(
         state.focus(lambda x: x.systems.map_data(lambda s: s.log_activity)),
-        state.focus(lambda x: x.systems.map_data(lambda s: s.unitcell.volume)),
+        state.focus(lambda x: x.systems.map_data(lambda s: s.cell.volume)),
         pipe(state, lambda x: x.systems.set_data(motif_counts(x.groups))),
         counts_probe,
     )
@@ -390,7 +390,7 @@ def make_muvt_probability_ratio[State, Move: Patch](
         state: Lens into the sub-state satisfying
             [IsMuVTState][kups.mcmc.probability.IsMuVTState] (needs ``groups``,
             ``systems.temperature``, ``systems.log_activity``,
-            ``systems.unitcell.volume``, and ``previous_energy``).
+            ``systems.cell.volume``, and ``previous_energy``).
         potential: Potential to evaluate on the proposed configuration.
 
     Returns:

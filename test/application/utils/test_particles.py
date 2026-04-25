@@ -107,7 +107,7 @@ class TestParticlesFromAse:
         from kups.application.utils.particles import particles_from_ase
 
         atoms = bulk("Cu")
-        particles, unitcell, uc_transform = particles_from_ase(atoms)
+        particles, cell, uc_transform = particles_from_ase(atoms)
 
         # Check return type
         assert isinstance(particles, Table)
@@ -153,7 +153,7 @@ class TestParticlesFromAse:
             cell=[5.6, 5.6, 5.6],
             pbc=True,
         )
-        particles, unitcell, uc_transform = particles_from_ase(atoms)
+        particles, cell, uc_transform = particles_from_ase(atoms)
 
         assert len(particles) == 2
         assert set(particles.data.labels.keys) == {"Cl", "Na"}
@@ -186,7 +186,7 @@ class TestParticlesFromAse:
         atoms = Atoms("Ar", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
         path = tmp_path / "test.cif"
         write(str(path), atoms)
-        particles, unitcell, uc_transform = particles_from_ase(str(path))
+        particles, cell, uc_transform = particles_from_ase(str(path))
         assert len(particles) == 1
         npt.assert_array_equal(particles.data.atomic_numbers, jnp.array([18]))
 
@@ -196,8 +196,8 @@ class TestParticlesFromAse:
         from kups.application.utils.particles import particles_from_ase
 
         atoms = bulk("Cu")
-        _, unitcell, _ = particles_from_ase(atoms)
-        lv = unitcell.lattice_vectors
+        _, cell, _ = particles_from_ase(atoms)
+        lv = cell.lattice_vectors
         # Lower-triangular: upper triangle (excluding diagonal) should be zero
         npt.assert_allclose(lv[..., 0, 1], 0.0, atol=1e-10)
         npt.assert_allclose(lv[..., 0, 2], 0.0, atol=1e-10)

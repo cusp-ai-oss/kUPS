@@ -7,12 +7,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.neighborlist import Edges
 from kups.core.patch import WithPatch
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.harmonic import (
     HarmonicAngleParameters,
@@ -32,7 +32,7 @@ class _PointData:
 
 @dataclass
 class _SystemData:
-    unitcell: UnitCell
+    cell: Cell
 
 
 def _make_particles(
@@ -44,8 +44,8 @@ def _make_particles(
 
 
 def _make_systems(lattice_vectors: jax.Array) -> Table[SystemId, _SystemData]:
-    unitcell = TriclinicUnitCell.from_matrix(lattice_vectors)
-    return Table.arange(_SystemData(unitcell), label=SystemId)
+    cell = TriclinicCell.from_matrix(lattice_vectors)
+    return Table.arange(_SystemData(cell), label=SystemId)
 
 
 def _make_graph(particles, systems, edge_indices, edge_shifts):
@@ -70,10 +70,10 @@ class TestHarmonicBondEnergy:
         cls.positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         cls.species = ["A", "B"]
         cls.system_ids = [0, 0]
-        cls.unitcells_lv = jnp.eye(3)[None] * 10.0
+        cls.cells_lv = jnp.eye(3)[None] * 10.0
 
         cls.particles = _make_particles(cls.positions, cls.species, cls.system_ids)
-        cls.systems = _make_systems(cls.unitcells_lv)
+        cls.systems = _make_systems(cls.cells_lv)
 
         edge_indices = jnp.array([[0, 1]])
         edge_shifts = jnp.array([[[0.0, 0.0, 0.0]]])
@@ -239,10 +239,10 @@ class TestHarmonicAngleEnergy:
         )
         cls.species = ["A", "B", "A"]
         cls.system_ids = [0, 0, 0]
-        cls.unitcells_lv = jnp.eye(3)[None] * 10.0
+        cls.cells_lv = jnp.eye(3)[None] * 10.0
 
         cls.particles = _make_particles(cls.positions, cls.species, cls.system_ids)
-        cls.systems = _make_systems(cls.unitcells_lv)
+        cls.systems = _make_systems(cls.cells_lv)
 
         edge_indices = jnp.array([[0, 1, 2]])
         edge_shifts = jnp.array([[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]])

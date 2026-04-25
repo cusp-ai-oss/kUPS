@@ -47,6 +47,7 @@ import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 from jax import Array
 
+from kups.core.cell import TriclinicCell
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import NearestNeighborList
@@ -54,15 +55,14 @@ from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
     HasAtomicNumbers,
-    HasUnitCell,
+    HasCell,
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import TriclinicUnitCell
 from kups.core.utils.functools import constant
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.torch import TorchModuleWrapper
-from kups.potential.common.energy import PositionAndUnitCell
+from kups.potential.common.energy import PositionAndCell
 from kups.potential.common.graph import (
     GraphPotentialInput,
     HyperGraph,
@@ -102,7 +102,7 @@ class _PreparedMACEInputs(NamedTuple):
 
 def _prepare_mace_inputs[
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     graph: HyperGraph[P, S, Literal[2]],
     species_to_index: Array,
@@ -197,7 +197,7 @@ class MACEModule(torch.nn.Module):
             batch: System index per atom.
             ptr: Cumulative atom counts per system.
             shifts: Absolute shift vectors per edge.
-            cell: Unit cell lattice vectors (optional).
+            cell: Cell lattice vectors (optional).
 
         Returns:
             Dictionary with ``"energy"`` and optionally ``"forces"`` /
@@ -290,7 +290,7 @@ class TorchMACEModel:
 
 type TorchMACEInput[
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ] = GraphPotentialInput[TorchMACEModel, P, S, Literal[2]]
 
 
@@ -304,7 +304,7 @@ class _MACEWrapperResult(NamedTuple):
 
 def _call_mace_wrapper[
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](inp: TorchMACEInput[P, S]) -> _MACEWrapperResult:
     """Call the MACE wrapper and extract energy, forces, and optional virials.
 
@@ -322,7 +322,7 @@ def _call_mace_wrapper[
 
     cell = None
     if graph.systems is not None:
-        cell = graph.systems.data.unitcell.lattice_vectors
+        cell = graph.systems.data.cell.lattice_vectors
 
     result = mace.wrapper(
         inputs.node_attrs,
@@ -347,7 +347,7 @@ def _call_mace_wrapper[
 @overload
 def torch_mace_model_fn[
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     inp: TorchMACEInput[P, S],
     *,
@@ -358,24 +358,24 @@ def torch_mace_model_fn[
 @overload
 def torch_mace_model_fn[
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     inp: TorchMACEInput[P, S],
     *,
     compute_virials: Literal[True],
-) -> WithPatch[PotentialOut[PositionAndUnitCell, EmptyType], IdPatch]: ...
+) -> WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch]: ...
 
 
 def torch_mace_model_fn[
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     inp: TorchMACEInput[P, S],
     *,
     compute_virials: bool = False,
 ) -> (
     WithPatch[PotentialOut[Array, EmptyType], IdPatch]
-    | WithPatch[PotentialOut[PositionAndUnitCell, EmptyType], IdPatch]
+    | WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch]
 ):
     """Model function for PyTorch MACE models.
 
@@ -394,11 +394,11 @@ def torch_mace_model_fn[
 
     if compute_virials:
         assert result.virials is not None, "Model must have compute_virials=True"
-        gradients = PositionAndUnitCell(
+        gradients = PositionAndCell(
             positions=Table(inp.graph.particles.keys, -result.forces),
-            unitcell=Table(
+            cell=Table(
                 inp.graph.systems.keys,
-                TriclinicUnitCell.from_matrix(result.virials),
+                TriclinicCell.from_matrix(result.virials),
             ),
         )
         return WithPatch(
@@ -418,7 +418,7 @@ def torch_mace_model_fn[
 def make_torch_mace_potential[
     State,
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
     NNList: NearestNeighborList,
 ](
     particles_view: View[State, Table[ParticleId, P]],
@@ -436,7 +436,7 @@ def make_torch_mace_potential[
 def make_torch_mace_potential[
     State,
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
     NNList: NearestNeighborList,
 ](
     particles_view: View[State, Table[ParticleId, P]],
@@ -445,17 +445,17 @@ def make_torch_mace_potential[
     model: View[State, TorchMACEModel] | TorchMACEModel,
     cutoffs_view: View[State, Table[SystemId, Array]],
     compute_virials: Literal[True],
-    patch_idx_view: View[State, PotentialOut[PositionAndUnitCell, EmptyType]]
+    patch_idx_view: View[State, PotentialOut[PositionAndCell, EmptyType]]
     | None = None,
-    out_cache_lens: Lens[State, PotentialOut[PositionAndUnitCell, EmptyType]]
+    out_cache_lens: Lens[State, PotentialOut[PositionAndCell, EmptyType]]
     | None = None,
-) -> Potential[State, PositionAndUnitCell, EmptyType, Patch[State]]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[State]]: ...
 
 
 def make_torch_mace_potential[
     State,
     P: IsTorchMACEParticles,
-    S: HasUnitCell,
+    S: HasCell,
     NNList: NearestNeighborList,
 ](
     particles_view: View[State, Table[ParticleId, P]],
@@ -474,7 +474,7 @@ def make_torch_mace_potential[
 
     Args:
         particles_view: Extracts particle data from state
-        systems_view: Extracts system data (unit cell) from state
+        systems_view: Extracts system data (cell) from state
         neighborlist_view: Extracts neighbor list from state
         model: TorchMACEModel instance or view to model in state
         cutoffs_view: Extracts cutoffs as ``Indexed[SystemId, Array]``

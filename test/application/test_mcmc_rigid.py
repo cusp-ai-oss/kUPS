@@ -20,6 +20,7 @@ from kups.application.simulations.mcmc_rigid import (
     _probe,
     make_propagator,
 )
+from kups.core.cell import TriclinicCell
 from kups.core.data import Table, WithCache, WithIndices
 from kups.core.data.buffered import Buffered
 from kups.core.data.index import Index
@@ -38,7 +39,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import TriclinicUnitCell
 from kups.mcmc.moves import (
     ExchangeChanges,
     ExchangeGroupData,
@@ -111,7 +111,7 @@ def _build_state() -> MCMCState:
     )
     systems = Table.arange(
         MCMCSystems(
-            unitcell=TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * L),
+            cell=TriclinicCell.from_matrix(jnp.eye(3)[None] * L),
             temperature=jnp.array([300.0]),
             potential_energy=jnp.array([0.0]),
             log_fugacity=jnp.array([[0.0]]),  # (n_sys, n_motifs)

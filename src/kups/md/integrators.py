@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from jax import Array
 from typing_extensions import Protocol
 
+from kups.core.cell import Cell, FullyPeriodic
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
@@ -28,11 +29,10 @@ from kups.core.typing import (
     HasTemperature,
     HasThermostatTimeConstant,
     HasTimeStep,
-    HasUnitCell,
+    HasCell,
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import UnitCell
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, tree_map, vectorize
 from kups.core.utils.random import sample_like
@@ -102,42 +102,41 @@ def euclidean_flow(
 
 
 @dataclass
-class MinimumImageConventionFlow[State, PyTree](Flow[State, PyTree]):
-    """Flow with periodic boundary conditions using minimum image convention.
+class WrapFlow[State, PyTree](Flow[State, PyTree]):
+    """Flow that applies the cell's wrap to updated positions.
 
-    Wraps the base flow to apply periodic boundary conditions, ensuring particles
-    remain within the primary simulation cell. After updating positions via the
-    underlying flow, applies the unit cell's `wrap` method to fold positions
-    back into the box.
+    After the base flow updates positions, applies the cell's ``wrap`` method.
+    On periodic axes this folds positions back into the box (minimum image
+    convention); on non-periodic axes ``wrap`` is the identity and positions
+    pass through unchanged.
 
     Type Parameters:
         State: Simulation state type
         PyTree: JAX PyTree type for positions
 
     Attributes:
-        unitcell: View to extract the [UnitCell][kups.core.unitcell.UnitCell] from state
+        cell: View to extract the [Cell][kups.core.cell.Cell] from state
         flow: Underlying flow operator (typically [euclidean_flow][kups.md.integrators.euclidean_flow])
 
     Example:
         ```python
-        from kups.md.integrators import MinimumImageConventionFlow, euclidean_flow
+        from kups.md.integrators import WrapFlow, euclidean_flow
 
-        # Create PBC flow
-        pbc_flow = MinimumImageConventionFlow(
-            unitcell=lambda s: s.unitcell,
+        wrap_flow = WrapFlow(
+            cell=lambda s: s.cell,
             flow=euclidean_flow
         )
         ```
     """
 
-    unitcell: View[State, UnitCell] = field(static=True)
+    cell: View[State, Cell] = field(static=True)
     flow: Flow[State, PyTree] = field(static=True)
 
     def __call__(
         self, state: State, dt: Time, primal: PyTree, tangent: PyTree
     ) -> PyTree:
         return tree_map(
-            self.unitcell(state).wrap, self.flow(state, dt, primal, tangent)
+            self.cell(state).wrap, self.flow(state, dt, primal, tangent)
         )
 
 
@@ -636,7 +635,7 @@ def make_csvr_step[State](
 
 @runtime_checkable
 class _StochasticCellRescalingSystemData(
-    HasUnitCell,
+    HasCell[FullyPeriodic],
     HasTimeStep,
     HasTemperature,
     HasTargetPressure,
@@ -646,7 +645,7 @@ class _StochasticCellRescalingSystemData(
     Protocol,
 ):
     @property
-    def unitcell_gradients(self) -> UnitCell: ...
+    def cell_gradients(self) -> Cell[FullyPeriodic]: ...
 
 
 @runtime_checkable
@@ -681,7 +680,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
 
     $$\\mathbf{L}_{\\text{new}} = \\mu \\mathbf{L}, \\quad \\mathbf{r}_{\\text{new}} = \\mu \\mathbf{r}$$
 
-    **Important:** The [UnitCell][kups.core.unitcell.UnitCell] must be reconstructed after
+    **Important:** The [Cell][kups.core.cell.Cell] must be reconstructed after
     scaling to ensure the cached volume is recomputed correctly.
 
     Type Parameters:
@@ -710,7 +709,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         """Apply stochastic cell rescaling for pressure control.
 
         Scales the simulation box and particle positions by a factor determined
-        from pressure deviation and stochastic fluctuations. The UnitCell is
+        from pressure deviation and stochastic fluctuations. The Cell is
         reconstructed to ensure cached volume is updated correctly.
 
         Args:
@@ -734,10 +733,10 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         compressibility = systems.data.compressibility
 
         # Get current state
-        # Unit cell with lattice vectors L
-        unitcell = systems.data.unitcell
+        # Cell with lattice vectors L
+        cell = systems.data.cell
         # V: volume [length³]
-        volume = unitcell.volume
+        volume = cell.volume
         # Compute kinetic energy from particles
         particles = self.particles.bind(state).get()
         per_particle_ke = particle_kinetic_energy(
@@ -793,11 +792,11 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         max_scaling = 1.0 / min_scaling
         scaling_factor = jnp.clip(scaling_factor, min_scaling, max_scaling)
 
-        # Scale unit cell: L_new = μ·L
-        # CRITICAL: Must reconstruct UnitCell to recompute cached volume
+        # Scale cell: L_new = μ·L
+        # CRITICAL: Must reconstruct Cell to recompute cached volume
         # L_new = μ·L [length]
-        new_unitcell = unitcell * scaling_factor
-        state = self.systems.focus(lambda x: x.data.unitcell).set(state, new_unitcell)
+        new_cell = cell * scaling_factor
+        state = self.systems.focus(lambda x: x.data.cell).set(state, new_cell)
 
         # Scale positions: r_new = μ·r
         particle_lens = self.particles.bind(state)
@@ -812,7 +811,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
 
 @runtime_checkable
 class IsCSVRNPTSystemData(
-    HasUnitCell,
+    HasCell[FullyPeriodic],
     HasTimeStep,
     HasTemperature,
     HasTargetPressure,
@@ -823,7 +822,7 @@ class IsCSVRNPTSystemData(
     Protocol,
 ):
     @property
-    def unitcell_gradients(self) -> UnitCell: ...
+    def cell_gradients(self) -> Cell[FullyPeriodic]: ...
 
 
 def make_csvr_npt_step[State](
@@ -910,7 +909,7 @@ def make_md_step_from_state[State](
 
     Constructs the appropriate integrator propagator by extracting views for
     particles and systems from ``state`` and wrapping them with a
-    [MinimumImageConventionFlow][kups.md.integrators.MinimumImageConventionFlow]
+    [WrapFlow][kups.md.integrators.WrapFlow]
     for periodic-boundary-condition-aware distance computations.
 
     Supported integrators:
@@ -939,8 +938,8 @@ def make_md_step_from_state[State](
     Raises:
         ValueError: If ``integrator`` is not one of the supported keys.
     """
-    flow = MinimumImageConventionFlow(
-        state.focus(lambda x: x.systems[x.particles.data.system].unitcell),
+    flow = WrapFlow(
+        state.focus(lambda x: x.systems[x.particles.data.system].cell),
         euclidean_flow,
     )
     match integrator:

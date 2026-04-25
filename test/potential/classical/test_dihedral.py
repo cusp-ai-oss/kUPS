@@ -129,7 +129,7 @@ class TestDihedralEnergy:
     def setup_class(cls):
         cls.species = ["A", "A", "A", "A"]
         cls.system_ids = [0, 0, 0, 0]
-        cls.unitcells_lv = jnp.eye(3)[None] * 20.0
+        cls.cells_lv = jnp.eye(3)[None] * 20.0
         shape = (2, 2, 2, 2)
         cls.V = jnp.ones(shape) * 2.0
         cls.n = jnp.ones(shape) * 3.0
@@ -138,7 +138,7 @@ class TestDihedralEnergy:
 
     def _make_graph(self, positions):
         particles = make_particles(positions, self.species, self.system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
             shifts=jnp.zeros((1, 3, 3)),
@@ -239,7 +239,7 @@ class TestDihedralEnergy:
         species = ["A", "A", "A"]
         system_ids = [0, 0, 0]
         particles = make_particles(positions, species, system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2]])),
             shifts=jnp.zeros((1, 2, 3)),
@@ -255,7 +255,7 @@ class TestDihedralEnergy:
         params = DihedralParameters(labels=_LABELS, V=V, n=self.n, phi0=self.phi0)
         positions = _positions_for_dihedral(jnp.pi)
         particles = make_particles(positions, species, system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
             shifts=jnp.zeros((1, 3, 3)),
@@ -271,7 +271,7 @@ class TestDihedralEnergy:
         species = ["A", "A", "A", "A", "A"]
         system_ids = [0, 0, 0, 0, 0]
         particles = make_particles(positions, species, system_ids)
-        systems = make_systems(self.unitcells_lv)
+        systems = make_systems(self.cells_lv)
         edges = Edges(
             indices=Index(particles.keys, jnp.array([[0, 1, 2, 3], [1, 2, 3, 4]])),
             shifts=jnp.zeros((2, 3, 3)),

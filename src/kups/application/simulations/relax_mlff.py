@@ -99,7 +99,7 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxMlffState:
         particles.data.system.counts, systems, jaxified_model.cutoff
     )
     opt_state = opt_init(
-        (particles.data.positions, systems.data.unitcell.lattice_vectors)
+        (particles.data.positions, systems.data.cell.lattice_vectors)
     )
     return RelaxMlffState(
         particles=particles,
@@ -121,7 +121,7 @@ def run(config: Config) -> None:
     state_lens = identity_lens(RelaxMlffState)
     optimizer = make_optimizer(config.relax.optimizer)
     potential = make_tojaxed_from_state(
-        state_lens, compute_position_and_unitcell_gradients=True
+        state_lens, compute_position_and_cell_gradients=True
     )
     propagator, opt_init = make_relax_propagator(
         state_lens, potential, optimizer, config.relax.optimize_cell

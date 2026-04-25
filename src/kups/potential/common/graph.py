@@ -45,7 +45,7 @@ from kups.core.typing import (
     HasPositions,
     HasPositionsAndSystemIndex,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     ParticleId,
     SystemId,
 )
@@ -54,7 +54,7 @@ from kups.potential.common.energy import Sum, SumComposer, Summand
 
 Params = TypeVar("Params", covariant=True)
 Part = TypeVar("Part", covariant=True, bound=HasPositionsAndSystemIndex)
-Sys = TypeVar("Sys", covariant=True, bound=HasUnitCell)
+Sys = TypeVar("Sys", covariant=True, bound=HasCell)
 Degree = TypeVar("Degree", bound=int)
 
 
@@ -63,11 +63,11 @@ class PointCloud(Generic[Part, Sys]):
     """Indexed particles and systems, the base for all graph representations.
 
     Generic in ``Part`` (particle data with positions and system assignment)
-    and ``Sys`` (system data with unit cell).
+    and ``Sys`` (system data with cell).
 
     Attributes:
         particles: Indexed particle data with positions and system assignment.
-        systems: Indexed system data with unit cell information.
+        systems: Indexed system data with cell information.
     """
 
     particles: Table[ParticleId, Part]
@@ -168,7 +168,7 @@ class GraphConstructor[
     State,
     Ptch: Patch,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
     Degree: int,
 ](Protocol):
     """Protocol for constructing molecular graphs from simulation state."""
@@ -216,13 +216,13 @@ class RadiusGraphConstructor[
     State,
     Ptch: Patch,
     P: IsRadiusGraphPoints,
-    S: HasUnitCell,
+    S: HasCell,
 ](GraphConstructor[State, Ptch, P, S, Literal[2]]):
     """Constructs pairwise graphs from neighbor lists (Degree=2).
 
     Attributes:
         particles: View extracting ``Indexed[ParticleId, P]`` from state.
-        systems: View extracting ``Indexed[SystemId, S]`` (unit cell).
+        systems: View extracting ``Indexed[SystemId, S]`` (cell).
         cutoffs: View extracting ``Indexed[SystemId, Array]`` from state.
         neighborlist: View extracting the ``NearestNeighborList`` from state.
         probe: Optional probe for incremental particle + neighbor list changes.
@@ -291,7 +291,7 @@ class EdgeSetGraphConstructor[
     State,
     Ptch: Patch,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
     Degree: int,
 ](GraphConstructor[State, Ptch, P, S, Degree]):
     """Constructs graphs from predefined edge lists (bonds, angles, dihedrals).
@@ -366,7 +366,7 @@ class PointCloudConstructor[
     State,
     Ptch: Patch,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
 ](GraphConstructor[State, Ptch, P, S, Literal[0]]):
     """Constructs zero-order graphs (Degree=0, no edges).
 
@@ -421,7 +421,7 @@ class LocalGraphSumComposer[
     State,
     Ptch: Patch,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
     Degree: int,
     Params,
 ](SumComposer[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):
@@ -458,7 +458,7 @@ class FullGraphSumComposer[
     State,
     Ptch: Patch,
     P: HasPositionsAndSystemIndex,
-    S: HasUnitCell,
+    S: HasCell,
     Degree: int,
     Params,
 ](SumComposer[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):

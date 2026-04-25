@@ -94,7 +94,7 @@ def run(config: Config) -> None:
     state = init_state(next(chain), config)
     state_lens = identity_lens(LjMdState)
     potential = make_lennard_jones_from_state(
-        state_lens, compute_position_and_unitcell_gradients=True
+        state_lens, compute_position_and_cell_gradients=True
     )
     propagator = make_md_propagator(state_lens, config.md.integrator, potential)
     state = run_md(next(chain), propagator, state, config.run)

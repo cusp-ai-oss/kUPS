@@ -38,7 +38,7 @@ from kups.core.typing import (
     HasCache,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasUnitCell,
+    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -48,9 +48,9 @@ from kups.core.utils.jax import dataclass, field
 from kups.potential.classical.uff_utils import compute_uff_bond_length
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndUnitCell,
+    PositionAndCell,
     PotentialFromEnergy,
-    position_and_unitcell_idx_view,
+    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     EdgeSetGraphConstructor,
@@ -135,7 +135,7 @@ class MorseBondParameters:
 
 
 type MorseBondInput = GraphPotentialInput[
-    MorseBondParameters, IsBondedParticles, HasUnitCell, Literal[2]
+    MorseBondParameters, IsBondedParticles, HasCell, Literal[2]
 ]
 
 
@@ -153,9 +153,9 @@ def morse_bond_energy(
         Total bond energy per system
     """
     graph = inp.graph
-    assert graph.edges.indices.indices.shape[1] == 2, (
-        "Morse bond potential only supports pairwise interactions (order=2)."
-    )
+    assert (
+        graph.edges.indices.indices.shape[1] == 2
+    ), "Morse bond potential only supports pairwise interactions (order=2)."
     edg_species = graph.particles[graph.edges.indices].labels.indices_in(
         inp.parameters.labels
     )
@@ -176,7 +176,7 @@ def make_morse_bond_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edges_view: View[State, Edges[Literal[2]]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell]],
     parameter_view: View[State, MorseBondParameters],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[2]]] | None,
     gradient_lens: Lens[MorseBondInput, Gradients],
@@ -190,7 +190,7 @@ def make_morse_bond_potential[
     Args:
         particles_view: Extracts particle data (positions, species) with system index
         edges_view: Extracts bond connectivity
-        systems_view: Extracts indexed system data (unit cell)
+        systems_view: Extracts indexed system data (cell)
         parameter_view: Extracts [MorseBondParameters][kups.potential.classical.morse.MorseBondParameters]
         probe: Grouped probe for incremental updates (particles, edges, capacity)
         gradient_lens: Specifies gradients to compute
@@ -230,7 +230,7 @@ class IsMorseBondState[Params](Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def bond_edges(self) -> Edges[Literal[2]]: ...
     @property
@@ -242,7 +242,7 @@ def make_morse_bond_from_state[State](
     state: Lens[State, IsMorseBondState[MaybeCached[MorseBondParameters, Any]]],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch]: ...
 
 
@@ -251,8 +251,8 @@ def make_morse_bond_from_state[State](
     state: Lens[State, IsMorseBondState[MaybeCached[MorseBondParameters, Any]]],
     probe: None = None,
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, Patch]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
 @overload
@@ -269,7 +269,7 @@ def make_morse_bond_from_state[State, P: Patch](
         IsEdgeSetGraphProbe[IsBondedParticles, Literal[2]],
     ],
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -278,7 +278,7 @@ def make_morse_bond_from_state[State, P: Patch](
     state: Lens[
         State,
         IsMorseBondState[
-            HasCache[MorseBondParameters, PotentialOut[PositionAndUnitCell, EmptyType]]
+            HasCache[MorseBondParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[
@@ -287,24 +287,24 @@ def make_morse_bond_from_state[State, P: Patch](
         IsEdgeSetGraphProbe[IsBondedParticles, Literal[2]],
     ],
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, P]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, P]: ...
 
 
 def make_morse_bond_from_state(
     state: Any,
     probe: Any = None,
     *,
-    compute_position_and_unitcell_gradients: bool = False,
+    compute_position_and_cell_gradients: bool = False,
 ) -> Any:
     """Create a Morse bond potential from a typed state, optionally with incremental updates.
 
     Args:
-        state: Lens into the sub-state providing particles, unit cell, edges,
+        state: Lens into the sub-state providing particles, cell, edges,
             and Morse bond parameters.
         probe: Detects which particles and edges changed since the last step.
             If ``None``, no incremental updates are used.
-        compute_position_and_unitcell_gradients: When ``True``, the returned
+        compute_position_and_cell_gradients: When ``True``, the returned
             potential computes gradients w.r.t. particle positions and lattice
             vectors (for forces / stress).
 
@@ -313,14 +313,14 @@ def make_morse_bond_from_state(
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_unitcell_gradients:
-        gradient_lens = SimpleLens[MorseBondInput, PositionAndUnitCell](
-            lambda x: PositionAndUnitCell(
+    if compute_position_and_cell_gradients:
+        gradient_lens = SimpleLens[MorseBondInput, PositionAndCell](
+            lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.unitcell),
+                x.graph.systems.map_data(lambda s: s.cell),
             )
         )
-        patch_idx_view = position_and_unitcell_idx_view
+        patch_idx_view = position_and_cell_idx_view
     param_view = state.focus(
         lambda x: (
             x.morse_bond_parameters.data

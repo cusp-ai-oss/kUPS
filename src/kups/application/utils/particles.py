@@ -13,9 +13,9 @@ import ase.io
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import Cell, TriclinicCell, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell, to_lower_triangular
 from kups.core.utils.jax import dataclass
 
 
@@ -59,21 +59,21 @@ def default_exclusion(n: int) -> Index[ExclusionId]:
 
 def particles_from_ase(
     atoms: ase.Atoms | str | Path,
-) -> tuple[Table[ParticleId, Particles], UnitCell, Callable[[Array], Array]]:
-    """Build particle data and unit cell from an ASE Atoms object or file path.
+) -> tuple[Table[ParticleId, Particles], Cell, Callable[[Array], Array]]:
+    """Build particle data and cell from an ASE Atoms object or file path.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
 
     Returns:
-        Tuple of (particles, unitcell, uc_transform) where uc_transform
+        Tuple of (particles, cell, uc_transform) where uc_transform
         rotates Cartesian positions into the lower-triangular frame.
     """
     if isinstance(atoms, (str, Path)):
         atoms = next(ase.io.iread(atoms, index=-1, store_tags=True))
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    unitcell = TriclinicUnitCell.from_matrix(L)
+    cell = TriclinicCell.from_matrix(L)
     # Rotate Cartesian positions into the lower-triangular frame.
     positions = uc_transform(jnp.asarray(atoms.positions))
     masses = jnp.asarray(atoms.get_masses())
@@ -99,4 +99,4 @@ def particles_from_ase(
         ),
         label=ParticleId,
     )
-    return particles, unitcell, uc_transform
+    return particles, cell, uc_transform

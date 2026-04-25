@@ -12,7 +12,7 @@ type safety, and compatibility with JAX transformations.
 ### Data Structures and Manipulation
 - **[data][kups.core.data]**: PyTree wrappers ([Batched][kups.core.data.Batched], [Table][kups.core.data.Table]) for structured data
 - **[lens][kups.core.lens]**: Functional lenses for accessing and modifying nested structures
-- **[unitcell][kups.core.unitcell]**: Periodic boundary conditions and crystallographic unit cells
+- **[cell][kups.core.cell]**: Simulation cell geometry with per-axis periodic boundaries
 
 ### Computation and Simulation
 - **[potential][kups.core.potential]**: Energy calculations with gradients and Hessians

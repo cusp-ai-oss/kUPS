@@ -17,6 +17,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import FixedCapacity
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data import WithCache, WithIndices
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -30,7 +31,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.cosine_angle import (
     CosineAngleParameters,
@@ -86,7 +86,7 @@ class ParticleData:
 
 @dataclass
 class SystemData:
-    unitcell: UnitCell
+    cell: Cell
     cutoff: Array
 
 
@@ -201,8 +201,8 @@ def _build_common(positions: Array | None = None) -> _CommonParts:
         positions = _INITIAL_POSITIONS
     system_ids = jnp.zeros(N_PARTICLES, dtype=int)
     particles = _make_particles(positions, system_ids)
-    unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
-    systems = Table.arange(SystemData(unitcell, jnp.array([5.0])), label=SystemId)
+    cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+    systems = Table.arange(SystemData(cell, jnp.array([5.0])), label=SystemId)
     pidx = particles.keys
     ns = N_SPECIES
     return _CommonParts(
@@ -592,9 +592,9 @@ class TestFromState:
         sl = identity_lens(State)
         state2 = sl.focus(lambda s: s.particles).set(state, new_particles)
         e2 = potential(state2).data.total_energies.data
-        assert not jnp.allclose(e1, e2), (
-            f"{name}: energy did not change after perturbation"
-        )
+        assert not jnp.allclose(
+            e1, e2
+        ), f"{name}: energy did not change after perturbation"
 
 
 class TestFromStateWithUpdates:
@@ -640,6 +640,6 @@ class TestFromStateWithUpdates:
             ref_state = _make_reference_state(state_cached, spec, pos_patch)
             e_full = basic_pot(ref_state).data.total_energies.data
 
-            assert jnp.allclose(e_incr, e_full, atol=1e-6), (
-                f"{pot.name}-{spec.name}: incremental {e_incr} != full {e_full}"
-            )
+            assert jnp.allclose(
+                e_incr, e_full, atol=1e-6
+            ), f"{pot.name}-{spec.name}: incremental {e_incr} != full {e_full}"

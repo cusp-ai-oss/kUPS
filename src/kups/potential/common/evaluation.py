@@ -28,7 +28,7 @@ from kups.core.neighborlist import (
 from kups.core.patch import Patch, WithPatch
 from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
 from kups.core.result import Result, as_result_function
-from kups.core.typing import HasUnitCell, ParticleId, SystemId
+from kups.core.typing import HasCell, ParticleId, SystemId
 from kups.core.utils.functools import constant
 from kups.core.utils.jax import dataclass, no_jax_tracing
 from kups.potential.classical.ewald import (
@@ -164,7 +164,7 @@ def evaluate_radius_graph_potential[
     Gradients,
     Hessians,
     P: IsRadiusGraphPoints,
-    S: HasUnitCell,
+    S: HasCell,
 ](
     point_cloud: PointCloud[P, S],
     parameters: Parameters,
@@ -187,7 +187,7 @@ def evaluate_radius_graph_potential[
     growing as needed via assertion retries.
 
     Args:
-        point_cloud: Particles and systems (unit cell).
+        point_cloud: Particles and systems (cell).
         parameters: Parameters forwarded to ``energy_fn``.
         cutoffs: Indexed cutoff data per system. If None, tries to extract
             from ``parameters.cutoff``.
@@ -246,15 +246,15 @@ def evaluate_ewald_potential[
     Gradients,
     Hessians,
 ](
-    point_cloud: PointCloud[IsEwaldPointData, HasUnitCell],
+    point_cloud: PointCloud[IsEwaldPointData, HasCell],
     parameters: EwaldParameters,
     *,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasUnitCell], Gradients
+        PointCloud[IsEwaldPointData, HasCell], Gradients
     ] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[
-        PointCloud[IsEwaldPointData, HasUnitCell], Hessians
+        PointCloud[IsEwaldPointData, HasCell], Hessians
     ] = EMPTY_LENS,
 ) -> PotentialOut[Gradients, Hessians]:
     """Evaluate the full Ewald potential: long-range + short-range + self-interaction.

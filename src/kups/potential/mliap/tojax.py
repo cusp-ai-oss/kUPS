@@ -22,10 +22,10 @@ from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import NearestNeighborList
 from kups.core.patch import IdPatch, WithPatch
 from kups.core.potential import EMPTY_LENS, EmptyType, Energy, Potential, PotentialOut
-from kups.core.typing import HasAtomicNumbers, HasUnitCell, ParticleId, SystemId
+from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp
 from kups.core.utils.msgpack import deserialize as msgpack_deserialize
-from kups.potential.common.energy import PositionAndUnitCell, PotentialFromEnergy
+from kups.potential.common.energy import PositionAndCell, PotentialFromEnergy
 from kups.potential.common.graph import (
     FullGraphSumComposer,
     GraphPotentialInput,
@@ -112,7 +112,7 @@ class TojaxedMliap:
 
 
 type JaxifiedInput = GraphPotentialInput[
-    TojaxedMliap, IsTojaxedParticles, HasUnitCell, Literal[2]
+    TojaxedMliap, IsTojaxedParticles, HasCell, Literal[2]
 ]
 
 
@@ -131,7 +131,7 @@ def tojaxed_energy(
     """
     graph = inp.graph.sorted_by_system(sort_edges=True)
 
-    n_sys = graph.systems.data.unitcell.lattice_vectors.shape[0] + 1
+    n_sys = graph.systems.data.cell.lattice_vectors.shape[0] + 1
 
     positions = jnp.pad(
         graph.particles.data.positions,
@@ -148,7 +148,7 @@ def tojaxed_energy(
         (0, 1),
         constant_values=graph.particles.data.system.num_labels,
     )
-    cell = graph.systems.data.unitcell.lattice_vectors
+    cell = graph.systems.data.cell.lattice_vectors
     cell = jnp.concatenate([cell, jnp.zeros((1, 3, 3))], axis=0)
 
     edge_indices = graph.edges.indices.indices_in(graph.particles.keys)
@@ -170,7 +170,7 @@ def tojaxed_energy(
 
 def make_tojaxed_potential[State, Gradients, Hessians](
     particles_view: View[State, Table[ParticleId, IsTojaxedParticles]],
-    systems_view: View[State, Table[SystemId, HasUnitCell]],
+    systems_view: View[State, Table[SystemId, HasCell]],
     neighborlist_view: View[State, NearestNeighborList],
     model: View[State, TojaxedMliap] | TojaxedMliap,
     cutoffs_view: View[State, Table[SystemId, Array]],
@@ -184,7 +184,7 @@ def make_tojaxed_potential[State, Gradients, Hessians](
 
     Args:
         particles_view: Extracts particle data (positions, species).
-        systems_view: Extracts system data (unit cell).
+        systems_view: Extracts system data (cell).
         neighborlist_view: Extracts neighbor list.
         model: Jaxified model instance or view to model in state.
         cutoffs_view: Extracts cutoffs as ``Table[SystemId, Array]``.
@@ -223,7 +223,7 @@ class IsTojaxedState(Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsTojaxedParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasUnitCell]: ...
+    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def neighborlist(self) -> NearestNeighborList: ...
     @property
@@ -234,7 +234,7 @@ class IsTojaxedState(Protocol):
 def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedState],
     *,
-    compute_position_and_unitcell_gradients: Literal[False] = ...,
+    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
@@ -242,33 +242,33 @@ def make_tojaxed_from_state[State](
 def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedState],
     *,
-    compute_position_and_unitcell_gradients: Literal[True],
-) -> Potential[State, PositionAndUnitCell, EmptyType, Any]: ...
+    compute_position_and_cell_gradients: Literal[True],
+) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
 
 
 def make_tojaxed_from_state(
     state: Any,
     *,
-    compute_position_and_unitcell_gradients: bool = False,
+    compute_position_and_cell_gradients: bool = False,
 ) -> Any:
     """Create a jaxified potential from a typed state.
 
     Args:
-        state: Lens into the sub-state providing particles, unit cell,
+        state: Lens into the sub-state providing particles, cell,
             neighbor list, and jaxified model.
-        compute_position_and_unitcell_gradients: When ``True``, compute
-            gradients w.r.t. particle positions and unit cell
+        compute_position_and_cell_gradients: When ``True``, compute
+            gradients w.r.t. particle positions and cell
             (for forces / stress).
 
     Returns:
         Configured jaxified [Potential][kups.core.potential.Potential].
     """
     gradient_lens: Any = EMPTY_LENS
-    if compute_position_and_unitcell_gradients:
-        gradient_lens = SimpleLens[JaxifiedInput, PositionAndUnitCell](
-            lambda x: PositionAndUnitCell(
+    if compute_position_and_cell_gradients:
+        gradient_lens = SimpleLens[JaxifiedInput, PositionAndCell](
+            lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.unitcell),
+                x.graph.systems.map_data(lambda s: s.cell),
             )
         )
     return make_tojaxed_potential(

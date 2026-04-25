@@ -7,13 +7,13 @@ import numpy.testing as npt
 from jax import Array
 
 from kups.core.capacity import FixedCapacity
+from kups.core.cell import Cell, FullyPeriodic, TriclinicCell, make_supercell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import lens
 from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell, make_supercell
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.coulomb import coulomb_vacuum_energy
 from kups.potential.classical.ewald import (
@@ -44,9 +44,9 @@ class PointCloudParticles:
 
 @dataclass
 class SystemData:
-    """System data with unit cell and cutoff."""
+    """System data with cell and cutoff."""
 
-    unitcell: UnitCell
+    cell: Cell[FullyPeriodic]
     cutoff: Array
 
 
@@ -93,11 +93,13 @@ def _make_particle_data(
     )
 
 
-def _make_systems(unitcell: UnitCell, cutoff: Array) -> Table[SystemId, SystemData]:
-    """Build a Table[SystemId, SystemData] from a batched UnitCell and cutoff."""
-    n_sys = unitcell.volume.shape[0]
+def _make_systems(
+    cell: Cell[FullyPeriodic], cutoff: Array
+) -> Table[SystemId, SystemData]:
+    """Build a Table[SystemId, SystemData] from a batched Cell and cutoff."""
+    n_sys = cell.volume.shape[0]
     keys = tuple(SystemId(i) for i in range(n_sys))
-    return Table(keys, SystemData(unitcell=unitcell, cutoff=cutoff))
+    return Table(keys, SystemData(cell=cell, cutoff=cutoff))
 
 
 def _build_neighborlist(particles, systems, n_particles):
@@ -154,8 +156,8 @@ class TestEwald:
         )
         particles = Table.arange(pdata, label=ParticleId)
 
-        unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 100.0)
-        systems = _make_systems(unitcell, jnp.array([50.0]))
+        cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 100.0)
+        systems = _make_systems(cell, jnp.array([50.0]))
 
         # Manually build bonded-pair edges: (0,1), (1,0), (2,3), (3,2)
         edge_idx = jnp.array([[0, 1], [1, 0], [2, 3], [3, 2]])
@@ -184,8 +186,8 @@ class TestEwald:
         )
         particles = Table.arange(pdata, label=ParticleId)
 
-        unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 20.0)
-        systems = _make_systems(unitcell, jnp.array([50.0]))
+        cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 20.0)
+        systems = _make_systems(cell, jnp.array([50.0]))
 
         # Manually build edges for the cross-boundary bond: (0,1), (1,0)
         # Particle 0 at x=1, particle 1 at x=19, box=20.
@@ -214,7 +216,7 @@ class TestEwald:
             [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [10.0, 0.0, 0.0], [11.5, 0.0, 0.0]]
         )
         charges = jnp.array([1.0, -1.0, 1.0, -1.0])
-        cell = TriclinicUnitCell.from_matrix(jnp.eye(3, dtype=float) * 20.0)
+        cell = TriclinicCell.from_matrix(jnp.eye(3, dtype=float) * 20.0)
 
         estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-4)
         params = EwaldParameters(
@@ -285,20 +287,20 @@ class TestEwald:
             dtype=float,
         )
         charges = jnp.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0], dtype=float)
-        cell = TriclinicUnitCell.from_matrix(jnp.eye(3, dtype=float) * 2)
+        cell = TriclinicCell.from_matrix(jnp.eye(3, dtype=float) * 2)
 
         with npt.assert_raises(ValueError):
             estimate_ewald_parameters(charges, cell, epsilon_total=eps)
 
-        # The unitcell needs to be at least as large as the cutoff
+        # The cell needs to be at least as large as the cutoff
         REPEATS = 5
         cell, (positions, charges) = make_supercell(
             cell, REPEATS, (positions, charges), lens(lambda x: x[0])
         )
         estimates = estimate_ewald_parameters(charges, cell, epsilon_total=eps)
-        assert estimates.error_real < eps, (
-            f"Real space target accuracy cannot be reached. {estimates.error_real}"
-        )
+        assert (
+            estimates.error_real < eps
+        ), f"Real space target accuracy cannot be reached. {estimates.error_real}"
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.asarray([estimates.alpha])),
             cutoff=Table((SystemId(0),), jnp.asarray([estimates.real_cutoff])),
@@ -344,9 +346,9 @@ class TestEwaldParametersMake:
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId
         )
-        uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * L)
+        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * L)
         systems = Table.arange(
-            SystemData(unitcell=uc, cutoff=jnp.array([4.0])),
+            SystemData(cell=uc, cutoff=jnp.array([4.0])),
             label=SystemId,
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
@@ -376,7 +378,7 @@ class TestEwaldParametersMake:
         systems = Table(
             (SystemId(0), SystemId(1)),
             SystemData(
-                unitcell=TriclinicUnitCell.from_matrix(
+                cell=TriclinicCell.from_matrix(
                     jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 20.0])
                 ),
                 cutoff=jnp.array([4.0, 4.0]),
@@ -396,9 +398,9 @@ class TestEwaldParametersMake:
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId
         )
-        uc = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 5.0)
+        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 5.0)
         systems = Table.arange(
-            SystemData(unitcell=uc, cutoff=jnp.array([2.0])),
+            SystemData(cell=uc, cutoff=jnp.array([2.0])),
             label=SystemId,
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=2.0)

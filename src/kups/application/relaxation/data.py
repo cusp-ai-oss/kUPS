@@ -17,10 +17,10 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
+from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.typing import ExclusionId, ParticleId, SystemId
-from kups.core.unitcell import UnitCell
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.relaxation.optax.optimizer import TransformationConfig
 
@@ -53,9 +53,9 @@ class RelaxParticles(Particles):
 class RelaxSystems:
     """System-level data for structure relaxation."""
 
-    unitcell: UnitCell
-    """Unit cell geometry, batched with shape (1,)."""
-    unitcell_gradients: UnitCell
+    cell: Cell
+    """Cell geometry, batched with shape (1,)."""
+    cell_gradients: Cell
     potential_energy: Array
     """Potential energy per system, shape (1,)."""
 
@@ -63,8 +63,8 @@ class RelaxSystems:
     def stress_tensor(self) -> Array:
         """Cauchy stress tensor, shape ``(..., 3, 3)``."""
         return (
-            -self.unitcell_gradients.lattice_vectors
-            / self.unitcell.volume[..., None, None]
+            -self.cell_gradients.lattice_vectors
+            / self.cell.volume[..., None, None]
         )
 
 
@@ -102,7 +102,7 @@ def relax_state_from_ase(
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
     """
-    p, unitcell, _ = particles_from_ase(atoms)
+    p, cell, _ = particles_from_ase(atoms)
     particles = p.set_data(
         RelaxParticles(
             positions=p.data.positions,
@@ -114,11 +114,11 @@ def relax_state_from_ase(
             position_gradients=jnp.zeros_like(p.data.positions),
         ),
     )
-    unitcell = unitcell[None]
+    cell = cell[None]
     systems = Table.arange(
         RelaxSystems(
-            unitcell=unitcell,
-            unitcell_gradients=tree_zeros_like(unitcell),
+            cell=cell,
+            cell_gradients=tree_zeros_like(cell),
             potential_energy=jnp.array([0.0]),
         ),
         label=SystemId,

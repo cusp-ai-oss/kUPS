@@ -16,6 +16,7 @@ import pytest
 from jax import Array, export
 
 from kups.core.capacity import FixedCapacity
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import lens
@@ -23,7 +24,6 @@ from kups.core.neighborlist import AllDenseNearestNeighborList
 from kups.core.potential import PotentialOut
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.core.utils.msgpack import serialize as msgpack_serialize
 from kups.potential.common.energy import PotentialFromEnergy
@@ -45,7 +45,7 @@ class AtomData:
 
 @dataclass
 class SystemData:
-    unitcell: UnitCell
+    cell: Cell
     cutoff: Array
 
 
@@ -127,7 +127,7 @@ def simple_system(jaxified_model):
     system_ids = Index.new([SystemId(0)] * n_atoms)
     inclusion_ids = Index.new([InclusionId(0)] * n_atoms)
     exclusion_ids = Index.new([ExclusionId(i) for i in range(n_atoms)])
-    unitcell = TriclinicUnitCell.from_matrix(jnp.eye(3)[None] * 10.0)
+    cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
 
     return State(
         atoms=Table.arange(
@@ -141,7 +141,7 @@ def simple_system(jaxified_model):
             label=ParticleId,
         ),
         systems=Table.arange(
-            SystemData(unitcell=unitcell, cutoff=jnp.array([5.0])),
+            SystemData(cell=cell, cutoff=jnp.array([5.0])),
             label=SystemId,
         ),
         jaxified_model=jaxified_model,

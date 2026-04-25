@@ -11,9 +11,9 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
+from kups.core.cell import Cell, TriclinicCell
 from kups.core.data import Index, Table
 from kups.core.typing import ParticleId, SystemId
-from kups.core.unitcell import TriclinicUnitCell, UnitCell
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import (
     stress_via_lattice_vector_gradients,
@@ -30,21 +30,21 @@ class _VirialParticles:
 
 @dataclass
 class _VirialSystems:
-    unitcell: UnitCell
-    unitcell_gradients: UnitCell
+    cell: Cell
+    cell_gradients: Cell
 
 
 def _make_systems(
     lattice_vectors: Array, lattice_grad: Array | None = None
 ) -> Table[SystemId, _VirialSystems]:
-    """Helper: single-system Table with unit cell and gradients."""
+    """Helper: single-system Table with cell and gradients."""
     if lattice_grad is None:
         lattice_grad = jnp.zeros_like(lattice_vectors)
-    uc = TriclinicUnitCell.from_matrix(lattice_vectors)
-    uc_grad = TriclinicUnitCell.from_matrix(lattice_grad)
+    uc = TriclinicCell.from_matrix(lattice_vectors)
+    uc_grad = TriclinicCell.from_matrix(lattice_grad)
     n = lattice_vectors.shape[0]
     keys = tuple(SystemId(i) for i in range(n))
-    return Table(keys, _VirialSystems(unitcell=uc, unitcell_gradients=uc_grad))
+    return Table(keys, _VirialSystems(cell=uc, cell_gradients=uc_grad))
 
 
 def _make_particles(

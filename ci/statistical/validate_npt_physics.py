@@ -157,12 +157,12 @@ def main() -> int:
     temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
 
     # Extract volume from stress tensor shape or lattice vectors
-    # The HDF5 stores per-step data; volume comes from the unitcell
+    # The HDF5 stores per-step data; volume comes from the cell
     # For NPT, volume changes each step — extract from logged data
     # stress_tensor shape: (n_steps, n_systems, 3, 3)
     # We need volume — compute from Tr(σ) and known pressure
     # Actually, let's just read it from the init lattice and note NPT changes volume
-    lattice = np.asarray(init_data.systems.data.unitcell.lattice_vectors[0])
+    lattice = np.asarray(init_data.systems.data.cell.lattice_vectors[0])
     initial_volume = abs(np.linalg.det(lattice))
 
     print(f"NPT Physics Validation: {args.hdf5_path.name}")

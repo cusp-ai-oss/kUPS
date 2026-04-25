@@ -17,7 +17,7 @@ hosts:
     pressure: 10_000   # Pa (10 bar)
     temperature: 298.15   # K
     init_adsorbates: [5]
-    unitcell_replication: 2
+    cell_replication: 2
 
 lj:
   tail_correction: true
