@@ -83,7 +83,7 @@ CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one rep
 
 These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream.
 
-> To use Meta's [UMA](https://huggingface.co/facebook/UMA) model with <em>k</em>UPS, you can download it directly from Hugging Face and then port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.ipynb#tojax-machine-learned-force-fields).
+> To use Meta's [UMA](https://huggingface.co/facebook/UMA) model with <em>k</em>UPS, you can download it directly from Hugging Face and then port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.md#tojax-machine-learned-force-fields).
 
 Any `model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (fetched via `huggingface_hub.hf_hub_download` and cached on first use) or a local filesystem path to a Tojax-exported `.zip`:
 
