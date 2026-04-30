@@ -75,15 +75,16 @@ Move probabilities and step sizes are configurable. The simulation supports mult
 
 # Machine-learning Force Fields
 
-CuspAI publishes JAX exports of MACE, UMA, and Orb on the Hugging Face Hub — one repository per model so each retains its upstream license:
+CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one repository per model so each retains its upstream license:
 
 | Model | Hugging Face repository | License |
 |-------|-------------------------|---------|
 | [MACE](https://github.com/ACEsuit/mace-foundations) | [CuspAI/kUPS-mace-jax](https://huggingface.co/CuspAI/kUPS-mace-jax) | MIT |
-| [UMA](https://huggingface.co/facebook/UMA) | [CuspAI/kUPS-uma-jax](https://huggingface.co/CuspAI/kUPS-uma-jax) (gated) | FAIR Chemistry License v1 |
 | [Orb](https://github.com/orbital-materials/orb-models) | [CuspAI/kUPS-orb-jax](https://huggingface.co/CuspAI/kUPS-orb-jax) | Apache 2.0 |
 
-These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream. UMA inherits Meta's gated distribution: request access on both the [upstream page](https://huggingface.co/facebook/UMA) and [CuspAI/kUPS-uma-jax](https://huggingface.co/CuspAI/kUPS-uma-jax), then `huggingface-cli login` before downloading.
+These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream. 
+
+> To use Meta's [UMA](https://huggingface.co/facebook/UMA) model with <em>k</em>UPS, you can download it directly from Hugging Face and then port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.ipynb#tojax-machine-learned-force-fields).
 
 Any `model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (fetched via `huggingface_hub.hf_hub_download` and cached on first use) or a local filesystem path to a Tojax-exported `.zip`:
 
