@@ -16,7 +16,6 @@ cd examples
 kups_md_lj md_lj_argon_nvt.yaml
 kups_md_lj md_lj_argon_nve.yaml
 kups_md_mlff md_mace.yaml
-kups_md_mlff md_uma.yaml
 kups_md_mlff md_orb.yaml
 ```
 
@@ -82,7 +81,7 @@ CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one rep
 | [MACE](https://github.com/ACEsuit/mace-foundations) | [CuspAI/kUPS-mace-jax](https://huggingface.co/CuspAI/kUPS-mace-jax) | MIT |
 | [Orb](https://github.com/orbital-materials/orb-models) | [CuspAI/kUPS-orb-jax](https://huggingface.co/CuspAI/kUPS-orb-jax) | Apache 2.0 |
 
-These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream. 
+These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream.
 
 > To use Meta's [UMA](https://huggingface.co/facebook/UMA) model with <em>k</em>UPS, you can download it directly from Hugging Face and then port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.ipynb#tojax-machine-learned-force-fields).
 
@@ -91,7 +90,6 @@ Any `model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (
 ```yaml
 # Remote (HF Hub, requires pip install kups[hf])
 model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
-model_path: hf://CuspAI/kUPS-uma-jax/uma-s-1p2_omat.zip        # heads: oc20, odac, omat, omc, omol
 model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
 
 # Local (anything readable by TojaxedMliap.from_zip_file)
