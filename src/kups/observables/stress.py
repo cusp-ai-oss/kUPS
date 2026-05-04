@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.data import Index, Table
+from kups.core.data.index import SupportsSorting
 from kups.core.typing import (
     GroupId,
     HasGroupIndex,
@@ -136,11 +137,14 @@ def stress_via_lattice_vector_gradients(
     return Table(systems.keys, stress)
 
 
-def stress_via_virial_theorem(
-    particles: Table[ParticleId, IsVirialParticles],
+def stress_via_virial_theorem[Key: SupportsSorting](
+    particles: Table[Key, IsVirialParticles],
     systems: Table[SystemId, IsVirialSystems],
 ) -> Table[SystemId, Array]:
     """Compute atomic-level virial stress tensor.
+
+    Generic over the particle key type so that the same formula can be
+    applied at the COM level (key :class:`GroupId`) for rigid-body MD.
 
     Args:
         particles: Per-particle positions, system index, and position gradients.

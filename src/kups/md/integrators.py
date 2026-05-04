@@ -11,7 +11,8 @@ from jax import Array
 from typing_extensions import Protocol
 
 from kups.core.constants import BOLTZMANN_CONSTANT
-from kups.core.data import Table
+from kups.core.data import Index, Table
+from kups.core.data.index import SupportsSorting
 from kups.core.lens import Lens, View, bind
 from kups.core.propagator import Propagator, SequentialPropagator
 from kups.core.typing import (
@@ -161,7 +162,7 @@ class _PositionStepData(
 
 
 @dataclass
-class PositionStep[State](Propagator[State]):
+class PositionStep[State, Key: SupportsSorting](Propagator[State]):
     """Update positions using velocities in molecular dynamics.
 
     Implements the 'A' operator in splitting schemes, propagating positions
@@ -176,6 +177,8 @@ class PositionStep[State](Propagator[State]):
 
     Type Parameters:
         State: Simulation state type
+        Key: Table key type (e.g. :class:`ParticleId` for atomic MD,
+            :class:`GroupId` for rigid-body COM drift).
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, positions $\\mathbf{r}$, masses $m$)
@@ -183,7 +186,7 @@ class PositionStep[State](Propagator[State]):
         flow: Flow operator defining how positions evolve (handles boundary conditions)
     """
 
-    particles: Lens[State, Table[ParticleId, _PositionStepData]] = field(static=True)
+    particles: Lens[State, Table[Key, _PositionStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
     flow: Flow[State, Array] = field(static=True)
 
@@ -216,7 +219,7 @@ class IsMomentumStepData(HasMomenta, HasForces, HasSystemIndex, Protocol): ...
 
 
 @dataclass
-class MomentumStep[State](Propagator[State]):
+class MomentumStep[State, Key: SupportsSorting](Propagator[State]):
     """Update momenta using forces according to Newton's second law.
 
     Implements the 'B' operator in splitting schemes, applying forces to
@@ -231,13 +234,15 @@ class MomentumStep[State](Propagator[State]):
 
     Type Parameters:
         State: Simulation state type
+        Key: Table key type (e.g. :class:`ParticleId` for atomic MD,
+            :class:`GroupId` for rigid-body COM and rotational kicks).
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, forces $\\mathbf{F}$)
         systems: View to extract system data with time step $\\Delta t$
     """
 
-    particles: Lens[State, Table[ParticleId, IsMomentumStepData]] = field(static=True)
+    particles: Lens[State, Table[Key, IsMomentumStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -329,7 +334,7 @@ class _StochasticSysData(
 
 
 @dataclass
-class StochasticStep[State](Propagator[State]):
+class StochasticStep[State, Key: SupportsSorting](Propagator[State]):
     """Langevin thermostat stochastic step with exact Ornstein-Uhlenbeck solution.
 
     Implements the 'O' operator in the BAOAB splitting scheme. This step
@@ -346,6 +351,7 @@ class StochasticStep[State](Propagator[State]):
 
     Type Parameters:
         State: Simulation state type
+        Key: Table key type (e.g. :class:`ParticleId`, :class:`GroupId`).
 
     Attributes:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, masses $m$)
@@ -359,7 +365,7 @@ class StochasticStep[State](Propagator[State]):
         DOI: 10.1093/amrx/abs010
     """
 
-    particles: Lens[State, Table[ParticleId, IsStochasticParticleData]] = field(
+    particles: Lens[State, Table[Key, IsStochasticParticleData]] = field(
         static=True
     )
     system: View[State, Table[SystemId, _StochasticSysData]] = field(static=True)
@@ -671,7 +677,7 @@ class _BarostatParticleData(_MDParticleData, Protocol): ...
 
 
 @dataclass
-class StochasticCellRescalingStep[State](Propagator[State]):
+class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]):
     """Stochastic cell rescaling barostat for NPT ensemble sampling.
 
     Implements the isotropic stochastic cell rescaling algorithm (Bernetti & Bussi, 2020)
@@ -719,13 +725,13 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         DOI: 10.1063/5.0020514
     """
 
-    particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
+    particles: Lens[State, Table[Key, _BarostatParticleData]] = field(
         static=True
     )
     systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
         static=True
     )
-    scaled_index: View[State, Any] | None = field(static=True, default=None)
+    scaled_index: View[State, "Index[SystemId]"] | None = field(static=True, default=None)
     position_lens: Lens[State, Array] | None = field(static=True, default=None)
     kinetic_energy_view: View[State, Array] | None = field(static=True, default=None)
     stress_view: View[State, Array] | None = field(static=True, default=None)

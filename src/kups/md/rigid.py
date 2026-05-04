@@ -21,7 +21,7 @@ declared inline in the same style as ``integrators.py``.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -81,11 +81,6 @@ from kups.md.integrators import (
 type RigidIntegrator = Literal[
     "rigid_verlet", "rigid_baoab_langevin", "rigid_csvr", "rigid_csvr_npt"
 ]
-
-
-# ---------------------------------------------------------------------------
-# Protocols (private, mirror integrators.py pattern)
-# ---------------------------------------------------------------------------
 
 
 @runtime_checkable
@@ -160,6 +155,37 @@ class _AtomReconstructionMotifData(HasPositions, Protocol): ...
 
 
 @runtime_checkable
+class _RigidAtomData(
+    _ForceAggregationAtomData, _AtomReconstructionAtomData, Protocol
+):
+    """Atom-level data shared across the rigid-body MD pipeline."""
+
+
+@runtime_checkable
+class _RigidGroupData(
+    HasMomenta,
+    HasPositions,
+    HasMasses,
+    HasSystemIndex,
+    HasQuaternion,
+    HasAngularMomentum,
+    HasInertiaDiag,
+    HasTorque,
+    Protocol,
+):
+    """Per-rigid-body data shared across the rigid-body MD pipeline."""
+
+    @property
+    def forces(self) -> Array: ...
+    @property
+    def position_gradients(self) -> Array: ...
+
+
+@runtime_checkable
+class _RigidVerletSysData(HasTimeStep, HasUnitCell, Protocol): ...
+
+
+@runtime_checkable
 class _RigidStochasticSysData(
     HasTimeStep, HasTemperature, HasFrictionCoefficient, HasUnitCell, Protocol
 ): ...
@@ -178,24 +204,16 @@ class _RigidCSVRSystemData(
 
 @runtime_checkable
 class _RigidNPTSystemData(
-    HasUnitCell,
-    HasTimeStep,
-    HasTemperature,
+    _RigidStochasticSysData,
+    _RigidCSVRSystemData,
     HasTargetPressure,
     HasPressureCouplingTime,
     HasCompressibility,
     HasMinimumScaleFactor,
-    HasThermostatTimeConstant,
-    HasDegreesOfFreedom,
     Protocol,
 ):
     @property
     def unitcell_gradients(self) -> UnitCell: ...
-
-
-# ---------------------------------------------------------------------------
-# Per-axis rotational kinematics helpers (NO_SQUISH)
-# ---------------------------------------------------------------------------
 
 
 def _rotate_quaternion_l_about_axis(
@@ -553,16 +571,11 @@ class AtomReconstructionStep[State](Propagator[State]):
         )
 
 
-# ---------------------------------------------------------------------------
-# Factories: pure composition through SequentialPropagator
-# ---------------------------------------------------------------------------
-
-
 def make_rigid_velocity_verlet_step[State](
-    particles: Lens[State, Any],
-    groups: Lens[State, Any],
-    motifs: View[State, Any],
-    systems: View[State, Table[SystemId, Any]],
+    particles: Lens[State, Table[ParticleId, _RigidAtomData]],
+    groups: Lens[State, Table[GroupId, _RigidGroupData]],
+    motifs: View[State, Table[MotifParticleId, _AtomReconstructionMotifData]],
+    systems: View[State, Table[SystemId, _RigidVerletSysData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
 ) -> SequentialPropagator[State]:
@@ -584,23 +597,23 @@ def make_rigid_velocity_verlet_step[State](
     aggregation = ForceAggregationStep(particles, groups, systems)
     return SequentialPropagator(
         (
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
-            PositionStep(groups, systems, flow),  # type: ignore[arg-type]
+            PositionStep(groups, systems, flow),
             QuaternionDriftStep(groups, systems),
             AtomReconstructionStep(particles, groups, motifs),
             derivative_computation,
             aggregation,
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
         )
     )
 
 
 def make_rigid_baoab_langevin_step[State](
-    particles: Lens[State, Any],
-    groups: Lens[State, Any],
-    motifs: View[State, Any],
+    particles: Lens[State, Table[ParticleId, _RigidAtomData]],
+    groups: Lens[State, Table[GroupId, _RigidGroupData]],
+    motifs: View[State, Table[MotifParticleId, _AtomReconstructionMotifData]],
     systems: View[State, Table[SystemId, _RigidStochasticSysData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -613,27 +626,27 @@ def make_rigid_baoab_langevin_step[State](
     aggregation = ForceAggregationStep(particles, groups, systems)
     return SequentialPropagator(
         (
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
-            PositionStep(groups, sys_half, flow),  # type: ignore[arg-type]
+            PositionStep(groups, sys_half, flow),
             QuaternionDriftStep(groups, sys_half),
-            StochasticStep(groups, systems),  # type: ignore[arg-type]
+            StochasticStep(groups, systems),
             RigidRotationalStochasticStep(groups, systems),
-            PositionStep(groups, sys_half, flow),  # type: ignore[arg-type]
+            PositionStep(groups, sys_half, flow),
             QuaternionDriftStep(groups, sys_half),
             AtomReconstructionStep(particles, groups, motifs),
             derivative_computation,
             aggregation,
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
         )
     )
 
 
 def make_rigid_csvr_step[State](
-    particles: Lens[State, Any],
-    groups: Lens[State, Any],
-    motifs: View[State, Any],
+    particles: Lens[State, Table[ParticleId, _RigidAtomData]],
+    groups: Lens[State, Table[GroupId, _RigidGroupData]],
+    motifs: View[State, Table[MotifParticleId, _AtomReconstructionMotifData]],
     systems: View[State, Table[SystemId, _RigidCSVRSystemData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -647,29 +660,29 @@ def make_rigid_csvr_step[State](
     return SequentialPropagator(
         (
             RigidCSVRStep(groups, systems),
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
-            PositionStep(groups, systems, flow),  # type: ignore[arg-type]
+            PositionStep(groups, systems, flow),
             QuaternionDriftStep(groups, systems),
             AtomReconstructionStep(particles, groups, motifs),
             derivative_computation,
             aggregation,
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
         )
     )
 
 
 def _rigid_translational_kinetic_energy_view[State](
-    groups_lens: Lens[State, Any],
+    groups_lens: Lens[State, Table[GroupId, _RigidGroupData]],
 ) -> View[State, Array]:
-    r"""Per-system **translational** (COM) kinetic energy.
+    r"""Per-system translational (COM) kinetic energy.
 
     Used by the NPT cell-rescaling barostat: the pressure expression
     $P = 2 K / (d V) + \mathrm{Tr}(\sigma) / d$ is derived from the volume
     derivative of the partition function, which only sees translational
-    DOF. Rotational kinetic energy of rigid bodies must NOT enter this $K$
-    — rotations preserve volume.
+    DOF. Rotational kinetic energy of rigid bodies must not enter this $K$
+    because rotations preserve volume.
     """
 
     def _ke(state: State) -> Array:
@@ -687,9 +700,9 @@ def _rigid_translational_kinetic_energy_view[State](
 
 
 def _molecular_stress_view[State](
-    particles_lens: Lens[State, Any],
-    groups_lens: Lens[State, Any],
-    systems_lens: Lens[State, Any],
+    particles_lens: Lens[State, Table[ParticleId, _RigidAtomData]],
+    groups_lens: Lens[State, Table[GroupId, _RigidGroupData]],
+    systems_lens: Lens[State, Table[SystemId, _RigidNPTSystemData]],
 ) -> View[State, Array]:
     """Per-system molecular Cauchy stress for the NPT pressure expression."""
     from kups.observables.stress import molecular_stress_via_virial_theorem
@@ -704,9 +717,9 @@ def _molecular_stress_view[State](
 
 
 def make_rigid_csvr_npt_step[State](
-    particles: Lens[State, Any],
-    groups: Lens[State, Any],
-    motifs: View[State, Any],
+    particles: Lens[State, Table[ParticleId, _RigidAtomData]],
+    groups: Lens[State, Table[GroupId, _RigidGroupData]],
+    motifs: View[State, Table[MotifParticleId, _AtomReconstructionMotifData]],
     systems_lens: Lens[State, Table[SystemId, _RigidNPTSystemData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -723,8 +736,8 @@ def make_rigid_csvr_npt_step[State](
     aggregation = ForceAggregationStep(particles, groups, systems_lens.get)
 
     cell_rescale = StochasticCellRescalingStep(
-        particles=particles,  # type: ignore[arg-type]
-        systems=systems_lens,  # type: ignore[arg-type]
+        particles=groups,
+        systems=systems_lens,
         scaled_index=lambda s: groups.get(s).data.system,
         position_lens=groups.focus(lambda g: g.data.positions),
         kinetic_energy_view=_rigid_translational_kinetic_energy_view(groups),
@@ -734,14 +747,14 @@ def make_rigid_csvr_npt_step[State](
     return SequentialPropagator(
         (
             RigidCSVRStep(groups, sys_view),
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
-            PositionStep(groups, sys_view, flow),  # type: ignore[arg-type]
+            PositionStep(groups, sys_view, flow),
             QuaternionDriftStep(groups, sys_view),
             AtomReconstructionStep(particles, groups, motifs),
             derivative_computation,
             aggregation,
-            MomentumStep(groups, sys_half),  # type: ignore[arg-type]
+            MomentumStep(groups, sys_half),
             RotationalMomentumStep(groups, sys_half),
             cell_rescale,
             AtomReconstructionStep(particles, groups, motifs),
@@ -751,22 +764,17 @@ def make_rigid_csvr_npt_step[State](
     )
 
 
-# ---------------------------------------------------------------------------
-# State-driven factory
-# ---------------------------------------------------------------------------
-
-
 class IsRigidMdState(Protocol):
     """Protocol for the state of a rigid-body MD simulation."""
 
     @property
-    def particles(self) -> Table[ParticleId, Any]: ...
+    def particles(self) -> Table[ParticleId, _RigidAtomData]: ...
     @property
-    def groups(self) -> Table[GroupId, Any]: ...
+    def groups(self) -> Table[GroupId, _RigidGroupData]: ...
     @property
-    def motifs(self) -> Table[MotifParticleId, Any]: ...
+    def motifs(self) -> Table[MotifParticleId, _AtomReconstructionMotifData]: ...
     @property
-    def systems(self) -> Table[SystemId, Any]: ...
+    def systems(self) -> Table[SystemId, _RigidNPTSystemData]: ...
 
 
 def make_rigid_md_step_from_state[State](
@@ -788,10 +796,10 @@ def make_rigid_md_step_from_state[State](
     particles = state.focus(lambda x: x.particles)
     groups = state.focus(lambda x: x.groups)
     systems_lens = state.focus(lambda x: x.systems)
-    motifs_view: View[State, Any] = lambda s: state.get(s).motifs
+    motifs_view: View[
+        State, Table[MotifParticleId, _AtomReconstructionMotifData]
+    ] = lambda s: state.get(s).motifs
 
-    # Per-atom unit cell flow for the COM PositionStep: each group's
-    # COM lives in the unit cell of its parent system.
     flow = MinimumImageConventionFlow(
         lambda s: state.get(s).systems[state.get(s).groups.data.system].unitcell,
         euclidean_flow,
@@ -799,39 +807,23 @@ def make_rigid_md_step_from_state[State](
 
     if integrator == "rigid_verlet":
         return make_rigid_velocity_verlet_step(
-            particles,
-            groups,
-            motifs_view,
-            systems_lens.get,
-            derivative_computation,
-            flow,
+            particles, groups, motifs_view, systems_lens.get,
+            derivative_computation, flow,
         )
     if integrator == "rigid_baoab_langevin":
         return make_rigid_baoab_langevin_step(
-            particles,
-            groups,
-            motifs_view,
-            systems_lens.get,
-            derivative_computation,
-            flow,
+            particles, groups, motifs_view, systems_lens.get,
+            derivative_computation, flow,
         )
     if integrator == "rigid_csvr":
         return make_rigid_csvr_step(
-            particles,
-            groups,
-            motifs_view,
-            systems_lens.get,
-            derivative_computation,
-            flow,
+            particles, groups, motifs_view, systems_lens.get,
+            derivative_computation, flow,
         )
     if integrator == "rigid_csvr_npt":
         return make_rigid_csvr_npt_step(
-            particles,
-            groups,
-            motifs_view,
-            systems_lens,
-            derivative_computation,
-            flow,
+            particles, groups, motifs_view, systems_lens,
+            derivative_computation, flow,
         )
     raise ValueError(f"Unknown rigid integrator: {integrator}")
 
