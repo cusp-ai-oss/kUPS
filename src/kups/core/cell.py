@@ -68,7 +68,7 @@ class TriclinicMap(Protocol):
 
 
 @runtime_checkable
-class Cell[M: BoundaryMode = BoundaryMode](Protocol):
+class Cell[M: BoundaryMode](Protocol):
     """3D lattice geometry with per-axis boundary semantics."""
 
     @property
@@ -252,7 +252,7 @@ class _MakeScaled[C](Protocol):
 
 
 @dataclass
-class TriclinicCell[M: BoundaryMode = BoundaryMode](Sliceable):
+class TriclinicCell[M: BoundaryMode](Sliceable):
     """General triclinic cell with 6 degrees of freedom.
 
     Stores the 6 independent elements of the lower-triangular lattice matrix.
@@ -375,7 +375,7 @@ class TriclinicCell[M: BoundaryMode = BoundaryMode](Sliceable):
 
 
 @dataclass
-class OrthogonalCell[M: BoundaryMode = BoundaryMode](Sliceable):
+class OrthogonalCell[M: BoundaryMode](Sliceable):
     """Orthogonal cell with 3 degrees of freedom.
 
     Exploits the diagonal structure for cheaper volume, inverse, and wrap

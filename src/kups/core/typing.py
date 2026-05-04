@@ -260,7 +260,7 @@ class HasLogActivity(Protocol):
 
 
 @runtime_checkable
-class HasCell[M: BoundaryMode = BoundaryMode](Protocol):
+class HasCell[M: BoundaryMode](Protocol):
     """Protocol for entities with cell parameters.
 
     Attributes:
