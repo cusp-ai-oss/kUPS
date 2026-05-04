@@ -445,10 +445,8 @@ def make_torch_mace_potential[
     model: View[State, TorchMACEModel] | TorchMACEModel,
     cutoffs_view: View[State, Table[SystemId, Array]],
     compute_virials: Literal[True],
-    patch_idx_view: View[State, PotentialOut[PositionAndCell, EmptyType]]
-    | None = None,
-    out_cache_lens: Lens[State, PotentialOut[PositionAndCell, EmptyType]]
-    | None = None,
+    patch_idx_view: View[State, PotentialOut[PositionAndCell, EmptyType]] | None = None,
+    out_cache_lens: Lens[State, PotentialOut[PositionAndCell, EmptyType]] | None = None,
 ) -> Potential[State, PositionAndCell, EmptyType, Patch[State]]: ...
 
 

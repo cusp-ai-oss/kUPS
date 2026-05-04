@@ -592,9 +592,9 @@ class TestFromState:
         sl = identity_lens(State)
         state2 = sl.focus(lambda s: s.particles).set(state, new_particles)
         e2 = potential(state2).data.total_energies.data
-        assert not jnp.allclose(
-            e1, e2
-        ), f"{name}: energy did not change after perturbation"
+        assert not jnp.allclose(e1, e2), (
+            f"{name}: energy did not change after perturbation"
+        )
 
 
 class TestFromStateWithUpdates:
@@ -640,6 +640,6 @@ class TestFromStateWithUpdates:
             ref_state = _make_reference_state(state_cached, spec, pos_patch)
             e_full = basic_pot(ref_state).data.total_energies.data
 
-            assert jnp.allclose(
-                e_incr, e_full, atol=1e-6
-            ), f"{pot.name}-{spec.name}: incremental {e_incr} != full {e_full}"
+            assert jnp.allclose(e_incr, e_full, atol=1e-6), (
+                f"{pot.name}-{spec.name}: incremental {e_incr} != full {e_full}"
+            )

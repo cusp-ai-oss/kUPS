@@ -98,12 +98,12 @@ from kups.core.data import Index, Sliceable, Table, subselect
 from kups.core.data.wrappers import WithIndices
 from kups.core.lens import Lens, bind, lens
 from kups.core.typing import (
+    HasCell,
     HasExclusionIndex,
     HasInclusionIndex,
     HasPositions,
     HasPositionsAndSystemIndex,
     HasSystemIndex,
-    HasCell,
     ParticleId,
     SystemId,
 )
@@ -149,17 +149,17 @@ class Edges[Degree: int](Sliceable):
         raw = self.indices.indices if isinstance(self.indices, Index) else self.indices
         if not isinstance(raw, Array):
             return
-        assert jnp.issubdtype(
-            raw.dtype, jnp.integer
-        ), f"Indices must be of integer type, got {raw.dtype}"
+        assert jnp.issubdtype(raw.dtype, jnp.integer), (
+            f"Indices must be of integer type, got {raw.dtype}"
+        )
         target_shape = (
             *self.indices.shape[:-1],
             self.indices.shape[-1] - 1 if self.indices.shape[-1] > 1 else 0,
             3,
         )
-        assert (
-            self.shifts.shape == target_shape
-        ), f"Shifts must have shape {target_shape}, got {self.shifts.shape}"
+        assert self.shifts.shape == target_shape, (
+            f"Shifts must have shape {target_shape}, got {self.shifts.shape}"
+        )
 
     def difference_vectors(
         self,
@@ -458,9 +458,7 @@ def _get_candidate_images(
     out_size: Capacity[int],
 ) -> tuple[Array, Array, Array]:
     cells = systems.data.cell
-    images = jnp.ceil(2 * cutoffs[..., None] / cells.perpendicular_lengths).astype(
-        int
-    )
+    images = jnp.ceil(2 * cutoffs[..., None] / cells.perpendicular_lengths).astype(int)
     images = jnp.where(jnp.isfinite(cutoffs[..., None]), images, 1)
     images += images % 2 == 0
     images_per_sys = jnp.prod(images, axis=-1).astype(int)

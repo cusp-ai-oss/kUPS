@@ -40,12 +40,12 @@ from kups.core.lens import View, bind
 from kups.core.neighborlist import Edges, NearestNeighborList
 from kups.core.patch import Patch, Probe
 from kups.core.typing import (
+    HasCell,
     HasExclusionIndex,
     HasInclusionIndex,
     HasPositions,
     HasPositionsAndSystemIndex,
     HasSystemIndex,
-    HasCell,
     ParticleId,
     SystemId,
 )

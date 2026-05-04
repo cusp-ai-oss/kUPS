@@ -249,9 +249,7 @@ def evaluate_ewald_potential[
     point_cloud: PointCloud[IsEwaldPointData, HasCell],
     parameters: EwaldParameters,
     *,
-    gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasCell], Gradients
-    ] = EMPTY_LENS,
+    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell], Gradients] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[
         PointCloud[IsEwaldPointData, HasCell], Hessians

@@ -311,9 +311,9 @@ class TestNearestNeighborListImplementations:
         # Check specific edges exist
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
         expected_edges = {(0, 1), (1, 0), (1, 2), (2, 1)}
-        assert expected_edges.issubset(
-            edge_set
-        ), f"Missing edges: {expected_edges - edge_set}"
+        assert expected_edges.issubset(edge_set), (
+            f"Missing edges: {expected_edges - edge_set}"
+        )
 
     def test_capacity_management(self, neighbor_list_impl):
         """Test capacity management for any implementation."""
@@ -349,9 +349,9 @@ class TestNearestNeighborListImplementations:
         valid_edges = valid_edges[valid_edges[:, 1] < 2]
 
         # The implementation uses < cutoff, so particles exactly at cutoff should not be neighbors
-        assert (
-            len(valid_edges) == 0
-        ), f"Found unexpected edges at exact cutoff: {valid_edges}"
+        assert len(valid_edges) == 0, (
+            f"Found unexpected edges at exact cutoff: {valid_edges}"
+        )
 
     def test_periodic_boundary_conditions(self, neighbor_list_impl):
         """Test neighbor search with periodic boundary conditions."""
@@ -472,9 +472,9 @@ class TestNearestNeighborListImplementations:
         for i in range(valid_pos.shape[0]):
             lh_idx, rh_idx = valid_pos[i]
             if lh_idx < 4 and rh_idx < 4:
-                assert (
-                    lh_batch[lh_idx] == lh_batch[rh_idx]
-                ), f"Edge ({lh_idx}, {rh_idx}) crosses batch boundary"
+                assert lh_batch[lh_idx] == lh_batch[rh_idx], (
+                    f"Edge ({lh_idx}, {rh_idx}) crosses batch boundary"
+                )
 
         # Negative case: rh in swapped systems, cross-system edges blocked
         result_neg = self._run_neighbor_search_test(
@@ -712,14 +712,14 @@ class TestNearestNeighborListImplementations:
         edges = {tuple(map(int, edge)) for edge in edges}
 
         for edge in edges:
-            assert (
-                edge in actual_edges
-            ), f"Edge {edge} not found in actual edges with distance {dists[edge[0], edge[1]]}."
+            assert edge in actual_edges, (
+                f"Edge {edge} not found in actual edges with distance {dists[edge[0], edge[1]]}."
+            )
         for edge in actual_edges:
             if edge not in edges:
-                assert (
-                    edge[0] == edge[1] == N
-                ), f"Unexpected edge {edge} found in actual edges with distance {dists[edge[0], edge[1]]}."
+                assert edge[0] == edge[1] == N, (
+                    f"Unexpected edge {edge} found in actual edges with distance {dists[edge[0], edge[1]]}."
+                )
 
     def test_compare_to_naive_update(self, neighbor_list_impl):
         N = 15
@@ -770,13 +770,13 @@ class TestNearestNeighborListImplementations:
         for i in range(N):
             for j in range(M):
                 if mask[i, j]:
-                    assert (
-                        (i, int(rh_indices[j])) in actual_edges
-                    ), f"Missing edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
+                    assert (i, int(rh_indices[j])) in actual_edges, (
+                        f"Missing edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
+                    )
                 else:
-                    assert (
-                        (i, int(rh_indices[j])) not in actual_edges
-                    ), f"Unexpected edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
+                    assert (i, int(rh_indices[j])) not in actual_edges, (
+                        f"Unexpected edge {(i, int(rh_indices[j]))} with indices {(i, j)} found with distance {dists[i, j]}."
+                    )
 
     # --- Small cell periodic image tests ---
 
@@ -1046,9 +1046,9 @@ class TestNearestNeighborListImplementations:
             if e[0] < len(positions) and e[1] < len(positions)
         }
         expected = self._compute_naive_neighbors(positions, cell, cutoff)
-        assert (
-            len(expected.difference(valid_edges)) == 0
-        ), f"Missing edges: {expected - valid_edges}"
+        assert len(expected.difference(valid_edges)) == 0, (
+            f"Missing edges: {expected - valid_edges}"
+        )
 
     def test_self_interactions_with_periodic_images(self, neighbor_list_impl):
         """Verify self-interactions with images are included while non-image self-interactions are excluded."""
@@ -1109,9 +1109,9 @@ class TestNearestNeighborListImplementations:
         assert (0, 0, (0, 0, 0)) not in edge_set
 
         # All expected self-image edges should be present
-        assert (
-            edge_set == expected_edges
-        ), f"Could not find edges {expected_edges - edge_set} or found unexpected edges {edge_set - expected_edges}"
+        assert edge_set == expected_edges, (
+            f"Could not find edges {expected_edges - edge_set} or found unexpected edges {edge_set - expected_edges}"
+        )
 
     def test_no_replication_with_infinite_cutoff(self, neighbor_list_impl):
         """Verify no periodic images are generated when cutoff is infinite."""
@@ -1156,9 +1156,9 @@ class TestNearestNeighborListImplementations:
         # Expected: only direct neighbors (0,1) and (1,0) with zero shift, no periodic images
         expected_edges = {(0, 1, (0, 0, 0)), (1, 0, (0, 0, 0))}
 
-        assert (
-            edge_set == expected_edges
-        ), f"Expected edges {expected_edges}, got {edge_set}"
+        assert edge_set == expected_edges, (
+            f"Expected edges {expected_edges}, got {edge_set}"
+        )
 
     def test_exclusion_only_applies_to_minimum_image(self, neighbor_list_impl):
         """Verify exclusion segments only exclude the minimum image convention interaction.
@@ -1277,9 +1277,9 @@ class TestRefineCutoffNeighborList:
         ]
 
         if len(valid_distances) > 0:
-            assert jnp.all(
-                valid_distances <= cutoffs[0] + 1e-6
-            ), "All distances should be within cutoff"
+            assert jnp.all(valid_distances <= cutoffs[0] + 1e-6), (
+                "All distances should be within cutoff"
+            )
 
     def test_with_cells(self):
         """Test refinement with periodic boundary conditions."""

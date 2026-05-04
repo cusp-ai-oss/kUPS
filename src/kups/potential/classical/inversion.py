@@ -52,9 +52,9 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -145,9 +145,9 @@ def inversion_energy(
         Total inversion energy per system
     """
     graph = inp.graph
-    assert (
-        graph.edges.indices.indices.shape[1] == 4
-    ), "Inversion potential requires 4-body interactions (order=4)."
+    assert graph.edges.indices.indices.shape[1] == 4, (
+        "Inversion potential requires 4-body interactions (order=4)."
+    )
     edg = graph.particles[graph.edges.indices]
     edg_species = edg.labels.indices_in(inp.parameters.labels)
     # Edge indices: [:, 0] = center j, [:, 1] = i, [:, 2] = k, [:, 3] = l

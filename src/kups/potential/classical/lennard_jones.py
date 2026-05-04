@@ -44,12 +44,12 @@ from kups.core.potential import (
 from kups.core.propagator import StateProperty
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasExclusionIndex,
     HasInclusionIndex,
     HasLabels,
     HasPositions,
     HasSystemIndex,
-    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -445,9 +445,7 @@ def make_lennard_jones_from_state[State, P: Patch](
     state: Lens[
         State,
         IsLJState[
-            HasCache[
-                LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]
-            ]
+            HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsRadiusGraphProbe],

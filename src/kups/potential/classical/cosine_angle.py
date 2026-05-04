@@ -41,9 +41,9 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -187,9 +187,9 @@ def cosine_angle_energy(
         Total angle energy per system
     """
     graph = inp.graph
-    assert (
-        graph.edges.indices.indices.shape[1] == 3
-    ), "Cosine angle potential only supports triplet interactions (order=3)."
+    assert graph.edges.indices.indices.shape[1] == 3, (
+        "Cosine angle potential only supports triplet interactions (order=3)."
+    )
     edg = graph.particles[graph.edges.indices]
     edg_species = edg.labels.indices_in(inp.parameters.labels)
     s0, s1, s2 = edg_species[:, 0], edg_species[:, 1], edg_species[:, 2]
@@ -335,9 +335,7 @@ def make_cosine_angle_from_state[State, P: Patch](
     state: Lens[
         State,
         IsCosineAngleState[
-            HasCache[
-                CosineAngleParameters, PotentialOut[PositionAndCell, EmptyType]
-            ]
+            HasCache[CosineAngleParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[

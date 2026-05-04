@@ -613,9 +613,9 @@ class TestTranslateGroups:
                 atol=1e-15,
                 err_msg=f"Boundary crossing translation failed for particle {i}",
             )
-            assert (
-                jnp.all(translated[i] >= -0.5) and jnp.all(translated[i] < 0.5)
-            ), f"Particle {i} position {translated[i]} is outside valid range [-0.5, 0.5)"
+            assert jnp.all(translated[i] >= -0.5) and jnp.all(translated[i] < 0.5), (
+                f"Particle {i} position {translated[i]} is outside valid range [-0.5, 0.5)"
+            )
 
     def test_single_system(self):
         """Non-unit 2x2x2 cubic cell where Cartesian-to-fractional conversion matters."""
@@ -918,9 +918,9 @@ class TestExchangeMove:
             assert np.all(
                 (proposal.groups.data.data.system.indices == 2) | g_insert_mask
             )
-        assert (
-            0.1 < n_inserts / (n_iters * 2) < 0.9
-        ), f"Unexpected insert ratio: {n_inserts / (n_iters * 2)}"
+        assert 0.1 < n_inserts / (n_iters * 2) < 0.9, (
+            f"Unexpected insert ratio: {n_inserts / (n_iters * 2)}"
+        )
 
     def test_multiple_motifs(self):
         chain = key_chain(jax.random.key(5))
@@ -1022,13 +1022,13 @@ class TestExchangeMove:
             p_insert_mask = proposal.particles.data.data.system.indices < 1
             n_insertions = jnp.sum(p_insert_mask)
             if n_insertions > 0:
-                assert (
-                    n_insertions == 5
-                ), f"Expected 5 particles in insertion, got {n_insertions}"
+                assert n_insertions == 5, (
+                    f"Expected 5 particles in insertion, got {n_insertions}"
+                )
                 group_ids = proposal.particles.data.data.group.indices[p_insert_mask]
-                assert jnp.all(
-                    group_ids == group_ids[0]
-                ), "Inserted particles should belong to same group"
+                assert jnp.all(group_ids == group_ids[0]), (
+                    "Inserted particles should belong to same group"
+                )
 
     def test_capacity_larger_than_motif_times_systems(self):
         chain = key_chain(jax.random.key(7))
@@ -1085,18 +1085,18 @@ class TestExchangeMove:
                 insert_system_ids = proposal.particles.data.data.system.indices[
                     p_insert_mask
                 ]
-                assert jnp.all(
-                    insert_system_ids < 2
-                ), f"Invalid system IDs: {insert_system_ids}"
+                assert jnp.all(insert_system_ids < 2), (
+                    f"Invalid system IDs: {insert_system_ids}"
+                )
                 for sys_id in range(2):
                     sys_insertions = jnp.sum(insert_system_ids == sys_id)
                     if sys_insertions > 0:
-                        assert (
-                            sys_insertions <= 4
-                        ), f"Too many insertions for system {sys_id}, got {sys_insertions}"
-        assert (
-            0.1 < n_inserts / (n_inserts + n_dels) < 0.9
-        ), f"Unexpected insert/delete ratio: {n_inserts}/{n_dels}"
+                        assert sys_insertions <= 4, (
+                            f"Too many insertions for system {sys_id}, got {sys_insertions}"
+                        )
+        assert 0.1 < n_inserts / (n_inserts + n_dels) < 0.9, (
+            f"Unexpected insert/delete ratio: {n_inserts}/{n_dels}"
+        )
 
     def test_mixed_motif_sizes(self):
         chain = key_chain(jax.random.key(8))
@@ -1163,9 +1163,9 @@ class TestExchangeMove:
                         motif_usage = motif_usage.at[motif_id].add(1)
                 n_inserted_particles = jnp.sum(p_insert_mask)
                 if n_inserted_particles > 0:
-                    assert (
-                        n_inserted_particles <= 10
-                    ), f"Too many particles inserted: {n_inserted_particles}"
+                    assert n_inserted_particles <= 10, (
+                        f"Too many particles inserted: {n_inserted_particles}"
+                    )
         assert jnp.sum(motif_usage) > 0, f"No motifs were used: {motif_usage}"
 
     def test_high_capacity_multiple_motifs(self):
@@ -1219,9 +1219,9 @@ class TestExchangeMove:
             n_no_ops = jnp.sum(no_op_mask)
             total_no_ops += int(n_no_ops)
             total_ops = n_valid_ops + n_no_ops
-            assert (
-                total_ops == state["capacity"].size
-            ), f"Expected {state['capacity'].size} total operations, got {total_ops}"
+            assert total_ops == state["capacity"].size, (
+                f"Expected {state['capacity'].size} total operations, got {total_ops}"
+            )
             p_insert_mask = (
                 proposal.particles.data.data.system.indices < 2
             ) & valid_particle_mask
@@ -1231,29 +1231,29 @@ class TestExchangeMove:
             )
             if jnp.any(no_op_mask):
                 no_op_particle_ids = particle_ids[no_op_mask]
-                assert jnp.all(
-                    no_op_particle_ids == positions.shape[0]
-                ), f"No-op particle IDs should be {positions.shape[0]}, got {no_op_particle_ids}"
+                assert jnp.all(no_op_particle_ids == positions.shape[0]), (
+                    f"No-op particle IDs should be {positions.shape[0]}, got {no_op_particle_ids}"
+                )
             if n_inserted > 0:
                 insert_system_ids = proposal.particles.data.data.system.indices[
                     p_insert_mask
                 ]
-                assert jnp.all(
-                    insert_system_ids < 2
-                ), f"Invalid system IDs: {insert_system_ids}"
+                assert jnp.all(insert_system_ids < 2), (
+                    f"Invalid system IDs: {insert_system_ids}"
+                )
                 insert_group_ids = proposal.particles.data.data.group.indices[
                     p_insert_mask
                 ]
-                assert jnp.all(
-                    insert_group_ids < groups.size
-                ), f"Invalid group IDs: {insert_group_ids}"
-        assert (
-            max_particles_per_proposal >= 3
-        ), f"Expected at least motif-sized proposals with high capacity, max was {max_particles_per_proposal}"
+                assert jnp.all(insert_group_ids < groups.size), (
+                    f"Invalid group IDs: {insert_group_ids}"
+                )
+        assert max_particles_per_proposal >= 3, (
+            f"Expected at least motif-sized proposals with high capacity, max was {max_particles_per_proposal}"
+        )
         avg_no_ops_per_proposal = total_no_ops / n_iters
-        assert (
-            avg_no_ops_per_proposal >= 8
-        ), f"Expected significant no-ops with high capacity, avg was {avg_no_ops_per_proposal}"
+        assert avg_no_ops_per_proposal >= 8, (
+            f"Expected significant no-ops with high capacity, avg was {avg_no_ops_per_proposal}"
+        )
 
 
 @dataclass

@@ -36,9 +36,9 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -153,9 +153,9 @@ def morse_bond_energy(
         Total bond energy per system
     """
     graph = inp.graph
-    assert (
-        graph.edges.indices.indices.shape[1] == 2
-    ), "Morse bond potential only supports pairwise interactions (order=2)."
+    assert graph.edges.indices.indices.shape[1] == 2, (
+        "Morse bond potential only supports pairwise interactions (order=2)."
+    )
     edg_species = graph.particles[graph.edges.indices].labels.indices_in(
         inp.parameters.labels
     )

@@ -32,11 +32,11 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     ExclusionId,
+    HasCell,
     HasExclusionIndex,
     HasInclusionIndex,
     HasMotifIndex,
     HasPositionsAndSystemIndex,
-    HasCell,
     InclusionId,
     MotifId,
     ParticleId,
@@ -234,9 +234,7 @@ class BlockingSpheresSumComposer[
         edges = neighborlist(particles, spheres, systems, cutoffs)
         cell = systems.data.cell
         return Sum(
-            Summand(
-                BlockingSpheresPotentialInput(parameters, particles, cell, edges)
-            )
+            Summand(BlockingSpheresPotentialInput(parameters, particles, cell, edges))
         )
 
 

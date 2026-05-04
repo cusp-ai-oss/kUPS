@@ -45,8 +45,8 @@ from kups.core.neighborlist import NearestNeighborList
 from kups.core.patch import Patch, WithPatch
 from kups.core.potential import EMPTY_LENS, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
-    HasPositionsAndSystemIndex,
     HasCell,
+    HasPositionsAndSystemIndex,
     ParticleId,
     SystemId,
 )

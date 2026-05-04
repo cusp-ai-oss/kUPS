@@ -278,9 +278,7 @@ class MCMCSystems:
 
     def __post_init__(self):
         if self.cell_gradients is None:
-            object.__setattr__(
-                self, "cell_gradients", tree_zeros_like(self.cell)
-            )
+            object.__setattr__(self, "cell_gradients", tree_zeros_like(self.cell))
 
     @property
     def log_activity(self) -> Array:

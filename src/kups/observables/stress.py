@@ -15,10 +15,10 @@ from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.typing import (
     GroupId,
+    HasCell,
     HasGroupIndex,
     HasPositions,
     HasSystemIndex,
-    HasCell,
     IsState,
     ParticleId,
     SystemId,

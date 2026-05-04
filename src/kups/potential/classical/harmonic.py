@@ -30,9 +30,9 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -94,9 +94,9 @@ def harmonic_bond_energy(
         Total bond energy per system
     """
     graph = inp.graph
-    assert (
-        graph.edges.indices.indices.shape[1] == 2
-    ), "Harmonic bond potential only supports pairwise interactions (order=2)."
+    assert graph.edges.indices.indices.shape[1] == 2, (
+        "Harmonic bond potential only supports pairwise interactions (order=2)."
+    )
     edg_species = graph.particles[graph.edges.indices].labels.indices_in(
         inp.parameters.labels
     )
@@ -142,9 +142,9 @@ def harmonic_angle_energy(
         Total angle energy per system
     """
     graph = inp.graph
-    assert (
-        graph.edges.indices.indices.shape[1] == 3
-    ), "Harmonic angle potential only supports triplet interactions (order=3)."
+    assert graph.edges.indices.indices.shape[1] == 3, (
+        "Harmonic angle potential only supports triplet interactions (order=3)."
+    )
     edg_species = graph.particles[graph.edges.indices].labels.indices_in(
         inp.parameters.labels
     )
@@ -342,9 +342,7 @@ def make_harmonic_bond_from_state[State, P: Patch](
     state: Lens[
         State,
         IsHarmonicBondState[
-            HasCache[
-                HarmonicBondParameters, PotentialOut[PositionAndCell, EmptyType]
-            ]
+            HasCache[HarmonicBondParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[2]]],
@@ -468,9 +466,7 @@ def make_harmonic_angle_from_state[State, P: Patch](
     state: Lens[
         State,
         IsHarmonicAngleState[
-            HasCache[
-                HarmonicAngleParameters, PotentialOut[PositionAndCell, EmptyType]
-            ]
+            HasCache[HarmonicAngleParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsEdgeSetGraphProbe[IsBondedParticles, Literal[3]]],

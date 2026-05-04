@@ -17,11 +17,11 @@ from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
 from kups.md.integrators import (
     CSVRStep,
-    WrapFlow,
     MomentumStep,
     PositionStep,
     StochasticCellRescalingStep,
     StochasticStep,
+    WrapFlow,
     euclidean_flow,
     make_baoab_langevin_step,
     make_csvr_npt_step,
@@ -121,9 +121,9 @@ def run_simulation(integrator, state, key, n_equil, n_sample, extract_fn):
 def assert_temperature(mean_temp, kT_target, tolerance, label=""):
     """Assert temperature is within tolerance of target."""
     rel_err = jnp.abs(mean_temp - kT_target) / kT_target
-    assert (
-        rel_err < tolerance
-    ), f"{label}Temperature {mean_temp:.3f} differs from target {kT_target} by {rel_err * 100:.1f}%"
+    assert rel_err < tolerance, (
+        f"{label}Temperature {mean_temp:.3f} differs from target {kT_target} by {rel_err * 100:.1f}%"
+    )
 
 
 def _virial_stress(positions, forces):
@@ -382,9 +382,7 @@ class TestBarostatAndMICSteps:
         assert not jnp.isclose(
             new_state.systems.data.cell.volume, initial_volume, rtol=1e-8
         ), "CRITICAL BUG: Cell volume did not update"
-        expected_volume = jnp.linalg.det(
-            new_state.systems.data.cell.lattice_vectors
-        )
+        expected_volume = jnp.linalg.det(new_state.systems.data.cell.lattice_vectors)
         assert jnp.isclose(
             new_state.systems.data.cell.volume, expected_volume, rtol=1e-6
         )
@@ -421,9 +419,9 @@ class TestBarostatAndMICSteps:
             extract_fn=lambda s: s.systems.data.cell.volume,
         )
 
-        assert (
-            jnp.mean(volumes[5:]) > initial_volume * 1.01
-        ), "Barostat did not expand box in response to high pressure"
+        assert jnp.mean(volumes[5:]) > initial_volume * 1.01, (
+            "Barostat did not expand box in response to high pressure"
+        )
 
     def test_wrapping_positions(self):
         box_size = 5.0
@@ -433,9 +431,7 @@ class TestBarostatAndMICSteps:
         class TestState:
             cell: Cell
 
-        flow = WrapFlow(
-            cell=lambda s: s.cell, flow=euclidean_flow
-        )
+        flow = WrapFlow(cell=lambda s: s.cell, flow=euclidean_flow)
         new_pos = flow(
             TestState(cell=cell),
             jnp.array([0.1]),
@@ -481,9 +477,9 @@ class TestNVTPhysics:
         max_drift = jnp.max(
             jnp.abs(energies - initial_energy) / jnp.abs(initial_energy)
         )
-        assert (
-            max_drift < 1e-4
-        ), f"Energy conservation violated: max drift = {max_drift:.2e}"
+        assert max_drift < 1e-4, (
+            f"Energy conservation violated: max drift = {max_drift:.2e}"
+        )
 
     def test_vv_time_reversibility(self):
         state, deriv, _ = create_harmonic_system(n_particles=5, k=1.0, dt=0.01)
@@ -736,12 +732,12 @@ def test_npt_cauchy_stress_convention():
     # What the old buggy code computed: 2K/(3V) + Tr(σ)/(3V)  ← extra /V
     P_buggy = 2 * ke_total / (3 * V) + jnp.trace(cauchy_stress) / (3 * V)
 
-    assert jnp.isclose(
-        P_fixed, P_expected, rtol=1e-10
-    ), f"Fixed pressure {P_fixed} != expected {P_expected}"
-    assert not jnp.isclose(
-        P_buggy, P_expected, rtol=0.1
-    ), f"Buggy pressure should NOT match expected (off by factor V={V})"
+    assert jnp.isclose(P_fixed, P_expected, rtol=1e-10), (
+        f"Fixed pressure {P_fixed} != expected {P_expected}"
+    )
+    assert not jnp.isclose(P_buggy, P_expected, rtol=0.1), (
+        f"Buggy pressure should NOT match expected (off by factor V={V})"
+    )
 
 
 def test_stress_matches_ase():
@@ -827,9 +823,7 @@ def test_stress_matches_ase():
         lj_parameters=lj,
     )
     sl = identity_lens(S)
-    pot = make_lennard_jones_from_state(
-        sl, compute_position_and_cell_gradients=True
-    )
+    pot = make_lennard_jones_from_state(sl, compute_position_and_cell_gradients=True)
 
     # Evaluate potential and write gradients back into state
     result = pot(state)

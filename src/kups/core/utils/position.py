@@ -50,9 +50,9 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     group_ids = particles.data.group.indices
     num_groups = particles.data.group.num_labels
     # TODO: This function assumes that the structure is less than half the size of the cell!
-    assert (
-        cells.lattice_vectors.shape[0] == num_groups
-    ), f"Cells must match the number of groups. Got {cells.lattice_vectors.shape[0]} for {num_groups} groups."
+    assert cells.lattice_vectors.shape[0] == num_groups, (
+        f"Cells must match the number of groups. Got {cells.lattice_vectors.shape[0]} for {num_groups} groups."
+    )
     batched_cells = cells[group_ids]
     # Index any particle in each group
     ref_idx = (

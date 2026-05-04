@@ -104,9 +104,7 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxLjState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj_params.cutoff
     )
-    opt_state = opt_init(
-        (particles.data.positions, systems.data.cell.lattice_vectors)
-    )
+    opt_state = opt_init((particles.data.positions, systems.data.cell.lattice_vectors))
     return RelaxLjState(
         particles=particles,
         systems=systems,

@@ -62,10 +62,7 @@ class RelaxSystems:
     @property
     def stress_tensor(self) -> Array:
         """Cauchy stress tensor, shape ``(..., 3, 3)``."""
-        return (
-            -self.cell_gradients.lattice_vectors
-            / self.cell.volume[..., None, None]
-        )
+        return -self.cell_gradients.lattice_vectors / self.cell.volume[..., None, None]
 
 
 class RelaxRunConfig(BaseModel):

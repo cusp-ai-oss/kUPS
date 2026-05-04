@@ -54,9 +54,9 @@ from kups.core.patch import Accept, Patch, Probe, WithPatch
 from kups.core.potential import EMPTY_LENS, Energy, Potential, PotentialOut
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasPositionsAndAtomicNumbers,
     HasSystemIndex,
-    HasCell,
     MaybeCached,
     ParticleId,
     SystemId,

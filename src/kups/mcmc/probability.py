@@ -45,11 +45,11 @@ from kups.core.potential import (
 from kups.core.propagator import LogProbabilityRatio, LogProbabilityRatioFn
 from kups.core.typing import (
     GroupId,
+    HasCell,
     HasLogActivity,
     HasMotifAndSystemIndex,
     HasPotentialEnergy,
     HasTemperature,
-    HasCell,
     SystemId,
 )
 from kups.core.utils.functools import pipe

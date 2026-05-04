@@ -39,9 +39,9 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     HasCache,
+    HasCell,
     HasPositionsAndLabels,
     HasSystemIndex,
-    HasCell,
     Label,
     MaybeCached,
     ParticleId,
@@ -223,9 +223,9 @@ def dihedral_energy(
         Total dihedral energy per system
     """
     graph = inp.graph
-    assert (
-        graph.edges.indices.indices.shape[1] == 4
-    ), "Dihedral potential only supports quadruplet interactions (order=4)."
+    assert graph.edges.indices.indices.shape[1] == 4, (
+        "Dihedral potential only supports quadruplet interactions (order=4)."
+    )
     edg = graph.particles[graph.edges.indices]
     edg_species = edg.labels.indices_in(inp.parameters.labels)
     s0, s1, s2, s3 = (

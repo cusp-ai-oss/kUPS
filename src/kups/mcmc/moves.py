@@ -51,12 +51,12 @@ from kups.core.schedule import PropertyScheduler
 from kups.core.typing import (
     DTypeLike,
     GroupId,
+    HasCell,
     HasGroupIndex,
     HasMotifAndSystemIndex,
     HasPositions,
     HasPositionsAndSystemIndex,
     HasSystemIndex,
-    HasCell,
     MotifId,
     MotifParticleId,
     ParticleId,

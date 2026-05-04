@@ -98,9 +98,7 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxMlffState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, jaxified_model.cutoff
     )
-    opt_state = opt_init(
-        (particles.data.positions, systems.data.cell.lattice_vectors)
-    )
+    opt_state = opt_init((particles.data.positions, systems.data.cell.lattice_vectors))
     return RelaxMlffState(
         particles=particles,
         systems=systems,

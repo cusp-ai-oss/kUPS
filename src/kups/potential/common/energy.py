@@ -335,17 +335,17 @@ class PotentialFromEnergy[
 
         # If the dispatcher demands it, we add the previous total potential
         if dp_plan.add_previous_total:
-            assert (
-                self.cache_lens is not None
-            ), "Cache lens must be set for caching previous total potential."
+            assert self.cache_lens is not None, (
+                "Cache lens must be set for caching previous total potential."
+            )
             outs.append(self.cache_lens.get(state))
 
         # Aggregate the result with Kahan summation
         total = kahan_summation(*outs)[0]
         if self.cache_lens is not None:
-            assert (
-                self.patch_idx_view is not None
-            ), "Patch index view must be set when cache lens is set."
+            assert self.patch_idx_view is not None, (
+                "Patch index view must be set when cache lens is set."
+            )
             cache_patch = IndexLensPatch(
                 total, self.patch_idx_view(state), self.cache_lens
             )

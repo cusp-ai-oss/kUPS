@@ -50,8 +50,14 @@ class CoordinateSpace(Enum):
 
 
 class FullyPeriodic: ...
+
+
 class Vacuum: ...
+
+
 class Slab: ...
+
+
 type BoundaryMode = FullyPeriodic | Vacuum | Slab
 
 

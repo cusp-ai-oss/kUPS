@@ -16,6 +16,7 @@ from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.propagator import Propagator, SequentialPropagator
 from kups.core.typing import (
+    HasCell,
     HasCompressibility,
     HasForces,
     HasFrictionCoefficient,
@@ -29,7 +30,6 @@ from kups.core.typing import (
     HasTemperature,
     HasThermostatTimeConstant,
     HasTimeStep,
-    HasCell,
     ParticleId,
     SystemId,
 )
@@ -135,9 +135,7 @@ class WrapFlow[State, PyTree](Flow[State, PyTree]):
     def __call__(
         self, state: State, dt: Time, primal: PyTree, tangent: PyTree
     ) -> PyTree:
-        return tree_map(
-            self.cell(state).wrap, self.flow(state, dt, primal, tangent)
-        )
+        return tree_map(self.cell(state).wrap, self.flow(state, dt, primal, tangent))
 
 
 def _half_time[S: HasTimeStep](sys: Table[SystemId, S]) -> Table[SystemId, S]:

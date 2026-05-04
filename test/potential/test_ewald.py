@@ -298,9 +298,9 @@ class TestEwald:
             cell, REPEATS, (positions, charges), lens(lambda x: x[0])
         )
         estimates = estimate_ewald_parameters(charges, cell, epsilon_total=eps)
-        assert (
-            estimates.error_real < eps
-        ), f"Real space target accuracy cannot be reached. {estimates.error_real}"
+        assert estimates.error_real < eps, (
+            f"Real space target accuracy cannot be reached. {estimates.error_real}"
+        )
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.asarray([estimates.alpha])),
             cutoff=Table((SystemId(0),), jnp.asarray([estimates.real_cutoff])),

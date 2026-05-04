@@ -48,8 +48,8 @@ from kups.core.potential import (
 from kups.core.typing import (
     ExclusionId,
     HasCache,
-    HasCharges,
     HasCell,
+    HasCharges,
     InclusionId,
     MaybeCached,
     ParticleId,
@@ -203,8 +203,7 @@ class EwaldParameters:
             for c, u in zip(charges_list, cell_list)
         ]
         shifts_list = [
-            kvecs_from_kmax(u, est.k_max)
-            for u, est in zip(cell_list, estimates_list)
+            kvecs_from_kmax(u, est.k_max) for u, est in zip(cell_list, estimates_list)
         ]
         max_n_kvecs = max(len(s) for s in shifts_list)
         padded_shifts = jnp.stack(
@@ -594,9 +593,9 @@ def ewald_long_range_energy[State](
     """
     structure_out, patch = structure_factor(inp)
     energy = long_range(inp, structure_out)
-    assert energy.shape == (
-        inp.point_cloud.batch_size,
-    ), f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
+    assert energy.shape == (inp.point_cloud.batch_size,), (
+        f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
+    )
     energy = energy * TO_STANDARD_UNITS
     return WithPatch(Table.arange(energy, label=SystemId), patch)
 
@@ -695,7 +694,9 @@ def make_ewald_short_range_potential[
     neighborlist_view: View[State, NearestNeighborList],
     parameter_view: View[State, EwaldParameters],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
-    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients],
+    gradient_lens: Lens[
+        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
+    ],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
@@ -819,7 +820,9 @@ def make_ewald_potential[
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
-    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients],
+    gradient_lens: Lens[
+        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
+    ],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
@@ -1072,9 +1075,7 @@ def make_ewald_from_state[State, P: Patch](
 def make_ewald_from_state[State, P: Patch](
     state: Lens[
         State,
-        IsEwaldState[
-            HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]
-        ],
+        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]],
     ],
     probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
     *,

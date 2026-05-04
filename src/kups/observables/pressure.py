@@ -13,8 +13,8 @@ from jax import Array
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import (
-    HasTemperature,
     HasCell,
+    HasTemperature,
     SystemId,
 )
 

@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol, overload
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import Vacuum
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
@@ -28,11 +29,10 @@ from kups.core.potential import (
     PotentialOut,
     empty_patch_idx_view,
 )
-from kups.core.cell import Vacuum
 from kups.core.typing import (
+    HasCell,
     HasCharges,
     HasPositionsAndSystemIndex,
-    HasCell,
     ParticleId,
     SystemId,
 )

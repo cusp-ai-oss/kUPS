@@ -90,9 +90,7 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     """
     # Cache the gradient and forces within the state
     pot = CachedPotential(
-        MappedPotential(
-            potential, lambda x: (x.positions.data, x.cell.data), identity
-        ),
+        MappedPotential(potential, lambda x: (x.positions.data, x.cell.data), identity),
         lens(
             lambda x: PotentialOut(
                 x.systems.map_data(lambda x: x.potential_energy),
