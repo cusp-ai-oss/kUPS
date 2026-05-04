@@ -1,34 +1,12 @@
-# Rigid-body NVE MD for TIP4P/2005 water (energy-conservation test).
-# Velocity-Verlet integrator, no thermostat.
-
-adsorbates:
-  - !import ["adsorbate/h2o.yaml"]
-
-n_molecules: [256]
-
-box:
-  edge_length: 19.74
+# Rigid-body NVE MD for TIP4P/2005 (energy-conservation test).
+# Velocity-Verlet integrator, no thermostat. Use with md_water_tip4p_common.yaml.
+md:
+  time_step: 0.5
+  friction_coefficient: 0.0
+  pressure_coupling_time: 1.0e10
+  minimum_scale_factor: 1.0
+  integrator: rigid_verlet
 
 run:
   out_file: md_water_tip4p_nve.h5
   num_steps: 10_000
-  num_warmup_steps: 0
-  seed: 42
-
-md:
-  temperature: 298.0
-  time_step: 0.5
-  friction_coefficient: 0.0
-  thermostat_time_constant: 100.0
-  target_pressure: 1.0e5
-  pressure_coupling_time: 1.0e10
-  compressibility: 4.5e-10
-  minimum_scale_factor: 1.0
-  integrator: "rigid_verlet"
-  initialize_momenta: true
-
-lj: !import ["lennard_jones/tip4p_2005.yaml"]
-
-ewald:
-  real_cutoff: 9.0
-  precision: 1.0e-5

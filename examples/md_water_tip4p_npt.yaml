@@ -1,34 +1,10 @@
-# Rigid-body NPT MD for TIP4P/2005 water at 298 K, 1 bar.
-# Density should converge near 0.997 g/cm³ (Abascal & Vega 2005).
-
-adsorbates:
-  - !import ["adsorbate/h2o.yaml"]
-
-n_molecules: [256]
-
-box:
-  edge_length: 19.74
+# Rigid-body NPT MD for TIP4P/2005 at 298 K, 1 atm.
+# Density should converge near 0.997 g/cm³ (with LJ tail correction enabled;
+# without it expect ~0.983 g/cm³ at 9 Å cutoff). Use with md_water_tip4p_common.yaml.
+md:
+  integrator: rigid_csvr_npt
 
 run:
   out_file: md_water_tip4p_npt.h5
   num_steps: 200_000
   num_warmup_steps: 50_000
-  seed: 42
-
-md:
-  temperature: 298.0
-  time_step: 1.0
-  friction_coefficient: 0.01
-  thermostat_time_constant: 100.0
-  target_pressure: 1.01325e5     # Pa (1 atm)
-  pressure_coupling_time: 1000.0
-  compressibility: 4.5e-10        # 1/Pa (water)
-  minimum_scale_factor: 0.5
-  integrator: "rigid_csvr_npt"
-  initialize_momenta: true
-
-lj: !import ["lennard_jones/tip4p_2005.yaml"]
-
-ewald:
-  real_cutoff: 9.0
-  precision: 1.0e-5

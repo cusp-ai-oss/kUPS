@@ -1,34 +1,11 @@
-# Rigid-body NVT MD for TIP4P/2005 water at 298 K, 1 bar density.
-# 256 waters laid out on a regular grid in a cubic box; CSVR thermostat.
-
-adsorbates:
-  - !import ["adsorbate/h2o.yaml"]
-
-n_molecules: [256]
-
-box:
-  edge_length: 19.74        # Å — cube side at ρ = 0.997 g/cm³, 256 waters
+# Rigid-body NVT MD for TIP4P/2005 at 298 K (CSVR thermostat, fixed volume).
+# Use with md_water_tip4p_common.yaml.
+md:
+  pressure_coupling_time: 1.0e10
+  minimum_scale_factor: 1.0
+  integrator: rigid_csvr
 
 run:
   out_file: md_water_tip4p_nvt.h5
   num_steps: 50_000
   num_warmup_steps: 10_000
-  seed: 42
-
-md:
-  temperature: 298.0          # K
-  time_step: 1.0              # fs
-  friction_coefficient: 0.01  # 1/fs
-  thermostat_time_constant: 100.0
-  target_pressure: 1.0e5      # ignored (NVT)
-  pressure_coupling_time: 1.0e10
-  compressibility: 4.5e-10
-  minimum_scale_factor: 1.0
-  integrator: "rigid_csvr"
-  initialize_momenta: true
-
-lj: !import ["lennard_jones/tip4p_2005.yaml"]
-
-ewald:
-  real_cutoff: 9.0
-  precision: 1.0e-5

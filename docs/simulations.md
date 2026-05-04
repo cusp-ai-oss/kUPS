@@ -16,11 +16,13 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble.
 cd examples
 kups_md_lj md_lj_argon_nvt.yaml
 kups_md_lj md_lj_argon_nve.yaml
-kups_md_rigid md_water_tip4p_nvt.yaml
-kups_md_rigid md_water_tip4p_npt.yaml
+kups_md_rigid md_water_tip4p_common.yaml md_water_tip4p_nvt.yaml
+kups_md_rigid md_water_tip4p_common.yaml md_water_tip4p_npt.yaml
 kups_md_mlff md_mace.yaml
 kups_md_mlff md_orb.yaml
 ```
+
+The `kups_md_rigid` examples share a common system definition (`md_water_tip4p_common.yaml`) and override only the integrator and run parameters from the per-ensemble file. nanoargs deep-merges the configs in order.
 
 **Ensembles and integrators:**
 
