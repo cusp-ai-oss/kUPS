@@ -16,6 +16,7 @@ from kups.core.lens import Lens, View, bind
 from kups.core.propagator import Propagator, SequentialPropagator
 from kups.core.typing import (
     HasCompressibility,
+    HasDegreesOfFreedom,
     HasForces,
     HasFrictionCoefficient,
     HasMasses,
@@ -458,12 +459,66 @@ class _CSVRSystemData(
     HasTimeStep,
     HasTemperature,
     HasThermostatTimeConstant,
+    HasDegreesOfFreedom,
     Protocol,
 ): ...
 
 
 @runtime_checkable
 class IsCSVRParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
+
+
+def csvr_scale_factor(
+    key: Array,
+    kinetic_energy: Array,
+    degrees_of_freedom: Array,
+    target_thermal_energy: Array,
+    timestep: Array,
+    thermostat_timescale: Array,
+) -> Array:
+    r"""Bussi–Donadio–Parrinello stochastic velocity-rescaling factor.
+
+    Pure function, useful both for atomic and rigid-body kinetic energies.
+    Returns one $\alpha$ per system: scaling momenta by $\alpha$ drives the
+    distribution of total KE toward the canonical $\chi^2(N_{\text{dof}})$.
+
+    Args:
+        key: PRNG key.
+        kinetic_energy: Current per-system kinetic energy $K$ (units: energy),
+            shape ``(n_systems,)``.
+        degrees_of_freedom: Per-system DOF count $N_{\text{dof}}$, shape ``(n_systems,)``.
+        target_thermal_energy: $k_B T$ per system (units: energy), shape ``(n_systems,)``.
+        timestep: $\Delta t$ per system (units: time), shape ``(n_systems,)``.
+        thermostat_timescale: $\tau$ per system (units: time), shape ``(n_systems,)``.
+
+    Returns:
+        Scaling factor $\alpha$ per system, shape ``(n_systems,)``.
+    """
+    kinetic_energy_target = degrees_of_freedom * target_thermal_energy / 2
+
+    key1, key2 = jax.random.split(key)
+    gaussian_noise = jax.random.normal(key1, dtype=float)
+
+    dof_minus_one = degrees_of_freedom - 1
+    chi_squared_noise = jnp.where(
+        dof_minus_one > 0,
+        jax.random.chisquare(key2, df=dof_minus_one, dtype=float),
+        0.0,
+    )
+
+    exponential_decay = jnp.exp(-timestep / thermostat_timescale)
+    correction_factor = (
+        (1 - exponential_decay)
+        * kinetic_energy_target
+        / (kinetic_energy * degrees_of_freedom)
+    )
+
+    scaling_squared = (
+        exponential_decay
+        + correction_factor * (gaussian_noise**2 + chi_squared_noise)
+        + 2 * gaussian_noise * jnp.sqrt(exponential_decay * correction_factor)
+    )
+    return jnp.sqrt(jnp.maximum(scaling_squared, 0.0))
 
 
 @dataclass
@@ -517,65 +572,27 @@ class CSVRStep[State](Propagator[State]):
         Returns:
             Updated state with rescaled momenta matching target temperature distribution
         """
-        # Extract parameters
         system = self.systems(state)
         particles = self.particles.get(state)
-        # Δt: timestep [time]
-        timestep = system.data.time_step
-        # kT: thermal energy [energy]
-        target_thermal_energy = system.data.temperature * BOLTZMANN_CONSTANT
-        # τ: thermostat time constant [time]
-        thermostat_timescale = system.data.thermostat_time_constant
-        # N_dof: degrees of freedom [dimensionless]
-        # TODO: Update once we have constraints that could limit the degrees of freedom
-        degrees_of_freedom = particles.data.system.counts.data * 3 - 3
 
-        # Compute current kinetic energy from particles
         per_particle_ke = particle_kinetic_energy(
             particles.data.momenta, particles.data.masses
         )
-        # K: total kinetic energy per system [energy]
         kinetic_energy_current = jax.ops.segment_sum(
             per_particle_ke,
             particles.data.system.indices,
             particles.data.system.num_labels,
         )
-        # K_target = N_dof·kT/2 [energy]
-        kinetic_energy_target = degrees_of_freedom * target_thermal_energy / 2
 
-        # Generate random numbers for scaling
-        key1, key2 = jax.random.split(key)
-        # R₁ ~ N(0,1) [dimensionless]
-        gaussian_noise = jax.random.normal(key1, dtype=float)
-
-        # R₂ ~ χ²(N_dof-1) [dimensionless]
-        dof_minus_one = degrees_of_freedom - 1
-        chi_squared_noise = jnp.where(
-            dof_minus_one > 0,
-            jax.random.chisquare(key2, df=dof_minus_one, dtype=float),
-            0.0,
+        velocity_scale = csvr_scale_factor(
+            key,
+            kinetic_energy=kinetic_energy_current,
+            degrees_of_freedom=system.data.degrees_of_freedom,
+            target_thermal_energy=system.data.temperature * BOLTZMANN_CONSTANT,
+            timestep=system.data.time_step,
+            thermostat_timescale=system.data.thermostat_time_constant,
         )
 
-        # CSVR scaling coefficients
-        # c₁ = e^(-Δt/τ) [dimensionless]
-        exponential_decay = jnp.exp(-timestep / thermostat_timescale)
-        # c₂ = (1-c₁)·K_target/(K_current·N_dof) [dimensionless]
-        correction_factor = (
-            (1 - exponential_decay)
-            * kinetic_energy_target
-            / (kinetic_energy_current * degrees_of_freedom)
-        )
-
-        # α² = c₁ + c₂(R₁² + R₂) + 2R₁√(c₁c₂) [dimensionless]
-        scaling_squared = (
-            exponential_decay
-            + correction_factor * (gaussian_noise**2 + chi_squared_noise)
-            + 2 * gaussian_noise * jnp.sqrt(exponential_decay * correction_factor)
-        )
-        # α = √(α²), ensure non-negative [dimensionless]
-        velocity_scale = jnp.sqrt(jnp.maximum(scaling_squared, 0.0))
-
-        # Scale momenta by system
         scale_per_system = velocity_scale[particles.data.system.indices]
         new_momenta = particles.data.momenta * scale_per_system[..., None]
 
@@ -662,36 +679,39 @@ class StochasticCellRescalingStep[State](Propagator[State]):
     stochastic term to ensure proper volume fluctuations, unlike the Berendsen
     barostat which artificially suppresses fluctuations.
 
-    The algorithm scales both the simulation box and particle positions by a
+    The algorithm scales both the simulation box and a position field by a
     factor $\\mu$ determined by:
 
     $$\\mu \\approx 1 + \\frac{\\Delta t}{\\tau_P} \\beta (P - P_0) + \\sqrt{\\frac{2k_B T \\beta \\Delta t}{\\tau_P V}} \\, R$$
 
-    where:
-
-    - $\\tau_P$ = pressure coupling time constant
-    - $P$ = instantaneous pressure
-    - $P_0$ = target pressure
-    - $\\beta$ = isothermal compressibility
-    - $k_B T$ = thermal energy
-    - $V$ = box volume
-    - $R \\sim \\mathcal{N}(0,1)$ = Gaussian random noise
-
-    The scaling is applied to both box and positions:
+    The scaling is applied to both box and the chosen position array:
 
     $$\\mathbf{L}_{\\text{new}} = \\mu \\mathbf{L}, \\quad \\mathbf{r}_{\\text{new}} = \\mu \\mathbf{r}$$
 
     **Important:** The [UnitCell][kups.core.unitcell.UnitCell] must be reconstructed after
     scaling to ensure the cached volume is recomputed correctly.
 
+    Generic over which positions are rescaled (atomic by default; per-group COM
+    for rigid-body NPT) and how the kinetic / virial contributions to the
+    pressure are computed. Defaults reproduce the original atomic behaviour.
+
     Type Parameters:
         State: Simulation state type
 
     Attributes:
-        particles: Lens to get/set indexed particle data (positions $\\mathbf{r}$, momenta $\\mathbf{p}$, masses $m$)
-        systems: Lens to get/set system data (lattice vectors $\\mathbf{L}$, stress tensor $\\mathbf{W}$,
-            time step $\\Delta t$, temperature $T$, target pressure $P_0$,
-            barostat time constant $\\tau_P$, compressibility $\\beta$, minimum scale factor $\\mu_{\\text{min}}$)
+        particles: Lens to atomic particle data. Used by the default kinetic
+            energy and stress views. Also supplies the index assigning each
+            scaled position to a system.
+        systems: Lens to per-system parameters and unit cell.
+        scaled_index: View returning the per-element system index for the
+            position field that gets rescaled. Default: ``particles.data.system``.
+        position_lens: Lens onto the position array to rescale. Default:
+            atomic ``particles.data.positions``.
+        kinetic_energy_view: View returning per-system kinetic energy used in
+            the pressure expression. Default: atomic kinetic energy.
+        stress_view: View returning the per-system Cauchy stress (3×3) used in
+            the pressure expression. Default: atomic virial via
+            ``stress_via_virial_theorem``.
 
     References:
         Bernetti, M., & Bussi, G. (2020). Pressure control using stochastic
@@ -705,69 +725,58 @@ class StochasticCellRescalingStep[State](Propagator[State]):
     systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
         static=True
     )
+    scaled_index: View[State, Any] | None = field(static=True, default=None)
+    position_lens: Lens[State, Array] | None = field(static=True, default=None)
+    kinetic_energy_view: View[State, Array] | None = field(static=True, default=None)
+    stress_view: View[State, Array] | None = field(static=True, default=None)
 
-    def __call__(self, key: Array, state: State) -> State:
-        """Apply stochastic cell rescaling for pressure control.
+    def _resolved_position_lens(self) -> Lens[State, Array]:
+        if self.position_lens is not None:
+            return self.position_lens
+        return self.particles.focus(lambda p: p.data.positions)
 
-        Scales the simulation box and particle positions by a factor determined
-        from pressure deviation and stochastic fluctuations. The UnitCell is
-        reconstructed to ensure cached volume is updated correctly.
+    def _resolved_scaled_index(self, state: State) -> Any:
+        if self.scaled_index is not None:
+            return self.scaled_index(state)
+        return self.particles.get(state).data.system
 
-        Args:
-            key: JAX PRNG key for generating volume fluctuation noise
-            state: Current simulation state
-
-        Returns:
-            Updated state with rescaled box and positions matching NPT ensemble
-        """
-        # Extract parameters
-        systems = self.systems.get(state)
-        # Δt: timestep [time]
-        timestep = systems.data.time_step
-        # kT: thermal energy [energy]
-        thermal_energy = systems.data.temperature * BOLTZMANN_CONSTANT
-        # P₀: target pressure [pressure]
-        target_pressure = systems.data.target_pressure
-        # τP: barostat time constant [time]
-        barostat_timescale = systems.data.pressure_coupling_time
-        # β: isothermal compressibility [1/pressure]
-        compressibility = systems.data.compressibility
-
-        # Get current state
-        # Unit cell with lattice vectors L
-        unitcell = systems.data.unitcell
-        # V: volume [length³]
-        volume = unitcell.volume
-        # Compute kinetic energy from particles
-        particles = self.particles.bind(state).get()
+    def _resolved_kinetic_energy(self, state: State) -> Array:
+        if self.kinetic_energy_view is not None:
+            return self.kinetic_energy_view(state)
+        particles = self.particles.get(state)
         per_particle_ke = particle_kinetic_energy(
             particles.data.momenta, particles.data.masses
         )
-        # K: total kinetic energy per system [energy]
-        kinetic_energy = jax.ops.segment_sum(
+        return jax.ops.segment_sum(
             per_particle_ke,
             particles.data.system.indices,
             particles.data.system.num_labels,
         )
 
-        # Full Cauchy stress via virial theorem:
-        # σ = -(1/V)(Σ ∂U/∂r_i ⊗ r_i + h^T · ∂U/∂h)
-        cauchy_stress = stress_via_virial_theorem(particles, systems).data
-        # P = 2K/(dV) + Tr(σ)/d
+    def _resolved_stress(self, state: State) -> Array:
+        if self.stress_view is not None:
+            return self.stress_view(state)
+        particles = self.particles.get(state)
+        systems = self.systems.get(state)
+        return stress_via_virial_theorem(particles, systems).data
+
+    def __call__(self, key: Array, state: State) -> State:
+        """Apply stochastic cell rescaling for pressure control."""
+        systems = self.systems.get(state)
+        timestep = systems.data.time_step
+        thermal_energy = systems.data.temperature * BOLTZMANN_CONSTANT
+        target_pressure = systems.data.target_pressure
+        barostat_timescale = systems.data.pressure_coupling_time
+        compressibility = systems.data.compressibility
+
+        unitcell = systems.data.unitcell
+        volume = unitcell.volume
+
+        kinetic_energy = self._resolved_kinetic_energy(state)
+        cauchy_stress = self._resolved_stress(state)
         current_pressure = instantaneous_pressure(kinetic_energy, cauchy_stress, volume)
 
-        # Stochastic cell rescaling (Bernetti & Bussi 2020)
-        # Linearized form for small timesteps:
-        # μ ≈ 1 + (Δt/τP)·β·(P - P₀) + √(2kT·β·Δt/(τP·V))·R
-        # where R ~ N(0,1)
-
-        # Stochastic cell rescaling (Bernetti & Bussi 2020, Eq. in reference impl)
-        # dε = -β/τP·Δt·(P₀ - P) + √(2kT·β·Δt/(τP·V))·R
-        # where dε = d(ln V) is the log-volume change. The LINEAR scaling
-        # factor for lattice vectors is exp(dε/3) = (V_new/V)^(1/3).
-
         pressure_deviation = current_pressure - target_pressure
-        # dε: log-volume change [dimensionless]
         depsilon_det = (
             (timestep / barostat_timescale) * compressibility * pressure_deviation
         )
@@ -784,30 +793,21 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         )
 
         depsilon = depsilon_det + depsilon_stoch
-        # Linear scaling: exp(dε/3) — cube root of volume scaling
         scaling_factor = jnp.exp(depsilon / 3.0)
 
-        # Safety clamp to prevent extreme scaling
-        # μ ∈ [μ_min, μ_max]
         min_scaling = systems.data.minimum_scale_factor
         max_scaling = 1.0 / min_scaling
         scaling_factor = jnp.clip(scaling_factor, min_scaling, max_scaling)
 
-        # Scale unit cell: L_new = μ·L
-        # CRITICAL: Must reconstruct UnitCell to recompute cached volume
-        # L_new = μ·L [length]
         new_unitcell = unitcell * scaling_factor
         state = self.systems.focus(lambda x: x.data.unitcell).set(state, new_unitcell)
 
-        # Scale positions: r_new = μ·r
-        particle_lens = self.particles.bind(state)
-        particles = particle_lens.get()
-        # μ_i: scaling factor per system [dimensionless]
-        scaling_per_system = scaling_factor[particles.data.system.indices]
-
-        new_positions = particles.data.positions * scaling_per_system[..., None]
-        assert new_positions.shape == particles.data.positions.shape
-        return particle_lens.focus(lambda p: p.data.positions).set(new_positions)
+        index = self._resolved_scaled_index(state)
+        position_lens = self._resolved_position_lens()
+        positions = position_lens.get(state)
+        scaling_per_element = scaling_factor[index.indices]
+        new_positions = positions * scaling_per_element[..., None]
+        return position_lens.set(state, new_positions)
 
 
 @runtime_checkable
@@ -820,6 +820,7 @@ class IsCSVRNPTSystemData(
     HasCompressibility,
     HasMinimumScaleFactor,
     HasThermostatTimeConstant,
+    HasDegreesOfFreedom,
     Protocol,
 ):
     @property

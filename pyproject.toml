@@ -74,6 +74,7 @@ kups_md_mlff = "kups.application.simulations.md_mlff:main"
 kups_relax_mlff = "kups.application.simulations.relax_mlff:main"
 kups_mcmc_rigid = "kups.application.simulations.mcmc_rigid:main"
 kups_md_lj = "kups.application.simulations.md_lj:main"
+kups_md_rigid = "kups.application.simulations.md_rigid:main"
 kups_relax_lj = "kups.application.simulations.relax_lj:main"
 
 [build-system]

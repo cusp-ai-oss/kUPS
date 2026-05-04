@@ -1,0 +1,14 @@
+# Lennard-Jones parameters for TIP4P/2005 water (Abascal & Vega 2005).
+# Only the oxygen site carries LJ; H and the M-site have null params (σ=1, ε=0).
+cutoff: 9.0
+mixing_rule: lorentz_berthelot
+parameters:
+  Ow:
+    - 3.1589      # σ (Å)
+    - 0.008031    # ε (eV) ≈ 93.2 K · k_B
+  Hw:
+    - null
+    - null
+  Mw:
+    - null
+    - null

@@ -8,10 +8,14 @@ from jax import Array
 
 from kups.application.md.data import (
     MDParticles,
+    MDRigidGroup,
+    MDRigidParticles,
     MdRunConfig,
     MDSystems,
 )
+from kups.application.mcmc.data import MotifParticles
 from kups.application.md.logging import MDLoggedData
+from kups.application.md.rigid_logging import RigidMDLoggedData
 from kups.application.utils.propagate import run_simulation_cycles, run_warmup_cycles
 from kups.core.data import Table
 from kups.core.data.index import Index
@@ -33,11 +37,12 @@ from kups.core.propagator import (
     step_counter_propagator,
 )
 from kups.core.storage import HDF5StorageWriter
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import GroupId, MotifParticleId, ParticleId, SystemId
 from kups.core.unitcell import UnitCell
 from kups.core.utils.functools import identity
 from kups.core.utils.jax import key_chain
 from kups.md.integrators import Integrator, make_md_step_from_state
+from kups.md.rigid import RigidIntegrator, make_rigid_md_step_from_state
 
 
 class IsMdGradients(Protocol):
@@ -119,6 +124,81 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     return propagator
 
 
+class IsRigidMdSimulationState(Protocol):
+    """Protocol for the full rigid-body MD simulation state.
+
+    Same shape as :class:`IsMdState` but with the rigid-body tables
+    (``groups`` and ``motifs``) in addition to atomic ``particles``.
+    """
+
+    @property
+    def particles(self) -> Table[ParticleId, MDRigidParticles]: ...
+    @property
+    def groups(self) -> Table[GroupId, MDRigidGroup]: ...
+    @property
+    def motifs(self) -> Table[MotifParticleId, MotifParticles]: ...
+    @property
+    def systems(self) -> Table[SystemId, MDSystems]: ...
+    @property
+    def step(self) -> Array: ...
+
+
+def make_rigid_md_propagator[State: IsRigidMdSimulationState, Grad: IsMdGradients](
+    state_lens: Lens[State, State],
+    integrator: RigidIntegrator,
+    potential: Potential[State, Grad, EmptyType, Any],
+) -> Propagator[State]:
+    """Build a single rigid-body MD propagator step.
+
+    Mirrors :func:`make_md_propagator`. The rigid factory itself sequences
+    atom reconstruction, potential evaluation, and force aggregation; this
+    wrapper only adds the cached-potential machinery (energy / per-atom
+    position-gradient / unit-cell-gradient storage) and the step counter.
+
+    Args:
+        state_lens: Lens focusing on the rigid-MD sub-state within the full state.
+        integrator: One of ``"rigid_verlet"``, ``"rigid_baoab_langevin"``,
+            ``"rigid_csvr"``, ``"rigid_csvr_npt"``.
+        potential: Atom-level potential (LJ + Ewald typically) producing
+            per-atom position gradients and per-system unit-cell gradients.
+
+    Returns:
+        Propagator that advances the state by one rigid MD step.
+    """
+    mapped_potential = MappedPotential(
+        potential, lambda x: (x.positions.data, x.unitcell.data), identity
+    )
+    derivative_computation = PotentialAsPropagator(
+        CachedPotential(
+            mapped_potential,
+            lens(
+                lambda x: PotentialOut(
+                    x.systems.map_data(lambda y: y.potential_energy),
+                    (
+                        x.particles.data.position_gradients,
+                        x.systems.data.unitcell_gradients,
+                    ),
+                    EMPTY,
+                )
+            ),
+            lambda x: PotentialOut(
+                Index.new(x.systems.keys),  # type: ignore
+                (x.particles.data.system, Index.new(x.systems.keys)),  # type: ignore
+                EMPTY,
+            ),
+        )
+    )
+    md_propagator = make_rigid_md_step_from_state(
+        state_lens,  # type: ignore[arg-type]
+        derivative_computation,
+        integrator,
+    )
+    step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
+    return ResetOnErrorPropagator(
+        SequentialPropagator((md_propagator, step_count_propagator))
+    )
+
+
 def run_md[State: IsMdState](
     key: Array, propagator: Propagator[State], state: State, config: MdRunConfig
 ) -> State:
@@ -141,6 +221,31 @@ def run_md[State: IsMdState](
     logger = CompositeLogger(
         TqdmLogger(config.num_steps),
         HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps),
+    )
+    state = run_simulation_cycles(
+        next(chain), propagator, state, config.num_steps, logger
+    )
+    return state
+
+
+def run_rigid_md[State: IsRigidMdSimulationState](
+    key: Array, propagator: Propagator[State], state: State, config: MdRunConfig
+) -> State:
+    """Run a full rigid-body MD simulation with warmup and production phases.
+
+    Mirrors :func:`run_md` but logs through :class:`RigidMDLoggedData`,
+    which pulls kinetic energy from the per-group rigid table.
+    """
+    chain = key_chain(key)
+    logging.info("Warmup")
+    state = run_warmup_cycles(next(chain), propagator, state, config.num_warmup_steps)
+
+    logging.info("Starting rigid MD simulation")
+    logger = CompositeLogger(
+        TqdmLogger(config.num_steps),
+        HDF5StorageWriter(
+            config.out_file, RigidMDLoggedData(), state, config.num_steps
+        ),
     )
     state = run_simulation_cycles(
         next(chain), propagator, state, config.num_steps, logger

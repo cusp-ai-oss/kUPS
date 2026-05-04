@@ -9,12 +9,15 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble.
 | Command | Force Field | Description |
 |---------|-------------|-------------|
 | `kups_md_lj` | Lennard-Jones | Classical pair potential with optional tail corrections and mixing rules |
+| `kups_md_rigid` | Lennard-Jones + Ewald | Rigid-body MD for multi-site molecules (TIP4P/2005 water, CO₂, N₂, …) |
 | `kups_md_mlff` | MACE, UMA, ORB | Machine-learned interatomic potentials loaded via [Tojax](https://github.com/cusp-ai-oss/tojax) |
 
 ```sh
 cd examples
 kups_md_lj md_lj_argon_nvt.yaml
 kups_md_lj md_lj_argon_nve.yaml
+kups_md_rigid md_water_tip4p_nvt.yaml
+kups_md_rigid md_water_tip4p_npt.yaml
 kups_md_mlff md_mace.yaml
 kups_md_mlff md_orb.yaml
 ```
@@ -24,6 +27,8 @@ kups_md_mlff md_orb.yaml
 - **NVE** — velocity Verlet. Constant energy, useful for validating energy conservation.
 - **NVT** — Langevin thermostat (BAOAB splitting) or canonical sampling via velocity rescaling (CSVR). Constant temperature.
 - **NPT** — CSVR thermostat with stochastic cell rescaling barostat. Constant temperature and pressure.
+
+`kups_md_rigid` exposes the same ensembles for rigid molecules via `rigid_verlet`, `rigid_baoab_langevin`, `rigid_csvr`, and `rigid_csvr_npt`. Per-molecule orientation is propagated with the symplectic NO_SQUISH scheme; the COM and rotational kicks reuse the existing `MomentumStep`/`PositionStep`/`StochasticStep` primitives.
 
 All integrators are built from the same composable propagator primitives described in the Propagators tutorial.
 

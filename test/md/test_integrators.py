@@ -53,6 +53,7 @@ class SystemData:
     temperature: Array
     friction_coefficient: Array
     thermostat_time_constant: Array
+    degrees_of_freedom: Array
 
 
 @dataclass
@@ -66,6 +67,7 @@ class NPTSystemData:
     pressure_coupling_time: Array
     compressibility: Array
     minimum_scale_factor: Array
+    degrees_of_freedom: Array
 
 
 @dataclass
@@ -168,6 +170,7 @@ def create_harmonic_system(
             temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
             friction_coefficient=jnp.array([gamma]),
             thermostat_time_constant=jnp.array([tau]),
+            degrees_of_freedom=jnp.array([max(3 * n_particles - 3, 0)], dtype=jnp.int32),
         ),
         label=SystemId,
     )
@@ -246,6 +249,7 @@ def create_npt_system(
             pressure_coupling_time=jnp.array([tau_p]),
             compressibility=jnp.array([compressibility]),
             minimum_scale_factor=jnp.array([0.5]),
+            degrees_of_freedom=jnp.array([max(3 * n_particles - 3, 0)], dtype=jnp.int32),
         ),
         label=SystemId,
     )

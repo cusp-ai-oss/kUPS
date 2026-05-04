@@ -380,6 +380,68 @@ class HasMinimumScaleFactor(Protocol):
 
 
 @runtime_checkable
+class HasDegreesOfFreedom(Protocol):
+    r"""Protocol for systems carrying their effective degrees of freedom.
+
+    Attributes:
+        degrees_of_freedom: Per-system DOF count $N_{\text{dof}}$ used by
+            kinetic-energy thermostats (e.g. CSVR). For point particles
+            this is $3N - 3$; for rigid molecules $6 N_{\text{nonlinear}} +
+            5 N_{\text{linear}} - 3$.
+    """
+
+    @property
+    def degrees_of_freedom(self) -> Array: ...
+
+
+@runtime_checkable
+class HasQuaternion(Protocol):
+    r"""Protocol for entities carrying a unit-quaternion orientation (body→lab)."""
+
+    @property
+    def quaternion(self) -> Any: ...
+
+
+@runtime_checkable
+class HasAngularMomentum(Protocol):
+    r"""Protocol for entities with an angular-momentum vector (lab frame).
+
+    Attributes:
+        angular_momentum: Lab-frame angular momentum $\mathbf{L}$ (units: action).
+    """
+
+    @property
+    def angular_momentum(self) -> Array: ...
+
+
+@runtime_checkable
+class HasTorque(Protocol):
+    r"""Protocol for entities with a torque vector (lab frame).
+
+    Attributes:
+        torque: Lab-frame torque $\boldsymbol{\tau}$ (units: energy).
+    """
+
+    @property
+    def torque(self) -> Array: ...
+
+
+@runtime_checkable
+class HasInertiaDiag(Protocol):
+    r"""Protocol for entities with body-frame principal moments of inertia.
+
+    Attributes:
+        inertia_diag: Body-frame diagonal inertia tensor entries
+            $(I_1, I_2, I_3)$, shape ``(..., 3)`` (units: mass·length²).
+            Linear molecules use ``inf`` for the symmetry axis to freeze
+            that rotational degree of freedom.
+    """
+
+    @property
+    def inertia_diag(self) -> Array: ...
+
+
+@runtime_checkable
 class HasPotentialEnergy(Protocol):
     r"""Protocol for systems with a potential energy.
 
