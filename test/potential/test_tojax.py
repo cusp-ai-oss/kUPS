@@ -16,7 +16,7 @@ import pytest
 from jax import Array, export
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import lens
@@ -127,7 +127,7 @@ def simple_system(jaxified_model):
     system_ids = Index.new([SystemId(0)] * n_atoms)
     inclusion_ids = Index.new([InclusionId(0)] * n_atoms)
     exclusion_ids = Index.new([ExclusionId(i) for i in range(n_atoms)])
-    cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+    cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
 
     return State(
         atoms=Table.arange(

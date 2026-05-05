@@ -18,7 +18,7 @@ from kups.application.mcmc.data import (
     _make_molecule,
     mcmc_state_from_config,
 )
-from kups.core.cell import TriclinicCell
+from kups.core.cell import PeriodicCell, TriclinicLattice
 from kups.core.data import Index, Table
 from kups.core.typing import Label, MotifId
 
@@ -206,7 +206,7 @@ class TestMakeMolecule:
     def test_positions_offset_by_com(self):
         """Offsets from COM preserve bond lengths after random rotation."""
         motifs = _build_motifs(_co2_config())
-        uc = TriclinicCell.from_matrix(jnp.eye(3) * L)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
         particles, _ = _make_molecule(motifs, _motif_index(0), uc, jax.random.key(42))
 
         pos = particles.data.positions
@@ -221,7 +221,7 @@ class TestMakeMolecule:
 
     def test_labels_match_motif(self):
         motifs = _build_motifs(_co2_config())
-        uc = TriclinicCell.from_matrix(jnp.eye(3) * L)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
         particles, _ = _make_molecule(motifs, _motif_index(0), uc, jax.random.key(0))
         labels = particles.data.labels
         assert Label("C_co2") in labels.keys
@@ -230,13 +230,13 @@ class TestMakeMolecule:
 
     def test_group_has_correct_motif(self):
         motifs = _build_motifs(_co2_config(), _ch4_config())
-        uc = TriclinicCell.from_matrix(jnp.eye(3) * L)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
         _, group = _make_molecule(motifs, _motif_index(1), uc, jax.random.key(0))
         npt.assert_array_equal(group.data.motif.indices, jnp.array([1]))
 
     def test_single_group_created(self):
         motifs = _build_motifs(_co2_config())
-        uc = TriclinicCell.from_matrix(jnp.eye(3) * L)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
         _, group = _make_molecule(motifs, _motif_index(0), uc, jax.random.key(0))
 
         assert len(group.keys) == 1

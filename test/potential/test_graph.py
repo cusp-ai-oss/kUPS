@@ -7,7 +7,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data import WithIndices
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -71,7 +71,7 @@ def _make_particles(
 def _make_systems(
     lattice_vectors: jax.Array, cutoff: jax.Array
 ) -> Table[SystemId, _SystemData]:
-    cell = TriclinicCell.from_matrix(lattice_vectors)
+    cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
     data = _SystemData(cell, cutoff)
     return Table.arange(data, label=SystemId)
 

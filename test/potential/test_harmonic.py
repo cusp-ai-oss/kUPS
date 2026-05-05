@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.neighborlist import Edges
@@ -44,7 +44,7 @@ def _make_particles(
 
 
 def _make_systems(lattice_vectors: jax.Array) -> Table[SystemId, _SystemData]:
-    cell = TriclinicCell.from_matrix(lattice_vectors)
+    cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
     return Table.arange(_SystemData(cell), label=SystemId)
 
 

@@ -10,7 +10,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import CapacityError, FixedCapacity
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.data.wrappers import WithIndices
@@ -88,7 +88,7 @@ def _make_systems(lattice_or_uc, cutoffs):
         lv = jnp.asarray(lattice_or_uc)
         if lv.shape[0] == 1 and n > 1:
             lv = jnp.repeat(lv, n, axis=0)
-        uc = TriclinicCell.from_matrix(lv)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(lv))
     sys_keys = tuple(SystemId(i) for i in range(n))
     indexed_systems = Table(sys_keys, SampleSystems(cell=uc))
     indexed_cutoffs = Table(sys_keys, cutoffs)
@@ -680,7 +680,7 @@ class TestNearestNeighborListImplementations:
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=0.0, maxval=10.0
         )
-        cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -727,7 +727,7 @@ class TestNearestNeighborListImplementations:
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=-5.0, maxval=5.0
         )
-        cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -811,7 +811,7 @@ class TestNearestNeighborListImplementations:
         positions_1 = jnp.array([[0.0, 0.0, 0.0], [0.4, 0.0, 0.0]])
         batch_mask_1 = jnp.array([0, 0])
         lv_1 = jnp.diag(jnp.array([1.0, 10.0, 10.0]))[None]
-        uc_1 = TriclinicCell.from_matrix(lv_1)
+        uc_1 = PeriodicCell(TriclinicLattice.from_matrix(lv_1))
         nl_1 = instance_factory(
             candidates=10, edges=10, cells=256, image_candidates=200
         )
@@ -833,7 +833,7 @@ class TestNearestNeighborListImplementations:
         positions_2 = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.3, 0.3]])
         batch_mask_2 = jnp.array([0, 0])
         lv_2 = jnp.eye(3)[None] * 1.0
-        uc_2 = TriclinicCell.from_matrix(lv_2)
+        uc_2 = PeriodicCell(TriclinicLattice.from_matrix(lv_2))
         nl_2 = instance_factory(candidates=4, edges=53, cells=8, image_candidates=600)
         lh_2 = _make_lh(positions_2, batch_mask_2, jnp.arange(len(batch_mask_2)))
         _sys_2, _cut_2 = _make_systems(uc_2, jnp.array([cutoff]))
@@ -857,7 +857,7 @@ class TestNearestNeighborListImplementations:
         )
         batch_mask = jnp.zeros(N, dtype=int)
         lattice_vectors = jnp.eye(3)[None] * 1.5
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
         cutoff = 1.2
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -909,7 +909,7 @@ class TestNearestNeighborListImplementations:
                 jnp.eye(3) * 10.0,
             ]
         )
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
         cutoffs = jnp.array([0.8, 1.5])
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -966,7 +966,9 @@ class TestNearestNeighborListImplementations:
             ]
         )
         batch_mask = jnp.array([0, 0, 1, 1, 2, 2])
-        cell = TriclinicCell.from_matrix(jnp.eye(3)[None].repeat(3, axis=0) * 1.0)
+        cell = PeriodicCell(
+            TriclinicLattice.from_matrix(jnp.eye(3)[None].repeat(3, axis=0) * 1.0)
+        )
         cutoffs = jnp.array([0.8, 0.8, 0.8])  # > 0.5 triggers images
 
         # Shuffle particles across systems: [S0, S1, S0, S2, S1, S2]
@@ -1015,7 +1017,7 @@ class TestNearestNeighborListImplementations:
                 ]
             ]
         )
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
         cutoff = 0.8
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1059,7 +1061,7 @@ class TestNearestNeighborListImplementations:
         # Cell size 0.5 Å, cutoff 0.55 Å => nearest self-images (distance 0.5) are within cutoff
         cell_size = 0.5
         lattice_vectors = jnp.eye(3)[None] * cell_size
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
         cutoff = 0.55
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1119,7 +1121,7 @@ class TestNearestNeighborListImplementations:
         batch_mask = jnp.array([0, 0])
 
         lattice_vectors = jnp.eye(3)[None] * 1.0
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
         cutoff = jnp.inf
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1175,7 +1177,7 @@ class TestNearestNeighborListImplementations:
         # The minimum image is (-1,0,0) with distance 0.2
         cell_size = 0.5
         lattice_vectors = jnp.eye(3)[None] * cell_size
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
         cutoff = 0.4
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1291,7 +1293,7 @@ class TestRefineCutoffNeighborList:
 
         # Lattice vectors for 3x3x3 cell
         lattice_vectors = jnp.eye(3)[None] * 3.0
-        cell = TriclinicCell.from_matrix(lattice_vectors)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
 
         # Create candidates including some that need PBC
         lh_indices = jnp.array([0, 1, 2, 3])
@@ -1559,7 +1561,7 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _make_systems(uc, jnp.array([3.0]))
         nl = self._make_nl()
 
@@ -1619,7 +1621,7 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _make_systems(uc, jnp.array([1.5]))
         nl = self._make_nl()
 
@@ -1656,8 +1658,10 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.array([0, 0, 1, 1])
-        uc = TriclinicCell.from_matrix(
-            jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+        uc = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+            )
         )
         systems, cutoffs = _make_systems(uc, jnp.array([1.5, 1.5]))
         nl = self._make_nl()
@@ -1683,7 +1687,7 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _make_systems(uc, jnp.array([1.5]))
         nl = self._make_nl()
 
@@ -1710,7 +1714,7 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10.0)
+        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _make_systems(uc, jnp.array([3.0]))
         nl = self._make_nl(capacity=64)
 

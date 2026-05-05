@@ -15,7 +15,7 @@ from typing import Any, Literal, Protocol, overload
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Vacuum
+from kups.core.cell import Lattice, Vacuum
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
@@ -58,7 +58,7 @@ class IsCoulombGraphParticles(
 
 
 type CoulombVacuumInput = GraphPotentialInput[
-    Any, IsCoulombGraphParticles, HasCell[Vacuum], Literal[2]
+    Any, IsCoulombGraphParticles, HasCell[Lattice, Vacuum], Literal[2]
 ]
 
 # Boundary-mode-agnostic alias used by Ewald's exclusion-correction term,
@@ -104,7 +104,7 @@ def make_coulomb_vacuum_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsCoulombGraphParticles]],
-    systems_view: View[State, Table[SystemId, HasCell[Vacuum]]],
+    systems_view: View[State, Table[SystemId, HasCell[Lattice, Vacuum]]],
     cutoffs_view: View[State, Table[SystemId, Array]],
     neighborlist_view: View[State, NearestNeighborList],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsCoulombGraphParticles]] | None,
@@ -165,7 +165,7 @@ class IsCoulombVacuumState(Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsCoulombGraphParticles]: ...
     @property
-    def systems(self) -> Table[SystemId, HasCell[Vacuum]]: ...
+    def systems(self) -> Table[SystemId, HasCell[Lattice, Vacuum]]: ...
     @property
     def neighborlist(self) -> NearestNeighborList: ...
     @property

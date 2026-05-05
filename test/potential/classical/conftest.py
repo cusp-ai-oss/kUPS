@@ -5,7 +5,7 @@
 
 import jax
 
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import ParticleId, SystemId
@@ -39,5 +39,5 @@ def make_particles(
 
 
 def make_systems(lattice_vectors: jax.Array) -> Table[SystemId, SystemData]:
-    cell = TriclinicCell.from_matrix(lattice_vectors)
+    cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
     return Table.arange(SystemData(cell), label=SystemId)

@@ -29,7 +29,7 @@ import scipy.special
 from jax import Array
 from scipy.special import erfc
 
-from kups.core.cell import Cell, FullyPeriodic
+from kups.core.cell import Cell, FullyPeriodic, Lattice
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
@@ -172,7 +172,7 @@ class EwaldParameters:
     def make(
         cls,
         charges: Table[ParticleId, IsEwaldPointData],
-        cell: Table[SystemId, HasCell[FullyPeriodic]],
+        cell: Table[SystemId, HasCell[Lattice, FullyPeriodic]],
         epsilon_total: float = 1e-8,
         real_cutoff: float | None = None,
     ) -> EwaldParameters:
@@ -229,12 +229,12 @@ class IsEwaldPointData(HasCharges, IsRadiusGraphPoints, Protocol):
 
 
 type EwaldShortRangeInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasCell[FullyPeriodic], Literal[2]
+    EwaldParameters, IsEwaldPointData, HasCell[Lattice, FullyPeriodic], Literal[2]
 ]
 """Input type for the real-space short-range Ewald energy."""
 
 type EwaldSelfInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasCell[FullyPeriodic], Any
+    EwaldParameters, IsEwaldPointData, HasCell[Lattice, FullyPeriodic], Any
 ]
 """Input type for the Ewald self-interaction correction."""
 
@@ -251,7 +251,7 @@ class EwaldLongRangeInput[State]:
         changes_from_prev: Changed particles for incremental structure factor updates.
     """
 
-    point_cloud: PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]]
+    point_cloud: PointCloud[IsEwaldPointData, HasCell[Lattice, FullyPeriodic]]
     parameters: EwaldParameters
     cache: EwaldCache | None = None
     cache_lens: Lens[State, EwaldCache[Any, Any]] | None = None
@@ -614,7 +614,7 @@ class EwaldLongRangeComposer[
     """
 
     particles: View[State, Table[ParticleId, IsEwaldPointData]] = field(static=True)
-    systems: View[State, Table[SystemId, HasCell[FullyPeriodic]]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]] = field(static=True)
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = field(
         static=True
     )
@@ -690,12 +690,12 @@ def make_ewald_short_range_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
+    systems_view: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]],
     neighborlist_view: View[State, NearestNeighborList],
     parameter_view: View[State, EwaldParameters],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
+        PointCloud[IsEwaldPointData, HasCell[Lattice, FullyPeriodic]], Gradients
     ],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -734,12 +734,12 @@ def make_ewald_long_range_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
+    systems_view: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
+        PointCloud[IsEwaldPointData, HasCell[Lattice, FullyPeriodic]], Gradients
     ] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
@@ -775,11 +775,11 @@ def make_ewald_self_interaction_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
+    systems_view: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]],
     parameter_view: View[State, EwaldParameters],
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
+        PointCloud[IsEwaldPointData, HasCell[Lattice, FullyPeriodic]], Gradients
     ] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
@@ -815,13 +815,13 @@ def make_ewald_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
-    systems_view: View[State, Table[SystemId, HasCell[FullyPeriodic]]],
+    systems_view: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]],
     neighborlist_view: View[State, NearestNeighborList],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
     gradient_lens: Lens[
-        PointCloud[IsEwaldPointData, HasCell[FullyPeriodic]], Gradients
+        PointCloud[IsEwaldPointData, HasCell[Lattice, FullyPeriodic]], Gradients
     ],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -1032,7 +1032,7 @@ class IsEwaldState[Params](Protocol):
     @property
     def particles(self) -> Table[ParticleId, IsEwaldPointData]: ...
     @property
-    def systems(self) -> Table[SystemId, HasCell[FullyPeriodic]]: ...
+    def systems(self) -> Table[SystemId, HasCell[Lattice, FullyPeriodic]]: ...
     @property
     def neighborlist(self) -> NearestNeighborList: ...
     @property

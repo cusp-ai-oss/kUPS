@@ -47,7 +47,7 @@ import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 from jax import Array
 
-from kups.core.cell import TriclinicCell
+from kups.core.cell import PeriodicCell, TriclinicLattice
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import NearestNeighborList
@@ -398,7 +398,7 @@ def torch_mace_model_fn[
             positions=Table(inp.graph.particles.keys, -result.forces),
             cell=Table(
                 inp.graph.systems.keys,
-                TriclinicCell.from_matrix(result.virials),
+                PeriodicCell(TriclinicLattice.from_matrix(result.virials)),
             ),
         )
         return WithPatch(

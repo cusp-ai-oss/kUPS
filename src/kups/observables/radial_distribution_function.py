@@ -243,7 +243,7 @@ def offline_radial_distribution_function(
         # Load trajectory from file
         with h5py.File("trajectory.h5", "r") as f:
             positions = f["positions"][:]  # Shape: (n_frames, n_particles, 3)
-            cell = TriclinicCell.from_matrix(f["cell"][()])
+            cell = PeriodicCell(TriclinicLattice.from_matrix(f["cell"][()]))
 
         # Compute time-averaged RDF
         g_r = offline_radial_distribution_function(

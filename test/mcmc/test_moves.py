@@ -9,7 +9,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import CapacityError, LensCapacity
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data import WithIndices
 from kups.core.data.buffered import Buffered, system_view
 from kups.core.data.index import Index
@@ -239,8 +239,10 @@ class TestRandomRotateGroups:
         cls.n_particles_per_sys = 6
 
         lattice_vecs = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        cls.cell = TriclinicCell.from_matrix(
-            jnp.broadcast_to(lattice_vecs, (cls.n_sys, 3, 3))
+        cls.cell = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.broadcast_to(lattice_vecs, (cls.n_sys, 3, 3))
+            )
         )
         cls.jit_rotate = staticmethod(jax.jit(random_rotate_groups))
 
@@ -378,8 +380,10 @@ class TestRandomRotateGroups:
         lattice_vecs = jnp.array(
             [[1.0, 0.0, 0.0], [0.5, jnp.sqrt(3) / 2, 0.0], [0.0, 0.0, 1.0]]
         )
-        hex_uc = TriclinicCell.from_matrix(
-            jnp.broadcast_to(lattice_vecs, (self.n_sys, 3, 3))
+        hex_uc = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.broadcast_to(lattice_vecs, (self.n_sys, 3, 3))
+            )
         )
         hex_sys = self._make_systems(hex_uc)
         rot_hex = self.jit_rotate(
@@ -392,8 +396,10 @@ class TestRandomRotateGroups:
     def test_single_system(self):
         key = jax.random.key(8)
         n_particles = 4
-        single_cell = TriclinicCell.from_matrix(
-            jnp.array([[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]]),
+        single_cell = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.array([[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]]),
+            )
         )
         single_positions = jnp.array(
             [[0.5, 0.5, 0.5], [0.51, 0.5, 0.5], [0.5, 0.51, 0.5], [0.5, 0.5, 0.51]]
@@ -431,8 +437,10 @@ class TestTranslateGroups:
         cls.n_sys = 3
         cls.n_particles_per_sys = 4
         lattice_vecs = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        cls.cell = TriclinicCell.from_matrix(
-            jnp.broadcast_to(lattice_vecs, (cls.n_sys, 3, 3))
+        cls.cell = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.broadcast_to(lattice_vecs, (cls.n_sys, 3, 3))
+            )
         )
         cls.jit_translate = staticmethod(jax.jit(translate_groups))
         cls.positions = jnp.array(
@@ -544,8 +552,10 @@ class TestTranslateGroups:
         lattice_vecs = jnp.array(
             [[1.0, 0.0, 0.0], [0.5, jnp.sqrt(3) / 2, 0.0], [0.0, 0.0, 1.0]]
         )
-        hex_uc = TriclinicCell.from_matrix(
-            jnp.broadcast_to(lattice_vecs, (self.n_sys, 3, 3))
+        hex_uc = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.broadcast_to(lattice_vecs, (self.n_sys, 3, 3))
+            )
         )
         small = jnp.array([[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])
         t_hex = self._call(
@@ -620,7 +630,7 @@ class TestTranslateGroups:
     def test_single_system(self):
         """Non-unit 2x2x2 cubic cell where Cartesian-to-fractional conversion matters."""
         lattice_vecs = 2.0 * jnp.eye(3)
-        uc = TriclinicCell.from_matrix(lattice_vecs[None])
+        uc = PeriodicCell(TriclinicLattice.from_matrix(lattice_vecs[None]))
         positions = jnp.array([[0.1, 0.2, 0.3], [0.4, 0.1, 0.2]])
         system_ids = jnp.array([0, 0])
         translations = jnp.array([[0.3, 0.0, 0.0]])
@@ -689,7 +699,7 @@ def _make_motifs(positions, motif_ids, n_motifs, max_motif_size):
 class TestExchangeMove:
     @classmethod
     def setup_class(cls):
-        cls.systems = TriclinicCell.from_matrix(jnp.eye(3))[None]
+        cls.systems = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)))[None]
 
         if "move" not in _exchange_move_cache:
             move_fn = jax.jit(
@@ -1293,7 +1303,7 @@ def _exchange_state():
     )
     motif_data = _Motifs(jnp.zeros((1, 3)), _make_index(MotifId, [0], 1, max_count=1))
     motifs = Table.arange(motif_data, label=MotifParticleId)
-    uc = TriclinicCell.from_matrix(jnp.eye(3)[None] * 10)
+    uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10))
     return particles, groups, motifs, Table.arange(uc, label=SystemId)
 
 

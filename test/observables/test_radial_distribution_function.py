@@ -12,7 +12,7 @@ import numpy.testing as npt
 from jax import Array
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import view
@@ -87,7 +87,7 @@ class EmptyNeighborList:
 
 def _box10() -> Cell:
     """10x10x10 cubic unit cell."""
-    return TriclinicCell.from_matrix((jnp.eye(3) * 10.0)[None])
+    return PeriodicCell(TriclinicLattice.from_matrix((jnp.eye(3) * 10.0)[None]))
 
 
 class TestRadialDistributionFunction:
@@ -164,7 +164,7 @@ class TestRadialDistributionFunction:
             jnp.array([0, 0, 0, 0]),
             1,
         )
-        cell = TriclinicCell.from_matrix((jnp.eye(3) * 20.0)[None])
+        cell = PeriodicCell(TriclinicLattice.from_matrix((jnp.eye(3) * 20.0)[None]))
         systems = _make_systems(cell, 8.0)
 
         result = radial_distribution_function(
@@ -195,7 +195,9 @@ class TestRadialDistributionFunction:
             jnp.array([0, 0, 1, 1]),
             2,
         )
-        cell = TriclinicCell.from_matrix(jnp.tile(jnp.eye(3) * 10.0, (2, 1, 1)))
+        cell = PeriodicCell(
+            TriclinicLattice.from_matrix(jnp.tile(jnp.eye(3) * 10.0, (2, 1, 1)))
+        )
         systems = _make_systems(cell, 5.0)
         rmax, bins = 5.0, 50
         dr = rmax / bins
@@ -238,8 +240,10 @@ class TestRadialDistributionFunction:
             jnp.array([0, 0, 0, 0]),
             1,
         )
-        cell = TriclinicCell.from_matrix(
-            jnp.array([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])[None],
+        cell = PeriodicCell(
+            TriclinicLattice.from_matrix(
+                jnp.array([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])[None],
+            )
         )
         rmax, bins = 3.0, 30
         dr = rmax / bins

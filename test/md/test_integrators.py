@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -232,7 +232,7 @@ def create_npt_system(
         label=ParticleId,
     )
 
-    cell = TriclinicCell.from_matrix(jnp.eye(3)[None] * box_size)
+    cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * box_size))
     from kups.core.utils.jax import tree_zeros_like
 
     systems = Table.arange(
@@ -425,7 +425,7 @@ class TestBarostatAndMICSteps:
 
     def test_wrapping_positions(self):
         box_size = 5.0
-        cell = TriclinicCell.from_matrix(jnp.eye(3) * box_size)
+        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * box_size))
 
         @dataclass
         class TestState:

@@ -10,7 +10,7 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
-from kups.core.cell import Cell, TriclinicCell
+from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import SystemId
@@ -30,7 +30,7 @@ def _make_systems(
     lv = jnp.eye(3)[None] * box_size
     if n > 1:
         lv = jnp.tile(lv, (n, 1, 1))
-    uc = TriclinicCell.from_matrix(lv)
+    uc = PeriodicCell(TriclinicLattice.from_matrix(lv))
     t = jnp.broadcast_to(jnp.asarray(temperature), (n,))
     keys = tuple(SystemId(i) for i in range(n))
     return Table(keys, _Systems(temperature=t, cell=uc))
