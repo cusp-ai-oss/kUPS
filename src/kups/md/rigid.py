@@ -70,12 +70,13 @@ from kups.md.integrators import (
     MinimumImageConventionFlow,
     MomentumStep,
     PositionStep,
-    StochasticCellRescalingStep,
     StochasticStep,
     _half_time,
     csvr_scale_factor,
     euclidean_flow,
+    stochastic_cell_rescaling_factor,
 )
+from kups.observables.stress import molecular_stress_via_virial_theorem
 
 
 type RigidIntegrator = Literal[
@@ -673,47 +674,56 @@ def make_rigid_csvr_step[State](
     )
 
 
-def _rigid_translational_kinetic_energy_view[State](
-    groups_lens: Lens[State, Table[GroupId, _RigidGroupData]],
-) -> View[State, Array]:
-    r"""Per-system translational (COM) kinetic energy.
+@dataclass
+class RigidStochasticCellRescalingStep[State](Propagator[State]):
+    r"""Bernetti–Bussi 2020 cell rescaling for rigid-body NPT.
 
-    Used by the NPT cell-rescaling barostat: the pressure expression
-    $P = 2 K / (d V) + \mathrm{Tr}(\sigma) / d$ is derived from the volume
-    derivative of the partition function, which only sees translational
-    DOF. Rotational kinetic energy of rigid bodies must not enter this $K$
-    because rotations preserve volume.
+    Differs from atomic :class:`StochasticCellRescalingStep` in two ways:
+
+    1. **Translational KE only.** The pressure expression's kinetic term
+       enters via the volume derivative of the partition function, which
+       sees only translational DOF for rigid bodies; rotational rotations
+       preserve volume and must not be counted. Computes $K_\mathrm{trans} =
+       \tfrac{1}{2}\sum_g |\mathbf p_g^\mathrm{COM}|^2 / M_g$.
+    2. **Molecular virial.** Uses :func:`molecular_stress_via_virial_theorem`
+       (RASPA convention: virial taken with respect to group COMs), not the
+       atomic virial.
+
+    Scales the per-group COM positions by the same factor as the unit cell;
+    atom positions are reconstructed downstream by :class:`AtomReconstructionStep`.
     """
 
-    def _ke(state: State) -> Array:
-        groups = groups_lens.get(state)
-        ke_trans = (
-            0.5 * jnp.sum(groups.data.momenta**2, axis=-1) / groups.data.masses
-        )
-        return jax.ops.segment_sum(
+    particles: Lens[State, Table[ParticleId, _RigidAtomData]] = field(static=True)
+    groups: Lens[State, Table[GroupId, _RigidGroupData]] = field(static=True)
+    systems: Lens[State, Table[SystemId, _RigidNPTSystemData]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        groups = self.groups.get(state)
+        particles = self.particles.get(state)
+        systems = self.systems.get(state)
+
+        ke_trans = 0.5 * jnp.sum(groups.data.momenta**2, axis=-1) / groups.data.masses
+        kinetic_energy = jax.ops.segment_sum(
             ke_trans,
             groups.data.system.indices,
             groups.data.system.num_labels,
         )
+        cauchy_stress = molecular_stress_via_virial_theorem(
+            particles, groups, systems
+        ).data
 
-    return _ke
+        scaling_factor = stochastic_cell_rescaling_factor(
+            key, kinetic_energy, cauchy_stress, systems.data
+        )
 
+        new_unitcell = systems.data.unitcell * scaling_factor
+        state = self.systems.focus(lambda x: x.data.unitcell).set(state, new_unitcell)
 
-def _molecular_stress_view[State](
-    particles_lens: Lens[State, Table[ParticleId, _RigidAtomData]],
-    groups_lens: Lens[State, Table[GroupId, _RigidGroupData]],
-    systems_lens: Lens[State, Table[SystemId, _RigidNPTSystemData]],
-) -> View[State, Array]:
-    """Per-system molecular Cauchy stress for the NPT pressure expression."""
-    from kups.observables.stress import molecular_stress_via_virial_theorem
-
-    def _stress(state: State) -> Array:
-        particles = particles_lens.get(state)
-        groups = groups_lens.get(state)
-        systems = systems_lens.get(state)
-        return molecular_stress_via_virial_theorem(particles, groups, systems).data
-
-    return _stress
+        groups_lens = self.groups.bind(state)
+        groups = groups_lens.get()
+        scaling_per_group = scaling_factor[groups.data.system.indices]
+        new_com = groups.data.positions * scaling_per_group[..., None]
+        return groups_lens.focus(lambda g: g.data.positions).set(new_com)
 
 
 def make_rigid_csvr_npt_step[State](
@@ -734,15 +744,7 @@ def make_rigid_csvr_npt_step[State](
     sys_view: View[State, Table[SystemId, _RigidNPTSystemData]] = systems_lens.get
     sys_half = pipe(sys_view, _half_time)
     aggregation = ForceAggregationStep(particles, groups, systems_lens.get)
-
-    cell_rescale = StochasticCellRescalingStep(
-        entries=groups,
-        systems=systems_lens,
-        scaled_index=lambda s: groups.get(s).data.system,
-        position_lens=groups.focus(lambda g: g.data.positions),
-        kinetic_energy_view=_rigid_translational_kinetic_energy_view(groups),
-        stress_view=_molecular_stress_view(particles, groups, systems_lens),
-    )
+    cell_rescale = RigidStochasticCellRescalingStep(particles, groups, systems_lens)
 
     return SequentialPropagator(
         (
@@ -805,27 +807,29 @@ def make_rigid_md_step_from_state[State](
         euclidean_flow,
     )
 
-    if integrator == "rigid_verlet":
-        return make_rigid_velocity_verlet_step(
-            particles, groups, motifs_view, systems_lens.get,
-            derivative_computation, flow,
-        )
-    if integrator == "rigid_baoab_langevin":
-        return make_rigid_baoab_langevin_step(
-            particles, groups, motifs_view, systems_lens.get,
-            derivative_computation, flow,
-        )
-    if integrator == "rigid_csvr":
-        return make_rigid_csvr_step(
-            particles, groups, motifs_view, systems_lens.get,
-            derivative_computation, flow,
-        )
-    if integrator == "rigid_csvr_npt":
-        return make_rigid_csvr_npt_step(
-            particles, groups, motifs_view, systems_lens,
-            derivative_computation, flow,
-        )
-    raise ValueError(f"Unknown rigid integrator: {integrator}")
+    match integrator:
+        case "rigid_verlet":
+            return make_rigid_velocity_verlet_step(
+                particles, groups, motifs_view, systems_lens.get,
+                derivative_computation, flow,
+            )
+        case "rigid_baoab_langevin":
+            return make_rigid_baoab_langevin_step(
+                particles, groups, motifs_view, systems_lens.get,
+                derivative_computation, flow,
+            )
+        case "rigid_csvr":
+            return make_rigid_csvr_step(
+                particles, groups, motifs_view, systems_lens.get,
+                derivative_computation, flow,
+            )
+        case "rigid_csvr_npt":
+            return make_rigid_csvr_npt_step(
+                particles, groups, motifs_view, systems_lens,
+                derivative_computation, flow,
+            )
+        case _:
+            raise ValueError(f"Unknown rigid integrator: {integrator}")
 
 
 # Re-export for callers
@@ -835,6 +839,7 @@ __all__ = [
     "RotationalMomentumStep",
     "RigidRotationalStochasticStep",
     "RigidCSVRStep",
+    "RigidStochasticCellRescalingStep",
     "ForceAggregationStep",
     "AtomReconstructionStep",
     "IsRigidMdState",

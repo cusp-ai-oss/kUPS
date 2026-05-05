@@ -15,6 +15,7 @@ from jax import Array
 
 from kups.core.data import Index, Table
 from kups.core.unitcell import UnitCell
+from kups.core.utils.quaternion import Quaternion
 
 DType = np.dtype
 type PyTree = Any
@@ -396,10 +397,14 @@ class HasDegreesOfFreedom(Protocol):
 
 @runtime_checkable
 class HasQuaternion(Protocol):
-    r"""Protocol for entities carrying a unit-quaternion orientation (body→lab)."""
+    r"""Protocol for entities carrying a unit-quaternion orientation (body→lab).
+
+    Attributes:
+        quaternion: Unit quaternion mapping body-frame vectors to the lab frame.
+    """
 
     @property
-    def quaternion(self) -> Any: ...
+    def quaternion(self) -> Quaternion: ...
 
 
 @runtime_checkable

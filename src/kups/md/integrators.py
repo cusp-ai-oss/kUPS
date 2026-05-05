@@ -11,7 +11,7 @@ from jax import Array
 from typing_extensions import Protocol
 
 from kups.core.constants import BOLTZMANN_CONSTANT
-from kups.core.data import Index, Table
+from kups.core.data import Table
 from kups.core.data.index import SupportsSorting
 from kups.core.lens import Lens, View, bind
 from kups.core.propagator import Propagator, SequentialPropagator
@@ -677,52 +677,77 @@ class _BarostatEntryData(
     def position_gradients(self) -> Array: ...
 
 
+def stochastic_cell_rescaling_factor(
+    key: Array,
+    kinetic_energy: Array,
+    cauchy_stress: Array,
+    systems_data: _StochasticCellRescalingSystemData,
+) -> Array:
+    r"""Bernetti–Bussi 2020 isotropic linear cell-scaling factor $\mu$.
+
+    Pure function shared by atomic and rigid-body NPT.
+
+    $$\mu = \exp\!\left(\frac{1}{3}\big[\beta\,\frac{\Delta t}{\tau_P}\,(P - P_0) + \sqrt{\tfrac{2 k_B T \beta \Delta t}{\tau_P V}}\,R\big]\right),
+       \quad R \sim \mathcal N(0, 1)$$
+
+    Args:
+        key: PRNG key.
+        kinetic_energy: Per-system kinetic energy entering the pressure
+            expression (translational only for rigid bodies), shape ``(n_systems,)``.
+        cauchy_stress: Per-system Cauchy stress tensor, shape ``(n_systems, 3, 3)``.
+        systems_data: Per-system NPT parameters.
+
+    Returns:
+        Linear scaling factor $\mu$ per system, clipped to
+        ``[minimum_scale_factor, 1/minimum_scale_factor]``.
+    """
+    timestep = systems_data.time_step
+    thermal_energy = systems_data.temperature * BOLTZMANN_CONSTANT
+    barostat_timescale = systems_data.pressure_coupling_time
+    compressibility = systems_data.compressibility
+    volume = systems_data.unitcell.volume
+
+    current_pressure = instantaneous_pressure(kinetic_energy, cauchy_stress, volume)
+    pressure_deviation = current_pressure - systems_data.target_pressure
+    depsilon_det = (
+        (timestep / barostat_timescale) * compressibility * pressure_deviation
+    )
+    random_noise = jax.random.normal(key, dtype=volume.dtype)
+    depsilon_stoch = (
+        jnp.sqrt(
+            2.0
+            * thermal_energy
+            * compressibility
+            * timestep
+            / (barostat_timescale * volume)
+        )
+        * random_noise
+    )
+    scaling_factor = jnp.exp((depsilon_det + depsilon_stoch) / 3.0)
+    min_scaling = systems_data.minimum_scale_factor
+    return jnp.clip(scaling_factor, min_scaling, 1.0 / min_scaling)
+
+
 @dataclass
 class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]):
-    """Stochastic cell rescaling barostat for NPT ensemble sampling.
+    """Stochastic cell rescaling barostat for atomic NPT (Bernetti & Bussi, 2020).
 
-    Implements the isotropic stochastic cell rescaling algorithm (Bernetti & Bussi, 2020)
-    that correctly samples the NPT ensemble. This first-order barostat includes a
-    stochastic term to ensure proper volume fluctuations, unlike the Berendsen
-    barostat which artificially suppresses fluctuations.
+    Computes the per-system kinetic energy and virial stress from ``entries``,
+    rescales the unit cell and ``entries.data.positions`` by the same factor.
+    For rigid-body NPT (translational-KE-only pressure, molecular virial)
+    use :class:`kups.md.rigid.RigidStochasticCellRescalingStep` instead.
 
-    The algorithm scales both the simulation box and a position field by a
-    factor $\\mu$ determined by:
-
-    $$\\mu \\approx 1 + \\frac{\\Delta t}{\\tau_P} \\beta (P - P_0) + \\sqrt{\\frac{2k_B T \\beta \\Delta t}{\\tau_P V}} \\, R$$
-
-    The scaling is applied to both box and the chosen position array:
-
-    $$\\mathbf{L}_{\\text{new}} = \\mu \\mathbf{L}, \\quad \\mathbf{r}_{\\text{new}} = \\mu \\mathbf{r}$$
-
-    **Important:** The [UnitCell][kups.core.unitcell.UnitCell] must be reconstructed after
-    scaling to ensure the cached volume is recomputed correctly.
-
-    Generic over which positions are rescaled (atomic by default; per-group COM
-    for rigid-body NPT) and how the kinetic / virial contributions to the
-    pressure are computed. Defaults reproduce the original atomic behaviour.
+    **Important:** The :class:`UnitCell` must be reconstructed after scaling
+    to ensure the cached volume is recomputed correctly.
 
     Type Parameters:
         State: Simulation state type
-        Key: Table key type (e.g. :class:`ParticleId` for atomic NPT,
-            :class:`GroupId` for rigid-body NPT).
+        Key: Table key type for ``entries`` (typically :class:`ParticleId`).
 
     Attributes:
-        entries: Lens to the indexed table that owns the kinetic/virial data
-            and supplies a fallback per-element system index. For atomic NPT
-            this is the particle table; for rigid NPT it is the per-group
-            table whose COM positions are rescaled.
-        systems: Lens to per-system parameters and unit cell.
-        scaled_index: View returning the per-element system index for the
-            position field that gets rescaled. Defaults to ``entries.data.system``.
-        position_lens: Lens onto the position array to rescale. Defaults to
-            ``entries.data.positions``.
-        kinetic_energy_view: View returning per-system kinetic energy used in
-            the pressure expression. Defaults to the atomic-style kinetic
-            energy from ``entries``.
-        stress_view: View returning the per-system Cauchy stress (3×3) used in
-            the pressure expression. Defaults to ``stress_via_virial_theorem``
-            applied to ``entries``.
+        entries: Lens to the table whose positions are rescaled and whose
+            momenta/masses/positions feed the kinetic and virial expressions.
+        systems: Lens to per-system NPT parameters and unit cell.
 
     References:
         Bernetti, M., & Bussi, G. (2020). Pressure control using stochastic
@@ -734,89 +759,33 @@ class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]
     systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
         static=True
     )
-    scaled_index: View[State, "Index[SystemId]"] | None = field(static=True, default=None)
-    position_lens: Lens[State, Array] | None = field(static=True, default=None)
-    kinetic_energy_view: View[State, Array] | None = field(static=True, default=None)
-    stress_view: View[State, Array] | None = field(static=True, default=None)
 
-    def _resolved_position_lens(self) -> Lens[State, Array]:
-        if self.position_lens is not None:
-            return self.position_lens
-        return self.entries.focus(lambda p: p.data.positions)
-
-    def _resolved_scaled_index(self, state: State) -> "Index[SystemId]":
-        if self.scaled_index is not None:
-            return self.scaled_index(state)
-        return self.entries.get(state).data.system
-
-    def _resolved_kinetic_energy(self, state: State) -> Array:
-        if self.kinetic_energy_view is not None:
-            return self.kinetic_energy_view(state)
+    def __call__(self, key: Array, state: State) -> State:
         entries = self.entries.get(state)
+        systems = self.systems.get(state)
+
         per_entry_ke = particle_kinetic_energy(
             entries.data.momenta, entries.data.masses
         )
-        return jax.ops.segment_sum(
+        kinetic_energy = jax.ops.segment_sum(
             per_entry_ke,
             entries.data.system.indices,
             entries.data.system.num_labels,
         )
+        cauchy_stress = stress_via_virial_theorem(entries, systems).data
 
-    def _resolved_stress(self, state: State) -> Array:
-        if self.stress_view is not None:
-            return self.stress_view(state)
-        entries = self.entries.get(state)
-        systems = self.systems.get(state)
-        return stress_via_virial_theorem(entries, systems).data
-
-    def __call__(self, key: Array, state: State) -> State:
-        """Apply stochastic cell rescaling for pressure control."""
-        systems = self.systems.get(state)
-        timestep = systems.data.time_step
-        thermal_energy = systems.data.temperature * BOLTZMANN_CONSTANT
-        target_pressure = systems.data.target_pressure
-        barostat_timescale = systems.data.pressure_coupling_time
-        compressibility = systems.data.compressibility
-
-        unitcell = systems.data.unitcell
-        volume = unitcell.volume
-
-        kinetic_energy = self._resolved_kinetic_energy(state)
-        cauchy_stress = self._resolved_stress(state)
-        current_pressure = instantaneous_pressure(kinetic_energy, cauchy_stress, volume)
-
-        pressure_deviation = current_pressure - target_pressure
-        depsilon_det = (
-            (timestep / barostat_timescale) * compressibility * pressure_deviation
-        )
-        random_noise = jax.random.normal(key, dtype=volume.dtype)
-        depsilon_stoch = (
-            jnp.sqrt(
-                2.0
-                * thermal_energy
-                * compressibility
-                * timestep
-                / (barostat_timescale * volume)
-            )
-            * random_noise
+        scaling_factor = stochastic_cell_rescaling_factor(
+            key, kinetic_energy, cauchy_stress, systems.data
         )
 
-        depsilon = depsilon_det + depsilon_stoch
-        scaling_factor = jnp.exp(depsilon / 3.0)
-
-        min_scaling = systems.data.minimum_scale_factor
-        max_scaling = 1.0 / min_scaling
-        scaling_factor = jnp.clip(scaling_factor, min_scaling, max_scaling)
-
-        new_unitcell = unitcell * scaling_factor
+        new_unitcell = systems.data.unitcell * scaling_factor
         state = self.systems.focus(lambda x: x.data.unitcell).set(state, new_unitcell)
 
-        index = self._resolved_scaled_index(state)
-        position_lens = self._resolved_position_lens()
-        positions = position_lens.get(state)
-        scaling_per_element = scaling_factor[index.indices]
-        new_positions = positions * scaling_per_element[..., None]
-        return position_lens.set(state, new_positions)
+        entries_lens = self.entries.bind(state)
+        entries = entries_lens.get()
+        scaling_per_entry = scaling_factor[entries.data.system.indices]
+        new_positions = entries.data.positions * scaling_per_entry[..., None]
+        return entries_lens.focus(lambda p: p.data.positions).set(new_positions)
 
 
 @runtime_checkable

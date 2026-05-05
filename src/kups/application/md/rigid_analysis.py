@@ -3,9 +3,9 @@
 
 """Post-simulation analysis for rigid-body MD.
 
-Mirrors :mod:`kups.application.md.analysis` but reads the rigid-MD HDF5
-schema (atom positions, per-group COM/quaternion/momenta, total kinetic
-energy already aggregated to the system level).
+Mirrors :mod:`kups.application.md.analysis`. Reads the rigid-MD HDF5
+schema (``atoms``, ``groups``, plus per-system scalars) and uses the
+DOF stored on :class:`MDSystems` for the kinetic temperature.
 """
 
 from __future__ import annotations
@@ -23,8 +23,10 @@ from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.storage import HDF5StorageReader
 from kups.core.typing import (
+    GroupId,
     HasDegreesOfFreedom,
     HasPositions,
+    HasSystemIndex,
     ParticleId,
     SystemId,
 )
@@ -46,6 +48,8 @@ class IsRigidMDInitData(Protocol):
     @property
     def atoms(self) -> Table[ParticleId, _IsRigidMDAtoms]: ...
     @property
+    def groups(self) -> Table[GroupId, HasSystemIndex]: ...
+    @property
     def systems(self) -> Table[SystemId, HasDegreesOfFreedom]: ...
 
 
@@ -58,8 +62,6 @@ class IsRigidMDStepData(Protocol):
     def kinetic_energy(self) -> Array: ...
     @property
     def stress_tensor(self) -> Array: ...
-    @property
-    def volume(self) -> Array: ...
 
 
 @plain_dataclass
@@ -67,17 +69,16 @@ class RigidMDAnalysisResult:
     """Block-averaged thermodynamic estimates for one rigid-MD system.
 
     Attributes:
-        potential_energy: ⟨U⟩ ± SEM (eV).
-        kinetic_energy: ⟨K⟩ ± SEM (eV).
-        total_energy: ⟨E⟩ ± SEM (eV).
-        temperature: ⟨T⟩ ± SEM (K).
-        pressure: ⟨P⟩ ± SEM (Pa).
-        volume: ⟨V⟩ ± SEM (Å³).
-        energy_drift: Linear drift slope of total energy (eV/step).
-        energy_drift_per_atom: Drift normalised by atom count.
-        n_atoms: Number of atoms.
+        potential_energy: Average potential energy with SEM (eV).
+        kinetic_energy: Average kinetic energy with SEM (eV).
+        total_energy: Average total energy with SEM (eV).
+        temperature: Average temperature with SEM (K).
+        energy_drift: Linear drift rate of total energy (eV/step).
+        energy_drift_per_atom: Energy drift normalised by atom count.
+        pressure: Average pressure with SEM (eV/Å³).
+        n_atoms: Number of atoms in this system.
         degrees_of_freedom: DOF used for the kinetic temperature.
-        n_steps: Number of production steps analysed.
+        n_steps: Number of simulation steps analysed.
     """
 
     potential_energy: BlockAverageResult
@@ -85,7 +86,6 @@ class RigidMDAnalysisResult:
     total_energy: BlockAverageResult
     temperature: BlockAverageResult
     pressure: BlockAverageResult
-    volume: BlockAverageResult
     energy_drift: float
     energy_drift_per_atom: float
     n_atoms: int
@@ -97,15 +97,12 @@ def _analyze_single_system(
     potential_energy: Array,
     kinetic_energy: Array,
     stress_tensor: Array,
-    volume: Array,
     n_atoms: int,
     dof: float,
     n_blocks: int | None,
 ) -> RigidMDAnalysisResult:
     n_steps = int(potential_energy.shape[0])
     total_energy = potential_energy + kinetic_energy
-    # Kinetic temperature uses the per-system DOF (already accounting for
-    # rotational vs. translational DOF at build time).
     temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
     pressure = jnp.trace(stress_tensor, axis1=-2, axis2=-1) / 3
 
@@ -120,7 +117,6 @@ def _analyze_single_system(
     ke_result = block_average(kinetic_energy, n_blocks=n_blocks_used)
     te_result = block_average(total_energy, n_blocks=n_blocks_used)
     temp_result = block_average(temperature, n_blocks=n_blocks_used)
-    vol_result = block_average(volume, n_blocks=n_blocks_used)
 
     steps = np.arange(n_steps)
     slope, _ = np.polyfit(steps, np.asarray(total_energy), 1)
@@ -131,7 +127,6 @@ def _analyze_single_system(
         total_energy=te_result,
         temperature=temp_result,
         pressure=pressure_result,
-        volume=vol_result,
         energy_drift=float(slope),
         energy_drift_per_atom=float(slope) / max(n_atoms, 1),
         n_atoms=n_atoms,
@@ -166,7 +161,6 @@ def analyze_rigid_md(
             potential_energy=step_data.potential_energy[:, i],
             kinetic_energy=step_data.kinetic_energy[:, i],
             stress_tensor=step_data.stress_tensor[:, i],
-            volume=step_data.volume[:, i],
             n_atoms=int(n_atoms_per_system[i]),
             dof=float(dofs[i]),
             n_blocks=n_blocks,
