@@ -764,7 +764,7 @@ def test_stress_matches_ase():
     import numpy as np
     from ase.calculators.lj import LennardJones as ASELJ
 
-    from kups.application.md.data import MdParameters, md_state_from_ase
+    from kups.application.md.data import BaoabLangevinParameters, md_state_from_ase
     from kups.core.lens import identity_lens
     from kups.core.neighborlist import (
         DenseNearestNeighborList,
@@ -809,16 +809,10 @@ def test_stress_matches_ase():
     lj = LennardJonesParameters.from_dict(
         cutoff=10.0, parameters={"Ar": (sigma, eps)}, mixing_rule="lorentz_berthelot"
     )
-    config = MdParameters(
+    config = BaoabLangevinParameters(
         temperature=100.0,
         time_step=2.0,
         friction_coefficient=1.0,
-        thermostat_time_constant=100.0,
-        target_pressure=1.0,
-        pressure_coupling_time=1e10,
-        compressibility=4.5e-5,
-        minimum_scale_factor=1.0,
-        integrator="baoab_langevin",
         initialize_momenta=False,
     )
     p, s = md_state_from_ase(str(cif), config)

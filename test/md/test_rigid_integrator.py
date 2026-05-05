@@ -23,7 +23,10 @@ import numpy as np
 
 from kups.application.mcmc.data import AdsorbateConfig
 from kups.application.md.data import (
-    RigidMdParameters,
+    RigidBaoabLangevinParameters,
+    RigidCsvrNptParameters,
+    RigidCsvrParameters,
+    RigidVerletParameters,
     build_rigid_state_from_grid,
 )
 from kups.application.md.rigid_logging import _per_group_kinetic_energy
@@ -239,18 +242,37 @@ def _build_water_state(
     """Helper: TIP4P/2005 water in a small box, ready for end-to-end tests."""
     chain = key_chain(jax.random.key(seed))
     water = _make_water()
-    params = RigidMdParameters(
-        temperature=298.0,
-        time_step=timestep_fs,
-        friction_coefficient=friction,
-        thermostat_time_constant=tau_fs,
-        target_pressure=101325.0,
-        pressure_coupling_time=1000.0,
-        compressibility=4.5e-10,
-        minimum_scale_factor=0.5,
-        integrator=integrator,  # type: ignore[arg-type]
-        initialize_momenta=True,
+    params: (
+        RigidVerletParameters
+        | RigidBaoabLangevinParameters
+        | RigidCsvrParameters
+        | RigidCsvrNptParameters
     )
+    if integrator == "rigid_verlet":
+        params = RigidVerletParameters(
+            temperature=298.0, time_step=timestep_fs, initialize_momenta=True,
+        )
+    elif integrator == "rigid_baoab_langevin":
+        params = RigidBaoabLangevinParameters(
+            temperature=298.0, time_step=timestep_fs, initialize_momenta=True,
+            friction_coefficient=friction,
+        )
+    elif integrator == "rigid_csvr":
+        params = RigidCsvrParameters(
+            temperature=298.0, time_step=timestep_fs, initialize_momenta=True,
+            thermostat_time_constant=tau_fs,
+        )
+    elif integrator == "rigid_csvr_npt":
+        params = RigidCsvrNptParameters(
+            temperature=298.0, time_step=timestep_fs, initialize_momenta=True,
+            thermostat_time_constant=tau_fs,
+            target_pressure=101325.0,
+            pressure_coupling_time=1000.0,
+            compressibility=4.5e-10,
+            minimum_scale_factor=0.5,
+        )
+    else:
+        raise ValueError(f"unknown integrator: {integrator}")
     particles, groups, motifs, systems = build_rigid_state_from_grid(
         next(chain),
         (water,),

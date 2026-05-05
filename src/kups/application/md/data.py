@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Annotated, Literal
 
 import ase
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kups.application.mcmc.data import AdsorbateConfig, MotifParticles
 from kups.application.utils.particles import (
@@ -42,9 +43,7 @@ from kups.core.utils.rigid_body import (
     is_linear_motif,
     reconstruct_atom_positions,
 )
-from kups.md.integrators import Integrator
 from kups.md.observables import particle_kinetic_energy
-from kups.md.rigid import RigidIntegrator
 
 
 @dataclass
@@ -144,29 +143,63 @@ class MdRunConfig(BaseModel):
     """Random seed for reproducibility. None for time-based."""
 
 
-class MdParameters(BaseModel):
-    """Physical and numerical parameters for an MD simulation."""
+class _BaseMdParameters(BaseModel):
+    """Fields common to every MD integrator."""
 
     temperature: float
     """Target temperature (K)."""
     time_step: float
     """Integration timestep (fs)."""
+    initialize_momenta: bool = False
+    """If True, initialise momenta from Maxwell-Boltzmann distribution."""
+
+
+class VerletParameters(_BaseMdParameters):
+    """NVE Verlet parameters."""
+
+    integrator: Literal["verlet"] = "verlet"
+
+
+class BaoabLangevinParameters(_BaseMdParameters):
+    """NVT Langevin (BAOAB) parameters."""
+
+    integrator: Literal["baoab_langevin"] = "baoab_langevin"
     friction_coefficient: float
     """Langevin friction coefficient (1/fs)."""
+
+
+class CsvrParameters(_BaseMdParameters):
+    """NVT CSVR (Bussi-Donadio-Parrinello) parameters."""
+
+    integrator: Literal["csvr"] = "csvr"
+    thermostat_time_constant: float
+    """CSVR thermostat coupling time (fs)."""
+
+
+class CsvrNptParameters(_BaseMdParameters):
+    """NPT CSVR + stochastic cell rescaling (Bernetti-Bussi 2020) parameters."""
+
+    integrator: Literal["csvr_npt"] = "csvr_npt"
     thermostat_time_constant: float
     """CSVR thermostat coupling time (fs)."""
     target_pressure: float
-    """Target pressure for NPT barostat (Pa)."""
+    """Target pressure for the barostat (Pa)."""
     pressure_coupling_time: float
     """Barostat coupling time (fs)."""
     compressibility: float
     """Isothermal compressibility (1/Pa)."""
     minimum_scale_factor: float
     """Minimum allowed box scaling factor per barostat step (dimensionless)."""
-    integrator: Integrator
-    """Integration algorithm to use."""
-    initialize_momenta: bool = False
-    """If True, initialize momenta from Maxwell-Boltzmann distribution."""
+
+
+type MdParameters = Annotated[
+    VerletParameters | BaoabLangevinParameters | CsvrParameters | CsvrNptParameters,
+    Field(discriminator="integrator"),
+]
+"""Discriminated union of MD parameter records, keyed on ``integrator``.
+
+Pydantic picks the variant matching the ``integrator`` field of the input.
+Each variant carries only the fields its integrator actually reads."""
 
 
 def md_state_from_ase(
@@ -217,30 +250,51 @@ def md_state_from_ase(
 
     unitcell = unitcell[None]  # Add system dimension
     systems = Table.arange(
-        MDSystems(
-            unitcell=unitcell,
-            temperature=jnp.array([config.temperature]),
-            time_step=jnp.array([config.time_step * FEMTO_SECOND]),
-            friction_coefficient=jnp.array(
-                [config.friction_coefficient / FEMTO_SECOND]
-            ),
-            thermostat_time_constant=jnp.array(
-                [config.thermostat_time_constant * FEMTO_SECOND]
-            ),
-            target_pressure=jnp.array([config.target_pressure * PASCAL]),
-            pressure_coupling_time=jnp.array(
-                [config.pressure_coupling_time * FEMTO_SECOND]
-            ),
-            compressibility=jnp.array([config.compressibility / PASCAL]),
-            minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
-            unitcell_gradients=tree_zeros_like(unitcell),
-            potential_energy=jnp.array([0.0]),
-            degrees_of_freedom=jnp.array([max(3 * n_atoms - 3, 0)], dtype=jnp.int32),
-        ),
+        _md_systems_from_params(config, unitcell, dof=max(3 * n_atoms - 3, 0)),
         label=SystemId,
     )
 
     return particles, systems
+
+
+def _md_systems_from_params(
+    config: _BaseMdParameters,
+    unitcell: UnitCell,
+    *,
+    dof: int,
+) -> MDSystems:
+    """Build per-system MD parameters from a discriminated parameter variant.
+
+    Fields that the chosen integrator does not read (e.g. ``friction_coefficient``
+    on Verlet, NPT fields on CSVR) are populated with placeholder values that
+    the integrator never touches.
+    """
+    return MDSystems(
+        unitcell=unitcell,
+        temperature=jnp.array([config.temperature]),
+        time_step=jnp.array([config.time_step * FEMTO_SECOND]),
+        friction_coefficient=jnp.array(
+            [getattr(config, "friction_coefficient", 0.0) / FEMTO_SECOND]
+        ),
+        thermostat_time_constant=jnp.array(
+            [getattr(config, "thermostat_time_constant", 1.0) * FEMTO_SECOND]
+        ),
+        target_pressure=jnp.array(
+            [getattr(config, "target_pressure", 0.0) * PASCAL]
+        ),
+        pressure_coupling_time=jnp.array(
+            [getattr(config, "pressure_coupling_time", 1.0) * FEMTO_SECOND]
+        ),
+        compressibility=jnp.array(
+            [getattr(config, "compressibility", 0.0) / PASCAL]
+        ),
+        minimum_scale_factor=jnp.array(
+            [getattr(config, "minimum_scale_factor", 1.0)]
+        ),
+        unitcell_gradients=tree_zeros_like(unitcell),
+        potential_energy=jnp.array([0.0]),
+        degrees_of_freedom=jnp.array([dof], dtype=jnp.int32),
+    )
 
 
 @dataclass
@@ -336,29 +390,52 @@ class MDRigidGroup:
         return self.momenta / self.masses[..., None]
 
 
-class RigidMdParameters(BaseModel):
-    """Physical and numerical parameters for a rigid-body MD simulation."""
+class RigidVerletParameters(_BaseMdParameters):
+    """Rigid-body NVE Verlet parameters."""
 
-    temperature: float
-    """Target temperature (K)."""
-    time_step: float
-    """Integration timestep (fs)."""
+    integrator: Literal["rigid_verlet"] = "rigid_verlet"
+
+
+class RigidBaoabLangevinParameters(_BaseMdParameters):
+    """Rigid-body NVT Langevin (BAOAB) parameters."""
+
+    integrator: Literal["rigid_baoab_langevin"] = "rigid_baoab_langevin"
     friction_coefficient: float
     """Langevin friction coefficient (1/fs)."""
+
+
+class RigidCsvrParameters(_BaseMdParameters):
+    """Rigid-body NVT CSVR parameters."""
+
+    integrator: Literal["rigid_csvr"] = "rigid_csvr"
+    thermostat_time_constant: float
+    """CSVR thermostat coupling time (fs)."""
+
+
+class RigidCsvrNptParameters(_BaseMdParameters):
+    """Rigid-body NPT CSVR + stochastic cell rescaling parameters."""
+
+    integrator: Literal["rigid_csvr_npt"] = "rigid_csvr_npt"
     thermostat_time_constant: float
     """CSVR thermostat coupling time (fs)."""
     target_pressure: float
-    """Target pressure for NPT barostat (Pa)."""
+    """Target pressure for the barostat (Pa)."""
     pressure_coupling_time: float
     """Barostat coupling time (fs)."""
     compressibility: float
     """Isothermal compressibility (1/Pa)."""
     minimum_scale_factor: float
     """Minimum allowed box scaling factor per barostat step (dimensionless)."""
-    integrator: RigidIntegrator
-    """Integration algorithm to use."""
-    initialize_momenta: bool = True
-    """If True, sample COM momenta + angular momenta from Maxwell-Boltzmann."""
+
+
+type RigidMdParameters = Annotated[
+    RigidVerletParameters
+    | RigidBaoabLangevinParameters
+    | RigidCsvrParameters
+    | RigidCsvrNptParameters,
+    Field(discriminator="integrator"),
+]
+"""Discriminated union of rigid-MD parameter records, keyed on ``integrator``."""
 
 
 def _canonicalise_motif(
@@ -600,26 +677,7 @@ def build_rigid_state_from_grid(
     unitcell = TriclinicUnitCell.from_matrix(box_matrix[None])
 
     systems = Table.arange(
-        MDSystems(
-            unitcell=unitcell,
-            temperature=jnp.array([config.temperature]),
-            time_step=jnp.array([config.time_step * FEMTO_SECOND]),
-            friction_coefficient=jnp.array(
-                [config.friction_coefficient / FEMTO_SECOND]
-            ),
-            thermostat_time_constant=jnp.array(
-                [config.thermostat_time_constant * FEMTO_SECOND]
-            ),
-            target_pressure=jnp.array([config.target_pressure * PASCAL]),
-            pressure_coupling_time=jnp.array(
-                [config.pressure_coupling_time * FEMTO_SECOND]
-            ),
-            compressibility=jnp.array([config.compressibility / PASCAL]),
-            minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
-            unitcell_gradients=tree_zeros_like(unitcell),
-            potential_energy=jnp.array([0.0]),
-            degrees_of_freedom=jnp.array([dof], dtype=jnp.int32),
-        ),
+        _md_systems_from_params(config, unitcell, dof=dof),
         label=SystemId,
     )
 
