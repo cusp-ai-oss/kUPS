@@ -122,6 +122,11 @@ extra_javascript:
   - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
   - javascripts/mermaid.js
 
+# Currently zensical reports false positives in mkdocstrings
+# https://github.com/zensical/zensical/issues/600
+validation:
+  unresolved_references: false
+
 nav:
   - Home: index.md
   - Simulations: simulations.md
@@ -139,4 +144,3 @@ nav:
     - 10. Logging: notebooks/logging.md
   - Units: units.md
   - Troubleshooting: troubleshooting.md
-
