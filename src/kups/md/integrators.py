@@ -143,8 +143,12 @@ class MinimumImageConventionFlow[State, PyTree](Flow[State, PyTree]):
         )
 
 
-def _half_time[S: HasTimeStep](sys: Table[SystemId, S]) -> Table[SystemId, S]:
+def half_time[S: HasTimeStep](sys: Table[SystemId, S]) -> Table[SystemId, S]:
     """View that halves the time_step of a system.
+
+    Used by every integrator factory (atomic and rigid) to compose the half-step
+    momentum kicks of velocity-Verlet / BAOAB. Public because the rigid-body
+    factories in :mod:`kups.md.rigid` need to share it.
 
     Args:
         sys: Indexed system with time_step attribute
@@ -153,6 +157,10 @@ def _half_time[S: HasTimeStep](sys: Table[SystemId, S]) -> Table[SystemId, S]:
         New Indexed system with time_step halved
     """
     return bind(sys, lambda x: x.data.time_step).apply(lambda x: x / 2)
+
+
+_half_time = half_time
+"""Backwards-compatible alias for :func:`half_time`."""
 
 
 @runtime_checkable

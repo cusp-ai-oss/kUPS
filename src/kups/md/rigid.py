@@ -72,9 +72,9 @@ from kups.md.integrators import (
     MomentumStep,
     PositionStep,
     StochasticStep,
-    _half_time,
     csvr_scale_factor,
     euclidean_flow,
+    half_time,
     stochastic_cell_rescaling_factor,
 )
 from kups.observables.stress import molecular_stress_via_virial_theorem
@@ -597,7 +597,7 @@ def make_rigid_velocity_verlet_step[State](
     8. **B**: half-step COM kick.
     9. **B_rot**: half-step angular-momentum kick.
     """
-    sys_half = pipe(systems, _half_time)
+    sys_half = pipe(systems, half_time)
     aggregation = ForceAggregationStep(particles, groups, systems)
     return SequentialPropagator(
         (
@@ -626,7 +626,7 @@ def make_rigid_baoab_langevin_step[State](
 
     Sequence ``B½ B_rot½ A½ A_rot½ O O_rot A½ A_rot½ R F G B½ B_rot½``.
     """
-    sys_half = pipe(systems, _half_time)
+    sys_half = pipe(systems, half_time)
     aggregation = ForceAggregationStep(particles, groups, systems)
     return SequentialPropagator(
         (
@@ -659,7 +659,7 @@ def make_rigid_csvr_step[State](
 
     Prepends :class:`RigidCSVRStep` to the rigid NVE sequence.
     """
-    sys_half = pipe(systems, _half_time)
+    sys_half = pipe(systems, half_time)
     aggregation = ForceAggregationStep(particles, groups, systems)
     return SequentialPropagator(
         (
@@ -745,7 +745,7 @@ def make_rigid_csvr_npt_step[State](
     ``derivative_computation`` of the atomic ``make_csvr_npt_step``).
     """
     sys_view: View[State, Table[SystemId, _RigidNPTSystemData]] = systems_lens.get
-    sys_half = pipe(sys_view, _half_time)
+    sys_half = pipe(sys_view, half_time)
     aggregation = ForceAggregationStep(particles, groups, systems_lens.get)
     cell_rescale = RigidStochasticCellRescalingStep(particles, groups, systems_lens)
 

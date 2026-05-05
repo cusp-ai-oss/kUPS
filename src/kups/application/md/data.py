@@ -489,14 +489,18 @@ def build_rigid_state_from_grid(
     Table[MotifParticleId, MotifParticles],
     Table[SystemId, MDSystems],
 ]:
-    """Initialise a single-system rigid-body MD state on a regular grid.
+    """Initialise a **single-system** rigid-body MD state on a regular grid.
 
     Each adsorbate species is canonicalised (COM at origin, principal axes
     aligned with x, y, z). Molecules are placed on a regular grid inside a
     box of size ``box_size`` with random orientations, and momenta are
-    drawn from Maxwell-Boltzmann at ``config.temperature``. The system COM
-    momentum is removed; angular momentum is **not** projected out (incorrect
-    for a rigid PBC system).
+    drawn from Maxwell-Boltzmann at ``config.temperature``. Per-system COM
+    momentum is removed; angular momentum is *intentionally not* projected
+    out (projecting out angular momentum is incorrect for a rigid PBC system).
+
+    Multi-system batched setups are constructed by calling this helper once
+    per system and stitching the results with :meth:`Table.union`, matching
+    the pattern in :func:`kups.application.mcmc.data.mcmc_state_from_config`.
 
     Args:
         key: PRNG key for orientation and momentum sampling.
@@ -506,7 +510,7 @@ def build_rigid_state_from_grid(
         config: Numerical / thermodynamic parameters.
 
     Returns:
-        ``(particles, groups, motifs, systems)`` tables.
+        ``(particles, groups, motifs, systems)`` tables for one system.
     """
     chain = key_chain(key)
     assert len(adsorbates) == len(n_molecules)
