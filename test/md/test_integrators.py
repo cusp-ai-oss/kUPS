@@ -297,7 +297,7 @@ class TestBasicSteps:
         """Position update correctness and momenta preservation."""
         state, _, _ = create_harmonic_system(n_particles=5, dt=0.01)
         step = PositionStep(
-            particles=SimpleState.particles,
+            entries=SimpleState.particles,
             systems=SimpleState.systems.get,
             flow=euclidean_flow,
         )
@@ -317,7 +317,7 @@ class TestBasicSteps:
         """Momentum update correctness and position preservation."""
         state, _, _ = create_harmonic_system(n_particles=5, dt=0.01)
         step = MomentumStep(
-            particles=SimpleState.particles, systems=SimpleState.systems.get
+            entries=SimpleState.particles, systems=SimpleState.systems.get
         )
         new_state = step(jax.random.key(0), state)
 
@@ -340,7 +340,7 @@ class TestThermostatSteps:
             n_particles=n_particles, kT=kT_target, dt=0.02
         )
         step = StochasticStep(
-            particles=SimpleState.particles, system=SimpleState.systems.get
+            entries=SimpleState.particles, system=SimpleState.systems.get
         )
 
         _, temps = run_simulation(
@@ -377,7 +377,7 @@ class TestBarostatAndMICSteps:
     def test_unitcell_volume_updates(self):
         state = create_npt_system(n_particles=3, box_size=5.0)
         step = StochasticCellRescalingStep(
-            particles=NPTState.particles, systems=NPTState.systems
+            entries=NPTState.particles, systems=NPTState.systems
         )
 
         initial_volume = state.systems.data.unitcell.volume
@@ -396,7 +396,7 @@ class TestBarostatAndMICSteps:
     def test_positions_scale_with_box(self):
         state = create_npt_system(n_particles=3, box_size=5.0)
         step = StochasticCellRescalingStep(
-            particles=NPTState.particles, systems=NPTState.systems
+            entries=NPTState.particles, systems=NPTState.systems
         )
 
         initial_pos = state.particles.data.positions
@@ -412,7 +412,7 @@ class TestBarostatAndMICSteps:
             n_particles=3, box_size=2.0, tau_p=0.1, compressibility=10.0
         )
         step = StochasticCellRescalingStep(
-            particles=NPTState.particles, systems=NPTState.systems
+            entries=NPTState.particles, systems=NPTState.systems
         )
 
         initial_volume = state.systems.data.unitcell.volume

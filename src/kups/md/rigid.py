@@ -736,7 +736,7 @@ def make_rigid_csvr_npt_step[State](
     aggregation = ForceAggregationStep(particles, groups, systems_lens.get)
 
     cell_rescale = StochasticCellRescalingStep(
-        particles=groups,
+        entries=groups,
         systems=systems_lens,
         scaled_index=lambda s: groups.get(s).data.system,
         position_lens=groups.focus(lambda g: g.data.positions),

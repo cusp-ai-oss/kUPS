@@ -181,12 +181,15 @@ class PositionStep[State, Key: SupportsSorting](Propagator[State]):
             :class:`GroupId` for rigid-body COM drift).
 
     Attributes:
-        particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, positions $\\mathbf{r}$, masses $m$)
+        entries: Lens to get/set the indexed table whose entries are drifted
+            (atom positions in atomic MD, group COM positions in rigid-body MD).
+            Each entry must expose ``positions``, ``momenta``, ``masses``, and
+            ``system``.
         systems: View to extract system data with time step $\\Delta t$
         flow: Flow operator defining how positions evolve (handles boundary conditions)
     """
 
-    particles: Lens[State, Table[Key, _PositionStepData]] = field(static=True)
+    entries: Lens[State, Table[Key, _PositionStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
     flow: Flow[State, Array] = field(static=True)
 
@@ -201,17 +204,16 @@ class PositionStep[State, Key: SupportsSorting](Propagator[State]):
             Updated state with new positions.
         """
         del key  # Deterministic step
-        # Extract current state
-        particle_lens = self.particles.bind(state)
-        particles = particle_lens.get()
-        sys = self.systems(state)[particles.data.system]
-        # Update particles: r_new = r + (p/m)·Δt
-        velocity = particles.data.momenta / particles.data.masses[..., None]
+        entries_lens = self.entries.bind(state)
+        entries = entries_lens.get()
+        sys = self.systems(state)[entries.data.system]
+        # r_new = r + (p/m) · Δt
+        velocity = entries.data.momenta / entries.data.masses[..., None]
         new_positions = self.flow(
-            state, sys.time_step, particles.data.positions, velocity
+            state, sys.time_step, entries.data.positions, velocity
         )
-        assert new_positions.shape == particles.data.positions.shape
-        return particle_lens.focus(lambda x: x.data.positions).set(new_positions)
+        assert new_positions.shape == entries.data.positions.shape
+        return entries_lens.focus(lambda x: x.data.positions).set(new_positions)
 
 
 @runtime_checkable
@@ -238,11 +240,13 @@ class MomentumStep[State, Key: SupportsSorting](Propagator[State]):
             :class:`GroupId` for rigid-body COM and rotational kicks).
 
     Attributes:
-        particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, forces $\\mathbf{F}$)
+        entries: Lens to get/set the indexed table whose momenta are kicked
+            (atoms in atomic MD, rigid groups in rigid-body MD). Each entry
+            must expose ``momenta``, ``forces``, and ``system``.
         systems: View to extract system data with time step $\\Delta t$
     """
 
-    particles: Lens[State, Table[Key, IsMomentumStepData]] = field(static=True)
+    entries: Lens[State, Table[Key, IsMomentumStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -256,16 +260,14 @@ class MomentumStep[State, Key: SupportsSorting](Propagator[State]):
             Updated state with new momenta.
         """
         del key  # Deterministic step
-        # Extract current state
-        particle_lens = self.particles.bind(state)
-        particles = particle_lens.get()
-        sys = self.systems(state)[particles.data.system]
-
+        entries_lens = self.entries.bind(state)
+        entries = entries_lens.get()
+        sys = self.systems(state)[entries.data.system]
         new_momenta = (
-            particles.data.momenta + particles.data.forces * sys.time_step[..., None]
+            entries.data.momenta + entries.data.forces * sys.time_step[..., None]
         )
-        assert new_momenta.shape == particles.data.momenta.shape
-        return particle_lens.focus(lambda x: x.data.momenta).set(new_momenta)
+        assert new_momenta.shape == entries.data.momenta.shape
+        return entries_lens.focus(lambda x: x.data.momenta).set(new_momenta)
 
 
 @runtime_checkable
@@ -354,7 +356,9 @@ class StochasticStep[State, Key: SupportsSorting](Propagator[State]):
         Key: Table key type (e.g. :class:`ParticleId`, :class:`GroupId`).
 
     Attributes:
-        particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, masses $m$)
+        entries: Lens to get/set the indexed table whose momenta are
+            thermostatted (atoms in atomic MD, rigid groups in rigid-body
+            MD). Each entry must expose ``momenta``, ``masses``, ``system``.
         system: View to extract system data (time step $\\Delta t$, temperature $T$,
             friction coefficient $\\gamma$)
 
@@ -365,9 +369,7 @@ class StochasticStep[State, Key: SupportsSorting](Propagator[State]):
         DOI: 10.1093/amrx/abs010
     """
 
-    particles: Lens[State, Table[Key, IsStochasticParticleData]] = field(
-        static=True
-    )
+    entries: Lens[State, Table[Key, IsStochasticParticleData]] = field(static=True)
     system: View[State, Table[SystemId, _StochasticSysData]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -380,33 +382,28 @@ class StochasticStep[State, Key: SupportsSorting](Propagator[State]):
         Returns:
             Updated state with thermostated momenta
         """
-        # Extract current state
-        particle_lens = self.particles.bind(state)
-        particles = particle_lens.get()
-        sys = self.system(state)[particles.data.system]
-        # kT: thermal energy [energy]
-        thermal_energy_per_particle = sys.temperature * BOLTZMANN_CONSTANT
+        entries_lens = self.entries.bind(state)
+        entries = entries_lens.get()
+        sys = self.system(state)[entries.data.system]
+        thermal_energy_per_entry = sys.temperature * BOLTZMANN_CONSTANT
         # Ornstein-Uhlenbeck coefficients
-        # c₁ = e^(-γΔt) [dimensionless]
+        # c₁ = e^(-γΔt)
         damping_factor = jax.numpy.exp(-sys.friction_coefficient * sys.time_step)
-        # c₂ = √(kT(1-e^(-2γΔt))) [√energy]
+        # c₂ = √(kT(1-e^(-2γΔt)))
         noise_amplitude = jax.numpy.sqrt(
-            thermal_energy_per_particle * (1 - damping_factor**2)
+            thermal_energy_per_entry * (1 - damping_factor**2)
         )
 
-        # η ~ N(0,1) [dimensionless]
-        noise = sample_like(jax.random.normal, key, particles.data.momenta)
+        noise = sample_like(jax.random.normal, key, entries.data.momenta)
 
         # Exact OU solution: p_new = c₁·p + c₂·√m·η
         new_momenta = (
-            damping_factor[..., None] * particles.data.momenta
-            + (noise_amplitude * jnp.sqrt(particles.data.masses))[..., None] * noise
+            damping_factor[..., None] * entries.data.momenta
+            + (noise_amplitude * jnp.sqrt(entries.data.masses))[..., None] * noise
         )
 
-        assert new_momenta.shape == particles.data.momenta.shape
-        return (
-            self.particles.bind(state).focus(lambda p: p.data.momenta).set(new_momenta)
-        )
+        assert new_momenta.shape == entries.data.momenta.shape
+        return entries_lens.focus(lambda p: p.data.momenta).set(new_momenta)
 
 
 def make_baoab_langevin_step[State](
@@ -703,21 +700,25 @@ class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]
 
     Type Parameters:
         State: Simulation state type
+        Key: Table key type (e.g. :class:`ParticleId` for atomic NPT,
+            :class:`GroupId` for rigid-body NPT).
 
     Attributes:
-        particles: Lens to atomic particle data. Used by the default kinetic
-            energy and stress views. Also supplies the index assigning each
-            scaled position to a system.
+        entries: Lens to the indexed table that owns the kinetic/virial data
+            and supplies a fallback per-element system index. For atomic NPT
+            this is the particle table; for rigid NPT it is the per-group
+            table whose COM positions are rescaled.
         systems: Lens to per-system parameters and unit cell.
         scaled_index: View returning the per-element system index for the
-            position field that gets rescaled. Default: ``particles.data.system``.
-        position_lens: Lens onto the position array to rescale. Default:
-            atomic ``particles.data.positions``.
+            position field that gets rescaled. Defaults to ``entries.data.system``.
+        position_lens: Lens onto the position array to rescale. Defaults to
+            ``entries.data.positions``.
         kinetic_energy_view: View returning per-system kinetic energy used in
-            the pressure expression. Default: atomic kinetic energy.
+            the pressure expression. Defaults to the atomic-style kinetic
+            energy from ``entries``.
         stress_view: View returning the per-system Cauchy stress (3×3) used in
-            the pressure expression. Default: atomic virial via
-            ``stress_via_virial_theorem``.
+            the pressure expression. Defaults to ``stress_via_virial_theorem``
+            applied to ``entries``.
 
     References:
         Bernetti, M., & Bussi, G. (2020). Pressure control using stochastic
@@ -725,9 +726,7 @@ class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]
         DOI: 10.1063/5.0020514
     """
 
-    particles: Lens[State, Table[Key, _BarostatParticleData]] = field(
-        static=True
-    )
+    entries: Lens[State, Table[Key, _BarostatParticleData]] = field(static=True)
     systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
         static=True
     )
@@ -739,32 +738,32 @@ class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]
     def _resolved_position_lens(self) -> Lens[State, Array]:
         if self.position_lens is not None:
             return self.position_lens
-        return self.particles.focus(lambda p: p.data.positions)
+        return self.entries.focus(lambda p: p.data.positions)
 
-    def _resolved_scaled_index(self, state: State) -> Any:
+    def _resolved_scaled_index(self, state: State) -> "Index[SystemId]":
         if self.scaled_index is not None:
             return self.scaled_index(state)
-        return self.particles.get(state).data.system
+        return self.entries.get(state).data.system
 
     def _resolved_kinetic_energy(self, state: State) -> Array:
         if self.kinetic_energy_view is not None:
             return self.kinetic_energy_view(state)
-        particles = self.particles.get(state)
-        per_particle_ke = particle_kinetic_energy(
-            particles.data.momenta, particles.data.masses
+        entries = self.entries.get(state)
+        per_entry_ke = particle_kinetic_energy(
+            entries.data.momenta, entries.data.masses
         )
         return jax.ops.segment_sum(
-            per_particle_ke,
-            particles.data.system.indices,
-            particles.data.system.num_labels,
+            per_entry_ke,
+            entries.data.system.indices,
+            entries.data.system.num_labels,
         )
 
     def _resolved_stress(self, state: State) -> Array:
         if self.stress_view is not None:
             return self.stress_view(state)
-        particles = self.particles.get(state)
+        entries = self.entries.get(state)
         systems = self.systems.get(state)
-        return stress_via_virial_theorem(particles, systems).data
+        return stress_via_virial_theorem(entries, systems).data
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply stochastic cell rescaling for pressure control."""
