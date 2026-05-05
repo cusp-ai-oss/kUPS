@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Protocol
 
 import jax
-import jax.numpy as jnp
 from jax import Array
 
 from kups.application.mcmc.data import MotifParticles
@@ -22,6 +21,7 @@ from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import GroupId, MotifParticleId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.rigid_body import per_group_kinetic_energy
 
 
 class HasRigidMDData(Protocol):
@@ -36,14 +36,9 @@ class HasRigidMDData(Protocol):
 def _per_group_kinetic_energy(groups: Table[GroupId, MDRigidGroup]) -> Array:
     """Translational + rotational KE per group, shape ``(n_groups,)``."""
     g = groups.data
-    ke_trans = 0.5 * jnp.sum(g.momenta**2, axis=-1) / g.masses
-    l_body = g.angular_momentum @ g.quaternion.inv()
-    per_axis = jnp.where(
-        jnp.isfinite(g.inertia_diag),
-        l_body**2 / (2.0 * g.inertia_diag),
-        0.0,
+    return per_group_kinetic_energy(
+        g.momenta, g.masses, g.angular_momentum, g.quaternion, g.inertia_diag
     )
-    return ke_trans + jnp.sum(per_axis, axis=-1)
 
 
 @dataclass

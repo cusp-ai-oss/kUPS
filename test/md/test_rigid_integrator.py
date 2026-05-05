@@ -47,7 +47,7 @@ from kups.md.rigid import (
 )
 from kups.potential.classical.ewald import EwaldParameters, make_ewald_from_state
 from kups.potential.classical.lennard_jones import (
-    LennardJonesParameters,
+    GlobalTailCorrectedLennardJonesParameters,
     make_lennard_jones_from_state,
 )
 
@@ -281,10 +281,11 @@ def _build_water_state(
         params,
     )
 
-    lj_params = LennardJonesParameters.from_dict(
+    lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
         cutoff=cutoff,
         parameters={"Ow": (3.1589, 0.008031), "Hw": (None, None), "Mw": (None, None)},
         mixing_rule="lorentz_berthelot",
+        tail_correction=False,
     )
     ewald_params = EwaldParameters.make(
         particles, systems, epsilon_total=1e-4, real_cutoff=cutoff,

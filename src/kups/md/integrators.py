@@ -467,8 +467,9 @@ class _CSVRSystemData(
 ): ...
 
 
-@runtime_checkable
-class IsCSVRParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
+IsCSVRParticleData = IsStochasticEntryData
+"""Alias kept for backwards compatibility; structurally identical to
+:class:`IsStochasticEntryData`."""
 
 
 def csvr_scale_factor(

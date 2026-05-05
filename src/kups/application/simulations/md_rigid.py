@@ -43,9 +43,10 @@ from kups.core.typing import GroupId, MotifParticleId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
 from kups.potential.classical.ewald import EwaldParameters, make_ewald_from_state
 from kups.potential.classical.lennard_jones import (
-    LennardJonesParameters,
+    GlobalTailCorrectedLennardJonesParameters,
     MixingRule,
     make_lennard_jones_from_state,
+    make_lennard_jones_tail_correction_from_state,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -58,6 +59,9 @@ class LjConfig(BaseModel):
     cutoff: float
     parameters: dict[str, tuple[float | None, float | None]]
     mixing_rule: MixingRule
+    tail_correction: bool = False
+    """If True, add the analytical long-range LJ tail correction. Required for
+    quantitative density at typical (8-10 Å) cutoffs against canonical TIP4P/2005."""
 
 
 class EwaldConfig(BaseModel):
@@ -96,7 +100,7 @@ class RigidMdState:
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
     step: Array
-    lj_parameters: LennardJonesParameters
+    lj_parameters: GlobalTailCorrectedLennardJonesParameters
     ewald_parameters: EwaldParameters
 
     @property
@@ -123,10 +127,11 @@ def init_state(key: Array, config: Config) -> RigidMdState:
         box_size,
         config.md,
     )
-    lj_params = LennardJonesParameters.from_dict(
+    lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
         cutoff=config.lj.cutoff,
         parameters=config.lj.parameters,
         mixing_rule=config.lj.mixing_rule,
+        tail_correction=config.lj.tail_correction,
     )
     ewald_params = EwaldParameters.make(
         particles,
@@ -166,6 +171,9 @@ def run(config: Config) -> RigidMdState:
             include_exclusion_mask=True,
         ),
         make_lennard_jones_from_state(
+            state_lens, compute_position_and_unitcell_gradients=True
+        ),
+        make_lennard_jones_tail_correction_from_state(
             state_lens, compute_position_and_unitcell_gradients=True
         ),
     )

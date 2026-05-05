@@ -154,6 +154,42 @@ def is_linear_motif(inertia_diag: Array, tol: float = 1e-6) -> bool:
     return smallest / largest < tol
 
 
+def per_group_kinetic_energy(
+    momenta: Array,
+    masses: Array,
+    angular_momentum: Array,
+    quaternion: Quaternion,
+    inertia_diag: Array,
+) -> Array:
+    r"""Translational + rotational kinetic energy per rigid group.
+
+    $$K_g = \tfrac{1}{2}\,|\mathbf{p}_g|^2 / M_g
+         + \tfrac{1}{2}\sum_a (L^{\mathrm{body}}_{g,a})^2 / I_{g,a}$$
+
+    Body-frame angular momentum is recovered from $\mathbf{L}_{\mathrm{lab}}$ via
+    $\mathbf{L}_{\mathrm{body}} = \mathbf{q}^{-1} \otimes \mathbf{L}_{\mathrm{lab}}$.
+    Linear-motif symmetry axes (``inertia_diag = inf``) contribute zero.
+
+    Args:
+        momenta: COM momenta, shape ``(n_groups, 3)``.
+        masses: Total group masses, shape ``(n_groups,)``.
+        angular_momentum: Lab-frame angular momenta, shape ``(n_groups, 3)``.
+        quaternion: Per-group orientation, batched ``(n_groups,)``.
+        inertia_diag: Body-frame principal moments, shape ``(n_groups, 3)``.
+
+    Returns:
+        Per-group total kinetic energy, shape ``(n_groups,)``.
+    """
+    ke_trans = 0.5 * jnp.sum(momenta**2, axis=-1) / masses
+    l_body = angular_momentum @ quaternion.inv()
+    per_axis = jnp.where(
+        jnp.isfinite(inertia_diag),
+        l_body**2 / (2.0 * inertia_diag),
+        0.0,
+    )
+    return ke_trans + jnp.sum(per_axis, axis=-1)
+
+
 def initial_inertia_for_dynamics(
     inertia_diag: Array, *, linear_axis_tol: float = 1e-6
 ) -> Array:

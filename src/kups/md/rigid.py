@@ -63,6 +63,7 @@ from kups.core.utils.quaternion import Quaternion
 from kups.core.utils.random import sample_like
 from kups.core.utils.rigid_body import (
     aggregate_forces,
+    per_group_kinetic_energy,
     reconstruct_atom_positions,
 )
 from kups.md.integrators import (
@@ -97,17 +98,8 @@ class _RotationalDriftData(
     HasInertiaDiag,
     HasSystemIndex,
     Protocol,
-): ...
-
-
-@runtime_checkable
-class _RotationalOUData(
-    HasQuaternion,
-    HasAngularMomentum,
-    HasInertiaDiag,
-    HasSystemIndex,
-    Protocol,
-): ...
+):
+    """Per-group fields needed by both NO_SQUISH drift and body-frame OU."""
 
 
 @runtime_checkable
@@ -205,7 +197,6 @@ class _RigidCSVRSystemData(
 
 @runtime_checkable
 class _RigidNPTSystemData(
-    _RigidStochasticSysData,
     _RigidCSVRSystemData,
     HasTargetPressure,
     HasPressureCouplingTime,
@@ -213,8 +204,29 @@ class _RigidNPTSystemData(
     HasMinimumScaleFactor,
     Protocol,
 ):
+    """What :class:`RigidStochasticCellRescalingStep` and the rigid NPT
+    factory actually need. Notably *not* :class:`HasFrictionCoefficient`:
+    NPT-CSVR does not use Langevin friction.
+    """
+
     @property
     def unitcell_gradients(self) -> UnitCell: ...
+
+
+@runtime_checkable
+class _RigidAnyIntegratorSysData(
+    _RigidNPTSystemData,
+    _RigidStochasticSysData,
+    Protocol,
+):
+    """Union of every per-system field the rigid integrator dispatch may read.
+
+    ``IsRigidMdState.systems`` declares this so :func:`make_rigid_md_step_from_state`
+    can route to any of the four rigid integrators from a single state shape.
+    Individual integrator factories take the narrower protocol they actually
+    need (e.g. :class:`_RigidVerletSysData` for NVE, :class:`_RigidNPTSystemData`
+    for NPT-CSVR).
+    """
 
 
 def _rotate_quaternion_l_about_axis(
@@ -388,7 +400,7 @@ class RigidRotationalStochasticStep[State](Propagator[State]):
     axis) are not stochastically refreshed (their target variance is zero).
     """
 
-    groups: Lens[State, Table[GroupId, _RotationalOUData]] = field(static=True)
+    groups: Lens[State, Table[GroupId, _RotationalDriftData]] = field(static=True)
     systems: View[State, Table[SystemId, _RigidStochasticSysData]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -447,22 +459,13 @@ class RigidCSVRStep[State](Propagator[State]):
         groups = groups_lens.get()
         systems = self.systems(state)
 
-        # Translational KE per group
-        ke_trans = 0.5 * jnp.sum(groups.data.momenta**2, axis=-1) / groups.data.masses
-
-        # Rotational KE per group (body frame avoids quaternion-of-quaternion ops)
-        l_body = _l_body_from_l_lab(
-            groups.data.quaternion, groups.data.angular_momentum
+        ke_per_group = per_group_kinetic_energy(
+            groups.data.momenta,
+            groups.data.masses,
+            groups.data.angular_momentum,
+            groups.data.quaternion,
+            groups.data.inertia_diag,
         )
-        # Inf-inertia axes correctly yield zero contribution.
-        per_axis = jnp.where(
-            jnp.isfinite(groups.data.inertia_diag),
-            l_body**2 / (2.0 * groups.data.inertia_diag),
-            0.0,
-        )
-        ke_rot = jnp.sum(per_axis, axis=-1)
-
-        ke_per_group = ke_trans + ke_rot
         ke_per_system = jax.ops.segment_sum(
             ke_per_group,
             groups.data.system.indices,
@@ -776,7 +779,7 @@ class IsRigidMdState(Protocol):
     @property
     def motifs(self) -> Table[MotifParticleId, _AtomReconstructionMotifData]: ...
     @property
-    def systems(self) -> Table[SystemId, _RigidNPTSystemData]: ...
+    def systems(self) -> Table[SystemId, _RigidAnyIntegratorSysData]: ...
 
 
 def make_rigid_md_step_from_state[State](

@@ -115,7 +115,7 @@ def _molecular_stress_via_virial_theorem(
     ).data
     stress = 0.5 * (stress + stress.mT)
     stress -= system_lattice_vectors.mT @ lattice_vector_gradients
-    stress /= system_volume[:1][:, None, None]
+    stress /= system_volume[:, None, None]
     return stress
 
 
