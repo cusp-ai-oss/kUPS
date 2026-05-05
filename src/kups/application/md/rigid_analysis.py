@@ -76,7 +76,6 @@ class RigidMDAnalysisResult:
         energy_drift: Linear drift slope of total energy (eV/step).
         energy_drift_per_atom: Drift normalised by atom count.
         n_atoms: Number of atoms.
-        n_groups: Number of rigid groups in this system.
         degrees_of_freedom: DOF used for the kinetic temperature.
         n_steps: Number of production steps analysed.
     """
@@ -90,7 +89,6 @@ class RigidMDAnalysisResult:
     energy_drift: float
     energy_drift_per_atom: float
     n_atoms: int
-    n_groups: int
     degrees_of_freedom: float
     n_steps: int
 
@@ -101,7 +99,6 @@ def _analyze_single_system(
     stress_tensor: Array,
     volume: Array,
     n_atoms: int,
-    n_groups: int,
     dof: float,
     n_blocks: int | None,
 ) -> RigidMDAnalysisResult:
@@ -138,7 +135,6 @@ def _analyze_single_system(
         energy_drift=float(slope),
         energy_drift_per_atom=float(slope) / max(n_atoms, 1),
         n_atoms=n_atoms,
-        n_groups=n_groups,
         degrees_of_freedom=dof,
         n_steps=n_steps,
     )
@@ -172,7 +168,6 @@ def analyze_rigid_md(
             stress_tensor=step_data.stress_tensor[:, i],
             volume=step_data.volume[:, i],
             n_atoms=int(n_atoms_per_system[i]),
-            n_groups=int(getattr(step_data, "_n_groups", 0)) or 0,
             dof=float(dofs[i]),
             n_blocks=n_blocks,
         )

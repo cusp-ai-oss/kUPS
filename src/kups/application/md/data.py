@@ -367,7 +367,9 @@ def _canonicalise_motif(
     """Re-centre a motif to its COM and rotate to its principal-axis frame.
 
     Returns:
-        Tuple of (canonical_positions, masses, charges, inertia_diag, is_linear).
+        Tuple ``(canonical_positions, masses, charges, inertia_for_dynamics,
+        is_linear)``. ``inertia_for_dynamics`` carries ``inf`` on the symmetry
+        axis of linear motifs to freeze the missing rotational DOF.
     """
     positions = jnp.asarray(adsorbate.positions, dtype=float)
     masses = jnp.asarray(adsorbate.masses, dtype=float)

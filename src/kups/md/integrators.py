@@ -326,7 +326,7 @@ def make_velocity_verlet_step[State](
 
 
 @runtime_checkable
-class IsStochasticParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
+class IsStochasticEntryData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
 
 
 @runtime_checkable
@@ -369,7 +369,7 @@ class StochasticStep[State, Key: SupportsSorting](Propagator[State]):
         DOI: 10.1093/amrx/abs010
     """
 
-    entries: Lens[State, Table[Key, IsStochasticParticleData]] = field(static=True)
+    entries: Lens[State, Table[Key, IsStochasticEntryData]] = field(static=True)
     system: View[State, Table[SystemId, _StochasticSysData]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
@@ -670,7 +670,7 @@ class _StochasticCellRescalingSystemData(
 
 
 @runtime_checkable
-class _BarostatParticleData(_MDParticleData, Protocol): ...
+class _BarostatEntryData(_MDParticleData, Protocol): ...
 
 
 @dataclass
@@ -726,7 +726,7 @@ class StochasticCellRescalingStep[State, Key: SupportsSorting](Propagator[State]
         DOI: 10.1063/5.0020514
     """
 
-    entries: Lens[State, Table[Key, _BarostatParticleData]] = field(static=True)
+    entries: Lens[State, Table[Key, _BarostatEntryData]] = field(static=True)
     systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
         static=True
     )
@@ -833,7 +833,7 @@ class IsCSVRNPTSystemData(
 
 
 def make_csvr_npt_step[State](
-    particles: Lens[State, Table[ParticleId, _BarostatParticleData]],
+    particles: Lens[State, Table[ParticleId, _BarostatEntryData]],
     systems: Lens[State, Table[SystemId, IsCSVRNPTSystemData]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
