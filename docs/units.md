@@ -1,4 +1,4 @@
-# 📐 Units & Constants
+# Units & Constants
 
 <em>k</em>UPS uses a consistent unit system optimized for molecular simulations:
 

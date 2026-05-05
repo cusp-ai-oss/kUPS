@@ -1,3 +1,7 @@
+---
+icon: lucide/house
+---
+
 # Handbook
 
 A tour of the primitives <em>k</em>UPS is built from. Each chapter covers one primitive: what it is and why it's included in the design.

@@ -132,15 +132,15 @@ nav:
   - Simulations: simulations.md
   - Handbook:
     - Overview: handbook.md
-    - 1. Tables: notebooks/tables.md
-    - 2. Lenses: notebooks/lens.md
-    - 3. Runtime Assertions: notebooks/runtime_assertions.md
-    - 4. Propagators: notebooks/propagators.md
-    - 5. Conventions: notebooks/conventions.md
-    - 6. Patches: notebooks/patches.md
-    - 7. Neighbor Lists: notebooks/neighborlist.md
-    - 8. Potentials: notebooks/potentials.md
-    - 9. Monte Carlo Moves: notebooks/mc_moves.md
-    - 10. Logging: notebooks/logging.md
+    - Tables: notebooks/tables.md
+    - Lenses: notebooks/lens.md
+    - Runtime Assertions: notebooks/runtime_assertions.md
+    - Propagators: notebooks/propagators.md
+    - Conventions: notebooks/conventions.md
+    - Patches: notebooks/patches.md
+    - Neighbor Lists: notebooks/neighborlist.md
+    - Potentials: notebooks/potentials.md
+    - Monte Carlo Moves: notebooks/mc_moves.md
+    - Logging: notebooks/logging.md
   - Units: units.md
   - Troubleshooting: troubleshooting.md
