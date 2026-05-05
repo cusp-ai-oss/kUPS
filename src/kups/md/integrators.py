@@ -670,7 +670,11 @@ class _StochasticCellRescalingSystemData(
 
 
 @runtime_checkable
-class _BarostatEntryData(_MDParticleData, Protocol): ...
+class _BarostatEntryData(
+    HasMomenta, HasPositions, HasForces, HasMasses, HasSystemIndex, Protocol
+):
+    @property
+    def position_gradients(self) -> Array: ...
 
 
 @dataclass

@@ -2,9 +2,6 @@
 # Velocity-Verlet integrator, no thermostat. Use with md_water_tip4p_common.yaml.
 md:
   time_step: 0.5
-  friction_coefficient: 0.0
-  pressure_coupling_time: 1.0e10
-  minimum_scale_factor: 1.0
   integrator: rigid_verlet
 
 run:

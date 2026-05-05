@@ -1,8 +1,6 @@
 # Rigid-body NVT MD for TIP4P/2005 at 298 K (CSVR thermostat, fixed volume).
 # Use with md_water_tip4p_common.yaml.
 md:
-  pressure_coupling_time: 1.0e10
-  minimum_scale_factor: 1.0
   integrator: rigid_csvr
 
 run:
