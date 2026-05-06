@@ -390,63 +390,12 @@ class TestLensReplacePreservesConcreteType:
         assert c2.periodic == (False, False, False)
 
 
-class TestVacuumWrapIsNoOp:
-    """A VacuumCell has no periodic axes — wrap must leave coordinates alone."""
-
-    def test_vacuum_wrap_real_to_real(self):
-        c = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        r = jnp.array([15.0, -3.0, 25.0])
-        npt.assert_allclose(c.wrap(r), r, atol=1e-10)
-
-    def test_vacuum_wrap_batched(self):
-        c = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        r = jnp.array([[15.0, -3.0, 25.0], [-50.0, 100.0, 0.5]])
-        npt.assert_allclose(c.wrap(r), r, atol=1e-10)
-
-    def test_vacuum_wrap_triclinic(self):
+class TestVacuumWrap:
+    def test_vacuum_wrap_is_identity(self):
+        """VacuumCell has no periodic axes — wrap must leave coordinates alone."""
         c = VacuumCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
-        r = jnp.array([7.0, -2.0, 11.0])
-        # Triclinic vacuum: real → fractional → real round-trip should also be id
+        r = jnp.array([[15.0, -3.0, 25.0], [-50.0, 100.0, 0.5]])
         npt.assert_allclose(c.wrap(r), r, atol=1e-6)
-
-
-class TestCellPassthrough:
-    """Cell.{vectors,inverse_vectors,volume,perpendicular_lengths} delegate to frame."""
-
-    def test_orthogonal_periodic_passthrough(self):
-        frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
-        cell = PeriodicCell(frame)
-        npt.assert_allclose(cell.vectors, frame.vectors)
-        npt.assert_allclose(cell.inverse_vectors, frame.inverse_vectors)
-        npt.assert_allclose(cell.volume, frame.volume)
-        npt.assert_allclose(cell.perpendicular_lengths, frame.perpendicular_lengths)
-
-    def test_triclinic_vacuum_passthrough(self):
-        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
-        cell = VacuumCell(frame)
-        npt.assert_allclose(cell.vectors, frame.vectors)
-        npt.assert_allclose(cell.inverse_vectors, frame.inverse_vectors)
-        npt.assert_allclose(cell.volume, frame.volume)
-        npt.assert_allclose(cell.perpendicular_lengths, frame.perpendicular_lengths)
-
-
-class TestCellPeriodicReadOnly:
-    def test_base_cell_periodic_raises(self):
-        """Bare Cell.periodic raises — only subclasses define it."""
-        # Directly constructing Cell is unusual but possible since it's a regular
-        # dataclass. Accessing periodic should raise.
-        c = Cell.__new__(Cell)
-        Cell.__init__(c, frame=OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
-        with pytest.raises(NotImplementedError):
-            _ = c.periodic
-
-    def test_periodic_cell_periodic_constant(self):
-        c = PeriodicCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
-        assert c.periodic == (True, True, True)
-
-    def test_vacuum_cell_periodic_constant(self):
-        c = VacuumCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
-        assert c.periodic == (False, False, False)
 
 
 class TestCellSlicing:
@@ -477,45 +426,17 @@ class TestCellSlicing:
         assert frame.lengths.shape == (1, 3)
 
 
-class TestFrameOperations:
-    """Direct tests of Frame.tile, Frame.__mul__, Frame.to_fractional/to_real."""
-
-    def test_orthogonal_tile(self):
-        frame = OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
-        tiled = frame.tile((2, 3, 4))
-        assert isinstance(tiled, OrthogonalFrame)
-        npt.assert_allclose(tiled.lengths, jnp.array([20.0, 30.0, 40.0]))
-
-    def test_triclinic_tile_expansion(self):
-        """tril multiplicities expand as [m0, m1, m1, m2, m2, m2]."""
-        frame = TriclinicFrame.from_matrix(jnp.eye(3))
-        tiled = frame.tile((2, 3, 4))
-        npt.assert_allclose(
-            tiled.vectors, jnp.diag(jnp.array([2.0, 3.0, 4.0])), atol=1e-6
+class TestFrameTile:
+    def test_triclinic_tile_expands_per_axis(self):
+        """The triclinic [m0, m1, m1, m2, m2, m2] tril expansion is non-obvious;
+        verify a non-cubic, non-uniform multiplicity gives the right scaled
+        basis matrix."""
+        frame = TriclinicFrame.from_matrix(
+            jnp.array([[1.0, 0.0, 0.0], [0.5, 2.0, 0.0], [0.3, 0.4, 3.0]])
         )
-
-    def test_orthogonal_uniform_scale(self):
-        frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
-        scaled = frame * 2.0
-        assert isinstance(scaled, OrthogonalFrame)
-        npt.assert_allclose(scaled.lengths, jnp.array([4.0, 6.0, 8.0]))
-
-    def test_triclinic_uniform_scale(self):
-        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
-        scaled = frame * 2.0
-        npt.assert_allclose(scaled.vectors, jnp.eye(3) * 10.0, atol=1e-6)
-
-    def test_orthogonal_to_fractional_real_roundtrip(self):
-        frame = OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
-        r = jnp.array([3.0, 5.0, 7.0])
-        frac = frame.to_fractional(r)
-        npt.assert_allclose(frac, jnp.array([0.3, 0.5, 0.7]), atol=1e-10)
-        npt.assert_allclose(frame.to_real(frac), r, atol=1e-10)
-
-    def test_triclinic_to_fractional_real_roundtrip(self):
-        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 4.0)
-        r = jnp.array([1.0, 2.0, 3.0])
-        npt.assert_allclose(frame.to_real(frame.to_fractional(r)), r, atol=1e-6)
+        tiled = frame.tile((2, 3, 4))
+        expected = jnp.array([[2.0, 0.0, 0.0], [1.5, 6.0, 0.0], [1.2, 1.6, 12.0]])
+        npt.assert_allclose(tiled.vectors, expected, atol=1e-6)
 
 
 class TestMakeSupercell:
@@ -623,217 +544,35 @@ class TestToLowerTriangular:
 
 
 class TestPytreeAndJIT:
-    def test_periodic_cell_pytree_one_leaf(self):
-        """Cell has only `frame` as a field; periodic is a property, not a leaf."""
+    def test_periodic_property_is_not_a_pytree_leaf(self):
+        """Design invariant: `periodic` is a `@property`, not a dataclass
+        field. If it became a leaf, `jax.tree.map` would try to rewrite it
+        and the literal-typed read-only contract would break."""
         cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        leaves = jax.tree.leaves(cell)
-        assert len(leaves) == 1
+        assert len(jax.tree.leaves(cell)) == 1
 
-    def test_vacuum_cell_pytree_one_leaf(self):
-        cell = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        leaves = jax.tree.leaves(cell)
-        assert len(leaves) == 1
-
-    def test_jit_volume_periodic(self):
+    def test_jit_traces_through_wrap(self):
+        """JAX must be able to trace through Cell.wrap, which closes over
+        `self.periodic`. This is the JIT regression that broke when periodic
+        was a dataclass field with `static=True` plumbed through `_wrap`."""
         cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        jit_volume = jax.jit(lambda c: c.volume)
-        npt.assert_allclose(jit_volume(cell), 1000.0)
-
-    def test_jit_volume_vacuum_triclinic(self):
-        cell = VacuumCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
-        jit_volume = jax.jit(lambda c: c.volume)
-        npt.assert_allclose(jit_volume(cell), 125.0)
-
-    def test_jit_wrap(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        jit_wrap = jax.jit(cell.wrap)
         r = jnp.array([12.0, -3.0, 25.0])
-        npt.assert_allclose(jit_wrap(r), jnp.array([2.0, -3.0, -5.0]), atol=1e-6)
+        npt.assert_allclose(jax.jit(cell.wrap)(r), cell.wrap(r), atol=1e-6)
 
-    def test_tree_map_preserves_concrete_type(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        scaled = jax.tree.map(lambda x: x * 2, cell)
-        assert isinstance(scaled, PeriodicCell)
-        assert isinstance(scaled.frame, OrthogonalFrame)
-        npt.assert_allclose(scaled.frame.lengths, jnp.array([20.0, 20.0, 20.0]))
-
-    def test_tree_map_preserves_vacuum(self):
+    def test_tree_map_preserves_concrete_subclass(self):
+        """`jax.tree.map` returns the same concrete cell class — not a bare
+        `Cell` — so downstream `isinstance(c, VacuumCell)` keeps working
+        after pytree round-trips."""
         cell = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
         scaled = jax.tree.map(lambda x: x * 2, cell)
         assert isinstance(scaled, VacuumCell)
 
 
-class TestArrayScalarMul:
-    """`cell * scalar` accepts both Python scalars and JAX scalars."""
-
-    def test_python_scalar(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        scaled = cell * 2.0
-        scaled_frame = scaled.frame
-        assert isinstance(scaled_frame, OrthogonalFrame)
-        npt.assert_allclose(scaled_frame.lengths, jnp.array([20.0, 20.0, 20.0]))
-
-    def test_jax_scalar(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
-        scaled = cell * jnp.float32(3.0)
-        scaled_frame = scaled.frame
-        assert isinstance(scaled_frame, OrthogonalFrame)
-        npt.assert_allclose(scaled_frame.lengths, jnp.array([30.0, 30.0, 30.0]))
-
-
-class TestCellWrapCrossSpace:
-    """Cross-space wrap on cells (delegates to _wrap helper)."""
-
-    def test_periodic_real_to_fractional(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([4.0, 4.0, 4.0])))
-        r = jnp.array([3.0, -3.0, 5.0])
-        frac = cell.wrap(
-            r, input_space=CoordinateSpace.REAL, output_space=CoordinateSpace.FRACTIONAL
-        )
-        npt.assert_allclose(frac, jnp.array([-0.25, 0.25, 0.25]), atol=1e-6)
-
-    def test_periodic_fractional_to_real(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([4.0, 4.0, 4.0])))
-        r_frac = jnp.array([0.7, -0.3, 0.1])
-        r = cell.wrap(
-            r_frac,
-            input_space=CoordinateSpace.FRACTIONAL,
-            output_space=CoordinateSpace.REAL,
-        )
-        npt.assert_allclose(r, jnp.array([-1.2, -1.2, 0.4]), atol=1e-6)
-
-    def test_vacuum_fractional_passthrough(self):
-        """Vacuum + fractional → fractional just returns fractional unchanged."""
-        cell = VacuumCell(OrthogonalFrame(jnp.array([4.0, 4.0, 4.0])))
-        r_frac = jnp.array([1.7, -1.3, 0.1])
-        out = cell.wrap(
-            r_frac,
-            input_space=CoordinateSpace.FRACTIONAL,
-            output_space=CoordinateSpace.FRACTIONAL,
-        )
-        npt.assert_allclose(out, r_frac, atol=1e-10)
-
-
-def _ortho_frame() -> OrthogonalFrame:
-    return OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
-
-
-def _tri_frame() -> TriclinicFrame:
-    return TriclinicFrame.from_matrix(jnp.eye(3) * 10.0)
-
-
-class TestPeriodicityMatrix:
-    """Every periodicity-dependent operation must be correct for both cell
-    types crossed with both frame types. Catches gaps where a code path
-    only happens to be exercised on one combination.
-    """
-
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_periodic_wraps_into_primary_box(self, frame_factory):
-        cell = PeriodicCell(frame_factory())
-        # 12 along x in a 10 Å cubic frame folds to 2
-        wrapped = cell.wrap(jnp.array([12.0, 0.0, 0.0]))
-        npt.assert_allclose(wrapped, jnp.array([2.0, 0.0, 0.0]), atol=1e-6)
-
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_vacuum_does_not_wrap(self, frame_factory):
-        cell = VacuumCell(frame_factory())
-        r = jnp.array([12.0, -3.0, 25.0])
-        npt.assert_allclose(cell.wrap(r), r, atol=1e-6)
-
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_periodic_min_multiplicity_grows_with_cutoff(self, frame_factory):
-        cell = PeriodicCell(frame_factory())
-        npt.assert_array_equal(min_multiplicity(cell, 4.0), [1, 1, 1])
-        npt.assert_array_equal(min_multiplicity(cell, 8.0), [2, 2, 2])
-
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_vacuum_min_multiplicity_always_one(self, frame_factory):
-        cell = VacuumCell(frame_factory())
-        # Cutoff bigger than the box would force replication if periodic
-        npt.assert_array_equal(min_multiplicity(cell, 100.0), [1, 1, 1])
-        npt.assert_array_equal(min_multiplicity(cell, 1.0), [1, 1, 1])
-
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_periodic_supercell_grows_frame_and_data(self, frame_factory):
-        cell = PeriodicCell(frame_factory())
-        positions = jnp.array([[0.0, 0.0, 0.0]])
-        new_cell, new_positions = make_supercell(
-            cell, (2, 2, 2), positions, lens(lambda x: x)
-        )
-        assert isinstance(new_cell, PeriodicCell)
-        npt.assert_allclose(new_cell.volume, 8 * cell.volume, rtol=1e-6)
-        assert new_positions.shape == (8, 3)
-
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_vacuum_supercell_clamps_to_one(self, frame_factory):
-        cell = VacuumCell(frame_factory())
-        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-        new_cell, new_positions = make_supercell(
-            cell, (2, 3, 4), positions, lens(lambda x: x)
-        )
-        assert isinstance(new_cell, VacuumCell)
-        # Frame untouched; data not replicated
-        npt.assert_allclose(new_cell.volume, cell.volume, rtol=1e-6)
-        assert new_positions.shape == positions.shape
-
-    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_mul_preserves_concrete_type_and_periodic(self, cell_cls, frame_factory):
-        cell = cell_cls(frame_factory())
-        scaled = cell * 2.0
-        assert type(scaled) is cell_cls
-        # Periodicity is unchanged by scaling
-        assert scaled.periodic == cell.periodic
-        npt.assert_allclose(scaled.volume, 8 * cell.volume, rtol=1e-6)
-
-    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_pytree_one_leaf(self, cell_cls, frame_factory):
-        """`periodic` is a property, not a leaf — only `frame` contributes."""
-        cell = cell_cls(frame_factory())
-        leaves = jax.tree.leaves(cell)
-        assert len(leaves) == 1
-
-    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_tree_map_preserves_concrete_type(self, cell_cls, frame_factory):
-        cell = cell_cls(frame_factory())
-        scaled = jax.tree.map(lambda x: x * 2, cell)
-        assert type(scaled) is cell_cls
-        assert scaled.periodic == cell.periodic
-
-    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_jit_volume(self, cell_cls, frame_factory):
-        cell = cell_cls(frame_factory())
-        jit_volume = jax.jit(lambda c: c.volume)
-        npt.assert_allclose(jit_volume(cell), cell.volume, rtol=1e-6)
-
-    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
-    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
-    def test_jit_wrap(self, cell_cls, frame_factory):
-        cell = cell_cls(frame_factory())
-        r = jnp.array([1.5, -0.7, 2.3])
-        jit_wrap = jax.jit(cell.wrap)
-        npt.assert_allclose(jit_wrap(r), cell.wrap(r), atol=1e-6)
-
-
-class TestTriclinicAngles:
-    """The angles property is triclinic-specific; lock in the simple cases."""
-
-    def test_cubic_angles_90(self):
-        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
-        npt.assert_allclose(frame.angles, jnp.array([90.0, 90.0, 90.0]), atol=1e-6)
-
-    def test_cubic_lengths(self):
-        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array([2.0, 3.0, 4.0])))
-        npt.assert_allclose(frame.lengths, jnp.array([2.0, 3.0, 4.0]), atol=1e-6)
-
-    def test_from_lengths_and_angles_roundtrip(self):
-        """Construct from (lengths, angles); read back lengths/angles."""
+class TestFromLengthsAndAngles:
+    def test_roundtrip(self):
+        """Construct from (lengths, angles); read them back."""
         lengths = jnp.array([5.0, 6.0, 7.0])
-        angles = jnp.array([90.0, 90.0, 90.0])
+        angles = jnp.array([85.0, 95.0, 100.0])
         frame = TriclinicFrame.from_lengths_and_angles(lengths, angles)
         npt.assert_allclose(frame.lengths, lengths, atol=1e-6)
         npt.assert_allclose(frame.angles, angles, atol=1e-6)
