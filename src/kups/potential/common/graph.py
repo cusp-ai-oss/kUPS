@@ -4,9 +4,10 @@
 """Graph construction from atomic coordinates for potential evaluation.
 
 This module builds molecular graphs (point clouds, hypergraphs) from
-``Indexed`` particle data for potential energy evaluation. Graphs support
-periodic boundary conditions, multiple independent systems, and efficient
-incremental construction for Monte Carlo via probes.
+``Indexed`` particle data for potential energy evaluation. Graphs honor the
+cell's per-axis ``periodic`` mask via the neighbor list, support multiple
+independent systems, and allow efficient incremental construction for Monte
+Carlo via probes.
 
 Key components:
 

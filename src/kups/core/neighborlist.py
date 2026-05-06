@@ -20,7 +20,7 @@ accuracy trade-offs.
 1. **[CellListNeighborList][kups.core.neighborlist.CellListNeighborList]** (Recommended when cutoff << box size)
     - O(N) complexity using spatial hashing
     - Best when cutoff / box_size < 0.3 (cutoff much smaller than box)
-    - Requires periodic boundary conditions
+    - Honors the cell's per-axis ``periodic`` mask (bulk and bounded non-periodic)
     - Efficiency improves as cutoff/box ratio decreases
 
 2. **[DenseNearestNeighborList][kups.core.neighborlist.DenseNearestNeighborList]**
@@ -54,7 +54,8 @@ with different cutoffs or interaction rules (e.g., Lennard-Jones and Coulomb).
 ## Features
 
 All neighbor lists handle:
-- Periodic boundary conditions via shift vectors
+- Per-axis periodic / non-periodic boundaries via the cell's ``periodic`` mask
+  (shift vectors are zero on non-periodic axes)
 - Multiple systems in parallel with segmentation
 - Automatic capacity management for variable neighbor counts
 - Integration with JAX transformations (JIT, vmap, etc.)
@@ -298,8 +299,20 @@ def _cell_list_subselect(
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
 ) -> _Candidates:
-    key_positions = _wrap_coordinates(lh.data.positions)
-    query_positions = _wrap_coordinates(rh.data.positions)
+    periodic = systems.data.cell.periodic
+    fully_periodic = all(periodic)
+
+    if fully_periodic:
+        key_positions = _wrap_coordinates(lh.data.positions)
+        query_positions = _wrap_coordinates(rh.data.positions)
+    else:
+        mask = jnp.array(periodic)
+        key_positions = jnp.where(
+            mask, _wrap_coordinates(lh.data.positions), lh.data.positions
+        )
+        query_positions = jnp.where(
+            mask, _wrap_coordinates(rh.data.positions), rh.data.positions
+        )
 
     num_cells = systems.map_data(partial(_num_cells, cutoff=cutoffs))
     max_num_cells = max_num_cells.generate_assertion(
@@ -325,17 +338,31 @@ def _cell_list_subselect(
 
     # Expand neighborhood around query points: for each query, tile across stencil
     stencil = _cell_stencil(dim)
-    query_neighborhood_positions = _wrap_coordinates(
-        jax.vmap(lambda s: query_positions + s[None] / num_cells[rh.data.system])(
-            stencil
-        ).reshape(-1, dim)
-    )
+    raw_shifted = jax.vmap(
+        lambda s: query_positions + s[None] / num_cells[rh.data.system]
+    )(stencil).reshape(-1, dim)
     query_original = Index(rh.keys, jnp.tile(jnp.arange(len(rh)), len(stencil)))
     query_system = rh.data.system[query_original.indices]
-    query_neighborhood_hashes = (
-        _cell_hash(query_neighborhood_positions, num_cells[query_system])
-        + rh_system_ids[query_original.indices] * max_num_cells.size
-    )
+
+    if fully_periodic:
+        query_neighborhood_positions = _wrap_coordinates(raw_shifted)
+        query_neighborhood_hashes = (
+            _cell_hash(query_neighborhood_positions, num_cells[query_system])
+            + rh_system_ids[query_original.indices] * max_num_cells.size
+        )
+    else:
+        # On periodic axes wrap; on open axes pass through. Out-of-range stencil
+        # offsets on open axes route to cell_oob so they produce no key matches
+        # (cross-boundary candidates are excluded).
+        mask = jnp.array(periodic)
+        shifted = jnp.where(mask, _wrap_coordinates(raw_shifted), raw_shifted)
+        in_box = jnp.all((shifted >= 0) & (shifted < 1), axis=-1)
+        hashes = (
+            _cell_hash(shifted, num_cells[query_system])
+            + rh_system_ids[query_original.indices] * max_num_cells.size
+        )
+        query_neighborhood_hashes = jnp.where(in_box, hashes, cell_oob)
+
     unique_queries = jnp.unique(
         jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
         axis=0,
@@ -458,6 +485,8 @@ def _get_candidate_images(
     cells = systems.data.cell
     images = jnp.ceil(2 * cutoffs[..., None] / cells.perpendicular_lengths).astype(int)
     images = jnp.where(jnp.isfinite(cutoffs[..., None]), images, 1)
+    # Open axes contribute no images.
+    images = jnp.where(jnp.array(cells.periodic), images, 1)
     images += images % 2 == 0
     images_per_sys = jnp.prod(images, axis=-1).astype(int)
 
@@ -542,9 +571,10 @@ def _compute_distances_pbc_sq(
     systems: Table[SystemId, NeighborListSystems],
     shifts: Array | None = None,
 ) -> tuple[Array, Array]:
-    """Compute squared distances with periodic boundary conditions.
+    """Compute squared distances honoring the cell's per-axis periodicity.
 
-    If ``shifts`` is None, minimum-image shifts are computed via rounding.
+    If ``shifts`` is None, minimum-image shifts are computed via rounding on
+    periodic axes; non-periodic axes get a zero shift (no MIC fold).
     """
     lattice_vecs = systems.map_data(lambda s: s.cell.vectors)
     vecs = lattice_vecs[lh.data.system[candidates.lhs.indices]]
@@ -553,7 +583,8 @@ def _compute_distances_pbc_sq(
         - rh.data.positions[candidates.rhs.indices]
     )
     if shifts is None:
-        shifts = jnp.round(deltas)
+        periodic = jnp.array(systems.data.cell.periodic)
+        shifts = jnp.where(periodic, jnp.round(deltas), 0.0)
     deltas -= shifts
     real_deltas = triangular_3x3_matmul(vecs, deltas)
     dist_sq = jnp.einsum("...d,...d->...", real_deltas, real_deltas)
@@ -986,7 +1017,11 @@ class CellListNeighborList:
     the box size. It divides space into a grid of cells and only checks pairs in
     neighboring cells, achieving linear scaling with system size.
 
-    **Requires periodic boundary conditions** (Cell).
+    Honors the cell's per-axis ``periodic`` mask: stencil offsets that cross a
+    non-periodic face are routed to an out-of-bounds bin (no key matches), and
+    minimum-image shifts are zero on non-periodic axes. The fully-periodic path
+    is byte-identical to the original (gated at trace time on ``all(periodic)``)
+    so PBC kernels see no overhead.
 
     Complexity: O(N) for well-distributed particles where cutoff << box size.
     Efficiency improves as cutoff/box ratio decreases.
@@ -1006,7 +1041,9 @@ class CellListNeighborList:
     When to use:
         - When cutoff/box_size << 1 (cutoff much smaller than box)
         - Typically cutoff/box < 0.3 for good efficiency
-        - Periodic boundary conditions required
+        - On non-periodic axes positions must lie inside ``[0, L)`` in real
+          coordinates (the caller's invariant; out-of-range positions are
+          silently routed to the OOB bin)
 
     Example:
         ```python

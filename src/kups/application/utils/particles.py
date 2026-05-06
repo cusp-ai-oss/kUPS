@@ -13,7 +13,13 @@ import ase.io
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, to_lower_triangular
+from kups.core.cell import (
+    Cell,
+    PeriodicCell,
+    TriclinicFrame,
+    VacuumCell,
+    to_lower_triangular,
+)
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -73,7 +79,24 @@ def particles_from_ase(
     if isinstance(atoms, (str, Path)):
         atoms = next(ase.io.iread(atoms, index=-1, store_tags=True))
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    cell = PeriodicCell(TriclinicFrame.from_matrix(L))
+    pbc: tuple[bool, bool, bool] = (
+        bool(atoms.pbc[0]),
+        bool(atoms.pbc[1]),
+        bool(atoms.pbc[2]),
+    )
+    cell: Cell
+    if all(pbc):
+        cell = PeriodicCell(TriclinicFrame.from_matrix(L))
+    elif not any(pbc):
+        cell = VacuumCell(TriclinicFrame.from_matrix(L))
+    else:
+        # Mixed-axis periodicity (slab / wire) needs a runtime per-axis mask;
+        # the current Cell hierarchy only exposes the all-True / all-False
+        # literals. Reintroduce a slab-shaped cell when a real consumer lands.
+        raise NotImplementedError(
+            f"Mixed per-axis periodicity {pbc} is not supported. "
+            "Use uniform pbc=True (PeriodicCell) or pbc=False (VacuumCell)."
+        )
     # Rotate Cartesian positions into the lower-triangular frame.
     positions = uc_transform(jnp.asarray(atoms.positions))
     masses = jnp.asarray(atoms.get_masses())

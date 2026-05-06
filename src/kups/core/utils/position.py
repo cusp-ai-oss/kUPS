@@ -25,18 +25,19 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     """Compute center of mass for indexed particle groups.
 
     Calculates the center of mass for each group of particles defined by
-    group index, properly handling periodic boundary conditions. The computation
-    ensures that wrapped particles are unwrapped relative to a reference particle
-    in each group before averaging.
+    group index, honoring the cell's per-axis ``periodic`` mask. The
+    computation ensures that wrapped particles are unwrapped relative to a
+    reference particle in each group before averaging.
 
     Warning:
-        Assumes each molecular structure is smaller than half the cell size.
-        Molecules spanning more than half the box may yield incorrect results.
+        On periodic axes, assumes each molecular structure is smaller than
+        half the cell size. Structures spanning more than half the box may
+        yield incorrect results.
 
     Args:
         particles: Indexed particles, optionally supporting `HasWeights` for mass weighting.
-        cells: Cell(s) defining periodic boundary conditions. Must have
-            one cell per group.
+        cells: Cell(s) carrying lattice geometry and per-axis periodicity.
+            Must have one cell per group.
 
     Returns:
         Shape `(num_groups, 3)` containing center-of-mass positions for each group.
@@ -92,13 +93,14 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
 ) -> Array:
     """Calculate particle positions relative to their group's center of mass.
 
-    Transforms absolute particle positions to positions relative to each group's
-    center of mass, properly accounting for periodic boundary conditions.
+    Transforms absolute particle positions to positions relative to each
+    group's center of mass, honoring the cell's per-axis ``periodic`` mask
+    (periodic axes wrap; non-periodic axes pass through unchanged).
 
     Args:
         particles: Indexed particles with position and group index data. Supports
             `HasWeights` if center of mass needs to be computed.
-        cells: Cell(s) defining periodic boundaries.
+        cells: Cell(s) carrying lattice geometry and per-axis periodicity.
         center_of_masses: Optional precomputed centers of mass. If `None`,
             will be computed automatically.
 
@@ -130,12 +132,13 @@ def to_absolute_positions[P: HasPositionsAndGroupIndex](
     """Calculate absolute positions from relative positions and group COMs.
 
     Inverse operation of `to_relative_positions`. Converts positions defined
-    relative to group centers of mass back to absolute coordinates, applying
-    periodic boundary conditions.
+    relative to group centers of mass back to absolute coordinates, honoring
+    the cell's per-axis ``periodic`` mask via ``wrap`` (identity on
+    non-periodic axes).
 
     Args:
         particles: Indexed particles with relative positions and group index.
-        cells: Cell(s) defining periodic boundaries.
+        cells: Cell(s) carrying lattice geometry and per-axis periodicity.
         center_of_masses: Centers of mass for each group, shape `(num_groups, 3)`.
 
     Returns:

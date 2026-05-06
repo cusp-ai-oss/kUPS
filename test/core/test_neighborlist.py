@@ -10,7 +10,13 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import CapacityError, FixedCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
+from kups.core.cell import (
+    Cell,
+    OrthogonalFrame,
+    PeriodicCell,
+    TriclinicFrame,
+    VacuumCell,
+)
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.data.wrappers import WithIndices
@@ -1762,3 +1768,106 @@ class TestNeighborlistChanges:
         assert _extract_valid_edge_set(result.removed, N) == _extract_valid_edge_set(
             ref_removed, N
         )
+
+
+def _valid_edges_set(edges, n_particles):
+    """Return the set of (i, j) edges with both indices < n_particles."""
+    raw = edges.indices.indices
+    in_range = (raw[:, 0] < n_particles) & (raw[:, 1] < n_particles)
+    return set(tuple(p.tolist()) for p in raw[in_range])
+
+
+def _run_cell_list(positions, cell, cutoff):
+    """Run CellListNeighborList on a single-system fixture."""
+    n = len(positions)
+    lh = _make_lh(positions, jnp.zeros(n, dtype=int))
+    systems, cutoffs = _systems_from_cell(cell, jnp.array([cutoff]))
+    nl = CellListNeighborList(
+        avg_candidates=FixedCapacity(max(n * n, 8)),
+        avg_edges=FixedCapacity(max(n * n, 8)),
+        cells=FixedCapacity(512),
+        avg_image_candidates=FixedCapacity(max(n * n, 8)),
+    )
+    result = jax.jit(as_result_function(nl))(
+        lh=lh, rh=None, systems=systems, cutoffs=cutoffs, rh_index_remap=None
+    )
+    result.raise_assertion()
+    return result.value
+
+
+def _run_dense(positions, cell, cutoff):
+    """Run DenseNearestNeighborList on the same fixture, for cross-check."""
+    n = len(positions)
+    lh = _make_lh(positions, jnp.zeros(n, dtype=int))
+    systems, cutoffs = _systems_from_cell(cell, jnp.array([cutoff]))
+    nl = DenseNearestNeighborList(
+        avg_candidates=FixedCapacity(max(n * n, 8)),
+        avg_edges=FixedCapacity(max(n * n, 8)),
+        avg_image_candidates=FixedCapacity(max(n * n, 8)),
+    )
+    result = jax.jit(as_result_function(nl))(
+        lh=lh, rh=None, systems=systems, cutoffs=cutoffs, rh_index_remap=None
+    )
+    result.raise_assertion()
+    return result.value
+
+
+class TestNonPeriodicNeighborList:
+    """Cell list with all-False periodic mask (vacuum cells).
+
+    The neighbor list machinery is per-axis-mask-aware via ``cell.periodic``.
+    The current cell hierarchy exposes only the all-True (PeriodicCell) and
+    all-False (VacuumCell) literals; mixed-axis (slab / wire) geometries
+    will be re-introduced together with their cell type when a real
+    consumer lands.
+    """
+
+    def test_non_pbc_excludes_cross_boundary_pair(self):
+        """Two atoms near opposite faces should NOT be connected when periodic=(F,F,F).
+
+        With PBC the wrapped x-distance would be 1.0 (well under cutoff); without
+        PBC the real distance is 9.0 (well above cutoff). Verifies that the
+        cell list honors the open boundary.
+        """
+        L = 10.0
+        positions = jnp.array([[0.5, 5.0, 5.0], [9.5, 5.0, 5.0]])
+        cell = VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        edges = _run_cell_list(positions, cell, cutoff=2.0)
+        assert _valid_edges_set(edges, 2) == set()
+
+    def test_non_pbc_finds_in_box_pair(self):
+        """Atoms within cutoff and inside the box should still be connected."""
+        L = 10.0
+        positions = jnp.array([[4.0, 5.0, 5.0], [5.0, 5.0, 5.0]])
+        cell = VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        edges = _run_cell_list(positions, cell, cutoff=2.0)
+        assert _valid_edges_set(edges, 2) == {(0, 1), (1, 0)}
+
+    def test_non_pbc_matches_dense(self):
+        """CellListNeighborList and DenseNearestNeighborList agree on non-PBC.
+
+        Both route through ``basic_neighborlist`` so they share the masked MIC
+        and image-count paths; this locks in that the cell-list specific
+        stencil routing is consistent with the dense reference.
+        """
+        L = 12.0
+        rng = np.random.default_rng(7)
+        # 30 atoms scattered in [1, L-1] so they're safely inside the box
+        positions = jnp.asarray(rng.uniform(1.0, L - 1.0, size=(30, 3)))
+        cell = VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        cutoff = 3.5
+        cl_edges = _run_cell_list(positions, cell, cutoff)
+        dn_edges = _run_dense(positions, cell, cutoff)
+        assert _valid_edges_set(cl_edges, 30) == _valid_edges_set(dn_edges, 30)
+
+    def test_pbc_unchanged(self):
+        """Sanity: PeriodicCell output is unchanged by the per-axis trace-time gate.
+
+        Same fixture as test_non_pbc_excludes_cross_boundary_pair, but with PBC:
+        the wrapped x-distance is 1.0 → edge under PBC.
+        """
+        L = 10.0
+        positions = jnp.array([[0.5, 5.0, 5.0], [9.5, 5.0, 5.0]])
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        edges = _run_cell_list(positions, cell, cutoff=2.0)
+        assert _valid_edges_set(edges, 2) == {(0, 1), (1, 0)}
