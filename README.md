@@ -12,7 +12,7 @@
 [Documentation](https://cusp-ai-oss.github.io/kUPS/) | [Quick Start](#quick-start) | [Features](#features) | [Examples](examples/)
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-powered-orange.svg)](https://github.com/google/jax)
 
 
