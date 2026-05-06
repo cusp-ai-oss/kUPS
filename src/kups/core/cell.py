@@ -5,9 +5,9 @@
 
 A cell wraps a [Frame][kups.core.cell.Frame] (a 3D parallelepiped) and adds
 a per-axis periodicity mask. The frame itself is geometry only — the same
-frame can describe a periodic crystal's unit cell, a vacuum simulation's
-bounding box, or the bounding parallelepiped of a slab. Which interpretation
-applies is decided by the cell type that wraps the frame.
+frame can describe a periodic crystal's unit cell or a vacuum simulation's
+bounding box. Which interpretation applies is decided by the cell type that
+wraps the frame.
 
 ## Frame — geometry
 
@@ -27,13 +27,10 @@ real/fractional coordinate transforms and per-axis tiling.
 - [VacuumCell][kups.core.cell.VacuumCell]: all three axes open
   (literal ``(False, False, False)``). The frame is the simulation
   domain's bounding parallelepiped.
-- [SlabCell][kups.core.cell.SlabCell]: runtime per-axis mask, e.g.
-  ``(True, True, False)`` for a slab. The frame is mixed: a periodic
-  unit on the True axes, a bounding span on the False axes.
 
 [Cell][kups.core.cell.Cell] is generic over the periodicity literal ``P``
 so consumers can narrow on the boundary axis — e.g. an Ewald path declares
-``Cell[FullyPeriodic]`` and pyright statically rejects ``VacuumCell``.
+``Cell[Periodic3D]`` and pyright statically rejects ``VacuumCell``.
 
 Cell re-exposes the frame's geometric properties as passthrough so
 ``cell.volume``, ``cell.vectors`` etc. work directly. For frame-specific
@@ -57,7 +54,7 @@ from jax import Array
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass
 from kups.core.utils.math import triangular_3x3_det_and_inverse, triangular_3x3_matmul
 
 
@@ -73,9 +70,9 @@ class CoordinateSpace(Enum):
     FRACTIONAL = "fractional"
 
 
-type FullyPeriodic = tuple[Literal[True], Literal[True], Literal[True]]
+type Periodic3D = tuple[Literal[True], Literal[True], Literal[True]]
 type Vacuum = tuple[Literal[False], Literal[False], Literal[False]]
-type AnyMask = tuple[bool, bool, bool]
+type AnyPeriodicity = tuple[bool, bool, bool]
 
 
 class TriclinicMap(Protocol):
@@ -312,14 +309,17 @@ def _wrap(
 class Cell[P: tuple[bool, bool, bool]](Sliceable):
     """Frame plus per-axis boundary semantics.
 
-    Generic over the periodicity literal ``P``. Three concrete subclasses
-    pin ``P`` to a literal-typed tuple (PeriodicCell, VacuumCell) or leave
-    it as a runtime mask (SlabCell). All shared behavior — geometry
-    passthrough, wrap, scaling — lives on this base.
+    Generic over the periodicity literal ``P``. Concrete subclasses pin
+    ``P`` to a literal-typed tuple via a read-only ``periodic`` property
+    so construction is runtime-honest: ``PeriodicCell(frame, ...)`` rejects
+    a periodic kwarg.
     """
 
     frame: Frame
-    periodic: P = field(static=True)
+
+    @property
+    def periodic(self) -> P:
+        raise NotImplementedError
 
     @property
     def vectors(self) -> Array:
@@ -351,15 +351,12 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
 
 
 @dataclass
-class PeriodicCell(Cell[FullyPeriodic]):
-    """Cell that is periodic along all three axes.
+class PeriodicCell(Cell[Periodic3D]):
+    """Cell that is periodic along all three axes."""
 
-    The ``periodic`` field is pinned to the literal type ``FullyPeriodic``,
-    so a function declared ``Cell[FullyPeriodic]`` accepts ``PeriodicCell``
-    and rejects ``VacuumCell`` / ``SlabCell`` statically.
-    """
-
-    periodic: FullyPeriodic = field(default=(True, True, True), static=True)
+    @property
+    def periodic(self) -> Periodic3D:
+        return (True, True, True)
 
 
 @dataclass
@@ -369,16 +366,9 @@ class VacuumCell(Cell[Vacuum]):
     and any consumer that needs a domain size.
     """
 
-    periodic: Vacuum = field(default=(False, False, False), static=True)
-
-
-@dataclass
-class SlabCell(Cell[AnyMask]):
-    """Cell with a runtime per-axis periodicity mask.
-
-    For statically known fully-periodic or fully-vacuum systems, prefer
-    ``PeriodicCell`` or ``VacuumCell`` so the type system can discriminate.
-    """
+    @property
+    def periodic(self) -> Vacuum:
+        return (False, False, False)
 
 
 def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
@@ -446,11 +436,11 @@ def is_vacuum[P: tuple[bool, bool, bool]](
     return isinstance(cell, VacuumCell)
 
 
-def is_fully_periodic[P: tuple[bool, bool, bool]](
+def is_3d_periodic[P: tuple[bool, bool, bool]](
     cell: Cell[P],
-) -> TypeGuard[PeriodicCell]:
-    """``True`` iff ``cell`` is a [PeriodicCell][kups.core.cell.PeriodicCell]."""
-    return isinstance(cell, PeriodicCell)
+) -> TypeGuard[Cell[Periodic3D]]:
+    """``True`` iff ``cell`` is periodic on all three axes."""
+    return all(cell.periodic)
 
 
 def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:

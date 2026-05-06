@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import FullyPeriodic
+from kups.core.cell import Periodic3D
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import (
@@ -21,7 +21,7 @@ from kups.core.typing import (
 
 
 @runtime_checkable
-class IsIdealGasSystems(HasTemperature, HasCell[FullyPeriodic], Protocol):
+class IsIdealGasSystems(HasTemperature, HasCell[Periodic3D], Protocol):
     """Systems with temperature and cell for ideal gas pressure."""
 
 

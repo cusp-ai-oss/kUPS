@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, FullyPeriodic
+from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Index, Table
 from kups.core.typing import (
     GroupId,
@@ -35,11 +35,11 @@ class IsVirialParticles(HasPositions, HasSystemIndex, Protocol):
 
 
 @runtime_checkable
-class IsVirialSystems(HasCell[FullyPeriodic], Protocol):
+class IsVirialSystems(HasCell[Periodic3D], Protocol):
     """Systems with cell gradients ∂U/∂h."""
 
     @property
-    def cell_gradients(self) -> Cell[FullyPeriodic]: ...
+    def cell_gradients(self) -> Cell[Periodic3D]: ...
 
 
 @runtime_checkable
@@ -83,7 +83,7 @@ def _molecular_stress_via_virial_theorem(
     vector_gradients: Array,
     positions: Array,
     group: Index[GroupId],
-    group_cells: Cell[FullyPeriodic],
+    group_cells: Cell[Periodic3D],
     system: Index[SystemId],
     system_vectors: Array,
     system_volume: Array,

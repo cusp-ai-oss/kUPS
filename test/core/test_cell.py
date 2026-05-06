@@ -3,21 +3,19 @@
 
 """Tests for Frame and Cell types."""
 
-import dataclasses
-
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
 from kups.core.cell import (
     Cell,
     CoordinateSpace,
     OrthogonalFrame,
     PeriodicCell,
-    SlabCell,
     TriclinicFrame,
     VacuumCell,
-    is_fully_periodic,
+    is_3d_periodic,
     is_vacuum,
     min_multiplicity,
     to_lower_triangular,
@@ -307,16 +305,9 @@ class TestCellIsinstance:
         cell = VacuumCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
         assert isinstance(cell, Cell)
 
-    def test_slab(self):
-        cell = SlabCell(
-            OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])),
-            periodic=(True, True, False),
-        )
-        assert isinstance(cell, Cell)
-
 
 class TestCellConstructors:
-    """Runtime behavior of PeriodicCell / VacuumCell / SlabCell.
+    """Runtime behavior of PeriodicCell / VacuumCell.
 
     Type-level discrimination — that ``PeriodicCell`` is rejected where
     ``VacuumCell`` is expected and vice versa — is enforced by pyright at
@@ -340,43 +331,27 @@ class TestCellConstructors:
         assert c.periodic == (False, False, False)
         npt.assert_allclose(c.vectors, jnp.eye(3) * 2.0)
 
-    def test_slab_orthogonal(self):
-        c = SlabCell(
-            OrthogonalFrame(jnp.array([10.0, 10.0, 30.0])),
-            periodic=(True, True, False),
-        )
-        assert c.periodic == (True, True, False)
-
-    def test_slab_triclinic(self):
-        c = SlabCell(
-            TriclinicFrame.from_matrix(jnp.eye(3) * 5.0),
-            periodic=(True, True, False),
-        )
-        assert c.periodic == (True, True, False)
+    def test_periodic_rejects_periodic_kwarg(self):
+        """`periodic` is a read-only property; constructor takes only `frame`."""
+        frame = OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
+        with pytest.raises(TypeError):
+            PeriodicCell(frame, (False, False, False))  # pyright: ignore[reportCallIssue]
 
 
 class TestTypeGuards:
     def test_is_vacuum_positive(self):
         c = VacuumCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
         assert is_vacuum(c)
-        assert not is_fully_periodic(c)
+        assert not is_3d_periodic(c)
 
-    def test_is_fully_periodic_positive(self):
+    def test_is_3d_periodic_positive(self):
         c = PeriodicCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
-        assert is_fully_periodic(c)
+        assert is_3d_periodic(c)
         assert not is_vacuum(c)
-
-    def test_slab_is_neither(self):
-        c = SlabCell(
-            OrthogonalFrame(jnp.array([10.0, 10.0, 30.0])),
-            periodic=(True, True, False),
-        )
-        assert not is_vacuum(c)
-        assert not is_fully_periodic(c)
 
 
 class TestPeriodicPreservedUnderScaling:
-    """Scaling a cell must preserve its concrete type and periodicity."""
+    """Scaling a cell must preserve its concrete type."""
 
     def test_orthogonal_mul_preserves_vacuum(self):
         c = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
@@ -386,30 +361,28 @@ class TestPeriodicPreservedUnderScaling:
         assert isinstance(scaled.frame, OrthogonalFrame)
         npt.assert_allclose(scaled.frame.lengths, jnp.array([20.0, 20.0, 20.0]))
 
-    def test_triclinic_mul_preserves_slab(self):
-        c = SlabCell(
-            TriclinicFrame.from_matrix(jnp.eye(3) * 5.0),
-            periodic=(True, True, False),
-        )
+    def test_triclinic_mul_preserves_periodic(self):
+        c = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
         scaled = c * 2.0
-        assert isinstance(scaled, SlabCell)
-        assert scaled.periodic == (True, True, False)
+        assert isinstance(scaled, PeriodicCell)
+        assert scaled.periodic == (True, True, True)
 
 
-class TestDataclassReplacePreservesConcreteType:
-    def test_replace_periodic(self):
+class TestLensReplacePreservesConcreteType:
+    def test_lens_replace_periodic(self):
+        from kups.core.lens import bind
+
         c = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
         new_frame = OrthogonalFrame(jnp.array([5.0, 5.0, 5.0]))
-        c2 = dataclasses.replace(c, frame=new_frame)
+        c2 = bind(c, lambda x: x.frame).set(new_frame)
         assert isinstance(c2, PeriodicCell)
         assert c2.periodic == (True, True, True)
 
-    def test_replace_slab_keeps_runtime_periodic(self):
-        c = SlabCell(
-            OrthogonalFrame(jnp.array([10.0, 10.0, 30.0])),
-            periodic=(True, True, False),
-        )
+    def test_lens_replace_vacuum(self):
+        from kups.core.lens import bind
+
+        c = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 30.0])))
         new_frame = OrthogonalFrame(jnp.array([5.0, 5.0, 10.0]))
-        c2 = dataclasses.replace(c, frame=new_frame)
-        assert isinstance(c2, SlabCell)
-        assert c2.periodic == (True, True, False)
+        c2 = bind(c, lambda x: x.frame).set(new_frame)
+        assert isinstance(c2, VacuumCell)
+        assert c2.periodic == (False, False, False)

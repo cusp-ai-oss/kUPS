@@ -265,7 +265,7 @@ class HasCell[P: tuple[bool, bool, bool]](Protocol):
 
     Generic over the periodicity literal ``P``, mirroring
     [Cell][kups.core.cell.Cell]. Narrowing example:
-    ``HasCell[FullyPeriodic]`` for systems requiring fully-periodic cells.
+    ``HasCell[Periodic3D]`` for systems requiring fully-periodic cells.
 
     Attributes:
         cell: Cell parameters for each system.

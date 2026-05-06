@@ -9,7 +9,7 @@ from jax import Array
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
     Cell,
-    FullyPeriodic,
+    Periodic3D,
     PeriodicCell,
     TriclinicFrame,
     make_supercell,
@@ -52,7 +52,7 @@ class PointCloudParticles:
 class SystemData:
     """System data with cell and cutoff."""
 
-    cell: Cell[FullyPeriodic]
+    cell: Cell[Periodic3D]
     cutoff: Array
 
 
@@ -99,9 +99,7 @@ def _make_particle_data(
     )
 
 
-def _make_systems(
-    cell: Cell[FullyPeriodic], cutoff: Array
-) -> Table[SystemId, SystemData]:
+def _make_systems(cell: Cell[Periodic3D], cutoff: Array) -> Table[SystemId, SystemData]:
     """Build a Table[SystemId, SystemData] from a batched Cell and cutoff."""
     n_sys = cell.volume.shape[0]
     keys = tuple(SystemId(i) for i in range(n_sys))

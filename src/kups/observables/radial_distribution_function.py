@@ -41,7 +41,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, FullyPeriodic
+from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Index, Table
 from kups.core.lens import View, lens
 from kups.core.neighborlist import (
@@ -205,7 +205,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
 @no_jax_tracing
 def offline_radial_distribution_function(
     positions: Array,
-    cell: Cell[FullyPeriodic],
+    cell: Cell[Periodic3D],
     rmax: float,
     bins: int,
     *,
