@@ -17,9 +17,11 @@ from kups.core.cell import (
     VacuumCell,
     is_3d_periodic,
     is_vacuum,
+    make_supercell,
     min_multiplicity,
     to_lower_triangular,
 )
+from kups.core.lens import lens
 
 
 class TestTriclinicFrame:
@@ -386,3 +388,347 @@ class TestLensReplacePreservesConcreteType:
         c2 = bind(c, lambda x: x.frame).set(new_frame)
         assert isinstance(c2, VacuumCell)
         assert c2.periodic == (False, False, False)
+
+
+class TestVacuumWrapIsNoOp:
+    """A VacuumCell has no periodic axes — wrap must leave coordinates alone."""
+
+    def test_vacuum_wrap_real_to_real(self):
+        c = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        r = jnp.array([15.0, -3.0, 25.0])
+        npt.assert_allclose(c.wrap(r), r, atol=1e-10)
+
+    def test_vacuum_wrap_batched(self):
+        c = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        r = jnp.array([[15.0, -3.0, 25.0], [-50.0, 100.0, 0.5]])
+        npt.assert_allclose(c.wrap(r), r, atol=1e-10)
+
+    def test_vacuum_wrap_triclinic(self):
+        c = VacuumCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
+        r = jnp.array([7.0, -2.0, 11.0])
+        # Triclinic vacuum: real → fractional → real round-trip should also be id
+        npt.assert_allclose(c.wrap(r), r, atol=1e-6)
+
+
+class TestCellPassthrough:
+    """Cell.{vectors,inverse_vectors,volume,perpendicular_lengths} delegate to frame."""
+
+    def test_orthogonal_periodic_passthrough(self):
+        frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
+        cell = PeriodicCell(frame)
+        npt.assert_allclose(cell.vectors, frame.vectors)
+        npt.assert_allclose(cell.inverse_vectors, frame.inverse_vectors)
+        npt.assert_allclose(cell.volume, frame.volume)
+        npt.assert_allclose(cell.perpendicular_lengths, frame.perpendicular_lengths)
+
+    def test_triclinic_vacuum_passthrough(self):
+        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
+        cell = VacuumCell(frame)
+        npt.assert_allclose(cell.vectors, frame.vectors)
+        npt.assert_allclose(cell.inverse_vectors, frame.inverse_vectors)
+        npt.assert_allclose(cell.volume, frame.volume)
+        npt.assert_allclose(cell.perpendicular_lengths, frame.perpendicular_lengths)
+
+
+class TestCellPeriodicReadOnly:
+    def test_base_cell_periodic_raises(self):
+        """Bare Cell.periodic raises — only subclasses define it."""
+        # Directly constructing Cell is unusual but possible since it's a regular
+        # dataclass. Accessing periodic should raise.
+        c = Cell.__new__(Cell)
+        Cell.__init__(c, frame=OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
+        with pytest.raises(NotImplementedError):
+            _ = c.periodic
+
+    def test_periodic_cell_periodic_constant(self):
+        c = PeriodicCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
+        assert c.periodic == (True, True, True)
+
+    def test_vacuum_cell_periodic_constant(self):
+        c = VacuumCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
+        assert c.periodic == (False, False, False)
+
+
+class TestCellSlicing:
+    def test_slice_periodic_orthogonal(self):
+        cell = PeriodicCell(
+            OrthogonalFrame(jnp.array([[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]))
+        )
+        sub = cell[0]
+        assert isinstance(sub, PeriodicCell)
+        assert isinstance(sub.frame, OrthogonalFrame)
+        npt.assert_allclose(sub.frame.lengths, jnp.array([2.0, 3.0, 4.0]))
+        assert sub.periodic == (True, True, True)
+
+    def test_slice_vacuum_triclinic(self):
+        cells = jnp.stack([jnp.eye(3) * 5.0, jnp.eye(3) * 10.0])
+        cell = VacuumCell(TriclinicFrame.from_matrix(cells))
+        sub = cell[1]
+        assert isinstance(sub, VacuumCell)
+        npt.assert_allclose(sub.vectors, jnp.eye(3) * 10.0, atol=1e-6)
+        assert sub.periodic == (False, False, False)
+
+    def test_add_batch_dim(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([2.0, 3.0, 4.0])))
+        batched = cell[None]
+        assert isinstance(batched, PeriodicCell)
+        frame = batched.frame
+        assert isinstance(frame, OrthogonalFrame)
+        assert frame.lengths.shape == (1, 3)
+
+
+class TestFrameOperations:
+    """Direct tests of Frame.tile, Frame.__mul__, Frame.to_fractional/to_real."""
+
+    def test_orthogonal_tile(self):
+        frame = OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
+        tiled = frame.tile((2, 3, 4))
+        assert isinstance(tiled, OrthogonalFrame)
+        npt.assert_allclose(tiled.lengths, jnp.array([20.0, 30.0, 40.0]))
+
+    def test_triclinic_tile_expansion(self):
+        """tril multiplicities expand as [m0, m1, m1, m2, m2, m2]."""
+        frame = TriclinicFrame.from_matrix(jnp.eye(3))
+        tiled = frame.tile((2, 3, 4))
+        npt.assert_allclose(
+            tiled.vectors, jnp.diag(jnp.array([2.0, 3.0, 4.0])), atol=1e-6
+        )
+
+    def test_orthogonal_uniform_scale(self):
+        frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
+        scaled = frame * 2.0
+        assert isinstance(scaled, OrthogonalFrame)
+        npt.assert_allclose(scaled.lengths, jnp.array([4.0, 6.0, 8.0]))
+
+    def test_triclinic_uniform_scale(self):
+        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
+        scaled = frame * 2.0
+        npt.assert_allclose(scaled.vectors, jnp.eye(3) * 10.0, atol=1e-6)
+
+    def test_orthogonal_to_fractional_real_roundtrip(self):
+        frame = OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
+        r = jnp.array([3.0, 5.0, 7.0])
+        frac = frame.to_fractional(r)
+        npt.assert_allclose(frac, jnp.array([0.3, 0.5, 0.7]), atol=1e-10)
+        npt.assert_allclose(frame.to_real(frac), r, atol=1e-10)
+
+    def test_triclinic_to_fractional_real_roundtrip(self):
+        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 4.0)
+        r = jnp.array([1.0, 2.0, 3.0])
+        npt.assert_allclose(frame.to_real(frame.to_fractional(r)), r, atol=1e-6)
+
+
+class TestMakeSupercell:
+    def test_periodic_orthogonal_replicates_frame_and_data(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(
+            cell, (2, 1, 1), positions, lens(lambda x: x)
+        )
+        assert isinstance(new_cell, PeriodicCell)
+        assert isinstance(new_cell.frame, OrthogonalFrame)
+        npt.assert_allclose(new_cell.frame.lengths, jnp.array([20.0, 10.0, 10.0]))
+        # 1 particle x 2 replicas = 2 particles
+        assert new_positions.shape == (2, 3)
+
+    def test_periodic_int_multiplicity_expanded(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(cell, 3, positions, lens(lambda x: x))
+        new_frame = new_cell.frame
+        assert isinstance(new_frame, OrthogonalFrame)
+        npt.assert_allclose(new_frame.lengths, jnp.array([30.0, 30.0, 30.0]))
+        assert new_positions.shape == (27, 3)  # 3^3
+
+    def test_vacuum_clamps_to_one(self):
+        """Vacuum cells have no periodic axes — multiplicities must clamp to 1."""
+        cell = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(
+            cell, (2, 2, 2), positions, lens(lambda x: x)
+        )
+        assert isinstance(new_cell, VacuumCell)
+        # frame unchanged (clamped to 1 on every axis)
+        new_frame = new_cell.frame
+        assert isinstance(new_frame, OrthogonalFrame)
+        npt.assert_allclose(new_frame.lengths, jnp.array([10.0, 10.0, 10.0]))
+        # positions unchanged (n_reps = 1)
+        assert new_positions.shape == positions.shape
+
+    def test_triclinic_supercell(self):
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        new_cell, _ = make_supercell(cell, (2, 2, 2), positions, lens(lambda x: x))
+        assert isinstance(new_cell, PeriodicCell)
+        npt.assert_allclose(new_cell.vectors, jnp.eye(3) * 10.0, atol=1e-6)
+
+    def test_concrete_subclass_preserved(self):
+        """The returned cell type matches the input cell type."""
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        for cell_cls in (PeriodicCell, VacuumCell):
+            cell = cell_cls(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+            new_cell, _ = make_supercell(cell, 2, positions, lens(lambda x: x))
+            assert type(new_cell) is cell_cls
+
+    def test_tuple_data_lens_picks_positions(self):
+        """Lens can focus on a specific element of structured replicate-data."""
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        charges = jnp.array([1.0])
+        _, (new_positions, new_charges) = make_supercell(
+            cell, (2, 1, 1), (positions, charges), lens(lambda x: x[0])
+        )
+        assert new_positions.shape == (2, 3)
+        assert new_charges.shape == (2,)
+
+    def test_zero_multiplicity_rejected(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        with pytest.raises(AssertionError):
+            make_supercell(cell, (0, 1, 1), positions, lens(lambda x: x))
+
+
+class TestMinMultiplicityVacuum:
+    def test_vacuum_returns_ones(self):
+        """Non-periodic axes don't need replication regardless of cutoff."""
+        cell = VacuumCell(OrthogonalFrame(jnp.array([5.0, 5.0, 5.0])))
+        # cutoff > box size would imply replication for periodic, but vacuum clamps to 1
+        npt.assert_array_equal(min_multiplicity(cell, 100.0), [1, 1, 1])
+        npt.assert_array_equal(min_multiplicity(cell, 1.0), [1, 1, 1])
+
+
+class TestToLowerTriangular:
+    def test_already_lower_triangular_passes_through(self):
+        L = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
+        L_out, mapper = to_lower_triangular(L)
+        npt.assert_allclose(L_out, L, atol=1e-6)
+        # On lower-triangular input the mapper is the identity rotation
+        r = jnp.array([1.0, 2.0, 3.0])
+        npt.assert_allclose(mapper(r), r, atol=1e-6)
+
+    def test_swap_yz_yields_negative_volume_input(self):
+        """Input with negative determinant: output volume is positive."""
+        vecs = jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+        L, _ = to_lower_triangular(vecs)
+        frame = TriclinicFrame.from_matrix(L)
+        assert float(frame.volume) > 0
+        npt.assert_allclose(frame.volume, 1.0, atol=1e-6)
+
+    def test_mapper_preserves_distances(self):
+        """The orthogonal rotation preserves vector norms."""
+        vecs = jnp.array([[3.0, 4.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+        _, mapper = to_lower_triangular(vecs)
+        r = jnp.array([1.0, 2.0, 3.0])
+        npt.assert_allclose(jnp.linalg.norm(mapper(r)), jnp.linalg.norm(r), atol=1e-6)
+
+
+class TestPytreeAndJIT:
+    def test_periodic_cell_pytree_one_leaf(self):
+        """Cell has only `frame` as a field; periodic is a property, not a leaf."""
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        leaves = jax.tree.leaves(cell)
+        assert len(leaves) == 1
+
+    def test_vacuum_cell_pytree_one_leaf(self):
+        cell = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        leaves = jax.tree.leaves(cell)
+        assert len(leaves) == 1
+
+    def test_jit_volume_periodic(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        jit_volume = jax.jit(lambda c: c.volume)
+        npt.assert_allclose(jit_volume(cell), 1000.0)
+
+    def test_jit_volume_vacuum_triclinic(self):
+        cell = VacuumCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
+        jit_volume = jax.jit(lambda c: c.volume)
+        npt.assert_allclose(jit_volume(cell), 125.0)
+
+    def test_jit_wrap(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        jit_wrap = jax.jit(cell.wrap)
+        r = jnp.array([12.0, -3.0, 25.0])
+        npt.assert_allclose(jit_wrap(r), jnp.array([2.0, -3.0, -5.0]), atol=1e-6)
+
+    def test_tree_map_preserves_concrete_type(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        scaled = jax.tree.map(lambda x: x * 2, cell)
+        assert isinstance(scaled, PeriodicCell)
+        assert isinstance(scaled.frame, OrthogonalFrame)
+        npt.assert_allclose(scaled.frame.lengths, jnp.array([20.0, 20.0, 20.0]))
+
+    def test_tree_map_preserves_vacuum(self):
+        cell = VacuumCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        scaled = jax.tree.map(lambda x: x * 2, cell)
+        assert isinstance(scaled, VacuumCell)
+
+
+class TestArrayScalarMul:
+    """`cell * scalar` accepts both Python scalars and JAX scalars."""
+
+    def test_python_scalar(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        scaled = cell * 2.0
+        scaled_frame = scaled.frame
+        assert isinstance(scaled_frame, OrthogonalFrame)
+        npt.assert_allclose(scaled_frame.lengths, jnp.array([20.0, 20.0, 20.0]))
+
+    def test_jax_scalar(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        scaled = cell * jnp.float32(3.0)
+        scaled_frame = scaled.frame
+        assert isinstance(scaled_frame, OrthogonalFrame)
+        npt.assert_allclose(scaled_frame.lengths, jnp.array([30.0, 30.0, 30.0]))
+
+
+class TestCellWrapCrossSpace:
+    """Cross-space wrap on cells (delegates to _wrap helper)."""
+
+    def test_periodic_real_to_fractional(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([4.0, 4.0, 4.0])))
+        r = jnp.array([3.0, -3.0, 5.0])
+        frac = cell.wrap(
+            r, input_space=CoordinateSpace.REAL, output_space=CoordinateSpace.FRACTIONAL
+        )
+        npt.assert_allclose(frac, jnp.array([-0.25, 0.25, 0.25]), atol=1e-6)
+
+    def test_periodic_fractional_to_real(self):
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([4.0, 4.0, 4.0])))
+        r_frac = jnp.array([0.7, -0.3, 0.1])
+        r = cell.wrap(
+            r_frac,
+            input_space=CoordinateSpace.FRACTIONAL,
+            output_space=CoordinateSpace.REAL,
+        )
+        npt.assert_allclose(r, jnp.array([-1.2, -1.2, 0.4]), atol=1e-6)
+
+    def test_vacuum_fractional_passthrough(self):
+        """Vacuum + fractional → fractional just returns fractional unchanged."""
+        cell = VacuumCell(OrthogonalFrame(jnp.array([4.0, 4.0, 4.0])))
+        r_frac = jnp.array([1.7, -1.3, 0.1])
+        out = cell.wrap(
+            r_frac,
+            input_space=CoordinateSpace.FRACTIONAL,
+            output_space=CoordinateSpace.FRACTIONAL,
+        )
+        npt.assert_allclose(out, r_frac, atol=1e-10)
+
+
+class TestTriclinicAngles:
+    """The angles property is triclinic-specific; lock in the simple cases."""
+
+    def test_cubic_angles_90(self):
+        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
+        npt.assert_allclose(frame.angles, jnp.array([90.0, 90.0, 90.0]), atol=1e-6)
+
+    def test_cubic_lengths(self):
+        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array([2.0, 3.0, 4.0])))
+        npt.assert_allclose(frame.lengths, jnp.array([2.0, 3.0, 4.0]), atol=1e-6)
+
+    def test_from_lengths_and_angles_roundtrip(self):
+        """Construct from (lengths, angles); read back lengths/angles."""
+        lengths = jnp.array([5.0, 6.0, 7.0])
+        angles = jnp.array([90.0, 90.0, 90.0])
+        frame = TriclinicFrame.from_lengths_and_angles(lengths, angles)
+        npt.assert_allclose(frame.lengths, lengths, atol=1e-6)
+        npt.assert_allclose(frame.angles, angles, atol=1e-6)
