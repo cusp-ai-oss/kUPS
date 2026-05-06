@@ -46,6 +46,7 @@ from kups.mcmc.moves import (
     ParticlePositionChanges,
     exchange_changes_from_position_changes,
 )
+from kups.potential.classical.blocking import BlockingSpheresParameters
 from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -177,6 +178,18 @@ def _build_state() -> MCMCState:
         ),
         lj_parameters=lj_params,
         ewald_parameters=ewald_params,
+        blocking_spheres_parameters=BlockingSpheresParameters(
+            radii=jnp.zeros((0,)),
+            positions=jnp.zeros((0, 3)),
+            system=Index.arange(0, label=SystemId),
+            motif=Index.arange(0, label=MotifId),
+        ),
+        blocking_spheres_neighborlist_params=UniversalNeighborlistParameters(
+            avg_edges=0,
+            avg_candidates=0,
+            avg_image_candidates=0,
+            cells=0,
+        ),
         translation_params=Table.arange(move_params, label=SystemId),
         rotation_params=Table.arange(move_params, label=SystemId),
         reinsertion_params=Table.arange(move_params, label=SystemId),
@@ -365,13 +378,13 @@ class TestMCMCStateUpdate:
 
 
 class TestMakePropagator:
-    def test_creates_propagator(self):
+    def test_creates_propagator(self, state):
         config = RunConfig(
             out_file="/tmp/test.h5",
             num_cycles=1,
             num_warmup_cycles=0,
             min_cycle_length=10,
         )
-        potential, propagator = make_propagator(config)
+        potential, propagator = make_propagator(state, config)
         assert callable(propagator)
         assert callable(potential)

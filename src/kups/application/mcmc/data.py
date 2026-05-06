@@ -104,6 +104,15 @@ class AdsorbateConfig(BaseModel):
         )
 
 
+class BlockingSphereConfig(BaseModel):
+    """Configuration for a blocking sphere to prevent adsorbate placement in certain regions."""
+
+    center: tuple[float, float, float]
+    """Center of the blocking sphere in Cartesian coordinates (Ang)."""
+    radius: float
+    """Radius of the blocking sphere (Ang)."""
+
+
 class HostConfig(BaseModel):
     """Configuration for a single host framework (e.g. zeolite, MOF).
 
@@ -125,6 +134,10 @@ class HostConfig(BaseModel):
     """Binary interaction parameters k_ij (n_ads x n_ads)."""
     cell_replication: int | tuple[int, int, int] | None = None
     """(nx, ny, nz) replication of the unit cell. Auto-computed if None."""
+    blocking_spheres: tuple[tuple[BlockingSphereConfig, ...], ...] = ((),)
+    """Blocking spheres preventing adsorbate placement in selected regions. Outer
+    tuple is indexed per adsorbate species; each inner tuple lists spheres for that
+    species and may have variable length."""
 
 
 class LJConfig(BaseModel):

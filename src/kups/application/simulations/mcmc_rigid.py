@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
 import rich
+import rich.logging
 from jax import Array
 from nanoargs.cli import NanoArgs
 from pydantic import BaseModel
@@ -50,6 +52,7 @@ from kups.core.potential import (
     EMPTY,
     CachedPotential,
     EmptyType,
+    Potential,
     PotentialAsPropagator,
     PotentialOut,
     sum_potentials,
@@ -71,6 +74,7 @@ from kups.core.typing import (
 from kups.core.utils.jax import (
     dataclass,
     key_chain,
+    no_jax_tracing,
     tree_map,
 )
 from kups.mcmc.moves import (
@@ -80,6 +84,10 @@ from kups.mcmc.moves import (
 from kups.mcmc.probability import make_muvt_probability_ratio
 from kups.observables.pressure import ideal_gas_pressure
 from kups.observables.stress import molecular_virial_stress_from_state
+from kups.potential.classical.blocking import (
+    BlockingSpheresParameters,
+    make_blocking_spheres_from_state,
+)
 from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldParameters,
@@ -100,6 +108,12 @@ from kups.potential.common.energy import (
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[rich.logging.RichHandler()],
+)
 
 
 class LJConfig(BaseModel):
@@ -148,6 +162,8 @@ class MCMCState:
         GlobalTailCorrectedLennardJonesParameters, PotentialOut[EmptyType, EmptyType]
     ]
     ewald_parameters: WithCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]
+    blocking_spheres_parameters: BlockingSpheresParameters
+    blocking_spheres_neighborlist_params: UniversalNeighborlistParameters
     translation_params: Table[SystemId, ParameterSchedulerState]
     rotation_params: Table[SystemId, ParameterSchedulerState]
     reinsertion_params: Table[SystemId, ParameterSchedulerState]
@@ -178,6 +194,27 @@ class MCMCState:
     @property
     def guest_only(self) -> MCMCState:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
+
+    @property
+    def blocking_spheres_neighborlist(self) -> NearestNeighborList:
+        return DenseNearestNeighborList.new(
+            self, lens(lambda x: x.blocking_spheres_neighborlist_params)
+        )
+
+    @property
+    @no_jax_tracing
+    def is_charged(self) -> bool:
+        return (
+            jnp.abs(self.particles.data.charges).sum().item() > 0
+            or jnp.abs(self.motifs.data.charges).sum().item() > 0
+        )
+
+    @property
+    def has_blocking_spheres(self) -> bool:
+        return (
+            self.blocking_spheres_parameters.system.max_count is not None
+            and self.blocking_spheres_parameters.system.max_count > 0
+        )
 
 
 @dataclass
@@ -279,14 +316,24 @@ def _probe(state: MCMCState, update: MCMCStateUpdate) -> MCMCStateUpdate:
 
 
 def make_propagator(
-    config: RunConfig,
+    state: MCMCState, config: RunConfig
 ) -> tuple[Propagator[MCMCState], Propagator[MCMCState]]:
     state_lens = identity_lens(MCMCState)
-    potential = sum_potentials(
-        make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True),
+    potentials: list[Potential[MCMCState, EmptyType, EmptyType, MCMCStateUpdate]] = [
         make_lennard_jones_from_state(state_lens, _probe),
         make_lennard_jones_tail_correction_from_state(state_lens),
-    )
+    ]
+    # If we have any charged particles, we include the Ewald potential
+    if state.is_charged:
+        potentials.append(
+            make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True)
+        )
+        logging.info("Charged particles detected: including Ewald potential.")
+    # If we have any blocking spheres, we include the blocking spheres potential
+    if state.has_blocking_spheres:
+        potentials.append(make_blocking_spheres_from_state(state_lens))
+        logging.info("Blocking spheres detected: including blocking spheres potential.")
+    potential = sum_potentials(*potentials)
     potential, probability_ratio = make_muvt_probability_ratio(state_lens, potential)
     propagator = make_gcmc_mcmc_propagator(
         state_lens,
@@ -323,12 +370,19 @@ def init_state(key: Array, config: Config) -> MCMCState:
         ss.append(system)
     assert motifs is not None, "At least one host must be provided."
     particles, groups, system = Table.union(ps, gs, ss)
+    logging.info(
+        f"Initialized state with {len(particles)} particles, "
+        f"{len(groups)} molecules, across {len(system)} systems."
+    )
     n_sys = len(system)
     lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
         cutoff=config.lj.cutoff,
         parameters=config.lj.parameters,
         mixing_rule=config.lj.mixing_rule,
         tail_correction=config.lj.tail_correction,
+    )
+    blocking_spheres = BlockingSpheresParameters.from_data(
+        [host.blocking_spheres for host in config.hosts]
     )
     max_motif_size = motifs.data.motif.max_count
     assert max_motif_size is not None
@@ -354,6 +408,15 @@ def init_state(key: Array, config: Config) -> MCMCState:
         system,
         tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
+    if blocking_spheres.radii.shape[0] > 0:
+        blocking_nlist = UniversalNeighborlistParameters.estimate(
+            Table.arange(jnp.array([num_buffer_particles / n_sys]), label=SystemId),
+            system,
+            blocking_spheres.system.max_over(blocking_spheres.radii),
+        )
+    else:
+        blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
+    logging.info(f"Estimated neighbor list parameters: {neighborlist_params}")
     min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
     return MCMCState(
         particles=particles,
@@ -361,11 +424,13 @@ def init_state(key: Array, config: Config) -> MCMCState:
         motifs=motifs,
         systems=system,
         neighborlist_params=neighborlist_params,
+        blocking_spheres_neighborlist_params=blocking_nlist,
         lj_parameters=WithCache(
             lj_params,
             PotentialOut(Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY),
         ),
         ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
+        blocking_spheres_parameters=blocking_spheres,
         translation_params=Table.arange(
             ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
             label=SystemId,
@@ -382,25 +447,28 @@ def init_state(key: Array, config: Config) -> MCMCState:
     )
 
 
-def make_guest_stress() -> StateProperty[
-    MCMCState,
-    Table[SystemId, StressResult],
-]:
+def make_guest_stress(
+    state: MCMCState,
+) -> StateProperty[MCMCState, Table[SystemId, StressResult]]:
     """Build guest-only stress tensor function from MCMCState."""
     state_lens = identity_lens(MCMCState)
-    potential = sum_potentials(
-        make_ewald_from_state(
-            state_lens,
-            compute_position_and_cell_gradients=True,
-            include_exclusion_mask=True,
-        ),
+    potentials: list[Potential[MCMCState, PositionAndCell, EmptyType, Any]] = [
         make_lennard_jones_from_state(
             state_lens, compute_position_and_cell_gradients=True
         ),
         make_lennard_jones_tail_correction_from_state(
             state_lens, compute_position_and_cell_gradients=True
         ),
-    )
+    ]
+    if state.is_charged:
+        potentials.append(
+            make_ewald_from_state(
+                state_lens,
+                compute_position_and_cell_gradients=True,
+                include_exclusion_mask=True,
+            )
+        )
+    potential = sum_potentials(*potentials)
     potential = CachedPotential(
         potential,
         lens(
@@ -446,10 +514,10 @@ def run(config: Config) -> MCMCState:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state = init_state(next(chain), config)
-    init_prop, propagator = make_propagator(config.run)
+    init_prop, propagator = make_propagator(state, config.run)
     state = propagate_and_fix(as_result_function(init_prop), next(chain), state)
     logged_data = make_mcmc_logged_data(
-        state, make_guest_stress() if config.compute_stress else None
+        state, make_guest_stress(state) if config.compute_stress else None
     )
     return run_mcmc(next(chain), propagator, state, config.run, logged_data)
 
