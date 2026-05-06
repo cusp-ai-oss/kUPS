@@ -45,7 +45,6 @@ Vectors follow the row convention: ``r_real = r_frac @ vectors``.
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from enum import Enum
 from functools import partial
@@ -57,7 +56,7 @@ import numpy as np
 from jax import Array
 
 from kups.core.data import Sliceable
-from kups.core.lens import Lens
+from kups.core.lens import Lens, bind
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.math import triangular_3x3_det_and_inverse, triangular_3x3_matmul
 
@@ -348,7 +347,7 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
         return _wrap(self.frame, self.periodic, r, input_space, output_space)
 
     def __mul__(self, other: Array | float | int) -> Self:
-        return dataclasses.replace(self, frame=self.frame * other)
+        return bind(self, lambda c: c.frame).set(self.frame * other)
 
 
 @dataclass
@@ -422,7 +421,7 @@ def make_supercell[T, T2, C: Cell[Any]](
     ).reshape(-1, 3)
     real_shifts = triangular_3x3_matmul(cell.vectors, shifts)
 
-    new_cell: C = dataclasses.replace(cell, frame=cell.frame.tile(clamped))
+    new_cell: C = bind(cell, lambda c: c.frame).set(cell.frame.tile(clamped))
 
     replicated = jax.tree.map(
         lambda x: jnp.repeat(x[None], n_reps, axis=0).reshape(-1, *x.shape[1:]),
