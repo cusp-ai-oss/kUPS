@@ -614,7 +614,9 @@ class EwaldLongRangeComposer[
     """
 
     particles: View[State, Table[ParticleId, IsEwaldPointData]] = field(static=True)
-    systems: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[Lattice, FullyPeriodic]]] = field(
+        static=True
+    )
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = field(
         static=True
     )

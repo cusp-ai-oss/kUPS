@@ -53,7 +53,9 @@ def test_evaluate_radius_graph_potential_lj():
         label=ParticleId,
     )
     systems = Table.arange(
-        _Systems(cell=PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))),
+        _Systems(
+            cell=PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
+        ),
         label=SystemId,
     )
     lj_params = LennardJonesParameters(

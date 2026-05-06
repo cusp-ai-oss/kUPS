@@ -198,9 +198,7 @@ class TriclinicLattice(Sliceable):
         return cls(vecs[..., *np.tril_indices(3)])
 
     @classmethod
-    def from_lengths_and_angles(
-        cls, lengths: Array, angles: Array
-    ) -> TriclinicLattice:
+    def from_lengths_and_angles(cls, lengths: Array, angles: Array) -> TriclinicLattice:
         """Construct a triclinic lattice from crystallographic parameters.
 
         Args:

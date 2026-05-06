@@ -223,7 +223,9 @@ class TestEwald:
             [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [10.0, 0.0, 0.0], [11.5, 0.0, 0.0]]
         )
         charges = jnp.array([1.0, -1.0, 1.0, -1.0])
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3, dtype=float) * 20.0))
+        cell = PeriodicCell(
+            TriclinicLattice.from_matrix(jnp.eye(3, dtype=float) * 20.0)
+        )
 
         estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-4)
         params = EwaldParameters(
