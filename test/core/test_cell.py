@@ -714,6 +714,111 @@ class TestCellWrapCrossSpace:
         npt.assert_allclose(out, r_frac, atol=1e-10)
 
 
+def _ortho_frame() -> OrthogonalFrame:
+    return OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
+
+
+def _tri_frame() -> TriclinicFrame:
+    return TriclinicFrame.from_matrix(jnp.eye(3) * 10.0)
+
+
+class TestPeriodicityMatrix:
+    """Every periodicity-dependent operation must be correct for both cell
+    types crossed with both frame types. Catches gaps where a code path
+    only happens to be exercised on one combination.
+    """
+
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_periodic_wraps_into_primary_box(self, frame_factory):
+        cell = PeriodicCell(frame_factory())
+        # 12 along x in a 10 Å cubic frame folds to 2
+        wrapped = cell.wrap(jnp.array([12.0, 0.0, 0.0]))
+        npt.assert_allclose(wrapped, jnp.array([2.0, 0.0, 0.0]), atol=1e-6)
+
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_vacuum_does_not_wrap(self, frame_factory):
+        cell = VacuumCell(frame_factory())
+        r = jnp.array([12.0, -3.0, 25.0])
+        npt.assert_allclose(cell.wrap(r), r, atol=1e-6)
+
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_periodic_min_multiplicity_grows_with_cutoff(self, frame_factory):
+        cell = PeriodicCell(frame_factory())
+        npt.assert_array_equal(min_multiplicity(cell, 4.0), [1, 1, 1])
+        npt.assert_array_equal(min_multiplicity(cell, 8.0), [2, 2, 2])
+
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_vacuum_min_multiplicity_always_one(self, frame_factory):
+        cell = VacuumCell(frame_factory())
+        # Cutoff bigger than the box would force replication if periodic
+        npt.assert_array_equal(min_multiplicity(cell, 100.0), [1, 1, 1])
+        npt.assert_array_equal(min_multiplicity(cell, 1.0), [1, 1, 1])
+
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_periodic_supercell_grows_frame_and_data(self, frame_factory):
+        cell = PeriodicCell(frame_factory())
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(
+            cell, (2, 2, 2), positions, lens(lambda x: x)
+        )
+        assert isinstance(new_cell, PeriodicCell)
+        npt.assert_allclose(new_cell.volume, 8 * cell.volume, rtol=1e-6)
+        assert new_positions.shape == (8, 3)
+
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_vacuum_supercell_clamps_to_one(self, frame_factory):
+        cell = VacuumCell(frame_factory())
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(
+            cell, (2, 3, 4), positions, lens(lambda x: x)
+        )
+        assert isinstance(new_cell, VacuumCell)
+        # Frame untouched; data not replicated
+        npt.assert_allclose(new_cell.volume, cell.volume, rtol=1e-6)
+        assert new_positions.shape == positions.shape
+
+    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_mul_preserves_concrete_type_and_periodic(self, cell_cls, frame_factory):
+        cell = cell_cls(frame_factory())
+        scaled = cell * 2.0
+        assert type(scaled) is cell_cls
+        # Periodicity is unchanged by scaling
+        assert scaled.periodic == cell.periodic
+        npt.assert_allclose(scaled.volume, 8 * cell.volume, rtol=1e-6)
+
+    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_pytree_one_leaf(self, cell_cls, frame_factory):
+        """`periodic` is a property, not a leaf — only `frame` contributes."""
+        cell = cell_cls(frame_factory())
+        leaves = jax.tree.leaves(cell)
+        assert len(leaves) == 1
+
+    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_tree_map_preserves_concrete_type(self, cell_cls, frame_factory):
+        cell = cell_cls(frame_factory())
+        scaled = jax.tree.map(lambda x: x * 2, cell)
+        assert type(scaled) is cell_cls
+        assert scaled.periodic == cell.periodic
+
+    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_jit_volume(self, cell_cls, frame_factory):
+        cell = cell_cls(frame_factory())
+        jit_volume = jax.jit(lambda c: c.volume)
+        npt.assert_allclose(jit_volume(cell), cell.volume, rtol=1e-6)
+
+    @pytest.mark.parametrize("cell_cls", [PeriodicCell, VacuumCell])
+    @pytest.mark.parametrize("frame_factory", [_ortho_frame, _tri_frame])
+    def test_jit_wrap(self, cell_cls, frame_factory):
+        cell = cell_cls(frame_factory())
+        r = jnp.array([1.5, -0.7, 2.3])
+        jit_wrap = jax.jit(cell.wrap)
+        npt.assert_allclose(jit_wrap(r), cell.wrap(r), atol=1e-6)
+
+
 class TestTriclinicAngles:
     """The angles property is triclinic-specific; lock in the simple cases."""
 
