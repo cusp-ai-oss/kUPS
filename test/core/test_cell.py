@@ -543,6 +543,71 @@ class TestToLowerTriangular:
         npt.assert_allclose(jnp.linalg.norm(mapper(r)), jnp.linalg.norm(r), atol=1e-6)
 
 
+_FRAMES = pytest.mark.parametrize(
+    "frame",
+    [
+        OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])),
+        TriclinicFrame.from_matrix(jnp.eye(3) * 10.0),
+    ],
+    ids=["orthogonal", "triclinic"],
+)
+
+
+class TestPeriodicityAcrossFrames:
+    """The cell-type × frame-type matrix for periodicity-aware operations.
+
+    `wrap`, `min_multiplicity`, and `make_supercell` all consult the cell's
+    `periodic` mask. Each operation must behave correctly for both
+    PeriodicCell and VacuumCell, with both frame parameterizations.
+    """
+
+    @_FRAMES
+    def test_periodic_wrap_folds(self, frame):
+        cell = PeriodicCell(frame)
+        # 12 along x in a 10 Å cubic frame folds to 2
+        wrapped = cell.wrap(jnp.array([12.0, 0.0, 0.0]))
+        npt.assert_allclose(wrapped, jnp.array([2.0, 0.0, 0.0]), atol=1e-6)
+
+    @_FRAMES
+    def test_vacuum_wrap_is_identity(self, frame):
+        cell = VacuumCell(frame)
+        r = jnp.array([12.0, -3.0, 25.0])
+        npt.assert_allclose(cell.wrap(r), r, atol=1e-6)
+
+    @_FRAMES
+    def test_periodic_min_multiplicity_grows_with_cutoff(self, frame):
+        cell = PeriodicCell(frame)
+        npt.assert_array_equal(min_multiplicity(cell, 4.0), [1, 1, 1])
+        npt.assert_array_equal(min_multiplicity(cell, 8.0), [2, 2, 2])
+
+    @_FRAMES
+    def test_vacuum_min_multiplicity_always_one(self, frame):
+        cell = VacuumCell(frame)
+        # cutoff bigger than the box would force replication if periodic
+        npt.assert_array_equal(min_multiplicity(cell, 100.0), [1, 1, 1])
+
+    @_FRAMES
+    def test_periodic_supercell_replicates(self, frame):
+        cell = PeriodicCell(frame)
+        positions = jnp.array([[0.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(
+            cell, (2, 2, 2), positions, lens(lambda x: x)
+        )
+        npt.assert_allclose(new_cell.volume, 8 * cell.volume, rtol=1e-6)
+        assert new_positions.shape == (8, 3)
+
+    @_FRAMES
+    def test_vacuum_supercell_clamps(self, frame):
+        cell = VacuumCell(frame)
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        new_cell, new_positions = make_supercell(
+            cell, (2, 3, 4), positions, lens(lambda x: x)
+        )
+        # frame untouched; data not replicated
+        npt.assert_allclose(new_cell.volume, cell.volume, rtol=1e-6)
+        assert new_positions.shape == positions.shape
+
+
 class TestPytreeAndJIT:
     def test_periodic_property_is_not_a_pytree_leaf(self):
         """Design invariant: `periodic` is a `@property`, not a dataclass
