@@ -356,6 +356,20 @@ class TestSumOver:
         )
 
 
+class TestMaxOver:
+    def test_max_over(self):
+        idx = Index.new([SystemId(0), SystemId(1), SystemId(0), SystemId(1)])
+        result = idx.max_over(jnp.array([1.0, 5.0, 3.0, 2.0]))
+        assert result.keys == (SystemId(0), SystemId(1))
+        npt.assert_array_equal(result.data, [3.0, 5.0])
+        # Multidimensional
+        idx3 = Index.new([SystemId(0), SystemId(1), SystemId(0)])
+        npt.assert_array_equal(
+            idx3.max_over(jnp.array([[1.0, 7.0], [3.0, 4.0], [5.0, 2.0]])).data,
+            [[5.0, 7.0], [3.0, 4.0]],
+        )
+
+
 class TestToCls:
     def test_to_cls(self):
         idx = Index((0, 1, 2), jnp.array([2, 0, 1]))
@@ -513,6 +527,22 @@ class TestFactoryAndLabels:
 class _NestedData:
     values: jax.Array
     system: Index[SystemId]
+
+
+class TestPopulateMaxCount:
+    def test_populate_max_count(self):
+        # Computes max count from data when unset
+        idx = Index(("X", "Y"), jnp.array([0, 1, 0, 0]))
+        assert idx.max_count is None
+        assert idx.populate_max_count().max_count == 3
+
+        # Empty data -> 0
+        empty = Index.arange(0, label=SystemId)
+        assert empty.populate_max_count().max_count == 0
+
+        # Already-set max_count is preserved (returns self unchanged)
+        preset = Index(("X",), jnp.array([0, 0]), max_count=7)
+        assert preset.populate_max_count() is preset
 
 
 class TestFindIndex:

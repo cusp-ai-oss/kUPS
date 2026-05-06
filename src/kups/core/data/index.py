@@ -5,7 +5,16 @@ from __future__ import annotations
 
 from collections import defaultdict
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, Sequence, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Literal,
+    Protocol,
+    Self,
+    Sequence,
+    overload,
+)
 
 import jax
 import jax.numpy as jnp
@@ -13,12 +22,14 @@ import numpy as np
 from jax import Array
 
 from kups.core.capacity import Capacity
+from kups.core.lens import bind
 from kups.core.utils.jax import (
     ScatterArgs,
     dataclass,
     field,
     is_traced,
     isin,
+    no_jax_tracing,
     skip_post_init_if_disabled,
 )
 from kups.core.utils.subselect import subselect
@@ -102,7 +113,11 @@ class Index[Key: SupportsSorting]:
 
     @classmethod
     def new[T: SupportsSorting](
-        cls, data: Sequence[T] | np.ndarray, *, max_count: int | None = None
+        cls,
+        data: Sequence[T] | np.ndarray,
+        *,
+        max_count: int | None = None,
+        label: Callable[[int], T] | None = None,
     ) -> Index[T]:
         """Create an ``Index`` from a sequence of keys.
 
@@ -123,11 +138,13 @@ class Index[Key: SupportsSorting]:
                 f"max_count={max_count} exceeded: key appears {int(counts.max())} times"
             )
         key_tuple = tuple(unique_keys.tolist())
-        return Index(
-            key_tuple,
-            jnp.asarray(values).reshape(np_data.shape),
-            max_count,
-            _cls=type(key_tuple[0]) if key_tuple else None,
+        if label is not None:
+            key_tuple = tuple(label(k) for k in key_tuple)
+            typ = type(label(0))
+        else:
+            typ = type(key_tuple[0]) if len(key_tuple) > 0 else None
+        return Index[T](
+            key_tuple, jnp.asarray(values).reshape(np_data.shape), max_count, _cls=typ
         )
 
     @classmethod
@@ -256,7 +273,9 @@ class Index[Key: SupportsSorting]:
         from kups.core.data.table import Table
 
         return Table(
-            self.keys, jnp.bincount(self.indices.ravel(), length=len(self.keys))
+            self.keys,
+            jnp.bincount(self.indices.ravel(), length=len(self.keys)),
+            _cls=self._cls,
         )
 
     @property
@@ -511,6 +530,23 @@ class Index[Key: SupportsSorting]:
             _cls=self._cls,
         )
 
+    def max_over(self, array: Array) -> Table[Key, Array]:
+        """Takes max of ``array`` values grouped by this index via segment max.
+
+        Args:
+            array: Array with leading dimension matching ``self.indices``.
+
+        Returns:
+            A ``Table`` mapping each key to its max values.
+        """
+        from kups.core.data.table import Table
+
+        return Table(
+            self.keys,
+            jax.ops.segment_max(array, self.indices, self.num_labels, mode="drop"),
+            _cls=self._cls,
+        )
+
     @staticmethod
     def find[L: SupportsSorting](obj: PyTree, cls: type[L]) -> Index[L]:
         """Extracts the unique ``Index`` of a given type from a pytree.
@@ -687,6 +723,21 @@ class Index[Key: SupportsSorting]:
         """
         all_keys = _merge_keys(*[i.keys for i in indices])
         return tuple(i.indices_in(all_keys) for i in indices)
+
+    @no_jax_tracing
+    def populate_max_count(self) -> Self:
+        """Populate the ``max_count`` field based on the actual data.
+
+        Returns:
+            A new ``Index`` with the same keys and indices, but with
+            ``max_count`` set to the maximum number of occurrences of any
+            key in the data.
+        """
+        if self.max_count is not None:
+            return self
+        counts = self.counts.data
+        new_max = int(counts.max()) if len(counts) > 0 else 0
+        return bind(self, lambda x: x.max_count).set(new_max)
 
 
 @dataclass
