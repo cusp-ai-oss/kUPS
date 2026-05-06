@@ -3,41 +3,92 @@
 
 """Simulation cell representations.
 
-A cell wraps a [Frame][kups.core.cell.Frame] (a 3D parallelepiped) and adds
-a per-axis periodicity mask. The frame itself is geometry only — the same
-frame can describe a periodic crystal's unit cell or a vacuum simulation's
-bounding box. Which interpretation applies is decided by the cell type that
-wraps the frame.
+This module separates two concepts that other simulation codes usually
+conflate into one "cell" object:
 
-## Frame — geometry
+1. **[Frame][kups.core.cell.Frame]** — pure geometry. A 3D parallelepiped
+   defined by three basis vectors. No periodicity, no boundary semantics.
+   What ASE calls ``cell``, OpenMM calls ``boxVectors``, LAMMPS calls the
+   simulation box; in crystallography the basis vectors of a periodic
+   structure are conventionally called *lattice vectors*. ``Frame``
+   subsumes all of these — a Frame just describes a parallelepiped, and
+   the meaning (periodic-translation vector vs bounding-box edge) is
+   supplied by the cell type that wraps it.
 
-- [OrthogonalFrame][kups.core.cell.OrthogonalFrame]: 3 DOF (lengths).
-- [TriclinicFrame][kups.core.cell.TriclinicFrame]: 6 DOF (lower-triangular elements).
+2. **[Cell][kups.core.cell.Cell]** — frame plus per-axis boundary
+   semantics. Decides whether the frame is interpreted as a periodic
+   unit cell or a bounding domain on each axis.
 
-Both expose [vectors][kups.core.cell.Frame.vectors],
-[inverse_vectors][kups.core.cell.Frame.inverse_vectors],
-[volume][kups.core.cell.Frame.volume],
-[perpendicular_lengths][kups.core.cell.Frame.perpendicular_lengths], plus
-real/fractional coordinate transforms and per-axis tiling.
+Why split: the same parallelepiped means different things in different
+contexts. A 30 Å cubic frame inside a [PeriodicCell][kups.core.cell.PeriodicCell]
+is a periodic unit cell — particles wrap, neighbor searches honour minimum
+image. The same frame inside a [VacuumCell][kups.core.cell.VacuumCell] is
+the bounding box of a finite domain — no wrapping, neighbor searches treat
+it as a spatial-partitioning hint. Naming the geometry "Lattice" or "Cell"
+would prejudice the reading toward the periodic case; ``Frame`` is
+boundary-condition-agnostic and reads equally honestly in both.
 
-## Cell — geometry plus boundary semantics
+## Frame implementations
 
-- [PeriodicCell][kups.core.cell.PeriodicCell]: all three axes periodic
-  (literal ``(True, True, True)``). The frame is the unit cell.
-- [VacuumCell][kups.core.cell.VacuumCell]: all three axes open
-  (literal ``(False, False, False)``). The frame is the simulation
-  domain's bounding parallelepiped.
+- [OrthogonalFrame][kups.core.cell.OrthogonalFrame] — 3 DOF, axes-aligned
+  parallelepiped parameterized by side lengths. Diagonal fast paths for
+  volume, inverse, and coordinate transforms.
+- [TriclinicFrame][kups.core.cell.TriclinicFrame] — 6 DOF, general
+  parallelepiped parameterized by the lower-triangular elements of the
+  basis matrix.
+
+Both expose [`vectors`][kups.core.cell.Frame.vectors] (the basis matrix —
+this is what crystallography calls *lattice vectors*),
+[`inverse_vectors`][kups.core.cell.Frame.inverse_vectors],
+[`volume`][kups.core.cell.Frame.volume],
+[`perpendicular_lengths`][kups.core.cell.Frame.perpendicular_lengths],
+[`to_fractional`][kups.core.cell.Frame.to_fractional] /
+[`to_real`][kups.core.cell.Frame.to_real] coordinate transforms, plus
+[`tile`][kups.core.cell.Frame.tile] for per-axis multiplicity tiling and
+``__mul__`` for uniform scaling.
+
+## Cell implementations
+
+- [PeriodicCell][kups.core.cell.PeriodicCell] — all three axes periodic
+  (literal ``(True, True, True)``). The frame is the unit cell of a
+  periodic crystal or fluid.
+- [VacuumCell][kups.core.cell.VacuumCell] — all three axes open (literal
+  ``(False, False, False)``). The frame is the bounding parallelepiped
+  of a finite simulation domain.
 
 [Cell][kups.core.cell.Cell] is generic over the periodicity literal ``P``
-so consumers can narrow on the boundary axis — e.g. an Ewald path declares
-``Cell[Periodic3D]`` and pyright statically rejects ``VacuumCell``.
+so consumers can narrow statically on the boundary axis. An Ewald path
+that requires periodic boundaries declares ``Cell[Periodic3D]`` and
+pyright rejects ``VacuumCell`` at the call site:
 
-Cell re-exposes the frame's geometric properties as passthrough so
-``cell.volume``, ``cell.vectors`` etc. work directly. For frame-specific
-fields (``OrthogonalFrame.lengths``, ``TriclinicFrame.tril``), narrow with
-``isinstance(cell.frame, OrthogonalFrame)``.
+```python
+def ewald(cell: Cell[Periodic3D]) -> Energy: ...
+ewald(PeriodicCell(frame))   # OK
+ewald(VacuumCell(frame))     # pyright: "Vacuum is not assignable to Periodic3D"
+```
 
-Vectors follow the row convention: ``r_real = r_frac @ vectors``.
+Cell re-exposes the frame's geometric properties as passthrough so callers
+can write ``cell.volume``, ``cell.vectors`` etc. without going through
+``cell.frame``. For frame-specific fields (``OrthogonalFrame.lengths``,
+``TriclinicFrame.tril`` / ``angles``), narrow with isinstance:
+
+```python
+frame = cell.frame
+assert isinstance(frame, OrthogonalFrame)
+side_lengths = frame.lengths
+```
+
+The same Frame instance can be wrapped in either cell type:
+
+```python
+frame = OrthogonalFrame(lengths=jnp.array([20., 20., 20.]))
+PeriodicCell(frame)   # 20 Å cubic crystal — particles wrap
+VacuumCell(frame)     # 20 Å bounding box of a cluster — no wrap
+```
+
+## Convention
+
+Frame vectors follow the row convention: ``r_real = r_frac @ frame.vectors``.
 """
 
 from __future__ import annotations
@@ -86,30 +137,69 @@ class TriclinicMap(Protocol):
 class Frame(Protocol):
     """3D parallelepiped geometry, no periodicity attached.
 
-    Frames are pure containers of geometric parameters. Their interpretation
-    (periodic unit cell vs bounding box vs slab) is decided by the cell type
-    that wraps them.
+    A Frame is a pure geometric container — three basis vectors that span
+    a parallelepiped in 3D space. It does not commit to whether those
+    vectors represent periodic translations or just bounding-box edges;
+    that distinction is supplied by the [Cell][kups.core.cell.Cell] type
+    that wraps a Frame.
+
+    In crystallography these basis vectors are conventionally called
+    "lattice vectors". They are exposed here under the name
+    [`vectors`][kups.core.cell.Frame.vectors] because the crystallographic
+    label implies a periodic interpretation that does not apply to all
+    Frame uses (e.g. the bounding box of a vacuum simulation).
+
+    Concrete implementations:
+
+    - [OrthogonalFrame][kups.core.cell.OrthogonalFrame]: 3 DOF (lengths).
+    - [TriclinicFrame][kups.core.cell.TriclinicFrame]: 6 DOF (lower-triangular).
     """
 
     @property
-    def vectors(self) -> Array: ...
+    def vectors(self) -> Array:
+        """Basis vectors of the parallelepiped, shape ``(..., 3, 3)``.
+
+        Rows are the basis vectors. Lower-triangular by convention so that
+        ``v[0]`` lies along x, ``v[1]`` in the xy-plane, ``v[2]`` general.
+        Crystallography calls this matrix the *lattice vectors*.
+        """
+        ...
 
     @property
-    def inverse_vectors(self) -> Array: ...
+    def inverse_vectors(self) -> Array:
+        """Matrix inverse of [`vectors`][kups.core.cell.Frame.vectors],
+        used to convert real-space coordinates to fractional, shape
+        ``(..., 3, 3)``."""
+        ...
 
     @property
-    def volume(self) -> Array: ...
+    def volume(self) -> Array:
+        """Volume of the parallelepiped, shape ``(...)``."""
+        ...
 
     @property
-    def perpendicular_lengths(self) -> Array: ...
+    def perpendicular_lengths(self) -> Array:
+        """Perpendicular distance between opposing faces, per axis,
+        shape ``(..., 3)``. Used by neighbor-list cutoff checks and by
+        [min_multiplicity][kups.core.cell.min_multiplicity]."""
+        ...
 
-    def to_fractional(self, r: Array) -> Array: ...
+    def to_fractional(self, r: Array) -> Array:
+        """Convert real-space coordinates to fractional, shape ``(..., 3)``."""
+        ...
 
-    def to_real(self, r_frac: Array) -> Array: ...
+    def to_real(self, r_frac: Array) -> Array:
+        """Convert fractional coordinates to real-space, shape ``(..., 3)``."""
+        ...
 
-    def __mul__(self, other: Array | float | int) -> Self: ...
+    def __mul__(self, other: Array | float | int) -> Self:
+        """Uniformly scale all basis vectors by ``other``."""
+        ...
 
-    def tile(self, multiplicities: tuple[int, int, int]) -> Self: ...
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
+        """Per-axis integer scaling. Used by
+        [make_supercell][kups.core.cell.make_supercell] to build supercells."""
+        ...
 
 
 def _build_vectors(lengths: Array, angles: Array) -> Array:
@@ -147,11 +237,15 @@ def _build_vectors(lengths: Array, angles: Array) -> Array:
 
 @dataclass
 class TriclinicFrame(Sliceable):
-    """General triclinic frame with 6 degrees of freedom.
+    """General triclinic [Frame][kups.core.cell.Frame] with 6 degrees of freedom.
 
     Stores the 6 independent elements of the lower-triangular basis matrix.
     Vectors are a linear function of these parameters, making them suitable
-    for gradient-based optimization.
+    for gradient-based optimization (e.g. NPT cell-vector relaxation).
+
+    Use this when the simulation domain has non-orthogonal axes
+    (monoclinic / triclinic crystals, sheared MD boxes). For axis-aligned
+    domains, [OrthogonalFrame][kups.core.cell.OrthogonalFrame] is cheaper.
 
     Attributes:
         tril: Lower-triangular elements ``[L00, L10, L11, L20, L21, L22]``,
@@ -250,13 +344,17 @@ class TriclinicFrame(Sliceable):
 
 @dataclass
 class OrthogonalFrame(Sliceable):
-    """Orthogonal frame with 3 degrees of freedom.
+    """Axis-aligned [Frame][kups.core.cell.Frame] with 3 degrees of freedom.
 
-    Exploits the diagonal structure for cheaper volume, inverse, and
-    coordinate transform operations compared to the general triclinic path.
+    Parameterized by the three side lengths. Exploits the diagonal
+    structure for cheaper volume, inverse, and coordinate-transform
+    operations than the general triclinic path. Use this when the
+    simulation domain has perpendicular axes (cubic, tetragonal, or
+    orthorhombic crystals; standard rectangular MD boxes).
 
     Attributes:
-        lengths: Box side lengths ``[Lx, Ly, Lz]`` in Angstroms, shape ``(..., 3)``.
+        lengths: Box side lengths ``[Lx, Ly, Lz]`` in Angstroms,
+            shape ``(..., 3)``.
     """
 
     lengths: Array
@@ -307,12 +405,19 @@ def _wrap(
 
 @dataclass
 class Cell[P: tuple[bool, bool, bool]](Sliceable):
-    """Frame plus per-axis boundary semantics.
+    """A [Frame][kups.core.cell.Frame] plus per-axis boundary semantics.
 
     Generic over the periodicity literal ``P``. Concrete subclasses pin
     ``P`` to a literal-typed tuple via a read-only ``periodic`` property
-    so construction is runtime-honest: ``PeriodicCell(frame, ...)`` rejects
-    a periodic kwarg.
+    so construction is runtime-honest — ``PeriodicCell(frame, ...)`` with
+    an extra periodic argument raises ``TypeError``.
+
+    The cell delegates geometry queries (``volume``, ``vectors``, etc.) to
+    its frame. The boundary semantics — what ``periodic`` means, how
+    [`wrap`][kups.core.cell.Cell.wrap] interprets it,
+    [`make_supercell`][kups.core.cell.make_supercell] tiling — live on the
+    cell. See [PeriodicCell][kups.core.cell.PeriodicCell] and
+    [VacuumCell][kups.core.cell.VacuumCell] for the two interpretations.
     """
 
     frame: Frame
@@ -352,7 +457,13 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
 
 @dataclass
 class PeriodicCell(Cell[Periodic3D]):
-    """Cell that is periodic along all three axes."""
+    """Cell that is periodic along all three axes.
+
+    The frame is interpreted as a *unit cell* — a tile of a periodic
+    crystal or fluid. ``wrap`` folds coordinates into the primary unit
+    cell; the neighbor list applies the minimum-image convention; the
+    Ewald summation requires this cell type.
+    """
 
     @property
     def periodic(self) -> Periodic3D:
@@ -361,9 +472,13 @@ class PeriodicCell(Cell[Periodic3D]):
 
 @dataclass
 class VacuumCell(Cell[Vacuum]):
-    """Cell with all three axes open. The frame is the simulation domain's
-    bounding parallelepiped — used by neighbor-list spatial partitioning
-    and any consumer that needs a domain size.
+    """Cell with all three axes open.
+
+    The frame is interpreted as the *bounding parallelepiped* of a finite
+    simulation domain — a cluster, an isolated molecule, a gas-phase
+    sample. ``wrap`` is a no-op; long-range electrostatics use direct
+    pairwise sums (no Ewald). The frame is still required because the
+    neighbor-list machinery needs a spatial-partitioning hint.
     """
 
     @property
