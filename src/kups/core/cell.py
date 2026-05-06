@@ -60,22 +60,14 @@ class CoordinateSpace(Enum):
 
 
 type FullyPeriodic = tuple[Literal[True], Literal[True], Literal[True]]
-"""Periodicity literal for fully-periodic cells."""
-
 type Vacuum = tuple[Literal[False], Literal[False], Literal[False]]
-"""Periodicity literal for fully-open cells."""
-
 type AnyMask = tuple[bool, bool, bool]
-"""General per-axis periodicity mask, used by slab cells."""
 
 
 class TriclinicMap(Protocol):
     """Mapping between an arbitrary frame and a triclinic frame."""
 
     def __call__(self, r: Array, /) -> Array: ...
-
-
-# --- Lattice protocol & implementations ------------------------------------
 
 
 @runtime_checkable
@@ -319,9 +311,6 @@ class OrthogonalLattice(Sliceable):
         return type(self)(self.lengths * jnp.asarray(other)[..., None])
 
 
-# --- Cell protocol & implementations ---------------------------------------
-
-
 def _wrap(
     lattice: Lattice,
     periodic: tuple[bool, bool, bool],
@@ -500,9 +489,6 @@ class SlabCell[L: Lattice](Sliceable):
 
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.lattice * other, self.periodic)
-
-
-# --- Free functions on Cell ------------------------------------------------
 
 
 def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
