@@ -11,7 +11,7 @@ Particles inside blocking spheres experience infinite repulsion, automatically
 rejecting Monte Carlo moves that violate spatial constraints.
 """
 
-from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Sequence, overload
 
 import jax
 import jax.numpy as jnp
@@ -19,7 +19,7 @@ from jax import Array
 
 from kups.core.cell import Cell
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, SimpleLens, View
+from kups.core.lens import Lens, View
 from kups.core.neighborlist import Edges, NearestNeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -32,9 +32,9 @@ from kups.core.potential import (
 )
 from kups.core.typing import (
     ExclusionId,
+    GroupId,
     HasCell,
-    HasExclusionIndex,
-    HasInclusionIndex,
+    HasGroupIndex,
     HasMotifIndex,
     HasPositionsAndSystemIndex,
     InclusionId,
@@ -45,13 +45,20 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndCell,
     PotentialFromEnergy,
     Sum,
     SumComposer,
     Summand,
-    position_and_cell_idx_view,
 )
+
+
+class BlockingSpheresConfig(Protocol):
+    """Protocol for a single blocking sphere description (center and radius)."""
+
+    @property
+    def center(self) -> tuple[float, float, float]: ...
+    @property
+    def radius(self) -> float: ...
 
 
 @dataclass
@@ -71,17 +78,46 @@ class BlockingSpheresParameters:
     motif: Index[MotifId]
 
     def __post_init__(self):
-        if isinstance(self.radii, Array):
-            assert (*self.radii.shape, 3) == self.positions.shape
+        if not isinstance(self.radii, Array):
+            return
+        assert (*self.radii.shape, 3) == self.positions.shape, (
+            f"Positions shape {self.positions.shape} must match radii shape {self.radii.shape} with last dimension 3"
+        )
+        assert self.radii.shape == self.system.shape == self.motif.shape, (
+            f"Radii, system, and motif must have the same shape: {self.radii.shape}, {self.system.shape}, {self.motif.shape}"
+        )
+
+    @staticmethod
+    def from_data(data: Sequence[Sequence[Sequence[BlockingSpheresConfig]]]):
+        """Build parameters from a nested sequence of sphere configurations.
+
+        Args:
+            data: Nested sequence indexed as ``data[system_idx][motif_idx][sphere_idx]``,
+                yielding the sphere configurations for each (system, motif) pair.
+
+        Returns:
+            BlockingSpheresParameters with flattened arrays of radii, positions,
+            system assignments, and motif assignments.
+        """
+        radii = []
+        positions = []
+        system = []
+        motif = []
+        for sys_idx, sys_spheres in enumerate(data):
+            for motif_idx, motif_spheres in enumerate(sys_spheres):
+                for sphere in motif_spheres:
+                    radii.append(sphere.radius)
+                    positions.append(sphere.center)
+                    system.append(SystemId(sys_idx))
+                    motif.append(MotifId(motif_idx))
+        radii = jnp.array(radii)
+        positions = jnp.array(positions).reshape(-1, 3)
+        system = Index.new(system, label=SystemId).populate_max_count()
+        motif = Index.new(motif, label=MotifId).populate_max_count()
+        return BlockingSpheresParameters(radii, positions, system, motif)
 
 
-class _BlockingParticles(
-    HasPositionsAndSystemIndex,
-    HasMotifIndex,
-    HasInclusionIndex,
-    HasExclusionIndex,
-    Protocol,
-): ...
+class _BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): ...
 
 
 @dataclass
@@ -108,30 +144,26 @@ class IsBlockingSpheresProbe(Protocol):
 
 
 @dataclass
-class BlockingSpheresPotentialInput[
-    Points: _BlockingParticles,
-    MaybeCell: Cell | None,
-]:
+class BlockingSpheresPotentialInput:
     """Input for blocking spheres energy calculation.
 
     Attributes:
         parameters: Blocking sphere positions and radii
-        particles: Indexed particle data with positions, system, and motif index
-        cell: Optional cell for periodic boundary conditions
+        particles: Indexed particle data with positions, system, and group index
+        groups: Indexed group data providing the motif index for each group
+        cell: Per-system cell used for periodic boundary wrapping
         edges: Particle-sphere pairs to check for blocking
     """
 
     parameters: BlockingSpheresParameters
-    particles: Table[ParticleId, Points]
-    cell: MaybeCell
+    particles: Table[ParticleId, _BlockingParticles]
+    groups: Table[GroupId, HasMotifIndex]
+    cell: Table[SystemId, Cell]
     edges: Edges[Literal[2]]
 
 
-def blocking_spheres_energy[
-    Points: _BlockingParticles,
-    UC: Cell | None,
-](
-    inp: BlockingSpheresPotentialInput[Points, UC],
+def blocking_spheres_energy(
+    inp: BlockingSpheresPotentialInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch]:
     """Calculate blocking spheres potential energy.
 
@@ -143,50 +175,48 @@ def blocking_spheres_energy[
     Returns:
         Energy and patch with infinite energy for blocked particles.
     """
-    edge_idx = inp.edges.indices.indices
-    particle_idx, sph_idx = edge_idx[:, 0], edge_idx[:, 1]
-    batch_data = inp.particles.data.system.indices[particle_idx]
-    diffs = (
-        inp.particles.data.positions[particle_idx] - inp.parameters.positions[sph_idx]
-    )
-    if inp.cell is not None:
-        cell = inp.cell[batch_data]
-        diffs = cell.wrap(diffs)
+    particle_motif_idx = inp.edges.indices[:, 0]
+    sph_idx = inp.edges.indices[:, 1].indices
+    particles = inp.particles[particle_motif_idx]
+    particle_sys = particles.system
+    diffs = particles.positions - inp.parameters.positions[sph_idx]
+    diffs = inp.cell[particle_sys].wrap(diffs)
     dists = jnp.linalg.norm(diffs, axis=-1)
     radii = inp.parameters.radii[sph_idx]
-    raw_energies = jnp.where(
-        (dists < radii)
-        & (
-            inp.particles.data.motif.indices[particle_idx]
-            == inp.parameters.motif.indices[sph_idx]
-        ),
-        jnp.inf,
-        0.0,
+    sph_motif = inp.parameters.motif[sph_idx]
+    # Compare motifs in a merged keyspace so that groups whose motif has no
+    # sphere (and OOB-sentinel groups, e.g. buffered empty slots) never match
+    # any sphere motif and therefore are not blocked.
+    group_motif_idx, sph_motif_idx = Index.match(
+        inp.groups[particles.group].motif, sph_motif
     )
-    batch_idx = Index(inp.particles.data.system.keys, batch_data)
-    energies = batch_idx.sum_over(raw_energies)
+    raw_energies = jnp.where(
+        (dists < radii) & (group_motif_idx == sph_motif_idx), jnp.inf, 0.0
+    )
+    energies = particle_sys.sum_over(raw_energies)
     return WithPatch(energies, IdPatch())
 
 
 @dataclass
-class BlockingSpheresSumComposer[
-    State,
-    Ptch: Patch,
-    S: HasCell,
-    Points: _BlockingParticles,
-](SumComposer[State, BlockingSpheresPotentialInput[Points, Cell], Ptch]):
+class BlockingSpheresSumComposer[State, Ptch: Patch](
+    SumComposer[State, BlockingSpheresPotentialInput, Ptch]
+):
     """Composer for blocking spheres potential in energy summation.
 
     Attributes:
         particles_view: Extracts indexed particle data from state
+        groups_view: Extracts indexed group data (motif assignments) from state
         systems_view: Extracts indexed systems from state
         parameters_view: Extracts blocking sphere parameters from state
         neighborlist_view: Extracts neighbor list instance from state
         probe: Probe providing a IsBlockingSpheresProbe
     """
 
-    particles_view: View[State, Table[ParticleId, Points]] = field(static=True)
-    systems_view: View[State, Table[SystemId, S]] = field(static=True)
+    particles_view: View[State, Table[ParticleId, _BlockingParticles]] = field(
+        static=True
+    )
+    groups_view: View[State, Table[GroupId, HasMotifIndex]] = field(static=True)
+    systems_view: View[State, Table[SystemId, HasCell]] = field(static=True)
     parameters_view: View[State, BlockingSpheresParameters] = field(static=True)
     neighborlist_view: View[State, NearestNeighborList] = field(static=True)
     probe: Probe[State, Ptch, IsBlockingSpheresProbe] | None = field(static=True)
@@ -211,16 +241,21 @@ class BlockingSpheresSumComposer[
         max_radii = jax.ops.segment_max(parameters.radii, seg_ids, len(systems.keys))
         cutoffs = Table(systems.keys, max_radii)
 
+        # NNList particles
+        nnlist_particles = particles.map_data(
+            lambda p: _BlockingSpherePoints(
+                positions=p.positions,
+                system=(sys := p.system.apply_mask(p.group.valid_mask)),
+                inclusion=sys.to_cls(InclusionId),
+                exclusion=Index.arange(len(sys), label=ExclusionId),
+            )
+        )
+
         # Build sphere rh as Indexed[ParticleId, _BlockingSpherePoints]
         p = parameters.positions.shape[0]
-        sphere_inclusion = Index(
-            tuple(InclusionId(lab) for lab in parameters.system.keys),
-            parameters.system.indices,
-        )
-        sphere_exclusion = Index(
-            tuple(ExclusionId(-1 - i) for i in range(p)),
-            jnp.arange(p),
-        )
+        sphere_inclusion = parameters.system.to_cls(InclusionId)
+        # Let's just pick negative exclusion IDs for spheres to avoid any possible overlap with particle exclusion IDs
+        sphere_exclusion = Index.new(tuple(ExclusionId(-1 - i) for i in range(p)))
         spheres = Table.arange(
             _BlockingSpherePoints(
                 positions=parameters.positions,
@@ -231,41 +266,37 @@ class BlockingSpheresSumComposer[
             label=ParticleId,
         )
 
-        edges = neighborlist(particles, spheres, systems, cutoffs)
-        cell = systems.data.cell
+        edges = neighborlist(nnlist_particles, spheres, systems, cutoffs)
+        cell = systems.map_data(lambda s: s.cell)
+        groups = self.groups_view(state)
         return Sum(
-            Summand(BlockingSpheresPotentialInput(parameters, particles, cell, edges))
+            Summand(
+                BlockingSpheresPotentialInput(
+                    parameters, particles, groups, cell, edges
+                )
+            )
         )
 
 
-def make_blocking_spheres_potential[
-    State,
-    Gradients,
-    Hessians,
-    Ptch: Patch,
-    Points: _BlockingParticles,
-    S: HasCell,
-](
-    particles_view: View[State, Table[ParticleId, Points]],
-    systems_view: View[State, Table[SystemId, S]],
+def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch](
+    particles_view: View[State, Table[ParticleId, _BlockingParticles]],
+    groups_view: View[State, Table[GroupId, HasMotifIndex]],
+    systems_view: View[State, Table[SystemId, HasCell]],
     parameters_view: View[State, BlockingSpheresParameters],
     neighborlist_view: View[State, NearestNeighborList],
     probe: Probe[State, Ptch, IsBlockingSpheresProbe] | None,
-    gradient_lens: Lens[BlockingSpheresPotentialInput[Points, Cell], Gradients],
+    gradient_lens: Lens[BlockingSpheresPotentialInput, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
 ) -> PotentialFromEnergy[
-    State,
-    BlockingSpheresPotentialInput[Points, Cell],
-    Gradients,
-    Hessians,
-    Ptch,
+    State, BlockingSpheresPotentialInput, Gradients, Hessians, Ptch
 ]:
     """Create blocking sphere potential for excluded volume constraints.
 
     Args:
         particles_view: Extracts indexed particle data from state
+        groups_view: Extracts indexed group data (motif assignments) from state
         systems_view: Extracts indexed systems from state
         parameters_view: Extracts blocking sphere parameters (positions, radii)
         neighborlist_view: Extracts neighbor list instance
@@ -282,6 +313,7 @@ def make_blocking_spheres_potential[
         blocking_spheres_energy,
         BlockingSpheresSumComposer(
             particles_view=particles_view,
+            groups_view=groups_view,
             systems_view=systems_view,
             parameters_view=parameters_view,
             neighborlist_view=neighborlist_view,
@@ -301,6 +333,8 @@ class IsBlockingSpheresState(Protocol):
     @property
     def particles(self) -> Table[ParticleId, _BlockingParticles]: ...
     @property
+    def groups(self) -> Table[GroupId, HasMotifIndex]: ...
+    @property
     def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def blocking_spheres_parameters(self) -> BlockingSpheresParameters: ...
@@ -312,71 +346,35 @@ class IsBlockingSpheresState(Protocol):
 def make_blocking_spheres_from_state[State](
     state: Lens[State, IsBlockingSpheresState],
     probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
 @overload
-def make_blocking_spheres_from_state[State](
-    state: Lens[State, IsBlockingSpheresState],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
-
-
-@overload
 def make_blocking_spheres_from_state[State, P: Patch](
     state: Lens[State, IsBlockingSpheresState],
     probe: Probe[State, P, IsBlockingSpheresProbe],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
-@overload
-def make_blocking_spheres_from_state[State, P: Patch](
-    state: Lens[State, IsBlockingSpheresState],
-    probe: Probe[State, P, IsBlockingSpheresProbe],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
-
-
-def make_blocking_spheres_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-) -> Any:
+def make_blocking_spheres_from_state(state: Any, probe: Any = None) -> Any:
     """Create a blocking spheres potential, optionally with incremental updates.
 
     Args:
-        state: Lens into the sub-state providing particles, systems, blocking sphere
-            parameters, and neighbor list.
+        state: Lens into the sub-state providing particles, groups, systems,
+            blocking sphere parameters, and neighbor list.
         probe: Probe returning a IsBlockingSpheresProbe; ``None`` for full
             recomputation.
-        compute_position_and_cell_gradients: When ``True``, compute gradients
-            w.r.t. particle positions and lattice vectors.
 
     Returns:
         Configured blocking spheres Potential.
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[BlockingSpheresPotentialInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.particles.map_data(lambda p: p.positions),
-                Table(x.particles.data.system.keys, x.cell),
-            )
-        )
-        patch_idx_view = position_and_cell_idx_view
     if probe is not None:
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_blocking_spheres_potential(
         state.focus(lambda x: x.particles),
+        state.focus(lambda x: x.groups),
         state.focus(lambda x: x.systems),
         state.focus(lambda x: x.blocking_spheres_parameters),
         state.focus(lambda x: x.blocking_spheres_neighborlist),
