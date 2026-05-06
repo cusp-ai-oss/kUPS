@@ -1,40 +1,55 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Simulation cell representations for molecular simulations.
+"""Simulation cell representations.
 
-Splits cell description into two orthogonal axes:
+A cell wraps a [Frame][kups.core.cell.Frame] (a 3D parallelepiped) and adds
+a per-axis periodicity mask. The frame itself is geometry only — the same
+frame can describe a periodic crystal's unit cell, a vacuum simulation's
+bounding box, or the bounding parallelepiped of a slab. Which interpretation
+applies is decided by the cell type that wraps the frame.
 
-- **Lattice geometry** — how the parallelepiped is parameterized.
-  - [OrthogonalLattice][kups.core.cell.OrthogonalLattice]: 3 DOF (lengths)
-  - [TriclinicLattice][kups.core.cell.TriclinicLattice]: 6 DOF (lower-triangular elements)
+## Frame — geometry
 
-- **Boundary condition** — which axes are periodic.
-  - [PeriodicCell][kups.core.cell.PeriodicCell]: all three axes periodic
-    (literal ``(True, True, True)``).
-  - [VacuumCell][kups.core.cell.VacuumCell]: all three axes open
-    (literal ``(False, False, False)``).
-  - [SlabCell][kups.core.cell.SlabCell]: runtime per-axis mask, e.g.
-    ``(True, True, False)`` for a slab.
+- [OrthogonalFrame][kups.core.cell.OrthogonalFrame]: 3 DOF (lengths).
+- [TriclinicFrame][kups.core.cell.TriclinicFrame]: 6 DOF (lower-triangular elements).
 
-Geometry primitives (lattice vectors, volume, fractional/real conversion)
-live on the [Lattice][kups.core.cell.Lattice] protocol. Boundary semantics
-(wrap, supercell replication) live on the [Cell][kups.core.cell.Cell]
-protocol, which is generic over both the lattice ``L`` and the periodicity
-literal ``P``. This lets callers narrow on either axis independently — e.g.
-an Ewald path can demand ``Cell[L, FullyPeriodic]`` regardless of geometry,
-and an orthogonal-only path can demand ``Cell[OrthogonalLattice, P]``
-regardless of periodicity.
+Both expose [vectors][kups.core.cell.Frame.vectors],
+[inverse_vectors][kups.core.cell.Frame.inverse_vectors],
+[volume][kups.core.cell.Frame.volume],
+[perpendicular_lengths][kups.core.cell.Frame.perpendicular_lengths], plus
+real/fractional coordinate transforms and per-axis tiling.
 
-Lattice vectors follow the row convention: ``r_real = r_frac @ lattice_vectors``.
+## Cell — geometry plus boundary semantics
+
+- [PeriodicCell][kups.core.cell.PeriodicCell]: all three axes periodic
+  (literal ``(True, True, True)``). The frame is the unit cell.
+- [VacuumCell][kups.core.cell.VacuumCell]: all three axes open
+  (literal ``(False, False, False)``). The frame is the simulation
+  domain's bounding parallelepiped.
+- [SlabCell][kups.core.cell.SlabCell]: runtime per-axis mask, e.g.
+  ``(True, True, False)`` for a slab. The frame is mixed: a periodic
+  unit on the True axes, a bounding span on the False axes.
+
+[Cell][kups.core.cell.Cell] is generic over the periodicity literal ``P``
+so consumers can narrow on the boundary axis — e.g. an Ewald path declares
+``Cell[FullyPeriodic]`` and pyright statically rejects ``VacuumCell``.
+
+Cell re-exposes the frame's geometric properties as passthrough so
+``cell.volume``, ``cell.vectors`` etc. work directly. For frame-specific
+fields (``OrthogonalFrame.lengths``, ``TriclinicFrame.tril``), narrow with
+``isinstance(cell.frame, OrthogonalFrame)``.
+
+Vectors follow the row convention: ``r_real = r_frac @ vectors``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from enum import Enum
 from functools import partial
-from typing import Any, Literal, Protocol, Self, TypeGuard, runtime_checkable
+from typing import Any, Literal, Protocol, Self, TypeGuard
 
 import jax
 import jax.numpy as jnp
@@ -52,7 +67,7 @@ class CoordinateSpace(Enum):
 
     Attributes:
         REAL: Cartesian coordinates in Angstroms.
-        FRACTIONAL: Scaled coordinates in [0, 1) relative to lattice vectors.
+        FRACTIONAL: Scaled coordinates in [0, 1) relative to frame vectors.
     """
 
     REAL = "real"
@@ -65,25 +80,26 @@ type AnyMask = tuple[bool, bool, bool]
 
 
 class TriclinicMap(Protocol):
-    """Mapping between an arbitrary frame and a triclinic frame."""
+    """Mapping that takes positions in an arbitrary frame and returns them
+    in the lower-triangular triclinic frame produced by
+    [to_lower_triangular][kups.core.cell.to_lower_triangular]."""
 
     def __call__(self, r: Array, /) -> Array: ...
 
 
-@runtime_checkable
-class Lattice(Protocol):
+class Frame(Protocol):
     """3D parallelepiped geometry, no periodicity attached.
 
-    Concrete lattices are pure containers of geometric parameters: lattice
-    vectors, volume, coordinate transforms. They know nothing about
-    boundary conditions.
+    Frames are pure containers of geometric parameters. Their interpretation
+    (periodic unit cell vs bounding box vs slab) is decided by the cell type
+    that wraps them.
     """
 
     @property
-    def lattice_vectors(self) -> Array: ...
+    def vectors(self) -> Array: ...
 
     @property
-    def inverse_lattice_vectors(self) -> Array: ...
+    def inverse_vectors(self) -> Array: ...
 
     @property
     def volume(self) -> Array: ...
@@ -95,25 +111,16 @@ class Lattice(Protocol):
 
     def to_real(self, r_frac: Array) -> Array: ...
 
-    def scale(self, multiplicities: tuple[int, int, int]) -> Self: ...
-
     def __mul__(self, other: Array | float | int) -> Self: ...
 
-    def __getitem__(self, index: Any) -> Self: ...
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self: ...
 
 
-def _build_lattice_vectors(lengths: Array, angles: Array) -> Array:
-    """Construct a lower-triangular 3x3 lattice matrix from crystallographic parameters.
+def _build_vectors(lengths: Array, angles: Array) -> Array:
+    """Construct a lower-triangular 3x3 matrix from crystallographic parameters.
 
-    Uses the standard crystallographic convention where the first vector lies
-    along x, the second in the xy-plane, and the third completes the cell.
-
-    Args:
-        lengths: Lattice lengths [a, b, c] in Angstroms, shape `(..., 3)`.
-        angles: Lattice angles [alpha, beta, gamma] in degrees, shape `(..., 3)`.
-
-    Returns:
-        Lower-triangular lattice matrix of shape `(..., 3, 3)`.
+    Uses the standard convention where the first vector lies along x, the
+    second in the xy-plane, and the third completes the cell.
     """
     a, b, c = lengths[..., 0], lengths[..., 1], lengths[..., 2]
     alpha_rad, beta_rad, gamma_rad = (
@@ -142,66 +149,44 @@ def _build_lattice_vectors(lengths: Array, angles: Array) -> Array:
     )
 
 
-def _perpendicular_lengths(lattice_vectors: Array, volume: Array) -> Array:
-    """Compute perpendicular distances between opposing faces of the cell."""
-    a = lattice_vectors[..., 0, :]
-    b = lattice_vectors[..., 1, :]
-    c = lattice_vectors[..., 2, :]
-    Lx = volume / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
-    Ly = volume / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
-    Lz = volume / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
-    return jnp.stack([Lx, Ly, Lz], axis=-1)
-
-
 @dataclass
-class TriclinicLattice(Sliceable):
-    """General triclinic lattice with 6 degrees of freedom.
+class TriclinicFrame(Sliceable):
+    """General triclinic frame with 6 degrees of freedom.
 
-    Stores the 6 independent elements of the lower-triangular lattice matrix.
-    Lattice vectors are a linear function of these parameters, making them
-    suitable for gradient-based optimization.
+    Stores the 6 independent elements of the lower-triangular basis matrix.
+    Vectors are a linear function of these parameters, making them suitable
+    for gradient-based optimization.
 
     Attributes:
         tril: Lower-triangular elements ``[L00, L10, L11, L20, L21, L22]``,
-            shape ``(..., 6)``. The lattice matrix is::
+            shape ``(..., 6)``. The basis matrix is::
 
                 [[L00,   0,   0],
                  [L10, L11,   0],
                  [L20, L21, L22]]
-
-    Example:
-        ```python
-        lat = TriclinicLattice.from_matrix(jnp.eye(3) * 10.0)
-        cell = PeriodicCell(lat)
-        cell.volume  # 1000.0
-        ```
     """
 
     tril: Array
 
     @classmethod
-    def from_matrix(cls, vecs: Array) -> TriclinicLattice:
-        """Construct a triclinic lattice from a lower-triangular lattice matrix.
-
-        Args:
-            vecs: Lower-triangular lattice vectors as rows, shape ``(..., 3, 3)``.
-        """
+    def from_matrix(cls, vecs: Array) -> TriclinicFrame:
+        """Construct from a lower-triangular basis matrix, shape ``(..., 3, 3)``."""
         vecs = jnp.asarray(vecs)
         return cls(vecs[..., *np.tril_indices(3)])
 
     @classmethod
-    def from_lengths_and_angles(cls, lengths: Array, angles: Array) -> TriclinicLattice:
-        """Construct a triclinic lattice from crystallographic parameters.
+    def from_lengths_and_angles(cls, lengths: Array, angles: Array) -> TriclinicFrame:
+        """Construct from crystallographic parameters.
 
         Args:
             lengths: Lattice lengths ``[a, b, c]`` in Angstroms, shape ``(..., 3)``.
             angles: Lattice angles ``[alpha, beta, gamma]`` in degrees, shape ``(..., 3)``.
                 alpha = angle(b, c), beta = angle(a, c), gamma = angle(a, b).
         """
-        return cls.from_matrix(_build_lattice_vectors(lengths, angles))
+        return cls.from_matrix(_build_vectors(lengths, angles))
 
     @property
-    def lattice_vectors(self) -> Array:
+    def vectors(self) -> Array:
         zero = jnp.zeros_like(self.tril[..., :1])
         return jnp.stack(
             [
@@ -213,8 +198,8 @@ class TriclinicLattice(Sliceable):
         )
 
     @property
-    def inverse_lattice_vectors(self) -> Array:
-        return triangular_3x3_det_and_inverse(self.lattice_vectors)[1]
+    def inverse_vectors(self) -> Array:
+        return triangular_3x3_det_and_inverse(self.vectors)[1]
 
     @property
     def volume(self) -> Array:
@@ -222,12 +207,12 @@ class TriclinicLattice(Sliceable):
 
     @property
     def lengths(self) -> Array:
-        return jnp.linalg.norm(self.lattice_vectors, axis=-1)
+        return jnp.linalg.norm(self.vectors, axis=-1)
 
     @property
     def angles(self) -> Array:
-        lv = self.lattice_vectors
-        a, b, c = lv[..., 0, :], lv[..., 1, :], lv[..., 2, :]
+        v = self.vectors
+        a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
         la, lb, lc = (
             jnp.linalg.norm(a, axis=-1),
             jnp.linalg.norm(b, axis=-1),
@@ -245,49 +230,47 @@ class TriclinicLattice(Sliceable):
 
     @property
     def perpendicular_lengths(self) -> Array:
-        return _perpendicular_lengths(self.lattice_vectors, self.volume)
+        v = self.vectors
+        a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
+        Lx = self.volume / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
+        Ly = self.volume / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
+        Lz = self.volume / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
+        return jnp.stack([Lx, Ly, Lz], axis=-1)
 
     def to_fractional(self, r: Array) -> Array:
-        return triangular_3x3_matmul(self.inverse_lattice_vectors, r)
+        return triangular_3x3_matmul(self.inverse_vectors, r)
 
     def to_real(self, r_frac: Array) -> Array:
-        return triangular_3x3_matmul(self.lattice_vectors, r_frac)
+        return triangular_3x3_matmul(self.vectors, r_frac)
 
-    def scale(self, multiplicities: tuple[int, int, int]) -> Self:
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         m = jnp.asarray(multiplicities)
-        scale_vec = jnp.array([m[0], m[1], m[1], m[2], m[2], m[2]])
-        return type(self)(self.tril * scale_vec)
+        scale = jnp.array([m[0], m[1], m[1], m[2], m[2], m[2]])
+        return type(self)(self.tril * scale)
 
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.tril * jnp.asarray(other)[..., None])
 
 
 @dataclass
-class OrthogonalLattice(Sliceable):
-    """Orthogonal lattice with 3 degrees of freedom.
+class OrthogonalFrame(Sliceable):
+    """Orthogonal frame with 3 degrees of freedom.
 
-    Exploits the diagonal structure for cheaper volume, inverse, and coordinate
-    transform operations compared to the general triclinic path.
+    Exploits the diagonal structure for cheaper volume, inverse, and
+    coordinate transform operations compared to the general triclinic path.
 
     Attributes:
         lengths: Box side lengths ``[Lx, Ly, Lz]`` in Angstroms, shape ``(..., 3)``.
-
-    Example:
-        ```python
-        lat = OrthogonalLattice(lengths=jnp.array([30., 30., 30.]))
-        cell = PeriodicCell(lat)
-        cell.volume  # 27000.0
-        ```
     """
 
     lengths: Array
 
     @property
-    def lattice_vectors(self) -> Array:
+    def vectors(self) -> Array:
         return self.lengths[..., :, None] * jnp.eye(3)
 
     @property
-    def inverse_lattice_vectors(self) -> Array:
+    def inverse_vectors(self) -> Array:
         return (1.0 / self.lengths)[..., :, None] * jnp.eye(3)
 
     @property
@@ -304,7 +287,7 @@ class OrthogonalLattice(Sliceable):
     def to_real(self, r_frac: Array) -> Array:
         return r_frac * self.lengths
 
-    def scale(self, multiplicities: tuple[int, int, int]) -> Self:
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         return type(self)(self.lengths * jnp.asarray(multiplicities))
 
     def __mul__(self, other: Array | float | int) -> Self:
@@ -312,48 +295,48 @@ class OrthogonalLattice(Sliceable):
 
 
 def _wrap(
-    lattice: Lattice,
+    frame: Frame,
     periodic: tuple[bool, bool, bool],
     r: Array,
     input_space: CoordinateSpace,
     output_space: CoordinateSpace,
 ) -> Array:
     """Fold coordinates into ``[-0.5, 0.5)`` along periodic axes."""
-    frac = lattice.to_fractional(r) if input_space is CoordinateSpace.REAL else r
+    frac = frame.to_fractional(r) if input_space is CoordinateSpace.REAL else r
     wrapped = (frac + 0.5) % 1 - 0.5
     mask = jnp.array(periodic)
     out = jnp.where(mask, wrapped, frac)
-    return lattice.to_real(out) if output_space is CoordinateSpace.REAL else out
+    return frame.to_real(out) if output_space is CoordinateSpace.REAL else out
 
 
-@runtime_checkable
-class Cell[L: Lattice, P: tuple[bool, bool, bool]](Protocol):
-    """Lattice geometry with per-axis boundary semantics.
+@dataclass
+class Cell[P: tuple[bool, bool, bool]](Sliceable):
+    """Frame plus per-axis boundary semantics.
 
-    Generic over both the lattice ``L`` (orthogonal vs triclinic) and the
-    periodicity literal ``P``. The two type parameters narrow independently:
-    a function may demand any combination such as
-    ``Cell[OrthogonalLattice, FullyPeriodic]``,
-    ``Cell[L, FullyPeriodic]``, or ``Cell[OrthogonalLattice, P]``.
+    Generic over the periodicity literal ``P``. Three concrete subclasses
+    pin ``P`` to a literal-typed tuple (PeriodicCell, VacuumCell) or leave
+    it as a runtime mask (SlabCell). All shared behavior — geometry
+    passthrough, wrap, scaling — lives on this base.
     """
 
-    @property
-    def lattice(self) -> L: ...
+    frame: Frame
+    periodic: P = field(static=True)
 
     @property
-    def periodic(self) -> P: ...
+    def vectors(self) -> Array:
+        return self.frame.vectors
 
     @property
-    def lattice_vectors(self) -> Array: ...
+    def inverse_vectors(self) -> Array:
+        return self.frame.inverse_vectors
 
     @property
-    def inverse_lattice_vectors(self) -> Array: ...
+    def volume(self) -> Array:
+        return self.frame.volume
 
     @property
-    def volume(self) -> Array: ...
-
-    @property
-    def perpendicular_lengths(self) -> Array: ...
+    def perpendicular_lengths(self) -> Array:
+        return self.frame.perpendicular_lengths
 
     def wrap(
         self,
@@ -361,134 +344,42 @@ class Cell[L: Lattice, P: tuple[bool, bool, bool]](Protocol):
         *,
         input_space: CoordinateSpace = CoordinateSpace.REAL,
         output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array: ...
+    ) -> Array:
+        return _wrap(self.frame, self.periodic, r, input_space, output_space)
 
-    def __mul__(self, other: Array | float | int) -> Self: ...
-
-    def __getitem__(self, index: Any) -> Self: ...
+    def __mul__(self, other: Array | float | int) -> Self:
+        return dataclasses.replace(self, frame=self.frame * other)
 
 
 @dataclass
-class PeriodicCell[L: Lattice](Sliceable):
+class PeriodicCell(Cell[FullyPeriodic]):
     """Cell that is periodic along all three axes.
 
     The ``periodic`` field is pinned to the literal type ``FullyPeriodic``,
-    so a function that requires ``Cell[L, FullyPeriodic]`` accepts
-    ``PeriodicCell[L]`` and rejects ``VacuumCell[L]`` or ``SlabCell[L]``
-    statically.
+    so a function declared ``Cell[FullyPeriodic]`` accepts ``PeriodicCell``
+    and rejects ``VacuumCell`` / ``SlabCell`` statically.
     """
 
-    lattice: L
     periodic: FullyPeriodic = field(default=(True, True, True), static=True)
 
-    @property
-    def lattice_vectors(self) -> Array:
-        return self.lattice.lattice_vectors
-
-    @property
-    def inverse_lattice_vectors(self) -> Array:
-        return self.lattice.inverse_lattice_vectors
-
-    @property
-    def volume(self) -> Array:
-        return self.lattice.volume
-
-    @property
-    def perpendicular_lengths(self) -> Array:
-        return self.lattice.perpendicular_lengths
-
-    def wrap(
-        self,
-        r: Array,
-        *,
-        input_space: CoordinateSpace = CoordinateSpace.REAL,
-        output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array:
-        return _wrap(self.lattice, self.periodic, r, input_space, output_space)
-
-    def __mul__(self, other: Array | float | int) -> Self:
-        return type(self)(self.lattice * other)
-
 
 @dataclass
-class VacuumCell[L: Lattice](Sliceable):
-    """Cell with all three axes open (no periodicity).
-
-    The ``periodic`` field is pinned to the literal type ``Vacuum``.
+class VacuumCell(Cell[Vacuum]):
+    """Cell with all three axes open. The frame is the simulation domain's
+    bounding parallelepiped — used by neighbor-list spatial partitioning
+    and any consumer that needs a domain size.
     """
 
-    lattice: L
     periodic: Vacuum = field(default=(False, False, False), static=True)
 
-    @property
-    def lattice_vectors(self) -> Array:
-        return self.lattice.lattice_vectors
-
-    @property
-    def inverse_lattice_vectors(self) -> Array:
-        return self.lattice.inverse_lattice_vectors
-
-    @property
-    def volume(self) -> Array:
-        return self.lattice.volume
-
-    @property
-    def perpendicular_lengths(self) -> Array:
-        return self.lattice.perpendicular_lengths
-
-    def wrap(
-        self,
-        r: Array,
-        *,
-        input_space: CoordinateSpace = CoordinateSpace.REAL,
-        output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array:
-        return _wrap(self.lattice, self.periodic, r, input_space, output_space)
-
-    def __mul__(self, other: Array | float | int) -> Self:
-        return type(self)(self.lattice * other)
-
 
 @dataclass
-class SlabCell[L: Lattice](Sliceable):
+class SlabCell(Cell[AnyMask]):
     """Cell with a runtime per-axis periodicity mask.
 
-    Use this when periodicity varies per axis at runtime (true slabs with
-    one open axis, 1D wires, mixed-domain geometries). For statically known
-    fully-periodic or fully-vacuum systems, prefer ``PeriodicCell`` or
-    ``VacuumCell`` so the type system can discriminate.
+    For statically known fully-periodic or fully-vacuum systems, prefer
+    ``PeriodicCell`` or ``VacuumCell`` so the type system can discriminate.
     """
-
-    lattice: L
-    periodic: AnyMask = field(static=True)
-
-    @property
-    def lattice_vectors(self) -> Array:
-        return self.lattice.lattice_vectors
-
-    @property
-    def inverse_lattice_vectors(self) -> Array:
-        return self.lattice.inverse_lattice_vectors
-
-    @property
-    def volume(self) -> Array:
-        return self.lattice.volume
-
-    @property
-    def perpendicular_lengths(self) -> Array:
-        return self.lattice.perpendicular_lengths
-
-    def wrap(
-        self,
-        r: Array,
-        *,
-        input_space: CoordinateSpace = CoordinateSpace.REAL,
-        output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array:
-        return _wrap(self.lattice, self.periodic, r, input_space, output_space)
-
-    def __mul__(self, other: Array | float | int) -> Self:
-        return type(self)(self.lattice * other, self.periodic)
 
 
 def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
@@ -496,12 +387,12 @@ def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
 
     Returns 1 for non-periodic axes (no replication needed).
     """
-    computed = jnp.ceil(2 * cutoff / cell.lattice.perpendicular_lengths).astype(int)
+    computed = jnp.ceil(2 * cutoff / cell.perpendicular_lengths).astype(int)
     mask = jnp.array(cell.periodic)
     return jnp.where(mask, computed, 1)
 
 
-def make_supercell[T, T2, C: Cell](
+def make_supercell[T, T2, C: Cell[Any]](
     cell: C,
     multiplicities: tuple[int, int, int] | int,
     to_replicate: T,
@@ -512,7 +403,7 @@ def make_supercell[T, T2, C: Cell](
     Tiles the cell according to ``multiplicities`` (clamped to 1 on
     non-periodic axes), replicates the data, and shifts coordinates into
     the expanded cell using periodic wrapping. The returned cell has the
-    same concrete type as the input (``PeriodicCell``/``VacuumCell``/``SlabCell``).
+    same concrete type as the input.
     """
     if isinstance(multiplicities, int):
         multiplicities = (multiplicities, multiplicities, multiplicities)
@@ -529,20 +420,9 @@ def make_supercell[T, T2, C: Cell](
     shifts = jnp.stack(
         jnp.meshgrid(*[jnp.arange(m) for m in clamped]), axis=-1
     ).reshape(-1, 3)
-    real_shifts = triangular_3x3_matmul(cell.lattice.lattice_vectors, shifts)
+    real_shifts = triangular_3x3_matmul(cell.vectors, shifts)
 
-    new_lattice = cell.lattice.scale(clamped)
-    new_cell_inst: PeriodicCell | VacuumCell | SlabCell
-    if isinstance(cell, PeriodicCell):
-        new_cell_inst = PeriodicCell(new_lattice)
-    elif isinstance(cell, VacuumCell):
-        new_cell_inst = VacuumCell(new_lattice)
-    elif isinstance(cell, SlabCell):
-        new_cell_inst = SlabCell(new_lattice, cell.periodic)
-    else:
-        msg = f"Unsupported cell type: {type(cell)}"
-        raise TypeError(msg)
-    new_cell: C = new_cell_inst  # pyright: ignore[reportAssignmentType]
+    new_cell: C = dataclasses.replace(cell, frame=cell.frame.tile(clamped))
 
     replicated = jax.tree.map(
         lambda x: jnp.repeat(x[None], n_reps, axis=0).reshape(-1, *x.shape[1:]),
@@ -560,35 +440,32 @@ def make_supercell[T, T2, C: Cell](
     return new_cell, replicated
 
 
-def is_vacuum[L: Lattice, P: tuple[bool, bool, bool]](
-    cell: Cell[L, P],
-) -> TypeGuard[VacuumCell[L]]:
+def is_vacuum[P: tuple[bool, bool, bool]](
+    cell: Cell[P],
+) -> TypeGuard[VacuumCell]:
     """``True`` iff ``cell`` is a [VacuumCell][kups.core.cell.VacuumCell]."""
     return isinstance(cell, VacuumCell)
 
 
-def is_fully_periodic[L: Lattice, P: tuple[bool, bool, bool]](
-    cell: Cell[L, P],
-) -> TypeGuard[PeriodicCell[L]]:
+def is_fully_periodic[P: tuple[bool, bool, bool]](
+    cell: Cell[P],
+) -> TypeGuard[PeriodicCell]:
     """``True`` iff ``cell`` is a [PeriodicCell][kups.core.cell.PeriodicCell]."""
     return isinstance(cell, PeriodicCell)
 
 
 def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
-    """Convert arbitrary lattice vectors to lower-triangular form via QR decomposition.
+    """Convert arbitrary basis vectors to lower-triangular form via QR.
 
-    Decomposes the input into a lower-triangular matrix (the canonical lattice
-    representation) and an orthogonal rotation that maps coordinates from the
-    original frame into the triclinic frame.
+    Decomposes the input into a lower-triangular basis matrix and an
+    orthogonal rotation that maps coordinates from the original frame
+    into the triclinic frame.
 
     Args:
-        vecs: Lattice vectors as rows of a 3x3 matrix, shape ``(3, 3)``.
+        vecs: Basis vectors as rows of a 3x3 matrix, shape ``(3, 3)``.
 
     Returns:
-        Tuple of (lower_triangular_vectors, coordinate_rotation_fn):
-            - lower_triangular_vectors: Lower-triangular 3x3 lattice matrix.
-            - coordinate_rotation_fn: Maps ``(..., 3)`` positions from the
-              original frame to the triclinic frame.
+        Tuple of (lower_triangular_vectors, coordinate_rotation_fn).
     """
     vecs = jnp.asarray(vecs)
     Q, L = jnp.linalg.qr(vecs.T)

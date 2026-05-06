@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
-from kups.core.cell import PeriodicCell, TriclinicLattice
+from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import GroupId, ParticleId
@@ -46,7 +46,7 @@ def _make_particles(
 def cells_2sys():
     """Two cubic cells: 4x4x4 and 6x6x6."""
     return PeriodicCell(
-        TriclinicLattice.from_matrix(
+        TriclinicFrame.from_matrix(
             jnp.array(
                 [
                     [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
@@ -61,7 +61,7 @@ def cells_2sys():
 def cells_1sys():
     """Single 4x4x4 cubic cell."""
     return PeriodicCell(
-        TriclinicLattice.from_matrix(
+        TriclinicFrame.from_matrix(
             jnp.array([[[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]]),
         )
     )
@@ -71,7 +71,7 @@ def cells_1sys():
 def small_cells():
     """Single 2x2x2 cubic cell."""
     return PeriodicCell(
-        TriclinicLattice.from_matrix(
+        TriclinicFrame.from_matrix(
             jnp.array([[[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]]),
         )
     )

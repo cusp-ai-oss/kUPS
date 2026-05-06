@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -232,7 +232,7 @@ def create_npt_system(
         label=ParticleId,
     )
 
-    cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * box_size))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size))
     from kups.core.utils.jax import tree_zeros_like
 
     systems = Table.arange(
@@ -382,7 +382,7 @@ class TestBarostatAndMICSteps:
         assert not jnp.isclose(
             new_state.systems.data.cell.volume, initial_volume, rtol=1e-8
         ), "CRITICAL BUG: Cell volume did not update"
-        expected_volume = jnp.linalg.det(new_state.systems.data.cell.lattice_vectors)
+        expected_volume = jnp.linalg.det(new_state.systems.data.cell.vectors)
         assert jnp.isclose(
             new_state.systems.data.cell.volume, expected_volume, rtol=1e-6
         )
@@ -394,9 +394,9 @@ class TestBarostatAndMICSteps:
         )
 
         initial_pos = state.particles.data.positions
-        initial_box = jnp.mean(jnp.diag(state.systems.data.cell.lattice_vectors[0]))
+        initial_box = jnp.mean(jnp.diag(state.systems.data.cell.vectors[0]))
         new_state = step(jax.random.key(42), state)
-        new_box = jnp.mean(jnp.diag(new_state.systems.data.cell.lattice_vectors[0]))
+        new_box = jnp.mean(jnp.diag(new_state.systems.data.cell.vectors[0]))
 
         expected_pos = initial_pos * (new_box / initial_box)
         assert jnp.allclose(new_state.particles.data.positions, expected_pos, rtol=1e-3)
@@ -425,7 +425,7 @@ class TestBarostatAndMICSteps:
 
     def test_wrapping_positions(self):
         box_size = 5.0
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * box_size))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * box_size))
 
         @dataclass
         class TestState:
@@ -828,12 +828,12 @@ def test_stress_matches_ase():
     # Evaluate potential and write gradients back into state
     result = pot(state)
     pos_grad = result.data.gradients.positions.data
-    uc_grad = result.data.gradients.cell.data
+    cell_grad = result.data.gradients.cell.data
 
     import dataclasses
 
     p_with_grad = p.set_data(dataclasses.replace(p.data, position_gradients=pos_grad))
-    s_with_grad = s.set_data(dataclasses.replace(s.data, cell_gradients=uc_grad))
+    s_with_grad = s.set_data(dataclasses.replace(s.data, cell_gradients=cell_grad))
 
     kups_stress = np.asarray(
         stress_via_virial_theorem(p_with_grad, s_with_grad).data[0]

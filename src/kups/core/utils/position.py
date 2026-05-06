@@ -44,14 +44,14 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     Example:
         ```python
         # Compute COM for each molecule
-        com = center_of_mass(molecules, unit_cell)
+        com = center_of_mass(molecules, cell)
         ```
     """
     group_ids = particles.data.group.indices
     num_groups = particles.data.group.num_labels
     # TODO: This function assumes that the structure is less than half the size of the cell!
-    assert cells.lattice_vectors.shape[0] == num_groups, (
-        f"Cells must match the number of groups. Got {cells.lattice_vectors.shape[0]} for {num_groups} groups."
+    assert cells.vectors.shape[0] == num_groups, (
+        f"Cells must match the number of groups. Got {cells.vectors.shape[0]} for {num_groups} groups."
     )
     batched_cells = cells[group_ids]
     # Index any particle in each group
@@ -107,7 +107,7 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
 
     Example:
         ```python
-        rel_pos = to_relative_positions(molecules, unit_cell)
+        rel_pos = to_relative_positions(molecules, cell)
         ```
     """
     group_ids = particles.data.group.indices
@@ -143,7 +143,7 @@ def to_absolute_positions[P: HasPositionsAndGroupIndex](
 
     Example:
         ```python
-        abs_pos = to_absolute_positions(rel_molecules, unit_cell, com)
+        abs_pos = to_absolute_positions(rel_molecules, cell, com)
         ```
     """
     group_ids = particles.data.group.indices

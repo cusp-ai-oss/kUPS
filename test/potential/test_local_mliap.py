@@ -11,7 +11,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import bind, lens
@@ -104,7 +104,7 @@ def simple_system():
     # Spread atoms far apart to minimize edges
     positions = jnp.array([[i * 3.0, 0.0, 0.0] for i in range(n_atoms)], dtype=float)
     atomic_numbers = jnp.zeros((n_atoms,), dtype=int)
-    cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 30.0))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 30.0))
 
     init_fn, edge_fn, readout_fn = make_simple_model(embed_dim)
 

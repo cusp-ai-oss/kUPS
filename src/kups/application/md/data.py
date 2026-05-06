@@ -80,7 +80,7 @@ class MDSystems:
         compressibility: Isothermal compressibility (length^3/energy), shape ``(n_systems,)``.
         minimum_scale_factor: Minimum barostat scale factor, shape ``(n_systems,)``.
         cell_gradients: Energy gradient w.r.t. the cell, stored as a
-            :class:`Cell` (the ``lattice_vectors`` leaf holds the
+            :class:`Cell` (the ``vectors`` leaf holds the
             shape-``(n_systems, 3, 3)`` gradient used by
             :attr:`stress_tensor`).
         potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
@@ -101,7 +101,7 @@ class MDSystems:
     @property
     def stress_tensor(self) -> Array:
         """Virial stress tensor, shape ``(n_systems, 3, 3)``."""
-        return -self.cell_gradients.lattice_vectors / self.cell.volume[..., None, None]
+        return -self.cell_gradients.vectors / self.cell.volume[..., None, None]
 
 
 class MdRunConfig(BaseModel):

@@ -92,7 +92,7 @@ class TestBlockingSpheresEnergy:
         )
 
     def test_energy_scenarios(self):
-        """Merged: inside + outside + boundary + multiple + no_edges + with_unit_cell."""
+        """Merged: inside + outside + boundary + multiple + no_edges + with_cell."""
         energy_fn = _jit_blocking_spheres_energy
 
         # Inside sphere -> infinite energy
@@ -155,16 +155,16 @@ class TestBlockingSpheresEnergy:
         assert result_none.data.data[0] == 0.0
 
         # With cell (still inside) -> infinite
-        uc_particles = _make_particles(jnp.array([[0.5, 0.0, 0.0]]), [0], [0])
-        edges_uc = create_test_edges(uc_particles, [[0, 0]])
-        inp_uc = BlockingSpheresPotentialInput(
+        cell_particles = _make_particles(jnp.array([[0.5, 0.0, 0.0]]), [0], [0])
+        edges_cell = create_test_edges(cell_particles, [[0, 0]])
+        inp_cell = BlockingSpheresPotentialInput(
             parameters=self.parameters,
-            particles=uc_particles,
+            particles=cell_particles,
             cell=None,
-            edges=edges_uc,
+            edges=edges_cell,
         )
-        result_uc = energy_fn(inp_uc)
-        assert jnp.isinf(result_uc.data.data[0])
+        result_cell = energy_fn(inp_cell)
+        assert jnp.isinf(result_cell.data.data[0])
 
     def test_edge_cases(self):
         """Merged: zero_radius + negative_radius + very_large_distances."""

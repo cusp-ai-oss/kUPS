@@ -197,7 +197,7 @@ class TestParticlesFromAse:
 
         atoms = bulk("Cu")
         _, cell, _ = particles_from_ase(atoms)
-        lv = cell.lattice_vectors
+        lv = cell.vectors
         # Lower-triangular: upper triangle (excluding diagonal) should be zero
         npt.assert_allclose(lv[..., 0, 1], 0.0, atol=1e-10)
         npt.assert_allclose(lv[..., 0, 2], 0.0, atol=1e-10)

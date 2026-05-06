@@ -13,7 +13,7 @@ import ase.io
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice, to_lower_triangular
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -73,7 +73,7 @@ def particles_from_ase(
     if isinstance(atoms, (str, Path)):
         atoms = next(ase.io.iread(atoms, index=-1, store_tags=True))
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    cell = PeriodicCell(TriclinicLattice.from_matrix(L))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(L))
     # Rotate Cartesian positions into the lower-triangular frame.
     positions = uc_transform(jnp.asarray(atoms.positions))
     masses = jnp.asarray(atoms.get_masses())

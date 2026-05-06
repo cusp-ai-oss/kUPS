@@ -10,9 +10,8 @@ from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
     Cell,
     FullyPeriodic,
-    Lattice,
     PeriodicCell,
-    TriclinicLattice,
+    TriclinicFrame,
     make_supercell,
 )
 from kups.core.data.index import Index
@@ -53,7 +52,7 @@ class PointCloudParticles:
 class SystemData:
     """System data with cell and cutoff."""
 
-    cell: Cell[Lattice, FullyPeriodic]
+    cell: Cell[FullyPeriodic]
     cutoff: Array
 
 
@@ -101,7 +100,7 @@ def _make_particle_data(
 
 
 def _make_systems(
-    cell: Cell[Lattice, FullyPeriodic], cutoff: Array
+    cell: Cell[FullyPeriodic], cutoff: Array
 ) -> Table[SystemId, SystemData]:
     """Build a Table[SystemId, SystemData] from a batched Cell and cutoff."""
     n_sys = cell.volume.shape[0]
@@ -163,7 +162,7 @@ class TestEwald:
         )
         particles = Table.arange(pdata, label=ParticleId)
 
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 100.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 100.0))
         systems = _make_systems(cell, jnp.array([50.0]))
 
         # Manually build bonded-pair edges: (0,1), (1,0), (2,3), (3,2)
@@ -193,7 +192,7 @@ class TestEwald:
         )
         particles = Table.arange(pdata, label=ParticleId)
 
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 20.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 20.0))
         systems = _make_systems(cell, jnp.array([50.0]))
 
         # Manually build edges for the cross-boundary bond: (0,1), (1,0)
@@ -223,9 +222,7 @@ class TestEwald:
             [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [10.0, 0.0, 0.0], [11.5, 0.0, 0.0]]
         )
         charges = jnp.array([1.0, -1.0, 1.0, -1.0])
-        cell = PeriodicCell(
-            TriclinicLattice.from_matrix(jnp.eye(3, dtype=float) * 20.0)
-        )
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * 20.0))
 
         estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-4)
         params = EwaldParameters(
@@ -296,7 +293,7 @@ class TestEwald:
             dtype=float,
         )
         charges = jnp.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0], dtype=float)
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3, dtype=float) * 2))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * 2))
 
         with npt.assert_raises(ValueError):
             estimate_ewald_parameters(charges, cell, epsilon_total=eps)
@@ -355,9 +352,9 @@ class TestEwaldParametersMake:
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId
         )
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * L))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * L))
         systems = Table.arange(
-            SystemData(cell=uc, cutoff=jnp.array([4.0])),
+            SystemData(cell=cell, cutoff=jnp.array([4.0])),
             label=SystemId,
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
@@ -388,7 +385,7 @@ class TestEwaldParametersMake:
             (SystemId(0), SystemId(1)),
             SystemData(
                 cell=PeriodicCell(
-                    TriclinicLattice.from_matrix(
+                    TriclinicFrame.from_matrix(
                         jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 20.0])
                     )
                 ),
@@ -409,9 +406,9 @@ class TestEwaldParametersMake:
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId
         )
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 5.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 5.0))
         systems = Table.arange(
-            SystemData(cell=uc, cutoff=jnp.array([2.0])),
+            SystemData(cell=cell, cutoff=jnp.array([2.0])),
             label=SystemId,
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=2.0)

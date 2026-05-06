@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import view
@@ -54,7 +54,7 @@ def _make_particles(
 def _make_systems(
     lattice_vectors: jax.Array, cutoff: jax.Array
 ) -> Table[SystemId, _SystemData]:
-    cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
     return Table.arange(_SystemData(cell, cutoff), label=SystemId)
 
 
@@ -391,7 +391,7 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
     def setup_class(cls):
         cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]])
         cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]])
-        cls.cells = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
+        cls.cells = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         cls.parameters = GlobalTailCorrectedLennardJonesParameters(
             labels=_LABELS,
             sigma=cls.sigma,

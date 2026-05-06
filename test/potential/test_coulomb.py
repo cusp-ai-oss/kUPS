@@ -4,7 +4,7 @@
 import jax
 import jax.numpy as jnp
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.neighborlist import Edges
@@ -47,7 +47,7 @@ def _make_particles(
 def _make_systems(
     lattice_vectors: jax.Array,
 ) -> Table[SystemId, _SystemData]:
-    cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
     cutoff = jnp.full((lattice_vectors.shape[0],), 100.0)
     return Table.arange(_SystemData(cell, cutoff), label=SystemId)
 

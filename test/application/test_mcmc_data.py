@@ -18,7 +18,7 @@ from kups.application.mcmc.data import (
     _make_molecule,
     mcmc_state_from_config,
 )
-from kups.core.cell import PeriodicCell, TriclinicLattice
+from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.typing import Label, MotifId
 
@@ -206,8 +206,8 @@ class TestMakeMolecule:
     def test_positions_offset_by_com(self):
         """Offsets from COM preserve bond lengths after random rotation."""
         motifs = _build_motifs(_co2_config())
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
-        particles, _ = _make_molecule(motifs, _motif_index(0), uc, jax.random.key(42))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        particles, _ = _make_molecule(motifs, _motif_index(0), cell, jax.random.key(42))
 
         pos = particles.data.positions
         com = pos.mean(axis=0)
@@ -221,8 +221,8 @@ class TestMakeMolecule:
 
     def test_labels_match_motif(self):
         motifs = _build_motifs(_co2_config())
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
-        particles, _ = _make_molecule(motifs, _motif_index(0), uc, jax.random.key(0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        particles, _ = _make_molecule(motifs, _motif_index(0), cell, jax.random.key(0))
         labels = particles.data.labels
         assert Label("C_co2") in labels.keys
         assert Label("O_co2") in labels.keys
@@ -230,14 +230,14 @@ class TestMakeMolecule:
 
     def test_group_has_correct_motif(self):
         motifs = _build_motifs(_co2_config(), _ch4_config())
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
-        _, group = _make_molecule(motifs, _motif_index(1), uc, jax.random.key(0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        _, group = _make_molecule(motifs, _motif_index(1), cell, jax.random.key(0))
         npt.assert_array_equal(group.data.motif.indices, jnp.array([1]))
 
     def test_single_group_created(self):
         motifs = _build_motifs(_co2_config())
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3) * L))
-        _, group = _make_molecule(motifs, _motif_index(0), uc, jax.random.key(0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        _, group = _make_molecule(motifs, _motif_index(0), cell, jax.random.key(0))
 
         assert len(group.keys) == 1
 
@@ -262,7 +262,7 @@ class TestSystemFields:
 
     def test_all(self):
         # cell matches input
-        diag = jnp.diag(self.systems_default.data.cell.lattice_vectors[0])
+        diag = jnp.diag(self.systems_default.data.cell.vectors[0])
         npt.assert_allclose(diag, jnp.full(3, L), atol=1e-5)
         # temperature
         npt.assert_allclose(self.systems_450.data.temperature, jnp.array([450.0]))

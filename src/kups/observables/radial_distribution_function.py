@@ -41,7 +41,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell
+from kups.core.cell import Cell, FullyPeriodic
 from kups.core.data import Index, Table
 from kups.core.lens import View, lens
 from kups.core.neighborlist import (
@@ -205,7 +205,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
 @no_jax_tracing
 def offline_radial_distribution_function(
     positions: Array,
-    cell: Cell,
+    cell: Cell[FullyPeriodic],
     rmax: float,
     bins: int,
     *,
@@ -243,7 +243,7 @@ def offline_radial_distribution_function(
         # Load trajectory from file
         with h5py.File("trajectory.h5", "r") as f:
             positions = f["positions"][:]  # Shape: (n_frames, n_particles, 3)
-            cell = PeriodicCell(TriclinicLattice.from_matrix(f["cell"][()]))
+            cell = PeriodicCell(TriclinicFrame.from_matrix(f["cell"][()]))
 
         # Compute time-averaged RDF
         g_r = offline_radial_distribution_function(

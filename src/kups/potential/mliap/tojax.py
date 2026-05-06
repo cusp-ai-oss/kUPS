@@ -131,7 +131,7 @@ def tojaxed_energy(
     """
     graph = inp.graph.sorted_by_system(sort_edges=True)
 
-    n_sys = graph.systems.data.cell.lattice_vectors.shape[0] + 1
+    n_sys = graph.systems.data.cell.vectors.shape[0] + 1
 
     positions = jnp.pad(
         graph.particles.data.positions,
@@ -148,7 +148,7 @@ def tojaxed_energy(
         (0, 1),
         constant_values=graph.particles.data.system.num_labels,
     )
-    cell = graph.systems.data.cell.lattice_vectors
+    cell = graph.systems.data.cell.vectors
     cell = jnp.concatenate([cell, jnp.zeros((1, 3, 3))], axis=0)
 
     edge_indices = graph.edges.indices.indices_in(graph.particles.keys)

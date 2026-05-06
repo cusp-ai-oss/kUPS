@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell
+from kups.core.cell import Cell, FullyPeriodic
 from kups.core.data import Index, Table
 from kups.core.typing import (
     GroupId,
@@ -35,11 +35,11 @@ class IsVirialParticles(HasPositions, HasSystemIndex, Protocol):
 
 
 @runtime_checkable
-class IsVirialSystems(HasCell, Protocol):
+class IsVirialSystems(HasCell[FullyPeriodic], Protocol):
     """Systems with cell gradients ∂U/∂h."""
 
     @property
-    def cell_gradients(self) -> Cell: ...
+    def cell_gradients(self) -> Cell[FullyPeriodic]: ...
 
 
 @runtime_checkable
@@ -59,37 +59,33 @@ class IsMolecularVirialState(
     def groups(self) -> Table[GroupId, HasSystemIndex]: ...
 
 
-def _stress_via_lattice_vector_gradients(
-    lattice_vectors_grad: Array, volume: Array
-) -> Array:
+def _stress_via_lattice_vector_gradients(vectors_grad: Array, volume: Array) -> Array:
     """σ = -∂U/∂h / V."""
-    return -lattice_vectors_grad / volume
+    return -vectors_grad / volume
 
 
 def _stress_via_virial_theorem(
     position_gradients: Array,
-    lattice_vector_gradients: Array,
+    vector_gradients: Array,
     positions: Array,
-    lattice_vectors: Array,
+    vectors: Array,
     system: Index[SystemId],
 ) -> Array:
     """σ = -1/V (Σ_i ∂U/∂r_i ⊗ r_i + h^T · ∂U/∂h)."""
     stress = -system.sum_over(position_gradients[:, None] * positions[..., None]).data
-    stress -= triangular_3x3_matmul(
-        lattice_vectors.mT, lattice_vector_gradients, lower=False
-    )
-    stress /= jnp.abs(jnp.linalg.det(lattice_vectors))
+    stress -= triangular_3x3_matmul(vectors.mT, vector_gradients, lower=False)
+    stress /= jnp.abs(jnp.linalg.det(vectors))
     return stress
 
 
 def _molecular_stress_via_virial_theorem(
     position_gradients: Array,
-    lattice_vector_gradients: Array,
+    vector_gradients: Array,
     positions: Array,
     group: Index[GroupId],
-    group_cells: Cell,
+    group_cells: Cell[FullyPeriodic],
     system: Index[SystemId],
-    system_lattice_vectors: Array,
+    system_vectors: Array,
     system_volume: Array,
 ) -> Array:
     """Molecular virial stress using center-of-mass positions (RASPA convention)."""
@@ -113,7 +109,7 @@ def _molecular_stress_via_virial_theorem(
         position_gradients[:, None] * (positions - rel_pos)[..., None]
     ).data
     stress = 0.5 * (stress + stress.mT)
-    stress -= system_lattice_vectors.mT @ lattice_vector_gradients
+    stress -= system_vectors.mT @ vector_gradients
     stress /= system_volume[:1][:, None, None]
     return stress
 
@@ -130,7 +126,7 @@ def stress_via_lattice_vector_gradients(
         Stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
     stress = _stress_via_lattice_vector_gradients(
-        systems.data.cell_gradients.lattice_vectors,
+        systems.data.cell_gradients.vectors,
         systems.data.cell.volume,
     )
     return Table(systems.keys, stress)
@@ -151,9 +147,9 @@ def stress_via_virial_theorem(
     """
     stress = _stress_via_virial_theorem(
         particles.data.position_gradients,
-        systems.data.cell_gradients.lattice_vectors,
+        systems.data.cell_gradients.vectors,
         particles.data.positions,
-        systems.data.cell.lattice_vectors,
+        systems.data.cell.vectors,
         particles.data.system,
     )
     return Table(systems.keys, stress)
@@ -179,12 +175,12 @@ def molecular_stress_via_virial_theorem(
     group_cells = systems[groups.data.system].cell
     stress = _molecular_stress_via_virial_theorem(
         particles.data.position_gradients,
-        systems.data.cell_gradients.lattice_vectors,
+        systems.data.cell_gradients.vectors,
         particles.data.positions,
         particles.data.group,
         group_cells,
         particles.data.system,
-        systems.data.cell.lattice_vectors,
+        systems.data.cell.vectors,
         systems.data.cell.volume,
     )
     return Table(systems.keys, stress)

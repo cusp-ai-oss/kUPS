@@ -199,7 +199,7 @@ class Edges[Degree: int](Sliceable):
         Returns:
             Array of shape `(n_edges, Degree-1, 3)` containing absolute shift vectors.
         """
-        lattice = systems.map_data(lambda x: x.cell.lattice_vectors)
+        lattice = systems.map_data(lambda x: x.cell.vectors)
         vecs = lattice[particles[self.indices[:, 0]].system]
         return triangular_3x3_matmul(vecs[:, None], self.shifts)
 
@@ -284,9 +284,7 @@ def _num_cells(
     *,
     eps: float = 1e-6,
 ) -> Array:
-    inv_norms: jax.Array = jnp.linalg.norm(
-        systems.cell.inverse_lattice_vectors, axis=-1
-    )
+    inv_norms: jax.Array = jnp.linalg.norm(systems.cell.inverse_vectors, axis=-1)
     face_lengths = 1.0 / jnp.where(inv_norms < eps, jnp.ones_like(inv_norms), inv_norms)
     num_bins = jnp.maximum((face_lengths / cutoff[..., None]).astype(int), 1)
     return num_bins
@@ -548,7 +546,7 @@ def _compute_distances_pbc_sq(
 
     If ``shifts`` is None, minimum-image shifts are computed via rounding.
     """
-    lattice_vecs = systems.map_data(lambda s: s.cell.lattice_vectors)
+    lattice_vecs = systems.map_data(lambda s: s.cell.vectors)
     vecs = lattice_vecs[lh.data.system[candidates.lhs.indices]]
     deltas = (
         lh.data.positions[candidates.lhs.indices]
@@ -756,13 +754,13 @@ def basic_neighborlist(
         rh = lh
 
     # Transform coordinates to fractional using per-particle system data
-    lh_inv = systems[lh.data.system].cell.inverse_lattice_vectors
+    lh_inv = systems[lh.data.system].cell.inverse_vectors
     lh = (
         bind(lh)
         .focus(lambda x: x.data.positions)
         .apply(lambda r: triangular_3x3_matmul(lh_inv, r))
     )
-    rh_inv = systems[rh.data.system].cell.inverse_lattice_vectors
+    rh_inv = systems[rh.data.system].cell.inverse_vectors
     rh = (
         bind(rh)
         .focus(lambda x: x.data.positions)
@@ -841,7 +839,7 @@ class AllDenseNearestNeighborList:
         # Or, if the state implements IsNeighborListState:
         nl = AllDenseNearestNeighborList.from_state(state)
 
-        edges = nl(particles, None, unit_cells, cutoffs, None)
+        edges = nl(particles, None, systems, cutoffs, None)
         ```
     """
 
@@ -1018,7 +1016,7 @@ class CellListNeighborList:
         # Or, if the state implements IsNeighborListState:
         nl = CellListNeighborList.from_state(state)
 
-        edges = nl(particles, None, unit_cells, cutoffs, None)
+        edges = nl(particles, None, systems, cutoffs, None)
         ```
     """
 
@@ -1266,12 +1264,8 @@ def all_connected_neighborlist(
         lh_i, rh_i = Index.match(lh_idx, rh.set_data(rh_index_remap)[rh_idx])
         mask &= ~lh_idx.isin(rh_index_remap) | (lh_i >= rh_i)
 
-    lh_frac = triangular_3x3_matmul(
-        lh_sys.cell.inverse_lattice_vectors, lh.data.positions
-    )
-    rh_frac = triangular_3x3_matmul(
-        rh_sys.cell.inverse_lattice_vectors, rh.data.positions
-    )
+    lh_frac = triangular_3x3_matmul(lh_sys.cell.inverse_vectors, lh.data.positions)
+    rh_frac = triangular_3x3_matmul(rh_sys.cell.inverse_vectors, rh.data.positions)
     shifts = jnp.round(lh_frac[lh_idx.indices] - rh_frac[rh_idx.indices]).astype(int)
     return _compact_edges(
         candidates,

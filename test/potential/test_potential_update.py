@@ -17,7 +17,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import WithCache, WithIndices
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -201,7 +201,7 @@ def _build_common(positions: Array | None = None) -> _CommonParts:
         positions = _INITIAL_POSITIONS
     system_ids = jnp.zeros(N_PARTICLES, dtype=int)
     particles = _make_particles(positions, system_ids)
-    cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
     systems = Table.arange(SystemData(cell, jnp.array([5.0])), label=SystemId)
     pidx = particles.keys
     ns = N_SPECIES

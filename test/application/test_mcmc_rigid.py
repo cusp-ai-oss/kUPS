@@ -20,7 +20,7 @@ from kups.application.simulations.mcmc_rigid import (
     _probe,
     make_propagator,
 )
-from kups.core.cell import PeriodicCell, TriclinicLattice
+from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Table, WithCache, WithIndices
 from kups.core.data.buffered import Buffered
 from kups.core.data.index import Index
@@ -111,7 +111,7 @@ def _build_state() -> MCMCState:
     )
     systems = Table.arange(
         MCMCSystems(
-            cell=PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * L)),
+            cell=PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * L)),
             temperature=jnp.array([300.0]),
             potential_energy=jnp.array([0.0]),
             log_fugacity=jnp.array([[0.0]]),  # (n_sys, n_motifs)

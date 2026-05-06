@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from jax import Array
 from typing_extensions import Protocol
 
-from kups.core.cell import Cell, FullyPeriodic, Lattice
+from kups.core.cell import Cell, FullyPeriodic
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
@@ -633,7 +633,7 @@ def make_csvr_step[State](
 
 @runtime_checkable
 class _StochasticCellRescalingSystemData(
-    HasCell[Lattice, FullyPeriodic],
+    HasCell[FullyPeriodic],
     HasTimeStep,
     HasTemperature,
     HasTargetPressure,
@@ -643,7 +643,7 @@ class _StochasticCellRescalingSystemData(
     Protocol,
 ):
     @property
-    def cell_gradients(self) -> Cell[Lattice, FullyPeriodic]: ...
+    def cell_gradients(self) -> Cell[FullyPeriodic]: ...
 
 
 @runtime_checkable
@@ -809,7 +809,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
 
 @runtime_checkable
 class IsCSVRNPTSystemData(
-    HasCell[Lattice, FullyPeriodic],
+    HasCell[FullyPeriodic],
     HasTimeStep,
     HasTemperature,
     HasTargetPressure,
@@ -820,7 +820,7 @@ class IsCSVRNPTSystemData(
     Protocol,
 ):
     @property
-    def cell_gradients(self) -> Cell[Lattice, FullyPeriodic]: ...
+    def cell_gradients(self) -> Cell[FullyPeriodic]: ...
 
 
 def make_csvr_npt_step[State](

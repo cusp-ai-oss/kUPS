@@ -11,7 +11,7 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -40,11 +40,11 @@ def _make_systems(
     """Helper: single-system Table with cell and gradients."""
     if lattice_grad is None:
         lattice_grad = jnp.zeros_like(lattice_vectors)
-    uc = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
-    uc_grad = PeriodicCell(TriclinicLattice.from_matrix(lattice_grad))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
+    cell_grad = PeriodicCell(TriclinicFrame.from_matrix(lattice_grad))
     n = lattice_vectors.shape[0]
     keys = tuple(SystemId(i) for i in range(n))
-    return Table(keys, _VirialSystems(cell=uc, cell_gradients=uc_grad))
+    return Table(keys, _VirialSystems(cell=cell, cell_gradients=cell_grad))
 
 
 def _make_particles(

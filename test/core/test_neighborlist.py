@@ -10,7 +10,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import CapacityError, FixedCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicLattice
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.data.wrappers import WithIndices
@@ -75,24 +75,31 @@ def _make_lh(positions, batch_mask, exclusion_ids=None):
     )
 
 
-def _make_systems(lattice_or_uc, cutoffs):
-    """Create Table systems from cell, alongside cutoffs.
+def _systems_from_cell(cell, cutoffs):
+    """Create Table systems from a Cell, alongside cutoffs.
 
     Returns:
         A tuple of (Table systems, Table cutoffs).
     """
     n = len(cutoffs)
-    if isinstance(lattice_or_uc, Cell):
-        uc = lattice_or_uc
-    else:
-        lv = jnp.asarray(lattice_or_uc)
-        if lv.shape[0] == 1 and n > 1:
-            lv = jnp.repeat(lv, n, axis=0)
-        uc = PeriodicCell(TriclinicLattice.from_matrix(lv))
     sys_keys = tuple(SystemId(i) for i in range(n))
-    indexed_systems = Table(sys_keys, SampleSystems(cell=uc))
+    indexed_systems = Table(sys_keys, SampleSystems(cell=cell))
     indexed_cutoffs = Table(sys_keys, cutoffs)
     return indexed_systems, indexed_cutoffs
+
+
+def _systems_from_lvecs(lvecs, cutoffs):
+    """Create Table systems from raw lattice vectors, alongside cutoffs.
+
+    Returns:
+        A tuple of (Table systems, Table cutoffs).
+    """
+    n = len(cutoffs)
+    lv = jnp.asarray(lvecs)
+    if lv.shape[0] == 1 and n > 1:
+        lv = jnp.repeat(lv, n, axis=0)
+    cell = PeriodicCell(TriclinicFrame.from_matrix(lv))
+    return _systems_from_cell(cell, cutoffs)
 
 
 def _make_rh(lh, rh_positions, rh_batch_mask, rh_index_remap, exclusion_ids=None):
@@ -284,7 +291,10 @@ class TestNearestNeighborListImplementations:
             rh_batch_mask = params.get("rh_batch_mask", params["batch_mask"])
             rh, rh_remap = _make_rh(lh, rh_pos, rh_batch_mask, rh_idx)
 
-        systems, cutoffs = _make_systems(params["cells"], params["cutoffs"])
+        if isinstance(params["cells"], Cell):
+            systems, cutoffs = _systems_from_cell(params["cells"], params["cutoffs"])
+        else:
+            systems, cutoffs = _systems_from_lvecs(params["cells"], params["cutoffs"])
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=rh,
@@ -448,7 +458,7 @@ class TestNearestNeighborListImplementations:
             ]
         )
         lh_batch = jnp.array([0, 0, 1, 1])
-        uc = jnp.eye(3)[None].repeat(2, axis=0) * 10.0
+        lvecs = jnp.eye(3)[None].repeat(2, axis=0) * 10.0
         cutoffs = jnp.array([1.5, 1.5])
 
         # Positive case: rh in correct systems, edges should be found
@@ -459,7 +469,7 @@ class TestNearestNeighborListImplementations:
             batch_mask=lh_batch,
             rh_batch_mask=jnp.array([0, 1]),
             rh_index_remap=jnp.array([1, 3]),
-            cells=uc,
+            cells=lvecs,
             cutoffs=cutoffs,
             capacity=20,
         )
@@ -484,7 +494,7 @@ class TestNearestNeighborListImplementations:
             batch_mask=lh_batch,
             rh_batch_mask=jnp.array([1, 0]),  # swapped
             rh_index_remap=jnp.array([3, 1]),
-            cells=uc,
+            cells=lvecs,
             cutoffs=cutoffs,
             capacity=20,
         )
@@ -680,7 +690,7 @@ class TestNearestNeighborListImplementations:
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=0.0, maxval=10.0
         )
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -694,7 +704,7 @@ class TestNearestNeighborListImplementations:
             jnp.arange(N),
         )
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         while (
             result := as_result_function(neighbor_list_instance)(
                 lh, None, systems=_sys, cutoffs=_cut
@@ -727,7 +737,7 @@ class TestNearestNeighborListImplementations:
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=-5.0, maxval=5.0
         )
-        cell = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -747,7 +757,7 @@ class TestNearestNeighborListImplementations:
         )
         rh, rh_remap = _make_rh(lh, new_positions, jnp.array([0] * M), rh_indices)
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
@@ -782,14 +792,14 @@ class TestNearestNeighborListImplementations:
 
     @staticmethod
     @jax.jit
-    def _compute_neighbor_mask(positions, lattice_vectors, cutoff):
+    def _compute_neighbor_mask(positions, vectors, cutoff):
         """JIT-compiled helper to compute neighbor mask (max_images=1)."""
         n = positions.shape[0]
         r = jnp.arange(-1, 2)  # [-1, 0, 1]
         image_offsets = jnp.stack(
             jnp.meshgrid(r, r, r, indexing="ij"), axis=-1
         ).reshape(-1, 3)
-        real_offsets = image_offsets @ lattice_vectors[0]
+        real_offsets = image_offsets @ vectors[0]
         deltas = positions[None, :, :] - positions[:, None, :]
         all_deltas = deltas[:, :, None, :] + real_offsets[None, None, :, :]
         dists = jnp.linalg.norm(all_deltas, axis=-1)
@@ -798,7 +808,7 @@ class TestNearestNeighborListImplementations:
 
     def _compute_naive_neighbors(self, positions, cell, cutoff):
         """Compute neighbors by explicitly checking all periodic images."""
-        mask = self._compute_neighbor_mask(positions, cell.lattice_vectors, cutoff)
+        mask = self._compute_neighbor_mask(positions, cell.vectors, cutoff)
         i_idx, j_idx = jnp.where(mask)
         return {(int(i), int(j)) for i, j in zip(i_idx, j_idx)}
 
@@ -811,12 +821,12 @@ class TestNearestNeighborListImplementations:
         positions_1 = jnp.array([[0.0, 0.0, 0.0], [0.4, 0.0, 0.0]])
         batch_mask_1 = jnp.array([0, 0])
         lv_1 = jnp.diag(jnp.array([1.0, 10.0, 10.0]))[None]
-        uc_1 = PeriodicCell(TriclinicLattice.from_matrix(lv_1))
+        cell_1 = PeriodicCell(TriclinicFrame.from_matrix(lv_1))
         nl_1 = instance_factory(
             candidates=10, edges=10, cells=256, image_candidates=200
         )
         lh_1 = _make_lh(positions_1, batch_mask_1, jnp.arange(len(batch_mask_1)))
-        _sys_1, _cut_1 = _make_systems(uc_1, jnp.array([cutoff]))
+        _sys_1, _cut_1 = _systems_from_cell(cell_1, jnp.array([cutoff]))
         result_1 = jax.jit(as_result_function(nl_1))(
             lh=lh_1, rh=None, systems=_sys_1, cutoffs=_cut_1
         )
@@ -826,17 +836,17 @@ class TestNearestNeighborListImplementations:
             for e in result_1.value.indices.indices
             if e[0] < len(positions_1) and e[1] < len(positions_1)
         }
-        expected_1 = self._compute_naive_neighbors(positions_1, uc_1, cutoff)
+        expected_1 = self._compute_naive_neighbors(positions_1, cell_1, cutoff)
         assert expected_1.issubset(valid_1), f"Missing edges: {expected_1 - valid_1}"
 
         # Sub-scenario 2: all directions
         positions_2 = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.3, 0.3]])
         batch_mask_2 = jnp.array([0, 0])
         lv_2 = jnp.eye(3)[None] * 1.0
-        uc_2 = PeriodicCell(TriclinicLattice.from_matrix(lv_2))
+        cell_2 = PeriodicCell(TriclinicFrame.from_matrix(lv_2))
         nl_2 = instance_factory(candidates=4, edges=53, cells=8, image_candidates=600)
         lh_2 = _make_lh(positions_2, batch_mask_2, jnp.arange(len(batch_mask_2)))
-        _sys_2, _cut_2 = _make_systems(uc_2, jnp.array([cutoff]))
+        _sys_2, _cut_2 = _systems_from_cell(cell_2, jnp.array([cutoff]))
         result_2 = jax.jit(as_result_function(nl_2))(
             lh=lh_2, rh=None, systems=_sys_2, cutoffs=_cut_2
         )
@@ -846,7 +856,7 @@ class TestNearestNeighborListImplementations:
             for e in result_2.value.indices.indices
             if e[0] < len(positions_2) and e[1] < len(positions_2)
         }
-        expected_2 = self._compute_naive_neighbors(positions_2, uc_2, cutoff)
+        expected_2 = self._compute_naive_neighbors(positions_2, cell_2, cutoff)
         assert expected_2.issubset(valid_2), f"Missing edges: {expected_2 - valid_2}"
 
     def test_small_cell_correctness(self, neighbor_list_impl):
@@ -857,7 +867,7 @@ class TestNearestNeighborListImplementations:
         )
         batch_mask = jnp.zeros(N, dtype=int)
         lattice_vectors = jnp.eye(3)[None] * 1.5
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
         cutoff = 1.2
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -871,7 +881,7 @@ class TestNearestNeighborListImplementations:
             jnp.arange(N),
         )
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
@@ -909,7 +919,7 @@ class TestNearestNeighborListImplementations:
                 jnp.eye(3) * 10.0,
             ]
         )
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
         cutoffs = jnp.array([0.8, 1.5])
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -925,7 +935,7 @@ class TestNearestNeighborListImplementations:
             ),
         )
 
-        _sys, _cut = _make_systems(cell, cutoffs)
+        _sys, _cut = _systems_from_cell(cell, cutoffs)
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -967,7 +977,7 @@ class TestNearestNeighborListImplementations:
         )
         batch_mask = jnp.array([0, 0, 1, 1, 2, 2])
         cell = PeriodicCell(
-            TriclinicLattice.from_matrix(jnp.eye(3)[None].repeat(3, axis=0) * 1.0)
+            TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(3, axis=0) * 1.0)
         )
         cutoffs = jnp.array([0.8, 0.8, 0.8])  # > 0.5 triggers images
 
@@ -983,7 +993,7 @@ class TestNearestNeighborListImplementations:
             jnp.arange(6),
         )
 
-        _sys, _cut = _make_systems(cell, cutoffs)
+        _sys, _cut = _systems_from_cell(cell, cutoffs)
 
         def get_edges(idx_order):
             rev_order = np.argsort(idx_order)
@@ -1017,7 +1027,7 @@ class TestNearestNeighborListImplementations:
                 ]
             ]
         )
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
         cutoff = 0.8
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1033,7 +1043,7 @@ class TestNearestNeighborListImplementations:
             ),
         )
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1061,7 +1071,7 @@ class TestNearestNeighborListImplementations:
         # Cell size 0.5 Å, cutoff 0.55 Å => nearest self-images (distance 0.5) are within cutoff
         cell_size = 0.5
         lattice_vectors = jnp.eye(3)[None] * cell_size
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
         cutoff = 0.55
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1075,7 +1085,7 @@ class TestNearestNeighborListImplementations:
             jnp.array([0]),
         )
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1121,7 +1131,7 @@ class TestNearestNeighborListImplementations:
         batch_mask = jnp.array([0, 0])
 
         lattice_vectors = jnp.eye(3)[None] * 1.0
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
         cutoff = jnp.inf
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1135,7 +1145,7 @@ class TestNearestNeighborListImplementations:
             jnp.array([0, 1]),
         )
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1177,7 +1187,7 @@ class TestNearestNeighborListImplementations:
         # The minimum image is (-1,0,0) with distance 0.2
         cell_size = 0.5
         lattice_vectors = jnp.eye(3)[None] * cell_size
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
         cutoff = 0.4
 
         instance_factory = neighbor_list_impl["instance_factory"]
@@ -1188,7 +1198,7 @@ class TestNearestNeighborListImplementations:
         # Same exclusion segment for both particles
         lh = _make_lh(positions, batch_mask, jnp.array([0, 0]))
 
-        _sys, _cut = _make_systems(cell, jnp.array([cutoff]))
+        _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
@@ -1255,7 +1265,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(10)
         )
 
-        _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, cutoffs)
+        _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=None,
@@ -1293,7 +1303,7 @@ class TestRefineCutoffNeighborList:
 
         # Lattice vectors for 3x3x3 cell
         lattice_vectors = jnp.eye(3)[None] * 3.0
-        cell = PeriodicCell(TriclinicLattice.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
 
         # Create candidates including some that need PBC
         lh_indices = jnp.array([0, 1, 2, 3])
@@ -1308,7 +1318,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(10)
         )
 
-        _sys, _cut = _make_systems(cell, cutoffs)
+        _sys, _cut = _systems_from_cell(cell, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=None,
@@ -1343,7 +1353,7 @@ class TestRefineCutoffNeighborList:
         rh, rh_remap = _make_rh(
             lh, rh_positions, jnp.zeros(len(rh_positions), dtype=int), rh_index_remap
         )
-        _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, cutoffs)
+        _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=rh,
@@ -1373,7 +1383,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(5)
         )
 
-        _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, cutoffs)
+        _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=None,
@@ -1416,7 +1426,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(10)
         )
 
-        _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, cutoffs)
+        _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=None,
@@ -1445,7 +1455,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(10)
         )
 
-        _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, cutoffs)
+        _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
             rh=None,
@@ -1471,7 +1481,9 @@ class TestRefineCutoffNeighborList:
             refinement_nl = RefineCutoffNeighborList(
                 candidates=candidates, avg_edges=FixedCapacity(5)
             )
-            _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
+            _sys, _cut = _systems_from_lvecs(
+                jnp.eye(3)[None] * 1000.0, jnp.array([2.0])
+            )
             edges = refinement_nl(lh=lh, rh=None, systems=_sys, cutoffs=_cut)
 
             if len(edges) > 0:
@@ -1499,7 +1511,7 @@ class TestRefineCutoffNeighborList:
             candidates=candidates, avg_edges=FixedCapacity(5)
         )
 
-        _sys, _cut = _make_systems(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
+        _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
         edges = refinement_nl(lh=lh, rh=None, systems=_sys, cutoffs=_cut)
 
         if len(edges) > 0:
@@ -1561,8 +1573,8 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = _make_systems(uc, jnp.array([3.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        systems, cutoffs = _systems_from_cell(cell, jnp.array([3.0]))
         nl = self._make_nl()
 
         # --- reference: two separate calls ---
@@ -1621,8 +1633,8 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = _make_systems(uc, jnp.array([1.5]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        systems, cutoffs = _systems_from_cell(cell, jnp.array([1.5]))
         nl = self._make_nl()
 
         lh = _make_lh(positions, batch)
@@ -1658,12 +1670,12 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.array([0, 0, 1, 1])
-        uc = PeriodicCell(
-            TriclinicLattice.from_matrix(
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(
                 jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
             )
         )
-        systems, cutoffs = _make_systems(uc, jnp.array([1.5, 1.5]))
+        systems, cutoffs = _systems_from_cell(cell, jnp.array([1.5, 1.5]))
         nl = self._make_nl()
 
         lh = _make_lh(positions, batch)
@@ -1687,8 +1699,8 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = _make_systems(uc, jnp.array([1.5]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        systems, cutoffs = _systems_from_cell(cell, jnp.array([1.5]))
         nl = self._make_nl()
 
         lh = _make_lh(positions, batch)
@@ -1714,8 +1726,8 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        uc = PeriodicCell(TriclinicLattice.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = _make_systems(uc, jnp.array([3.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        systems, cutoffs = _systems_from_cell(cell, jnp.array([3.0]))
         nl = self._make_nl(capacity=64)
 
         # reference

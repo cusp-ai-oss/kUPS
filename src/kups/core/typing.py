@@ -13,7 +13,7 @@ from typing import Any, Protocol, Union, runtime_checkable
 import numpy as np
 from jax import Array
 
-from kups.core.cell import Cell, Lattice
+from kups.core.cell import Cell
 from kups.core.data import Index, Table
 
 DType = np.dtype
@@ -260,19 +260,19 @@ class HasLogActivity(Protocol):
 
 
 @runtime_checkable
-class HasCell[L: Lattice, P: tuple[bool, bool, bool]](Protocol):
+class HasCell[P: tuple[bool, bool, bool]](Protocol):
     """Protocol for entities with cell parameters.
 
-    Generic over both the lattice geometry ``L`` and the periodicity
-    literal ``P``, mirroring [Cell][kups.core.cell.Cell] so consumers can
-    narrow on either axis (e.g. ``HasCell[OrthogonalLattice, FullyPeriodic]``).
+    Generic over the periodicity literal ``P``, mirroring
+    [Cell][kups.core.cell.Cell]. Narrowing example:
+    ``HasCell[FullyPeriodic]`` for systems requiring fully-periodic cells.
 
     Attributes:
-        cell: Cell parameters for each system (lattice vectors, volume).
+        cell: Cell parameters for each system.
     """
 
     @property
-    def cell(self) -> Cell[L, P]: ...
+    def cell(self) -> Cell[P]: ...
 
 
 @runtime_checkable

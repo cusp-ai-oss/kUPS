@@ -310,10 +310,7 @@ def _make_molecule(
     """
     chain = key_chain(key)
     motif_index = Index(motifs.keys, motifs.data.motif.where_flat(species_idx))
-    com = (
-        jax.random.uniform(next(chain), (3,), minval=-0.5, maxval=0.5)
-        @ cell.lattice_vectors
-    )
+    com = jax.random.uniform(next(chain), (3,), minval=-0.5, maxval=0.5) @ cell.vectors
     rot = Quaternion.random(next(chain))
     tpl = motifs[motif_index]
     n_a = len(tpl.positions)
