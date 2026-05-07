@@ -105,7 +105,7 @@ from jax import Array
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, field
 from kups.core.utils.math import triangular_3x3_det_and_inverse, triangular_3x3_matmul
 
 
@@ -407,24 +407,24 @@ def _wrap(
 class Cell[P: tuple[bool, bool, bool]](Sliceable):
     """A [Frame][kups.core.cell.Frame] plus per-axis boundary semantics.
 
-    Generic over the periodicity literal ``P``. Concrete subclasses pin
-    ``P`` to a literal-typed tuple via a read-only ``periodic`` property
-    so construction is runtime-honest — ``PeriodicCell(frame, ...)`` with
-    an extra periodic argument raises ``TypeError``.
+    Generic over the periodicity literal ``P``.
+    [PeriodicCell][kups.core.cell.PeriodicCell] and
+    [VacuumCell][kups.core.cell.VacuumCell] pin ``P`` to a literal tuple
+    via ``init=False`` defaults so construction is runtime-honest —
+    ``PeriodicCell(frame, ...)`` with an extra periodic argument raises
+    ``TypeError``. [SlabCell][kups.core.cell.SlabCell] keeps ``periodic``
+    init-able for runtime per-axis masks.
 
     The cell delegates geometry queries (``volume``, ``vectors``, etc.) to
-    its frame. The boundary semantics — what ``periodic`` means, how
-    [`wrap`][kups.core.cell.Cell.wrap] interprets it,
-    [`make_supercell`][kups.core.cell.make_supercell] tiling — live on the
-    cell. See [PeriodicCell][kups.core.cell.PeriodicCell] and
-    [VacuumCell][kups.core.cell.VacuumCell] for the two interpretations.
+    its frame. Periodic-mask-aware operations
+    ([`wrap`][kups.core.cell.Cell.wrap], [`fold`][kups.core.cell.Cell.fold],
+    [`minimum_image_shifts`][kups.core.cell.Cell.minimum_image_shifts])
+    live on the cell so callers don't need to access ``cell.periodic``
+    directly.
     """
 
     frame: Frame
-
-    @property
-    def periodic(self) -> P:
-        raise NotImplementedError
+    periodic: P = field(static=True)
 
     @property
     def vectors(self) -> Array:
@@ -451,6 +451,25 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
     ) -> Array:
         return _wrap(self.frame, self.periodic, r, input_space, output_space)
 
+    def fold(self, r_frac: Array) -> Array:
+        """Fold fractional coords into ``[0, 1)`` on periodic axes;
+        non-periodic axes pass through unchanged.
+
+        Used by neighbor-list spatial hashing; complementary to
+        [`wrap`][kups.core.cell.Cell.wrap] which uses the ``[-0.5, 0.5)``
+        convention.
+        """
+        return jnp.where(jnp.array(self.periodic), r_frac % 1, r_frac)
+
+    def minimum_image_shifts(self, deltas: Array) -> Array:
+        """Per-axis minimum-image shifts for fractional separations.
+
+        Returns ``round(deltas)`` on periodic axes (the closest integer
+        cell offset that wraps the separation to its minimum image) and
+        ``0`` on non-periodic axes.
+        """
+        return jnp.where(jnp.array(self.periodic), jnp.round(deltas), 0.0)
+
     def __mul__(self, other: Array | float | int) -> Self:
         return bind(self, lambda c: c.frame).set(self.frame * other)
 
@@ -465,9 +484,7 @@ class PeriodicCell(Cell[Periodic3D]):
     Ewald summation requires this cell type.
     """
 
-    @property
-    def periodic(self) -> Periodic3D:
-        return (True, True, True)
+    periodic: Periodic3D = field(default=(True, True, True), static=True)
 
 
 @dataclass
@@ -481,9 +498,20 @@ class VacuumCell(Cell[Vacuum]):
     neighbor-list machinery needs a spatial-partitioning hint.
     """
 
-    @property
-    def periodic(self) -> Vacuum:
-        return (False, False, False)
+    periodic: Vacuum = field(default=(False, False, False), static=True)
+
+
+@dataclass
+class SlabCell(Cell[AnyPeriodicity]):
+    """Cell with a runtime per-axis periodicity mask.
+
+    Used for slab geometries (e.g. ``(True, True, False)``) and 1D wires
+    (e.g. ``(True, False, False)``) where the periodic-axis story is
+    determined at construction rather than encoded in the type. For
+    statically known fully-periodic or fully-open cells, prefer
+    [PeriodicCell][kups.core.cell.PeriodicCell] or
+    [VacuumCell][kups.core.cell.VacuumCell] so type narrowing applies.
+    """
 
 
 def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:

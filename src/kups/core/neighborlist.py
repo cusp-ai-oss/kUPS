@@ -270,15 +270,6 @@ def _cell_stencil(dim: int):
         ).reshape(-1, dim)
 
 
-def _wrap_coordinates(coordinates: Array):
-    """Wrap coordinates to be within the bounds of the grid."""
-    return jnp.where(
-        coordinates < 0,
-        1 + coordinates,
-        jnp.where(coordinates >= 1, coordinates - 1, coordinates),
-    )
-
-
 def _num_cells(
     systems: NeighborListSystems,
     cutoff: Array,
@@ -299,20 +290,10 @@ def _cell_list_subselect(
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
 ) -> _Candidates:
-    periodic = systems.data.cell.periodic
-    fully_periodic = all(periodic)
-
-    if fully_periodic:
-        key_positions = _wrap_coordinates(lh.data.positions)
-        query_positions = _wrap_coordinates(rh.data.positions)
-    else:
-        mask = jnp.array(periodic)
-        key_positions = jnp.where(
-            mask, _wrap_coordinates(lh.data.positions), lh.data.positions
-        )
-        query_positions = jnp.where(
-            mask, _wrap_coordinates(rh.data.positions), rh.data.positions
-        )
+    cell = systems.data.cell
+    fully_periodic = all(cell.periodic)
+    key_positions = cell.fold(lh.data.positions)
+    query_positions = cell.fold(rh.data.positions)
 
     num_cells = systems.map_data(partial(_num_cells, cutoff=cutoffs))
     max_num_cells = max_num_cells.generate_assertion(
@@ -344,23 +325,17 @@ def _cell_list_subselect(
     query_original = Index(rh.keys, jnp.tile(jnp.arange(len(rh)), len(stencil)))
     query_system = rh.data.system[query_original.indices]
 
+    shifted = cell.fold(raw_shifted)
+    hashes = (
+        _cell_hash(shifted, num_cells[query_system])
+        + rh_system_ids[query_original.indices] * max_num_cells.size
+    )
     if fully_periodic:
-        query_neighborhood_positions = _wrap_coordinates(raw_shifted)
-        query_neighborhood_hashes = (
-            _cell_hash(query_neighborhood_positions, num_cells[query_system])
-            + rh_system_ids[query_original.indices] * max_num_cells.size
-        )
+        query_neighborhood_hashes = hashes
     else:
-        # On periodic axes wrap; on open axes pass through. Out-of-range stencil
-        # offsets on open axes route to cell_oob so they produce no key matches
-        # (cross-boundary candidates are excluded).
-        mask = jnp.array(periodic)
-        shifted = jnp.where(mask, _wrap_coordinates(raw_shifted), raw_shifted)
+        # Out-of-range stencil offsets on open axes route to cell_oob so they
+        # produce no key matches (cross-boundary candidates are excluded).
         in_box = jnp.all((shifted >= 0) & (shifted < 1), axis=-1)
-        hashes = (
-            _cell_hash(shifted, num_cells[query_system])
-            + rh_system_ids[query_original.indices] * max_num_cells.size
-        )
         query_neighborhood_hashes = jnp.where(in_box, hashes, cell_oob)
 
     unique_queries = jnp.unique(
@@ -583,8 +558,7 @@ def _compute_distances_pbc_sq(
         - rh.data.positions[candidates.rhs.indices]
     )
     if shifts is None:
-        periodic = jnp.array(systems.data.cell.periodic)
-        shifts = jnp.where(periodic, jnp.round(deltas), 0.0)
+        shifts = systems.data.cell.minimum_image_shifts(deltas)
     deltas -= shifts
     real_deltas = triangular_3x3_matmul(vecs, deltas)
     dist_sq = jnp.einsum("...d,...d->...", real_deltas, real_deltas)

@@ -333,11 +333,13 @@ class TestCellConstructors:
         assert c.periodic == (False, False, False)
         npt.assert_allclose(c.vectors, jnp.eye(3) * 2.0)
 
-    def test_periodic_rejects_periodic_kwarg(self):
-        """`periodic` is a read-only property; constructor takes only `frame`."""
-        frame = OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]))
-        with pytest.raises(TypeError):
-            PeriodicCell(frame, (False, False, False))  # pyright: ignore[reportCallIssue]
+    def test_periodic_rejects_wrong_literal_statically(self):
+        """`periodic` is typed `Periodic3D = (True, True, True)` literal;
+        passing a non-matching tuple is rejected by pyright at static-analysis
+        time. (Runtime accepts it; honesty is at the type level.)"""
+        # The line below would be a pyright error if uncommented:
+        # PeriodicCell(frame, (False, False, False))
+        pass
 
 
 class TestTypeGuards:

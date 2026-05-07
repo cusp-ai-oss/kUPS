@@ -1,11 +1,12 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Utilities for computing particle positions and center of mass in periodic systems.
+"""Utilities for computing particle positions and center of mass.
 
-This module provides functions for handling particle positions under periodic
-boundary conditions, including center-of-mass calculations for indexed particle
-groups.
+Functions in this module honor the cell's per-axis ``periodic`` mask via
+``cell.wrap`` — periodic axes fold into the primary cell, non-periodic
+axes pass through unchanged. The same code path covers fully-periodic
+crystals, vacuum clusters, and slab / wire geometries.
 """
 
 import jax
