@@ -168,7 +168,7 @@ class TestInternalEnergies:
         @dataclass
         class AssertionPatch:
             def __call__(self, state: MockState, accept: Accept) -> MockState:
-                sys_idx = Index.new(accept.keys)
+                sys_idx = accept.index
                 runtime_assert(
                     predicate=jnp.array(True),
                     message="Test assertion from patch",

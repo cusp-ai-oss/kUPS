@@ -10,7 +10,6 @@ import pytest
 from jax import Array
 
 from kups.core.assertion import runtime_assert
-from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import SimpleLens, bind, view
 from kups.core.parameter_scheduler import (
@@ -84,7 +83,7 @@ class ArrayPatch:
 
     def __call__(self, state: ExampleState, accept: Accept) -> ExampleState:
         # Apply increment only where accept is True
-        sys_idx = Index.new(list(accept.keys))
+        sys_idx = accept.index
         new_value = jnp.where(
             accept[sys_idx][0], state.array_data + self.increment, state.array_data
         )
@@ -100,7 +99,7 @@ class ExamplePatch:
 
     def __call__(self, state: ExampleState, accept: Accept) -> ExampleState:
         # Apply increment only where accept is True
-        sys_idx = Index.new(list(accept.keys))
+        sys_idx = accept.index
         new_value = jnp.where(
             accept[sys_idx][0], state.value + self.increment, state.value
         )

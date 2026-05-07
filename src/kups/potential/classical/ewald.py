@@ -263,7 +263,7 @@ class EwaldLongRangeInput[State]:
 
     @property
     def kvecs(self) -> Array:
-        sys_idx = Index.new(list(self.point_cloud.systems.keys))
+        sys_idx = self.point_cloud.systems.index
         return triangular_3x3_matmul(
             self.point_cloud.systems.data.cell.inverse_vectors.mT[:, None] * 2 * jnp.pi,
             self.parameters.reciprocal_lattice_shifts[sys_idx],
@@ -284,7 +284,7 @@ def ewald_self_interaction_energy(
     Summed per system via segment_sum. Positions in Ang, charges in e,
     energy in eV.
     """
-    sys_idx = Index.new(list(inp.graph.systems.keys))
+    sys_idx = inp.graph.systems.index
     energies = (
         -jax.ops.segment_sum(
             inp.graph.particles.data.charges**2,
@@ -368,7 +368,7 @@ def prefactor(inp: EwaldLongRangeInput) -> Array:
     Returns:
         Prefactor array, shape ``(batch_size, n_kvecs)``.
     """
-    sys_idx = Index.new(inp.point_cloud.systems.keys)
+    sys_idx = inp.point_cloud.systems.index
     alpha = inp.parameters.alpha[sys_idx]
     rls = inp.parameters.reciprocal_lattice_shifts[sys_idx]
     kv = inp.kvecs
@@ -572,7 +572,7 @@ def structure_factor[State](
             inp.changes_from_prev,
         )
     patch = (
-        EwaldCachePatch(sk, Index.new(inp.point_cloud.systems.keys), inp.cache_lens)
+        EwaldCachePatch(sk, inp.point_cloud.systems.index, inp.cache_lens)
         if inp.cache_lens is not None
         else IdPatch()
     )

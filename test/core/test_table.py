@@ -100,6 +100,32 @@ class TestUtilities:
         npt.assert_array_equal(new.data, [10.0, 20.0])
 
 
+class TestIndex:
+    def test_index_property(self):
+        # String keys: returns Index with arange indices and max_count=1
+        t = Table(("a", "b", "c"), jnp.array([10.0, 20.0, 30.0]))
+        idx = t.index
+        assert idx.keys == ("a", "b", "c")
+        assert idx.max_count == 1
+        assert idx.cls is str
+        npt.assert_array_equal(idx.indices, jnp.arange(3))
+
+        # Integer-typed keys preserve cls via _cls
+        ti = Table.arange(jnp.array([1.0, 2.0, 3.0]), label=ParticleId)
+        assert ti.index.cls is ParticleId
+        assert ti.index.keys == ti.keys
+
+        # Round-trip: indexing self by self.index returns the original data
+        npt.assert_array_equal(t[t.index], t.data)
+
+        # Empty table with explicit _cls
+        empty = Table((), jnp.zeros(0), _cls=str)
+        empty_idx = empty.index
+        assert empty_idx.keys == ()
+        assert empty_idx.cls is str
+        assert empty_idx.indices.shape == (0,)
+
+
 class TestAt:
     def test_get_and_set(self):
         data = jnp.array([1.0, 2.0, 3.0])

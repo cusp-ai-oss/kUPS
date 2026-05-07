@@ -84,7 +84,7 @@ class AtomPatch(Patch[State]):
 
     def __call__(self, state: State, accept: Accept) -> State:
         prev_positions = state.atoms.data.positions[self.indices]
-        mask = accept[Index.new(list(accept.keys))]
+        mask = accept[accept.index]
         new_pos = jnp.where(mask, self.new_positions, prev_positions)
         return (
             bind(state)

@@ -140,8 +140,8 @@ def make_mcmc_logged_data[S: IsMCMCState](
     host_positions = np.where(is_host)[0]
     ads_positions = np.where(~is_host)[0]
 
-    host_idx = Index(particles.keys, jnp.asarray(host_positions))
-    ads_idx = Index(particles.keys, jnp.asarray(ads_positions))
+    host_idx = particles.index[host_positions]
+    ads_idx = particles.index[ads_positions]
     host_keys = tuple(particles.keys[int(i)] for i in host_positions)
     ads_keys = tuple(particles.keys[int(i)] for i in ads_positions)
 

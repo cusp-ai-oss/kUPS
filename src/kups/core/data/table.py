@@ -156,6 +156,11 @@ class Table(Batched, Generic[TKey, TData]):
         index = tuple(map(label, range(n_items)))
         return Table(index, data, _cls=label)
 
+    @property
+    def index(self) -> Index[TKey]:
+        """Return the primary keys as an ``Index``."""
+        return Index(self.keys, jnp.arange(len(self.keys)), max_count=1, _cls=self.cls)
+
     def at[L: SupportsSorting, D](
         self: Table[L, D], index: Index[L], *, args: ScatterArgs | None = None
     ) -> BoundLens[D, D]:
@@ -349,8 +354,7 @@ class Table(Batched, Generic[TKey, TData]):
                     f"Key set mismatch at argument {i + 1}: "
                     f"expected {set(base.keys)}, got {set(other.keys)}"
                 )
-            idx = Index.new(list(base.keys))
-            return other[idx]
+            return other[base.index]
 
         aligned = [_align(o, i) for i, o in enumerate(others)]
         return Table(base.keys, (base.data, *aligned), _cls=base._cls)

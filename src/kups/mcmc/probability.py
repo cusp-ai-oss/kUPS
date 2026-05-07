@@ -30,7 +30,6 @@ from jax import Array
 
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
-from kups.core.data.index import Index
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -323,7 +322,7 @@ def make_boltzmann_probability_ratio[State, Move: Patch](
                 x.systems.map_data(lambda x: x.potential_energy), EMPTY, EMPTY
             )
         ),
-        state.focus(lambda x: PotentialOut(Index.new(x.systems.keys), EMPTY, EMPTY)),  # type: ignore
+        state.focus(lambda x: PotentialOut(x.systems.index, EMPTY, EMPTY)),  # type: ignore
     )
     return potential, BoltzmannLogProbabilityRatio(
         state.focus(lambda x: x.systems.map_data(lambda s: s.temperature)),

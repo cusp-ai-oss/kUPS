@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import Cell
-from kups.core.data import Index, Table
+from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.potential import (
@@ -65,7 +65,7 @@ def position_and_cell_idx_view(
 ) -> PotentialOut[PositionAndCell, EmptyType]:
     return PotentialOut(
         empty_patch_idx_view(state).total_energies,
-        PositionAndCell(state.particles.data.system, Index.new(state.systems.keys)),
+        PositionAndCell(state.particles.data.system, state.systems.index),
         EMPTY,
     )
 

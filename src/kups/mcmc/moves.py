@@ -234,7 +234,7 @@ def propose_group_translation(
     selected = random_select_groups(next(chain), groups, particles, capacity)
     selected_data = particles[selected]
     selected_particles = Table.arange(selected_data, label=ParticleId)
-    sys_idx = Index.new(systems.keys)
+    sys_idx = systems.index
     width = step_width[sys_idx]
     translations = Table(
         systems.keys,
@@ -254,7 +254,7 @@ def propose_group_rotation(
 ) -> ParticlePositionChanges:
     """Propose a random rigid-body rotation of one group per system."""
     chain = key_chain(key)
-    sys_idx = Index.new(systems.keys)
+    sys_idx = systems.index
     width = step_width[sys_idx]
     selected = random_select_groups(next(chain), groups, particles, capacity)
     selected_data = particles[selected]
@@ -308,7 +308,7 @@ def propose_particle_translation(
     random_ints = jax.random.bits(next(chain), shape=(n_sys,), dtype=jnp.uint32)
     raw_particle_ids = particles.data.system.select_per_label(random_ints)
     particle_ids = Index(particles.keys, raw_particle_ids)
-    sys_idx = Index.new(systems.keys)
+    sys_idx = systems.index
     width = step_width[sys_idx]
     translation = (
         distribution(

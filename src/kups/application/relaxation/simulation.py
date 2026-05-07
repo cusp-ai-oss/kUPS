@@ -18,7 +18,6 @@ from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import run_simulation_cycles
 from kups.core.cell import Cell
 from kups.core.data import Table
-from kups.core.data.index import Index
 from kups.core.lens import Lens, View, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.potential import (
@@ -102,8 +101,8 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
             )
         ),
         lambda x: PotentialOut(
-            Index.new(x.systems.keys),  # type: ignore
-            (x.particles.data.system, Index.new(x.systems.keys)),
+            x.systems.index,  # type: ignore
+            (x.particles.data.system, x.systems.index),
             EMPTY,
         ),  # type: ignore
     )
