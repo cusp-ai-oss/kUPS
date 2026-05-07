@@ -326,6 +326,7 @@ class TestCellConstructors:
         assert c.periodic == (False, False, False)
         npt.assert_allclose(c.vectors, jnp.eye(3) * 2.0)
 
+
 class TestTypeGuards:
     def test_is_vacuum_positive(self):
         c = VacuumCell(OrthogonalFrame(jnp.array([1.0, 1.0, 1.0])))
