@@ -79,24 +79,28 @@ def particles_from_ase(
     if isinstance(atoms, (str, Path)):
         atoms = next(ase.io.iread(atoms, index=-1, store_tags=True))
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
+    frame = TriclinicFrame.from_matrix(L)
     pbc: tuple[bool, bool, bool] = (
         bool(atoms.pbc[0]),
         bool(atoms.pbc[1]),
         bool(atoms.pbc[2]),
     )
+    # Match dispatch narrows `pbc` from `tuple[bool, bool, bool]` to the
+    # specific literal alias on each branch — `Cell(frame, pbc)` infers
+    # the cell's P parameter from the narrowed tuple type. The 8 patterns
+    # exhaustively cover every (bool, bool, bool) value.
     cell: Cell
-    if all(pbc):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(L))
-    elif not any(pbc):
-        cell = VacuumCell(TriclinicFrame.from_matrix(L))
-    else:
-        # Mixed-axis periodicity (slab / wire) needs a runtime per-axis mask;
-        # the current Cell hierarchy only exposes the all-True / all-False
-        # literals. Reintroduce a slab-shaped cell when a real consumer lands.
-        raise NotImplementedError(
-            f"Mixed per-axis periodicity {pbc} is not supported. "
-            "Use uniform pbc=True (PeriodicCell) or pbc=False (VacuumCell)."
-        )
+    match pbc:
+        case (True, True, True):
+            cell = PeriodicCell(frame)
+        case (False, False, False):
+            cell = VacuumCell(frame)
+        case (True, True, False) | (True, False, True) | (False, True, True):
+            cell = Cell(frame, periodic=pbc)  # Cell[Slab2D]
+        case (True, False, False) | (False, True, False) | (False, False, True):
+            cell = Cell(frame, periodic=pbc)  # Cell[Wire1D]
+        case _:
+            raise ValueError(f"unreachable: {pbc}")  # 8 cases above are exhaustive
     # Rotate Cartesian positions into the lower-triangular frame.
     positions = uc_transform(jnp.asarray(atoms.positions))
     masses = jnp.asarray(atoms.get_masses())

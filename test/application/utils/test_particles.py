@@ -8,6 +8,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
+import pytest
 
 from kups.application.utils.particles import Particles
 from kups.core.data.index import Index
@@ -202,3 +203,58 @@ class TestParticlesFromAse:
         npt.assert_allclose(lv[..., 0, 1], 0.0, atol=1e-10)
         npt.assert_allclose(lv[..., 0, 2], 0.0, atol=1e-10)
         npt.assert_allclose(lv[..., 1, 2], 0.0, atol=1e-10)
+
+
+class TestParticlesFromAsePbcDispatch:
+    """`particles_from_ase` constructs the right Cell flavor for each pbc shape."""
+
+    @staticmethod
+    def _atoms(pbc):
+        from ase import Atoms
+
+        return Atoms("Ar", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=pbc)
+
+    def test_fully_periodic_constructs_periodic_cell(self):
+        from kups.application.utils.particles import particles_from_ase
+        from kups.core.cell import PeriodicCell
+
+        _, cell, _ = particles_from_ase(self._atoms((True, True, True)))
+        assert isinstance(cell, PeriodicCell)
+        assert cell.periodic == (True, True, True)
+
+    def test_no_pbc_constructs_vacuum_cell(self):
+        from kups.application.utils.particles import particles_from_ase
+        from kups.core.cell import VacuumCell
+
+        _, cell, _ = particles_from_ase(self._atoms((False, False, False)))
+        assert isinstance(cell, VacuumCell)
+        assert cell.periodic == (False, False, False)
+
+    @pytest.mark.parametrize(
+        "pbc",
+        [(True, True, False), (True, False, True), (False, True, True)],
+        ids=["xy", "xz", "yz"],
+    )
+    def test_2d_slab_carries_runtime_mask(self, pbc):
+        from kups.application.utils.particles import particles_from_ase
+        from kups.core.cell import Cell, PeriodicCell, VacuumCell
+
+        _, cell, _ = particles_from_ase(self._atoms(pbc))
+        # neither the literal-typed PeriodicCell nor VacuumCell — generic Cell
+        assert isinstance(cell, Cell)
+        assert not isinstance(cell, (PeriodicCell, VacuumCell))
+        assert cell.periodic == pbc
+
+    @pytest.mark.parametrize(
+        "pbc",
+        [(True, False, False), (False, True, False), (False, False, True)],
+        ids=["x", "y", "z"],
+    )
+    def test_1d_wire_carries_runtime_mask(self, pbc):
+        from kups.application.utils.particles import particles_from_ase
+        from kups.core.cell import Cell, PeriodicCell, VacuumCell
+
+        _, cell, _ = particles_from_ase(self._atoms(pbc))
+        assert isinstance(cell, Cell)
+        assert not isinstance(cell, (PeriodicCell, VacuumCell))
+        assert cell.periodic == pbc
