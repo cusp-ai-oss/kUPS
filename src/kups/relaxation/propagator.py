@@ -13,17 +13,17 @@ both standard optimizers (Adam, SGD) and line-search optimizers (L-BFGS, backtra
 from typing import Any
 
 import jax.numpy as jnp
-import optax
 from jax import Array
 
 from kups.core.lens import Lens
 from kups.core.potential import Potential
 from kups.core.propagator import Propagator
 from kups.core.utils.jax import dataclass, field
+from kups.relaxation.optimizer import Optimizer, apply_updates
 
 
 @dataclass
-class RelaxationPropagator[State, PyTree](Propagator[State]):
+class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
     """Unified propagator for gradient-based optimization using Optax.
 
     Uses a Potential to compute energy and gradients. Supports both standard
@@ -87,8 +87,8 @@ class RelaxationPropagator[State, PyTree](Propagator[State]):
 
     potential: Potential[State, PyTree, Any, Any] = field(static=True)
     property: Lens[State, PyTree] = field(static=True)
-    opt_state: Lens[State, optax.OptState] = field(static=True)
-    optimizer: optax.GradientTransformationExtraArgs = field(static=True)
+    opt_state: Lens[State, OptState] = field(static=True)
+    optimizer: Optimizer[PyTree, OptState] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
         del key
@@ -111,15 +111,15 @@ class RelaxationPropagator[State, PyTree](Propagator[State]):
         opt_state_current = self.opt_state.get(state)
 
         updates, new_opt_state = self.optimizer.update(
-            grad,  # type: ignore - optax typing
+            grad,
             opt_state_current,
-            params,  # type: ignore - optax typing
+            params,
             value=value,
             grad=grad,
             value_fn=value_fn,  # necessary for line-search optimizers
         )
 
-        new_params: PyTree = optax.apply_updates(params, updates)  # type: ignore
+        new_params = apply_updates(params, updates)
         state = self.property.set(state, new_params)
         state = self.opt_state.set(state, new_opt_state)
         return state

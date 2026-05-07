@@ -44,7 +44,7 @@ from kups.potential.classical.lennard_jones import (
     MixingRule,
     make_lennard_jones_from_state,
 )
-from kups.relaxation.optax import make_optimizer
+from kups.relaxation.config import make_optimizer
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -104,7 +104,7 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxLjState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj_params.cutoff
     )
-    opt_state = opt_init((particles.data.positions, systems.data.cell.vectors))
+    opt_state = opt_init(particles, systems)
     return RelaxLjState(
         particles=particles,
         systems=systems,

@@ -42,7 +42,7 @@ from kups.core.neighborlist import (
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_from_state
-from kups.relaxation.optax import make_optimizer
+from kups.relaxation.config import make_optimizer
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -98,7 +98,7 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxMlffState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, jaxified_model.cutoff
     )
-    opt_state = opt_init((particles.data.positions, systems.data.cell.vectors))
+    opt_state = opt_init(particles, systems)
     return RelaxMlffState(
         particles=particles,
         systems=systems,

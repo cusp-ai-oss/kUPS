@@ -1096,6 +1096,11 @@ def tree_zeros_like[T](tree: T) -> T:
     return tree_map(jnp.zeros_like, tree)
 
 
+def tree_copy[T](tree: T) -> T:
+    """Return a copy of the pytree with the same structure and values as ``tree``."""
+    return tree_map(jnp.copy, tree)
+
+
 def tree_where_broadcast_last[T](accept: Array, tree1: T, tree2: T) -> T:
     """Element-wise ``jnp.where`` over two pytrees, broadcasting ``accept`` on trailing dims.
 

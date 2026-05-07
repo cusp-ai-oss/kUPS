@@ -1,15 +1,25 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Factory utilities for building Optax optimizers from config specs."""
+"""Factory utilities for building chained relaxation optimizers from config specs.
+
+Lives in its own module (rather than ``kups.relaxation.optimizer``) so the
+custom-transform registry can refer to entries from
+``kups.relaxation.transforms`` without forming a circular import — the
+transform implementations need ``Optimizer`` from
+``kups.relaxation.optimizer`` themselves.
+"""
 
 from typing import Any
 
 import optax
 
-from kups.relaxation.optax.fire import scale_by_fire, scale_by_fire2
-from kups.relaxation.optax.lbfgs import scale_by_ase_lbfgs
-from kups.relaxation.optax.max_step_size import max_step_size
+from kups.relaxation.optimizer import Optimizer, chain
+from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
+from kups.relaxation.transforms.fire import ScaleByFire
+from kups.relaxation.transforms.fire2 import ScaleByFire2
+from kups.relaxation.transforms.lbfgs import ScaleByAseLbfgs
+from kups.relaxation.transforms.max_step_size import MaxStepSize
 
 Transform = str | dict[str, bool | int | float | str | list | None]
 """A single transform spec: either a name string or a dict with ``"transform"`` key."""
@@ -18,14 +28,15 @@ TransformationConfig = list[Transform]
 """Ordered list of transform specs to chain into an optimizer."""
 
 _CUSTOM_TRANSFORMS: dict[str, Any] = {
-    "scale_by_fire": scale_by_fire,
-    "scale_by_fire2": scale_by_fire2,
-    "max_step_size": max_step_size,
-    "scale_by_ase_lbfgs": scale_by_ase_lbfgs,
+    "scale_by_fire": ScaleByFire,
+    "scale_by_fire2": ScaleByFire2,
+    "max_step_size": MaxStepSize,
+    "scale_by_ase_lbfgs": ScaleByAseLbfgs,
+    "clip_by_global_norm": ClipByGlobalNorm,
 }
 
 
-def get_transform(transform: Transform) -> optax.GradientTransformation:
+def get_transform(transform: Transform) -> optax.GradientTransformation | Optimizer:
     """Convert a transform config entry to an Optax GradientTransformation.
 
     Args:
@@ -58,7 +69,7 @@ def get_transform(transform: Transform) -> optax.GradientTransformation:
 
 def get_transformations(
     transformations: TransformationConfig,
-) -> list[optax.GradientTransformation]:
+) -> list[optax.GradientTransformation | Optimizer]:
     """Convert a list of transform configs to Optax GradientTransformations.
 
     Args:
@@ -70,9 +81,7 @@ def get_transformations(
     return [get_transform(t) for t in transformations]
 
 
-def make_optimizer(
-    transformations: TransformationConfig,
-) -> optax.GradientTransformationExtraArgs:
+def make_optimizer(transformations: TransformationConfig) -> Optimizer:
     """Create a chained optimizer from a list of transform configs.
 
     Args:
@@ -88,4 +97,4 @@ def make_optimizer(
         ... ]
         >>> optimizer = make_optimizer(config)
     """
-    return optax.chain(*get_transformations(transformations))
+    return chain(*get_transformations(transformations))

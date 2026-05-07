@@ -37,6 +37,7 @@ from kups.core.propagator import (
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.functools import identity
+from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.propagator import RelaxationPropagator
 
 
@@ -65,13 +66,17 @@ class IsRelaxGradients(Protocol):
 class OptInit(Protocol):
     """Protocol for initialising an Optax optimizer state from gradients."""
 
-    def __call__(self, grads: tuple[Array, Array]) -> optax.OptState: ...
+    def __call__(
+        self,
+        particles: Table[ParticleId, RelaxParticles],
+        systems: Table[SystemId, RelaxSystems],
+    ) -> optax.OptState: ...
 
 
 def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     state_lens: Lens[State, State],
     potential: Potential[State, Gradients, EmptyType, Any],
-    optimizer: optax.GradientTransformationExtraArgs,
+    optimizer: Optimizer,
     optimize_cell: bool = False,
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
@@ -79,13 +84,13 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     Args:
         state_lens: Lens focusing on the relaxation sub-state.
         potential: Potential whose gradients drive the optimisation.
-        optimizer: Optax gradient transformation (e.g. FIRE, Adam, L-BFGS).
+        optimizer: Optimizer (e.g. FIRE, Adam, L-BFGS).
         optimize_cell: If True, optimise both positions and lattice vectors;
             otherwise optimise positions only.
 
     Returns:
         Tuple of ``(propagator, opt_init)`` where *propagator* performs one
-        optimisation step and *opt_init* initialises the Optax optimizer state.
+        optimisation step and *opt_init* initialises the optimizer state.
     """
     # Cache the gradient and forces within the state
     pot = CachedPotential(
@@ -111,12 +116,21 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
         prop_lens = state_lens.focus(
             lambda x: prop_view((x.particles.data.positions, x.systems.data.cell))
         )
+
+        def opt_init(
+            particles: Table[ParticleId, RelaxParticles],
+            systems: Table[SystemId, RelaxSystems],
+        ) -> optax.OptState:
+            params = (particles.data.positions, systems.data.cell)
+            indices = (particles.data.system, systems.index)
+            return optimizer.init(prop_view(params), prop_view(indices))  # type: ignore
+
         return RelaxationPropagator(
             potential=MappedPotential(pot, prop_view, identity),
             property=prop_lens,
             opt_state=state_lens.focus(lambda x: x.opt_state),
             optimizer=optimizer,
-        ), lambda grads: optimizer.init(prop_view(grads))  # type: ignore
+        ), opt_init
 
     relax_prop, opt_init = (
         relax_prop_and_opt_init(lens(identity))

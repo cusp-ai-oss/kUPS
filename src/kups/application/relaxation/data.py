@@ -22,7 +22,7 @@ from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
-from kups.relaxation.optax.optimizer import TransformationConfig
+from kups.relaxation.config import TransformationConfig
 
 
 @dataclass
