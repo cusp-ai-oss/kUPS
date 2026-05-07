@@ -96,7 +96,7 @@ from __future__ import annotations
 import math
 from enum import Enum
 from functools import partial
-from typing import Any, Literal, Protocol, Self, TypeGuard
+from typing import Any, Literal, Protocol, Self, TypeGuard, overload
 
 import jax
 import jax.numpy as jnp
@@ -472,6 +472,16 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
         """
         return jnp.where(jnp.array(self.periodic), r_frac % 1, r_frac)
 
+    def in_box(self, r_frac: Array) -> Array:
+        """Per-particle mask: ``True`` where fractional coords lie in
+        ``[0, 1)`` on every axis (i.e. inside the cell's parallelepiped).
+
+        Companion to [`fold`][kups.core.cell.Cell.fold]: after folding,
+        periodic axes are guaranteed in range, so this only filters
+        particles that left the box on a non-periodic axis.
+        """
+        return jnp.all((r_frac >= 0) & (r_frac < 1), axis=-1)
+
     def minimum_image_shifts(self, deltas: Array) -> Array:
         """Per-axis minimum-image shifts for fractional separations.
 
@@ -484,6 +494,33 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
     def __mul__(self, other: Array | float | int) -> Self:
         return bind(self, lambda c: c.frame).set(self.frame * other)
 
+    @overload
+    @staticmethod
+    def from_pbc(frame: Frame, pbc: Periodic3D) -> PeriodicCell: ...
+    @overload
+    @staticmethod
+    def from_pbc(frame: Frame, pbc: Vacuum) -> VacuumCell: ...
+    @overload
+    @staticmethod
+    def from_pbc[Q: tuple[bool, bool, bool]](frame: Frame, pbc: Q) -> Cell[Q]: ...
+    @staticmethod
+    def from_pbc(frame: Frame, pbc: tuple[bool, bool, bool]) -> Cell[Any]:
+        """Construct the cell flavor matching ``pbc``.
+
+        Returns [`PeriodicCell`][kups.core.cell.PeriodicCell] for
+        ``(True, True, True)``, [`VacuumCell`][kups.core.cell.VacuumCell]
+        for ``(False, False, False)``, and a generic ``Cell[P]`` carrying
+        the runtime mask for slab and wire geometries (``P`` is inferred
+        from the literal tuple).
+        """
+        match pbc:
+            case (True, True, True):
+                return PeriodicCell(frame)
+            case (False, False, False):
+                return VacuumCell(frame)
+            case _:
+                return Cell(frame, periodic=pbc)
+
 
 @dataclass
 class PeriodicCell(Cell[Periodic3D]):
@@ -495,7 +532,7 @@ class PeriodicCell(Cell[Periodic3D]):
     Ewald summation requires this cell type.
     """
 
-    periodic: Periodic3D = field(default=(True, True, True), static=True)
+    periodic: Periodic3D = field(default=(True, True, True), init=False, static=True)
 
 
 @dataclass
@@ -509,7 +546,7 @@ class VacuumCell(Cell[Vacuum]):
     neighbor-list machinery needs a spatial-partitioning hint.
     """
 
-    periodic: Vacuum = field(default=(False, False, False), static=True)
+    periodic: Vacuum = field(default=(False, False, False), init=False, static=True)
 
 
 def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:

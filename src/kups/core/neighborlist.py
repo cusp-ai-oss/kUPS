@@ -95,6 +95,7 @@ from jax import Array
 
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
+from kups.core.cell import is_3d_periodic
 from kups.core.data import Index, Sliceable, Table, subselect
 from kups.core.data.wrappers import WithIndices
 from kups.core.lens import Lens, bind, lens
@@ -291,7 +292,6 @@ def _cell_list_subselect(
     max_num_candidates: Capacity[int],
 ) -> _Candidates:
     cell = systems.data.cell
-    fully_periodic = all(cell.periodic)
     key_positions = cell.fold(lh.data.positions)
     query_positions = cell.fold(rh.data.positions)
 
@@ -330,13 +330,12 @@ def _cell_list_subselect(
         _cell_hash(shifted, num_cells[query_system])
         + rh_system_ids[query_original.indices] * max_num_cells.size
     )
-    if fully_periodic:
+    if is_3d_periodic(cell):
         query_neighborhood_hashes = hashes
     else:
         # Out-of-range stencil offsets on open axes route to cell_oob so they
         # produce no key matches (cross-boundary candidates are excluded).
-        in_box = jnp.all((shifted >= 0) & (shifted < 1), axis=-1)
-        query_neighborhood_hashes = jnp.where(in_box, hashes, cell_oob)
+        query_neighborhood_hashes = jnp.where(cell.in_box(shifted), hashes, cell_oob)
 
     unique_queries = jnp.unique(
         jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),

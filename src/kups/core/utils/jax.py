@@ -725,7 +725,23 @@ def dataclass[T: type](
             weakref_slot=weakref_slot,
         )  # type: ignore
         dcls._jax_dataclass = True
-        jax.tree_util.register_dataclass(dcls)
+        # `init=False` fields are excluded from pytree registration: they are
+        # set from defaults in __init__ and are not part of the constructor
+        # surface, so they neither carry traced data nor static aux that the
+        # caller can vary. JAX's auto-detection includes them and then errors,
+        # so we partition explicitly.
+        init_fields = [f for f in dataclasses.fields(dcls) if f.init]
+        data_fields = [
+            f.name for f in init_fields if not f.metadata.get("static", False)
+        ]
+        meta_fields = [f.name for f in init_fields if f.metadata.get("static", False)]
+        drop_fields = [f.name for f in dataclasses.fields(dcls) if not f.init]
+        jax.tree_util.register_dataclass(
+            dcls,
+            data_fields=data_fields,
+            meta_fields=meta_fields,
+            drop_fields=drop_fields,
+        )
         return dcls
 
     if cls is None:

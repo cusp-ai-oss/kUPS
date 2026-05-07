@@ -13,13 +13,7 @@ import ase.io
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import (
-    Cell,
-    PeriodicCell,
-    TriclinicFrame,
-    VacuumCell,
-    to_lower_triangular,
-)
+from kups.core.cell import Cell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -79,22 +73,8 @@ def particles_from_ase(
     if isinstance(atoms, (str, Path)):
         atoms = next(ase.io.iread(atoms, index=-1, store_tags=True))
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    frame = TriclinicFrame.from_matrix(L)
-    pbc: tuple[bool, bool, bool] = (
-        bool(atoms.pbc[0]),
-        bool(atoms.pbc[1]),
-        bool(atoms.pbc[2]),
-    )
-    cell: Cell
-    match pbc:
-        case (True, True, True):
-            cell = PeriodicCell(frame)
-        case (False, False, False):
-            cell = VacuumCell(frame)
-        case (True, True, False) | (True, False, True) | (False, True, True):
-            cell = Cell(frame, periodic=pbc)
-        case (True, False, False) | (False, True, False) | (False, False, True):
-            cell = Cell(frame, periodic=pbc)
+    pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
+    cell = Cell.from_pbc(TriclinicFrame.from_matrix(L), pbc)
     positions = uc_transform(jnp.asarray(atoms.positions))
     masses = jnp.asarray(atoms.get_masses())
     atomic_numbers = jnp.asarray(atoms.get_atomic_numbers())

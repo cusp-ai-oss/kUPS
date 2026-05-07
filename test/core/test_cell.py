@@ -326,6 +326,12 @@ class TestCellConstructors:
         assert c.periodic == (False, False, False)
         npt.assert_allclose(c.vectors, jnp.eye(3) * 2.0)
 
+    @pytest.mark.parametrize("cls", [PeriodicCell, VacuumCell])
+    def test_periodic_arg_is_rejected(self, cls):
+        frame = OrthogonalFrame(jnp.array([1.0, 1.0, 1.0]))
+        with pytest.raises(TypeError, match="periodic"):
+            cls(frame, periodic=(True, False, True))  # type: ignore[call-arg]
+
 
 class TestTypeGuards:
     def test_is_vacuum_positive(self):
