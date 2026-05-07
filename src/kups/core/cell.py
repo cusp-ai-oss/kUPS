@@ -462,25 +462,23 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
     ) -> Array:
         return _wrap(self.frame, self.periodic, r, input_space, output_space)
 
-    def fold(self, r_frac: Array) -> Array:
-        """Fold fractional coords into ``[0, 1)`` on periodic axes;
-        non-periodic axes pass through unchanged.
+    def fold(self, r_frac: Array) -> tuple[Array, Array]:
+        """Fold fractional coords into ``[0, 1)`` on periodic axes; non-periodic
+        axes pass through unchanged.
+
+        Returns ``(folded, in_cell)`` where ``in_cell`` is a per-particle
+        mask, ``True`` where the folded coords lie in ``[0, 1)`` on every
+        axis. For fully-periodic cells, ``in_cell`` is trivially ``True``
+        after folding; for cells with non-periodic axes, particles that
+        leaked out of the box on those axes are flagged ``False``.
 
         Used by neighbor-list spatial hashing; complementary to
         [`wrap`][kups.core.cell.Cell.wrap] which uses the ``[-0.5, 0.5)``
         convention.
         """
-        return jnp.where(jnp.array(self.periodic), r_frac % 1, r_frac)
-
-    def in_box(self, r_frac: Array) -> Array:
-        """Per-particle mask: ``True`` where fractional coords lie in
-        ``[0, 1)`` on every axis (i.e. inside the cell's parallelepiped).
-
-        Companion to [`fold`][kups.core.cell.Cell.fold]: after folding,
-        periodic axes are guaranteed in range, so this only filters
-        particles that left the box on a non-periodic axis.
-        """
-        return jnp.all((r_frac >= 0) & (r_frac < 1), axis=-1)
+        folded = jnp.where(jnp.array(self.periodic), r_frac % 1, r_frac)
+        in_cell = jnp.all((folded >= 0) & (folded < 1), axis=-1)
+        return folded, in_cell
 
     def minimum_image_shifts(self, deltas: Array) -> Array:
         """Per-axis minimum-image shifts for fractional separations.

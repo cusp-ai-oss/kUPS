@@ -95,7 +95,6 @@ from jax import Array
 
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
-from kups.core.cell import is_3d_periodic
 from kups.core.data import Index, Sliceable, Table, subselect
 from kups.core.data.wrappers import WithIndices
 from kups.core.lens import Lens, bind, lens
@@ -292,8 +291,8 @@ def _cell_list_subselect(
     max_num_candidates: Capacity[int],
 ) -> _Candidates:
     cell = systems.data.cell
-    key_positions = cell.fold(lh.data.positions)
-    query_positions = cell.fold(rh.data.positions)
+    key_positions, _ = cell.fold(lh.data.positions)
+    query_positions, _ = cell.fold(rh.data.positions)
 
     num_cells = systems.map_data(partial(_num_cells, cutoff=cutoffs))
     max_num_cells = max_num_cells.generate_assertion(
@@ -325,17 +324,16 @@ def _cell_list_subselect(
     query_original = Index(rh.keys, jnp.tile(jnp.arange(len(rh)), len(stencil)))
     query_system = rh.data.system[query_original.indices]
 
-    shifted = cell.fold(raw_shifted)
+    shifted, in_cell = cell.fold(raw_shifted)
     hashes = (
         _cell_hash(shifted, num_cells[query_system])
         + rh_system_ids[query_original.indices] * max_num_cells.size
     )
-    if is_3d_periodic(cell):
-        query_neighborhood_hashes = hashes
-    else:
-        # Out-of-range stencil offsets on open axes route to cell_oob so they
-        # produce no key matches (cross-boundary candidates are excluded).
-        query_neighborhood_hashes = jnp.where(cell.in_box(shifted), hashes, cell_oob)
+    # Stencil offsets that left the box on a non-periodic axis route to
+    # cell_oob so they produce no key matches (cross-boundary candidates
+    # are excluded). For fully-periodic cells fold guarantees in_cell is
+    # all-True, making the where a no-op.
+    query_neighborhood_hashes = jnp.where(in_cell, hashes, cell_oob)
 
     unique_queries = jnp.unique(
         jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
