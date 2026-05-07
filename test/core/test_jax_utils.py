@@ -233,6 +233,122 @@ class TestDataclass:
         assert len(leaves) == 3
 
 
+class TestDataclassInitStaticMatrix:
+    """The (init, static) combinations partition into JAX (data, meta, drop)
+    field groups. Downstream consumers — jit, tree.map, flatten/unflatten —
+    must respect the partition so that:
+      - data leaves get traced and updated
+      - meta aux is preserved across pytree roundtrips
+      - drop fields take their default after roundtrip and are not part of
+        the constructor surface
+    """
+
+    @staticmethod
+    def _matrix_class():
+        @dataclass
+        class Mix:
+            data: jax.Array  # init=T, static=F → data field
+            meta: str = field(
+                default="m0", static=True
+            )  # init=T, static=T → meta field
+            init_false_default: int = field(
+                default=99, init=False
+            )  # init=F → drop field
+            init_false_static: str = field(
+                default="s0", init=False, static=True
+            )  # init=F (static moot) → drop field
+
+        return Mix
+
+    def test_constructor_rejects_init_false_kwargs(self):
+        Mix = self._matrix_class()
+        with pytest.raises(TypeError, match="init_false_default"):
+            Mix(jnp.zeros(3), init_false_default=1)  # type: ignore[call-arg]
+        with pytest.raises(TypeError, match="init_false_static"):
+            Mix(jnp.zeros(3), init_false_static="bad")  # type: ignore[call-arg]
+
+    def test_only_data_fields_are_pytree_leaves(self):
+        m = self._matrix_class()(jnp.array([1.0, 2.0]))
+        leaves = jax.tree.leaves(m)
+        assert len(leaves) == 1
+        npt.assert_allclose(leaves[0], jnp.array([1.0, 2.0]))
+
+    def test_tree_map_preserves_all_field_kinds(self):
+        Mix = self._matrix_class()
+        m = Mix(jnp.array([1.0, 2.0]), meta="custom")
+        m2 = jax.tree.map(lambda x: x * 2, m)
+        npt.assert_allclose(m2.data, jnp.array([2.0, 4.0]))
+        # meta is carried in the treedef
+        assert m2.meta == "custom"
+        # drop fields restored from default on unflatten
+        assert m2.init_false_default == 99
+        assert m2.init_false_static == "s0"
+
+    def test_jit_traces_through_all_field_kinds(self):
+        Mix = self._matrix_class()
+        m = Mix(jnp.array([1.0, 2.0, 3.0]), meta="x")
+
+        @jax.jit
+        def square_data(mm):
+            return Mix(mm.data**2, meta=mm.meta)
+
+        m2 = square_data(m)
+        npt.assert_allclose(m2.data, jnp.array([1.0, 4.0, 9.0]))
+        assert m2.meta == "x"
+        assert m2.init_false_default == 99
+
+
+class TestDataclassPostInitWithInitFalse:
+    """``__post_init__`` runs at Python construction and observes the
+    init=False fields after their defaults are assigned, so validation that
+    depends on those fields works."""
+
+    def test_post_init_sees_default_assigned_init_false_field(self):
+        seen = []
+
+        @dataclass
+        class T:
+            x: jax.Array
+            cache: int = field(default=42, init=False)
+
+            @skip_post_init_if_disabled
+            def __post_init__(self):
+                seen.append((self.x.shape, self.cache))
+
+        T(jnp.zeros(3))
+        assert seen == [((3,), 42)]
+
+
+class TestDataclassSubclassPinsInheritedField:
+    """Subclass redeclares an inherited field with ``init=False`` to lock it
+    to a fixed default. This is the ``PeriodicCell`` / ``VacuumCell`` pattern:
+    the parent ``Cell`` exposes ``periodic`` as a constructor arg; the
+    subclass pins it and removes it from the constructor surface."""
+
+    def test_pinned_field_default_and_constructor_rejection(self):
+        @dataclass
+        class Parent:
+            data: jax.Array
+            mask: tuple[bool, bool] = field(static=True)
+
+        @dataclass
+        class Pinned(Parent):
+            mask: tuple[bool, bool] = field(
+                default=(True, True), init=False, static=True
+            )
+
+        p = Pinned(jnp.zeros(3))
+        assert p.mask == (True, True)
+
+        with pytest.raises(TypeError, match="mask"):
+            Pinned(jnp.zeros(3), mask=(False, True))  # type: ignore[call-arg]
+
+        # Roundtrip preserves the concrete subclass and the pinned default.
+        p2 = jax.tree.map(lambda x: x * 2, p)
+        assert isinstance(p2, Pinned)
+        assert p2.mask == (True, True)
+
+
 class TestSequentialVmapWithVjp:
     """Tests for sequential_vmap_with_vjp function."""
 
