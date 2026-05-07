@@ -14,7 +14,6 @@ from kups.core.cell import (
     Cell,
     OrthogonalFrame,
     PeriodicCell,
-    SlabCell,
     TriclinicFrame,
     VacuumCell,
 )
@@ -1825,8 +1824,9 @@ class TestNeighborListAcrossPeriodicities:
         return VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
 
     def _slab_cell(self, L, periodic):
-        # `periodic` is a static tuple; SlabCell stores it on the dataclass.
-        return SlabCell(OrthogonalFrame(jnp.array([L, L, L])[None]), periodic=periodic)
+        # Mixed-axis periodic mask: `Cell(frame, periodic=...)` directly.
+        # The literal tuple narrows P (e.g. `Cell[SlabXY]` for `(T,T,F)`).
+        return Cell(OrthogonalFrame(jnp.array([L, L, L])[None]), periodic=periodic)
 
     def test_3d_periodic_wraps_across_face(self):
         """Two atoms near opposite x-faces connect via the periodic image."""

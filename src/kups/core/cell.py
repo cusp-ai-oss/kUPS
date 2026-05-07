@@ -123,6 +123,17 @@ class CoordinateSpace(Enum):
 
 type Periodic3D = tuple[Literal[True], Literal[True], Literal[True]]
 type Vacuum = tuple[Literal[False], Literal[False], Literal[False]]
+
+type SlabXY = tuple[Literal[True], Literal[True], Literal[False]]
+type SlabXZ = tuple[Literal[True], Literal[False], Literal[True]]
+type SlabYZ = tuple[Literal[False], Literal[True], Literal[True]]
+type Slab2D = SlabXY | SlabXZ | SlabYZ
+
+type WireX = tuple[Literal[True], Literal[False], Literal[False]]
+type WireY = tuple[Literal[False], Literal[True], Literal[False]]
+type WireZ = tuple[Literal[False], Literal[False], Literal[True]]
+type Wire1D = WireX | WireY | WireZ
+
 type AnyPeriodicity = tuple[bool, bool, bool]
 
 
@@ -407,13 +418,13 @@ def _wrap(
 class Cell[P: tuple[bool, bool, bool]](Sliceable):
     """A [Frame][kups.core.cell.Frame] plus per-axis boundary semantics.
 
-    Generic over the periodicity literal ``P``.
-    [PeriodicCell][kups.core.cell.PeriodicCell] and
-    [VacuumCell][kups.core.cell.VacuumCell] pin ``P`` to a literal tuple
-    via ``init=False`` defaults so construction is runtime-honest —
-    ``PeriodicCell(frame, ...)`` with an extra periodic argument raises
-    ``TypeError``. [SlabCell][kups.core.cell.SlabCell] keeps ``periodic``
-    init-able for runtime per-axis masks.
+    Generic over the periodicity literal ``P`` (a length-3 tuple of
+    booleans). [PeriodicCell][kups.core.cell.PeriodicCell] and
+    [VacuumCell][kups.core.cell.VacuumCell] are subclasses that pin ``P``
+    to a literal-typed default; for slab and wire geometries, construct
+    ``Cell(frame, periodic=mask)`` directly — the literal tuple narrows
+    ``P`` to the corresponding [Slab2D][kups.core.cell.Slab2D] or
+    [Wire1D][kups.core.cell.Wire1D] alias.
 
     The cell delegates geometry queries (``volume``, ``vectors``, etc.) to
     its frame. Periodic-mask-aware operations
@@ -499,19 +510,6 @@ class VacuumCell(Cell[Vacuum]):
     """
 
     periodic: Vacuum = field(default=(False, False, False), static=True)
-
-
-@dataclass
-class SlabCell(Cell[AnyPeriodicity]):
-    """Cell with a runtime per-axis periodicity mask.
-
-    Used for slab geometries (e.g. ``(True, True, False)``) and 1D wires
-    (e.g. ``(True, False, False)``) where the periodic-axis story is
-    determined at construction rather than encoded in the type. For
-    statically known fully-periodic or fully-open cells, prefer
-    [PeriodicCell][kups.core.cell.PeriodicCell] or
-    [VacuumCell][kups.core.cell.VacuumCell] so type narrowing applies.
-    """
 
 
 def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
