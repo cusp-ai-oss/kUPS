@@ -1824,8 +1824,6 @@ class TestNeighborListAcrossPeriodicities:
         return VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
 
     def _slab_cell(self, L, periodic):
-        # Mixed-axis periodic mask: `Cell(frame, periodic=...)` directly.
-        # The literal tuple narrows P (e.g. `Cell[SlabXY]` for `(T,T,F)`).
         return Cell(OrthogonalFrame(jnp.array([L, L, L])[None]), periodic=periodic)
 
     def test_3d_periodic_wraps_across_face(self):

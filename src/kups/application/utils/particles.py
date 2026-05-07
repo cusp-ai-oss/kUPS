@@ -85,10 +85,6 @@ def particles_from_ase(
         bool(atoms.pbc[1]),
         bool(atoms.pbc[2]),
     )
-    # Match dispatch narrows `pbc` from `tuple[bool, bool, bool]` to the
-    # specific literal alias on each branch — `Cell(frame, pbc)` infers
-    # the cell's P parameter from the narrowed tuple type. The 8 patterns
-    # exhaustively cover every (bool, bool, bool) value.
     cell: Cell
     match pbc:
         case (True, True, True):
@@ -96,12 +92,9 @@ def particles_from_ase(
         case (False, False, False):
             cell = VacuumCell(frame)
         case (True, True, False) | (True, False, True) | (False, True, True):
-            cell = Cell(frame, periodic=pbc)  # Cell[Slab2D]
+            cell = Cell(frame, periodic=pbc)
         case (True, False, False) | (False, True, False) | (False, False, True):
-            cell = Cell(frame, periodic=pbc)  # Cell[Wire1D]
-        case _:
-            raise ValueError(f"unreachable: {pbc}")  # 8 cases above are exhaustive
-    # Rotate Cartesian positions into the lower-triangular frame.
+            cell = Cell(frame, periodic=pbc)
     positions = uc_transform(jnp.asarray(atoms.positions))
     masses = jnp.asarray(atoms.get_masses())
     atomic_numbers = jnp.asarray(atoms.get_atomic_numbers())

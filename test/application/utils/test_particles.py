@@ -240,7 +240,6 @@ class TestParticlesFromAsePbcDispatch:
         from kups.core.cell import Cell, PeriodicCell, VacuumCell
 
         _, cell, _ = particles_from_ase(self._atoms(pbc))
-        # neither the literal-typed PeriodicCell nor VacuumCell — generic Cell
         assert isinstance(cell, Cell)
         assert not isinstance(cell, (PeriodicCell, VacuumCell))
         assert cell.periodic == pbc
