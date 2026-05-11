@@ -6,7 +6,7 @@ on:
 
 jobs:
   validate:
-    runs-on: nvidia-t4-runners
+    runs-on: t4-gpu-github
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
