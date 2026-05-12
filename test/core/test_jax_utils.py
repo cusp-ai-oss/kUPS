@@ -348,6 +348,54 @@ class TestDataclassSubclassPinsInheritedField:
         assert isinstance(p2, Pinned)
         assert p2.mask == (True, True)
 
+    def test_sibling_subclasses_with_distinct_pins_have_distinct_treedefs(self):
+        # Two sibling subclasses pin the same field to different constants —
+        # the `PeriodicCell` vs `VacuumCell` pattern. Their treedefs must
+        # compare unequal (in addition to hashing distinctly) so that a JIT
+        # cache lookup keyed on treedef cannot route a call against one
+        # flavor onto a compilation cached for the other. Regression for
+        # the silent collision that left two unrelated subclasses
+        # treedef-equal when ``init=False`` static fields were dropped from
+        # pytree aux data.
+        @dataclass
+        class Parent:
+            data: jax.Array
+            mask: tuple[bool, bool] = field(static=True)
+
+        @dataclass
+        class A(Parent):
+            mask: tuple[bool, bool] = field(
+                default=(True, True), init=False, static=True
+            )
+
+        @dataclass
+        class B(Parent):
+            mask: tuple[bool, bool] = field(
+                default=(False, False), init=False, static=True
+            )
+
+        _, td_a = jax.tree_util.tree_flatten(A(jnp.zeros(3)))
+        _, td_b = jax.tree_util.tree_flatten(B(jnp.zeros(3)))
+        assert td_a != td_b
+        assert hash(td_a) != hash(td_b)
+
+        # And functionally: a jit'd function that depends on `mask` must
+        # compile distinct traces for A and B, even when called in
+        # alternation.
+        trace_log: list[tuple[type, tuple[bool, bool]]] = []
+
+        @jax.jit
+        def use_mask(x):
+            trace_log.append((type(x), x.mask))
+            return x.data * jnp.array(x.mask, dtype=int).sum()
+
+        a, b = A(jnp.ones(3)), B(jnp.ones(3))
+        npt.assert_allclose(use_mask(a), jnp.full(3, 2.0))
+        npt.assert_allclose(use_mask(b), jnp.zeros(3))
+        npt.assert_allclose(use_mask(a), jnp.full(3, 2.0))
+        npt.assert_allclose(use_mask(b), jnp.zeros(3))
+        assert trace_log == [(A, (True, True)), (B, (False, False))]
+
 
 class TestSequentialVmapWithVjp:
     """Tests for sequential_vmap_with_vjp function."""
