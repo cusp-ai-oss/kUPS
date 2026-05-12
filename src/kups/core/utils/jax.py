@@ -767,9 +767,7 @@ def dataclass[T: type](
             kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
             return _cls(**kwargs)
 
-        jax.tree_util.register_pytree_with_keys(
-            dcls, _flatten_with_keys, _unflatten
-        )
+        jax.tree_util.register_pytree_with_keys(dcls, _flatten_with_keys, _unflatten)
         return dcls
 
     if cls is None:
