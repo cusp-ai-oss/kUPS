@@ -12,10 +12,33 @@ adaptive ``dt`` / ``alpha`` / ``n_pos`` state is stored as a
 systems through this transform is bit-identical to running them one at a
 time.
 
-For step-size clipping outside the LAMMPS-style ``dmax`` (which is built
-in), compose with :class:`kups.relaxation.transforms.ClipByGlobalNorm`
-(per-system L2) or :class:`kups.relaxation.transforms.MaxStepSize`
-(per-particle L2) via :func:`kups.relaxation.optimizer.chain`.
+API convention
+--------------
+Following the optax composability pattern, the ``updates`` argument to
+:meth:`ScaleByFire2.update` is the *descent direction* (force
+``F = -∇L``), not the raw gradient. The transform integrates ``updates``
+as a force and emits a position step ``Δx`` such that
+``apply_updates(x, Δx) = x + Δx`` descends.
+
+Convert a raw gradient with a sign-flip transform at the head of the
+chain. Per-system L2 clipping on the input force and per-particle Δx
+clipping on the output both compose around FIRE 2.0 — the built-in
+LAMMPS ``dmax`` (``max_step``) is independent of these:
+
+.. code-block:: python
+
+    from kups.relaxation.optimizer import chain
+    from kups.relaxation.transforms import (
+        ClipByGlobalNorm, MaxStepSize, ScaleByFire2,
+    )
+    import optax
+
+    optimizer = chain(
+        optax.scale(-1.0),                  # ∇L  →  F = -∇L
+        ScaleByFire2(dt_start=0.1),         # built-in dmax also active
+        ClipByGlobalNorm(max_norm=10.0),    # per-system L2 force cap
+        MaxStepSize(max_step_size=0.05),    # extra per-particle Δx cap
+    )
 """
 
 from __future__ import annotations
@@ -76,6 +99,15 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
     ``kups.relaxation.optax.scale_by_fire2``; with multiple systems each
     system independently adapts its own ``dt`` / ``alpha`` / ``n_pos``
     and sees its own per-system power, norms and ``dmax``.
+
+    The transform follows the optax convention: ``updates`` passed to
+    :meth:`update` is interpreted as the force ``F = -∇L`` (the descent
+    direction). Sign conversion from a raw gradient and any external
+    clipping live in the surrounding
+    :func:`kups.relaxation.optimizer.chain` — see the module docstring
+    for a worked example. The LAMMPS-style ``dmax`` clip configured via
+    :attr:`max_step` is internal to FIRE 2.0 and applies on top of any
+    composed clipping.
 
     Attributes:
         dt_start: Initial timestep.
@@ -152,12 +184,11 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         dt_data = state.dt.data
         alpha_data = state.alpha.data
         float_dtype = dt_data.dtype
-
-        forces = jax.tree.map(lambda g: -g, updates)
         n_total = state.n_total + 1
 
-        # ----- P = v_old · F per system (LAMMPS: vdotfall) ----------------
-        power = tree_vdot(forces, state.velocity, idx).data
+        # ``updates`` IS the force F = -∇L (optax convention); see module
+        # docstring. P = v_old · F per system (LAMMPS: vdotfall).
+        power = tree_vdot(updates, state.velocity, idx).data
         positive = power > 0.0
 
         # ----- n_pos (LAMMPS: ntimestep - last_negative) ------------------
@@ -199,7 +230,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
 
         # ----- Mixing scales (use OLD velocity, per system) --------------
         v_old_sq = tree_vdot(state.velocity, state.velocity, idx).data
-        f_sq = tree_vdot(forces, forces, idx).data
+        f_sq = tree_vdot(updates, updates, idx).data
 
         if self.use_abc:
             abc = jnp.where(
@@ -227,7 +258,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         # ----- dmax: compute dtv (non-ABC only) per system ----------------
         if self.max_step is not None and not self.use_abc:
             abs_v = jax.tree.map(jnp.abs, state.velocity)
-            abs_f = jax.tree.map(jnp.abs, forces)
+            abs_f = jax.tree.map(jnp.abs, updates)
             vmax_pos = tree_segment_max(abs_v, idx).data
             vmax_neg = new_dt * tree_segment_max(abs_f, idx).data
             vmax = jnp.where(positive, vmax_pos, vmax_neg)
@@ -252,14 +283,14 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         v_pre = tree_scale_per_row(state.velocity, gate, idx)
 
         # ----- Euler-implicit kick: v += dtv · F --------------------------
-        scaled_f = tree_scale_per_row(forces, Table(keys, dtv), idx)
+        scaled_f = tree_scale_per_row(updates, Table(keys, dtv), idx)
         v_int = jax.tree.map(jnp.add, v_pre, scaled_f)
 
         # ----- Mixing (applied only when P > 0): v = s1·v + s2·F ----------
         v_mixed = jax.tree.map(
             jnp.add,
             tree_scale_per_row(v_int, Table(keys, scale1), idx),
-            tree_scale_per_row(forces, Table(keys, scale2), idx),
+            tree_scale_per_row(updates, Table(keys, scale2), idx),
         )
         new_velocity = tree_where_per_row(Table(keys, positive), v_mixed, v_int, idx)
 

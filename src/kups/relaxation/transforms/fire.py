@@ -11,6 +11,33 @@ adaptive ``dt`` / ``alpha`` / ``n_pos`` state is stored as a
 ``Table[K, Array]`` — one entry per system. Running batched independent
 systems through this transform is bit-identical to running them one at a
 time.
+
+API convention
+--------------
+Following the optax composability pattern, the ``updates`` argument to
+:meth:`ScaleByFire.update` is the *descent direction* (force
+``F = -∇L``), not the raw gradient. The transform integrates ``updates``
+directly as a force and emits a position step ``Δx`` such that
+``apply_updates(x, Δx) = x + Δx`` descends.
+
+If your upstream produces a raw gradient ``∇L``, prepend a sign-flip in
+the chain. Any per-system clipping (force cap or per-particle step cap)
+composes the same way:
+
+.. code-block:: python
+
+    from kups.relaxation.optimizer import chain
+    from kups.relaxation.transforms import (
+        ClipByGlobalNorm, MaxStepSize, ScaleByFire,
+    )
+    import optax
+
+    optimizer = chain(
+        optax.scale(-1.0),                 # ∇L  →  F = -∇L
+        ScaleByFire(dt_start=0.1),
+        ClipByGlobalNorm(max_norm=10.0),   # per-system L2 force cap
+        MaxStepSize(max_step_size=0.1),    # per-particle Δx cap
+    )
 """
 
 from __future__ import annotations
@@ -63,6 +90,12 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
     ``dt`` / ``alpha`` / ``n_pos`` and sees its own per-system power and
     norms.
 
+    The transform follows the optax convention: ``updates`` passed to
+    :meth:`update` is interpreted as the force ``F = -∇L`` (the descent
+    direction). Sign conversion from a raw gradient and any clipping live
+    in the surrounding :func:`kups.relaxation.optimizer.chain` — see the
+    module docstring for a worked example.
+
     .. note::
 
         This is the original FIRE 1.0. For most production relaxations
@@ -77,10 +110,12 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
         run is known to be stable. FIRE 1.0 remains useful as a
         well-tested baseline and for comparison with legacy results.
 
-    For step-size clipping, compose this transform with
-    :class:`kups.relaxation.transforms.ClipByGlobalNorm` (per-system L2
-    cap) or :class:`kups.relaxation.transforms.MaxStepSize` (per-particle
-    cap) via :func:`kups.relaxation.optimizer.chain`.
+    Composable clipping:
+
+    * :class:`kups.relaxation.transforms.ClipByGlobalNorm` — per-system
+      L2 cap on the input force (prepend before FIRE).
+    * :class:`kups.relaxation.transforms.MaxStepSize` — per-particle
+      ∞/L2 cap on the output displacement (append after FIRE).
 
     Attributes:
         dt_start: Initial timestep.
@@ -139,23 +174,21 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
         del params, kwargs
         idx = state.index_prefix
 
-        # F = -gradient (FIRE uses forces, pointing downhill).
-        forces = jax.tree.map(jnp.negative, updates)
-
-        # v <- v + dt[s] · F   (per-system dt broadcast back per particle).
+        # ``updates`` IS the force F = -∇L (optax convention); see module
+        # docstring. v <- v + dt[s] · F (per-system dt broadcast per particle).
         velocity = jax.tree.map(
             lambda v, sf: v + sf,
             state.velocity,
-            tree_scale_per_row(forces, state.dt, idx),
+            tree_scale_per_row(updates, state.dt, idx),
         )
 
         # Per-system power P = F · v and its sign.
-        power = tree_vdot(forces, velocity, idx)
+        power = tree_vdot(updates, velocity, idx)
         positive = power.data > 0.0
 
         # Per-system L2 norms; safe denominator for ||F||.
         v_norm = tree_segment_norm(velocity, idx)
-        f_norm = tree_segment_norm(forces, idx)
+        f_norm = tree_segment_norm(updates, idx)
         safe_f_norm = jnp.maximum(f_norm.data, 1e-10)
 
         # Mixed velocity per particle: v' = (1-α)·v + α·||v||/||F|| · F.
@@ -164,7 +197,7 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
         mixed_velocity = jax.tree.map(
             lambda a, b: a + b,
             tree_scale_per_row(velocity, v_scale, idx),
-            tree_scale_per_row(forces, f_scale, idx),
+            tree_scale_per_row(updates, f_scale, idx),
         )
 
         # Adaptive dt / alpha / n_pos updates per system.
