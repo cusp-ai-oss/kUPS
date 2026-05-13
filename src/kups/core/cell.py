@@ -212,6 +212,18 @@ class Frame(Protocol):
         [make_supercell][kups.core.cell.make_supercell] to build supercells."""
         ...
 
+    @classmethod
+    def from_matrix(cls, vecs: Array) -> Self:
+        """Construct from a ``(..., 3, 3)`` basis matrix.
+
+        Projects the input onto the frame's parameter space — entries
+        not represented by the parameterisation are discarded
+        (``OrthogonalFrame`` keeps the diagonal; ``TriclinicFrame``
+        keeps the lower-triangular block). Used to wrap a generic
+        ``∂E/∂h`` matrix back into the same frame type as an input cell.
+        """
+        ...
+
 
 def _build_vectors(lengths: Array, angles: Array) -> Array:
     """Construct a lower-triangular 3x3 matrix from crystallographic parameters.
@@ -369,6 +381,17 @@ class OrthogonalFrame(Sliceable):
     """
 
     lengths: Array
+
+    @classmethod
+    def from_matrix(cls, vecs: Array) -> Self:
+        """Construct from a diagonal basis matrix, shape ``(..., 3, 3)``.
+
+        Projects the input matrix onto the orthogonal subspace by taking
+        its diagonal — off-diagonal entries are discarded, matching the
+        3-parameter ``(Lx, Ly, Lz)`` representation.
+        """
+        vecs = jnp.asarray(vecs)
+        return cls(jnp.diagonal(vecs, axis1=-2, axis2=-1))
 
     @property
     def vectors(self) -> Array:

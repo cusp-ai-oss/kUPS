@@ -231,6 +231,17 @@ class TestOrthogonalFrame:
         frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
         npt.assert_allclose(frame.vectors, jnp.diag(jnp.array([2.0, 3.0, 4.0])))
 
+    def test_from_matrix_extracts_diagonal(self):
+        vecs = jnp.array([[2.0, 0.7, 0.0], [0.0, 3.0, 0.0], [0.4, 0.0, 4.0]])
+        frame = OrthogonalFrame.from_matrix(vecs)
+        npt.assert_allclose(frame.lengths, jnp.array([2.0, 3.0, 4.0]))
+
+    def test_from_matrix_batched(self):
+        vecs = jnp.stack([jnp.diag(jnp.array([2.0, 3.0, 4.0]))] * 2)
+        frame = OrthogonalFrame.from_matrix(vecs)
+        assert frame.lengths.shape == (2, 3)
+        npt.assert_allclose(frame.lengths[0], jnp.array([2.0, 3.0, 4.0]))
+
     def test_inverse_vectors(self):
         frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
         npt.assert_allclose(
