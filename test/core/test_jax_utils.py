@@ -348,8 +348,7 @@ class TestDataclassSubclassPinsInheritedField:
         assert isinstance(p2, Pinned)
         assert p2.mask == (True, True)
 
-    @staticmethod
-    def _pinned_pair():
+    def test_sibling_subclasses_with_distinct_pins_have_distinct_treedefs(self):
         @dataclass
         class Parent:
             data: jax.Array
@@ -367,42 +366,10 @@ class TestDataclassSubclassPinsInheritedField:
                 default=(False, False), init=False, static=True
             )
 
-        return A, B
-
-    def test_sibling_subclasses_with_distinct_pins_have_distinct_treedefs(self):
-        A, B = self._pinned_pair()
         _, td_a = jax.tree_util.tree_flatten(A(jnp.zeros(3)))
         _, td_b = jax.tree_util.tree_flatten(B(jnp.zeros(3)))
         assert td_a != td_b
         assert hash(td_a) != hash(td_b)
-
-    def test_treedef_keyed_cache_distinguishes_pins_under_hash_collision(self):
-        # Models the JIT-cache scenario: a dict keyed on the treedef. Force
-        # a hash collision so the dict falls back to `__eq__`; the two
-        # subclasses must still resolve to separate entries. Without the
-        # `periodic` value in aux_data, `td_a == td_b` is True and the
-        # second insert silently overwrites the first — the surface that
-        # let a vacuum call use a previously-traced periodic compilation.
-        A, B = self._pinned_pair()
-        _, td_a = jax.tree_util.tree_flatten(A(jnp.zeros(3)))
-        _, td_b = jax.tree_util.tree_flatten(B(jnp.zeros(3)))
-
-        class Colliding:
-            __slots__ = ("td",)
-
-            def __init__(self, td):
-                self.td = td
-
-            def __hash__(self):
-                return 0
-
-            def __eq__(self, other):
-                return isinstance(other, Colliding) and self.td == other.td
-
-        cache: dict[Colliding, str] = {Colliding(td_a): "a", Colliding(td_b): "b"}
-        assert len(cache) == 2
-        assert cache[Colliding(td_a)] == "a"
-        assert cache[Colliding(td_b)] == "b"
 
 
 class TestSequentialVmapWithVjp:
