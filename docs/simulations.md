@@ -34,12 +34,15 @@ Relax atomic positions (and optionally lattice vectors) to a local energy minimu
 | Command | Force Field | Description |
 |---------|-------------|-------------|
 | `kups_relax_lj` | Lennard-Jones | Classical relaxation |
-| `kups_relax_mlff` | MACE, UMA, ORB | Machine-learned force field relaxation |
+| `kups_relax_mlff` | MACE, UMA, ORB | Machine-learned force field relaxation via JAX-exported models ([Tojax](https://github.com/cusp-ai-oss/tojax)) |
+| `kups_relax_torch` | MACE, UMA | Native PyTorch MLFFs (MACE checkpoints, Meta's UMA via [fairchem-core](https://github.com/facebookresearch/fairchem)) bridged into JAX |
 
 ```sh
 cd examples
 kups_relax_mlff relax_mace.yaml
 kups_relax_mlff relax_orb.yaml
+kups_relax_torch relax_torch_mace.yaml   # native MACE .model checkpoint
+kups_relax_torch relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 ```
 
 **Optimizers:**
@@ -94,11 +97,12 @@ CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one rep
 | Model | Hugging Face repository | License |
 |-------|-------------------------|---------|
 | [MACE](https://github.com/ACEsuit/mace-foundations) | [CuspAI/kUPS-mace-jax](https://huggingface.co/CuspAI/kUPS-mace-jax) | MIT |
+| [MatterSim](https://github.com/microsoft/mattersim) | [CuspAI/kUPS-mattersim-jax](https://huggingface.co/CuspAI/kUPS-mattersim-jax) | MIT |
 | [Orb](https://github.com/orbital-materials/orb-models) | [CuspAI/kUPS-orb-jax](https://huggingface.co/CuspAI/kUPS-orb-jax) | Apache 2.0 |
 
 These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream.
 
-> To use Meta's [UMA](https://huggingface.co/facebook/UMA) model with <em>k</em>UPS, you can download it directly from Hugging Face and then port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.md#tojax-machine-learned-force-fields).
+> Meta's [UMA](https://huggingface.co/facebook/UMA) model is not redistributed by CuspAI. Two routes to run it with <em>k</em>UPS: (1) download the PyTorch checkpoint from Hugging Face and run it natively via [`kups_relax_torch`](#direct-pytorch-bridge) (`backend: uma`); or (2) port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.md#tojax-machine-learned-force-fields) and run via `kups_relax_mlff`.
 
 Any `model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (fetched via `huggingface_hub.hf_hub_download` and cached on first use) or a local filesystem path to a Tojax-exported `.zip`:
 
@@ -113,3 +117,52 @@ model_path: /absolute/path/to/my_model.zip
 ```
 
 The `hf://` scheme requires the optional `huggingface_hub` dependency: `pip install kups[hf]`. Local paths work without it.
+
+## Direct PyTorch Bridge
+
+`kups_relax_torch` loads native PyTorch MLFF checkpoints (no Tojax conversion) and runs them from JAX via a [DLPack-based bridge](https://pytorch.org/docs/stable/dlpack.html). Functionality across the two paths is identical (forces, stress, optimisation, HDF5 trajectory output) — the differences are about *how* the model is plumbed in.
+
+**Pros**
+
+- **No JAX-traceability requirement.** Any `torch.nn.Module` plugs in as-is: you write one adapter forward that consumes the universal [`AtomGraphInput`][kups.potential.mliap.torch.interface.AtomGraphInput] dict and you're done. The model never has to be expressible in pure JAX ops or jaxprs.
+- **Run upstream checkpoints unmodified** (MACE `.model`, UMA `.pt`) — no export step, no risk of conversion drift, easy to diff against the reference implementation.
+- **Full upstream feature surface** — every inference toggle the original library exposes is still accessible. For UMA that means tunable [`InferenceSettings`](https://github.com/facebookresearch/fairchem) and all five dataset heads (`omat`/`omol`/`oc20`/`odac`/`omc`) selected per-call, without re-exporting one zip per head.
+- **Custom CUDA kernels** (e.g. [cuequivariance](https://github.com/NVIDIA/cuEquivariance) for MACE/UMA) execute on the original PyTorch path, no JAX reimplementation required.
+- **UMA turbo is faster than its Tojax export.** `inference_settings: turbo` merges the mixture-of-linear-experts at lazy-init, beating the JAX-exported equivalent on the same model.
+
+**Cons**
+
+- **Per-call JAX↔PyTorch hand-off.** Zero-copy via DLPack but a serial dispatch — adds latency on every potential evaluation.
+- **MACE is slower than its Tojax export.** For MACE specifically the JAX build wins; use the bridge mainly for unconverted checkpoints or reference diffs.
+- **Extra runtime dependency** — you install the model's own PyTorch package (`mace-torch`, `fairchem-core`, …) alongside kUPS.
+- **Python-version constraints** from upstream propagate (e.g. `fairchem-core>=2.0` caps at Python ≤3.13).
+
+**Backends** are selected via a discriminated union under `model:` in the YAML config:
+
+```yaml
+# MACE — native .model checkpoint
+model:
+  backend: mace
+  model_path: ./mace-mpa-0-medium.model
+  device: cuda
+  dtype: float32           # or float64
+```
+
+```yaml
+# UMA — native .pt checkpoint via fairchem-core
+model:
+  backend: uma
+  model_path: ./uma-s-1p2.pt
+  device: cuda
+  task_name: omat          # one of: omat | omol | oc20 | odac | omc
+  inference_settings: default   # or "turbo" (compiled MOLE merge — same composition every call)
+```
+
+**Optional extras** install the model's own PyTorch package alongside kUPS:
+
+```sh
+pip install kups[mace]   # mace-torch
+pip install kups[uma]    # fairchem-core (≥2.0; Python ≤3.13)
+```
+
+Under the hood both backends share the universal [`TorchMliap`][kups.potential.mliap.torch.interface.TorchMliap] container — adding a third backend means writing one `torch.nn.Module` that consumes the [`AtomGraphInput`][kups.potential.mliap.torch.interface.AtomGraphInput] schema and returns `{"energy", "position_gradients", "cell_gradients"}`. See `kups.potential.mliap.torch.mace` and `kups.potential.mliap.torch.uma` for the adapter pattern.
