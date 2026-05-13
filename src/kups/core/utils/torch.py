@@ -46,6 +46,7 @@ Example:
 
 Requires the `torch_dev` dependency group: `uv sync --group torch_dev`
 """
+# pyright: reportPrivateImportUsage=false
 
 from __future__ import annotations
 
