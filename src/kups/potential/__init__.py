@@ -18,13 +18,13 @@ protocol and can be composed using [sum_potentials][kups.core.potential.sum_pote
 ```python
 from kups.core.potential import sum_potentials
 from kups.potential.classical import make_lennard_jones_potential, make_ewald_potential
-from kups.potential.mliap.interface import make_mliap_potential
+from kups.potential.mliap.direct import make_direct_mliap_potential
 
 # Compose multiple potentials
 total_potential = sum_potentials(
     make_lennard_jones_potential(...),
     make_ewald_potential(...),
-    make_mliap_potential(...)
+    make_direct_mliap_potential(...)
 )
 
 # Evaluate energy

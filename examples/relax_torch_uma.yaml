@@ -1,0 +1,23 @@
+inp_files:
+  - host/RUBTAK.cif
+model:
+  backend: uma
+  model_path: ./uma-s-1p2.pt
+  device: cuda
+  task_name: omat            # one of: omat, omol, oc20, odac, omc
+  inference_settings: turbo  # one of: default, turbo
+relax:
+  optimizer:
+    - transform: scale_by_ase_lbfgs
+      memory_size: 100
+      alpha: 70
+    - transform: max_step_size
+      max_step_size: 0.2
+    - transform: scale
+      step_size: -1
+  optimize_cell: false
+run:
+  out_file: relax_torch_uma.h5
+  max_steps: 1000
+  force_tolerance: 0.001   # eV/Å
+  seed: null

@@ -11,8 +11,9 @@ field computational cost, enabling accurate simulations of complex systems.
 
 - **[tojax][kups.potential.mliap.tojax]**: Generic jaxified MLFF models (exported JAX)
 - **[local][kups.potential.mliap.local]**: Local MLIAP with single message passing and incremental updates
-- **[torch.mace][kups.potential.mliap.torch.mace]**: PyTorch MACE models via TorchModuleWrapper
-- **[interface][kups.potential.mliap.interface]**: Generic MLIAP potential factory
+- **[torch][kups.potential.mliap.torch]**: PyTorch MLFF models (MACE, UMA) via TorchModuleWrapper
+- **[direct][kups.potential.mliap.direct]**: Direct-gradient MLIAP potential factory
+  (`make_direct_mliap_potential`) — used by the torch bridge
 
 MLIAPs are trained on ab initio data and can capture complex many-body interactions,
 bond breaking/forming, and reactive chemistry that classical force fields cannot.

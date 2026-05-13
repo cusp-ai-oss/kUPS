@@ -1,249 +1,208 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""MACE model integration via TorchModuleWrapper.
+"""MACE adapter for the universal torch MLFF interface.
 
-This module provides wrappers for using PyTorch MACE models directly from JAX
-via the TorchModuleWrapper bridge, including full kUPS potential integration.
+Provides a thin ``torch.nn.Module`` ([MACEModule][kups.potential.mliap.torch.mace.MACEModule])
+that translates the universal
+[AtomGraphInput][kups.potential.mliap.torch.interface.AtomGraphInput] into
+MACE's PyG-style input format, plus a [load_mace][kups.potential.mliap.torch.mace.load_mace]
+loader returning a [TorchMliap][kups.potential.mliap.torch.interface.TorchMliap].
 
 Example:
     ```python
-    from kups.potential.mliap.torch import load_mace_wrapper
+    from kups.potential.mliap.torch import load_mace, make_torch_mliap_from_state
 
-    # Load and wrap a MACE model (with forces)
-    wrapper = load_mace_wrapper("path/to/mace.model")
-    result = wrapper(node_attrs, positions, edge_index, batch, ptr, shifts, cell)
-    energy, forces = result["energy"], result["forces"]
-    ```
-
-For kUPS integration:
-    ```python
-    from kups.potential.mliap.torch.mace import TorchMACEModel, make_torch_mace_potential
-
-    # Create TorchMACEModel from wrapper
-    model = TorchMACEModel(species_to_index, cutoff, num_species, wrapper)
-
-    # Create kUPS potential (forces only)
-    potential = make_torch_mace_potential(
-        particles_view, systems_view, neighborlist_view, model, ...
-    )
-
-    # With virial/stress support
-    potential = make_torch_mace_potential(
-        ..., compute_virials=True, ...
+    model = load_mace("mace.model", compute_cell_gradients=True)
+    potential = make_torch_mliap_from_state(
+        state_lens, compute_position_and_cell_gradients=True,
     )
     ```
 
-Requires the `torch_dev` dependency group: `uv sync --group torch_dev`
+Requires the ``torch`` dependency group: ``uv sync --group torch``.
 """
+
+# pyright: reportPrivateImportUsage=false
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, Protocol, overload
+from typing import Literal, cast
 
-import jax
-import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
-from jax import Array
+import torch.nn.functional as F  # pyright: ignore[reportMissingImports]
 
-from kups.core.cell import PeriodicCell, TriclinicFrame
-from kups.core.data import Table
-from kups.core.lens import Lens, View
-from kups.core.neighborlist import NearestNeighborList
-from kups.core.patch import IdPatch, Patch, WithPatch
-from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
-from kups.core.typing import (
-    HasAtomicNumbers,
-    HasCell,
-    ParticleId,
-    SystemId,
+from kups.potential.mliap.torch.interface import (
+    TorchMliap,
+    lattice_gradient_from_virial,
 )
-from kups.core.utils.functools import constant
-from kups.core.utils.jax import dataclass, field
-from kups.core.utils.torch import TorchModuleWrapper
-from kups.potential.common.energy import PositionAndCell
-from kups.potential.common.graph import (
-    GraphPotentialInput,
-    HyperGraph,
-    IsRadiusGraphPoints,
-)
-from kups.potential.mliap.interface import make_mliap_potential
 
-
-class IsTorchMACEParticles(IsRadiusGraphPoints, HasAtomicNumbers, Protocol):
-    """Particle protocol for PyTorch MACE models."""
-
-    ...
-
-
-__all__ = [
-    "TorchMACEModel",
-    "load_mace_wrapper",
-    "make_torch_mace_potential",
-]
-
-
-class _PreparedMACEInputs(NamedTuple):
-    """Prepared inputs for MACE model in PyG-style format.
-
-    All tensors include padding (one extra atom/system) to work around
-    MACE's inability to handle empty graphs.
-    """
-
-    node_attrs: Array
-    positions: Array
-    edge_index: Array
-    batch: Array
-    ptr: Array
-    shifts: Array
-    cell: Array | None
-
-
-def _prepare_mace_inputs[
-    P: IsTorchMACEParticles,
-    S: HasCell,
-](
-    graph: HyperGraph[P, S, Literal[2]],
-    species_to_index: Array,
-    num_mace_species: int,
-) -> _PreparedMACEInputs:
-    """Prepare MACE inputs from a sorted graph.
-
-    Args:
-        graph: HyperGraph with particles already sorted by system index.
-        species_to_index: Mapping from atomic number to MACE species index.
-        num_mace_species: Number of species the MACE model was trained on.
-
-    Returns:
-        Prepared inputs in PyG-style format for the MACE model.
-    """
-    ptr = jnp.cumulative_sum(
-        graph.particles.data.system.counts.data, include_initial=True
-    )
-    species = jnp.pad(graph.particles.data.atomic_numbers, (0, 1), constant_values=0)
-    positions = jnp.pad(
-        graph.particles.data.positions,
-        ((0, 1), (0, 0)),
-        constant_values=0,
-    )
-    batch = jnp.pad(
-        graph.particles.data.system.indices,
-        (0, 1),
-        constant_values=graph.particles.data.system.num_labels,
-    )
-    ptr = jnp.pad(ptr, (0, 1), constant_values=ptr[-1] + 1)
-    edge_indices = graph.edges.indices.indices
-    abs_shifts = (
-        graph.edges.absolute_shifts(graph.particles, graph.systems)
-        .squeeze(1)
-        .astype(float)
-    )
-    node_attrs = jax.nn.one_hot(species_to_index[species], num_mace_species)
-
-    return _PreparedMACEInputs(
-        node_attrs=node_attrs,
-        positions=positions,
-        edge_index=edge_indices.T,
-        batch=batch,
-        ptr=ptr,
-        shifts=abs_shifts,
-        cell=None,
-    )
+__all__ = ["MACEModule", "load_mace"]
 
 
 class MACEModule(torch.nn.Module):
-    """Wraps a MACE model for JAX interop via TorchModuleWrapper.
+    """Adapter: ``AtomGraphInput`` → MACE PyG-style input → energy + gradients.
 
-    Supports energy-only, energy+forces, and energy+forces+virials modes
-    via the compute_force and compute_virials flags.
+    Wraps a MACE ``nn.Module`` and translates the universal graph input into
+    the (``node_attrs``, ``positions``, ``edge_index``, ``batch``, ``ptr``,
+    ``shifts``, ``cell``) tuple that MACE expects. Returns gradients of energy
+    w.r.t. positions (and optionally cell vectors).
+
+    Attributes:
+        mace: Underlying MACE ``nn.Module``.
+        species_to_index: Buffer mapping atomic number ``Z`` → MACE species
+            index (0..``num_species``-1).
+        num_species: Number of species the MACE model was trained on.
+        compute_cell_gradients: Whether to compute cell gradients (stress).
     """
+
+    species_to_index: torch.Tensor
 
     def __init__(
         self,
         mace_model: torch.nn.Module,
-        compute_force: bool = True,
-        compute_virials: bool = False,
+        species_to_index: torch.Tensor,
+        num_species: int,
+        compute_cell_gradients: bool = False,
     ) -> None:
-        """Initialise MACEModule.
+        """Initialise ``MACEModule``.
 
         Args:
-            mace_model: Underlying PyTorch MACE model.
-            compute_force: Whether to compute forces.
-            compute_virials: Whether to compute virials.
+            mace_model: Underlying MACE ``nn.Module``.
+            species_to_index: Tensor mapping ``Z`` → MACE index. Indexed by
+                atomic number; entries for unsupported ``Z`` are ignored.
+            num_species: Number of species the MACE model was trained on.
+            compute_cell_gradients: Whether to compute cell gradients.
         """
         super().__init__()
         self.mace = mace_model
         self.mace.eval()
-        self.compute_force = compute_force
-        self.compute_virials = compute_virials
+        self.register_buffer("species_to_index", species_to_index.to(dtype=torch.int64))
+        self.num_species = num_species
+        self.compute_cell_gradients = compute_cell_gradients
 
-    def forward(
-        self,
-        node_attrs: torch.Tensor,
-        positions: torch.Tensor,
-        edge_index: torch.Tensor,
-        batch: torch.Tensor,
-        ptr: torch.Tensor,
-        shifts: torch.Tensor,
-        cell: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        """Run MACE forward pass.
+    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Run MACE on a universal ``AtomGraphInput`` and return gradients.
 
         Args:
-            node_attrs: One-hot species encoding.
-            positions: Atom positions.
-            edge_index: Edge index array (2, n_edges).
-            batch: System index per atom.
-            ptr: Cumulative atom counts per system.
-            shifts: Absolute shift vectors per edge.
-            cell: Cell lattice vectors (optional).
+            input: Dict matching the universal ``AtomGraphInput`` schema.
 
         Returns:
-            Dictionary with ``"energy"`` and optionally ``"forces"`` /
-            ``"virials"`` tensors.
+            Dict with ``"energy"`` ``(B,)``, ``"position_gradients"`` ``(N, 3)``,
+            and optionally ``"cell_gradients"`` ``(B, 3, 3)``.
         """
-        input_dict = {
-            "node_attrs": node_attrs,
-            "positions": positions,
-            "edge_index": edge_index,
-            "batch": batch,
-            "ptr": ptr,
-            "shifts": shifts,
-            "cell": cell,
-        }
-        output = self.mace(
-            input_dict,
-            compute_force=self.compute_force,
-            compute_virials=self.compute_virials,
+        # MACE is loaded at a fixed precision (float32 or float64 — see
+        # ``load_mace(dtype=...)``); align every float input to that dtype
+        # rather than whatever JAX hands us.
+        model_dtype = next(self.mace.parameters()).dtype
+
+        pos = input["pos"].to(model_dtype)
+        species = input["atomic_numbers"]
+        cell = input["cell"].to(model_dtype)
+        batch = input["batch"]
+        edge_index = input["edge_index"]
+        cell_offsets = input["cell_offsets"].to(model_dtype)
+
+        n_atoms = pos.shape[0]
+        n_sys = cell.shape[0]
+
+        # kUPS's neighbor list is a fixed-size buffer; ``indices_in`` maps
+        # unused slots to the OOB sentinel ``len(keys) == n_atoms``. Drop
+        # padded edges before indexing into atom-shaped tensors.
+        valid_edge = (edge_index < n_atoms).all(dim=0)
+        edge_index = edge_index[:, valid_edge]
+        cell_offsets = cell_offsets[valid_edge]
+
+        counts = torch.bincount(batch, minlength=n_sys)
+        ptr = torch.cat([batch.new_zeros(1), counts.cumsum(0)])
+        # ``species_to_index`` is registered as a CPU buffer at construction
+        # time. ``TorchModuleWrapper`` calls us once with mock tensors on the
+        # device of the wrapped MACE model (typically cuda) without first
+        # calling ``self.to(device)``, so the indexing would straddle devices.
+        # Co-locate the lookup table with the input on every call.
+        species_to_index = self.species_to_index.to(species.device)
+        node_attrs = F.one_hot(species_to_index[species], self.num_species).to(
+            pos.dtype
+        )
+        cell_per_edge = cell[batch[edge_index[0]]]
+        # cell_offsets (E,3) integer multiples → absolute Å via per-edge cell:
+        # shifts[e, j] = Σ_i cell_offsets[e, i] * cell_per_edge[e, i, j]
+        shifts = (cell_offsets.to(pos.dtype).unsqueeze(1) @ cell_per_edge).squeeze(1)
+
+        out = self.mace(
+            {
+                "node_attrs": node_attrs,
+                "positions": pos,
+                "edge_index": edge_index,
+                "batch": batch,
+                "ptr": ptr,
+                "shifts": shifts,
+                # MACE's ``prepare_graph`` reads ``unit_shifts`` (the integer
+                # cell-offset multiples) when ``compute_virials=True`` to build
+                # the strain-perturbed graph in ``get_symmetric_displacement``.
+                "unit_shifts": cell_offsets.to(pos.dtype),
+                "cell": cell,
+            },
+            compute_force=True,
+            compute_virials=self.compute_cell_gradients,
         )
 
-        result: dict[str, torch.Tensor] = {"energy": output["energy"].detach()}
-        if self.compute_force:
-            result["forces"] = output["forces"].detach()
-        if self.compute_virials:
-            result["virials"] = output["virials"].detach()
+        forces = out["forces"]
+        result: dict[str, torch.Tensor] = {
+            "energy": out["energy"].detach(),
+            "position_gradients": (-forces).detach(),
+        }
+        if self.compute_cell_gradients:
+            # MACE's ``virials`` = -sym(pos_virial + cell^T @ ∂E/∂h).
+            # Negate to get the symmetric-strain virial, then invert.
+            virial = -out["virials"]
+            cell_grad = lattice_gradient_from_virial(
+                forces=forces,
+                positions=pos,
+                batch=batch,
+                cell=cell,
+                virial=virial,
+            )
+            result["cell_gradients"] = cell_grad.detach()
         return result
 
 
-def load_mace_wrapper(
+def _build_species_to_index(model: torch.nn.Module) -> tuple[torch.Tensor, int]:
+    """Build ``species_to_index`` lookup and ``num_species`` from a MACE model.
+
+    Expects ``model.atomic_numbers`` to enumerate the supported atomic numbers
+    in MACE-index order. The returned tensor has length ``max(Z) + 1`` so that
+    indexing ``species_to_index[Z]`` gives the MACE species index for
+    supported ``Z`` (unsupported entries default to 0).
+    """
+    atomic_numbers = cast(torch.Tensor, model.atomic_numbers).to(
+        dtype=torch.int64, device="cpu"
+    )
+    num_species = int(atomic_numbers.numel())
+    table_size = int(atomic_numbers.max().item()) + 1
+    table = atomic_numbers.new_zeros(table_size)
+    table[atomic_numbers] = torch.arange(num_species, dtype=torch.int64)
+    return table, num_species
+
+
+def load_mace(
     model_path: str | Path,
     device: str = "cuda",
-    compute_force: bool = True,
-    compute_virials: bool = False,
     dtype: Literal["float32", "float64"] = "float32",
-) -> TorchModuleWrapper:
-    """Load a PyTorch MACE model and wrap it for JAX computation.
+    compute_cell_gradients: bool = False,
+    cutoff: float | None = None,
+) -> TorchMliap:
+    """Load a PyTorch MACE ``.model`` into a universal ``TorchMliap``.
 
     Args:
-        model_path: Path to the MACE .model file
-        device: Device to load the model onto (default: "cuda")
-        compute_force: Whether to compute forces (default: True)
-        compute_virials: Whether to compute virials for stress (default: False)
-        dtype: Model precision - "float32" (default) or "float64"
+        model_path: Path to a MACE ``.model`` checkpoint.
+        device: Device to load the model onto.
+        dtype: Model precision — ``"float32"`` (default) or ``"float64"``.
+        compute_cell_gradients: Whether to also compute virials/stress.
+        cutoff: Cutoff radius [Å]. When ``None``, read from ``model.r_max``.
 
     Returns:
-        TorchModuleWrapper containing MACEModule.
+        ``TorchMliap`` ready to be wired into the kUPS interface.
     """
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(
@@ -257,263 +216,23 @@ def load_mace_wrapper(
 
     model = torch.load(path, weights_only=False, map_location=device)
     model.eval()
+    model = model.double() if dtype == "float64" else model.float()
+    # Re-broadcast to the target device: some MACE/e3nn TorchScript submodules
+    # carry Wigner-3j buffers that ``map_location`` and ``.float()`` don't
+    # consistently move, and ``TorchModuleWrapper``'s mock-inference call
+    # invokes the module before any ``.to(device)`` could rectify this.
+    model = model.to(device)
 
-    if dtype == "float64":
-        model = model.double()
-    else:
-        model = model.float()
+    species_to_index, num_species = _build_species_to_index(model)
+    if cutoff is None:
+        cutoff = float(cast(torch.Tensor, model.r_max).item())
 
     module = MACEModule(
-        model, compute_force=compute_force, compute_virials=compute_virials
+        model,
+        species_to_index=species_to_index,
+        num_species=num_species,
+        compute_cell_gradients=compute_cell_gradients,
     )
-    return TorchModuleWrapper(module, requires_grad=compute_force)
-
-
-@dataclass
-class TorchMACEModel:
-    """MACE model container for PyTorch models via TorchModuleWrapper.
-
-    Attributes:
-        species_to_index: Mapping from atomic number to MACE species index.
-        cutoff: Model cutoff radius per system.
-        num_mace_species: Number of species the MACE model was trained on.
-        wrapper: TorchModuleWrapper bridging PyTorch to JAX.
-        compute_virials: Whether to compute virials for stress.
-    """
-
-    species_to_index: Array
-    cutoff: Table[SystemId, Array]
-    num_mace_species: int = field(static=True)
-    wrapper: TorchModuleWrapper = field(static=True)
-    compute_virials: bool = field(static=True, default=False)
-
-
-type TorchMACEInput[
-    P: IsTorchMACEParticles,
-    S: HasCell,
-] = GraphPotentialInput[TorchMACEModel, P, S, Literal[2]]
-
-
-class _MACEWrapperResult(NamedTuple):
-    """Result from calling MACE wrapper."""
-
-    energy: Array
-    forces: Array
-    virials: Array | None
-
-
-def _call_mace_wrapper[
-    P: IsTorchMACEParticles,
-    S: HasCell,
-](inp: TorchMACEInput[P, S]) -> _MACEWrapperResult:
-    """Call the MACE wrapper and extract energy, forces, and optional virials.
-
-    Args:
-        inp: Graph potential input containing the MACE model and graph.
-
-    Returns:
-        Energy, forces (unsorted back to original order), and optional virials.
-    """
-    graph, sort_order = inp.graph.sorted_by_system(return_sort_order=True)
-    unsort_order = jnp.argsort(sort_order)
-    mace = inp.parameters
-
-    inputs = _prepare_mace_inputs(graph, mace.species_to_index, mace.num_mace_species)
-
-    cell = None
-    if graph.systems is not None:
-        cell = graph.systems.data.cell.vectors
-
-    result = mace.wrapper(
-        inputs.node_attrs,
-        inputs.positions,
-        inputs.edge_index,
-        inputs.batch,
-        inputs.ptr,
-        inputs.shifts,
-        cell,
-    )
-
-    energy = result["energy"][:-1]
-    forces_sorted = result["forces"][:-1]
-    forces = forces_sorted[unsort_order]
-    virials = result.get("virials")
-    if virials is not None:
-        virials = virials[:-1]
-
-    return _MACEWrapperResult(energy, forces, virials)
-
-
-@overload
-def torch_mace_model_fn[
-    P: IsTorchMACEParticles,
-    S: HasCell,
-](
-    inp: TorchMACEInput[P, S],
-    *,
-    compute_virials: Literal[False] = False,
-) -> WithPatch[PotentialOut[Array, EmptyType], IdPatch]: ...
-
-
-@overload
-def torch_mace_model_fn[
-    P: IsTorchMACEParticles,
-    S: HasCell,
-](
-    inp: TorchMACEInput[P, S],
-    *,
-    compute_virials: Literal[True],
-) -> WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch]: ...
-
-
-def torch_mace_model_fn[
-    P: IsTorchMACEParticles,
-    S: HasCell,
-](
-    inp: TorchMACEInput[P, S],
-    *,
-    compute_virials: bool = False,
-) -> (
-    WithPatch[PotentialOut[Array, EmptyType], IdPatch]
-    | WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch]
-):
-    """Model function for PyTorch MACE models.
-
-    Returns ``PotentialOut`` with forces (and optionally virials) computed by
-    PyTorch.
-
-    Args:
-        inp: Graph potential input containing the MACE model and graph.
-        compute_virials: Whether to include virial gradients in the output.
-
-    Returns:
-        ``WithPatch`` containing ``PotentialOut`` with energy, gradients, and
-        an identity patch.
-    """
-    result = _call_mace_wrapper(inp)
-
-    if compute_virials:
-        assert result.virials is not None, "Model must have compute_virials=True"
-        gradients = PositionAndCell(
-            positions=Table(inp.graph.particles.keys, -result.forces),
-            cell=Table(
-                inp.graph.systems.keys,
-                PeriodicCell(TriclinicFrame.from_matrix(result.virials)),
-            ),
-        )
-        return WithPatch(
-            PotentialOut(Table.arange(result.energy, label=SystemId), gradients, EMPTY),
-            IdPatch(),
-        )
-    else:
-        return WithPatch(
-            PotentialOut(
-                Table.arange(result.energy, label=SystemId), -result.forces, EMPTY
-            ),
-            IdPatch(),
-        )
-
-
-@overload
-def make_torch_mace_potential[
-    State,
-    P: IsTorchMACEParticles,
-    S: HasCell,
-    NNList: NearestNeighborList,
-](
-    particles_view: View[State, Table[ParticleId, P]],
-    systems_view: View[State, Table[SystemId, S]],
-    neighborlist_view: View[State, NNList],
-    model: View[State, TorchMACEModel] | TorchMACEModel,
-    cutoffs_view: View[State, Table[SystemId, Array]],
-    compute_virials: Literal[False] = False,
-    patch_idx_view: View[State, PotentialOut[Array, EmptyType]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Array, EmptyType]] | None = None,
-) -> Potential[State, Array, EmptyType, Patch[State]]: ...
-
-
-@overload
-def make_torch_mace_potential[
-    State,
-    P: IsTorchMACEParticles,
-    S: HasCell,
-    NNList: NearestNeighborList,
-](
-    particles_view: View[State, Table[ParticleId, P]],
-    systems_view: View[State, Table[SystemId, S]],
-    neighborlist_view: View[State, NNList],
-    model: View[State, TorchMACEModel] | TorchMACEModel,
-    cutoffs_view: View[State, Table[SystemId, Array]],
-    compute_virials: Literal[True],
-    patch_idx_view: View[State, PotentialOut[PositionAndCell, EmptyType]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[PositionAndCell, EmptyType]] | None = None,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[State]]: ...
-
-
-def make_torch_mace_potential[
-    State,
-    P: IsTorchMACEParticles,
-    S: HasCell,
-    NNList: NearestNeighborList,
-](
-    particles_view: View[State, Table[ParticleId, P]],
-    systems_view: View[State, Table[SystemId, S]],
-    neighborlist_view: View[State, NNList],
-    model: View[State, TorchMACEModel] | TorchMACEModel,
-    cutoffs_view: View[State, Table[SystemId, Array]],
-    compute_virials: bool = False,
-    patch_idx_view: Any | None = None,
-    out_cache_lens: Any | None = None,
-) -> Any:
-    """Create kUPS potential from PyTorch MACE model.
-
-    Forces are computed by PyTorch natively (not JAX autodiff).
-    Hessians are NOT supported (returns EmptyType).
-
-    Args:
-        particles_view: Extracts particle data from state
-        systems_view: Extracts system data (cell) from state
-        neighborlist_view: Extracts neighbor list from state
-        model: TorchMACEModel instance or view to model in state
-        cutoffs_view: Extracts cutoffs as ``Indexed[SystemId, Array]``
-        compute_virials: Whether to compute virials for stress (default: False)
-        patch_idx_view: Cached output index structure (optional)
-        out_cache_lens: Cache location lens (optional)
-
-    Returns:
-        kUPS ``Potential`` backed by the PyTorch MACE model.
-    """
-    if isinstance(model, TorchMACEModel):
-        model_view: View[State, TorchMACEModel] = constant(model)
-    else:
-        model_view = model
-
-    if compute_virials:
-
-        def virial_fn(inp):
-            return torch_mace_model_fn(inp, compute_virials=True)
-
-        return make_mliap_potential(
-            model_fn=virial_fn,
-            particles_view=particles_view,
-            systems_view=systems_view,
-            neighborlist_view=neighborlist_view,
-            model_view=model_view,
-            cutoffs_view=cutoffs_view,
-            patch_idx_view=patch_idx_view,
-            out_cache_lens=out_cache_lens,
-        )
-
-    def forces_fn(inp):
-        return torch_mace_model_fn(inp, compute_virials=False)
-
-    return make_mliap_potential(
-        model_fn=forces_fn,
-        particles_view=particles_view,
-        systems_view=systems_view,
-        neighborlist_view=neighborlist_view,
-        model_view=model_view,
-        cutoffs_view=cutoffs_view,
-        patch_idx_view=patch_idx_view,
-        out_cache_lens=out_cache_lens,
+    return TorchMliap.from_module(
+        module, cutoff=cutoff, compute_cell_gradients=compute_cell_gradients
     )
