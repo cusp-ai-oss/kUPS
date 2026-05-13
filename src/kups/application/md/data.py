@@ -28,6 +28,73 @@ from kups.md.observables import particle_kinetic_energy
 
 
 @dataclass
+class VerletParams:
+    """Control parameters for the NVE Velocity Verlet integrator.
+
+    Attributes:
+        time_step: Integration timestep ``Δt`` (internal time units), shape ``(n_systems,)``.
+    """
+
+    time_step: Array
+
+
+@dataclass
+class BAOABLangevinParams:
+    """Control parameters for the BAOAB Langevin (NVT) integrator.
+
+    Attributes:
+        time_step: Integration timestep ``Δt``, shape ``(n_systems,)``.
+        temperature: Target temperature ``T`` (K), shape ``(n_systems,)``.
+        friction_coefficient: Langevin friction ``γ`` (1/time), shape ``(n_systems,)``.
+    """
+
+    time_step: Array
+    temperature: Array
+    friction_coefficient: Array
+
+
+@dataclass
+class CSVRParams:
+    """Control parameters for the CSVR (NVT) integrator.
+
+    Attributes:
+        time_step: Integration timestep ``Δt``, shape ``(n_systems,)``.
+        temperature: Target temperature ``T`` (K), shape ``(n_systems,)``.
+        thermostat_time_constant: CSVR coupling time ``τ`` (time), shape ``(n_systems,)``.
+    """
+
+    time_step: Array
+    temperature: Array
+    thermostat_time_constant: Array
+
+
+@dataclass
+class CSVRNPTParams:
+    """Control parameters for the CSVR-NPT integrator.
+
+    Attributes:
+        time_step: Integration timestep ``Δt``, shape ``(n_systems,)``.
+        temperature: Target temperature ``T`` (K), shape ``(n_systems,)``.
+        thermostat_time_constant: CSVR coupling time ``τ`` (time), shape ``(n_systems,)``.
+        target_pressure: Target pressure ``P₀`` (energy/length³), shape ``(n_systems,)``.
+        pressure_coupling_time: Barostat coupling time ``τ_P`` (time), shape ``(n_systems,)``.
+        compressibility: Isothermal compressibility ``β`` (length³/energy), shape ``(n_systems,)``.
+        minimum_scale_factor: Minimum barostat scale factor, shape ``(n_systems,)``.
+    """
+
+    time_step: Array
+    temperature: Array
+    thermostat_time_constant: Array
+    target_pressure: Array
+    pressure_coupling_time: Array
+    compressibility: Array
+    minimum_scale_factor: Array
+
+
+type IntegratorParams = VerletParams | BAOABLangevinParams | CSVRParams | CSVRNPTParams
+
+
+@dataclass
 class MDParticles(Particles):
     """Particle state for molecular dynamics simulations.
 
@@ -71,14 +138,10 @@ class MDSystems:
 
     Attributes:
         cell: Cell geometry for each system.
-        temperature: Target temperature (K), shape ``(n_systems,)``.
-        time_step: Integration timestep (internal time units), shape ``(n_systems,)``.
-        friction_coefficient: Langevin friction (1/time), shape ``(n_systems,)``.
-        thermostat_time_constant: CSVR coupling time (time), shape ``(n_systems,)``.
-        target_pressure: Target pressure (energy/length^3), shape ``(n_systems,)``.
-        pressure_coupling_time: Barostat coupling time (time), shape ``(n_systems,)``.
-        compressibility: Isothermal compressibility (length^3/energy), shape ``(n_systems,)``.
-        minimum_scale_factor: Minimum barostat scale factor, shape ``(n_systems,)``.
+        integrator_params: Bundled integrator control parameters; concrete shape
+            (e.g. :class:`VerletParams`, :class:`BAOABLangevinParams`,
+            :class:`CSVRParams`, :class:`CSVRNPTParams`) is chosen to match the
+            selected integrator.
         cell_gradients: Energy gradient w.r.t. the cell, stored as a
             :class:`Cell` (the ``vectors`` leaf holds the
             shape-``(n_systems, 3, 3)`` gradient used by
@@ -87,14 +150,7 @@ class MDSystems:
     """
 
     cell: Cell
-    temperature: Array
-    time_step: Array
-    friction_coefficient: Array
-    thermostat_time_constant: Array
-    target_pressure: Array
-    pressure_coupling_time: Array
-    compressibility: Array
-    minimum_scale_factor: Array
+    integrator_params: IntegratorParams
     cell_gradients: Cell
     potential_energy: Array
 
@@ -187,20 +243,7 @@ def md_state_from_ase(
     systems = Table.arange(
         MDSystems(
             cell=cell,
-            temperature=jnp.array([config.temperature]),
-            time_step=jnp.array([config.time_step * FEMTO_SECOND]),
-            friction_coefficient=jnp.array(
-                [config.friction_coefficient / FEMTO_SECOND]
-            ),
-            thermostat_time_constant=jnp.array(
-                [config.thermostat_time_constant * FEMTO_SECOND]
-            ),
-            target_pressure=jnp.array([config.target_pressure * PASCAL]),
-            pressure_coupling_time=jnp.array(
-                [config.pressure_coupling_time * FEMTO_SECOND]
-            ),
-            compressibility=jnp.array([config.compressibility / PASCAL]),
-            minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
+            integrator_params=_build_integrator_params(config),
             cell_gradients=tree_zeros_like(cell),
             potential_energy=jnp.array([0.0]),
         ),
@@ -210,10 +253,54 @@ def md_state_from_ase(
     return particles, systems
 
 
+def _build_integrator_params(config: MdParameters) -> IntegratorParams:
+    """Construct the concrete integrator-params dataclass matching ``config.integrator``."""
+    time_step = jnp.array([config.time_step * FEMTO_SECOND])
+    temperature = jnp.array([config.temperature])
+    match config.integrator:
+        case "verlet":
+            return VerletParams(time_step=time_step)
+        case "baoab_langevin":
+            return BAOABLangevinParams(
+                time_step=time_step,
+                temperature=temperature,
+                friction_coefficient=jnp.array(
+                    [config.friction_coefficient / FEMTO_SECOND]
+                ),
+            )
+        case "csvr":
+            return CSVRParams(
+                time_step=time_step,
+                temperature=temperature,
+                thermostat_time_constant=jnp.array(
+                    [config.thermostat_time_constant * FEMTO_SECOND]
+                ),
+            )
+        case "csvr_npt":
+            return CSVRNPTParams(
+                time_step=time_step,
+                temperature=temperature,
+                thermostat_time_constant=jnp.array(
+                    [config.thermostat_time_constant * FEMTO_SECOND]
+                ),
+                target_pressure=jnp.array([config.target_pressure * PASCAL]),
+                pressure_coupling_time=jnp.array(
+                    [config.pressure_coupling_time * FEMTO_SECOND]
+                ),
+                compressibility=jnp.array([config.compressibility / PASCAL]),
+                minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
+            )
+
+
 __all__ = [
     "MDParticles",
     "MDSystems",
     "MdRunConfig",
     "MdParameters",
+    "VerletParams",
+    "BAOABLangevinParams",
+    "CSVRParams",
+    "CSVRNPTParams",
+    "IntegratorParams",
     "md_state_from_ase",
 ]

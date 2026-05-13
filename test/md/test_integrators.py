@@ -48,7 +48,13 @@ class ParticleData:
 
 
 @dataclass
-class SystemData:
+class SystemParams:
+    """Bundled integrator-params for the simple harmonic-system tests.
+
+    Carries the union of fields needed by BAOAB Langevin and CSVR so the same
+    state shape can drive both integrators.
+    """
+
     time_step: Array
     temperature: Array
     friction_coefficient: Array
@@ -56,16 +62,28 @@ class SystemData:
 
 
 @dataclass
-class NPTSystemData:
+class NPTSystemParams:
+    """Bundled integrator-params for CSVR-NPT tests."""
+
     time_step: Array
     temperature: Array
     thermostat_time_constant: Array
-    cell: Cell
-    cell_gradients: Cell
     target_pressure: Array
     pressure_coupling_time: Array
     compressibility: Array
     minimum_scale_factor: Array
+
+
+@dataclass
+class SystemData:
+    integrator_params: SystemParams
+
+
+@dataclass
+class NPTSystemData:
+    cell: Cell
+    cell_gradients: Cell
+    integrator_params: NPTSystemParams
 
 
 @dataclass
@@ -98,6 +116,12 @@ def compute_temperature(state, dof):
 def get_systems(s: SimpleState) -> Table[SystemId, SystemData]:
     """Extract Table SystemData from state."""
     return s.systems
+
+
+def get_params(s: SimpleState) -> Table[SystemId, SystemParams]:
+    """Project the system table to its integrator_params bundle."""
+    sys = s.systems
+    return Table(sys.keys, sys.data.integrator_params, _cls=sys._cls)
 
 
 def run_simulation(integrator, state, key, n_equil, n_sample, extract_fn):
@@ -164,10 +188,12 @@ def create_harmonic_system(
 
     systems = Table.arange(
         SystemData(
-            time_step=jnp.array([dt]),
-            temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
-            friction_coefficient=jnp.array([gamma]),
-            thermostat_time_constant=jnp.array([tau]),
+            integrator_params=SystemParams(
+                time_step=jnp.array([dt]),
+                temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
+                friction_coefficient=jnp.array([gamma]),
+                thermostat_time_constant=jnp.array([tau]),
+            ),
         ),
         label=SystemId,
     )
@@ -237,15 +263,17 @@ def create_npt_system(
 
     systems = Table.arange(
         NPTSystemData(
-            time_step=jnp.array([dt]),
-            temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
-            thermostat_time_constant=jnp.array([tau_t]),
             cell=cell,
             cell_gradients=tree_zeros_like(cell),
-            target_pressure=jnp.array([target_pressure]),
-            pressure_coupling_time=jnp.array([tau_p]),
-            compressibility=jnp.array([compressibility]),
-            minimum_scale_factor=jnp.array([0.5]),
+            integrator_params=NPTSystemParams(
+                time_step=jnp.array([dt]),
+                temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
+                thermostat_time_constant=jnp.array([tau_t]),
+                target_pressure=jnp.array([target_pressure]),
+                pressure_coupling_time=jnp.array([tau_p]),
+                compressibility=jnp.array([compressibility]),
+                minimum_scale_factor=jnp.array([0.5]),
+            ),
         ),
         label=SystemId,
     )
@@ -294,7 +322,7 @@ class TestBasicSteps:
         state, _, _ = create_harmonic_system(n_particles=5, dt=0.01)
         step = PositionStep(
             particles=SimpleState.particles,
-            systems=SimpleState.systems.get,
+            systems=get_params,
             flow=euclidean_flow,
         )
         new_state = step(jax.random.key(0), state)
@@ -302,7 +330,7 @@ class TestBasicSteps:
         velocities = state.particles.data.momenta / state.particles.data.masses[:, None]
         expected = (
             state.particles.data.positions
-            + velocities * state.systems.data.time_step[0]
+            + velocities * state.systems.data.integrator_params.time_step[0]
         )
         assert jnp.allclose(new_state.particles.data.positions, expected, rtol=1e-6)
         assert jnp.allclose(
@@ -312,14 +340,13 @@ class TestBasicSteps:
     def test_momentum_update(self):
         """Momentum update correctness and position preservation."""
         state, _, _ = create_harmonic_system(n_particles=5, dt=0.01)
-        step = MomentumStep(
-            particles=SimpleState.particles, systems=SimpleState.systems.get
-        )
+        step = MomentumStep(particles=SimpleState.particles, systems=get_params)
         new_state = step(jax.random.key(0), state)
 
         expected = (
             state.particles.data.momenta
-            + state.particles.data.forces * state.systems.data.time_step[0]
+            + state.particles.data.forces
+            * state.systems.data.integrator_params.time_step[0]
         )
         assert jnp.allclose(new_state.particles.data.momenta, expected, rtol=1e-6)
         assert jnp.allclose(
@@ -335,9 +362,7 @@ class TestThermostatSteps:
         state, _, _ = create_harmonic_system(
             n_particles=n_particles, kT=kT_target, dt=0.02
         )
-        step = StochasticStep(
-            particles=SimpleState.particles, system=SimpleState.systems.get
-        )
+        step = StochasticStep(particles=SimpleState.particles, system=get_params)
 
         _, temps = run_simulation(
             step,
@@ -354,7 +379,7 @@ class TestThermostatSteps:
         state, _, _ = create_harmonic_system(
             n_particles=n_particles, kT=kT_target, tau=0.1, dt=0.02
         )
-        step = CSVRStep(particles=SimpleState.particles, systems=get_systems)
+        step = CSVRStep(particles=SimpleState.particles, systems=get_params)
 
         _, temps = run_simulation(
             step,
@@ -530,7 +555,7 @@ class TestNVTPhysics:
         )
         integrator = make_csvr_step(
             particles=SimpleState.particles,
-            systems=get_systems,
+            systems=SimpleState.systems.get,
             derivative_computation=deriv,
             flow=euclidean_flow,
         )
@@ -552,7 +577,7 @@ class TestNVTPhysics:
         )
         integrator2 = make_csvr_step(
             particles=SimpleState.particles,
-            systems=get_systems,
+            systems=SimpleState.systems.get,
             derivative_computation=deriv2,
             flow=euclidean_flow,
         )

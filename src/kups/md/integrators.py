@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, runtime_checkable
+from typing import Any, Literal, overload, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +20,7 @@ from kups.core.typing import (
     HasCompressibility,
     HasForces,
     HasFrictionCoefficient,
+    HasIntegratorParams,
     HasMasses,
     HasMinimumScaleFactor,
     HasMomenta,
@@ -30,6 +31,7 @@ from kups.core.typing import (
     HasTemperature,
     HasThermostatTimeConstant,
     HasTimeStep,
+    IsState,
     ParticleId,
     SystemId,
 )
@@ -138,16 +140,38 @@ class WrapFlow[State, PyTree](Flow[State, PyTree]):
         return tree_map(self.cell(state).wrap, self.flow(state, dt, primal, tangent))
 
 
-def _half_time[S: HasTimeStep](sys: Table[SystemId, S]) -> Table[SystemId, S]:
-    """View that halves the time_step of a system.
+def _half_time[S: HasIntegratorParams[HasTimeStep]](
+    sys: Table[SystemId, S],
+) -> Table[SystemId, S]:
+    """View that halves the time_step nested in ``integrator_params``.
 
     Args:
-        sys: Indexed system with time_step attribute
+        sys: Indexed system whose ``integrator_params`` exposes ``time_step``.
 
     Returns:
-        New Indexed system with time_step halved
+        New Indexed system with ``integrator_params.time_step`` halved.
     """
-    return bind(sys, lambda x: x.data.time_step).apply(lambda x: x / 2)
+    return bind(sys, lambda x: x.data.integrator_params.time_step).apply(
+        lambda x: x / 2
+    )
+
+
+def _to_params[P](
+    sys: Table[SystemId, HasIntegratorParams[P]],
+) -> Table[SystemId, P]:
+    """Project a Table of systems down to its ``integrator_params`` bundle.
+
+    The resulting table shares the same primary keys but exposes the inner
+    integrator parameter pytree as its ``data``.
+    """
+    return Table(sys.keys, sys.data.integrator_params, _cls=sys._cls)
+
+
+def _half_time_params[P: HasTimeStep](
+    sys: Table[SystemId, HasIntegratorParams[P]],
+) -> Table[SystemId, P]:
+    """Project to ``integrator_params`` with ``time_step`` halved (for splitting schemes)."""
+    return _to_params(_half_time(sys))
 
 
 @runtime_checkable
@@ -267,9 +291,14 @@ class _MDParticleData(
     def position_gradients(self) -> Array: ...
 
 
+@runtime_checkable
+class IsVerletParams(HasTimeStep, Protocol):
+    r"""Integrator-params shape for :func:`make_velocity_verlet_step`."""
+
+
 def make_velocity_verlet_step[State](
     particles: Lens[State, Table[ParticleId, _MDParticleData]],
-    systems: View[State, Table[SystemId, HasTimeStep]],
+    systems: View[State, Table[SystemId, HasIntegratorParams[IsVerletParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
 ) -> SequentialPropagator[State]:
@@ -303,13 +332,14 @@ def make_velocity_verlet_step[State](
         Application to small water clusters. J. Chem. Phys., 76(1), 637-649.
         DOI: 10.1063/1.442716
     """
-    sys_with_half_time = pipe(systems, _half_time)  # Δt/2 [time]
+    params = pipe(systems, _to_params)
+    params_half_time = pipe(systems, _half_time_params)  # Δt/2 [time]
     return SequentialPropagator(
         (
-            MomentumStep(particles, sys_with_half_time),
-            PositionStep(particles, systems, flow),
+            MomentumStep(particles, params_half_time),
+            PositionStep(particles, params, flow),
             derivative_computation,
-            MomentumStep(particles, sys_with_half_time),
+            MomentumStep(particles, params_half_time),
         )
     )
 
@@ -319,9 +349,10 @@ class IsStochasticParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol):
 
 
 @runtime_checkable
-class _StochasticSysData(
+class IsBAOABLangevinParams(
     HasTimeStep, HasTemperature, HasFrictionCoefficient, Protocol
-): ...
+):
+    r"""Integrator-params shape for :func:`make_baoab_langevin_step`."""
 
 
 @dataclass
@@ -358,7 +389,7 @@ class StochasticStep[State](Propagator[State]):
     particles: Lens[State, Table[ParticleId, IsStochasticParticleData]] = field(
         static=True
     )
-    system: View[State, Table[SystemId, _StochasticSysData]] = field(static=True)
+    system: View[State, Table[SystemId, IsBAOABLangevinParams]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply stochastic Ornstein-Uhlenbeck thermostat step.
@@ -401,7 +432,7 @@ class StochasticStep[State](Propagator[State]):
 
 def make_baoab_langevin_step[State](
     particles: Lens[State, Table[ParticleId, _MDParticleData]],
-    systems: View[State, Table[SystemId, _StochasticSysData]],
+    systems: View[State, Table[SystemId, HasIntegratorParams[IsBAOABLangevinParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
 ) -> SequentialPropagator[State]:
@@ -437,26 +468,28 @@ def make_baoab_langevin_step[State](
         stochastic numerical methods for molecular sampling.
         Appl. Math. Res. Express, 2013(1), 34-56. DOI: 10.1093/amrx/abs010
     """
-    sys_with_half_time = pipe(systems, _half_time)
+    params = pipe(systems, _to_params)
+    params_half_time = pipe(systems, _half_time_params)
     return SequentialPropagator(
         (
-            MomentumStep(particles, sys_with_half_time),  # B
-            PositionStep(particles, sys_with_half_time, flow),  # A
-            StochasticStep(particles, systems),  # O
-            PositionStep(particles, sys_with_half_time, flow),  # A
+            MomentumStep(particles, params_half_time),  # B
+            PositionStep(particles, params_half_time, flow),  # A
+            StochasticStep(particles, params),  # O
+            PositionStep(particles, params_half_time, flow),  # A
             derivative_computation,
-            MomentumStep(particles, sys_with_half_time),  # B
+            MomentumStep(particles, params_half_time),  # B
         )
     )
 
 
 @runtime_checkable
-class _CSVRSystemData(
+class IsCSVRParams(
     HasTimeStep,
     HasTemperature,
     HasThermostatTimeConstant,
     Protocol,
-): ...
+):
+    r"""Integrator-params shape for :func:`make_csvr_step`."""
 
 
 @runtime_checkable
@@ -502,7 +535,7 @@ class CSVRStep[State](Propagator[State]):
     """
 
     particles: Lens[State, Table[ParticleId, IsCSVRParticleData]] = field(static=True)
-    systems: View[State, Table[SystemId, _CSVRSystemData]] = field(static=True)
+    systems: View[State, Table[SystemId, IsCSVRParams]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply CSVR stochastic velocity rescaling.
@@ -584,7 +617,7 @@ class CSVRStep[State](Propagator[State]):
 
 def make_csvr_step[State](
     particles: Lens[State, Table[ParticleId, _MDParticleData]],
-    systems: View[State, Table[SystemId, _CSVRSystemData]],
+    systems: View[State, Table[SystemId, HasIntegratorParams[IsCSVRParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
 ) -> SequentialPropagator[State]:
@@ -619,29 +652,42 @@ def make_csvr_step[State](
         through velocity rescaling. J. Chem. Phys., 126(1), 014101.
         DOI: 10.1063/1.2408420
     """
-    systems_with_half_time = pipe(systems, _half_time)
+    params = pipe(systems, _to_params)
+    params_half_time = pipe(systems, _half_time_params)
     return SequentialPropagator(
         (
-            CSVRStep(particles, systems),
-            MomentumStep(particles, systems_with_half_time),
-            PositionStep(particles, systems, flow),
+            CSVRStep(particles, params),
+            MomentumStep(particles, params_half_time),
+            PositionStep(particles, params, flow),
             derivative_computation,
-            MomentumStep(particles, systems_with_half_time),
+            MomentumStep(particles, params_half_time),
         )
     )
 
 
 @runtime_checkable
-class _StochasticCellRescalingSystemData(
-    HasCell[Periodic3D],
+class IsCSVRNPTParams(
     HasTimeStep,
     HasTemperature,
+    HasThermostatTimeConstant,
     HasTargetPressure,
     HasPressureCouplingTime,
     HasCompressibility,
     HasMinimumScaleFactor,
     Protocol,
 ):
+    r"""Integrator-params shape for :func:`make_csvr_npt_step`."""
+
+
+@runtime_checkable
+class IsMDSystem[P](HasCell[Periodic3D], HasIntegratorParams[P], Protocol):
+    r"""Protocol for an MD system row: a periodic cell plus bundled integrator parameters."""
+
+
+@runtime_checkable
+class IsMDSystemNPT(IsMDSystem[IsCSVRNPTParams], Protocol):
+    r"""NPT MD system row: adds the cell-gradient leaf needed for the barostat."""
+
     @property
     def cell_gradients(self) -> Cell[Periodic3D]: ...
 
@@ -699,9 +745,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
         static=True
     )
-    systems: Lens[State, Table[SystemId, _StochasticCellRescalingSystemData]] = field(
-        static=True
-    )
+    systems: Lens[State, Table[SystemId, IsMDSystemNPT]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply stochastic cell rescaling for pressure control.
@@ -719,16 +763,17 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         """
         # Extract parameters
         systems = self.systems.get(state)
+        params = systems.data.integrator_params
         # Δt: timestep [time]
-        timestep = systems.data.time_step
+        timestep = params.time_step
         # kT: thermal energy [energy]
-        thermal_energy = systems.data.temperature * BOLTZMANN_CONSTANT
+        thermal_energy = params.temperature * BOLTZMANN_CONSTANT
         # P₀: target pressure [pressure]
-        target_pressure = systems.data.target_pressure
+        target_pressure = params.target_pressure
         # τP: barostat time constant [time]
-        barostat_timescale = systems.data.pressure_coupling_time
+        barostat_timescale = params.pressure_coupling_time
         # β: isothermal compressibility [1/pressure]
-        compressibility = systems.data.compressibility
+        compressibility = params.compressibility
 
         # Get current state
         # Cell with lattice vectors L
@@ -786,7 +831,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
 
         # Safety clamp to prevent extreme scaling
         # μ ∈ [μ_min, μ_max]
-        min_scaling = systems.data.minimum_scale_factor
+        min_scaling = params.minimum_scale_factor
         max_scaling = 1.0 / min_scaling
         scaling_factor = jnp.clip(scaling_factor, min_scaling, max_scaling)
 
@@ -807,25 +852,9 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         return particle_lens.focus(lambda p: p.data.positions).set(new_positions)
 
 
-@runtime_checkable
-class IsCSVRNPTSystemData(
-    HasCell[Periodic3D],
-    HasTimeStep,
-    HasTemperature,
-    HasTargetPressure,
-    HasPressureCouplingTime,
-    HasCompressibility,
-    HasMinimumScaleFactor,
-    HasThermostatTimeConstant,
-    Protocol,
-):
-    @property
-    def cell_gradients(self) -> Cell[Periodic3D]: ...
-
-
 def make_csvr_npt_step[State](
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]],
-    systems: Lens[State, Table[SystemId, IsCSVRNPTSystemData]],
+    systems: Lens[State, Table[SystemId, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
 ) -> SequentialPropagator[State]:
@@ -868,38 +897,59 @@ def make_csvr_npt_step[State](
              stochastic cell rescaling. J. Chem. Phys., 153(11), 114107.
              DOI: 10.1063/5.0020514
     """
-    sys_view: View[State, Table[SystemId, IsCSVRNPTSystemData]] = systems.get
-    sys_half_view: View[State, Table[SystemId, IsCSVRNPTSystemData]] = pipe(
-        systems.get, _half_time
+    params: View[State, Table[SystemId, IsCSVRNPTParams]] = pipe(
+        systems.get, _to_params
+    )
+    params_half: View[State, Table[SystemId, IsCSVRNPTParams]] = pipe(
+        systems.get, _half_time_params
     )
     return SequentialPropagator(
         (
-            CSVRStep(particles, sys_view),
-            MomentumStep(particles, sys_half_view),
-            PositionStep(particles, sys_view, flow),
+            CSVRStep(particles, params),
+            MomentumStep(particles, params_half),
+            PositionStep(particles, params, flow),
             derivative_computation,
-            MomentumStep(particles, sys_half_view),
+            MomentumStep(particles, params_half),
             StochasticCellRescalingStep(particles, systems),
             derivative_computation,
         )
     )
 
 
-@runtime_checkable
-class IsMDSystem(HasFrictionCoefficient, IsCSVRNPTSystemData, Protocol): ...
-
-
-class IsMDState(Protocol):
-    """State protocol for molecular dynamics step computation."""
-
-    @property
-    def particles(self) -> Table[ParticleId, _MDParticleData]: ...
-    @property
-    def systems(self) -> Table[SystemId, IsMDSystem]: ...
+@overload
+def make_md_step_from_state[State](
+    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsVerletParams]]],
+    derivative_computation: Propagator[State],
+    integrator: Literal["verlet"],
+) -> Propagator[State]: ...
+@overload
+def make_md_step_from_state[State](
+    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsBAOABLangevinParams]]],
+    derivative_computation: Propagator[State],
+    integrator: Literal["baoab_langevin"],
+) -> Propagator[State]: ...
+@overload
+def make_md_step_from_state[State](
+    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsCSVRParams]]],
+    derivative_computation: Propagator[State],
+    integrator: Literal["csvr"],
+) -> Propagator[State]: ...
+@overload
+def make_md_step_from_state[State](
+    state: Lens[State, IsState[_MDParticleData, IsMDSystemNPT]],
+    derivative_computation: Propagator[State],
+    integrator: Literal["csvr_npt"],
+) -> Propagator[State]: ...
+@overload
+def make_md_step_from_state[State](
+    state: Lens[State, Any],
+    derivative_computation: Propagator[State],
+    integrator: Integrator,
+) -> Propagator[State]: ...
 
 
 def make_md_step_from_state[State](
-    state: Lens[State, IsMDState],
+    state: Lens[State, Any],
     derivative_computation: Propagator[State],
     integrator: Integrator,
 ) -> Propagator[State]:
@@ -913,18 +963,21 @@ def make_md_step_from_state[State](
     Supported integrators:
 
     - ``"verlet"`` — [Velocity Verlet][kups.md.integrators.make_velocity_verlet_step]
-      (NVE ensemble, no thermostat).
+      (NVE ensemble, no thermostat). Requires ``integrator_params: IsVerletParams``.
     - ``"baoab_langevin"`` — [BAOAB Langevin][kups.md.integrators.make_baoab_langevin_step]
-      (NVT via Langevin friction/noise).
+      (NVT via Langevin friction/noise). Requires
+      ``integrator_params: IsBAOABLangevinParams``.
     - ``"csvr"`` — [CSVR][kups.md.integrators.make_csvr_step]
-      (NVT via canonical-sampling velocity rescaling, constant volume).
+      (NVT via canonical-sampling velocity rescaling, constant volume). Requires
+      ``integrator_params: IsCSVRParams``.
     - ``"csvr_npt"`` — [CSVR-NPT][kups.md.integrators.make_csvr_npt_step]
-      (NPT via CSVR thermostat with barostat).
+      (NPT via CSVR thermostat with barostat). Requires
+      ``integrator_params: IsCSVRNPTParams`` and a ``cell_gradients`` leaf on each system.
+
+    The overloads narrow the required state protocol per ``integrator`` literal.
 
     Args:
-        state: Lens into the sub-state satisfying
-            [IsMDState][kups.md.integrators.IsMDState] (needs ``particles`` and
-            ``systems``).
+        state: Lens into the sub-state with ``particles`` and ``systems``.
         derivative_computation: Propagator that computes forces/gradients and
             updates the state (e.g. a wrapped potential).
         integrator: String key selecting the integration algorithm.
@@ -940,20 +993,24 @@ def make_md_step_from_state[State](
         state.focus(lambda x: x.systems[x.particles.data.system].cell),
         euclidean_flow,
     )
+    particles_lens = state.focus(lambda x: x.particles)
+    systems_lens = state.focus(lambda x: x.systems)
     match integrator:
         case "verlet":
-            integrator_fn = make_velocity_verlet_step
+            return make_velocity_verlet_step(
+                particles_lens, systems_lens, derivative_computation, flow
+            )
         case "baoab_langevin":
-            integrator_fn = make_baoab_langevin_step
+            return make_baoab_langevin_step(
+                particles_lens, systems_lens, derivative_computation, flow
+            )
         case "csvr":
-            integrator_fn = make_csvr_step
+            return make_csvr_step(
+                particles_lens, systems_lens, derivative_computation, flow
+            )
         case "csvr_npt":
-            integrator_fn = make_csvr_npt_step
+            return make_csvr_npt_step(
+                particles_lens, systems_lens, derivative_computation, flow
+            )
         case _:
             raise ValueError(f"Unknown integrator: {integrator}")
-    return integrator_fn(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        derivative_computation,
-        flow,
-    )

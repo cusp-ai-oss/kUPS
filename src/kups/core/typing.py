@@ -384,6 +384,21 @@ class HasMinimumScaleFactor(Protocol):
 
 
 @runtime_checkable
+class HasIntegratorParams[P](Protocol):
+    r"""Protocol for systems carrying bundled integrator control parameters.
+
+    Attributes:
+        integrator_params: Control knobs consumed by the chosen integrator
+            (time step, thermostat/barostat coupling parameters). Concrete shape
+            of ``P`` matches one of the integrator-specific protocols defined
+            in :mod:`kups.md.integrators`.
+    """
+
+    @property
+    def integrator_params(self) -> P: ...
+
+
+@runtime_checkable
 class HasPotentialEnergy(Protocol):
     r"""Protocol for systems with a potential energy.
 
