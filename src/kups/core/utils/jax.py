@@ -725,18 +725,11 @@ def dataclass[T: type](
             weakref_slot=weakref_slot,
         )  # type: ignore
         dcls._jax_dataclass = True
-        # All static fields (whether `init=True` or `init=False`) are carried
-        # in the pytree's aux_data, so the resulting treedef hashes and
-        # compares equal only for instances whose static metadata agrees on
-        # every field. This matters in particular for the
-        # `PeriodicCell.periodic == (True, True, True)` /
-        # `VacuumCell.periodic == (False, False, False)` pattern: both
-        # subclasses declare `periodic` with `init=False`, and if the field
-        # is dropped from aux_data the resulting treedefs compare equal,
-        # which lets a JIT-cache lookup route a vacuum call onto a
-        # previously-traced periodic compilation. `init=False` fields are
-        # extracted from the live instance on flatten and ignored on
-        # unflatten (their class-level default re-applies via `__init__`).
+        # All static fields land in aux_data so sibling subclasses pinning
+        # the same field to different `init=False` defaults (e.g.
+        # PeriodicCell vs VacuumCell) produce distinct treedefs; the
+        # unflatten skips `init=False` fields and lets their class-level
+        # default re-apply via `__init__`.
         all_fields = dataclasses.fields(dcls)
         data_fields = tuple(
             f.name for f in all_fields if f.init and not f.metadata.get("static", False)

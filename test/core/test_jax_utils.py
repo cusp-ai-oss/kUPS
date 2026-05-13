@@ -348,15 +348,8 @@ class TestDataclassSubclassPinsInheritedField:
         assert isinstance(p2, Pinned)
         assert p2.mask == (True, True)
 
-    def test_sibling_subclasses_with_distinct_pins_have_distinct_treedefs(self):
-        # Two sibling subclasses pin the same field to different constants —
-        # the `PeriodicCell` vs `VacuumCell` pattern. Their treedefs must
-        # compare unequal (in addition to hashing distinctly) so that a JIT
-        # cache lookup keyed on treedef cannot route a call against one
-        # flavor onto a compilation cached for the other. Regression for
-        # the silent collision that left two unrelated subclasses
-        # treedef-equal when ``init=False`` static fields were dropped from
-        # pytree aux data.
+    @staticmethod
+    def _pinned_pair():
         @dataclass
         class Parent:
             data: jax.Array
@@ -374,27 +367,42 @@ class TestDataclassSubclassPinsInheritedField:
                 default=(False, False), init=False, static=True
             )
 
+        return A, B
+
+    def test_sibling_subclasses_with_distinct_pins_have_distinct_treedefs(self):
+        A, B = self._pinned_pair()
         _, td_a = jax.tree_util.tree_flatten(A(jnp.zeros(3)))
         _, td_b = jax.tree_util.tree_flatten(B(jnp.zeros(3)))
         assert td_a != td_b
         assert hash(td_a) != hash(td_b)
 
-        # And functionally: a jit'd function that depends on `mask` must
-        # compile distinct traces for A and B, even when called in
-        # alternation.
-        trace_log: list[tuple[type, tuple[bool, bool]]] = []
+    def test_treedef_keyed_cache_distinguishes_pins_under_hash_collision(self):
+        # Models the JIT-cache scenario: a dict keyed on the treedef. Force
+        # a hash collision so the dict falls back to `__eq__`; the two
+        # subclasses must still resolve to separate entries. Without the
+        # `periodic` value in aux_data, `td_a == td_b` is True and the
+        # second insert silently overwrites the first — the surface that
+        # let a vacuum call use a previously-traced periodic compilation.
+        A, B = self._pinned_pair()
+        _, td_a = jax.tree_util.tree_flatten(A(jnp.zeros(3)))
+        _, td_b = jax.tree_util.tree_flatten(B(jnp.zeros(3)))
 
-        @jax.jit
-        def use_mask(x):
-            trace_log.append((type(x), x.mask))
-            return x.data * jnp.array(x.mask, dtype=int).sum()
+        class Colliding:
+            __slots__ = ("td",)
 
-        a, b = A(jnp.ones(3)), B(jnp.ones(3))
-        npt.assert_allclose(use_mask(a), jnp.full(3, 2.0))
-        npt.assert_allclose(use_mask(b), jnp.zeros(3))
-        npt.assert_allclose(use_mask(a), jnp.full(3, 2.0))
-        npt.assert_allclose(use_mask(b), jnp.zeros(3))
-        assert trace_log == [(A, (True, True)), (B, (False, False))]
+            def __init__(self, td):
+                self.td = td
+
+            def __hash__(self):
+                return 0
+
+            def __eq__(self, other):
+                return isinstance(other, Colliding) and self.td == other.td
+
+        cache: dict[Colliding, str] = {Colliding(td_a): "a", Colliding(td_b): "b"}
+        assert len(cache) == 2
+        assert cache[Colliding(td_a)] == "a"
+        assert cache[Colliding(td_b)] == "b"
 
 
 class TestSequentialVmapWithVjp:
