@@ -178,17 +178,19 @@ def _make_triclinic() -> ase.Atoms:
         positions=[[0.0, 0.0, 0.0]],
         cell=[[5.0, 0.0, 0.0], [1.5, 4.5, 0.0], [0.7, 0.4, 5.2]],
         pbc=True,
-    )# .repeat((2,2,2))
+    )  # .repeat((2,2,2))
 
 
 def _make_cu_supercell() -> ase.Atoms:
-    return ase.build.bulk("Cu", "fcc", a=3.6, cubic=True).repeat((5,5,5))
+    return ase.build.bulk("Cu", "fcc", a=3.6, cubic=True).repeat((5, 5, 5))
+
 
 def _build_bulk_al() -> ase.Atoms:
     at = ase.build.bulk("Al", "fcc", a=4.05, cubic=True)
     at.rattle(0.5)
     at.wrap()
     return at
+
 
 _CASES = [
     ("cubic_Al", _build_bulk_al, (6.0, 12.0)),

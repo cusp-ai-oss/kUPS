@@ -455,7 +455,9 @@ def _get_candidate_images(
     out_size: Capacity[int],
 ) -> tuple[Array, Array, Array]:
     cells = systems.data.cell
-    images = 2 * jnp.ceil(cutoffs[..., None] / cells.perpendicular_lengths).astype(int) + 1
+    images = (
+        2 * jnp.ceil(cutoffs[..., None] / cells.perpendicular_lengths).astype(int) + 1
+    )
     images = jnp.where(jnp.isfinite(cutoffs[..., None]), images, 1)
     # Open axes contribute no images.
     images = jnp.where(jnp.array(cells.periodic), images, 1)
