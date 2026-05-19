@@ -1890,3 +1890,5 @@ class TestNeighborListAcrossPeriodicities:
         cl_edges = _run_cell_list(positions, cell, cutoff)
         dn_edges = _run_dense(positions, cell, cutoff)
         assert _valid_edges_set(cl_edges, 30) == _valid_edges_set(dn_edges, 30)
+
+
