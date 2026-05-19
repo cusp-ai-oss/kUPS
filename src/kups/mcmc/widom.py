@@ -126,9 +126,7 @@ class WidomStatistics:
             n_samples=jnp.zeros_like(self.n_samples),
         )
 
-    def update(
-        self, ln_alpha: LogAcceptanceRatio, delta_u: Energy
-    ) -> WidomStatistics:
+    def update(self, ln_alpha: LogAcceptanceRatio, delta_u: Energy) -> WidomStatistics:
         r"""Accumulate one ghost insertion.
 
         Args:

@@ -161,9 +161,7 @@ def _apply_atom_type_map(
     """Rewrite host label keys via the map. Per-atom indices preserved."""
     labels = particles.data.labels
     new_keys = tuple(Label(atom_type_map.get(str(k), str(k))) for k in labels.keys)
-    new_labels = Index(
-        new_keys, labels.indices, max_count=labels.max_count, _cls=Label
-    )
+    new_labels = Index(new_keys, labels.indices, max_count=labels.max_count, _cls=Label)
     new_data = replace(particles.data, labels=new_labels)
     return Table(particles.keys, new_data)
 

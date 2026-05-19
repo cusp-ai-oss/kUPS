@@ -143,7 +143,9 @@ class TestInitState:
     def test_blocking_spheres_flow_through(self):
         cif = _write_cubic_ar_cif()
         spheres = ((BlockingSphereConfig(center=(5.0, 5.0, 5.0), radius=2.0),),)
-        state = init_state(jax.random.key(0), _config(_host(cif, blocking_spheres=spheres)))
+        state = init_state(
+            jax.random.key(0), _config(_host(cif, blocking_spheres=spheres))
+        )
         assert state.has_blocking_spheres
         assert state.blocking_spheres_parameters.radii.shape[0] == 1
         npt.assert_allclose(state.blocking_spheres_parameters.radii, jnp.array([2.0]))
