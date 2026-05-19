@@ -1,0 +1,226 @@
+# Copyright 2024-2026 Cusp AI
+# SPDX-License-Identifier: Apache-2.0
+
+r"""Widom test-particle method.
+
+A ghost move runs the full propose/patch/log-ratio pipeline and discards the
+resulting state patch; the log acceptance ratio is accumulated into running
+statistics.
+
+Contents:
+
+- [widom_test][kups.mcmc.widom.widom_test]: per-system $\ln\alpha$ for a ghost move
+- [GhostProbe][kups.mcmc.widom.GhostProbe]: propagator wrapper accumulating
+  the ratio via a lens + update callback
+- [WidomStatistics][kups.mcmc.widom.WidomStatistics] /
+  [WidomResult][kups.mcmc.widom.WidomResult] /
+  [finalize_widom][kups.mcmc.widom.finalize_widom]: $\mu^\mathrm{ex}$, $K_H$,
+  Vlugt $q_\mathrm{st}$.
+
+References:
+    Widom, B. (1963). J. Chem. Phys., 39, 2808.
+    Vlugt, T. J. H. et al. (2008). J. Chem. Theory Comput., 4, 1107.
+"""
+
+from __future__ import annotations
+
+from typing import Callable
+
+import jax.numpy as jnp
+from jax import Array
+
+from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core.data import Table
+from kups.core.lens import Lens
+from kups.core.patch import Patch
+from kups.core.propagator import (
+    ChangesFn,
+    LogProbabilityRatioFn,
+    PatchFn,
+    Propagator,
+)
+from kups.core.typing import SystemId
+from kups.core.utils.jax import dataclass, field, key_chain
+
+type LogAcceptanceRatio = Array
+r"""Log Metropolis acceptance ratio $\ln\alpha$ [dimensionless]."""
+
+type Energy = Array
+r"""Potential energy [energy]."""
+
+type Temperature = Array
+r"""Thermodynamic temperature $T$ [K]."""
+
+type Volume = Array
+r"""Simulation-cell volume $V$ [length$^3$]."""
+
+
+def widom_test[State, Changes, Move: Patch](
+    key: Array,
+    state: State,
+    propose_fn: ChangesFn[State, Changes],
+    patch_fn: PatchFn[State, Changes, Move],
+    log_probability_ratio_fn: LogProbabilityRatioFn[State, Move],
+) -> Table[SystemId, LogAcceptanceRatio]:
+    r"""Evaluate per-system $\ln\alpha$ for a ghost move without modifying state.
+
+    Runs the full MCMC proposal $\to$ patch $\to$ log-ratio pipeline and
+    intentionally discards the resulting state patch. The physical state is
+    untouched --- this is the Widom test-particle method applied as a reusable
+    subroutine. The returned value is **raw** $\ln\alpha$, not clamped by
+    $\min(1, \cdot)$; callers decide how to consume it:
+
+    - Excess chemical potential: average $\exp\ln\alpha$, take $-k_BT \ln\langle\cdot\rangle$.
+    - Henry coefficient: same average evaluated at $N = 0$.
+
+    Args:
+        key: JAX PRNG key.
+        state: Current simulation state. Not modified.
+        propose_fn: Move proposal (e.g. insertion or deletion).
+        patch_fn: Converts proposal to a state patch.
+        log_probability_ratio_fn: Evaluates the acceptance log-ratio against
+            the proposed patch.
+
+    Returns:
+        Per-system log acceptance ratio as ``Table[SystemId, Array]``.
+    """
+    chain = key_chain(key)
+    changes, move_lr = propose_fn(next(chain), state)
+    patch = patch_fn(next(chain), state, changes)
+    result = log_probability_ratio_fn(state, patch)
+    # result.patch is intentionally discarded --- state is NOT modified.
+    return move_lr + result.data
+
+
+@dataclass
+class WidomStatistics:
+    r"""Online accumulator for plain Widom insertion sums.
+
+    Attributes:
+        sum_boltzmann: $\sum \exp(-\beta \Delta U) = \sum W$ [dimensionless].
+        sum_delta_u_boltzmann:
+            $\sum \Delta U \cdot \exp(-\beta \Delta U)$ [energy], with
+            $\Delta U$ the ghost insertion (host-guest) energy, not the
+            cell's total potential energy.
+        n_samples: Number of evaluations accumulated.
+    """
+
+    sum_boltzmann: Array
+    sum_delta_u_boltzmann: Array
+    n_samples: Array
+
+    @staticmethod
+    def zeros(n_systems: int) -> WidomStatistics:
+        """Zero-initialize."""
+        return WidomStatistics(
+            sum_boltzmann=jnp.zeros(n_systems),
+            sum_delta_u_boltzmann=jnp.zeros(n_systems),
+            n_samples=jnp.zeros(n_systems, dtype=jnp.int32),
+        )
+
+    def reset(self) -> WidomStatistics:
+        """Zero all fields while preserving shape/dtype."""
+        return WidomStatistics(
+            sum_boltzmann=jnp.zeros_like(self.sum_boltzmann),
+            sum_delta_u_boltzmann=jnp.zeros_like(self.sum_delta_u_boltzmann),
+            n_samples=jnp.zeros_like(self.n_samples),
+        )
+
+    def update(
+        self, ln_alpha: LogAcceptanceRatio, delta_u: Energy
+    ) -> WidomStatistics:
+        r"""Accumulate one ghost insertion.
+
+        Args:
+            ln_alpha: Per-system log Metropolis ratio.
+            delta_u: Per-system ghost insertion energy. With a zero-move-log
+                insertion proposal and a bare Boltzmann log-ratio,
+                $\Delta U = -k_BT \ln\alpha$ exactly.
+        """
+        boltzmann = jnp.exp(ln_alpha)
+        return WidomStatistics(
+            sum_boltzmann=self.sum_boltzmann + boltzmann,
+            sum_delta_u_boltzmann=self.sum_delta_u_boltzmann + delta_u * boltzmann,
+            n_samples=self.n_samples + 1,
+        )
+
+
+@dataclass
+class WidomResult:
+    r"""Finalized Widom chemical potential / Henry / heat of adsorption.
+
+    Attributes:
+        excess_chemical_potential:
+            $\mu^\mathrm{ex} = -k_BT \ln\langle W \rangle$ [energy].
+        henry_coefficient:
+            $K_H = V\langle W\rangle / (k_BT)$ [length$^3$ / energy].
+        heat_of_adsorption: Vlugt (2008) eq. 16, test-particle ($N = 0$) limit
+            $q_\mathrm{st} = k_BT
+            - \langle \Delta U \cdot \exp(-\beta \Delta U)\rangle / \langle \exp(-\beta \Delta U)\rangle$
+            [energy], with intramolecular gas energy taken as zero (rigid
+            adsorbate).
+    """
+
+    excess_chemical_potential: Energy
+    henry_coefficient: Array
+    heat_of_adsorption: Energy
+
+
+def finalize_widom(
+    stats: WidomStatistics,
+    temperature: Temperature,
+    volume: Volume,
+) -> WidomResult:
+    r"""Convert accumulated Widom sums into $\mu^\mathrm{ex}$, $K_H$, and $q_\mathrm{st}$.
+
+    Args:
+        stats: Accumulated statistics.
+        temperature: Per-system $T$ [K].
+        volume: Per-system $V$ [length$^3$].
+
+    Returns:
+        The finalized :class:`WidomResult`.
+    """
+    nf = stats.n_samples.astype(jnp.float64)
+    mean_w = stats.sum_boltzmann / nf
+    mean_du_w = stats.sum_delta_u_boltzmann / nf
+    kT = temperature * BOLTZMANN_CONSTANT
+    # Vlugt 2008 eq. 16 (N=0): W-weighted mean of ΔU. No covariance term;
+    # the cell's total PE does not enter. With a constant host PE a
+    # covariance form would collapse q_st to kT.
+    return WidomResult(
+        excess_chemical_potential=-kT * jnp.log(mean_w),
+        henry_coefficient=volume * mean_w / kT,
+        heat_of_adsorption=kT - mean_du_w / mean_w,
+    )
+
+
+@dataclass
+class GhostProbe[State, Changes, Move: Patch, Stat](Propagator[State]):
+    r"""Propagator running one ghost move and updating a lens-accessed statistic.
+
+    Attributes:
+        propose_fn / patch_fn / log_probability_ratio_fn: standard MCMC trio
+            (:class:`~kups.core.propagator.MCMCPropagator` interface); the
+            resulting patch is discarded.
+        stat_lens: where in ``state`` the accumulator lives.
+        update_fn: ``(state, stat, ln_alpha) -> stat``.
+    """
+
+    propose_fn: ChangesFn[State, Changes] = field(static=True)
+    patch_fn: PatchFn[State, Changes, Move] = field(static=True)
+    log_probability_ratio_fn: LogProbabilityRatioFn[State, Move] = field(static=True)
+    stat_lens: Lens[State, Stat] = field(static=True)
+    update_fn: Callable[[State, Stat, Array], Stat] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        ln_alpha = widom_test(
+            key,
+            state,
+            self.propose_fn,
+            self.patch_fn,
+            self.log_probability_ratio_fn,
+        )
+        current = self.stat_lens.get(state)
+        updated = self.update_fn(state, current, ln_alpha.data)
+        return self.stat_lens.set(state, updated)

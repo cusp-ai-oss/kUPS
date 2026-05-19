@@ -800,7 +800,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
         n_sys = self.positions(state).data.system.num_labels
         return Table.arange(jnp.zeros((n_sys,)), label=SystemId)
 
-    def _propose_insertion(
+    def propose_insertion(
         self, key: Array, state: State, /
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
         changes = insert_random_motif(
@@ -830,7 +830,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
         chain = key_chain(key)
         changes, log_ratio, _ = propose_mixed(
-            next(chain), state, (self._propose_insertion, self._propose_deletion)
+            next(chain), state, (self.propose_insertion, self._propose_deletion)
         )
         return changes, log_ratio
 
