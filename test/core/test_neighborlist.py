@@ -1082,7 +1082,7 @@ class TestNearestNeighborListImplementations:
 
         instance_factory = neighbor_list_impl["instance_factory"]
         neighbor_list_instance = instance_factory(
-            candidates=1, edges=16, cells=8, image_candidates=27
+            candidates=1, edges=16, cells=8, image_candidates=125
         )
 
         lh = _make_lh(

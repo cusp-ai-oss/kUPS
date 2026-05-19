@@ -455,13 +455,23 @@ def _get_candidate_images(
     out_size: Capacity[int],
 ) -> tuple[Array, Array, Array]:
     cells = systems.data.cell
-    images = (
-        2 * jnp.ceil(cutoffs[..., None] / cells.perpendicular_lengths).astype(int) + 1
+    # Per-axis image count, picked to satisfy whichever distance path runs:
+    #   - cutoff ≤ perp/2: minimum-image convention alone covers all pairs, so
+    #     emit 1 image; this is the trigger for the MIC fast path in
+    #     `_apply_distance_cutoff_w_images`.
+    #   - cutoff > perp/2: the slow path computes distances as
+    #     `raw_frac_delta - shift`, with raw_frac_delta ∈ (-1, 1). We therefore
+    #     need integer shifts spanning (-1 - cutoff/perp, 1 + cutoff/perp), i.e.
+    #     `2·⌈cutoff/perp⌉ + 1` shifts per axis.
+    perp = cells.perpendicular_lengths
+    images = jnp.where(
+        cutoffs[..., None] <= perp / 2,
+        1,
+        2 * jnp.ceil(cutoffs[..., None] / perp).astype(int) + 1,
     )
     images = jnp.where(jnp.isfinite(cutoffs[..., None]), images, 1)
     # Open axes contribute no images.
     images = jnp.where(jnp.array(cells.periodic), images, 1)
-    images += images % 2 == 0
     images_per_sys = jnp.prod(images, axis=-1).astype(int)
 
     cand_sys_ids = lh.data.system.indices[candidates.lhs.indices]
