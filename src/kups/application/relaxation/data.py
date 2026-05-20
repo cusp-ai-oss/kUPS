@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, TypeGuard
 
 import ase
 import jax.numpy as jnp
@@ -18,7 +17,7 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import Cell, Periodic3D
+from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.typing import ExclusionId, ParticleId, SystemId
@@ -86,10 +85,6 @@ class RelaxParameters(BaseModel):
     """List of Optax transform specifications passed to `make_optimizer`."""
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
-
-
-def _assert_periodic(x: Cell[Any]) -> TypeGuard[Cell[Periodic3D]]:
-    return x.periodic == (True,) * 3
 
 
 def relax_state_from_ase(
