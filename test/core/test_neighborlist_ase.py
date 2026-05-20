@@ -10,8 +10,6 @@ agree with ``ase.neighborlist.neighbor_list`` across cutoffs that are smaller,
 larger, and much larger than the perpendicular cell length.
 """
 
-import gc
-
 import ase
 import ase.build
 import jax
@@ -31,15 +29,7 @@ from kups.core.neighborlist import (
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _clear_cache():
-    jax.clear_caches()
-    gc.collect()
-    yield
-    jax.clear_caches()
-    gc.collect()
+from ..clear_cache import clear_cache  # noqa: F401
 
 
 @dataclass
