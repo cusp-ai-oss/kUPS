@@ -29,6 +29,7 @@ from kups.core.neighborlist import (
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+
 from ..clear_cache import clear_cache  # noqa: F401
 
 
@@ -110,7 +111,7 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     state, cutoff_table = _build_state(atoms, cutoff)
 
     # Loop with a generous bound to avoid pathological growth.
-    for _ in range(16):
+    for _ in range(2):
         nl = nl_cls.from_state(state)
         result = jax.jit(as_result_function(nl))(
             lh=state.particles,
