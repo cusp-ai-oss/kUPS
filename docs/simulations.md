@@ -87,8 +87,6 @@ kups_mcmc_widom mcmc_widom.yaml
 
 [`finalize_widom`][kups.mcmc.widom.finalize_widom] applied to the accumulated [`WidomStatistics`][kups.mcmc.widom.WidomStatistics] yields $\mu^\mathrm{ex}$, $K_H$, and $q_\mathrm{st}$ (Vlugt 2008 eq. 16, $N=0$). Multiple hosts in one config become parallel batched systems on the `Table[SystemId, ...]` axis; duplicate a host entry $k$ times for $k$ independent chains. Blocking spheres ([`HostConfig.blocking_spheres`][kups.application.mcmc.data.HostConfig.blocking_spheres]) exclude regions from insertion.
 
-The default config uses [UFF4MOF / UFF4MOF-II](https://github.com/cusp-ai-oss/kups/blob/main/examples/lennard_jones/uff4mof.yaml) with an `atom_type_map:` rewriting the bare-element labels in `RUBTAK.cif` to UFF4MOF type names at host load. A vanilla-UFF (Rappé / `trappe.yaml`) fallback sits commented next to the active import.
-
 # Machine-learning Force Fields
 
 CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one repository per model so each retains its upstream license:

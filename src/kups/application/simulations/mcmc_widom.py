@@ -45,7 +45,7 @@ from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table, WithCache
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
-from kups.core.lens import identity_lens, lens
+from kups.core.lens import bind, identity_lens, lens
 from kups.core.logging import TqdmLogger
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.parameter_scheduler import ParameterSchedulerState
@@ -333,7 +333,7 @@ def make_propagator(
         widom_probe, config.num_widom_per_cycle
     )
 
-    production = SequentialPropagator((ResetOnErrorPropagator(nvt_loop), widom_loop))
+    production = ResetOnErrorPropagator(SequentialPropagator((nvt_loop, widom_loop)))
     init_prop = ResetOnErrorPropagator(PotentialAsPropagator(cached_potential))
     return init_prop, production
 
@@ -353,12 +353,7 @@ def run(config: Config) -> WidomState:
     state = run_warmup_cycles(
         next(chain), propagator, state, config.run.num_warmup_cycles
     )
-    state = replace(
-        state,
-        widom_statistics=Table(
-            state.widom_statistics.keys, state.widom_statistics.data.reset()
-        ),
-    )
+    state = bind(state, lambda x: x.widom_statistics.data).apply(WidomStatistics.reset)
 
     logger = TqdmLogger(config.run.num_cycles)
     state = run_simulation_cycles(

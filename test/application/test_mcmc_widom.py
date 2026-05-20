@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-import gc
 import tempfile
 
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
-import pytest
 
 from kups.application.mcmc.data import (
     AdsorbateConfig,
@@ -28,14 +26,7 @@ from kups.application.simulations.mcmc_widom import (
 )
 from kups.mcmc.widom import finalize_widom
 
-
-@pytest.fixture(autouse=True, scope="module")
-def clear_cache():
-    jax.clear_caches()
-    gc.collect()
-    yield
-    jax.clear_caches()
-    gc.collect()
+from ..clear_cache import clear_cache  # noqa: F401
 
 
 L = 10.0  # box side (Å)

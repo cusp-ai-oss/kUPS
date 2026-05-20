@@ -29,6 +29,8 @@ from kups.mcmc.widom import (
     widom_test,
 )
 
+from ..clear_cache import clear_cache  # noqa: F401
+
 
 def _sys_table[T](values: T) -> Table[SystemId, T]:
     return Table.arange(values, label=SystemId)

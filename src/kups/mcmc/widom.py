@@ -119,12 +119,8 @@ class WidomStatistics:
         )
 
     def reset(self) -> WidomStatistics:
-        """Zero all fields while preserving shape/dtype."""
-        return WidomStatistics(
-            sum_boltzmann=jnp.zeros_like(self.sum_boltzmann),
-            sum_delta_u_boltzmann=jnp.zeros_like(self.sum_delta_u_boltzmann),
-            n_samples=jnp.zeros_like(self.n_samples),
-        )
+        """Zero all fields."""
+        return self.zeros(int(self.n_samples.shape[0]))
 
     def update(self, ln_alpha: LogAcceptanceRatio, delta_u: Energy) -> WidomStatistics:
         r"""Accumulate one ghost insertion.
