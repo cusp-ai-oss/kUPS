@@ -19,6 +19,7 @@ from kups.application.mcmc.data import (
     MotifParticles,
     StressResult,
 )
+from kups.core.capacity import Capacity
 from kups.core.data import Buffered, Index, Table
 from kups.core.data.wrappers import WithCache
 from kups.core.parameter_scheduler import ParameterSchedulerState
@@ -27,6 +28,7 @@ from kups.core.propagator import StateProperty
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import GroupId, MotifId, MotifParticleId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.mcmc.widom import WidomStatistics
 from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -194,6 +196,47 @@ def make_mcmc_logged_data[S: IsMCMCState](
         )
 
     return MCMCLoggedData(
+        fixed=WriterGroupConfig(fixed_view, Once()),
+        per_step=WriterGroupConfig(step_view, EveryNStep(1)),
+    )
+
+
+class IsWidomState(IsMCMCState, Protocol):
+    """Protocol for states compatible with Widom logging and probe wiring."""
+
+    @property
+    def widom_statistics(self) -> Table[SystemId, WidomStatistics]: ...
+    @property
+    def move_capacity(self) -> Capacity[int]: ...
+
+
+@dataclass
+class WidomFixedData:
+    """One-shot Widom-run metadata: per-system thermodynamic state."""
+
+    systems: Table[SystemId, MCMCSystems]
+
+
+@dataclass
+class WidomLoggedData[S]:
+    """HDF5 writer layout for ``kups_mcmc_widom``: thermo state once, cumulative
+    ``WidomStatistics`` snapshot per cycle."""
+
+    fixed: WriterGroupConfig[S, WidomFixedData]
+    per_step: WriterGroupConfig[S, Table[SystemId, WidomStatistics]]
+
+
+def make_widom_logged_data[S: IsWidomState](state: S) -> WidomLoggedData[S]:
+    """Snapshot ``state.systems`` once and ``state.widom_statistics`` each cycle."""
+    del state
+
+    def fixed_view(state: S) -> WidomFixedData:
+        return WidomFixedData(systems=state.systems)
+
+    def step_view(state: S) -> Table[SystemId, WidomStatistics]:
+        return state.widom_statistics
+
+    return WidomLoggedData(
         fixed=WriterGroupConfig(fixed_view, Once()),
         per_step=WriterGroupConfig(step_view, EveryNStep(1)),
     )

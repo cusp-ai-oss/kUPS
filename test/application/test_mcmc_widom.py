@@ -14,17 +14,17 @@ import numpy.testing as npt
 from kups.application.mcmc.data import (
     AdsorbateConfig,
     BlockingSphereConfig,
+    HostConfig,
 )
 from kups.application.simulations.mcmc_rigid import EwaldConfig, LJConfig
 from kups.application.simulations.mcmc_widom import (
     Config,
-    WidomHostConfig,
     WidomRunConfig,
     init_state,
     make_propagator,
     run,
 )
-from kups.mcmc.widom import finalize_widom
+from kups.application.mcmc.analysis import analyze_widom_file
 
 from ..clear_cache import clear_cache  # noqa: F401
 
@@ -77,8 +77,8 @@ def _ar_adsorbate() -> AdsorbateConfig:
     )
 
 
-def _host(cif_file: str, blocking_spheres=((),)) -> WidomHostConfig:
-    return WidomHostConfig(
+def _host(cif_file: str, blocking_spheres=((),)) -> HostConfig:
+    return HostConfig(
         cif_file=cif_file,
         pressure=1e5,
         temperature=300.0,
@@ -103,12 +103,19 @@ def _ewald() -> EwaldConfig:
     return EwaldConfig(real_cutoff=4.5, precision=1.0e-4)
 
 
-def _config(host: WidomHostConfig, run_config: WidomRunConfig | None = None) -> Config:
+def _tmp_h5() -> str:
+    f = tempfile.NamedTemporaryFile(suffix=".h5", delete=False)
+    f.close()
+    return f.name
+
+
+def _config(host: HostConfig, run_config: WidomRunConfig | None = None) -> Config:
     return Config(
         adsorbates=(_ar_adsorbate(),),
         hosts=(host,),
         run=run_config
         or WidomRunConfig(
+            out_file=_tmp_h5(),
             num_cycles=2,
             num_warmup_cycles=1,
             num_displacements_per_cycle=1,
@@ -169,9 +176,9 @@ class TestMakePropagator:
 
 
 class TestRun:
-    """End-to-end smoke: one short run produces finite, non-zero accumulators."""
+    """End-to-end smoke: a short run writes an HDF5 file the analyzer can read."""
 
-    def test_finite_widom_statistics(self):
+    def test_state_has_accumulated_widom_statistics(self):
         cif = _write_cubic_ar_cif()
         config = _config(_host(cif))
         state = run(config)
@@ -180,14 +187,15 @@ class TestRun:
         assert jnp.isfinite(stats.sum_boltzmann[0]).item()
         assert float(stats.sum_boltzmann[0]) > 0.0
 
-    def test_finalize_widom_produces_physical_outputs(self):
+    def test_analyzer_reads_back_physical_outputs(self):
         cif = _write_cubic_ar_cif()
         config = _config(_host(cif))
-        state = run(config)
-        temperature = state.systems.data.temperature
-        volume = state.systems.data.cell.volume
-        result = finalize_widom(state.widom_statistics.data, temperature, volume)
-        assert jnp.isfinite(result.excess_chemical_potential[0]).item()
-        assert jnp.isfinite(result.henry_coefficient[0]).item()
-        assert jnp.isfinite(result.heat_of_adsorption[0]).item()
-        assert float(result.henry_coefficient[0]) > 0.0
+        run(config)
+        results = analyze_widom_file(config.run.out_file, n_blocks=2)
+        assert len(results) == 1
+        result = next(iter(results.values()))
+        assert jnp.isfinite(result.excess_chemical_potential.mean).item()
+        assert jnp.isfinite(result.henry_coefficient.mean).item()
+        assert jnp.isfinite(result.heat_of_adsorption.mean).item()
+        assert float(result.henry_coefficient.mean) > 0.0
+        assert float(result.henry_coefficient.sem) >= 0.0

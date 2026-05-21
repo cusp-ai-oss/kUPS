@@ -16,7 +16,6 @@ Multiple hosts in the config become parallel batched systems on the
 from __future__ import annotations
 
 import time
-from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -25,15 +24,16 @@ from jax import Array
 from nanoargs.cli import NanoArgs
 from pydantic import BaseModel
 
+from kups.application.mcmc.analysis import analyze_widom_file
 from kups.application.mcmc.data import (
     AdsorbateConfig,
     HostConfig,
     mcmc_state_from_config,
 )
+from kups.application.mcmc.logging import IsWidomState, make_widom_logged_data
 from kups.application.simulations.mcmc_rigid import (
     EwaldConfig,
     LJConfig,
-    MCMCParticles,
     MCMCState,
     MCMCStateUpdate,
 )
@@ -42,11 +42,13 @@ from kups.application.utils.propagate import (
     run_warmup_cycles,
 )
 from kups.core.constants import BOLTZMANN_CONSTANT
-from kups.core.data import Index, Table, WithCache
+from kups.core.data import Table, WithCache
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
-from kups.core.lens import bind, identity_lens, lens
-from kups.core.logging import TqdmLogger
+from kups.core.lens import Lens, bind, identity_lens
+from kups.core.patch import Patch
+from kups.core.logging import CompositeLogger, TqdmLogger
+from kups.core.storage import HDF5StorageWriter
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.parameter_scheduler import ParameterSchedulerState
 from kups.core.potential import (
@@ -56,27 +58,26 @@ from kups.core.potential import (
     sum_potentials,
 )
 from kups.core.propagator import (
+    LogProbabilityRatioFn,
     LoopPropagator,
+    PatchFn,
     Propagator,
     ResetOnErrorPropagator,
     SequentialPropagator,
     propagate_and_fix,
 )
 from kups.core.result import as_result_function
-from kups.core.typing import Label, ParticleId, SystemId
+from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
 from kups.mcmc.moves import (
+    ExchangeChanges,
     ExchangeMove,
     ParticlePositionChanges,
     exchange_changes_from_position_changes,
     make_displacement_mcmc_propagator,
 )
 from kups.mcmc.probability import make_muvt_probability_ratio
-from kups.mcmc.widom import (
-    GhostProbe,
-    WidomStatistics,
-    finalize_widom,
-)
+from kups.mcmc.widom import GhostProbe, WidomStatistics
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
     make_blocking_spheres_from_state,
@@ -100,6 +101,7 @@ jax.config.update("jax_default_matmul_precision", "highest")
 class WidomRunConfig(BaseModel):
     """Run-time configuration for a plain Widom simulation."""
 
+    out_file: str
     num_cycles: int
     num_warmup_cycles: int
     num_displacements_per_cycle: int = 20
@@ -110,24 +112,11 @@ class WidomRunConfig(BaseModel):
     seed: int | None = None
 
 
-class WidomHostConfig(HostConfig):
-    """``HostConfig`` with an optional CIF-label rename."""
-
-    atom_type_map: dict[str, str] | None = None
-    """Optional CIF-label rename applied at host load.
-
-    E.g. ``{"Zr": "Zr8f4", "C": "C_R", "O": "O_R", "H": "H_"}`` rewrites
-    bare-element labels to UFF4MOF type names so the LJ lookup matches
-    ``lennard_jones/uff4mof.yaml``. Labels absent from the map pass through.
-    """
-
-
 class Config(BaseModel):
     """Top-level Widom simulation configuration."""
 
     adsorbates: tuple[AdsorbateConfig, ...]
-    hosts: tuple[WidomHostConfig, ...]
-    """Hosts become parallel batched systems; one Widom sweep per host."""
+    hosts: tuple[HostConfig, ...]
     run: WidomRunConfig
     lj: LJConfig
     ewald: EwaldConfig
@@ -154,18 +143,6 @@ def _probe(state: WidomState, update: MCMCStateUpdate) -> MCMCStateUpdate:
     return update
 
 
-def _apply_atom_type_map(
-    particles: Table[ParticleId, MCMCParticles],
-    atom_type_map: dict[str, str],
-) -> Table[ParticleId, MCMCParticles]:
-    """Rewrite host label keys via the map. Per-atom indices preserved."""
-    labels = particles.data.labels
-    new_keys = tuple(Label(atom_type_map.get(str(k), str(k))) for k in labels.keys)
-    new_labels = Index(new_keys, labels.indices, max_count=labels.max_count, _cls=Label)
-    new_data = replace(particles.data, labels=new_labels)
-    return Table(particles.keys, new_data)
-
-
 def init_state(key: Array, config: Config) -> WidomState:
     """Build the batched Widom state via one ``mcmc_state_from_config`` call per host."""
     chain = key_chain(key)
@@ -173,8 +150,6 @@ def init_state(key: Array, config: Config) -> WidomState:
     motifs = None
     for host in config.hosts:
         p, g, s, m = mcmc_state_from_config(next(chain), host, config.adsorbates)
-        if host.atom_type_map:
-            p = _apply_atom_type_map(p, host.atom_type_map)
         ps.append(p)
         gs.append(g)
         ss.append(s)
@@ -257,7 +232,7 @@ def init_state(key: Array, config: Config) -> WidomState:
 
 
 def _update_widom_stats(
-    state: WidomState, stats: WidomStatistics, ln_alpha: Array
+    state: IsWidomState, stats: WidomStatistics, ln_alpha: Array
 ) -> WidomStatistics:
     r"""Accumulate one ghost insertion.
 
@@ -267,6 +242,36 @@ def _update_widom_stats(
     kT = state.systems.data.temperature * BOLTZMANN_CONSTANT
     delta_u = -ln_alpha * kT
     return stats.update(ln_alpha, delta_u)
+
+
+def make_widom_probe_from_state[S: IsWidomState, Move: Patch](
+    state: Lens[S, IsWidomState],
+    patch_fn: PatchFn[S, ExchangeChanges, Move],
+    log_probability_ratio_fn: LogProbabilityRatioFn[S, Move],
+) -> GhostProbe[S, ExchangeChanges, Move, WidomStatistics]:
+    """Plain-Widom probe: ghost insertion + ``WidomStatistics`` accumulator.
+
+    Bundles the ``ExchangeMove`` construction, ``widom_statistics`` stat lens,
+    and ``_update_widom_stats`` update callback. ``patch_fn`` and
+    ``log_probability_ratio_fn`` are caller-provided (matching the
+    :func:`make_displacement_mcmc_propagator` shape) so the same probe works
+    with a bare Boltzmann ratio (plain Widom) or a fugacity-corrected ratio
+    (Widom-in-GCMC).
+    """
+    exchange = ExchangeMove(
+        positions=state.focus(lambda x: x.particles),
+        groups=state.focus(lambda x: x.groups),
+        motifs=state.focus(lambda x: x.motifs),
+        cell=state.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
+        capacity=state.focus(lambda x: x.move_capacity),
+    )
+    return GhostProbe(
+        propose_fn=exchange.propose_insertion,
+        patch_fn=patch_fn,
+        log_probability_ratio_fn=log_probability_ratio_fn,
+        stat_lens=state.focus(lambda x: x.widom_statistics.data),
+        update_fn=_update_widom_stats,
+    )
 
 
 def make_propagator(
@@ -315,19 +320,8 @@ def make_propagator(
 
     # Bare Boltzmann log-ratio (raw -βΔU), not the fugacity-corrected μVT
     # ratio used by GCMC.
-    exchange = ExchangeMove(
-        positions=state_lens.focus(lambda x: x.particles),
-        groups=state_lens.focus(lambda x: x.groups),
-        motifs=state_lens.focus(lambda x: x.motifs),
-        cell=state_lens.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
-        capacity=state_lens.focus(lambda x: x.move_capacity),
-    )
-    widom_probe = GhostProbe(
-        propose_fn=exchange.propose_insertion,
-        patch_fn=MCMCStateUpdate.from_changes,
-        log_probability_ratio_fn=boltzmann_ratio,
-        stat_lens=lens(lambda s: s.widom_statistics.data, cls=WidomState),
-        update_fn=_update_widom_stats,
+    widom_probe = make_widom_probe_from_state(
+        state_lens, MCMCStateUpdate.from_changes, boltzmann_ratio
     )
     widom_loop: Propagator[WidomState] = LoopPropagator(
         widom_probe, config.num_widom_per_cycle
@@ -355,25 +349,24 @@ def run(config: Config) -> WidomState:
     )
     state = bind(state, lambda x: x.widom_statistics.data).apply(WidomStatistics.reset)
 
-    logger = TqdmLogger(config.run.num_cycles)
-    state = run_simulation_cycles(
+    logged_data = make_widom_logged_data(state)
+    logger = CompositeLogger(
+        HDF5StorageWriter(
+            config.run.out_file, logged_data, state, config.run.num_cycles
+        ),
+        TqdmLogger(config.run.num_cycles),
+    )
+    return run_simulation_cycles(
         next(chain), propagator, state, config.run.num_cycles, logger
     )
-    return state
 
 
 def main() -> None:
     cli = NanoArgs(Config)
     config = cli.parse()
     rich.print(config)
-    state = run(config)
-    temperature = state.systems.data.temperature
-    volume = state.systems.data.cell.volume
-    result = finalize_widom(state.widom_statistics.data, temperature, volume)
-    rich.print("Widom statistics:", state.widom_statistics)
-    rich.print("μ_ex [eV]:", result.excess_chemical_potential)
-    rich.print("Henry K_H [Å³/eV]:", result.henry_coefficient)
-    rich.print("q_st [eV]:", result.heat_of_adsorption)
+    run(config)
+    rich.print(analyze_widom_file(config.run.out_file))
 
 
 if __name__ == "__main__":

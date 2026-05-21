@@ -13,7 +13,11 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.application.mcmc.data import StressResult
-from kups.application.mcmc.logging import MCMCLoggedData
+from kups.application.mcmc.logging import (
+    MCMCLoggedData,
+    WidomFixedData,
+    WidomLoggedData,
+)
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.storage import HDF5StorageReader
@@ -26,6 +30,7 @@ from kups.core.utils.block_average import (
     optimal_block_average,
 )
 from kups.core.utils.jax import no_jax_tracing
+from kups.mcmc.widom import WidomStatistics
 
 
 class IsMCMCFixedData(Protocol):
@@ -215,6 +220,143 @@ def analyze_mcmc(
         )
 
     return results
+
+
+@plain_dataclass
+class WidomAnalysisResult:
+    """Block-averaged Widom outputs for a single system.
+
+    Attributes:
+        excess_chemical_potential: $\\mu^\\mathrm{ex}$ with SEM (eV).
+        henry_coefficient: $K_H$ with SEM (Å³/eV).
+        heat_of_adsorption: $q_\\mathrm{st}$ with SEM (eV); Vlugt 2008 eq. 16,
+            test-particle limit.
+    """
+
+    excess_chemical_potential: BlockAverageResult
+    henry_coefficient: BlockAverageResult
+    heat_of_adsorption: BlockAverageResult
+
+
+@no_jax_tracing
+def _per_cycle_widom_means(
+    per_step: Table[SystemId, WidomStatistics],
+) -> tuple[Array, Array]:
+    """Difference cumulative-cycle snapshots into per-cycle ⟨W⟩ and ⟨ΔU·W⟩.
+
+    Returns arrays of shape ``(n_cycles, n_systems)``.
+    """
+    sum_w = per_step.data.sum_boltzmann
+    sum_du_w = per_step.data.sum_delta_u_boltzmann
+    n = per_step.data.n_samples.astype(jnp.float64)
+
+    zero_w = jnp.zeros_like(sum_w[:1])
+    zero_du = jnp.zeros_like(sum_du_w[:1])
+    zero_n = jnp.zeros_like(n[:1])
+    delta_w = jnp.diff(jnp.concatenate([zero_w, sum_w], axis=0), axis=0)
+    delta_du_w = jnp.diff(jnp.concatenate([zero_du, sum_du_w], axis=0), axis=0)
+    delta_n = jnp.diff(jnp.concatenate([zero_n, n], axis=0), axis=0)
+    return delta_w / delta_n, delta_du_w / delta_n
+
+
+@no_jax_tracing
+def _analyze_single_widom_system(
+    mean_w_per_cycle: Array,
+    mean_du_w_per_cycle: Array,
+    temperature: float,
+    volume: float,
+    n_blocks: int | None,
+) -> WidomAnalysisResult:
+    """Block-average per-cycle Widom samples into μ_ex / K_H / q_st with SEM.
+
+    μ_ex, K_H, q_st are derived from the block-averaged means of W and ΔU·W
+    via the canonical formulas; per-block ratio-then-average estimators are
+    biased (Jensen) and would not converge to the canonical quantities.
+    """
+    if n_blocks is None:
+        w_result = optimal_block_average(mean_w_per_cycle)
+        n_used = int(w_result.n_blocks)
+    else:
+        w_result = block_average(mean_w_per_cycle, n_blocks=n_blocks)
+        n_used = n_blocks
+
+    block_w = compute_block_means(mean_w_per_cycle, n_used)
+    block_du_w = compute_block_means(mean_du_w_per_cycle, n_used)
+
+    mean_w = jnp.mean(block_w)
+    mean_du_w = jnp.mean(block_du_w)
+    var_w = jnp.var(block_w, ddof=1)
+    var_du_w = jnp.var(block_du_w, ddof=1)
+    # Block-level covariance for the ratio's delta-method SE.
+    cov_w_du_w = (
+        jnp.mean((block_w - mean_w) * (block_du_w - mean_du_w)) * n_used / (n_used - 1)
+    )
+
+    kT = temperature * BOLTZMANN_CONSTANT
+
+    mu_ex = -kT * jnp.log(mean_w)
+    se_mu_ex = kT * w_result.sem / mean_w
+
+    k_h = volume * mean_w / kT
+    se_k_h = volume * w_result.sem / kT
+
+    # q_st = kT - ⟨ΔU·W⟩/⟨W⟩; delta method on f(a, b) = -a/b at (mean_du_w, mean_w).
+    inv_w = 1.0 / mean_w
+    ratio = mean_du_w * inv_w
+    q_st = kT - ratio
+    var_q_st = (
+        inv_w**2 * var_du_w
+        + ratio**2 * inv_w**2 * var_w
+        - 2 * ratio * inv_w**2 * cov_w_du_w
+    ) / n_used
+    se_q_st = jnp.sqrt(jnp.maximum(var_q_st, 0.0))
+
+    return WidomAnalysisResult(
+        excess_chemical_potential=BlockAverageResult(mu_ex, se_mu_ex, n_used),
+        henry_coefficient=BlockAverageResult(k_h, se_k_h, n_used),
+        heat_of_adsorption=BlockAverageResult(q_st, se_q_st, n_used),
+    )
+
+
+@no_jax_tracing
+def analyze_widom(
+    fixed: WidomFixedData,
+    per_step: Table[SystemId, WidomStatistics],
+    n_blocks: int | None = None,
+) -> dict[SystemId, WidomAnalysisResult]:
+    """Block-averaged Widom analysis from pre-loaded HDF5 data.
+
+    Args:
+        fixed: Fixed-group data carrying per-system temperature and cell.
+        per_step: Cumulative ``WidomStatistics`` time series.
+        n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
+    """
+    mean_w, mean_du_w = _per_cycle_widom_means(per_step)
+    temperatures = fixed.systems.data.temperature
+    volumes = fixed.systems.data.cell.volume
+
+    results: dict[SystemId, WidomAnalysisResult] = {}
+    for i, sys_id in enumerate(fixed.systems.keys):
+        results[sys_id] = _analyze_single_widom_system(
+            mean_w[:, i],
+            mean_du_w[:, i],
+            float(temperatures[i]),
+            float(volumes[i]),
+            n_blocks,
+        )
+    return results
+
+
+@no_jax_tracing
+def analyze_widom_file(
+    hdf5_path: str | Path,
+    n_blocks: int | None = None,
+) -> dict[SystemId, WidomAnalysisResult]:
+    """Analyze a ``kups_mcmc_widom`` HDF5 output."""
+    with HDF5StorageReader[WidomLoggedData](hdf5_path) as reader:
+        fixed = reader.focus_group(lambda s: s.fixed)[...]
+        per_step = reader.focus_group(lambda s: s.per_step)[...]
+    return analyze_widom(fixed, per_step, n_blocks)
 
 
 @no_jax_tracing
