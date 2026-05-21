@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 
+from kups.application.mcmc.analysis import analyze_widom_file
 from kups.application.mcmc.data import (
     AdsorbateConfig,
     BlockingSphereConfig,
@@ -24,10 +25,8 @@ from kups.application.simulations.mcmc_widom import (
     make_propagator,
     run,
 )
-from kups.application.mcmc.analysis import analyze_widom_file
 
 from ..clear_cache import clear_cache  # noqa: F401
-
 
 L = 10.0  # box side (Å)
 

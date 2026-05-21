@@ -46,11 +46,10 @@ from kups.core.data import Table, WithCache
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
 from kups.core.lens import Lens, bind, identity_lens
-from kups.core.patch import Patch
 from kups.core.logging import CompositeLogger, TqdmLogger
-from kups.core.storage import HDF5StorageWriter
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.parameter_scheduler import ParameterSchedulerState
+from kups.core.patch import Patch
 from kups.core.potential import (
     EMPTY,
     PotentialAsPropagator,
@@ -67,6 +66,7 @@ from kups.core.propagator import (
     propagate_and_fix,
 )
 from kups.core.result import as_result_function
+from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
 from kups.mcmc.moves import (
