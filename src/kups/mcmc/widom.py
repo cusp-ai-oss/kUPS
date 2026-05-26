@@ -13,8 +13,8 @@ Contents:
 - [GhostProbe][kups.mcmc.widom.GhostProbe]: propagator wrapper accumulating
   the ratio via a lens + update callback
 - [WidomStatistics][kups.mcmc.widom.WidomStatistics]: running-sum accumulator
-  consumed by the post-hoc analyzer
-  ([analyze_widom_file][kups.application.mcmc.analysis.analyze_widom_file]).
+  reduced to $\mu^\mathrm{ex}$, $K_H$, $q_\mathrm{st}$ by the post-hoc
+  analyzer.
 
 References:
     Widom, B. (1963). J. Chem. Phys., 39, 2808.

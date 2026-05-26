@@ -803,7 +803,21 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     def propose_insertion(
         self, key: Array, state: State, /
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
-        """Propose inserting a random motif. Move log-ratio is zero."""
+        """Propose inserting one motif at a uniformly random position per system.
+
+        The returned ``LogProbabilityRatio`` is zero per system: the volume /
+        particle-count factor of the asymmetric insertion proposal is folded
+        into the fugacity term of
+        :func:`~kups.mcmc.probability.make_muvt_probability_ratio`.
+
+        Args:
+            key: JAX PRNG key.
+            state: Current simulation state.
+
+        Returns:
+            ``(changes, log_ratio)`` where ``changes`` describes the inserted
+            motif and ``log_ratio`` is per-system zeros.
+        """
         changes = insert_random_motif(
             key,
             self.motifs(state),
@@ -817,7 +831,21 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     def propose_deletion(
         self, key: Array, state: State, /
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
-        """Propose deleting a random motif. Move log-ratio is zero."""
+        """Propose deleting a uniformly random motif per system.
+
+        The returned ``LogProbabilityRatio`` is zero per system: the volume /
+        particle-count factor of the asymmetric deletion proposal is folded
+        into the fugacity term of
+        :func:`~kups.mcmc.probability.make_muvt_probability_ratio`.
+
+        Args:
+            key: JAX PRNG key.
+            state: Current simulation state.
+
+        Returns:
+            ``(changes, log_ratio)`` where ``changes`` describes the deleted
+            motif and ``log_ratio`` is per-system zeros.
+        """
         changes = delete_random_motif(
             key,
             self.motifs(state),
