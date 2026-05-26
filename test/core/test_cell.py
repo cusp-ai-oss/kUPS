@@ -546,6 +546,40 @@ class TestToLowerTriangular:
         r = jnp.array([1.0, 2.0, 3.0])
         npt.assert_allclose(jnp.linalg.norm(mapper(r)), jnp.linalg.norm(r), atol=1e-6)
 
+    @pytest.mark.parametrize(
+        "vecs",
+        [
+            # FCC primitive vectors (a=3.61), historically produced a negative diagonal.
+            1.805 * jnp.array([[0.0, 1.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 0.0]]),
+            # Swap-yz input (negative determinant).
+            jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]),
+            # Random rotations of a positive-diagonal lower-triangular cell.
+            *[
+                jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
+                @ jnp.linalg.qr(jax.random.normal(jax.random.key(seed), (3, 3)))[0]
+                for seed in (0, 1, 2)
+            ],
+        ],
+    )
+    def test_diagonal_is_positive_for_various_inputs(self, vecs):
+        L, _ = to_lower_triangular(vecs)
+        assert jnp.all(jnp.diagonal(L) > 0)
+
+    def test_round_trip_recovers_input(self):
+        """vecs == L @ Q, where Q is reconstructed from the mapper."""
+        vecs = jnp.array([[1.0, 2.0, 0.3], [0.2, 3.0, 0.1], [0.5, 0.4, 4.0]])
+        L, mapper = to_lower_triangular(vecs)
+        Q = jnp.stack([mapper(row) for row in jnp.eye(3)])
+        npt.assert_allclose(L @ Q, vecs, atol=1e-6)
+
+    def test_fcc_primitive_gives_positive_diagonal(self):
+        """Regression: ase FCC Cu (a=3.61) previously produced a negative diagonal."""
+        import ase.build
+
+        vecs = jnp.asarray(ase.build.bulk("Cu", "fcc", a=3.61).cell.array)
+        L, _ = to_lower_triangular(vecs)
+        assert jnp.all(jnp.diagonal(L) > 0)
+
 
 _FRAMES = pytest.mark.parametrize(
     "frame",

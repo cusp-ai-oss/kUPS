@@ -38,7 +38,7 @@ def get_model_path(path: str | Path) -> Path:
     if path_str.startswith(HF_PREFIX):
         try:
             from huggingface_hub import (  # pyright: ignore[reportMissingImports]
-                hf_hub_download,
+                hf_hub_download,  # pyright: ignore[reportAttributeAccessIssue]
             )
         except ImportError as e:
             raise ImportError(
