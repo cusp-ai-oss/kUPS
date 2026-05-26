@@ -56,13 +56,13 @@ class RelaxSystems:
     cell: Cell
     """Cell geometry, batched with shape (1,)."""
     cell_gradients: Cell
+    """Energy gradient w.r.t. the cell, stored on the same
+    :class:`~kups.core.cell.Frame` as :attr:`cell` (i.e. the 6 lower-triangular
+    entries of ``∂U/∂h`` for a :class:`~kups.core.cell.TriclinicFrame`). Stress
+    is computed from particles + systems via
+    :func:`~kups.observables.stress.stress_via_virial_theorem`."""
     potential_energy: Array
     """Potential energy per system, shape (1,)."""
-
-    @property
-    def stress_tensor(self) -> Array:
-        """Cauchy stress tensor, shape ``(..., 3, 3)``."""
-        return -self.cell_gradients.vectors / self.cell.volume[..., None, None]
 
 
 class RelaxRunConfig(BaseModel):

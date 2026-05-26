@@ -1,7 +1,21 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stress tensor calculations via virial theorem and lattice vector gradients."""
+"""Stress tensor calculations via the virial theorem.
+
+Stress is the symmetric (3, 3) tensor
+
+    σ = -1/V sym[Σ_i r_i ⊗ ∂U/∂r_i + h^T · ∂U/∂h]
+
+Only the 6 lower-triangular entries of ``∂U/∂h`` are stored (the cell's
+parameter DoF; see :class:`kups.core.cell.TriclinicFrame`). For
+lower-triangular ``h``, the lower triangle of ``h^T · ∂U/∂h`` depends only
+on the lower triangle of ``∂U/∂h``: since ``h[k, i] = 0`` for ``k < i``,
+the sum ``(h^T·g)[i, j] = Σ_{k≥i} h[k, i]·g[k, j]`` for ``j ≤ i`` touches
+only ``g[k, j]`` with ``k ≥ i ≥ j``, i.e. lower-triangular entries. The
+upper triangle of ``σ`` is filled by symmetry — the full 3×3 cell virial
+is never materialized.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +37,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.math import triangular_3x3_matmul
 
 
 @runtime_checkable
@@ -36,7 +49,7 @@ class IsVirialParticles(HasPositions, HasSystemIndex, Protocol):
 
 @runtime_checkable
 class IsVirialSystems(HasCell[Periodic3D], Protocol):
-    """Systems with cell gradients ∂U/∂h."""
+    """Systems with cell gradients ∂U/∂h (stored lower-triangular)."""
 
     @property
     def cell_gradients(self) -> Cell[Periodic3D]: ...
@@ -59,9 +72,26 @@ class IsMolecularVirialState(
     def groups(self) -> Table[GroupId, HasSystemIndex]: ...
 
 
-def _stress_via_lattice_vector_gradients(vectors_grad: Array, volume: Array) -> Array:
-    """σ = -∂U/∂h / V."""
-    return -vectors_grad / volume
+def _symmetrize_from_lower(lower: Array) -> Array:
+    """Build a symmetric (..., 3, 3) tensor from its lower triangle.
+
+    ``lower`` is assumed to have a zero (or arbitrary, ignored) upper
+    triangle. Returns ``lower + lower^T − diag(lower)`` so the diagonal
+    is not double-counted.
+    """
+    return lower + lower.mT - lower * jnp.eye(3)
+
+
+def _lower_sym_cell_virial(vectors: Array, vector_gradients: Array) -> Array:
+    """Lower triangle of ``S = h^T · ∂U/∂h`` from lower-triangular ``h`` and
+    the lower-triangular projection of ``∂U/∂h``.
+
+    For lower-triangular ``h``, the lower triangle of ``h^T · g`` depends
+    only on the lower triangle of ``g`` (the upper-triangular entries of
+    ``g`` are not parameters and are not stored). The upper triangle is not
+    materialized; the final position-plus-cell virial is symmetrized later.
+    """
+    return jnp.tril(vectors.mT @ vector_gradients)
 
 
 def _stress_via_virial_theorem(
@@ -71,11 +101,13 @@ def _stress_via_virial_theorem(
     vectors: Array,
     system: Index[SystemId],
 ) -> Array:
-    """σ = -1/V (Σ_i ∂U/∂r_i ⊗ r_i + h^T · ∂U/∂h)."""
-    stress = -system.sum_over(position_gradients[:, None] * positions[..., None]).data
-    stress -= triangular_3x3_matmul(vectors.mT, vector_gradients, lower=False)
-    stress /= jnp.abs(jnp.linalg.det(vectors))
-    return stress
+    """σ = −1/V sym[Σ_i r_i ⊗ ∂U/∂r_i + h^T · ∂U/∂h]."""
+    pos_outer = system.sum_over(position_gradients[:, None] * positions[..., None]).data
+    pos_lower = jnp.tril(pos_outer)
+    cell_lower = _lower_sym_cell_virial(vectors, vector_gradients)
+    volume = jnp.abs(jnp.linalg.det(vectors))[..., None, None]
+    sigma_lower = -(pos_lower + cell_lower) / volume
+    return _symmetrize_from_lower(sigma_lower)
 
 
 def _molecular_stress_via_virial_theorem(
@@ -105,31 +137,14 @@ def _molecular_stress_via_virial_theorem(
     rel_pos = batched_cells.wrap(
         positions - com.at[group.indices].get(mode="fill", fill_value=0)
     )
-    stress = -system.sum_over(
+    pos_outer = system.sum_over(
         position_gradients[:, None] * (positions - rel_pos)[..., None]
     ).data
-    stress = 0.5 * (stress + stress.mT)
-    stress -= system_vectors.mT @ vector_gradients
-    stress /= system_volume[:1][:, None, None]
-    return stress
-
-
-def stress_via_lattice_vector_gradients(
-    systems: Table[SystemId, IsVirialSystems],
-) -> Table[SystemId, Array]:
-    """Compute stress from energy gradients w.r.t. lattice vectors.
-
-    Args:
-        systems: Per-system cell and cell gradients.
-
-    Returns:
-        Stress tensor per system, shape ``(n_systems, 3, 3)``.
-    """
-    stress = _stress_via_lattice_vector_gradients(
-        systems.data.cell_gradients.vectors,
-        systems.data.cell.volume,
-    )
-    return Table(systems.keys, stress)
+    pos_lower = jnp.tril(pos_outer)
+    cell_lower = _lower_sym_cell_virial(system_vectors, vector_gradients)
+    volume = system_volume[..., None, None]
+    sigma_lower = -(pos_lower + cell_lower) / volume
+    return _symmetrize_from_lower(sigma_lower)
 
 
 def stress_via_virial_theorem(
@@ -140,10 +155,10 @@ def stress_via_virial_theorem(
 
     Args:
         particles: Per-particle positions, system index, and position gradients.
-        systems: Per-system cell and cell gradients.
+        systems: Per-system cell and cell gradients (lower-triangular).
 
     Returns:
-        Stress tensor per system, shape ``(n_systems, 3, 3)``.
+        Symmetric stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
     stress = _stress_via_virial_theorem(
         particles.data.position_gradients,
@@ -162,15 +177,13 @@ def molecular_stress_via_virial_theorem(
 ) -> Table[SystemId, Array]:
     """Compute molecular virial stress tensor (RASPA convention).
 
-    The stress tensor is symmetrized: σ = (σ + σᵀ)/2.
-
     Args:
         particles: Per-particle positions, group/system index, and gradients.
         groups: Per-group system assignment.
-        systems: Per-system cell and cell gradients.
+        systems: Per-system cell and cell gradients (lower-triangular).
 
     Returns:
-        Symmetrized stress tensor per system, shape ``(n_systems, 3, 3)``.
+        Symmetric stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
     group_cells = systems[groups.data.system].cell
     stress = _molecular_stress_via_virial_theorem(
@@ -184,14 +197,6 @@ def molecular_stress_via_virial_theorem(
         systems.data.cell.volume,
     )
     return Table(systems.keys, stress)
-
-
-def lattice_vector_stress_from_state(
-    key: Array, state: IsState[IsVirialParticles, IsVirialSystems]
-) -> Table[SystemId, Array]:
-    """Compute stress from lattice vector gradients from a state."""
-    del key
-    return stress_via_lattice_vector_gradients(state.systems)
 
 
 def virial_stress_from_state(

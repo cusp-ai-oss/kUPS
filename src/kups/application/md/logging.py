@@ -15,6 +15,7 @@ from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.observables.stress import stress_via_virial_theorem
 
 
 class HasMDData(Protocol):
@@ -70,7 +71,9 @@ class MDStepData:
             atoms=state.particles,
             potential_energy=state.systems.data.potential_energy,
             kinetic_energy=ke,
-            stress_tensor=state.systems.data.stress_tensor,
+            stress_tensor=stress_via_virial_theorem(
+                state.particles, state.systems
+            ).data,
             volume=state.systems.data.cell.volume,
         )
 

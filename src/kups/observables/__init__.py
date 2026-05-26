@@ -10,7 +10,7 @@ simulations or from stored trajectory data.
 ## Module Organization
 
 - **[pressure][kups.observables.pressure]**: Pressure calculations from stress tensors and ideal gas law
-- **[stress][kups.observables.stress]**: Stress tensor calculations via virial theorem and lattice gradients
+- **[stress][kups.observables.stress]**: Stress tensor calculations via the virial theorem
 - **[radial_distribution_function][kups.observables.radial_distribution_function]**: Pair correlation functions $g(r)$
 
 ## Key Concepts
@@ -18,13 +18,16 @@ simulations or from stored trajectory data.
 ### Stress and Pressure
 
 The stress tensor relates internal forces to system deformation. Pressure is
-the isotropic component: $P = -\\text{Tr}(\\sigma)/3$. Two main approaches are available:
+the isotropic component: $P = -\\text{Tr}(\\sigma)/3$. The stress is computed
+via the virial theorem, combining the atomic outer-product term with the
+symmetric cell virial $h^T \\cdot \\partial U/\\partial h$:
 
-1. **Virial Theorem**: Computes stress from force-position correlations
-   $$\\sigma_{\\alpha\\beta} = -\\frac{1}{V} \\sum_i r_{i,\\alpha} F_{i,\\beta}$$
+$$\\sigma = -\\frac{1}{V}\\left[ \\mathrm{sym}\\left(\\sum_i \\partial U/\\partial r_i \\otimes r_i\\right) + h^T \\cdot \\partial U/\\partial h \\right]$$
 
-2. **Lattice Gradients**: Stress from energy derivatives w.r.t. lattice vectors
-   $$\\sigma_{\\alpha\\beta} = -\\frac{1}{V} \\frac{\\partial U}{\\partial h_{\\alpha\\beta}}$$
+Only the 6 lower-triangular entries of $\\partial U/\\partial h$ are stored
+(the cell's parameter DoF). The lower triangle of $h^T \\cdot \\partial U/\\partial h$
+depends only on those 6 entries; symmetry of the stress tensor fills the
+upper triangle.
 
 **Molecular stress** differs from atomic stress by using center-of-mass positions,
 avoiding spurious intramolecular contributions (following RASPA convention).

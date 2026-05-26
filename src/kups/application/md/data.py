@@ -98,11 +98,6 @@ class MDSystems:
     cell_gradients: Cell
     potential_energy: Array
 
-    @property
-    def stress_tensor(self) -> Array:
-        """Virial stress tensor, shape ``(n_systems, 3, 3)``."""
-        return -self.cell_gradients.vectors / self.cell.volume[..., None, None]
-
 
 class MdRunConfig(BaseModel):
     """Run configuration for an MD simulation."""

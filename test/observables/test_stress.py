@@ -1,24 +1,21 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for stress computation via different methods."""
+"""Tests for stress computation via the virial theorem."""
 
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
-import pytest
 from jax import Array
 
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-from kups.observables.stress import (
-    stress_via_lattice_vector_gradients,
-    stress_via_virial_theorem,
-)
+from kups.observables.stress import stress_via_virial_theorem
 
 
 @dataclass
@@ -37,7 +34,8 @@ class _VirialSystems:
 def _make_systems(
     lattice_vectors: Array, lattice_grad: Array | None = None
 ) -> Table[SystemId, _VirialSystems]:
-    """Helper: single-system Table with cell and gradients."""
+    """Helper: Table with cell and cell-gradient for each row of
+    ``lattice_vectors`` (one system per leading-axis entry)."""
     if lattice_grad is None:
         lattice_grad = jnp.zeros_like(lattice_vectors)
     cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
@@ -71,48 +69,15 @@ def _make_particles(
     )
 
 
-class TestStressViaLatticeVectorGradients:
-    """Test stress from energy gradients w.r.t. lattice vectors."""
-
-    @pytest.mark.parametrize(
-        "virial,box_size,expected_fn",
-        [
-            pytest.param(
-                jnp.zeros((1, 3, 3)),
-                1.0,
-                lambda v, b: jnp.zeros((3, 3)),
-                id="zero_gradient",
-            ),
-            pytest.param(
-                jnp.eye(3)[None] * 2.0,
-                3.0,
-                lambda v, b: -v[0] / b**3,
-                id="known_gradient",
-            ),
-            pytest.param(
-                jnp.array([[[1.0, 0.0, 0.0], [3.0, 4.0, 0.0], [0.0, 0.0, 5.0]]]),
-                2.0,
-                lambda v, b: -v[0] / b**3,
-                id="asymmetric_virial",
-            ),
-        ],
-    )
-    def test_stress_from_virial(self, virial, box_size, expected_fn):
-        """Stress = -virial / V for various virial tensors."""
-        systems = _make_systems(jnp.eye(3)[None] * box_size, virial)
-        result = stress_via_lattice_vector_gradients(systems)
-        expected = expected_fn(virial, box_size)
-        npt.assert_allclose(result.data[0], expected, rtol=1e-6, atol=1e-10)
-
-
 class TestStressViaVirialTheorem:
-    """Test stress via virial theorem: sigma = -1/V * (sum(grad_i ⊗ r_i) + h^T dU/dh)."""
+    """σ = -1/V sym[Σ r ⊗ ∂U/∂r + h^T·∂U/∂h]."""
 
     def test_known_virial_stress(self):
-        """Two particles with known positions: verify stress = -sum(r_i ⊗ r_i)/V."""
+        """Two particles with `position_gradients == positions` (symmetric outer
+        product); zero cell gradient: σ = -Σ p_i⊗p_i / V."""
         positions = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
         lv = jnp.eye(3)[None] * 2.0
-        particles = _make_particles(positions)  # gradients = positions
+        particles = _make_particles(positions)
         systems = _make_systems(lv)
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
 
@@ -134,22 +99,8 @@ class TestStressViaVirialTheorem:
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
         npt.assert_allclose(result.data, 0.0, atol=1e-10)
 
-    def test_two_particles_numerical(self):
-        """Two particles at known positions: verify each stress component."""
-        positions = jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
-        particles = _make_particles(positions)
-        systems = _make_systems(jnp.eye(3)[None])
-        result = jax.jit(stress_via_virial_theorem)(particles, systems)
-
-        expected = -(
-            jnp.outer(positions[0], positions[0])
-            + jnp.outer(positions[1], positions[1])
-        )
-        assert result.data.shape == (1, 3, 3)
-        npt.assert_allclose(result.data[0], expected, rtol=1e-6)
-
-    def test_with_lattice_gradient_contribution(self):
-        """Non-zero lattice gradient adds to stress via h^T @ dU/dh."""
+    def test_with_diagonal_lattice_gradient(self):
+        """Diagonal h and diagonal ∂U/∂h: σ = -h^T·∂U/∂h / V."""
         lv = jnp.eye(3)[None] * 2.0
         lattice_grad = jnp.eye(3)[None] * 3.0
         particles = _make_particles(
@@ -158,29 +109,75 @@ class TestStressViaVirialTheorem:
         systems = _make_systems(lv, lattice_grad)
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
 
-        # h^T @ dU/dh = (2I)^T @ (3I) = 6I, stress = -6I / V = -6I / 8
+        # h^T @ ∂U/∂h = (2I) @ (3I) = 6I, σ = -6I / 8
         expected = -jnp.eye(3) * 6.0 / 8.0
         npt.assert_allclose(result.data[0], expected, rtol=1e-6)
 
+    def test_periodic_pair_virial_combines_position_and_cell_before_symmetry(self):
+        """A pair crossing PBC reconstructs the full minimum-image virial.
 
-class TestStressMethodComparison:
-    """Cross-validate that both stress methods produce consistent results."""
+        The wrapped coordinate difference is ``r_j - r_i = [-8, 2, 1]`` and the
+        periodic image shift is ``[1, 0, 0]``, giving minimum-image displacement
+        ``d = [2, 2, 1]``. For a central pair with ``∂U/∂d = d``, the stress is
+        ``-d⊗d/V``. This only comes out correctly if the lower-triangular
+        position virial and cell-gradient virial are added before symmetrizing.
+        """
+        lv = (jnp.eye(3) * 10.0)[None]
+        positions = jnp.array([[9.0, 1.0, 1.0], [1.0, 3.0, 2.0]])
+        d = jnp.array([2.0, 2.0, 1.0])
+        position_gradients = jnp.array([-d, d])
+        # Full d = r_j - r_i + s @ h with s = [1, 0, 0]. Only lower-triangular
+        # cell-gradient DOFs are stored.
+        lattice_grad = jnp.tril(
+            jnp.array([[[2.0, 2.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]])
+        )
 
-    def test_symmetric_positions_give_symmetric_stress(self):
-        """Symmetric positions should produce symmetric stress tensors."""
-        positions = jnp.array([[0.25, 0.25, 0.25], [-0.25, -0.25, -0.25]])
-        lv = jnp.eye(3)[None] * 2.0
+        particles = _make_particles(positions, position_gradients=position_gradients)
+        systems = _make_systems(lv, lattice_grad)
+        result = jax.jit(stress_via_virial_theorem)(particles, systems)
 
-        # Lattice vector method: σ = -virial / V where virial = sum(r) ⊗ sum(r)
-        sum_pos = jnp.sum(positions, axis=0)  # = [0, 0, 0]
-        virial = jnp.outer(sum_pos, sum_pos)[None]
-        systems_lv = _make_systems(lv, virial)
-        result_lv = stress_via_lattice_vector_gradients(systems_lv)
+        expected = -jnp.outer(d, d) / 1000.0
+        npt.assert_allclose(result.data[0], expected, atol=1e-12)
 
-        # Virial theorem method
-        particles = _make_particles(positions)
-        systems_vt = _make_systems(lv)
-        result_vt = jax.jit(stress_via_virial_theorem)(particles, systems_vt)
+    def test_triclinic_cell_recovers_symmetric_cell_virial(self):
+        """Non-diagonal lower-triangular ``h``: stress code recovers
+        ``S = h^T·∂U/∂h`` from the stored lower triangle of ``∂U/∂h``.
 
-        npt.assert_allclose(result_lv.data, 0.0, atol=1e-10)
-        npt.assert_allclose(result_vt.data[0], result_vt.data[0].T, atol=1e-10)
+        Build a symmetric ``S``, solve ``g = (h^T)^{-1}·S`` for the full
+        ``∂U/∂h``, project to the lower triangle (what ``TriclinicFrame``
+        stores), and verify ``stress_via_virial_theorem`` returns
+        ``-S / V`` with no particle contribution.
+        """
+        rng = np.random.default_rng(0)
+        h_np = np.array([[2.0, 0.0, 0.0], [0.7, 1.9, 0.0], [0.3, -0.5, 2.4]])
+        S_np = rng.standard_normal((3, 3))
+        S_np = S_np + S_np.T  # symmetric
+        g_full = np.linalg.solve(h_np.T, S_np)
+        g_tril = np.tril(g_full)  # what TriclinicFrame.from_matrix keeps
+
+        lv = jnp.asarray(h_np)[None]
+        lattice_grad = jnp.asarray(g_tril)[None]
+        particles = _make_particles(
+            jnp.zeros((1, 3)), position_gradients=jnp.zeros((1, 3))
+        )
+        systems = _make_systems(lv, lattice_grad)
+        result = jax.jit(stress_via_virial_theorem)(particles, systems)
+
+        volume = float(np.abs(np.linalg.det(h_np)))
+        expected = -S_np / volume
+        npt.assert_allclose(result.data[0], expected, atol=1e-10)
+
+    def test_stress_is_symmetric(self):
+        """Output is always symmetric, even with asymmetric position outer
+        products and a triclinic lattice gradient."""
+        rng = np.random.default_rng(1)
+        positions = jnp.asarray(rng.standard_normal((4, 3)))
+        position_gradients = jnp.asarray(rng.standard_normal((4, 3)))
+        h_np = np.array([[2.0, 0.0, 0.0], [0.7, 1.9, 0.0], [0.3, -0.5, 2.4]])
+        g_tril = np.tril(rng.standard_normal((3, 3)))
+        lv = jnp.asarray(h_np)[None]
+        lattice_grad = jnp.asarray(g_tril)[None]
+        particles = _make_particles(positions, position_gradients=position_gradients)
+        systems = _make_systems(lv, lattice_grad)
+        result = jax.jit(stress_via_virial_theorem)(particles, systems)
+        npt.assert_allclose(result.data[0], result.data[0].T, atol=1e-10)
