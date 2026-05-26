@@ -124,7 +124,6 @@ default-groups = "all"
 conflicts = [[{ extra = "uma" }, { extra = "mace" }]]
 
 [tool.pytest_env]
-JAX_PLATFORMS = "cpu"
 JAX_ENABLE_X64 = "True"
 
 [tool.pytest.ini_options]

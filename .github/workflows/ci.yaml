@@ -41,11 +41,15 @@ jobs:
         # Run only on non-main branches or PRs
         if: github.ref != 'refs/heads/main' || github.event_name == 'pull_request'
         run: uv run --no-default-groups --group dev -p ${{ matrix.python-version }} --resolution ${{ matrix.resolution }} -U pytest --testmon
+        env:
+          JAX_PLATFORMS: cpu
         continue-on-error: true
       - name: Full Pytest
         # Run full test suite if testmon failed or on main branch
         if: steps.pytest-testmon.outcome == 'failure' || (github.ref == 'refs/heads/main' && github.event_name != 'pull_request')
         run: rm .testmondata & uv run --no-default-groups --group dev -p ${{ matrix.python-version }} --resolution ${{ matrix.resolution }} -U pytest --testmon
+        env:
+          JAX_PLATFORMS: cpu
       - id: testmon-cache-save
         uses: actions/cache/save@v4
         if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -66,4 +70,6 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Run ${{ matrix.app.name }}
         run: uv run --no-default-groups --group dev --env-file ci.env ${{ matrix.app.config }}
+        env:
+          JAX_PLATFORMS: cpu
         working-directory: ./ci
