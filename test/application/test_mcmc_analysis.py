@@ -6,22 +6,21 @@
 from dataclasses import dataclass
 
 import jax.numpy as jnp
+import numpy.testing as npt
 import pytest
 from jax import Array
 
 from kups.application.mcmc.analysis import (
     _analyze_single_system,
+    _analyze_single_widom_system,
     analyze_mcmc,
 )
 from kups.application.mcmc.data import StressResult
+from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import MotifId, SystemId
 from kups.core.utils.jax import dataclass as jax_dataclass
 from kups.core.utils.jax import no_post_init
-
-# ---------------------------------------------------------------------------
-# Helpers / stubs
-# ---------------------------------------------------------------------------
 
 
 @jax_dataclass
@@ -44,11 +43,6 @@ class _SystemStepData:
 class _StepData:
     particle_count: Table[tuple[SystemId, MotifId], Array]
     systems: Table[SystemId, _SystemStepData]
-
-
-# ---------------------------------------------------------------------------
-# Tests for _analyze_single_system
-# ---------------------------------------------------------------------------
 
 
 class TestAnalyzeSingleSystem:
@@ -81,11 +75,6 @@ class TestAnalyzeSingleSystem:
 
         assert float(result.loading.mean[0]) == pytest.approx(3.0)
         assert float(result.loading.mean[1]) == pytest.approx(7.0)
-
-
-# ---------------------------------------------------------------------------
-# Tests for analyze_mcmc
-# ---------------------------------------------------------------------------
 
 
 class TestAnalyzeMCMC:
@@ -171,3 +160,39 @@ class TestAnalyzeMCMC:
         assert float(result.pressure.mean) == pytest.approx(P)
         expected_stress = P * jnp.eye(3)
         assert jnp.allclose(result.stress.mean, expected_stress, atol=1e-12)
+
+
+class TestAnalyzeSingleWidomSystem:
+    def test_constant_input_recovers_analytic_mu_ex_kh_qst(self):
+        """Constant ΔU stream: μ_ex = ΔU, K_H = V·exp(-βΔU)/kT, q_st = kT − ΔU."""
+        n_cycles = 10
+        delta_U = -0.05  # eV
+        temperature = 300.0
+        volume = 100.0
+        kT = float(BOLTZMANN_CONSTANT * temperature)
+        beta = 1.0 / kT
+        W = float(jnp.exp(-beta * delta_U))
+
+        mean_w_per_cycle = jnp.full((n_cycles,), W)
+        mean_du_w_per_cycle = jnp.full((n_cycles,), delta_U * W)
+
+        result = _analyze_single_widom_system(
+            mean_w_per_cycle,
+            mean_du_w_per_cycle,
+            temperature=temperature,
+            volume=volume,
+            n_blocks=2,
+        )
+        npt.assert_allclose(
+            float(result.excess_chemical_potential.mean), delta_U, rtol=1e-9
+        )
+        npt.assert_allclose(
+            float(result.henry_coefficient.mean), volume * W / kT, rtol=1e-9
+        )
+        npt.assert_allclose(
+            float(result.heat_of_adsorption.mean), kT - delta_U, rtol=1e-9
+        )
+        # Constant input -> zero variance -> zero SEM (within fp64 rounding).
+        npt.assert_allclose(float(result.excess_chemical_potential.sem), 0.0, atol=1e-9)
+        npt.assert_allclose(float(result.henry_coefficient.sem), 0.0, atol=1e-9)
+        npt.assert_allclose(float(result.heat_of_adsorption.sem), 0.0, atol=1e-9)

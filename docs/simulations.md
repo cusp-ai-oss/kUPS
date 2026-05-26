@@ -85,7 +85,7 @@ cd examples
 kups_mcmc_widom mcmc_widom.yaml
 ```
 
-[`finalize_widom`][kups.mcmc.widom.finalize_widom] applied to the accumulated [`WidomStatistics`][kups.mcmc.widom.WidomStatistics] yields $\mu^\mathrm{ex}$, $K_H$, and $q_\mathrm{st}$ (Vlugt 2008 eq. 16, $N=0$). Multiple hosts in one config become parallel batched systems on the `Table[SystemId, ...]` axis; duplicate a host entry $k$ times for $k$ independent chains. Blocking spheres ([`HostConfig.blocking_spheres`][kups.application.mcmc.data.HostConfig.blocking_spheres]) exclude regions from insertion.
+Per-cycle [`WidomStatistics`][kups.mcmc.widom.WidomStatistics] snapshots are written to the HDF5 output file. [`analyze_widom_file`][kups.application.mcmc.analysis.analyze_widom_file] reduces them post-hoc into block-averaged $\mu^\mathrm{ex}$, $K_H$, and $q_\mathrm{st}$ with standard errors (Vlugt 2008 eq. 16, $N=0$).
 
 # Machine-learning Force Fields
 

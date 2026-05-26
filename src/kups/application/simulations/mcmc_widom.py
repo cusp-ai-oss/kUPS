@@ -4,13 +4,9 @@
 r"""Widom test-particle insertion entry point.
 
 Each cycle runs a displacement-move loop at fixed $N$ followed by a batch of
-Widom ghost insertions; Boltzmann factors $\exp(-\beta\Delta U)$ accumulate
-into [WidomStatistics][kups.mcmc.widom.WidomStatistics].
-[finalize_widom][kups.mcmc.widom.finalize_widom] yields $\mu^\mathrm{ex}$,
-$K_H$, and $q_\mathrm{st}$ (Vlugt 2008 eq. 16, $N=0$).
-
-Multiple hosts in the config become parallel batched systems on the
-``Table[SystemId, ...]`` axis; duplicate a host $k$ times for $k$ chains.
+Widom ghost insertions; cumulative [WidomStatistics][kups.mcmc.widom.WidomStatistics]
+snapshots are logged per cycle to HDF5 and reduced post-hoc via
+[analyze_widom_file][kups.application.mcmc.analysis.analyze_widom_file].
 """
 
 from __future__ import annotations

@@ -12,10 +12,9 @@ Contents:
 - [widom_test][kups.mcmc.widom.widom_test]: per-system $\ln\alpha$ for a ghost move
 - [GhostProbe][kups.mcmc.widom.GhostProbe]: propagator wrapper accumulating
   the ratio via a lens + update callback
-- [WidomStatistics][kups.mcmc.widom.WidomStatistics] /
-  [WidomResult][kups.mcmc.widom.WidomResult] /
-  [finalize_widom][kups.mcmc.widom.finalize_widom]: $\mu^\mathrm{ex}$, $K_H$,
-  Vlugt $q_\mathrm{st}$.
+- [WidomStatistics][kups.mcmc.widom.WidomStatistics]: running-sum accumulator
+  consumed by the post-hoc analyzer
+  ([analyze_widom_file][kups.application.mcmc.analysis.analyze_widom_file]).
 
 References:
     Widom, B. (1963). J. Chem. Phys., 39, 2808.
@@ -29,7 +28,6 @@ from typing import Callable
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.lens import Lens
 from kups.core.patch import Patch
@@ -47,12 +45,6 @@ r"""Log Metropolis acceptance ratio $\ln\alpha$ [dimensionless]."""
 
 type Energy = Array
 r"""Potential energy [energy]."""
-
-type Temperature = Array
-r"""Thermodynamic temperature $T$ [K]."""
-
-type Volume = Array
-r"""Simulation-cell volume $V$ [length$^3$]."""
 
 
 def widom_test[State, Changes, Move: Patch](
@@ -137,56 +129,6 @@ class WidomStatistics:
             sum_delta_u_boltzmann=self.sum_delta_u_boltzmann + delta_u * boltzmann,
             n_samples=self.n_samples + 1,
         )
-
-
-@dataclass
-class WidomResult:
-    r"""Finalized Widom chemical potential / Henry / heat of adsorption.
-
-    Attributes:
-        excess_chemical_potential:
-            $\mu^\mathrm{ex} = -k_BT \ln\langle W \rangle$ [energy].
-        henry_coefficient:
-            $K_H = V\langle W\rangle / (k_BT)$ [length$^3$ / energy].
-        heat_of_adsorption: Vlugt (2008) eq. 16, test-particle ($N = 0$) limit
-            $q_\mathrm{st} = k_BT
-            - \langle \Delta U \cdot \exp(-\beta \Delta U)\rangle / \langle \exp(-\beta \Delta U)\rangle$
-            [energy], with intramolecular gas energy taken as zero (rigid
-            adsorbate).
-    """
-
-    excess_chemical_potential: Energy
-    henry_coefficient: Array
-    heat_of_adsorption: Energy
-
-
-def finalize_widom(
-    stats: WidomStatistics,
-    temperature: Temperature,
-    volume: Volume,
-) -> WidomResult:
-    r"""Convert accumulated Widom sums into $\mu^\mathrm{ex}$, $K_H$, and $q_\mathrm{st}$.
-
-    Args:
-        stats: Accumulated statistics.
-        temperature: Per-system $T$ [K].
-        volume: Per-system $V$ [length$^3$].
-
-    Returns:
-        The finalized :class:`WidomResult`.
-    """
-    nf = stats.n_samples.astype(jnp.float64)
-    mean_w = stats.sum_boltzmann / nf
-    mean_du_w = stats.sum_delta_u_boltzmann / nf
-    kT = temperature * BOLTZMANN_CONSTANT
-    # Vlugt 2008 eq. 16 (N=0): W-weighted mean of ΔU. No covariance term;
-    # the cell's total PE does not enter. With a constant host PE a
-    # covariance form would collapse q_st to kT.
-    return WidomResult(
-        excess_chemical_potential=-kT * jnp.log(mean_w),
-        henry_coefficient=volume * mean_w / kT,
-        heat_of_adsorption=kT - mean_du_w / mean_w,
-    )
 
 
 @dataclass

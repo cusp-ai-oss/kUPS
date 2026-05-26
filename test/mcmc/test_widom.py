@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy.testing as npt
 from jax import Array
 
-from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data.table import Table
 from kups.core.lens import lens
 from kups.core.patch import IdPatch, Patch, WithPatch
@@ -25,7 +24,6 @@ from kups.core.utils.jax import dataclass
 from kups.mcmc.widom import (
     GhostProbe,
     WidomStatistics,
-    finalize_widom,
     widom_test,
 )
 
@@ -34,9 +32,6 @@ from ..clear_cache import clear_cache  # noqa: F401
 
 def _sys_table[T](values: T) -> Table[SystemId, T]:
     return Table.arange(values, label=SystemId)
-
-
-# -- synthetic state + propose/patch/log_ratio stubs ---------------------
 
 
 @dataclass
@@ -90,9 +85,6 @@ def _ratio_stub(
     return ratio
 
 
-# -- widom_test ----------------------------------------------------------
-
-
 class TestWidomTest:
     def test_returns_sum_of_move_and_density_log_ratios(self):
         n_systems = 3
@@ -129,37 +121,7 @@ class TestWidomTest:
             npt.assert_array_equal(a, b)
 
 
-# -- WidomStatistics + finalize_widom -----------------------------------
-
-
 class TestWidomStatistics:
-    def test_constant_boltzmann_factor_recovers_mu_excess_and_qst(self):
-        """Single ΔU value across all insertions: μ_ex = ΔU and q_st = kT − ΔU."""
-        n_samples = 10
-        temperature = jnp.array([300.0])
-        volume = jnp.array([100.0])
-        delta_U = -0.05  # eV
-        kT = float(BOLTZMANN_CONSTANT * 300.0)
-        beta = 1.0 / kT
-        ln_alpha = jnp.array([-beta * delta_U])
-        delta_u_arr = jnp.array([delta_U])
-
-        stats = WidomStatistics.zeros(1)
-        for _ in range(n_samples):
-            stats = stats.update(ln_alpha, delta_u_arr)
-
-        result = finalize_widom(stats, temperature, volume)
-        # ⟨W⟩ = exp(-β ΔU), μ_ex = -kT ln⟨W⟩ = ΔU
-        npt.assert_allclose(result.excess_chemical_potential[0], delta_U, rtol=1e-9)
-        # K_H = V ⟨W⟩ / kT = V exp(-β ΔU) / kT
-        npt.assert_allclose(
-            result.henry_coefficient[0],
-            float(volume[0]) * float(jnp.exp(-beta * delta_U)) / kT,
-            rtol=1e-9,
-        )
-        # q_st = kT − ⟨ΔU·W⟩/⟨W⟩ = kT − ΔU when ΔU is constant
-        npt.assert_allclose(result.heat_of_adsorption[0], kT - delta_U, rtol=1e-9)
-
     def test_reset_clears_sums(self):
         stats = WidomStatistics.zeros(2)
         for _ in range(7):
@@ -168,9 +130,6 @@ class TestWidomStatistics:
         npt.assert_array_equal(r.sum_boltzmann, jnp.zeros(2))
         npt.assert_array_equal(r.sum_delta_u_boltzmann, jnp.zeros(2))
         npt.assert_array_equal(r.n_samples, jnp.zeros(2, dtype=jnp.int32))
-
-
-# -- GhostProbe propagator ----------------------------------------------
 
 
 class TestGhostProbe:

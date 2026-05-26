@@ -803,6 +803,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     def propose_insertion(
         self, key: Array, state: State, /
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
+        """Propose inserting a random motif. Move log-ratio is zero."""
         changes = insert_random_motif(
             key,
             self.motifs(state),
@@ -813,9 +814,10 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
         )
         return changes, self._zero_ratio(state)
 
-    def _propose_deletion(
+    def propose_deletion(
         self, key: Array, state: State, /
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
+        """Propose deleting a random motif. Move log-ratio is zero."""
         changes = delete_random_motif(
             key,
             self.motifs(state),
@@ -830,7 +832,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
         chain = key_chain(key)
         changes, log_ratio, _ = propose_mixed(
-            next(chain), state, (self.propose_insertion, self._propose_deletion)
+            next(chain), state, (self.propose_insertion, self.propose_deletion)
         )
         return changes, log_ratio
 
