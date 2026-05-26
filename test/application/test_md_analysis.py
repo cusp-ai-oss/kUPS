@@ -41,6 +41,7 @@ class MockStepData:
     potential_energy: Array
     kinetic_energy: Array
     stress_tensor: Array
+    volume: Array
 
 
 def _make_init(n_atoms: int = 10, n_systems: int = 1) -> MockInitData:
@@ -58,12 +59,16 @@ def _make_step(
     pe: Array,
     ke: Array,
     stress: Array,
+    volume: Array | None = None,
 ) -> MockStepData:
     """Create mock step data."""
+    if volume is None:
+        volume = jnp.ones(pe.shape)
     return MockStepData(
         potential_energy=pe,
         kinetic_energy=ke,
         stress_tensor=stress,
+        volume=volume,
     )
 
 

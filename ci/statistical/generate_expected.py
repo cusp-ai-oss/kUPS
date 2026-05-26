@@ -11,12 +11,15 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import yaml
 
 from kups.application.mcmc.analysis import analyze_mcmc_file
 from kups.application.md.analysis import analyze_md_file
 from kups.core.utils.block_average import BlockAverageResult
+
+jax.config.update("jax_enable_x64", True)
 
 
 def _analyze_mcmc_first_system(path: Path) -> Any:

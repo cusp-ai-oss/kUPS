@@ -152,22 +152,14 @@ def main() -> int:
     dof = 3 * n_atoms - 3
     potential_energy = np.asarray(step_data.potential_energy).flatten()
     kinetic_energy = np.asarray(step_data.kinetic_energy).flatten()
+    volume = np.asarray(step_data.volume).flatten()
 
     n_steps = len(potential_energy)
     temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
 
-    # Extract volume from stress tensor shape or lattice vectors
-    # The HDF5 stores per-step data; volume comes from the cell
-    # For NPT, volume changes each step — extract from logged data
-    # stress_tensor shape: (n_steps, n_systems, 3, 3)
-    # We need volume — compute from Tr(σ) and known pressure
-    # Actually, let's just read it from the init lattice and note NPT changes volume
-    lattice = np.asarray(init_data.systems.data.cell.vectors[0])
-    initial_volume = abs(np.linalg.det(lattice))
-
     print(f"NPT Physics Validation: {args.hdf5_path.name}")
     print(f"  Atoms: {n_atoms}, Steps: {n_steps}, DOF: {dof}")
-    print(f"  Initial volume: {initial_volume:.2f} A^3")
+    print(f"  <V>: {np.mean(volume):.2f} A^3 (initial: {volume[0]:.2f} A^3)")
     print(f"  Target T: {args.target_temperature} K")
     print()
 
@@ -206,12 +198,31 @@ def main() -> int:
     )
     all_passed &= passed
 
-    # 4. Energy sanity (finite, no NaN)
+    # 4. Volume stability (no monotonic drift between first and second half)
+    passed, info = validate_volume_stability(volume)
+    status = "PASS" if passed else "FAIL"
+    print(f"4. Volume Stability: {status}")
+    print(
+        f"   <V> first/second half: {info['mean_first_half']:.2f} / {info['mean_second_half']:.2f} A^3"
+    )
+    print(f"   Drift: {info['drift']:.2%} (max: {info['threshold']:.0%})")
+    all_passed &= passed
+
+    # 5. Volume fluctuations (barostat active, bounded)
+    passed, info = validate_volume_fluctuations(volume)
+    status = "PASS" if passed else "FAIL"
+    print(f"5. Volume Fluctuations: {status}")
+    print(
+        f"   CV (std/mean): {info['cv']:.4f} (must be {info['min_cv']:.3f}-{info['max_cv']:.2f})"
+    )
+    all_passed &= passed
+
+    # 6. Energy sanity (finite, no NaN)
     finite_ok = bool(
         np.all(np.isfinite(potential_energy)) and np.all(np.isfinite(kinetic_energy))
     )
     status = "PASS" if finite_ok else "FAIL"
-    print(f"4. Energy Sanity: {status}")
+    print(f"6. Energy Sanity: {status}")
     print(
         f"   <PE>: {np.mean(potential_energy):.4f} eV, <KE>: {np.mean(kinetic_energy):.4f} eV"
     )

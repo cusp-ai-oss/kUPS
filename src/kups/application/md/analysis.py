@@ -49,6 +49,9 @@ class IsMDStepData(HasPotentialEnergy, HasStressTensor, Protocol):
     @property
     def kinetic_energy(self) -> Array: ...
 
+    @property
+    def volume(self) -> Array: ...
+
 
 @plain_dataclass
 class MDAnalysisResult:
@@ -62,6 +65,7 @@ class MDAnalysisResult:
         energy_drift: Linear drift rate of total energy (eV/step).
         energy_drift_per_atom: Energy drift normalized by number of atoms.
         pressure: Average pressure with SEM (Pa).
+        volume: Average cell volume with SEM (A^3).
         n_atoms: Number of atoms in this system.
         n_steps: Number of simulation steps analyzed.
     """
@@ -73,6 +77,7 @@ class MDAnalysisResult:
     energy_drift: float
     energy_drift_per_atom: float
     pressure: BlockAverageResult
+    volume: BlockAverageResult
     n_atoms: int
     n_steps: int
 
@@ -81,6 +86,7 @@ def _analyze_single_system(
     potential_energy: Array,
     kinetic_energy: Array,
     stress_tensor: Array,
+    volume: Array,
     n_atoms: int,
     n_blocks: int | None,
 ) -> MDAnalysisResult:
@@ -90,6 +96,7 @@ def _analyze_single_system(
         potential_energy: Potential energy time series, shape ``(n_steps,)``.
         kinetic_energy: Kinetic energy time series, shape ``(n_steps,)``.
         stress_tensor: Stress tensor time series, shape ``(n_steps, 3, 3)``.
+        volume: Cell volume time series, shape ``(n_steps,)``.
         n_atoms: Number of atoms in this system.
         n_blocks: Number of blocks, or ``None`` for automatic selection.
     """
@@ -111,6 +118,7 @@ def _analyze_single_system(
     ke_result = block_average(kinetic_energy, n_blocks=n_blocks_used)
     te_result = block_average(total_energy, n_blocks=n_blocks_used)
     temp_result = block_average(temperature, n_blocks=n_blocks_used)
+    volume_result = block_average(volume, n_blocks=n_blocks_used)
 
     steps = np.arange(n_steps)
     slope, _ = np.polyfit(steps, np.asarray(total_energy), 1)
@@ -123,6 +131,7 @@ def _analyze_single_system(
         energy_drift=float(slope),
         energy_drift_per_atom=float(slope) / n_atoms,
         pressure=pressure_result,
+        volume=volume_result,
         n_atoms=n_atoms,
         n_steps=n_steps,
     )
@@ -156,6 +165,7 @@ def analyze_md(
             potential_energy=step_data.potential_energy[:, i],
             kinetic_energy=step_data.kinetic_energy[:, i],
             stress_tensor=step_data.stress_tensor[:, i],
+            volume=step_data.volume[:, i],
             n_atoms=int(n_atoms_per_system[i]),
             n_blocks=n_blocks,
         )

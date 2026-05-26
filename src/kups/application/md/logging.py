@@ -50,12 +50,14 @@ class MDStepData:
         potential_energy: Potential energy per system.
         kinetic_energy: Kinetic energy per system.
         stress_tensor: Virial stress tensor per system.
+        volume: Cell volume per system (A^3).
     """
 
     atoms: Table[ParticleId, MDParticles]
     potential_energy: Array
     kinetic_energy: Array
     stress_tensor: Array
+    volume: Array
 
     @staticmethod
     def from_state(state: HasMDData) -> MDStepData:
@@ -69,6 +71,7 @@ class MDStepData:
             potential_energy=state.systems.data.potential_energy,
             kinetic_energy=ke,
             stress_tensor=state.systems.data.stress_tensor,
+            volume=state.systems.data.cell.volume,
         )
 
 

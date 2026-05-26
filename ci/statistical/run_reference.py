@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import subprocess
@@ -27,7 +28,51 @@ EXPERIMENTS: list[tuple[str, str, str]] = [
 SIM_ENV = {**os.environ, "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
 
 
+def _generate_expected(name: str, sim_type: str) -> bool:
+    """Run generate_expected.py for a single experiment. Returns True on success."""
+    hdf5 = SCRIPT_DIR / f"{name}_ref.h5"
+    if not hdf5.exists():
+        print(f"  ✗ Missing HDF5 output: {hdf5.name}")
+        return False
+    result = subprocess.run(
+        ["uv", "run", "python", "generate_expected.py", hdf5.name, sim_type],
+        cwd=SCRIPT_DIR,
+        env=SIM_ENV,
+    )
+    if result.returncode != 0:
+        print(f"  ✗ Expected value generation failed: {name}")
+        return False
+    print(f"  ✓ Expected values generated: {name}")
+    return True
+
+
+def _regenerate_only() -> int:
+    print(f"Regenerating expected YAMLs for {len(EXPERIMENTS)} experiments")
+    failed = [
+        name
+        for name, sim_type, _ in EXPERIMENTS
+        if not _generate_expected(name, sim_type)
+    ]
+    print(f"\n{'=' * 60}")
+    if failed:
+        print(f"FAILED: {', '.join(failed)}")
+        return 1
+    print("All expected values regenerated successfully.")
+    return 0
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--regenerate-only",
+        action="store_true",
+        help="Skip simulations and only regenerate expected YAMLs from existing HDF5 outputs.",
+    )
+    args = parser.parse_args()
+
+    if args.regenerate_only:
+        return _regenerate_only()
+
     print(f"Launching {len(EXPERIMENTS)} simulations in parallel")
     procs: list[tuple[str, str, subprocess.Popen]] = []
 
@@ -61,13 +106,7 @@ def main() -> int:
                 continue
             print(f"  ✓ Simulation done: {name}")
 
-            hdf5 = SCRIPT_DIR / f"{name}_ref.h5"
-            result = subprocess.run(
-                ["uv", "run", "python", "generate_expected.py", hdf5.name, sim_type],
-                cwd=SCRIPT_DIR,
-            )
-            if result.returncode != 0:
-                print(f"  ✗ Expected value generation failed: {name}")
+            if not _generate_expected(name, sim_type):
                 failed.append(name)
     except BaseException:
         _kill_all()

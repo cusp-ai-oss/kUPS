@@ -17,7 +17,7 @@ hosts:
 
 run:
   out_file: ../../gcmc_co2_rubtak_ref.h5
-  num_warmup_cycles: 0
+  num_warmup_cycles: 10_000
   num_cycles: 20_000
   min_cycle_length: 20
   seed: 42

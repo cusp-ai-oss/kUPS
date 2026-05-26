@@ -17,12 +17,15 @@ from typing import Any, Callable
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+import jax
 import jax.numpy as jnp
 import yaml
 
 from kups.application.mcmc.analysis import MCMCAnalysisResult, analyze_mcmc_file
 from kups.application.md.analysis import MDAnalysisResult, analyze_md_file
 from kups.core.utils.block_average import BlockAverageResult
+
+jax.config.update("jax_enable_x64", True)
 
 SCRIPT_DIR = Path(__file__).parent
 INPUTS_DIR = SCRIPT_DIR / "inputs" / "ci"
