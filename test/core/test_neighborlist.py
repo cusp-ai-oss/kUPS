@@ -27,11 +27,13 @@ from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
     RefineCutoffNeighborList,
+    neighborlist_changes,
+)
+from kups.core.neighborlist.cell_list import _cell_hash
+from kups.core.neighborlist.common import (
     _candidate_image_counts,
     _Candidates,
-    _cell_hash,
     _get_candidate_images,
-    neighborlist_changes,
 )
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
