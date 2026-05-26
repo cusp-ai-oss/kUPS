@@ -566,11 +566,53 @@ class TestToLowerTriangular:
         assert jnp.all(jnp.diagonal(L) > 0)
 
     def test_round_trip_recovers_input(self):
-        """vecs == L @ Q, where Q is reconstructed from the mapper."""
+        """``vecs == L @ Q.T``, where Q is the rotation reconstructed from
+        the mapper. The mapper acts as ``r @ Q`` in row form (= ``Q.T @ r``
+        on a column vector), matching the same rotation that takes
+        ``vecs`` row-by-row into the rows of ``L``."""
         vecs = jnp.array([[1.0, 2.0, 0.3], [0.2, 3.0, 0.1], [0.5, 0.4, 4.0]])
         L, mapper = to_lower_triangular(vecs)
         Q = jnp.stack([mapper(row) for row in jnp.eye(3)])
-        npt.assert_allclose(L @ Q, vecs, atol=1e-6)
+        npt.assert_allclose(L @ Q.T, vecs, atol=1e-6)
+
+    def test_mapper_preserves_fractional_coordinates(self):
+        """The mapper re-expresses positions without changing fractional coordinates."""
+        vecs = jnp.array([[1.0, 2.0, 0.3], [0.2, 3.0, 0.1], [0.5, 0.4, 4.0]])
+        L, mapper = to_lower_triangular(vecs)
+        # Several arbitrary fractional positions; all must survive.
+        frac_coords = jnp.array(
+            [[0.7, 0.3, 0.5], [0.0, 0.0, 0.0], [0.123, 0.456, 0.789]]
+        )
+        for f in frac_coords:
+            r_orig = f @ vecs
+            r_new = mapper(r_orig)
+            f_new = r_new @ jnp.linalg.inv(L)
+            npt.assert_allclose(f_new, f, atol=1e-6)
+
+    def test_mapper_preserves_fractional_coordinates_fcc_primitive(self):
+        """End-to-end regression for the FCC primitive ASE case: the
+        upper-triangular ASE convention must round-trip through the rotation
+        without changing fractional coordinates."""
+        vecs = 1.805 * jnp.array([[0.0, 1.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 0.0]])
+        # The 8 atoms of an FCC 2×2×2 primitive supercell — fractional coords
+        # are at half-integer combinations of the basis vectors.
+        frac = jnp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.5],
+                [0.0, 0.5, 0.0],
+                [0.0, 0.5, 0.5],
+                [0.5, 0.0, 0.0],
+                [0.5, 0.0, 0.5],
+                [0.5, 0.5, 0.0],
+                [0.5, 0.5, 0.5],
+            ]
+        )
+        L, mapper = to_lower_triangular(vecs)
+        r_orig = frac @ vecs
+        r_new = jnp.stack([mapper(r) for r in r_orig])
+        frac_new = r_new @ jnp.linalg.inv(L)
+        npt.assert_allclose(frac_new, frac, atol=1e-5)
 
     def test_fcc_primitive_gives_positive_diagonal(self):
         """Regression: ase FCC Cu (a=3.61) previously produced a negative diagonal."""

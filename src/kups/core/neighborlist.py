@@ -257,9 +257,13 @@ class NearestNeighborList(Protocol):
 
 
 def _cell_hash(coordinate: Array, num_cells: Array):
-    """Calculate the cell hash for a given coordinate and number of cells."""
-    factor = jnp.cumprod(num_cells, axis=-1) / num_cells
-    return (jnp.floor(coordinate * num_cells) * factor).astype(int).sum(axis=-1)
+    """Hash folded fractional coordinates into row-major cell bins.
+
+    Boundary values are clamped into the valid bin range for each axis.
+    """
+    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
+    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
+    return (bin_idx * factor).sum(axis=-1)
 
 
 def _cell_stencil(dim: int):
@@ -447,6 +451,23 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     return coords - half
 
 
+def _candidate_image_counts(cells, cutoffs: Array) -> Array:
+    """Return per-system, per-axis image counts for candidate replication.
+
+    Periodic axes covered by the minimum-image convention use one image. Wider
+    periodic cutoffs use a symmetric integer-shift stencil; open axes and
+    non-finite cutoff/height ratios use one image.
+    """
+    ratio = cutoffs[..., None] / cells.perpendicular_lengths
+    images = jnp.where(
+        ratio <= 0.5,
+        1,
+        2 * jnp.ceil(ratio).astype(int) + 1,
+    )
+    images = jnp.where(jnp.isfinite(ratio), images, 1)
+    return jnp.where(jnp.array(cells.periodic), images, 1)
+
+
 def _get_candidate_images(
     candidates: _Candidates,
     lh: Table[ParticleId, NeighborListPoints],
@@ -455,23 +476,7 @@ def _get_candidate_images(
     out_size: Capacity[int],
 ) -> tuple[Array, Array, Array]:
     cells = systems.data.cell
-    # Per-axis image count, picked to satisfy whichever distance path runs:
-    #   - cutoff ≤ perp/2: minimum-image convention alone covers all pairs, so
-    #     emit 1 image; this is the trigger for the MIC fast path in
-    #     `_apply_distance_cutoff_w_images`.
-    #   - cutoff > perp/2: the slow path computes distances as
-    #     `raw_frac_delta - shift`, with raw_frac_delta ∈ (-1, 1). We therefore
-    #     need integer shifts spanning (-1 - cutoff/perp, 1 + cutoff/perp), i.e.
-    #     `2·⌈cutoff/perp⌉ + 1` shifts per axis.
-    perp = cells.perpendicular_lengths
-    images = jnp.where(
-        cutoffs[..., None] <= perp / 2,
-        1,
-        2 * jnp.ceil(cutoffs[..., None] / perp).astype(int) + 1,
-    )
-    images = jnp.where(jnp.isfinite(cutoffs[..., None]), images, 1)
-    # Open axes contribute no images.
-    images = jnp.where(jnp.array(cells.periodic), images, 1)
+    images = _candidate_image_counts(cells, cutoffs)
     images_per_sys = jnp.prod(images, axis=-1).astype(int)
 
     cand_sys_ids = lh.data.system.indices[candidates.lhs.indices]

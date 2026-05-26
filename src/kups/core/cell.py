@@ -645,14 +645,8 @@ def is_3d_periodic[P: tuple[bool, bool, bool]](
 def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
     """Convert arbitrary basis vectors to lower-triangular form via QR.
 
-    Decomposes the input into a lower-triangular basis matrix and an
-    orthogonal rotation that maps coordinates from the original frame
-    into the triclinic frame. The diagonal of the returned basis matrix
-    is forced positive (the QR factorisation is unique only up to per-row
-    sign; jax/numpy returns an arbitrary sign), which matches the standard
-    LAMMPS/CP2K lower-triangular convention and keeps every downstream code
-    path (neighbour list shifts, cell-vector parametrisations) on the same
-    side of the axes.
+    The returned basis has a positive diagonal. The coordinate mapper applies
+    the same rigid rotation to positions, preserving fractional coordinates.
 
     Args:
         vecs: Basis vectors as rows of a 3x3 matrix, shape ``(3, 3)``.
@@ -662,13 +656,9 @@ def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
     """
     vecs = jnp.asarray(vecs)
     Q, R = jnp.linalg.qr(vecs.T)
-    # Force the diagonal of R (= the future diagonal of L) positive by
-    # flipping each row of R together with the corresponding column of Q;
-    # ``Q @ R`` is invariant under this rescaling.
     signs = jnp.sign(jnp.diagonal(R))
     signs = jnp.where(signs == 0, 1.0, signs)
     R = R * signs[:, None]
     Q = Q * signs[None, :]
     L = R.T
-    Q = Q.T
     return L, partial(jnp.einsum, "...ij,...i->...j", Q)

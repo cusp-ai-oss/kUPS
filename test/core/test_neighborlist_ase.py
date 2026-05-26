@@ -15,10 +15,11 @@ import ase.build
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.testing as npt
 import pytest
 from ase.neighborlist import neighbor_list as ase_neighbor_list
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, to_lower_triangular
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.neighborlist import (
@@ -69,7 +70,31 @@ def _make_systems(cell: Cell, cutoff: float) -> tuple[Table, Table]:
     return systems, cutoffs
 
 
+def _ensure_lower_triangular(atoms: ase.Atoms) -> ase.Atoms:
+    """Rigidly rotate ``atoms`` so its lattice matrix is lower-triangular.
+
+    ``TriclinicFrame.from_matrix`` projects onto the lower-triangular block
+    (a documented gradient-wrapping behaviour), so an ASE lattice that is
+    not already lower-triangular would be silently truncated. Rotating up
+    front via the same QR reduction kups uses internally
+    (`kups.core.cell.to_lower_triangular`) puts the input on the supported
+    branch and is a no-op for cells that are already lower-triangular.
+    """
+    cell = jnp.asarray(np.asarray(atoms.cell.array))
+    L, uc_transform = to_lower_triangular(cell)
+    rotated_positions = np.asarray(
+        uc_transform(jnp.asarray(np.asarray(atoms.positions)))
+    )
+    out = atoms.copy()
+    out.set_cell(np.asarray(L), scale_atoms=False)
+    out.set_positions(rotated_positions)
+    return out
+
+
 def _atoms_to_cell(atoms: ase.Atoms) -> Cell:
+    """Build a kups ``PeriodicCell`` from an ASE ``Atoms`` whose lattice
+    matrix is lower-triangular. Use ``_ensure_lower_triangular`` to bring
+    arbitrary ASE inputs onto this branch first."""
     lvecs = jnp.asarray(np.asarray(atoms.cell.array))[None]
     return PeriodicCell(TriclinicFrame.from_matrix(lvecs))
 
@@ -107,6 +132,7 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     fails. Returns ``(i, j, displacement)`` for valid (non-padding) directed
     edges.
     """
+    atoms = _ensure_lower_triangular(atoms)
     n = len(atoms)
     state, cutoff_table = _build_state(atoms, cutoff)
 
@@ -134,6 +160,7 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
 
 def _ase_edges(atoms: ase.Atoms, cutoff: float):
     """Reference directed edges from ase.neighborlist as (i, j, displacement)."""
+    atoms = _ensure_lower_triangular(atoms)
     i, j, S = ase_neighbor_list("ijS", atoms, float(cutoff))
     pos = np.asarray(atoms.get_positions())
     cell = np.asarray(atoms.cell.array)
@@ -176,6 +203,12 @@ def _make_cu_supercell() -> ase.Atoms:
     return ase.build.bulk("Cu", "fcc", a=3.6, cubic=True).repeat((5, 5, 5))
 
 
+def _make_fcc_primitive_222() -> ase.Atoms:
+    """FCC primitive 2x2x2 — non-lower-triangular ASE lattice, exercises the
+    cell-list path at ``cutoff > perp`` (perpendicular cell width ~4.17 A)."""
+    return ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
+
+
 def _build_bulk_al() -> ase.Atoms:
     at = ase.build.bulk("Al", "fcc", a=4.05, cubic=True)
     at.rattle(0.5)
@@ -189,7 +222,95 @@ _CASES = [
     ("hcp_Mg", _make_hcp_mg, (2.5, 5.0, 10.0)),
     ("triclinic", _make_triclinic, (3.0, 6.0, 12.0)),
     ("Cu_5x5x5", _make_cu_supercell, (5.0,)),
+    ("fcc_primitive_222", _make_fcc_primitive_222, (3.0, 6.0)),
 ]
+
+
+class TestEnsureLowerTriangular:
+    """``_ensure_lower_triangular`` is a rigid QR rotation that brings the
+    ASE lattice onto the lower-triangular branch required by kups'
+    ``TriclinicFrame``. The bug it guards against is Bug #1b: without
+    pre-rotating, ``TriclinicFrame.from_matrix`` silently *projects* the
+    arbitrary basis matrix onto its lower-triangular block (a documented
+    behaviour used elsewhere for ``∂E/∂h`` gradient wrapping), which for
+    FCC primitive ASE conventions corrupts the cell into a degenerate basis
+    and triggers Bug #2 downstream.
+    """
+
+    def test_rotates_fcc_primitive_to_lower_triangular(self):
+        atoms = ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
+        # Pre-condition: ASE's FCC primitive lattice is *not* lower-triangular.
+        npt.assert_(
+            not np.allclose(np.triu(np.asarray(atoms.cell.array), k=1), 0.0),
+            "FCC primitive ASE cell is expected to be non-lower-triangular",
+        )
+        rotated = _ensure_lower_triangular(atoms)
+        upper = np.triu(np.asarray(rotated.cell.array), k=1)
+        npt.assert_allclose(upper, 0.0, atol=1e-5)
+
+    def test_no_op_on_already_lower_triangular(self):
+        # Cubic cell is lower-triangular (diagonal). Rotation must be identity
+        # (up to optional sign flips, which keep diag positive by the QR
+        # sign-convention fix in ``to_lower_triangular``).
+        atoms = ase.build.bulk("Cu", "fcc", a=3.6, cubic=True)
+        rotated = _ensure_lower_triangular(atoms)
+        npt.assert_allclose(
+            np.asarray(rotated.cell.array), np.asarray(atoms.cell.array), atol=1e-6
+        )
+        npt.assert_allclose(
+            np.asarray(rotated.positions), np.asarray(atoms.positions), atol=1e-6
+        )
+
+    def test_preserves_volume(self):
+        atoms = ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
+        v_before = abs(np.linalg.det(np.asarray(atoms.cell.array)))
+        rotated = _ensure_lower_triangular(atoms)
+        v_after = abs(np.linalg.det(np.asarray(rotated.cell.array)))
+        npt.assert_allclose(v_after, v_before, rtol=1e-6)
+
+    def test_preserves_pairwise_distances(self):
+        # A rigid rotation must preserve all pair distances between atoms.
+        atoms = ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
+        rotated = _ensure_lower_triangular(atoms)
+        p0 = np.asarray(atoms.positions)
+        p1 = np.asarray(rotated.positions)
+        d0 = np.linalg.norm(p0[:, None] - p0[None, :], axis=-1)
+        d1 = np.linalg.norm(p1[:, None] - p1[None, :], axis=-1)
+        npt.assert_allclose(d1, d0, atol=1e-5)
+
+    def test_preserves_periodic_image_distances(self):
+        # ASE neighbor_list on the original atoms and on the rotated atoms
+        # must report the same multiset of pair distances at any cutoff
+        # (only the *direction* of each displacement vector differs).
+        atoms = ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
+        rotated = _ensure_lower_triangular(atoms)
+        i0, j0, S0 = ase_neighbor_list("ijS", atoms, 6.0)
+        i1, j1, S1 = ase_neighbor_list("ijS", rotated, 6.0)
+        d0 = np.linalg.norm(
+            np.asarray(atoms.positions)[j0]
+            - np.asarray(atoms.positions)[i0]
+            + S0 @ np.asarray(atoms.cell.array),
+            axis=-1,
+        )
+        d1 = np.linalg.norm(
+            np.asarray(rotated.positions)[j1]
+            - np.asarray(rotated.positions)[i1]
+            + S1 @ np.asarray(rotated.cell.array),
+            axis=-1,
+        )
+        npt.assert_allclose(np.sort(d0), np.sort(d1), atol=1e-5)
+
+    def test_atoms_to_cell_produces_finite_perpendicular_lengths(self):
+        # Pre-fix, ``_atoms_to_cell`` on an FCC primitive returned a
+        # degenerate frame with ``perp = [0, NaN, NaN]``. After routing
+        # through ``_ensure_lower_triangular`` the perpendicular lengths
+        # are all finite and positive.
+        atoms = ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
+        rotated = _ensure_lower_triangular(atoms)
+        cell = _atoms_to_cell(rotated)
+        perp = np.asarray(cell.perpendicular_lengths)
+        npt.assert_(np.all(np.isfinite(perp)), f"perp not finite: {perp}")
+        npt.assert_(np.all(perp > 0), f"perp not strictly positive: {perp}")
 
 
 @pytest.mark.parametrize(

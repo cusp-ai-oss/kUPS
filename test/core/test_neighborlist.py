@@ -27,6 +27,10 @@ from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
     RefineCutoffNeighborList,
+    _candidate_image_counts,
+    _Candidates,
+    _cell_hash,
+    _get_candidate_images,
     neighborlist_changes,
 )
 from kups.core.result import as_result_function
@@ -198,6 +202,96 @@ class TestNumNeighbors:
 
         nn_zero = FixedCapacity(0)
         assert nn_zero.size == 0
+
+
+class TestCellHashClampsAtBoundary:
+    """``_cell_hash`` keeps per-axis bins inside ``[0, num_cells - 1]``."""
+
+    def test_interior_coord_with_unit_grid_hashes_to_zero(self):
+        # Sanity check: when num_cells = (1, 1, 1) any coord in [0, 1) hashes to 0.
+        h = _cell_hash(jnp.array([0.0, 0.0, 0.0]), jnp.array([1, 1, 1]))
+        assert int(h) == 0
+        h = _cell_hash(jnp.array([0.5, 0.99, 0.0]), jnp.array([1, 1, 1]))
+        assert int(h) == 0
+
+    def test_fold_overshoot_at_one_clamps_with_unit_grid(self):
+        # Boundary values remain in range even when folding lands exactly on 1.0.
+        h = _cell_hash(jnp.array([1.0, 1.0, 1.0]), jnp.array([1, 1, 1]))
+        assert int(h) == 0
+
+    def test_fold_overshoot_at_one_clamps_with_nontrivial_grid(self):
+        # For num_cells = (2, 3, 5), the max valid bin per axis is (1, 2, 4).
+        # Coord = 1.0 should clamp to that and hash to 1 + 2*2 + 4*6 = 29.
+        num_cells = jnp.array([2, 3, 5])
+        h = _cell_hash(jnp.array([1.0, 1.0, 1.0]), num_cells)
+        assert int(h) == 1 + 2 * 2 + 4 * 6
+        # Interior coords are unaffected by the clamp.
+        h = _cell_hash(jnp.array([0.25, 0.5, 0.5]), num_cells)
+        # bins (0, 1, 2) → 0 + 1*2 + 2*6 = 14
+        assert int(h) == 0 + 1 * 2 + 2 * 6
+
+    def test_realistic_fold_path_does_not_escape_range(self):
+        # Reproduce the exact failure path: a tiny-negative fractional coord
+        # passes through ``cell.fold`` and must hash inside ``[0, 1)`` with
+        # ``num_cells = (1, 1, 1)``.
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        bad_frac = jnp.array([-1.49e-8, 0.0, 0.0])
+        folded, _ = cell.fold(bad_frac)
+        # We don't assert that fold returns < 1 (it may not in float32) — only
+        # that ``_cell_hash`` survives that overshoot.
+        h = _cell_hash(folded, jnp.array([1, 1, 1]))
+        assert int(h) == 0
+
+
+class TestImageCountIsFiniteGuard:
+    """Candidate image counts stay finite for degenerate periodic geometry."""
+
+    @staticmethod
+    def _make_minimal_inputs(cell: PeriodicCell):
+        """One-atom, one-system, one-candidate setup for direct invocation
+        of ``_get_candidate_images``."""
+        sys_keys = (SystemId(0),)
+        pi_keys = (ParticleId(0),)
+        lh = Table(
+            pi_keys,
+            SamplePoints(
+                positions=jnp.zeros((1, 3)),
+                system=Index(sys_keys, jnp.array([0])),
+                inclusion=Index(sys_keys, jnp.array([0])),
+                exclusion=Index.integer(jnp.array([0])),
+            ),
+        )
+        systems = Table(sys_keys, SampleSystems(cell=cell))
+        candidates = _Candidates(
+            lhs=Index(pi_keys, jnp.array([0])),
+            rhs=Index(pi_keys, jnp.array([0])),
+        )
+        return lh, systems, candidates
+
+    def test_zero_perpendicular_axis_clamps_images_to_one(self):
+        # ``tril = [0, 0, 1, 0, 0, 1]`` gives ``vectors[0] = (0, 0, 0)``.
+        # Volume = 0, perp[0] = 0, perp[1] = perp[2] = NaN (0/0).
+        tril = jnp.array([[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]])
+        cell = PeriodicCell(TriclinicFrame(tril))
+        assert float(cell.perpendicular_lengths[0, 0]) == 0.0
+        lh, systems, candidates = self._make_minimal_inputs(cell)
+        cutoffs = jnp.array([6.0])
+        # Degenerate axes are treated as a single image, keeping the output bounded.
+        idx, offsets, has_been_replicated = _get_candidate_images(
+            candidates, lh, systems, cutoffs, FixedCapacity(8)
+        )
+        # Exact contents are not relevant here; only bounded shape is.
+        assert idx.shape[0] <= 8
+        assert offsets.shape == (idx.shape[0], 3)
+        assert has_been_replicated.shape == (idx.shape[0],)
+
+    def test_candidate_image_counts_handles_nonfinite_ratios(self):
+        class Cells:
+            perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]])
+            periodic = (True, True, True)
+
+        images = _candidate_image_counts(Cells(), jnp.array([6.0]))
+        npt.assert_array_equal(np.asarray(images), np.array([[1, 5, 1]]))
 
 
 # Parametrized test class for testing different neighbor list implementations
