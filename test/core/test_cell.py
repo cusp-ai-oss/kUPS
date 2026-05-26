@@ -11,6 +11,7 @@ import pytest
 from kups.core.cell import (
     Cell,
     CoordinateSpace,
+    MaterializedFrame,
     OrthogonalFrame,
     PeriodicCell,
     TriclinicFrame,
@@ -441,6 +442,80 @@ class TestFrameTile:
         tiled = frame.tile((2, 3, 4))
         expected = jnp.array([[2.0, 0.0, 0.0], [1.5, 6.0, 0.0], [1.2, 1.6, 12.0]])
         npt.assert_allclose(tiled.vectors, expected, atol=1e-6)
+
+
+class TestMaterializedFrame:
+    """All inputs carry a leading batch dim so that vectors ``(B, 3, 3)``,
+    inverse ``(B, 3, 3)`` and volume ``(B,)`` share the same leading axis
+    and satisfy the ``Batched`` contract."""
+
+    @pytest.fixture
+    def vecs(self):
+        return jnp.stack(
+            [
+                jnp.array([[1.0, 0.0, 0.0], [0.5, 2.0, 0.0], [0.3, 0.4, 3.0]]),
+                jnp.array([[2.0, 0.0, 0.0], [0.1, 1.5, 0.0], [0.2, 0.3, 4.0]]),
+            ]
+        )
+
+    def test_materialize_triclinic_matches_source(self, vecs):
+        src = TriclinicFrame.from_matrix(vecs)
+        mat = src.materialize()
+        assert isinstance(mat, MaterializedFrame)
+        assert mat.vectors.shape == (2, 3, 3)
+        assert mat.inverse_vectors.shape == (2, 3, 3)
+        assert mat.volume.shape == (2,)
+        npt.assert_allclose(mat.vectors, src.vectors, atol=1e-6)
+        npt.assert_allclose(mat.inverse_vectors, src.inverse_vectors, atol=1e-6)
+        npt.assert_allclose(mat.volume, src.volume, atol=1e-6)
+        npt.assert_allclose(
+            mat.perpendicular_lengths, src.perpendicular_lengths, atol=1e-6
+        )
+
+    def test_materialize_orthogonal_matches_source(self):
+        src = OrthogonalFrame(jnp.array([[2.0, 3.0, 4.0], [1.0, 1.0, 1.0]]))
+        mat = src.materialize()
+        npt.assert_allclose(mat.vectors, src.vectors, atol=1e-6)
+        npt.assert_allclose(mat.inverse_vectors, src.inverse_vectors, atol=1e-6)
+        npt.assert_allclose(mat.volume, src.volume, atol=1e-6)
+
+    def test_coordinate_transforms_match_triclinic(self, vecs):
+        src = TriclinicFrame.from_matrix(vecs)
+        mat = src.materialize()
+        r = jnp.array([[0.1, 0.2, 0.3], [-0.4, 0.7, 1.1]])
+        npt.assert_allclose(mat.to_fractional(r), src.to_fractional(r), atol=1e-6)
+        npt.assert_allclose(mat.to_real(r), src.to_real(r), atol=1e-6)
+
+    def test_scalar_multiply(self, vecs):
+        mat = TriclinicFrame.from_matrix(vecs).materialize()
+        scaled = mat * 2.0
+        npt.assert_allclose(scaled.vectors, mat.vectors * 2.0, atol=1e-6)
+        npt.assert_allclose(
+            scaled.inverse_vectors, mat.inverse_vectors / 2.0, atol=1e-6
+        )
+        npt.assert_allclose(scaled.volume, mat.volume * 8.0, atol=1e-6)
+
+    def test_tile(self, vecs):
+        mat = TriclinicFrame.from_matrix(vecs).materialize()
+        tiled = mat.tile((2, 3, 4))
+        expected = TriclinicFrame.from_matrix(vecs).tile((2, 3, 4)).materialize()
+        npt.assert_allclose(tiled.vectors, expected.vectors, atol=1e-6)
+        npt.assert_allclose(tiled.inverse_vectors, expected.inverse_vectors, atol=1e-6)
+        npt.assert_allclose(tiled.volume, expected.volume, atol=1e-6)
+
+    def test_from_matrix_roundtrip(self, vecs):
+        mat = MaterializedFrame.from_matrix(vecs)
+        npt.assert_allclose(mat.vectors, vecs, atol=1e-6)
+        npt.assert_allclose(
+            jax.vmap(jnp.matmul)(mat.vectors, mat.inverse_vectors),
+            jnp.broadcast_to(jnp.eye(3), (2, 3, 3)),
+            atol=1e-6,
+        )
+        npt.assert_allclose(mat.volume, jnp.abs(jnp.linalg.det(vecs)), atol=1e-6)
+
+    def test_materialize_is_idempotent(self, vecs):
+        mat = TriclinicFrame.from_matrix(vecs).materialize()
+        assert mat.materialize() is mat
 
 
 class TestMakeSupercell:

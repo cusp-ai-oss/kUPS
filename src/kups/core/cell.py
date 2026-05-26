@@ -36,6 +36,11 @@ boundary-condition-agnostic and reads equally honestly in both.
 - [TriclinicFrame][kups.core.cell.TriclinicFrame] — 6 DOF, general
   parallelepiped parameterized by the lower-triangular elements of the
   basis matrix.
+- [MaterializedFrame][kups.core.cell.MaterializedFrame] — caches
+  ``vectors``, ``inverse_vectors``, and ``volume`` as concrete arrays.
+  Produced by [`Frame.materialize`][kups.core.cell.Frame.materialize];
+  useful when the same frame is queried many times or when the inverse
+  needs to be cached across a JIT boundary.
 
 Both expose [`vectors`][kups.core.cell.Frame.vectors] (the basis matrix —
 this is what crystallography calls *lattice vectors*),
@@ -224,6 +229,23 @@ class Frame(Protocol):
         """
         ...
 
+    def materialize(self) -> MaterializedFrame:
+        """Return a [MaterializedFrame][kups.core.cell.MaterializedFrame]
+        with ``vectors``, ``inverse_vectors`` and ``volume`` evaluated
+        and stored as concrete arrays.
+
+        Use this to avoid recomputing the inverse and determinant when
+        the same frame is queried many times, or to lift these arrays
+        across a JIT boundary so downstream callers don't need to know
+        the frame's parametrisation.
+
+        Requires at least one leading batch dim so that ``vectors``
+        ``(B, ..., 3, 3)``, ``inverse_vectors`` ``(B, ..., 3, 3)`` and
+        ``volume`` ``(B, ...)`` share a leading axis (see
+        [MaterializedFrame][kups.core.cell.MaterializedFrame]).
+        """
+        ...
+
 
 def _build_vectors(lengths: Array, angles: Array) -> Array:
     """Construct a lower-triangular 3x3 matrix from crystallographic parameters.
@@ -364,6 +386,11 @@ class TriclinicFrame(Sliceable):
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.tril * jnp.asarray(other)[..., None])
 
+    def materialize(self) -> MaterializedFrame:
+        vecs = self.vectors
+        det, inv = triangular_3x3_det_and_inverse(vecs)
+        return MaterializedFrame(vectors=vecs, inverse_vectors=inv, volume=jnp.abs(det))
+
 
 @dataclass
 class OrthogonalFrame(Sliceable):
@@ -420,6 +447,85 @@ class OrthogonalFrame(Sliceable):
 
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.lengths * jnp.asarray(other)[..., None])
+
+    def materialize(self) -> MaterializedFrame:
+        return MaterializedFrame(
+            vectors=self.vectors,
+            inverse_vectors=self.inverse_vectors,
+            volume=self.volume,
+        )
+
+
+@dataclass
+class MaterializedFrame(Sliceable):
+    """[Frame][kups.core.cell.Frame] that stores its basis matrix, inverse,
+    and volume as concrete arrays.
+
+    Produced by [`Frame.materialize`][kups.core.cell.Frame.materialize].
+    Useful when the same frame is queried repeatedly (no recomputation
+    of the inverse or determinant) or when the arrays need to cross a
+    JIT boundary independently of the frame's original parametrisation.
+
+    The stored matrices are assumed to follow the lower-triangular
+    convention shared by every other Frame implementation; coordinate
+    transforms use [triangular_3x3_matmul][kups.core.utils.math.triangular_3x3_matmul]
+    accordingly. Manually constructing this frame with non-triangular
+    vectors violates the convention.
+
+    All three fields are pytree leaves and must share a leading batch
+    dim ``B`` to satisfy the [Sliceable][kups.core.data.Sliceable]
+    contract — unbatched single-frame inputs must be wrapped with an
+    explicit ``[None]`` axis before being passed in.
+
+    Attributes:
+        vectors: Basis matrix, shape ``(B, 3, 3)``.
+        inverse_vectors: Matrix inverse of ``vectors``, shape ``(B, 3, 3)``.
+        volume: Absolute determinant of ``vectors``, shape ``(B,)``.
+    """
+
+    vectors: Array
+    inverse_vectors: Array
+    volume: Array
+
+    @classmethod
+    def from_matrix(cls, vecs: Array) -> Self:
+        vecs = jnp.asarray(vecs)
+        det, inv = triangular_3x3_det_and_inverse(vecs)
+        return cls(vectors=vecs, inverse_vectors=inv, volume=jnp.abs(det))
+
+    @property
+    def perpendicular_lengths(self) -> Array:
+        v = self.vectors
+        a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
+        Lx = self.volume / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
+        Ly = self.volume / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
+        Lz = self.volume / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
+        return jnp.stack([Lx, Ly, Lz], axis=-1)
+
+    def to_fractional(self, r: Array) -> Array:
+        return triangular_3x3_matmul(self.inverse_vectors, r)
+
+    def to_real(self, r_frac: Array) -> Array:
+        return triangular_3x3_matmul(self.vectors, r_frac)
+
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
+        m = jnp.asarray(multiplicities)
+        return type(self)(
+            vectors=self.vectors * m[:, None],
+            inverse_vectors=self.inverse_vectors / m[None, :],
+            volume=self.volume * jnp.prod(m),
+        )
+
+    def __mul__(self, other: Array | float | int) -> Self:
+        scale = jnp.asarray(other)
+        return type(self)(
+            vectors=self.vectors * scale[..., None, None],
+            inverse_vectors=self.inverse_vectors / scale[..., None, None],
+            volume=self.volume * scale**3,
+        )
+
+    def materialize(self) -> Self:
+        return self
 
 
 def _wrap(
