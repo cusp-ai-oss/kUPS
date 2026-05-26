@@ -15,12 +15,27 @@ from jax import Array
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
-from kups.core.neighborlist.common import _Candidates, _num_cells, basic_neighborlist
+from kups.core.neighborlist.common import (
+    Candidates,
+    num_cells,
+    replicate_for_images,
+)
+from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+    RemapDedupMask,
+)
+from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.types import (
+    CandidateBatch,
     IsNeighborListState,
     NeighborListPoints,
     NeighborListSystems,
+    PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
@@ -64,14 +79,14 @@ def _cell_list_subselect(
     cutoffs: Array,
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
-) -> _Candidates:
+) -> Candidates:
     cell = systems.data.cell
     key_positions, _ = cell.fold(lh.data.positions)
     query_positions, _ = cell.fold(rh.data.positions)
 
-    num_cells = systems.map_data(partial(_num_cells, cutoff=cutoffs))
+    bins = systems.map_data(partial(num_cells, cutoff=cutoffs))
     max_num_cells = max_num_cells.generate_assertion(
-        jnp.max(jnp.prod(num_cells.data, axis=-1))
+        jnp.max(jnp.prod(bins.data, axis=-1))
     )
     num_systems = systems.size
     cell_oob = max_num_cells.size * num_systems
@@ -87,21 +102,21 @@ def _cell_list_subselect(
     rh_system_ids = rh.data.system.indices
 
     key_hashes = (
-        _cell_hash(key_positions, num_cells[lh.data.system])
+        _cell_hash(key_positions, bins[lh.data.system])
         + lh_system_ids * max_num_cells.size
     )
 
     # Expand neighborhood around query points: for each query, tile across stencil
     stencil = _cell_stencil(dim)
-    raw_shifted = jax.vmap(
-        lambda s: query_positions + s[None] / num_cells[rh.data.system]
-    )(stencil).reshape(-1, dim)
+    raw_shifted = jax.vmap(lambda s: query_positions + s[None] / bins[rh.data.system])(
+        stencil
+    ).reshape(-1, dim)
     query_original = Index(rh.keys, jnp.tile(jnp.arange(len(rh)), len(stencil)))
     query_system = rh.data.system[query_original.indices]
 
     shifted, in_cell = cell.fold(raw_shifted)
     hashes = (
-        _cell_hash(shifted, num_cells[query_system])
+        _cell_hash(shifted, bins[query_system])
         + rh_system_ids[query_original.indices] * max_num_cells.size
     )
     # Stencil offsets that left the box on a non-periodic axis route to
@@ -133,7 +148,39 @@ def _cell_list_subselect(
             **query_original.scatter_args
         ),
     )
-    return _Candidates(lhs=lhs, rhs=rhs)
+    return Candidates(lhs=lhs, rhs=rhs)
+
+
+@dataclass
+class CellListSelector:
+    """Selector for the cell-list algorithm.
+
+    Calls the raw spatial-hash candidate emission, then replicates per image
+    multiplicity when ``max(cutoff/perp) > 0.5``.
+    """
+
+    cutoffs: Table[SystemId, Array]
+    max_cells: Capacity[int]
+    max_candidates: Capacity[int]
+    max_image_candidates: Capacity[int]
+
+    def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
+        candidates = _cell_list_subselect(
+            ctx.lh,
+            ctx.rh,
+            ctx.systems,
+            cutoffs=self.cutoffs.data,
+            max_num_cells=self.max_cells,
+            max_num_candidates=self.max_candidates,
+        )
+        return replicate_for_images(
+            candidates,
+            ctx.lh,
+            ctx.rh,
+            ctx.systems,
+            self.cutoffs,
+            self.max_image_candidates,
+        )
 
 
 @dataclass
@@ -220,18 +267,21 @@ class CellListNeighborList:
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         rh_size = rh.size if rh is not None else lh.size
-        return basic_neighborlist(
-            lh,
-            rh,
-            systems,
-            cutoffs,
-            rh_index_remap,
-            candidate_selector=partial(
-                _cell_list_subselect,
-                cutoffs=cutoffs.data,
-                max_num_cells=self.cells,
-                max_num_candidates=self.avg_candidates.multiply(rh_size),
+        cutoffs = Table.broadcast_to(cutoffs, systems)
+        pipeline = Pipeline[Literal[2]](
+            selector=CellListSelector(
+                cutoffs=cutoffs,
+                max_cells=self.cells,
+                max_candidates=self.avg_candidates.multiply(rh_size),
+                max_image_candidates=self.avg_image_candidates.multiply(rh_size),
             ),
-            max_num_edges=self.avg_edges.multiply(rh_size),
-            max_image_candidates=self.avg_image_candidates.multiply(rh_size),
+            masks=(
+                InBoundsMask(),
+                InclusionMatchMask(),
+                RemapDedupMask(),
+                DistanceCutoffMask(cutoffs=cutoffs),
+                ExclusionMask(),
+            ),
+            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(rh_size)),
         )
+        return pipeline(lh, rh, systems, rh_index_remap)

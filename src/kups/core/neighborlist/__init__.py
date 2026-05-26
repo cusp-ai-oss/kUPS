@@ -11,7 +11,7 @@ accuracy trade-offs.
 
 - **[Edges][kups.core.neighborlist.Edges]**: Represents connections between particles with periodic shifts
 - **[NearestNeighborList][kups.core.neighborlist.NearestNeighborList]**: Protocol for neighbor search implementations
-- **[RefineMaskNeighborList][kups.core.neighborlist.RefineMaskNeighborList]**: Applies inclusion/exclusion masks for selective interactions
+- **[Pipeline][kups.core.neighborlist.Pipeline]**: Selector → mask sequence → compactor
 
 ## Neighbor List Implementations
 
@@ -21,13 +21,10 @@ accuracy trade-offs.
     - O(N) complexity using spatial hashing
     - Best when cutoff / box_size < 0.3 (cutoff much smaller than box)
     - Honors the cell's per-axis ``periodic`` mask (bulk and bounded non-periodic)
-    - Efficiency improves as cutoff/box ratio decreases
 
 2. **[DenseNearestNeighborList][kups.core.neighborlist.DenseNearestNeighborList]**
     - O(N²/K) complexity (K = number of systems)
     - Best when cutoff / box_size ~ 1 (cutoff comparable to box)
-    - Works with or without periodic boundaries
-    - More efficient when few cells would fit in box
 
 3. **[AllDenseNearestNeighborList][kups.core.neighborlist.AllDenseNearestNeighborList]**
     - O(N²) complexity across all systems
@@ -36,85 +33,109 @@ accuracy trade-offs.
 
 ### Refinement Implementations
 
-These allow sharing a single base neighbor list across multiple potentials
-with different cutoffs or interaction rules (e.g., Lennard-Jones and Coulomb).
+These let one expensive base neighbor list be shared across multiple potentials.
 
-4. **[RefineMaskNeighborList][kups.core.neighborlist.RefineMaskNeighborList]**
-    - Applies inclusion/exclusion masks to precomputed edges
-    - Use for bonded exclusions or group-specific interactions
-    - No distance recalculation
-    - Share one neighbor list, apply different masks per potential
+4. **[RefineMaskNeighborList][kups.core.neighborlist.RefineMaskNeighborList]**:
+   apply different inclusion/exclusion masks to precomputed edges.
+5. **[RefineCutoffNeighborList][kups.core.neighborlist.RefineCutoffNeighborList]**:
+   refine precomputed edges with new cutoff distances.
 
-5. **[RefineCutoffNeighborList][kups.core.neighborlist.RefineCutoffNeighborList]**
-    - Refines precomputed edges with new cutoff distances
-    - Use for multi-stage construction or adaptive cutoffs
-    - Recalculates distances
-    - Share one conservative neighbor list, apply different cutoffs per potential
+## Pipeline Primitives
 
-## Features
-
-All neighbor lists handle:
-- Per-axis periodic / non-periodic boundaries via the cell's ``periodic`` mask
-  (shift vectors are zero on non-periodic axes)
-- Multiple systems in parallel with segmentation
-- Automatic capacity management for variable neighbor counts
-- Integration with JAX transformations (JIT, vmap, etc.)
+Every neighbor list above is a [`Pipeline`][kups.core.neighborlist.Pipeline]
+of a [`CandidateSelector`][kups.core.neighborlist.CandidateSelector], a
+``tuple`` of [`Mask`][kups.core.neighborlist.Mask] criteria, and a
+[`Compactor`][kups.core.neighborlist.Compactor]. Users wanting custom
+behavior can compose their own pipeline directly.
 """
 
-from kups.core.neighborlist.all_connected import all_connected_neighborlist
+from kups.core.neighborlist.all_connected import (
+    InclusionGroupSelector,
+    all_connected_neighborlist,
+)
 from kups.core.neighborlist.all_dense import (
     AllDenseNearestNeighborList,
+    AllDenseSelector,
     IsAllDenseNeighborListParams,
 )
 from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
+    CellListSelector,
     IsCellListParams,
 )
 from kups.core.neighborlist.changes import (
     NeighborListChangesResult,
     neighborlist_changes,
 )
-from kups.core.neighborlist.common import (
-    CandidateSelector,
-    basic_neighborlist,
-)
+from kups.core.neighborlist.compact import MaskOnlyCompactor, ReduceCompactor
 from kups.core.neighborlist.dense import (
     DenseNearestNeighborList,
+    DenseSelector,
     IsDenseNeighborlistParams,
 )
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+    RemapDedupMask,
+)
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
+from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.refine import (
+    PrecomputedEdgesSelector,
     RefineCutoffNeighborList,
     RefineMaskNeighborList,
 )
 from kups.core.neighborlist.types import (
+    CandidateBatch,
+    CandidateSelector,
+    Compactor,
     IsNeighborListState,
     IsUniversalNeighborlistParams,
+    Mask,
     NearestNeighborList,
     NeighborListPoints,
     NeighborListSystems,
+    PipelineContext,
 )
 
 __all__ = [
     "AllDenseNearestNeighborList",
+    "AllDenseSelector",
+    "CandidateBatch",
     "CandidateSelector",
     "CellListNeighborList",
+    "CellListSelector",
+    "Compactor",
     "DenseNearestNeighborList",
+    "DenseSelector",
+    "DistanceCutoffMask",
     "Edges",
+    "ExclusionMask",
+    "InBoundsMask",
+    "InclusionGroupSelector",
+    "InclusionMatchMask",
     "IsAllDenseNeighborListParams",
     "IsCellListParams",
     "IsDenseNeighborlistParams",
     "IsNeighborListState",
     "IsUniversalNeighborlistParams",
+    "Mask",
+    "MaskOnlyCompactor",
     "NearestNeighborList",
     "NeighborListChangesResult",
     "NeighborListPoints",
     "NeighborListSystems",
+    "Pipeline",
+    "PipelineContext",
+    "PrecomputedEdgesSelector",
+    "ReduceCompactor",
     "RefineCutoffNeighborList",
     "RefineMaskNeighborList",
+    "RemapDedupMask",
     "UniversalNeighborlistParameters",
     "all_connected_neighborlist",
-    "basic_neighborlist",
     "neighborlist_changes",
 ]

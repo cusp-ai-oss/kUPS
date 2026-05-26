@@ -19,12 +19,84 @@ from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.data import Index, Table
-from kups.core.neighborlist.common import _Candidates, basic_neighborlist
+from kups.core.neighborlist.common import Candidates, make_batch_with_mic
+from kups.core.neighborlist.compact import MaskOnlyCompactor, ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.types import NeighborListPoints, NeighborListSystems
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+)
+from kups.core.neighborlist.pipeline import Pipeline
+from kups.core.neighborlist.types import (
+    CandidateBatch,
+    NeighborListPoints,
+    NeighborListSystems,
+    PipelineContext,
+)
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import dataclass, jit
-from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.jax import dataclass, field, jit
+
+
+@dataclass
+class PrecomputedEdgesSelector:
+    """Selector that wraps precomputed ``Edges`` for both refine variants.
+
+    Precomputed edges use the same index convention as the call that produced
+    them: public lh-space edges when an ``rh`` remap is supplied, and raw
+    rh-space indices for a disjoint ``rh`` without a remap. Remapped ``rh``
+    rows are overlaid onto ``lh`` before this selector runs.
+
+    Attributes:
+        candidates: Precomputed edges (indices in lh-space).
+        recompute_mic_shifts: When ``True``, drop the precomputed shifts and
+            recompute minimum-image shifts on the current positions
+            (``RefineCutoffNeighborList`` — the precomputed shifts may be
+            stale relative to the current cell). When ``False``, reuse
+            ``candidates.shifts`` directly (``RefineMaskNeighborList``).
+            ``is_minimum_image`` is always all-True (no image replication).
+    """
+
+    candidates: Edges[Literal[2]]
+    recompute_mic_shifts: bool = field(static=True, default=False)
+
+    def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
+        if self.recompute_mic_shifts:
+            indices = self.candidates.indices.indices
+            raw_candidates = Candidates(
+                lhs=Index(ctx.lh.keys, indices[:, 0]),
+                rhs=Index(ctx.rh.keys, indices[:, 1]),
+            )
+            return make_batch_with_mic(raw_candidates, ctx.lh, ctx.rh, ctx.systems)
+        indices = self.candidates.indices.indices
+        edges = Edges(Index(ctx.lh.keys, indices), self.candidates.shifts)
+        return CandidateBatch(
+            edges=edges,
+            is_minimum_image=jnp.ones((len(self.candidates),), dtype=bool),
+        )
+
+
+def _resolve_precomputed_inputs(
+    lh: Table[ParticleId, NeighborListPoints],
+    rh: Table[ParticleId, NeighborListPoints] | None,
+    rh_index_remap: Index[ParticleId] | None,
+) -> tuple[
+    Table[ParticleId, NeighborListPoints],
+    Table[ParticleId, NeighborListPoints] | None,
+]:
+    """Return the tables that precomputed refine candidates address.
+
+    With a remap, refine candidates are public ``Edges`` outputs, so both
+    columns are in lh-space. Overlay rh rows onto the corresponding lh slots
+    and run the pipeline as a self-refinement. Without a remap, rh is disjoint
+    and the candidate right column is already in rh-space.
+    """
+    if rh is None:
+        return lh, None
+    if rh_index_remap is None:
+        return lh, rh
+    return lh.update(rh_index_remap, rh.data), None
 
 
 @dataclass
@@ -74,16 +146,13 @@ class RefineMaskNeighborList:
         cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        lh_c = self.candidates.indices[:, 0]
-        rh_c = self.candidates.indices[:, 1]
-        lh_d, rh_d = lh[lh_c], lh[rh_c]
-        lh_incl, rh_incl = Index.match(lh_d.inclusion, rh_d.inclusion)
-        lh_excl, rh_excl = Index.match(lh_d.exclusion, rh_d.exclusion)
-        mask = lh_incl == rh_incl
-        mask &= lh_excl != rh_excl
-        indices = where_broadcast_last(mask, self.candidates.indices.indices, lh.size)
-        shifts = where_broadcast_last(mask, self.candidates.shifts, 0)
-        return Edges(Index(self.candidates.indices.keys, indices), shifts)
+        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, rh_index_remap)
+        pipeline = Pipeline[Literal[2]](
+            selector=PrecomputedEdgesSelector(self.candidates),
+            masks=(InBoundsMask(), InclusionMatchMask(), ExclusionMask()),
+            compactor=MaskOnlyCompactor(),
+        )
+        return pipeline(resolved_lh, resolved_rh, systems, None)
 
 
 @dataclass
@@ -136,37 +205,19 @@ class RefineCutoffNeighborList:
         cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        rh_remap_raw = (
-            rh_index_remap.indices_in(lh.keys) if rh_index_remap is not None else None
-        )
-
-        if rh_remap_raw is not None:
-            assert rh is not None
-            inv_rh_index_remap = jnp.full(lh.size, rh.size, dtype=int)
-            inv_rh_index_remap = inv_rh_index_remap.at[rh_remap_raw].set(
-                jnp.arange(rh.size, dtype=int)
-            )
-        else:
-            inv_rh_index_remap = None
-
-        def _cand_selector(
-            lh: Table[ParticleId, NeighborListPoints],
-            rh: Table[ParticleId, NeighborListPoints],
-            systems: Table[SystemId, NeighborListSystems],
-        ) -> _Candidates:
-            rh_c = self.candidates.indices[:, 1].indices
-            if inv_rh_index_remap is not None:
-                rh_c = inv_rh_index_remap.at[rh_c].get(mode="fill", fill_value=len(lh))
-            return _Candidates(self.candidates.indices[:, 0], Index(rh.keys, rh_c))
-
+        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, rh_index_remap)
         rh_size = rh.size if rh is not None else lh.size
-        return basic_neighborlist(
-            lh,
-            rh,
-            systems,
-            cutoffs,
-            rh_index_remap,
-            candidate_selector=_cand_selector,
-            max_num_edges=self.avg_edges.multiply(rh_size),
-            consider_images=False,
+        cutoffs = Table.broadcast_to(cutoffs, systems)
+        pipeline = Pipeline[Literal[2]](
+            selector=PrecomputedEdgesSelector(
+                self.candidates, recompute_mic_shifts=True
+            ),
+            masks=(
+                InBoundsMask(),
+                InclusionMatchMask(),
+                DistanceCutoffMask(cutoffs=cutoffs),
+                ExclusionMask(),
+            ),
+            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(rh_size)),
         )
+        return pipeline(resolved_lh, resolved_rh, systems, None)

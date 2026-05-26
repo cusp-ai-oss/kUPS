@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -27,14 +28,31 @@ from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
     RefineCutoffNeighborList,
+    RefineMaskNeighborList,
     neighborlist_changes,
 )
 from kups.core.neighborlist.cell_list import _cell_hash
 from kups.core.neighborlist.common import (
+    Candidates,
     _candidate_image_counts,
-    _Candidates,
     _get_candidate_images,
+    make_batch_with_mic,
 )
+from kups.core.neighborlist.compact import (
+    MaskOnlyCompactor,
+    ReduceCompactor,
+    remap_rh_to_lh,
+)
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+    RemapDedupMask,
+)
+from kups.core.neighborlist.pipeline import Pipeline
+from kups.core.neighborlist.refine import PrecomputedEdgesSelector
+from kups.core.neighborlist.types import CandidateBatch, PipelineContext
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -152,6 +170,35 @@ def _call_nl(nl_instance, lh, systems, cutoffs, rh=None, rh_index_remap=None):
     )
 
 
+def _make_pipeline_ctx(lh, rh=None, cell=None, rh_index_remap=None):
+    """Build a ``PipelineContext`` directly for unit-level mask/compactor tests.
+
+    Positions are taken as-is — caller is responsible for the fractional
+    convention. Using a unit cell (``eye(3)``) keeps real == fractional so
+    ``DistanceCutoffMask`` produces the same numbers either way.
+    """
+    if rh is None:
+        rh = lh
+    if cell is None:
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+    systems, _ = _systems_from_cell(cell, jnp.array([1.0]))
+    return PipelineContext(lh=lh, rh=rh, systems=systems, rh_index_remap=rh_index_remap)
+
+
+def _make_batch(lh_keys, lh_idx, rh_idx, shifts=None, is_minimum_image=None):
+    """Build a ``CandidateBatch`` with one Index keys for both sides."""
+    n = lh_idx.shape[0]
+    if shifts is None:
+        shifts = jnp.zeros((n, 1, 3))
+    if is_minimum_image is None:
+        is_minimum_image = jnp.ones((n,), dtype=bool)
+    indices_2d = jnp.stack([lh_idx, rh_idx], axis=-1)
+    return CandidateBatch(
+        edges=Edges(Index(lh_keys, indices_2d), shifts),
+        is_minimum_image=is_minimum_image,
+    )
+
+
 class TestEdges:
     """Test cases for the Edges dataclass."""
 
@@ -264,7 +311,7 @@ class TestImageCountIsFiniteGuard:
             ),
         )
         systems = Table(sys_keys, SampleSystems(cell=cell))
-        candidates = _Candidates(
+        candidates = Candidates(
             lhs=Index(pi_keys, jnp.array([0])),
             rhs=Index(pi_keys, jnp.array([0])),
         )
@@ -1467,6 +1514,124 @@ class TestRefineCutoffNeighborList:
         assert edges.degree == 2
         # Should handle remapping correctly
 
+    def test_rh_remap_uses_rh_positions_for_cutoff(self):
+        """Precomputed edges are in public lh-space, but the remapped rh data
+        may carry positions that differ from lh. RefineCutoff must evaluate
+        distances after overlaying rh onto those lh rows.
+        """
+        lh_positions = jnp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [100.0, 0.0, 0.0],
+                [105.0, 0.0, 0.0],
+            ]
+        )
+        lh = self._create_test_pointset(lh_positions)
+        rh, rh_remap = _make_rh(
+            lh,
+            jnp.array([[100.4, 0.0, 0.0]]),
+            jnp.zeros(1, dtype=int),
+            jnp.array([2]),
+            exclusion_ids=jnp.array([20]),
+        )
+        candidates = self._create_candidate_edges(
+            jnp.array([1]), jnp.array([2]), n_particles=3
+        )
+        refinement_nl = RefineCutoffNeighborList(
+            candidates=candidates, avg_edges=FixedCapacity(4)
+        )
+
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None] * 1000.0, jnp.array([1.0])
+        )
+        edges = refinement_nl(
+            lh=lh,
+            rh=rh,
+            systems=systems,
+            cutoffs=cutoffs,
+            rh_index_remap=rh_remap,
+        )
+
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
+            np.array([[1, 2]]),
+        )
+
+    def test_disjoint_rh_uses_rh_positions_for_cutoff(self):
+        """Without a remap, the precomputed candidate right column is in
+        rh-space and distance checks must use the separate rh table.
+        """
+        lh_positions = jnp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [100.0, 0.0, 0.0],
+            ]
+        )
+        lh = self._create_test_pointset(lh_positions)
+        rh, _ = _make_rh(
+            lh,
+            jnp.array([[100.4, 0.0, 0.0]]),
+            jnp.zeros(1, dtype=int),
+            jnp.array([0]),
+            exclusion_ids=jnp.array([20]),
+        )
+        candidates = self._create_candidate_edges(
+            jnp.array([1]), jnp.array([0]), n_particles=2
+        )
+        refinement_nl = RefineCutoffNeighborList(
+            candidates=candidates, avg_edges=FixedCapacity(4)
+        )
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None] * 1000.0, jnp.array([1.0])
+        )
+
+        edges = refinement_nl(
+            lh=lh, rh=rh, systems=systems, cutoffs=cutoffs, rh_index_remap=None
+        )
+
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
+            np.array([[1, 0]]),
+        )
+
+    def test_rh_remap_uses_rh_exclusion_for_cutoff_refinement(self):
+        """The cutoff refiner still applies exclusion masks after distance
+        filtering, so remapped rh metadata must be used there too.
+        """
+        lh_positions = jnp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ]
+        )
+        lh = self._create_test_pointset(lh_positions, exclusion_offset=0)
+        rh, rh_remap = _make_rh(
+            lh,
+            jnp.array([[1.0, 0.0, 0.0]]),
+            jnp.zeros(1, dtype=int),
+            jnp.array([1]),
+            exclusion_ids=jnp.array([0]),
+        )
+        candidates = self._create_candidate_edges(
+            jnp.array([0]), jnp.array([1]), n_particles=2
+        )
+        refinement_nl = RefineCutoffNeighborList(
+            candidates=candidates, avg_edges=FixedCapacity(4)
+        )
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None] * 1000.0, jnp.array([2.0])
+        )
+
+        edges = refinement_nl(
+            lh=lh,
+            rh=rh,
+            systems=systems,
+            cutoffs=cutoffs,
+            rh_index_remap=rh_remap,
+        )
+
+        assert not np.any(np.asarray(edges.indices.indices[:, 0] < lh.size))
+
     def test_empty_candidates(self):
         """Test refinement with no candidate edges."""
         lh_positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -1632,6 +1797,504 @@ class TestRefineCutoffNeighborList:
                             npt.assert_allclose(
                                 diff_vectors[i, 0], expected_diff, rtol=1e-10
                             )
+
+
+class TestRefineMaskNeighborList:
+    """Test cases for RefineMaskNeighborList.
+
+    RefineMask is the post-filter used by MCMC. Its precomputed edges carry
+    indices in **lh-space** (the output of any base NL +
+    ``neighborlist_changes``). When a non-trivial ``rh`` subset plus a remap is
+    provided, those rows are overlaid onto the lh table before filtering so
+    public lh-space edge indices remain valid while rh metadata is honored.
+    Without a remap, the right column remains in raw rh-space.
+    """
+
+    def test_mcmc_patch_pattern_with_partial_overlap(self):
+        """Mirror the MCMC patch flow: precomputed edges contain pairs where
+        only some indices are inside the move subset. Concrete check:
+        5-particle ``lh``, ``rh`` = 2-particle subset (move particles),
+        precomputed edges include a pair that touches a non-move particle.
+        All edges must survive (distinct exclusion segments) and the output
+        must be in lh-space.
+        """
+        lh = _make_lh(
+            jnp.zeros((5, 3)),
+            jnp.zeros(5, dtype=int),
+            exclusion_ids=jnp.array([0, 1, 2, 3, 4]),
+        )
+        # Move subset = particles 1 and 3 (typical MCMC small move).
+        rh_positions = jnp.zeros((2, 3))
+        rh_remap_arr = jnp.array([1, 3])
+        rh, rh_remap = _make_rh(lh, rh_positions, jnp.zeros(2, dtype=int), rh_remap_arr)
+        # Precomputed edges: (0, 1), (2, 3), (1, 4). The last touches a
+        # particle NOT in the move subset; overlaying rh into lh keeps that
+        # public lh-space edge valid.
+        candidates = _make_edges(
+            jnp.array([0, 2, 1]), jnp.array([1, 3, 4]), n_particles=5
+        )
+
+        refine_nl = RefineMaskNeighborList(candidates=candidates)
+        sys, cut = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
+        edges = refine_nl(
+            lh=lh, rh=rh, systems=sys, cutoffs=cut, rh_index_remap=rh_remap
+        )
+
+        raw = edges.indices.indices
+        oob = lh.size
+        valid_mask = (raw[:, 0] < oob) & (raw[:, 1] < oob)
+        valid = np.asarray(raw[valid_mask])
+        valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
+
+        npt.assert_array_equal(valid, np.array([[0, 1], [1, 4], [2, 3]]))
+
+    def test_full_overlap_with_rh_subset(self):
+        """RefineMask called with a non-trivial ``rh`` subset where every
+        precomputed rh-side index is in the move subset.
+
+        The rh rows are overlaid into the lh table and the precomputed
+        lh-space edges stay in lh-space directly. Output: edges (0, 1) and
+        (2, 3).
+        """
+        lh_positions = jnp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+            ]
+        )
+        lh = _make_lh(lh_positions, jnp.zeros(4, dtype=int), jnp.arange(4))
+
+        # rh is the subset {lh[1], lh[3]}; remap takes rh-positions → lh-positions.
+        rh_positions = lh_positions[jnp.array([1, 3])]
+        rh_remap_arr = jnp.array([1, 3])
+        rh, rh_remap = _make_rh(lh, rh_positions, jnp.zeros(2, dtype=int), rh_remap_arr)
+
+        # Precomputed edges with rh-side in lh-space (1, 3 — both are lh-positions
+        # that happen to correspond to rh positions 0 and 1 respectively).
+        candidates = _make_edges(jnp.array([0, 2]), jnp.array([1, 3]), n_particles=4)
+
+        refine_nl = RefineMaskNeighborList(candidates=candidates)
+        sys, cut = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
+        edges = refine_nl(
+            lh=lh, rh=rh, systems=sys, cutoffs=cut, rh_index_remap=rh_remap
+        )
+
+        raw = edges.indices.indices
+        oob = lh.size  # MaskOnlyCompactor's OOB sentinel
+        valid_mask = (raw[:, 0] < oob) & (raw[:, 1] < oob)
+        valid = np.asarray(raw[valid_mask])
+        valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
+
+        npt.assert_array_equal(valid, np.array([[0, 1], [2, 3]]))
+
+    def test_disjoint_rh_uses_rh_inclusion(self):
+        """Without a remap, the precomputed candidate right column is in
+        rh-space and masks must read inclusion/exclusion from rh.
+        """
+        lh = _make_lh(
+            jnp.zeros((2, 3)),
+            jnp.zeros(2, dtype=int),
+            exclusion_ids=jnp.array([0, 1]),
+        )
+        rh, _ = _make_rh(
+            lh,
+            jnp.zeros((2, 3)),
+            jnp.array([0, 1]),
+            jnp.array([0, 1]),
+            exclusion_ids=jnp.array([2, 3]),
+        )
+        candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
+        refine_nl = RefineMaskNeighborList(candidates=candidates)
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None].repeat(2, axis=0) * 100.0,
+            jnp.array([10.0, 10.0]),
+        )
+
+        edges = refine_nl(
+            lh=lh, rh=rh, systems=systems, cutoffs=cutoffs, rh_index_remap=None
+        )
+
+        npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
+
+    def test_rh_remap_uses_rh_inclusion(self):
+        """A remapped rh row can belong to a different inclusion segment than
+        the lh row it replaces. RefineMask must use that rh metadata.
+        """
+        lh = _make_lh(
+            jnp.zeros((2, 3)),
+            jnp.zeros(2, dtype=int),
+            exclusion_ids=jnp.array([0, 1]),
+        )
+        rh, rh_remap = _make_rh(
+            lh,
+            jnp.zeros((1, 3)),
+            jnp.ones(1, dtype=int),
+            jnp.array([1]),
+            exclusion_ids=jnp.array([1]),
+        )
+        candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
+        refine_nl = RefineMaskNeighborList(candidates=candidates)
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None] * 100.0, jnp.array([10.0, 10.0])
+        )
+
+        edges = refine_nl(
+            lh=lh,
+            rh=rh,
+            systems=systems,
+            cutoffs=cutoffs,
+            rh_index_remap=rh_remap,
+        )
+
+        npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
+
+    def test_rh_remap_uses_rh_exclusion(self):
+        """A remapped rh row can introduce an exclusion that is not present in
+        the lh table at the same public edge index.
+        """
+        lh = _make_lh(
+            jnp.zeros((2, 3)),
+            jnp.zeros(2, dtype=int),
+            exclusion_ids=jnp.array([0, 1]),
+        )
+        rh, rh_remap = _make_rh(
+            lh,
+            jnp.zeros((1, 3)),
+            jnp.zeros(1, dtype=int),
+            jnp.array([1]),
+            exclusion_ids=jnp.array([0]),
+        )
+        candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
+        refine_nl = RefineMaskNeighborList(candidates=candidates)
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None] * 100.0, jnp.array([10.0])
+        )
+
+        edges = refine_nl(
+            lh=lh,
+            rh=rh,
+            systems=systems,
+            cutoffs=cutoffs,
+            rh_index_remap=rh_remap,
+        )
+
+        npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
+
+
+class TestInBoundsMask:
+    """``InBoundsMask`` drops candidates whose raw index is out of range on
+    either side. The mode='fill' lookup turns OOB indices into ``False``;
+    valid indices return whatever the per-particle ``inclusion < num_labels``
+    check evaluates to (always True in well-formed states)."""
+
+    def test_drops_oob_indices_on_either_side(self):
+        lh = _make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
+        ctx = _make_pipeline_ctx(lh)
+        # Edge 0: both in bounds. Edge 1: rh OOB. Edge 2: lh OOB.
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 1, 100]),
+            jnp.array([1, 100, 2]),
+        )
+        result = InBoundsMask()(batch, ctx)
+        assert result.tolist() == [True, False, False]
+
+
+class TestInclusionMatchMask:
+    def test_matches_inclusion_segments(self):
+        # Two inclusion groups: 0 and 1.
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.array([0, 0, 1, 1]))
+        rh = _make_lh(jnp.zeros((4, 3)), jnp.array([0, 1, 0, 1]))
+        ctx = _make_pipeline_ctx(lh, rh)
+        # lh.incl[lh_idx] = [0, 0, 1, 1]; rh.incl[rh_idx] = [0, 1, 0, 1].
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 1, 2, 3]),
+            jnp.array([0, 1, 0, 3]),
+        )
+        result = InclusionMatchMask()(batch, ctx)
+        assert result.tolist() == [True, False, False, True]
+
+
+class TestRemapDedupMask:
+    def test_no_remap_returns_all_true(self):
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        ctx = _make_pipeline_ctx(lh, rh_index_remap=None)
+        batch = _make_batch(lh.keys, jnp.array([0, 1, 2]), jnp.array([1, 2, 3]))
+        result = RemapDedupMask()(batch, ctx)
+        assert result.tolist() == [True, True, True]
+
+    def test_drops_self_pair_with_remap(self):
+        """When ``rh`` is a remapped subset of ``lh``, dedup keeps an edge only
+        when its lh-side ID is **outside** the remap *or* is not less than the
+        remapped-rh ID."""
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        # rh-pos 0 maps to lh-pos 1; rh-pos 1 maps to lh-pos 3.
+        remap = jnp.array([1, 3])
+        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
+        # Cases:
+        #   (lh=0, rh=0): rh_remapped=1, isin(0,[1,3])=False → ~isin=True → keep.
+        #   (lh=1, rh=1): rh_remapped=3, isin(1,[1,3])=True  → ~isin=False;
+        #                 1 >= 3 = False → drop.
+        #   (lh=3, rh=0): rh_remapped=1, isin(3,[1,3])=True  → ~isin=False;
+        #                 3 >= 1 = True → keep.
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 1, 3]),
+            jnp.array([0, 1, 0]),
+        )
+        result = RemapDedupMask()(batch, ctx)
+        assert result.tolist() == [True, False, True]
+
+
+class TestDistanceCutoffMask:
+    def test_filters_by_distance_squared(self):
+        # Unit cell: real == fractional.
+        positions = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0], [0.8, 0.0, 0.0]])
+        lh = _make_lh(positions, jnp.zeros(3, dtype=int))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        ctx = _make_pipeline_ctx(lh, cell=cell)
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 0, 1]),
+            jnp.array([1, 2, 2]),
+        )
+        # Distances: 0.3, 0.8, 0.5. cutoff² = 0.55² = 0.3025 → keep [T, F, T].
+        cutoffs = Table(ctx.systems.keys, jnp.array([0.55]))
+        result = DistanceCutoffMask(cutoffs=cutoffs)(batch, ctx)
+        assert result.tolist() == [True, False, True]
+
+
+class TestExclusionMask:
+    def test_drops_matching_exclusion_at_min_image(self):
+        # Exclusion ids: lh = [0, 1, 0, 2]; rh = [0, 1, 2, 3].
+        lh = _make_lh(
+            jnp.zeros((4, 3)),
+            jnp.zeros(4, dtype=int),
+            exclusion_ids=jnp.array([0, 1, 0, 2]),
+        )
+        rh = _make_lh(
+            jnp.zeros((4, 3)),
+            jnp.zeros(4, dtype=int),
+            exclusion_ids=jnp.array([0, 1, 2, 3]),
+        )
+        ctx = _make_pipeline_ctx(lh, rh)
+        # lh.excl[lh_idx=[0,1,2,3]] = [0, 1, 0, 2].
+        # rh.excl[rh_idx=[0,1,0,1]] = [0, 1, 0, 1]. All min-image.
+        # Mismatches: [F, F, F, T]. ~is_min: all False → final [F, F, F, T].
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 1, 2, 3]),
+            jnp.array([0, 1, 0, 1]),
+        )
+        result = ExclusionMask()(batch, ctx)
+        assert result.tolist() == [False, False, False, True]
+
+    def test_keeps_non_min_image_periodic_copy_of_excluded_pair(self):
+        """Periodic copies of an excluded pair survive ExclusionMask because
+        ``~is_minimum_image`` short-circuits the drop."""
+        lh = _make_lh(
+            jnp.zeros((2, 3)),
+            jnp.zeros(2, dtype=int),
+            exclusion_ids=jnp.array([0, 0]),  # both share exclusion segment
+        )
+        ctx = _make_pipeline_ctx(lh)
+        # Same lh-rh pair, one MIC and one non-MIC copy.
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 0]),
+            jnp.array([1, 1]),
+            is_minimum_image=jnp.array([True, False]),
+        )
+        result = ExclusionMask()(batch, ctx)
+        # MIC copy: same excl → drop. Non-MIC copy: kept regardless of excl.
+        assert result.tolist() == [False, True]
+
+
+class TestReduceCompactor:
+    def test_compacts_to_capacity_size(self):
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        ctx = _make_pipeline_ctx(lh)
+        # 5 candidates, 3 surviving. Capacity 6.
+        keep = jnp.array([True, False, True, False, True])
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 1, 2, 3, 0]),
+            jnp.array([1, 2, 3, 0, 2]),
+        )
+        compactor = ReduceCompactor(avg_edges=FixedCapacity(6))
+        edges = compactor(keep, batch, ctx)
+        # jnp.where selects the survivor positions (0, 2, 4) in order. Then
+        # the remaining 3 slots are filled with OOB = lh.size = 4.
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices[:, 0]),
+            np.array([0, 2, 0, 4, 4, 4]),
+        )
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices[:, 1]),
+            np.array([1, 3, 2, 4, 4, 4]),
+        )
+
+    def test_mirrors_each_edge_with_reverse_when_remap_set(self):
+        """When ``rh_index_remap`` is set, ``ReduceCompactor`` doubles each
+        surviving edge with its (rh→lh) reverse, restoring symmetry that
+        ``RemapDedupMask`` removed upstream."""
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        # rh-pos 0 → lh-pos 1; rh-pos 1 → lh-pos 3.
+        remap = jnp.array([1, 3])
+        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
+        # One candidate: lh-pos 0, rh-pos 0 (= lh-pos 1).
+        keep = jnp.array([True])
+        shifts = jnp.array([[[0.5, 0.0, 0.0]]])
+        batch = _make_batch(lh.keys, jnp.array([0]), jnp.array([0]), shifts=shifts)
+        compactor = ReduceCompactor(avg_edges=FixedCapacity(1))
+        edges = compactor(keep, batch, ctx)
+        # Output has 2 entries: (0, 1) with shift +s and (1, 0) with shift -s.
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices),
+            np.array([[0, 1], [1, 0]]),
+        )
+        npt.assert_allclose(
+            np.asarray(edges.shifts),
+            np.array([[[0.5, 0.0, 0.0]], [[-0.5, -0.0, -0.0]]]),
+        )
+
+
+class TestMaskOnlyCompactor:
+    def test_stamps_oob_on_dropped_entries_and_remaps_rh(self):
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        remap = jnp.array([1, 3])
+        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
+        # 3 candidates with rh-side in rh-space; middle one is dropped.
+        keep = jnp.array([True, False, True])
+        batch = _make_batch(
+            lh.keys,
+            jnp.array([0, 1, 2]),
+            jnp.array([0, 1, 1]),
+        )
+        edges = MaskOnlyCompactor()(keep, batch, ctx)
+        # Survivors: (lh=0, rh=0→lh1) and (lh=2, rh=1→lh3). Dropped → (oob, oob).
+        oob = lh.size  # MaskOnlyCompactor uses ctx.lh.size
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices),
+            np.array([[0, 1], [oob, oob], [2, 3]]),
+        )
+
+
+class TestRemapRhToLh:
+    def test_passthrough_without_remap(self):
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        ctx = _make_pipeline_ctx(lh, rh_index_remap=None)
+        rh_idx = jnp.array([0, 1, 2])
+        npt.assert_array_equal(
+            np.asarray(remap_rh_to_lh(rh_idx, ctx)), np.array([0, 1, 2])
+        )
+
+    def test_translates_rh_to_lh_space_and_fills_oob(self):
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        remap = jnp.array([1, 3])
+        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
+        oob = max(lh.size, rh.size)  # 4
+        result = remap_rh_to_lh(jnp.array([0, 1, 5]), ctx)
+        npt.assert_array_equal(np.asarray(result), np.array([1, 3, oob]))
+
+
+class TestMakeBatchWithMic:
+    def test_round_fractional_delta_as_shift(self):
+        """``make_batch_with_mic`` sets shifts via ``cell.minimum_image_shifts``
+        which on periodic axes rounds the fractional delta to the nearest int."""
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        positions = jnp.array([[0.1, 0.0, 0.0], [0.9, 0.0, 0.0]])
+        lh = _make_lh(positions, jnp.zeros(2, dtype=int))
+        systems, _ = _systems_from_cell(cell, jnp.array([1.0]))
+        candidates = Candidates(
+            lhs=Index(lh.keys, jnp.array([0])),
+            rhs=Index(lh.keys, jnp.array([1])),
+        )
+        batch = make_batch_with_mic(candidates, lh, lh, systems)
+        # delta = 0.1 - 0.9 = -0.8; round(-0.8) = -1.0 on the periodic axis.
+        npt.assert_allclose(
+            np.asarray(batch.edges.shifts),
+            np.array([[[-1.0, 0.0, 0.0]]]),
+        )
+        assert batch.is_minimum_image.tolist() == [True]
+
+
+class TestPrecomputedEdgesSelectorModes:
+    """The unified selector has two modes: reuse precomputed shifts (default,
+    for ``RefineMaskNeighborList``) or recompute MIC shifts (for
+    ``RefineCutoffNeighborList``). Remapped rh data is handled by overlaying
+    it onto lh before this selector runs; disjoint rh data is passed through as
+    the pipeline right-hand table."""
+
+    def test_default_mode_reuses_precomputed_shifts(self):
+        lh = _make_lh(
+            jnp.array([[0.1, 0.0, 0.0], [0.9, 0.0, 0.0]]),
+            jnp.zeros(2, dtype=int),
+        )
+        # Precomputed shift on the edge — a non-MIC value to see it preserved.
+        custom_shift = jnp.array([[[7.0, 7.0, 7.0]]])
+        candidates = _make_edges(
+            jnp.array([0]), jnp.array([1]), n_particles=2, shifts=custom_shift
+        )
+        ctx = _make_pipeline_ctx(lh)
+        selector = PrecomputedEdgesSelector(candidates)  # recompute_mic=False
+        batch = selector(ctx)
+        npt.assert_allclose(np.asarray(batch.edges.shifts), np.asarray(custom_shift))
+
+    def test_recompute_mic_mode_overrides_precomputed_shifts(self):
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        lh = _make_lh(
+            jnp.array([[0.1, 0.0, 0.0], [0.9, 0.0, 0.0]]),
+            jnp.zeros(2, dtype=int),
+        )
+        # Garbage precomputed shift — should be ignored.
+        candidates = _make_edges(
+            jnp.array([0]),
+            jnp.array([1]),
+            n_particles=2,
+            shifts=jnp.array([[99.0, 99.0, 99.0]]),
+        )
+        ctx = _make_pipeline_ctx(lh, cell=cell)
+        selector = PrecomputedEdgesSelector(candidates, recompute_mic_shifts=True)
+        batch = selector(ctx)
+        npt.assert_allclose(
+            np.asarray(batch.edges.shifts),
+            np.array([[[-1.0, 0.0, 0.0]]]),
+        )
+
+
+class TestPipelineComposition:
+    """End-to-end test of the ``Pipeline`` runner with a custom mask set."""
+
+    def test_distance_only_pipeline(self):
+        # Precomputed candidates (lh, rh) = (0, 1) and (0, 2); only the close
+        # pair survives a distance cutoff of 1.5.
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        lh = _make_lh(positions, jnp.zeros(3, dtype=int))
+        candidates = _make_edges(jnp.array([0, 0]), jnp.array([1, 2]), n_particles=3)
+        # Large lattice so fractional ≠ real and _prepare's conversion is real.
+        systems, cutoffs = _systems_from_lvecs(
+            jnp.eye(3)[None] * 10.0, jnp.array([1.5])
+        )
+        pipeline = Pipeline[Literal[2]](
+            selector=PrecomputedEdgesSelector(candidates, recompute_mic_shifts=True),
+            masks=(DistanceCutoffMask(cutoffs=cutoffs),),
+            compactor=MaskOnlyCompactor(),
+        )
+        edges = pipeline(lh, None, systems, None)
+        # First edge survives, second is stamped OOB.
+        oob = lh.size
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices),
+            np.array([[0, 1], [oob, oob]]),
+        )
 
 
 def _extract_valid_edge_set(edges: Edges, n_particles: int) -> set[tuple[int, int]]:

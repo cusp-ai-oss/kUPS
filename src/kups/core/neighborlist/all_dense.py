@@ -14,12 +14,23 @@ from jax import Array
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
-from kups.core.neighborlist.common import _Candidates, basic_neighborlist
+from kups.core.neighborlist.common import Candidates, replicate_for_images
+from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+    RemapDedupMask,
+)
+from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.types import (
+    CandidateBatch,
     IsNeighborListState,
     NeighborListPoints,
     NeighborListSystems,
+    PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
@@ -38,9 +49,28 @@ def _all_subselect(
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
-) -> _Candidates:
+) -> Candidates:
     lh_indices, rh_indices = jnp.indices((len(lh), len(rh))).reshape(2, -1)
-    return _Candidates(lhs=Index(lh.keys, lh_indices), rhs=Index(rh.keys, rh_indices))
+    return Candidates(lhs=Index(lh.keys, lh_indices), rhs=Index(rh.keys, rh_indices))
+
+
+@dataclass
+class AllDenseSelector:
+    """Selector that emits every ``(i, j)`` pair across all systems."""
+
+    cutoffs: Table[SystemId, Array]
+    max_image_candidates: Capacity[int]
+
+    def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
+        candidates = _all_subselect(ctx.lh, ctx.rh, ctx.systems)
+        return replicate_for_images(
+            candidates,
+            ctx.lh,
+            ctx.rh,
+            ctx.systems,
+            self.cutoffs,
+            self.max_image_candidates,
+        )
 
 
 @dataclass
@@ -111,15 +141,19 @@ class AllDenseNearestNeighborList:
                 "Consider using DenseNearestNeighborList or CellListNeighborList instead."
             )
         rh_size = rh.size if rh is not None else lh.size
-        return basic_neighborlist(
-            lh,
-            rh,
-            systems,
-            cutoffs,
-            rh_index_remap,
-            candidate_selector=_all_subselect,
-            max_num_edges=self.avg_edges.multiply(rh_size),
-            max_image_candidates=self.avg_image_candidates.multiply(rh_size)
-            if self.avg_image_candidates
-            else None,
+        cutoffs = Table.broadcast_to(cutoffs, systems)
+        pipeline = Pipeline[Literal[2]](
+            selector=AllDenseSelector(
+                cutoffs=cutoffs,
+                max_image_candidates=self.avg_image_candidates.multiply(rh_size),
+            ),
+            masks=(
+                InBoundsMask(),
+                InclusionMatchMask(),
+                RemapDedupMask(),
+                DistanceCutoffMask(cutoffs=cutoffs),
+                ExclusionMask(),
+            ),
+            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(rh_size)),
         )
+        return pipeline(lh, rh, systems, rh_index_remap)

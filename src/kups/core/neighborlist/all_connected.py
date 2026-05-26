@@ -16,13 +16,56 @@ from typing import Literal
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.capacity import FixedCapacity
+from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Index, Table, subselect
-from kups.core.neighborlist.common import _Candidates, _compact_edges
+from kups.core.neighborlist.common import Candidates, candidates_to_batch
+from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.types import NeighborListPoints, NeighborListSystems
+from kups.core.neighborlist.masks import ExclusionMask, RemapDedupMask
+from kups.core.neighborlist.pipeline import Pipeline
+from kups.core.neighborlist.types import (
+    CandidateBatch,
+    NeighborListPoints,
+    NeighborListSystems,
+    PipelineContext,
+)
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.math import triangular_3x3_matmul
+from kups.core.utils.jax import dataclass
+
+
+@dataclass
+class InclusionGroupSelector:
+    """Pairs every particle with every other in the same inclusion segment.
+
+    Ignores the cutoff entirely. Shifts are int-typed minimum-image
+    fractional rounds — matches today's ``all_connected_neighborlist``
+    (which is Ewald-only and assumed fully periodic).
+    """
+
+    capacity: Capacity[int]
+
+    def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
+        ngraphs = ctx.lh.data.inclusion.num_labels
+        selection_result = subselect(
+            ctx.lh.data.inclusion.indices,
+            ctx.rh.data.inclusion.indices,
+            output_buffer_size=self.capacity,
+            num_segments=ngraphs,
+        )
+        candidates = Candidates(
+            lhs=Index(ctx.lh.keys, selection_result.scatter_idxs),
+            rhs=Index(ctx.rh.keys, selection_result.gather_idxs),
+        )
+        deltas = (
+            ctx.lh.data.positions[candidates.lhs.indices]
+            - ctx.rh.data.positions[candidates.rhs.indices]
+        )
+        shifts = jnp.round(deltas).astype(int)
+        return candidates_to_batch(
+            candidates,
+            shifts,
+            jnp.ones((candidates.lhs.size,), dtype=bool),
+        )
 
 
 def all_connected_neighborlist(
@@ -44,41 +87,13 @@ def all_connected_neighborlist(
         rh = lh
         rh_index_remap = Index.arange(len(lh), label=ParticleId)
 
-    ngraphs = lh.data.inclusion.num_labels
     max_count = lh.data.inclusion.max_count
     assert max_count is not None, "inclusion.max_count must be set"
     capacity = FixedCapacity(max_count).multiply(min(lh.size, rh.size))
-    out_of_bounds = max(lh.size, rh.size)
 
-    lh_sys = systems[lh.data.system]
-    rh_sys = systems[rh.data.system]
-
-    selection_result = subselect(
-        lh.data.inclusion.indices,
-        rh.data.inclusion.indices,
-        output_buffer_size=capacity,
-        num_segments=ngraphs,
+    pipeline = Pipeline[Literal[2]](
+        selector=InclusionGroupSelector(capacity=capacity),
+        masks=(ExclusionMask(), RemapDedupMask()),
+        compactor=ReduceCompactor(avg_edges=capacity),
     )
-    candidates = _Candidates(
-        lhs=Index(lh.keys, selection_result.scatter_idxs),
-        rhs=Index(rh.keys, selection_result.gather_idxs),
-    )
-    lh_idx, rh_idx = candidates.lhs, candidates.rhs
-    lh_data, rh_data = lh[lh_idx], rh[rh_idx]
-    lh_excl, rh_excl = Index.match(lh_data.exclusion, rh_data.exclusion)
-    mask = lh_excl != rh_excl
-    if rh_index_remap is not None:
-        lh_i, rh_i = Index.match(lh_idx, rh.set_data(rh_index_remap)[rh_idx])
-        mask &= ~lh_idx.isin(rh_index_remap) | (lh_i >= rh_i)
-
-    lh_frac = triangular_3x3_matmul(lh_sys.cell.inverse_vectors, lh.data.positions)
-    rh_frac = triangular_3x3_matmul(rh_sys.cell.inverse_vectors, rh.data.positions)
-    shifts = jnp.round(lh_frac[lh_idx.indices] - rh_frac[rh_idx.indices]).astype(int)
-    return _compact_edges(
-        candidates,
-        mask,
-        shifts,
-        rh_index_remap.indices_in(lh.keys) if rh_index_remap is not None else None,
-        capacity,
-        out_of_bounds,
-    )
+    return pipeline(lh, rh, systems, rh_index_remap)

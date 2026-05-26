@@ -1,23 +1,30 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Algorithmic core of the neighbor list module.
+"""Shared algorithmic helpers for neighbor list selectors and masks.
 
-Provides the [`basic_neighborlist`][kups.core.neighborlist.common.basic_neighborlist]
-engine and the shared helpers (candidate selection, distance/PBC filtering,
-periodic-image expansion, edge compaction) that every concrete neighbor list
-implementation composes.
+Contains:
 
-The public-facing implementations (``CellListNeighborList``,
-``DenseNearestNeighborList``, ``AllDenseNearestNeighborList``,
-``RefineCutoffNeighborList``) all delegate to ``basic_neighborlist`` with
-different
-[`CandidateSelector`][kups.core.neighborlist.common.CandidateSelector] strategies.
+- ``num_cells`` — per-axis spatial bin counts (used by the cell-list
+  selector and by ``parameters.estimate``).
+- ``Candidates`` — private intermediate struct used inside individual
+  selector algorithms while raw ``(lhs, rhs)`` index arrays are being built.
+  Not the pipeline carrier (see
+  [`CandidateBatch`][kups.core.neighborlist.types.CandidateBatch]).
+- ``_generate_image_offsets``, ``_get_candidate_images`` — image-expansion
+  primitives.
+- ``replicate_for_images`` — adapts raw ``Candidates`` into a
+  ``CandidateBatch`` with shifts and ``is_minimum_image`` set, replicating
+  per image multiplicity when ``cutoff > perp/2``.
+- ``make_batch_with_mic`` — pack raw candidates with minimum-image shifts
+  and ``is_minimum_image=all-True`` (used by selectors that don't replicate).
+- ``real_distance_sq`` — squared real-space distance between candidate
+  pairs given fractional shifts; used by ``DistanceCutoffMask``.
 """
 
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -27,13 +34,16 @@ from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Index, Table
 from kups.core.lens import bind
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.types import NeighborListPoints, NeighborListSystems
+from kups.core.neighborlist.types import (
+    CandidateBatch,
+    NeighborListPoints,
+    NeighborListSystems,
+)
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import dataclass, isin
-from kups.core.utils.math import triangular_3x3_matmul
+from kups.core.utils.jax import dataclass
 
 
-def _num_cells(
+def num_cells(
     systems: NeighborListSystems,
     cutoff: Array,
     *,
@@ -46,18 +56,16 @@ def _num_cells(
 
 
 @dataclass
-class _Candidates:
+class Candidates:
+    """Private intermediate produced inside selector algorithms.
+
+    Not the pipeline carrier — selectors convert ``Candidates`` into a
+    ``CandidateBatch`` (via ``replicate_for_images`` or
+    ``make_batch_with_mic``) before returning.
+    """
+
     lhs: Index[ParticleId]
     rhs: Index[ParticleId]
-
-
-class CandidateSelector(Protocol):
-    def __call__(
-        self,
-        lh: Table[ParticleId, NeighborListPoints],
-        rh: Table[ParticleId, NeighborListPoints],
-        systems: Table[SystemId, NeighborListSystems],
-    ) -> _Candidates: ...
 
 
 def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.Array:
@@ -137,7 +145,7 @@ def _candidate_image_counts(cells, cutoffs: Array) -> Array:
 
 
 def _get_candidate_images(
-    candidates: _Candidates,
+    candidates: Candidates,
     lh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Array,
@@ -169,141 +177,78 @@ def _get_candidate_images(
     return idx, offsets, has_been_replicated
 
 
-def _build_segmentation_mask(
-    candidates: _Candidates,
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
-    rh_index_remap: Array | None,
-    out_of_bounds: int,
-) -> Array:
-    """Build a mask based on segmentation constraints."""
-    ngraphs = lh.data.inclusion.num_labels
-    lh_idx = candidates.lhs.indices
-    rh_idx = candidates.rhs.indices
-    rh_idx_out = (
-        rh_index_remap.at[rh_idx].get(mode="fill", fill_value=out_of_bounds)
-        if rh_index_remap is not None
-        else rh_idx
-    )
-    lh_incl = lh.data.inclusion.indices[lh_idx]
-    rh_incl = rh.data.inclusion.indices[rh_idx]
-
-    mask = lh_incl == rh_incl
-    mask &= (
-        (lh.data.inclusion.indices < ngraphs)
-        .at[lh_idx]
-        .get(mode="fill", fill_value=False)
-    )
-    mask &= (
-        (rh.data.inclusion.indices < ngraphs)
-        .at[rh_idx]
-        .get(mode="fill", fill_value=False)
-    )
-
-    if rh_index_remap is not None:
-        mask &= ~isin(lh_idx, rh_index_remap, lh.size) | (lh_idx >= rh_idx_out)
-
-    return mask
-
-
-def _compute_distances_pbc_sq(
-    candidates: _Candidates,
+def _minimum_image_shifts(
+    candidates: Candidates,
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
-    shifts: Array | None = None,
-) -> tuple[Array, Array]:
-    """Compute squared distances honoring the cell's per-axis periodicity.
-
-    If ``shifts`` is None, minimum-image shifts are computed via rounding on
-    periodic axes; non-periodic axes get a zero shift (no MIC fold).
-    """
-    lattice_vecs = systems.map_data(lambda s: s.cell.vectors)
-    vecs = lattice_vecs[lh.data.system[candidates.lhs.indices]]
+) -> Array:
+    """Compute minimum-image fractional shifts for each candidate pair."""
     deltas = (
         lh.data.positions[candidates.lhs.indices]
         - rh.data.positions[candidates.rhs.indices]
     )
-    if shifts is None:
-        shifts = systems.data.cell.minimum_image_shifts(deltas)
-    deltas -= shifts
-    real_deltas = triangular_3x3_matmul(vecs, deltas)
-    dist_sq = jnp.einsum("...d,...d->...", real_deltas, real_deltas)
-    return dist_sq, shifts
+    return systems.data.cell.minimum_image_shifts(deltas)
 
 
-@dataclass
-class _DistanceCutoffResult:
-    candidates: _Candidates
-    original_candidate_idx: Array
-    mask: Array
-    shifts: Array
-    is_minimum_interaction: Array
-
-
-def _apply_distance_cutoff_wo_images(
-    candidates: _Candidates,
+def make_batch_with_mic(
+    candidates: Candidates,
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
-) -> _DistanceCutoffResult:
-    """Apply distance cutoff with periodic boundaries, without image generation."""
-    dist_sq, shifts = _compute_distances_pbc_sq(candidates, lh, rh, systems)
-    cand_sys = lh.data.system[candidates.lhs.indices]
-    return _DistanceCutoffResult(
+) -> CandidateBatch[Literal[2]]:
+    """Pack raw candidates with minimum-image shifts; ``is_minimum_image=all-True``."""
+    min_shifts = _minimum_image_shifts(candidates, lh, rh, systems)
+    return candidates_to_batch(
         candidates,
-        jnp.arange(candidates.lhs.size),
-        dist_sq < cutoffs[cand_sys] ** 2,
-        shifts,
+        min_shifts,
         jnp.ones((candidates.lhs.size,), dtype=bool),
     )
 
 
-def _apply_distance_cutoff_w_images(
-    candidates: _Candidates,
+def candidates_to_batch(
+    candidates: Candidates,
+    shifts: Array,
+    is_minimum_image: Array,
+) -> CandidateBatch[Literal[2]]:
+    """Pack ``(candidates, flat shifts, is_min)`` into a ``CandidateBatch[2]``."""
+    indices_2d = jnp.stack([candidates.lhs.indices, candidates.rhs.indices], axis=-1)
+    edges: Edges[Literal[2]] = Edges(
+        Index(candidates.lhs.keys, indices_2d),
+        jnp.expand_dims(shifts, axis=-2),
+    )
+    return CandidateBatch(edges=edges, is_minimum_image=is_minimum_image)
+
+
+def replicate_for_images(
+    candidates: Candidates,
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Table[SystemId, Array],
-    max_image_candidates: Capacity[int],
-) -> _DistanceCutoffResult:
-    """Apply distance cutoff with periodic boundaries and image generation."""
-    idx, shifts, has_been_replicated = _get_candidate_images(
-        candidates, lh, systems, cutoffs.data, max_image_candidates
-    )
-    if idx.size == candidates.lhs.size:
-        return _apply_distance_cutoff_wo_images(candidates, lh, rh, systems, cutoffs)
-
-    min_dist_sq, min_shifts = _compute_distances_pbc_sq(candidates, lh, rh, systems)
-    candidates_w_images = bind(candidates).at(idx).get()
-    dist_sq, shifts = _compute_distances_pbc_sq(
-        candidates_w_images, lh, rh, systems, shifts
-    )
-    shifts = jnp.where(has_been_replicated[:, None], shifts, min_shifts[idx])
-    dist_sq = jnp.where(has_been_replicated, dist_sq, min_dist_sq[idx])
-    cand_sys = lh.data.system[candidates_w_images.lhs.indices]
-    return _DistanceCutoffResult(
-        candidates_w_images,
-        idx,
-        dist_sq < cutoffs[cand_sys] ** 2,
-        shifts,
-        (min_shifts[idx] == shifts).all(axis=-1),
-    )
-
-
-def _compute_distances_and_apply_cutoff(
-    candidates: _Candidates,
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
-    systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
-    consider_images: bool,
     max_image_candidates: Capacity[int] | None,
-) -> _DistanceCutoffResult:
-    """Compute distances and apply cutoff filter."""
-    if not consider_images:
-        return _apply_distance_cutoff_wo_images(candidates, lh, rh, systems, cutoffs)
+) -> CandidateBatch[Literal[2]]:
+    """Replicate candidates by image multiplicity, attaching shifts and is-min flag.
+
+    For each candidate pair:
+    - If ``max(cutoff[sys] / perp_axes) <= 0.5``: emit 1 copy with MIC shifts.
+    - Otherwise: emit per-image copies with replicated shifts; the
+      ``is_minimum_image`` flag is set per copy so ``ExclusionMask`` can keep
+      non-minimum image periodic copies of excluded pairs.
+
+    Args:
+        candidates: Raw candidate pair indices.
+        lh, rh, systems: Pipeline tables (fractional coords).
+        cutoffs: Per-system cutoff.
+        max_image_candidates: Capacity for replicated-candidates buffer.
+            When ``None``, falls back to ``FixedCapacity(candidates.lhs.size)``
+            with an error message — pass an editable capacity if image
+            replication is expected.
+
+    Returns:
+        ``CandidateBatch`` with shifts populated and ``is_minimum_image`` set.
+    """
+    cutoffs_t = Table.broadcast_to(cutoffs, systems)
     if max_image_candidates is None:
         max_image_candidates = FixedCapacity(
             candidates.lhs.size,
@@ -311,144 +256,46 @@ def _compute_distances_and_apply_cutoff(
             "we need to generate additional images. "
             "Please provide a editable max_candidates.",
         )
-    return _apply_distance_cutoff_w_images(
-        candidates, lh, rh, systems, cutoffs, max_image_candidates
-    )
 
+    idx, image_shifts, has_been_replicated = _get_candidate_images(
+        candidates, lh, systems, cutoffs_t.data, max_image_candidates
+    )
+    min_shifts = _minimum_image_shifts(candidates, lh, rh, systems)
 
-def _compact_edges(
-    candidates: _Candidates,
-    mask: Array,
-    shifts: Array,
-    rh_index_remap: Array | None,
-    max_num_edges: Capacity[int],
-    out_of_bounds: int,
-) -> Edges[Literal[2]]:
-    """Compact valid edges and format output."""
-    num_edges = mask.sum()
-    max_num_edges = max_num_edges.generate_assertion(num_edges)
-    sort_idxs = jnp.where(mask, size=max_num_edges.size, fill_value=mask.size)[0]
-    shifts = shifts.at[sort_idxs].get(
-        mode="fill", fill_value=0, indices_are_sorted=True
-    )
-    rh_idx_out = (
-        rh_index_remap.at[candidates.rhs.indices].get(
-            mode="fill", fill_value=out_of_bounds
-        )
-        if rh_index_remap is not None
-        else candidates.rhs.indices
-    )
-    lh_edge, rh_edge = (
-        c.at[sort_idxs].get(
-            mode="fill", fill_value=out_of_bounds, indices_are_sorted=True
-        )
-        for c in (candidates.lhs.indices, rh_idx_out)
-    )
-
-    if rh_index_remap is not None:
-        shifts = jnp.concatenate([shifts, -shifts], axis=0)
-        lh_edge, rh_edge = (
-            jnp.concatenate([lh_edge, rh_edge], axis=0),
-            jnp.concatenate([rh_edge, lh_edge], axis=0),
+    if idx.size == candidates.lhs.size:
+        # No replication needed — MIC shifts cover everything.
+        return candidates_to_batch(
+            candidates, min_shifts, jnp.ones((candidates.lhs.size,), dtype=bool)
         )
 
-    shifts = jnp.expand_dims(shifts, axis=-2)
-    edge_indices = Index(candidates.lhs.keys, jnp.stack([lh_edge, rh_edge], axis=-1))
-    return Edges(edge_indices, shifts)
+    replicated = bind(candidates).at(idx).get()
+    final_shifts = jnp.where(
+        has_been_replicated[:, None], image_shifts, min_shifts[idx]
+    )
+    is_min = (min_shifts[idx] == final_shifts).all(axis=-1)
+    return candidates_to_batch(replicated, final_shifts, is_min)
 
 
-def _filter_candidates(
-    candidates: _Candidates,
+def real_distance_sq(
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
-    rh_index_remap: Index[ParticleId] | None,
-    *,
-    max_num_edges: Capacity[int],
-    max_image_candidates: Capacity[int] | None,
-    consider_images: bool,
-) -> Edges[Literal[2]]:
-    out_of_bounds = max(rh.data.positions.shape[0], lh.data.positions.shape[0])
+    lh_idx: Array,
+    rh_idx: Array,
+    shifts: Array,
+) -> Array:
+    """Squared real-space distance between candidate pairs.
 
-    # Convert Index[ParticleId] to raw array for leaf functions
-    rh_remap_raw: Array | None = (
-        rh_index_remap.indices_in(lh.keys) if rh_index_remap is not None else None
-    )
-    if rh_remap_raw is not None and rh_remap_raw.size == 0:
-        rh_remap_raw = jnp.full((1,), out_of_bounds, dtype=int)
+    Args:
+        lh, rh, systems: Pipeline tables (positions in fractional coords).
+        lh_idx, rh_idx: ``(n,)`` raw index arrays.
+        shifts: ``(n, 3)`` fractional shifts.
 
-    mask = _build_segmentation_mask(candidates, lh, rh, rh_remap_raw, out_of_bounds)
-
-    distance_result = _compute_distances_and_apply_cutoff(
-        candidates,
-        lh,
-        rh,
-        systems,
-        cutoffs,
-        consider_images,
-        max_image_candidates,
-    )
-    mask = mask.at[distance_result.original_candidate_idx].get(
-        mode="fill", fill_value=False
-    )
-    mask &= distance_result.mask
-    shifts = distance_result.shifts
-    candidates = distance_result.candidates
-
-    # Exclusion mask: drop edges where exclusion segments match on minimum image
-    lh_excl, rh_excl = Index.match(
-        lh[candidates.lhs].exclusion, rh[candidates.rhs].exclusion
-    )
-    mask &= (lh_excl != rh_excl) | ~distance_result.is_minimum_interaction
-
-    result = _compact_edges(
-        candidates, mask, shifts, rh_remap_raw, max_num_edges, out_of_bounds
-    )
-    return result
-
-
-def basic_neighborlist(
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints] | None,
-    systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
-    rh_index_remap: Index[ParticleId] | None,
-    *,
-    candidate_selector: CandidateSelector,
-    max_num_edges: Capacity[int],
-    max_image_candidates: Capacity[int] | None = None,
-    consider_images: bool = True,
-) -> Edges[Literal[2]]:
-    """Core neighbor list construction algorithm with pluggable candidate selection."""
-    cutoffs = Table.broadcast_to(cutoffs, systems)
-    if rh is None:
-        rh = lh
-
-    # Transform coordinates to fractional using per-particle system data
-    lh_inv = systems[lh.data.system].cell.inverse_vectors
-    lh = (
-        bind(lh)
-        .focus(lambda x: x.data.positions)
-        .apply(lambda r: triangular_3x3_matmul(lh_inv, r))
-    )
-    rh_inv = systems[rh.data.system].cell.inverse_vectors
-    rh = (
-        bind(rh)
-        .focus(lambda x: x.data.positions)
-        .apply(lambda r: triangular_3x3_matmul(rh_inv, r))
-    )
-
-    candidates = candidate_selector(lh, rh, systems)
-
-    return _filter_candidates(
-        candidates,
-        lh,
-        rh,
-        systems,
-        cutoffs,
-        rh_index_remap,
-        max_num_edges=max_num_edges,
-        max_image_candidates=max_image_candidates,
-        consider_images=consider_images,
-    )
+    Returns:
+        ``(n,)`` array of squared distances in real coordinates.
+    """
+    frames = systems.map_data(lambda s: s.cell.frame.materialize())
+    frames = frames[lh.data.system[lh_idx]]
+    deltas = lh.data.positions[lh_idx] - rh.data.positions[rh_idx] - shifts
+    real_deltas = frames.to_real(deltas)
+    return jnp.einsum("...d,...d->...", real_deltas, real_deltas)

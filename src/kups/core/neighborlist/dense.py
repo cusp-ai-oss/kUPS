@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Literal, Protocol
 
 from jax import Array
@@ -13,12 +12,23 @@ from jax import Array
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
-from kups.core.neighborlist.common import _Candidates, basic_neighborlist
+from kups.core.neighborlist.common import Candidates, replicate_for_images
+from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+    RemapDedupMask,
+)
+from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.types import (
+    CandidateBatch,
     IsNeighborListState,
     NeighborListPoints,
     NeighborListSystems,
+    PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -40,17 +50,39 @@ def _dense_subselect(
     rh: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
     max_num_candidates: Capacity[int],
-) -> _Candidates:
+) -> Candidates:
     selection_result = subselect(
         lh.data.system.indices,
         rh.data.system.indices,
         output_buffer_size=max_num_candidates,
         num_segments=systems.size,
     )
-    return _Candidates(
+    return Candidates(
         lhs=Index(lh.keys, selection_result.scatter_idxs),
         rhs=Index(rh.keys, selection_result.gather_idxs),
     )
+
+
+@dataclass
+class DenseSelector:
+    """Selector for the per-system dense ``O(N²/K²)`` algorithm."""
+
+    cutoffs: Table[SystemId, Array]
+    max_candidates: Capacity[int]
+    max_image_candidates: Capacity[int]
+
+    def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
+        candidates = _dense_subselect(
+            ctx.lh, ctx.rh, ctx.systems, max_num_candidates=self.max_candidates
+        )
+        return replicate_for_images(
+            candidates,
+            ctx.lh,
+            ctx.rh,
+            ctx.systems,
+            self.cutoffs,
+            self.max_image_candidates,
+        )
 
 
 @dataclass
@@ -120,17 +152,20 @@ class DenseNearestNeighborList:
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         rh_size = rh.size if rh is not None else lh.size
-        selector = partial(
-            _dense_subselect,
-            max_num_candidates=self.avg_candidates.multiply(rh_size),
+        cutoffs = Table.broadcast_to(cutoffs, systems)
+        pipeline = Pipeline[Literal[2]](
+            selector=DenseSelector(
+                cutoffs=cutoffs,
+                max_candidates=self.avg_candidates.multiply(rh_size),
+                max_image_candidates=self.avg_image_candidates.multiply(rh_size),
+            ),
+            masks=(
+                InBoundsMask(),
+                InclusionMatchMask(),
+                RemapDedupMask(),
+                DistanceCutoffMask(cutoffs=cutoffs),
+                ExclusionMask(),
+            ),
+            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(rh_size)),
         )
-        return basic_neighborlist(
-            lh,
-            rh,
-            systems,
-            cutoffs,
-            rh_index_remap,
-            candidate_selector=selector,
-            max_num_edges=self.avg_edges.multiply(rh_size),
-            max_image_candidates=self.avg_image_candidates.multiply(rh_size),
-        )
+        return pipeline(lh, rh, systems, rh_index_remap)
