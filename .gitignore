@@ -54,3 +54,6 @@ docs/reference
 .vscode/
 *.pt
 *.model
+*.log
+*.dat
+

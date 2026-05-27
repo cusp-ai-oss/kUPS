@@ -21,16 +21,18 @@ from kups.core.utils.block_average import BlockAverageResult
 
 jax.config.update("jax_enable_x64", True)
 
+N_BLOCKS = 5
+
 
 def _analyze_mcmc_first_system(path: Path) -> Any:
     """Analyze MCMC file and return the first system's result."""
-    results = analyze_mcmc_file(path)
+    results = analyze_mcmc_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 
 def _analyze_md_first_system(path: Path) -> Any:
     """Analyze MD file and return the first system's result."""
-    results = analyze_md_file(path)
+    results = analyze_md_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 

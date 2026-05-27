@@ -9,13 +9,14 @@ run:
 md:
   temperature: 100.0
   time_step: 2.0
-  friction_coefficient: 1.0
+  friction_coefficient: 0.01
   thermostat_time_constant: 100.0
   target_pressure: 1.0
   pressure_coupling_time: 1.0e10
   compressibility: 4.5e-5
   minimum_scale_factor: 1.0
   integrator: baoab_langevin
+  initialize_momenta: true
 
 lj:
   tail_correction: false

@@ -15,6 +15,9 @@ jobs:
       - name: Run statistical validation
         run: uv run --no-default-groups --group cuda python validate.py
         working-directory: ci/statistical
+      - name: Compare LAMMPS YAML references
+        run: uv run --no-default-groups --group cuda python lammps/validate.py
+        working-directory: ci/statistical
       - name: Validate NVE ensemble
         run: uv run --no-default-groups --group cuda python validate_nve_physics.py
         working-directory: ci/statistical
