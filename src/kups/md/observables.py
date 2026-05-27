@@ -8,12 +8,23 @@ forces, and other MD quantities. These are used internally by integrators
 and are distinct from the StateProperty-based observables in kups.observables.
 """
 
+from typing import Protocol, runtime_checkable
+
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.data import Index
-from kups.core.typing import SystemId
+from kups.core.data import Index, Table
+from kups.core.typing import HasMasses, HasMomenta, ParticleId, SystemId
 from kups.core.utils.jax import vectorize
+from kups.observables.stress import (
+    IsVirialParticles,
+    IsVirialSystems,
+    stress_via_virial_theorem,
+)
+
+
+@runtime_checkable
+class _PressureTensorParticles(IsVirialParticles, HasMomenta, HasMasses, Protocol): ...
 
 
 def particle_kinetic_energy(momentum: Array, mass: Array) -> Array:
@@ -77,3 +88,41 @@ def instantaneous_pressure(
     """
     d = cauchy_stress.shape[0]
     return (2.0 * kinetic_energy) / (d * volume) + jnp.trace(cauchy_stress) / d
+
+
+def instantaneous_pressure_tensor(
+    particles: Table[ParticleId, _PressureTensorParticles],
+    systems: Table[SystemId, IsVirialSystems],
+) -> Array:
+    r"""Compute the symmetric instantaneous pressure tensor.
+
+    $$P_{\text{ins}} = \frac{1}{V}\sum_i \frac{\mathbf{p}_i \otimes \mathbf{p}_i}{m_i}
+                      + \boldsymbol{\sigma},$$
+
+    where the second term is the symmetric Cauchy stress from the virial
+    theorem (`stress_via_virial_theorem`), which includes both the
+    pair-force contribution ``sym(Σ Fᵢ ⊗ rᵢ)/V`` and the lattice-gradient
+    contribution ``h^T·∂U/∂h / V`` needed for periodic potentials such as
+    Ewald and PME. This is the tensorial generalisation of
+    [`instantaneous_pressure`][kups.md.observables.instantaneous_pressure] used
+    by extended-variable NPT integrators (e.g. Gao–Fang–Wang BAOAB NPT
+    Langevin, Eq. 9).
+
+    Args:
+        particles: Per-particle table providing ``positions``, ``momenta``,
+            ``masses``, ``system`` index and ``position_gradients``.
+        systems: Per-system table providing ``cell`` and ``cell_gradients``.
+
+    Returns:
+        Symmetric pressure tensor per system, shape ``(n_systems, 3, 3)``,
+        units of energy/length³.
+    """
+    p = particles.data.momenta
+    m = particles.data.masses
+    # Per-particle kinetic outer product, summed per-system via the kUPS-native
+    # Index.sum_over (same pattern as stress_via_virial_theorem itself).
+    per_particle = p[..., :, None] * p[..., None, :] / m[..., None, None]
+    ke_tensor = particles.data.system.sum_over(per_particle).data
+    volume = systems.data.cell.volume
+    sigma = stress_via_virial_theorem(particles, systems).data
+    return ke_tensor / volume[..., None, None] + sigma

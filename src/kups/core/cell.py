@@ -748,6 +748,44 @@ def is_3d_periodic[P: tuple[bool, bool, bool]](
     return all(cell.periodic)
 
 
+def require_periodic_3d(cell: Cell) -> None:
+    """Raise ``TypeError`` unless ``cell`` is fully 3D-periodic.
+
+    Equivalent to asserting ``isinstance(cell, PeriodicCell)`` but with a
+    helpful message.
+    """
+    if not isinstance(cell, PeriodicCell):
+        raise TypeError(
+            f"Expected a PeriodicCell (3D-periodic boundaries); got "
+            f"{type(cell).__name__} with periodic={cell.periodic}."
+        )
+
+
+def require_triclinic_frame(cell: Cell) -> None:
+    """Raise ``TypeError`` unless ``cell.frame`` is a
+    [TriclinicFrame][kups.core.cell.TriclinicFrame].
+
+    Some integrators (e.g. fully-flexible-cell NPT Langevin) drift the cell
+    matrix to a general lower-triangular state at every step, which an
+    [OrthogonalFrame][kups.core.cell.OrthogonalFrame] (3-DOF) cannot represent.
+    Use [TriclinicFrame.from_matrix][kups.core.cell.TriclinicFrame.from_matrix]
+    to auto-promote ``cell.frame`` before constructing such an integrator.
+    """
+    if not isinstance(cell.frame, TriclinicFrame):
+        raise TypeError(
+            f"Expected cell.frame to be TriclinicFrame (6 DOF, lower-triangular); "
+            f"got {type(cell.frame).__name__}. Use "
+            f"TriclinicFrame.from_matrix(cell.vectors) to promote an "
+            f"orthogonal cell."
+        )
+
+
+def require_periodic_3d_triclinic(cell: Cell) -> None:
+    """Shorthand for ``require_periodic_3d(cell); require_triclinic_frame(cell)``."""
+    require_periodic_3d(cell)
+    require_triclinic_frame(cell)
+
+
 def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
     """Convert arbitrary basis vectors to lower-triangular form via QR.
 

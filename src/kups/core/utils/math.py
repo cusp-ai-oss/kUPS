@@ -239,6 +239,41 @@ def triangular_3x3_matmul(
     return inner(L, x)
 
 
+@jit
+def solve_affine_ode(A: Array, b: Array, x0: Array, dt: Array | float) -> Array:
+    r"""Solve the affine ODE $\dot{x} = A\,x + b$ exactly over $[0, \Delta t]$.
+
+    Computes
+
+    $$x(\Delta t) = e^{A\,\Delta t}\,x_0 + \varphi_1(A\,\Delta t)\,\Delta t\,b,
+    \qquad \varphi_1(M) = M^{-1}(e^{M} - I).$$
+
+    Uses the augmented-matrix trick (Al-Mohy & Higham 2011) so that a single
+    matrix exponential delivers both terms and the formula is well-defined
+    even when ``A`` has zero eigenvalues:
+
+    $$\exp\!\left(\Delta t \begin{bmatrix} A & b \\ 0 & 0 \end{bmatrix}\right)
+      = \begin{bmatrix} e^{A\,\Delta t} & \varphi_1(A\,\Delta t)\,\Delta t\,b \\ 0 & 1 \end{bmatrix}.$$
+
+    Args:
+        A: Coefficient matrix, shape ``(..., n, n)``. Any shape (triangular
+            or general) is accepted; ``expm`` handles all cases.
+        b: Constant inhomogeneous term, shape ``(..., n)``.
+        x0: Initial state, shape ``(..., n)``.
+        dt: Scalar timestep (broadcastable to the batch shape).
+
+    Returns:
+        State at ``dt``, shape ``(..., n)``.
+    """
+    n = x0.shape[-1]
+    # Augmented matrix M = [[A, b], [0, 0]], shape (..., n+1, n+1)
+    A_padded = jnp.concatenate([A, b[..., None]], axis=-1)  # (..., n, n+1)
+    zero_row = jnp.zeros((*A.shape[:-2], 1, n + 1), dtype=A.dtype)
+    M = jnp.concatenate([A_padded, zero_row], axis=-2)  # (..., n+1, n+1)
+    E = jax.scipy.linalg.expm(M * dt)
+    return jnp.einsum("...ij,...j->...i", E[..., :n, :n], x0) + E[..., :n, n]
+
+
 def next_higher_power(value: Array, base: Array | float = 2.0) -> Array:
     """Compute the next higher power of a given base for each element.
 

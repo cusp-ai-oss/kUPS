@@ -21,6 +21,7 @@ EXPERIMENTS: list[tuple[str, str, str]] = [
     ("md_nve_lj_argon", "md", "kups_md_lj"),
     ("md_nvt_lj_argon", "md", "kups_md_lj"),
     ("md_npt_lj_argon", "md", "kups_md_lj"),
+    ("md_npt_lj_argon_baoab", "md", "kups_md_lj"),
     ("nvt_50co2_30box", "nvt", "kups_mcmc_rigid"),
     ("gcmc_co2_rubtak", "gcmc", "kups_mcmc_rigid"),
 ]

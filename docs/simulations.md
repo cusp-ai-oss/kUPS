@@ -23,7 +23,7 @@ kups_md_mlff md_orb.yaml
 
 - **NVE** — velocity Verlet. Constant energy, useful for validating energy conservation.
 - **NVT** — Langevin thermostat (BAOAB splitting) or canonical sampling via velocity rescaling (CSVR). Constant temperature.
-- **NPT** — CSVR thermostat with stochastic cell rescaling barostat. Constant temperature and pressure.
+- **NPT** — CSVR thermostat with stochastic cell rescaling barostat (`csvr_npt`), or fully-flexible-cell BAOAB NPT Langevin (`baoab_npt_langevin`, Gao–Fang–Wang JCP 2016). Constant temperature and pressure.
 
 All integrators are built from the same composable propagator primitives described in the Propagators tutorial.
 

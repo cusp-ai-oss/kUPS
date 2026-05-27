@@ -384,6 +384,61 @@ class HasMinimumScaleFactor(Protocol):
 
 
 @runtime_checkable
+class HasCellMomentum(Protocol):
+    r"""Protocol for systems with an extended-variable cell-momentum tensor.
+
+    Conjugate momentum of the lower-triangular cell-vector matrix
+    [`cell.vectors`][kups.core.cell.Cell.vectors]. Stored as a
+    ``(..., 3, 3)`` lower-triangular array (strict-upper entries are
+    zero and ignored). Used by extended-variable NPT integrators such as
+    Gao–Fang–Wang BAOAB NPT Langevin.
+
+    Attributes:
+        cell_momentum: Cell momentum $p^h$ (units: mass·length/time),
+            shape ``(..., 3, 3)``, lower-triangular.
+    """
+
+    @property
+    def cell_momentum(self) -> Array: ...
+
+
+@runtime_checkable
+class HasBarostatMass(Protocol):
+    r"""Protocol for systems with a fictitious cell mass tensor.
+
+    Per-component mass $M_{\alpha\beta}$ of the cell DOFs, set from the
+    Gao–Fang–Wang formula
+    $M_{\alpha\beta} = 3\det(h_0)\,(\tau/2\pi)^2 / (\kappa (h_0)_{\alpha\alpha}^2)$
+    (Eq. 14–15 of the paper) at construction time. Lower-triangular to
+    match [`cell_momentum`][kups.core.typing.HasCellMomentum].
+
+    Attributes:
+        barostat_mass: Cell mass tensor $M$ (units: mass·length²),
+            shape ``(..., 3, 3)``, lower-triangular.
+    """
+
+    @property
+    def barostat_mass(self) -> Array: ...
+
+
+@runtime_checkable
+class HasBarostatFriction(Protocol):
+    r"""Protocol for systems with Langevin friction on the cell DOFs.
+
+    Per-component friction $\gamma_{\alpha\beta}$ governing the
+    Ornstein–Uhlenbeck thermostat on [`cell_momentum`][kups.core.typing.HasCellMomentum].
+    Lower-triangular.
+
+    Attributes:
+        barostat_friction: Cell friction tensor $\gamma$ (units: 1/time),
+            shape ``(..., 3, 3)``, lower-triangular.
+    """
+
+    @property
+    def barostat_friction(self) -> Array: ...
+
+
+@runtime_checkable
 class HasIntegratorParams[P](Protocol):
     r"""Protocol for systems carrying bundled integrator control parameters.
 

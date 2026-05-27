@@ -10,13 +10,21 @@ import jax.numpy as jnp
 from jax import Array
 from typing_extensions import Protocol
 
-from kups.core.cell import Cell, Periodic3D
+from kups.core.cell import (
+    Cell,
+    Periodic3D,
+    TriclinicFrame,
+    require_periodic_3d_triclinic,
+)
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.propagator import Propagator, SequentialPropagator
 from kups.core.typing import (
+    HasBarostatFriction,
+    HasBarostatMass,
     HasCell,
+    HasCellMomentum,
     HasCompressibility,
     HasForces,
     HasFrictionCoefficient,
@@ -37,9 +45,11 @@ from kups.core.typing import (
 )
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, tree_map, vectorize
+from kups.core.utils.math import solve_affine_ode
 from kups.core.utils.random import sample_like
 from kups.md.observables import (
     instantaneous_pressure,
+    instantaneous_pressure_tensor,
     particle_kinetic_energy,
     remove_center_of_mass_momentum,
 )
@@ -52,7 +62,13 @@ type Temperature = Array
 type Pressure = Array
 type Stress = Array
 
-type Integrator = Literal["verlet", "baoab_langevin", "csvr", "csvr_npt"]
+type Integrator = Literal[
+    "verlet", "baoab_langevin", "csvr", "csvr_npt", "baoab_npt_langevin"
+]
+
+# χ constant in the Gao-Fang-Wang NPT Langevin barostat-pressure term
+# (Appendix A, ν/d − 1). For 3D lower-triangular cell with ν = d(d+1)/2 = 6.
+_GAO_CHI: int = 1
 
 
 @runtime_checkable
@@ -930,6 +946,372 @@ def make_csvr_npt_step[State](
     )
 
 
+# =============================================================================
+# Gao-Fang-Wang BAOAB NPT Langevin (JCP 2016, arxiv 1601.01044)
+# Fully-flexible-cell extended-variable NPT Langevin dynamics.
+# =============================================================================
+
+
+@runtime_checkable
+class IsBAOABNPTLangevinParams(
+    HasTimeStep,
+    HasTemperature,
+    HasFrictionCoefficient,
+    HasTargetPressure,
+    HasPressureCouplingTime,
+    HasCompressibility,
+    HasBarostatMass,
+    HasBarostatFriction,
+    Protocol,
+):
+    r"""Integrator-params shape for :func:`make_baoab_npt_langevin_step`."""
+
+
+@runtime_checkable
+class IsBAOABNPTLangevinSystem(
+    HasCell[Periodic3D],
+    HasCellMomentum,
+    HasIntegratorParams[IsBAOABNPTLangevinParams],
+    Protocol,
+):
+    r"""NPT Langevin MD system row: periodic cell, cell-momentum tensor, integrator
+    params, and a cell-gradient leaf for the virial."""
+
+    @property
+    def cell_gradients(self) -> Cell[Periodic3D]: ...
+
+
+def _cell_velocity(cell_momentum: Array, barostat_mass: Array) -> Array:
+    """Element-wise ``V_dot = p^h / M`` on the lower-triangular DOFs.
+
+    Both inputs have zeros in the strict-upper triangle by construction; a
+    naive division would propagate ``0/0 = NaN`` there. Mask the strict-upper
+    triangle to zero.
+    """
+    safe_M = jnp.where(barostat_mass != 0, barostat_mass, 1.0)
+    return jnp.tril(jnp.where(barostat_mass != 0, cell_momentum / safe_M, 0.0))
+
+
+@dataclass
+class CellMomentumKick[State](Propagator[State]):
+    r"""B$^h$ kick (Gao Algorithm lines 2 & 13).
+
+    Updates the cell-momentum tensor by the pressure-deviation virial. In
+    paper convention (Eq. 8d) the deterministic term is
+
+    $$\text{kick}^{\text{paper}} = \det(h)\,(P_{\text{ins}} - P_0 I)\,h^{-T}
+                                   - \chi k_B T\, h^{-T}.$$
+
+    In kUPS convention $V = h^T$, so $h^{-T} = V^{-1}$, and $p^h_{\text{kUPS}}
+    = (p^h_{\text{paper}})^T$. Transposing the kick and projecting to the
+    lower triangle gives the kUPS-side update applied here:
+
+    $$p^h \leftarrow p^h + \Delta t \cdot \text{tril}\!\left(
+        \det(V)\,V^{-T}(P_{\text{ins}} - P_0 I) - \chi k_B T\, V^{-T}
+    \right),$$
+
+    The integration uses $\Delta t / 2$ — the algorithm calls this kick four
+    times per step, twice at the start and twice at the end of the BAOAB
+    palindrome, each at a half time-step. $P_{\text{ins}}$ is the symmetric
+    pressure tensor from
+    [instantaneous_pressure_tensor][kups.md.observables.instantaneous_pressure_tensor]
+    and includes the lattice-gradient contribution. $\chi = 1$ for the
+    3D lower-triangular cell parameterisation (Appendix A, $\nu/d-1$).
+    """
+
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
+        static=True
+    )
+    systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        del key  # Deterministic step
+        sys = self.systems.get(state)
+        par = self.particles.get(state)
+        params = sys.data.integrator_params
+
+        V_inv = sys.data.cell.inverse_vectors  # lower-tri
+        V_det = sys.data.cell.volume  # (n,)
+        chi_kT = _GAO_CHI * params.temperature * BOLTZMANN_CONSTANT  # (n,)
+        P_target = params.target_pressure  # (n,)
+        P_ins = instantaneous_pressure_tensor(par, sys)  # (n, 3, 3) symmetric
+        P_diff = P_ins - P_target[..., None, None] * jnp.eye(3)
+
+        # Paper-side kick = det(h)·(P_diff @ V_inv) − χkT·V_inv.
+        # kUPS-side kick = (paper kick)^T  (since kUPS p^h = paper p^h transposed).
+        kick_paper = (
+            V_det[..., None, None] * (P_diff @ V_inv) - chi_kT[..., None, None] * V_inv
+        )
+        kick_kups = jnp.tril(jnp.swapaxes(kick_paper, -1, -2))
+
+        # Half time-step: this kick fires twice per BAOAB step on each side.
+        dt_half = params.time_step[..., None, None] / 2
+        new_cell_momentum = sys.data.cell_momentum + dt_half * kick_kups
+        return self.systems.focus(lambda x: x.data.cell_momentum).set(
+            state, new_cell_momentum
+        )
+
+
+@dataclass
+class CellPositionStep[State](Propagator[State]):
+    r"""A$^h$ drift (Gao Algorithm lines 4 & 9): cell-only drift.
+
+    Implements the paper's :math:`\mathcal{F}^h_K = \sum_{\alpha\beta}
+    (p^h_{\alpha\beta}/M_{\alpha\beta})\,\partial/\partial h_{\alpha\beta}`,
+    which moves only $h$:
+
+    $$V \leftarrow V + \frac{\Delta t}{2}\,p^h / M.$$
+
+    **Atomic positions are not modified here.** The convective response of
+    particle positions to cell motion ($\dot{h} h^{-1} r$, paper Eq. 8a) is
+    handled in :class:`CoupledPositionStep` via the analytic ODE solver;
+    rescaling positions in this step too would double-count the convective
+    term and break the symplectic Trotter splitting.
+
+    The new cell is reconstructed as a :class:`TriclinicFrame` from the
+    drifted lower-triangular vectors, which forces a fresh ``volume`` cache.
+    """
+
+    systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        del key  # Deterministic step
+        sys = self.systems.get(state)
+        params = sys.data.integrator_params
+        V_old = sys.data.cell.vectors  # lower-tri
+        V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
+        # Half time-step (BAOAB: drifts twice per side, each at Δt/2).
+        # V_old, V_dot both lower-tri ⇒ V_new lower-tri.
+        V_new = V_old + (params.time_step[..., None, None] / 2) * V_dot
+        # Reconstruct TriclinicFrame so cached volume refreshes.
+        return self.systems.focus(lambda x: x.data.cell.frame).set(
+            state, TriclinicFrame.from_matrix(V_new)
+        )
+
+
+@dataclass
+class CellStochasticStep[State](Propagator[State]):
+    r"""O$^h$ Ornstein–Uhlenbeck thermostat on the cell-momentum tensor
+    (Gao Algorithm line 6).
+
+    Exact OU solution per lower-triangular component:
+
+    $$p^h_{\alpha\beta} \leftarrow e^{-\gamma_{\alpha\beta}\Delta t}\,p^h_{\alpha\beta}
+        + \sqrt{M_{\alpha\beta}\,k_B T\,(1 - e^{-2\gamma_{\alpha\beta}\Delta t})}\,R_{\alpha\beta},$$
+
+    with $R_{\alpha\beta} \sim \mathcal{N}(0, 1)$. Noise is masked to the
+    lower triangle so strict-upper components of $p^h$ remain zero.
+    """
+
+    systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        sys = self.systems.get(state)
+        params = sys.data.integrator_params
+        gamma = params.barostat_friction
+        M = params.barostat_mass
+        kT = params.temperature * BOLTZMANN_CONSTANT
+        dt = params.time_step
+        damp = jnp.exp(-gamma * dt[..., None, None])
+        noise_amp = jnp.sqrt(M * kT[..., None, None] * (1.0 - damp**2))
+        R = jnp.tril(jax.random.normal(key, M.shape, dtype=M.dtype))
+        new_cell_momentum = jnp.tril(damp * sys.data.cell_momentum + noise_amp * R)
+        return self.systems.focus(lambda x: x.data.cell_momentum).set(
+            state, new_cell_momentum
+        )
+
+
+@dataclass
+class CoupledMomentumStep[State](Propagator[State]):
+    r"""B kick with cell coupling (Gao Algorithm lines 3 & 11).
+
+    Solves $\dot{p}_i = F_i - h^{-\top}\dot{h}^{\top} p_i$ exactly over the
+    params time-step via :func:`solve_affine_ode`. In kUPS row-vector form
+    the coupling becomes $\dot{p}_{\text{row}} = F_{\text{row}} - p_{\text{row}}\cdot M^{\top}$
+    with $M = V^{-1}\dot{V}$ (lower-triangular); the equivalent column-vector
+    ODE has $A = -M$.
+
+    Half time-step: the BAOAB palindrome calls this kick four times per
+    full step, each at $\Delta t / 2$.
+    """
+
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
+        static=True
+    )
+    systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        del key
+        sys = self.systems.get(state)
+        par_lens = self.particles.bind(state)
+        par = par_lens.get()
+        params = sys.data.integrator_params
+        V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
+        M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
+        A_per_p = -M_pos[par.data.system.indices]  # column-form A
+        dt_half_per_p = params.time_step[par.data.system.indices] / 2
+        new_momenta = jax.vmap(solve_affine_ode)(
+            A_per_p, par.data.forces, par.data.momenta, dt_half_per_p
+        )
+        return par_lens.focus(lambda p: p.data.momenta).set(new_momenta)
+
+
+@dataclass
+class CoupledPositionStep[State](Propagator[State]):
+    r"""A drift with cell coupling (Gao Algorithm lines 5 & 8).
+
+    Solves $\dot{r}_i = p_i/m_i + \dot{h}h^{-1} r_i$ exactly over the params
+    time-step via :func:`solve_affine_ode`. In kUPS row-vector form the
+    coupling becomes $\dot{r}_{\text{row}} = v_{\text{row}} + r_{\text{row}}\cdot M$
+    with $M = V^{-1}\dot{V}$ (lower-triangular); the column-vector ODE has
+    $A = M^{\top}$ (upper-triangular).
+
+    Half time-step: the BAOAB palindrome calls this drift four times per
+    full step, each at $\Delta t / 2$.
+    """
+
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
+        static=True
+    )
+    systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        del key
+        sys = self.systems.get(state)
+        par_lens = self.particles.bind(state)
+        par = par_lens.get()
+        params = sys.data.integrator_params
+        V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
+        M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
+        A_per_p = jnp.swapaxes(M_pos, -1, -2)[par.data.system.indices]  # upper-tri
+        dt_half_per_p = params.time_step[par.data.system.indices] / 2
+        v = par.data.momenta / par.data.masses[..., None]
+        new_positions = jax.vmap(solve_affine_ode)(
+            A_per_p, v, par.data.positions, dt_half_per_p
+        )
+        return par_lens.focus(lambda p: p.data.positions).set(new_positions)
+
+
+@dataclass
+class WrapStep[State](Propagator[State]):
+    """Apply the cell's wrap operation to particle positions.
+
+    Standalone version of :class:`WrapFlow` for use at the end of a coupled
+    integration step where the per-A-step wrap would break the analytic
+    affine-ODE solution.
+    """
+
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
+        static=True
+    )
+    systems: View[State, Table[SystemId, HasCell[Periodic3D]]] = field(static=True)
+
+    def __call__(self, key: Array, state: State) -> State:
+        del key
+        par_lens = self.particles.bind(state)
+        par = par_lens.get()
+        cells = self.systems(state)[par.data.system]
+        new_positions = cells.cell.wrap(par.data.positions)
+        return par_lens.focus(lambda p: p.data.positions).set(new_positions)
+
+
+def make_baoab_npt_langevin_step[State](
+    particles: Lens[State, Table[ParticleId, _BarostatParticleData]],
+    systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]],
+    derivative_computation: Propagator[State],
+    flow: Flow[State, Array],
+) -> SequentialPropagator[State]:
+    r"""Create the fully-flexible-cell BAOAB NPT Langevin integrator.
+
+    Implements the Trotter-split scheme of Gao, Fang & Wang
+    (*Sampling the isothermal-isobaric ensemble by Langevin dynamics*,
+    arxiv 1601.01044, JCP 2016). Each step is a palindrome of 12
+    sub-operators around a single OU pair, with one force/stress
+    evaluation per step:
+
+    ``B^h ▸ B ▸ A^h ▸ A ▸ O^h ▸ O ▸ A ▸ A^h ▸ wrap ▸ F ▸ B ▸ B^h``
+
+    Algorithm (paper §III lines 2–13):
+
+    1. **B^h** ($\Delta t/2$): kick cell-momentum by the pressure deviation.
+    2. **B** ($\Delta t/2$): coupled atom-momentum kick, $\dot p = F - h^{-T}\dot h^{T} p$.
+    3. **A^h** ($\Delta t/2$): drift the cell matrix only.
+    4. **A** ($\Delta t/2$): coupled atom-position drift, $\dot r = p/m + \dot h h^{-1} r$.
+    5. **O^h** ($\Delta t$): exact OU thermostat on cell-momentum.
+    6. **O** ($\Delta t$): exact OU thermostat on atom-momentum (reuses
+       :class:`StochasticStep`).
+    7. **A** ($\Delta t/2$): repeat.
+    8. **A^h** ($\Delta t/2$): repeat.
+    9. **wrap**: single periodic wrap of all positions.
+    10. **F**: recompute forces and cell-gradients at the wrapped coordinates
+        retained in the state.
+    11. **B** ($\Delta t/2$): repeat.
+    12. **B^h** ($\Delta t/2$): repeat.
+
+    The atom-side OU step is the existing :class:`StochasticStep`
+    (unchanged); only the cell-side machinery is new.
+
+    The ``flow`` argument is unused (kept for signature compatibility with
+    the other ``make_*_step`` factories); periodic wrapping is handled
+    in-step by a single :class:`WrapStep` just before the force evaluation.
+
+    Args:
+        particles: Lens onto the per-particle table (momenta, positions,
+            forces, masses, system).
+        systems: Lens onto the per-system table providing the cell, the
+            extended-variable cell-momentum, ``cell_gradients`` and the
+            integrator-params bundle (:class:`BAOABNPTLangevinParams`).
+        derivative_computation: Propagator that updates ``position_gradients``
+            and ``cell_gradients`` from the current state.
+        flow: Unused — present only for API parity with sibling factories.
+
+    Returns:
+        :class:`SequentialPropagator` implementing the Gao–Fang–Wang scheme.
+
+    References:
+        Gao, X., Fang, J., & Wang, H. (2016). Sampling the
+        isothermal-isobaric ensemble by Langevin dynamics.
+        J. Chem. Phys., 144, 124113. arxiv 1601.01044.
+    """
+    del flow  # Wrapping is handled by an explicit WrapStep.
+
+    # The atom-side OU step is keyed off a HasFrictionCoefficient/HasTemperature
+    # params view; project to the params slot so the existing StochasticStep
+    # works without modification.
+    params: View[State, Table[SystemId, IsBAOABNPTLangevinParams]] = pipe(
+        systems.get, _to_params
+    )
+    return SequentialPropagator(
+        (
+            CellMomentumKick(particles, systems),  # B^h  Δt/2
+            CoupledMomentumStep(particles, systems),  # B    Δt/2
+            CellPositionStep(systems),  # A^h  Δt/2
+            CoupledPositionStep(particles, systems),  # A    Δt/2
+            CellStochasticStep(systems),  # O^h  Δt
+            StochasticStep(particles, params),  # O    Δt  (reused)
+            CoupledPositionStep(particles, systems),  # A    Δt/2
+            CellPositionStep(systems),  # A^h  Δt/2
+            WrapStep(particles, systems.get),  # wrap
+            derivative_computation,  # F
+            CoupledMomentumStep(particles, systems),  # B    Δt/2
+            CellMomentumKick(particles, systems),  # B^h  Δt/2
+        )
+    )
+
+
+def require_baoab_npt_langevin_state(
+    systems: Table[SystemId, IsBAOABNPTLangevinSystem],
+) -> None:
+    """Runtime check that the system table satisfies the BAOAB NPT Langevin shape.
+
+    Call this once on the initial state (outside of jit) before constructing
+    the integrator. Verifies that the cell is a 3D-periodic
+    :class:`TriclinicFrame` and that the integrator-params is a
+    :class:`BAOABNPTLangevinParams`-shaped bundle.
+    """
+    require_periodic_3d_triclinic(systems.data.cell)
+
+
 @overload
 def make_md_step_from_state[State](
     state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsVerletParams]]],
@@ -953,6 +1335,12 @@ def make_md_step_from_state[State](
     state: Lens[State, IsState[_MDParticleData, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     integrator: Literal["csvr_npt"],
+) -> Propagator[State]: ...
+@overload
+def make_md_step_from_state[State](
+    state: Lens[State, IsState[_MDParticleData, IsBAOABNPTLangevinSystem]],
+    derivative_computation: Propagator[State],
+    integrator: Literal["baoab_npt_langevin"],
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
@@ -987,6 +1375,11 @@ def make_md_step_from_state[State](
     - ``"csvr_npt"`` — [CSVR-NPT][kups.md.integrators.make_csvr_npt_step]
       (NPT via CSVR thermostat with barostat). Requires
       ``integrator_params: IsCSVRNPTParams`` and a ``cell_gradients`` leaf on each system.
+    - ``"baoab_npt_langevin"`` — [BAOAB NPT Langevin][kups.md.integrators.make_baoab_npt_langevin_step]
+      (Gao–Fang–Wang JCP 2016 fully-flexible-cell NPT). Requires
+      ``integrator_params: IsBAOABNPTLangevinParams`` plus ``cell_momentum``
+      and ``cell_gradients`` leaves on each system, and a
+      :class:`~kups.core.cell.TriclinicFrame` cell.
 
     The overloads narrow the required state protocol per ``integrator`` literal.
 
@@ -1024,6 +1417,10 @@ def make_md_step_from_state[State](
             )
         case "csvr_npt":
             return make_csvr_npt_step(
+                particles_lens, systems_lens, derivative_computation, flow
+            )
+        case "baoab_npt_langevin":
+            return make_baoab_npt_langevin_step(
                 particles_lens, systems_lens, derivative_computation, flow
             )
         case _:

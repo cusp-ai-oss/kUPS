@@ -24,7 +24,7 @@ from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
-from kups.md.observables import particle_kinetic_energy
+from kups.md.observables import particle_kinetic_energy, remove_center_of_mass_momentum
 
 
 @dataclass
@@ -91,7 +91,55 @@ class CSVRNPTParams:
     minimum_scale_factor: Array
 
 
-type IntegratorParams = VerletParams | BAOABLangevinParams | CSVRParams | CSVRNPTParams
+@dataclass
+class BAOABNPTLangevinParams:
+    r"""Control parameters for the BAOAB NPT Langevin integrator.
+
+    Implements the fully-flexible-cell extended-variable NPT Langevin
+    formulation of Gao, Fang & Wang, *Sampling the isothermal-isobaric
+    ensemble by Langevin dynamics*, JCP 2016 (arxiv 1601.01044). The atom
+    side reuses the existing Langevin friction ``γ``; the cell side adds a
+    fictitious mass tensor and a separate Langevin friction.
+
+    Attributes:
+        time_step: Integration timestep ``Δt``, shape ``(n_systems,)``.
+        temperature: Target temperature ``T`` (K), shape ``(n_systems,)``.
+        friction_coefficient: Atom Langevin friction ``γ`` (1/time),
+            shape ``(n_systems,)``. Reused from BAOAB-Langevin.
+        target_pressure: Target pressure ``P₀`` (energy/length³),
+            shape ``(n_systems,)``.
+        pressure_coupling_time: Barostat coupling time ``τ_P`` (time),
+            shape ``(n_systems,)``. Drives the auto-derived
+            :attr:`barostat_mass` per Gao Eq. (14)/(15).
+        compressibility: Isothermal compressibility ``β`` (length³/energy),
+            shape ``(n_systems,)``. Drives :attr:`barostat_mass`.
+        barostat_mass: Fictitious cell mass tensor $M_{\alpha\beta}$
+            (mass·length²), lower-triangular, shape ``(n_systems, 3, 3)``.
+            Auto-derived from ``compressibility``, ``pressure_coupling_time``
+            and the initial cell at construction time.
+        barostat_friction: Langevin friction on cell DOFs $\gamma_{\alpha\beta}$
+            (1/time), lower-triangular, shape ``(n_systems, 3, 3)``. Defaults
+            to ``friction_coefficient`` broadcast across the 6 cell DOFs per
+            Gao Remark 3.
+    """
+
+    time_step: Array
+    temperature: Array
+    friction_coefficient: Array
+    target_pressure: Array
+    pressure_coupling_time: Array
+    compressibility: Array
+    barostat_mass: Array
+    barostat_friction: Array
+
+
+type IntegratorParams = (
+    VerletParams
+    | BAOABLangevinParams
+    | CSVRParams
+    | CSVRNPTParams
+    | BAOABNPTLangevinParams
+)
 
 
 @dataclass
@@ -134,24 +182,30 @@ class MDParticles(Particles):
 
 @dataclass
 class MDSystems:
-    """Per-system state for molecular dynamics simulations.
+    r"""Per-system state for molecular dynamics simulations.
 
     Attributes:
         cell: Cell geometry for each system.
         integrator_params: Bundled integrator control parameters; concrete shape
             (e.g. :class:`VerletParams`, :class:`BAOABLangevinParams`,
-            :class:`CSVRParams`, :class:`CSVRNPTParams`) is chosen to match the
-            selected integrator.
+            :class:`CSVRParams`, :class:`CSVRNPTParams`,
+            :class:`BAOABNPTLangevinParams`) is chosen to match the selected
+            integrator.
         cell_gradients: Energy gradient w.r.t. the cell, stored as a
             :class:`Cell` (the ``vectors`` leaf holds the
             shape-``(n_systems, 3, 3)`` gradient used by
             :attr:`stress_tensor`).
+        cell_momentum: Extended-variable cell-momentum tensor $p^h$,
+            lower-triangular ``(n_systems, 3, 3)``. Only meaningful for
+            integrators that drive cell dynamics via an explicit conjugate
+            momentum (e.g. BAOAB NPT Langevin); zero otherwise.
         potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
     """
 
     cell: Cell
     integrator_params: IntegratorParams
     cell_gradients: Cell
+    cell_momentum: Array
     potential_energy: Array
 
 
@@ -220,8 +274,7 @@ def md_state_from_ase(
         # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT))
         std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
         momenta = jax.random.normal(key, (n_atoms, 3)) * std[:, None]
-        # Remove centre-of-mass drift
-        momenta -= momenta.sum(axis=0) / n_atoms
+        momenta = remove_center_of_mass_momentum(momenta, p.masses, p.system)
     else:
         momenta = jnp.zeros((n_atoms, 3))
 
@@ -243,8 +296,9 @@ def md_state_from_ase(
     systems = Table.arange(
         MDSystems(
             cell=cell,
-            integrator_params=_build_integrator_params(config),
+            integrator_params=_build_integrator_params(config, cell),
             cell_gradients=tree_zeros_like(cell),
+            cell_momentum=jnp.zeros(cell.vectors.shape),
             potential_energy=jnp.array([0.0]),
         ),
         label=SystemId,
@@ -253,7 +307,38 @@ def md_state_from_ase(
     return particles, systems
 
 
-def _build_integrator_params(config: MdParameters) -> IntegratorParams:
+def _gao_barostat_mass(
+    cell_vectors: Array, compressibility: Array, tau_P: Array
+) -> Array:
+    r"""Gao Eq. (14)/(15) fictitious cell mass tensor.
+
+    .. math::
+
+        M_{\alpha\beta} = \frac{3\,\det(h_0)}{\kappa\,(h_0)_{\alpha\alpha}^2}
+                          \left(\frac{\tau_{\alpha\beta}}{2\pi}\right)^2
+
+    For simplicity all $\tau_{\alpha\beta}$ default to a single barostat
+    time-scale ``tau_P``. Gao writes the formula for the paper's upper-triangular
+    cell matrix ``h``. kUPS stores ``V = h.T`` and ``p_h = p_h_paper.T``, so the
+    paper row index becomes the lower-triangular column index here.
+    """
+    V0 = jnp.abs(jnp.linalg.det(cell_vectors))  # (n_sys,)
+    h_diag = jnp.diagonal(cell_vectors, axis1=-2, axis2=-1)  # (n_sys, 3)
+    # Per-paper-row scale. In kUPS' transposed lower-triangular convention this
+    # is a per-column scale for active cell-momentum DOFs.
+    per_column = (
+        3.0
+        * V0[..., None]
+        * (tau_P[..., None] / (2.0 * jnp.pi)) ** 2
+        / (compressibility[..., None] * h_diag**2)
+    )  # (n_sys, 3)
+    M = jnp.broadcast_to(
+        per_column[..., None, :], (*per_column.shape, 3)
+    )  # (n_sys, 3, 3)
+    return jnp.tril(M)
+
+
+def _build_integrator_params(config: MdParameters, cell: Cell) -> IntegratorParams:
     """Construct the concrete integrator-params dataclass matching ``config.integrator``."""
     time_step = jnp.array([config.time_step * FEMTO_SECOND])
     temperature = jnp.array([config.temperature])
@@ -290,6 +375,24 @@ def _build_integrator_params(config: MdParameters) -> IntegratorParams:
                 compressibility=jnp.array([config.compressibility / PASCAL]),
                 minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
             )
+        case "baoab_npt_langevin":
+            tau_P = jnp.array([config.pressure_coupling_time * FEMTO_SECOND])
+            kappa = jnp.array([config.compressibility / PASCAL])
+            gamma = jnp.array([config.friction_coefficient / FEMTO_SECOND])
+            barostat_mass = _gao_barostat_mass(cell.vectors, kappa, tau_P)
+            barostat_friction = jnp.tril(
+                jnp.broadcast_to(gamma[..., None, None], barostat_mass.shape)
+            )
+            return BAOABNPTLangevinParams(
+                time_step=time_step,
+                temperature=temperature,
+                friction_coefficient=gamma,
+                target_pressure=jnp.array([config.target_pressure * PASCAL]),
+                pressure_coupling_time=tau_P,
+                compressibility=kappa,
+                barostat_mass=barostat_mass,
+                barostat_friction=barostat_friction,
+            )
 
 
 __all__ = [
@@ -301,6 +404,7 @@ __all__ = [
     "BAOABLangevinParams",
     "CSVRParams",
     "CSVRNPTParams",
+    "BAOABNPTLangevinParams",
     "IntegratorParams",
     "md_state_from_ase",
 ]
