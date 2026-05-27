@@ -1,0 +1,39 @@
+# LAMMPS NVE reference for kUPS md_nve_lj_argon.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data inputs/host/argon_fcc_lammps.data
+
+pair_style lj/cut 10.0
+pair_coeff 1 1 0.01032356174398622 3.405 10.0
+pair_modify shift no tail no
+
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+timestep 0.0001
+velocity all set 0.0 0.0 0.0
+
+fix ensemble all nve
+
+thermo 1000
+thermo_style custom step temp pe ke etotal press vol
+thermo_modify norm no flush yes
+
+run 10000
+reset_timestep 0
+
+variable s equal step
+variable t equal temp
+variable pe_ equal pe
+variable ke_ equal ke
+variable etot equal etotal
+variable p equal press
+variable v equal vol
+
+fix obs all print 1 "${s} ${t} ${pe_} ${ke_} ${etot} ${p} ${v}" file outputs/reference/md_nve_lj_argon_lammps.dat screen no title "step temp pe ke etotal press_bar volume"
+
+run 20000
+
+unfix obs

@@ -12,11 +12,18 @@ ci/statistical/
 │   ├── host/              # CIF structure files
 │   └── lennard_jones/     # Force field parameters
 ├── expected/              # Expected values for validation
+├── lammps/                # LAMMPS cross-reference suite
+│   ├── inputs/
+│   │   ├── reference/     # LAMMPS input decks
+│   │   └── host/          # LAMMPS data files
+│   ├── expected/          # kUPS-format YAML stats from LAMMPS
+│   └── outputs/           # Generated LAMMPS .dat tables (ignored)
 ├── validate.py            # Validation script (runs in CI)
 ├── run_reference.py       # Run all reference sims and generate expected values
 ├── generate_expected.py   # Generate expected values from a single HDF5 file
 ├── validate_nve_physics.py  # NVE physics validation
-└── validate_nvt_physics.py  # NVT physics validation
+├── validate_nvt_physics.py  # NVT physics validation
+└── validate_npt_physics.py  # NPT physics validation
 ```
 
 ## Adding a New Test
@@ -63,3 +70,27 @@ The validator compares measured values against expected values using a statistic
 ```
 
 This accounts for statistical uncertainty in both the reference and measured values.
+
+## LAMMPS References
+
+The MD LJ Argon statistical suite also keeps LAMMPS same-force-field reference
+inputs and committed per-case kUPS-format YAML stats under `lammps/`.
+Generated `.dat` output tables live under `lammps/outputs/` and are ignored.
+The YAML SEMs use the same fixed 5-block average
+calculation as kUPS expected-value generation. LAMMPS `press` is converted
+from total pressure to the configurational pressure currently stored as kUPS MD
+`pressure` by subtracting the kinetic contribution, then converted from bar to
+kUPS internal pressure units. CI compares the committed LAMMPS YAML stats to
+the kUPS MD NVE, NVT, and NPT references without requiring LAMMPS or `.dat`
+tables to be present.
+
+To regenerate the LAMMPS YAMLs on a machine with `lmp` installed:
+
+```bash
+cd ci/statistical/lammps
+uv run python run_reference.py
+uv run python validate.py
+
+# To rewrite YAML stats from existing generated .dat tables without rerunning LAMMPS:
+uv run python run_reference.py --analyze-only
+```

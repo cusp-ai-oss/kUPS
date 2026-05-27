@@ -1,0 +1,51 @@
+# LAMMPS fully flexible NPT reference for kUPS md_npt_lj_argon_baoab.
+
+units metal
+atom_style atomic
+boundary p p p
+read_data inputs/host/argon_fcc_lammps.data
+
+pair_style lj/cut 10.0
+pair_coeff 1 1 0.01032356174398622 3.405 10.0
+pair_modify shift no tail no
+
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+timestep 0.002
+velocity all create 100.0 42 mom yes rot no dist gaussian
+
+fix ensemble all npt temp 100.0 100.0 0.1 tri 420.0 420.0 1.0 mtk yes tchain 3 pchain 3
+
+thermo 1000
+thermo_style custom step temp pe ke etotal press vol lx ly lz xy xz yz pxx pyy pzz pxy pxz pyz
+thermo_modify norm no flush yes
+
+run 100000
+reset_timestep 0
+
+variable s equal step
+variable t equal temp
+variable pe_ equal pe
+variable ke_ equal ke
+variable etot equal etotal
+variable p equal press
+variable v equal vol
+variable lx_ equal lx
+variable ly_ equal ly
+variable lz_ equal lz
+variable xy_ equal xy
+variable xz_ equal xz
+variable yz_ equal yz
+variable pxx_ equal pxx
+variable pyy_ equal pyy
+variable pzz_ equal pzz
+variable pxy_ equal pxy
+variable pxz_ equal pxz
+variable pyz_ equal pyz
+
+fix obs all print 1 "${s} ${t} ${pe_} ${ke_} ${etot} ${p} ${v} ${lx_} ${ly_} ${lz_} ${xy_} ${xz_} ${yz_} ${pxx_} ${pyy_} ${pzz_} ${pxy_} ${pxz_} ${pyz_}" file outputs/reference/md_npt_lj_argon_tri_lammps.dat screen no title "step temp pe ke etotal press_bar volume lx ly lz xy xz yz pxx pyy pzz pxy pxz pyz"
+
+run 20000
+
+unfix obs

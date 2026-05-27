@@ -31,6 +31,7 @@ SCRIPT_DIR = Path(__file__).parent
 INPUTS_DIR = SCRIPT_DIR / "inputs" / "ci"
 EXPECTED_DIR = SCRIPT_DIR / "expected"
 DEFAULT_TOLERANCE_SIGMAS = 10.0
+N_BLOCKS = 5
 
 CLI_COMMANDS: dict[str, str] = {
     "md": "kups_md_lj",
@@ -42,12 +43,12 @@ SIM_ENV = {**os.environ, "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
 
 
 def _analyze_mcmc_first_system(path: Path) -> MCMCAnalysisResult:
-    results = analyze_mcmc_file(path)
+    results = analyze_mcmc_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 
 def _analyze_md_first_system(path: Path) -> MDAnalysisResult:
-    results = analyze_md_file(path)
+    results = analyze_md_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 
