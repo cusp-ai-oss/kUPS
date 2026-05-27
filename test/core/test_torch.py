@@ -10,6 +10,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+_REQUIRES_JAX_GPU = not any(device.platform == "gpu" for device in jax.devices())
+pytestmark = pytest.mark.skipif(
+    _REQUIRES_JAX_GPU,
+    reason="JAX GPU backend required",
+)
+
 # Skip entire module if torch not available
 torch = pytest.importorskip("torch", minversion="2.0.0")
 
