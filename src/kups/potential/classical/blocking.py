@@ -20,7 +20,7 @@ from jax import Array
 from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
-from kups.core.neighborlist import Edges, NearestNeighborList
+from kups.core.neighborlist import Edges, NeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY_LENS,
@@ -140,7 +140,7 @@ class IsBlockingSpheresProbe(Protocol):
     @property
     def changed_particle_idx(self) -> Array: ...
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
 
 
 @dataclass
@@ -218,7 +218,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch](
     groups_view: View[State, Table[GroupId, HasMotifIndex]] = field(static=True)
     systems_view: View[State, Table[SystemId, HasCell]] = field(static=True)
     parameters_view: View[State, BlockingSpheresParameters] = field(static=True)
-    neighborlist_view: View[State, NearestNeighborList] = field(static=True)
+    neighborlist_view: View[State, NeighborList[Literal[2]]] = field(static=True)
     probe: Probe[State, Ptch, IsBlockingSpheresProbe] | None = field(static=True)
 
     def __call__(self, state: State, patch: Ptch | None):  # type: ignore[reportReturnType]
@@ -283,7 +283,7 @@ def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch](
     groups_view: View[State, Table[GroupId, HasMotifIndex]],
     systems_view: View[State, Table[SystemId, HasCell]],
     parameters_view: View[State, BlockingSpheresParameters],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     probe: Probe[State, Ptch, IsBlockingSpheresProbe] | None,
     gradient_lens: Lens[BlockingSpheresPotentialInput, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
@@ -339,7 +339,7 @@ class IsBlockingSpheresState(Protocol):
     @property
     def blocking_spheres_parameters(self) -> BlockingSpheresParameters: ...
     @property
-    def blocking_spheres_neighborlist(self) -> NearestNeighborList: ...
+    def blocking_spheres_neighborlist(self) -> NeighborList[Literal[2]]: ...
 
 
 @overload

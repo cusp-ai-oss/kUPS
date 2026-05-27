@@ -38,7 +38,7 @@ from jax import Array
 from kups.core.capacity import Capacity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import View, bind
-from kups.core.neighborlist import Edges, NearestNeighborList
+from kups.core.neighborlist import Edges, NeighborList
 from kups.core.patch import Patch, Probe
 from kups.core.typing import (
     HasCell,
@@ -207,9 +207,9 @@ class IsRadiusGraphProbe[P: IsRadiusGraphPoints](Protocol):
     @property
     def particles(self) -> WithIndices[ParticleId, P]: ...
     @property
-    def neighborlist_after(self) -> NearestNeighborList: ...
+    def neighborlist_after(self) -> NeighborList[Literal[2]]: ...
     @property
-    def neighborlist_before(self) -> NearestNeighborList: ...
+    def neighborlist_before(self) -> NeighborList[Literal[2]]: ...
 
 
 @dataclass
@@ -225,14 +225,14 @@ class RadiusGraphConstructor[
         particles: View extracting ``Indexed[ParticleId, P]`` from state.
         systems: View extracting ``Indexed[SystemId, S]`` (cell).
         cutoffs: View extracting ``Indexed[SystemId, Array]`` from state.
-        neighborlist: View extracting the ``NearestNeighborList`` from state.
+        neighborlist: View extracting the ``NeighborList`` from state.
         probe: Optional probe for incremental particle + neighbor list changes.
     """
 
     particles: View[State, Table[ParticleId, P]] = field(static=True)
     systems: View[State, Table[SystemId, S]] = field(static=True)
     cutoffs: View[State, Table[SystemId, Array]] = field(static=True)
-    neighborlist: View[State, NearestNeighborList] = field(static=True)
+    neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
     probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None = field(static=True)
 
     @jit(static_argnames=("old_graph",))

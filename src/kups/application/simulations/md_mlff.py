@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -31,7 +32,7 @@ from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
-    NearestNeighborList,
+    NeighborList,
     UniversalNeighborlistParameters,
 )
 from kups.core.typing import ParticleId, SystemId
@@ -69,7 +70,7 @@ class MlffMdState:
     jaxified_model: TojaxedMliap
 
     @property
-    def neighborlist(self) -> NearestNeighborList:
+    def neighborlist(self) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.from_state(self)
 
 

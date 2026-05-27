@@ -19,7 +19,7 @@ from jax import Array, export
 
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
-from kups.core.neighborlist import NearestNeighborList
+from kups.core.neighborlist import NeighborList
 from kups.core.patch import IdPatch, WithPatch
 from kups.core.potential import EMPTY_LENS, EmptyType, Energy, Potential, PotentialOut
 from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
@@ -171,7 +171,7 @@ def tojaxed_energy(
 def make_tojaxed_potential[State, Gradients, Hessians](
     particles_view: View[State, Table[ParticleId, IsTojaxedParticles]],
     systems_view: View[State, Table[SystemId, HasCell]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     model: View[State, TojaxedMliap] | TojaxedMliap,
     cutoffs_view: View[State, Table[SystemId, Array]],
     gradient_lens: Lens[JaxifiedInput, Gradients],
@@ -225,7 +225,7 @@ class IsTojaxedState(Protocol):
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
     @property
     def jaxified_model(self) -> TojaxedMliap: ...
 

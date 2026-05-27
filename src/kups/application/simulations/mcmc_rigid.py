@@ -41,7 +41,7 @@ from kups.core.lens import bind, identity_lens, lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
-    NearestNeighborList,
+    NeighborList,
     RefineMaskNeighborList,
     UniversalNeighborlistParameters,
     neighborlist_changes,
@@ -188,7 +188,7 @@ class MCMCState:
         return FixedCapacity(motif_size * len(self.systems))
 
     @property
-    def neighborlist(self) -> NearestNeighborList:
+    def neighborlist(self) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.from_state(self)
 
     @property
@@ -196,7 +196,7 @@ class MCMCState:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
 
     @property
-    def blocking_spheres_neighborlist(self) -> NearestNeighborList:
+    def blocking_spheres_neighborlist(self) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.new(
             self, lens(lambda x: x.blocking_spheres_neighborlist_params)
         )

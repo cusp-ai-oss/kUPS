@@ -37,7 +37,7 @@ from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
-    NearestNeighborList,
+    NeighborList,
     UniversalNeighborlistParameters,
 )
 from kups.core.typing import ParticleId, SystemId
@@ -106,7 +106,7 @@ class RelaxTorchState:
     torch_mliap_model: TorchMliap
 
     @property
-    def neighborlist(self) -> NearestNeighborList:
+    def neighborlist(self) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.from_state(self)
 
 

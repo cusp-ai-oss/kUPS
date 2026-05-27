@@ -22,7 +22,7 @@ from kups.core.lens import Lens, View, lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
-    NearestNeighborList,
+    NeighborList,
     UniversalNeighborlistParameters,
 )
 from kups.core.patch import Patch, WithPatch
@@ -154,7 +154,7 @@ class _RadiusGraphEvalState:
     neighborlist_params: UniversalNeighborlistParameters
 
     @property
-    def neighborlist(self) -> NearestNeighborList:
+    def neighborlist(self) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.from_state(self)
 
 

@@ -19,7 +19,7 @@ from kups.core.cell import Vacuum
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
-from kups.core.neighborlist import NearestNeighborList
+from kups.core.neighborlist import NeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY_LENS,
@@ -106,7 +106,7 @@ def make_coulomb_vacuum_potential[
     particles_view: View[State, Table[ParticleId, IsCoulombGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell[Vacuum]]],
     cutoffs_view: View[State, Table[SystemId, Array]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsCoulombGraphParticles]] | None,
     gradient_lens: Lens[CoulombVacuumInput, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
@@ -167,7 +167,7 @@ class IsCoulombVacuumState(Protocol):
     @property
     def systems(self) -> Table[SystemId, HasCell[Vacuum]]: ...
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
     @property
     def coulomb_cutoff(self) -> Table[SystemId, Array]: ...
 

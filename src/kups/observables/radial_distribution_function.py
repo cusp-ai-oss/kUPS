@@ -35,7 +35,7 @@ and solvation structure.
 """
 
 from collections import namedtuple
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import jax
 import jax.numpy as jnp
@@ -46,7 +46,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import View, lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
-    NearestNeighborList,
+    NeighborList,
     NeighborListSystems,
 )
 from kups.core.propagator import StateProperty
@@ -90,7 +90,7 @@ def radial_distribution_function(
     systems: Table[SystemId, NeighborListSystems],
     rmax: float,
     bins: int,
-    neighborlist: NearestNeighborList,
+    neighborlist: NeighborList[Literal[2]],
     cutoffs: Table[SystemId, Array] | None = None,
 ) -> Array:
     """Compute radial distribution function $g(r)$ from particle positions.
@@ -181,7 +181,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
     systems: View[State, Table[SystemId, NeighborListSystems]] = field(static=True)
     rmax: View[State, float] = field(static=True)
     bins: View[State, int] = field(static=True)
-    neighborlist: NearestNeighborList = field(static=True)
+    neighborlist: NeighborList[Literal[2]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> Array:
         """Compute RDF from current state.
