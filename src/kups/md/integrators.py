@@ -38,7 +38,11 @@ from kups.core.typing import (
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, tree_map, vectorize
 from kups.core.utils.random import sample_like
-from kups.md.observables import instantaneous_pressure, particle_kinetic_energy
+from kups.md.observables import (
+    instantaneous_pressure,
+    particle_kinetic_energy,
+    remove_center_of_mass_momentum,
+)
 from kups.observables.stress import stress_via_virial_theorem
 
 type Time = Array
@@ -422,6 +426,16 @@ class StochasticStep[State](Propagator[State]):
         new_momenta = (
             damping_factor[..., None] * particles.data.momenta
             + (noise_amplitude * jnp.sqrt(particles.data.masses))[..., None] * noise
+        )
+        constrained_momenta = remove_center_of_mass_momentum(
+            new_momenta, particles.data.masses, particles.data.system
+        )
+        # Deterministic gamma=0 or dt=0 steps should remain no-ops. For
+        # active Langevin thermostats, keep the sampled ensemble in the
+        # zero-total-momentum subspace used by the MD temperature analysis.
+        should_project = (sys.friction_coefficient > 0) & (sys.time_step > 0)
+        new_momenta = jnp.where(
+            should_project[..., None], constrained_momenta, new_momenta
         )
 
         assert new_momenta.shape == particles.data.momenta.shape

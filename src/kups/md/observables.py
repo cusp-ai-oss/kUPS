@@ -11,6 +11,8 @@ and are distinct from the StateProperty-based observables in kups.observables.
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.data import Index
+from kups.core.typing import SystemId
 from kups.core.utils.jax import vectorize
 
 
@@ -32,6 +34,22 @@ def particle_kinetic_energy(momentum: Array, mass: Array) -> Array:
     """
     # K = p²/(2m) [energy]
     return 0.5 * jnp.sum(jnp.square(momentum), axis=-1) / mass
+
+
+def remove_center_of_mass_momentum(
+    momenta: Array, masses: Array, system: Index[SystemId]
+) -> Array:
+    """Project momenta onto the zero-total-momentum subspace per system.
+
+    The projection subtracts the center-of-mass velocity from each particle,
+    ``p_i <- p_i - m_i * sum_j(p_j) / sum_j(m_j)``, independently for each
+    system index. This is the mass-metric projection for the canonical ensemble
+    conditioned on zero total momentum.
+    """
+    total_momentum = system.sum_over(momenta).data
+    total_mass = system.sum_over(masses).data
+    com_velocity = total_momentum / total_mass[..., None]
+    return momenta - masses[..., None] * com_velocity[system.indices]
 
 
 @vectorize(signature="(),(3,3),()->()")

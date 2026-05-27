@@ -3,6 +3,8 @@
 
 """Unit tests for MD integrators."""
 
+from typing import Any, cast
+
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -370,9 +372,35 @@ class TestThermostatSteps:
             jax.random.key(42),
             n_equil=50,
             n_sample=100,
-            extract_fn=lambda s: compute_temperature(s, 3 * n_particles),
+            extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
         assert_temperature(jnp.mean(temps), kT_target, 0.2)
+
+    def test_stochastic_step_removes_center_of_mass_momentum(self):
+        state, _, _ = create_harmonic_system(n_particles=6, kT=1.0, dt=0.02)
+        drift = jnp.array([0.4, -0.2, 0.1])
+        momenta = (
+            state.particles.data.momenta + state.particles.data.masses[:, None] * drift
+        )
+        state = SimpleState.particles.focus(lambda p: p.data.momenta).set(
+            state, momenta
+        )
+        step = StochasticStep(particles=SimpleState.particles, system=get_params)
+
+        out = step(jax.random.key(7), state)
+
+        total_momentum = out.particles.data.system.sum_over(
+            out.particles.data.momenta
+        ).data
+        assert jnp.allclose(total_momentum, 0.0, atol=1e-12)
+
+    def test_stochastic_step_gamma_zero_is_deterministic_noop(self):
+        state, _, _ = create_harmonic_system(n_particles=6, kT=1.0, dt=0.02, gamma=0.0)
+        step = StochasticStep(particles=SimpleState.particles, system=get_params)
+
+        out = step(jax.random.key(7), state)
+
+        assert jnp.allclose(out.particles.data.momenta, state.particles.data.momenta)
 
     def test_csvr_velocity_rescaling(self):
         n_particles, kT_target = 10, 2.0
@@ -613,7 +641,7 @@ class TestNVTPhysics:
             jax.random.key(456),
             n_equil=150,
             n_sample=150,
-            extract_fn=lambda s: compute_temperature(s, 3 * n_particles),
+            extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
         assert_temperature(jnp.mean(temps), kT_target, 0.15, "BAOAB ")
 
@@ -779,6 +807,7 @@ def test_stress_matches_ase():
 
     import ase.io
     import numpy as np
+    from ase import Atoms
     from ase.calculators.lj import LennardJones as ASELJ
 
     from kups.application.md.data import MdParameters, md_state_from_ase
@@ -805,7 +834,7 @@ def test_stress_matches_ase():
     sigma, eps = 3.405, 0.01032356174398622
 
     # ASE stress
-    atoms = ase.io.read(str(cif))
+    atoms = cast(Atoms, ase.io.read(str(cif)))
     atoms.calc = ASELJ(epsilon=eps, sigma=sigma, rc=10.0, smooth=False)
     ase_stress = atoms.get_stress(voigt=False)
     ase_pressure = -np.trace(ase_stress) / 3
@@ -813,8 +842,8 @@ def test_stress_matches_ase():
     # kUPS: evaluate potential directly (no propagator/propagate_and_fix)
     @dataclass
     class S:
-        particles: Table[ParticleId, ...]
-        systems: Table[SystemId, ...]
+        particles: Table[ParticleId, Any]
+        systems: Table[SystemId, Any]
         neighborlist_params: UniversalNeighborlistParameters
         step: jnp.ndarray
         lj_parameters: LennardJonesParameters
