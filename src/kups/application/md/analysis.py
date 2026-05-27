@@ -9,6 +9,7 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -18,6 +19,8 @@ from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.storage import HDF5StorageReader
 from kups.core.typing import (
+    HasMasses,
+    HasMomenta,
     HasPositions,
     HasPotentialEnergy,
     HasStressTensor,
@@ -29,11 +32,18 @@ from kups.core.utils.block_average import (
     block_average,
     optimal_block_average,
 )
+from kups.md.observables import (
+    particle_kinetic_energy,
+    remove_center_of_mass_momentum,
+)
 
 
 class _IsMDAtoms(HasPositions, Protocol):
     @property
     def system(self) -> Index[SystemId]: ...
+
+
+class _IsMDStepAtoms(HasMomenta, HasMasses, Protocol): ...
 
 
 class IsMDInitData(Protocol):
@@ -45,6 +55,9 @@ class IsMDInitData(Protocol):
 
 class IsMDStepData(HasPotentialEnergy, HasStressTensor, Protocol):
     """Contract for the step reader group."""
+
+    @property
+    def atoms(self) -> Table[ParticleId, _IsMDStepAtoms]: ...
 
     @property
     def kinetic_energy(self) -> Array: ...
@@ -89,6 +102,7 @@ def _analyze_single_system(
     volume: Array,
     n_atoms: int,
     n_blocks: int | None,
+    internal_kinetic_energy: Array,
 ) -> MDAnalysisResult:
     """Run block-averaging analysis for one system.
 
@@ -99,12 +113,17 @@ def _analyze_single_system(
         volume: Cell volume time series, shape ``(n_steps,)``.
         n_atoms: Number of atoms in this system.
         n_blocks: Number of blocks, or ``None`` for automatic selection.
+        internal_kinetic_energy: Center-of-mass-projected kinetic energy time
+            series to use when computing internal temperature. The logged
+            ``kinetic_energy`` and ``total_energy`` are left unchanged.
     """
     degrees_of_freedom = 3 * n_atoms - 3
     total_energy = potential_energy + kinetic_energy
     n_steps = len(total_energy)
 
-    temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * degrees_of_freedom)
+    temperature = (
+        2 * internal_kinetic_energy / (BOLTZMANN_CONSTANT * degrees_of_freedom)
+    )
     pressure = jnp.trace(stress_tensor, axis1=-2, axis2=-1) / 3
 
     if n_blocks is None:
@@ -137,6 +156,24 @@ def _analyze_single_system(
     )
 
 
+def _internal_kinetic_energy(
+    atoms: Table[ParticleId, _IsMDStepAtoms],
+    system: Index[SystemId],
+    system_number: int,
+) -> Array:
+    """Compute per-step internal kinetic energy for one system."""
+    mask = system.indices == system_number
+    momenta = atoms.data.momenta[:, mask, :]
+    masses = atoms.data.masses[:, mask]
+    local_system = Index.zeros(momenta.shape[1], label=SystemId)
+    projected_momenta = jax.vmap(
+        remove_center_of_mass_momentum,
+        in_axes=(0, 0, None),
+    )(momenta, masses, local_system)
+
+    return jnp.sum(particle_kinetic_energy(projected_momenta, masses), axis=-1)
+
+
 def analyze_md(
     init_data: IsMDInitData,
     step_data: IsMDStepData,
@@ -161,13 +198,17 @@ def analyze_md(
 
     results: dict[SystemId, MDAnalysisResult] = {}
     for i, sys_id in enumerate(system_index.keys):
+        kinetic_energy = step_data.kinetic_energy[:, i]
+        internal_ke = kinetic_energy
+        internal_ke = _internal_kinetic_energy(step_data.atoms, system_index, i)
         results[sys_id] = _analyze_single_system(
             potential_energy=step_data.potential_energy[:, i],
-            kinetic_energy=step_data.kinetic_energy[:, i],
+            kinetic_energy=kinetic_energy,
             stress_tensor=step_data.stress_tensor[:, i],
             volume=step_data.volume[:, i],
             n_atoms=int(n_atoms_per_system[i]),
             n_blocks=n_blocks,
+            internal_kinetic_energy=internal_ke,
         )
 
     return results

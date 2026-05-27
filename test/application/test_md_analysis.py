@@ -14,6 +14,7 @@ from kups.application.md.analysis import analyze_md
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.typing import ParticleId, SystemId
+from kups.core.utils.jax import no_post_init
 
 
 @dataclass
@@ -24,7 +25,16 @@ class MockAtomData:
     system: Index[SystemId]
 
 
+@dataclass
+class MockStepAtomData:
+    """Mock satisfying per-step atom momenta and masses."""
+
+    momenta: Array
+    masses: Array
+
+
 jax.tree_util.register_dataclass(MockAtomData)
+jax.tree_util.register_dataclass(MockStepAtomData)
 
 
 @dataclass
@@ -42,6 +52,7 @@ class MockStepData:
     kinetic_energy: Array
     stress_tensor: Array
     volume: Array
+    atoms: Table[ParticleId, MockStepAtomData]
 
 
 def _make_init(n_atoms: int = 10, n_systems: int = 1) -> MockInitData:
@@ -55,20 +66,54 @@ def _make_init(n_atoms: int = 10, n_systems: int = 1) -> MockInitData:
     return MockInitData(atoms=Table(keys=keys, data=data))
 
 
+def _make_step_atoms_from_kinetic_energy(
+    ke: Array,
+    n_atoms: int = 10,
+) -> Table[ParticleId, MockStepAtomData]:
+    """Create per-step atoms whose internal kinetic energy matches ``ke``."""
+    n_steps, n_systems = ke.shape
+    dtype = jnp.result_type(ke, jnp.float32)
+    momenta = jnp.zeros((n_steps, n_atoms, 3), dtype=dtype)
+    masses = jnp.ones((n_steps, n_atoms), dtype=dtype)
+
+    for system_number in range(n_systems):
+        atom_indices = [i for i in range(n_atoms) if i % n_systems == system_number]
+        if len(atom_indices) < 2:
+            raise ValueError(
+                "At least two atoms per system are needed for mock momenta"
+            )
+
+        amplitude = jnp.sqrt(ke[:, system_number].astype(dtype))
+        momenta = momenta.at[:, atom_indices[0], 0].set(amplitude)
+        momenta = momenta.at[:, atom_indices[1], 0].set(-amplitude)
+
+    with no_post_init():
+        return Table(
+            keys=tuple(ParticleId(i) for i in range(n_atoms)),
+            data=MockStepAtomData(momenta=momenta, masses=masses),
+        )
+
+
 def _make_step(
     pe: Array,
     ke: Array,
     stress: Array,
     volume: Array | None = None,
+    atoms: Table[ParticleId, MockStepAtomData] | None = None,
+    *,
+    n_atoms: int = 10,
 ) -> MockStepData:
-    """Create mock step data."""
+    """Create mock step data with per-step atoms."""
     if volume is None:
         volume = jnp.ones(pe.shape)
+    if atoms is None:
+        atoms = _make_step_atoms_from_kinetic_energy(ke, n_atoms=n_atoms)
     return MockStepData(
         potential_energy=pe,
         kinetic_energy=ke,
         stress_tensor=stress,
         volume=volume,
+        atoms=atoms,
     )
 
 
@@ -105,12 +150,58 @@ class TestAnalyzeMD:
         stress = jnp.zeros((n_steps, 1, 3, 3))
 
         results = analyze_md(
-            _make_init(n_atoms), _make_step(pe, ke, stress), n_blocks=10
+            _make_init(n_atoms),
+            _make_step(pe, ke, stress, n_atoms=n_atoms),
+            n_blocks=10,
         )
         r = results[SystemId(0)]
 
         assert r.temperature.mean == pytest.approx(expected_temp, rel=1e-6)
         assert r.n_atoms == n_atoms
+
+    def test_temperature_subtracts_center_of_mass_kinetic_energy(self):
+        """Internal temperature excludes COM drift when per-step momenta are logged."""
+        n_steps = 100
+        n_atoms = 2
+        dof = 3 * n_atoms - 3
+        momenta = jnp.tile(
+            jnp.array([[[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]]),
+            (n_steps, 1, 1),
+        )
+        masses = jnp.ones((n_steps, n_atoms))
+        with no_post_init():
+            atoms = Table(
+                keys=tuple(ParticleId(i) for i in range(n_atoms)),
+                data=MockStepAtomData(momenta=momenta, masses=masses),
+            )
+        pe = jnp.zeros((n_steps, 1))
+        ke = jnp.full((n_steps, 1), 1.0)
+        stress = jnp.zeros((n_steps, 1, 3, 3))
+
+        results = analyze_md(
+            _make_init(n_atoms), _make_step(pe, ke, stress, atoms=atoms), n_blocks=10
+        )
+
+        expected_temp = 2.0 / (BOLTZMANN_CONSTANT * dof)
+        assert results[SystemId(0)].temperature.mean == pytest.approx(
+            expected_temp, rel=1e-6
+        )
+
+        com_momenta = jnp.tile(
+            jnp.array([[[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]),
+            (n_steps, 1, 1),
+        )
+        with no_post_init():
+            com_atoms = Table(
+                keys=tuple(ParticleId(i) for i in range(n_atoms)),
+                data=MockStepAtomData(momenta=com_momenta, masses=masses),
+            )
+        com_results = analyze_md(
+            _make_init(n_atoms),
+            _make_step(pe, ke, stress, atoms=com_atoms),
+            n_blocks=10,
+        )
+        assert com_results[SystemId(0)].temperature.mean == pytest.approx(0.0)
 
     def test_pressure(self):
         """Pressure equals trace of diagonal stress / 3."""
