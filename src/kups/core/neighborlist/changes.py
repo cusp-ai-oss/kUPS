@@ -23,7 +23,7 @@ from kups.core.data import Index, Table
 from kups.core.data.wrappers import WithIndices
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import (
-    NearestNeighborList,
+    NeighborList,
     NeighborListPoints,
     NeighborListSystems,
 )
@@ -39,7 +39,7 @@ class NeighborListChangesResult(NamedTuple):
 
 @partial(jit, static_argnames=("compaction",))
 def neighborlist_changes(
-    neighborlist: NearestNeighborList,
+    neighborlist: NeighborList[Literal[2]],
     lh: Table[ParticleId, NeighborListPoints],
     rh: WithIndices[ParticleId, Table[ParticleId, NeighborListPoints]],
     systems: Table[SystemId, NeighborListSystems],

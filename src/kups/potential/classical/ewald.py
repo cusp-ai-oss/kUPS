@@ -33,7 +33,7 @@ from kups.core.cell import Cell, Periodic3D
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
-from kups.core.neighborlist import NearestNeighborList, all_connected_neighborlist
+from kups.core.neighborlist import NeighborList, all_connected_neighborlist
 from kups.core.patch import Accept, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY,
@@ -689,7 +689,7 @@ def make_ewald_short_range_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, EwaldParameters],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
@@ -812,7 +812,7 @@ def make_ewald_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
@@ -888,7 +888,7 @@ def make_ewald_potential[
 
     def _make_probe(
         inclusion_fn: Callable[[IsEwaldPointData], Index[Any]],
-        neighborlist_override: NearestNeighborList | None = None,
+        neighborlist_override: NeighborList[Literal[2]] | None = None,
     ) -> Probe[State, Ptch, IsRadiusGraphProbe[_ParticleData]] | None:
         """Wrap `probe` to convert particle data with `inclusion_fn`.
 
@@ -904,8 +904,8 @@ def make_ewald_potential[
         @dataclass
         class _ProbeResult:
             particles: WithIndices[ParticleId, _ParticleData]
-            neighborlist_after: NearestNeighborList
-            neighborlist_before: NearestNeighborList
+            neighborlist_after: NeighborList[Literal[2]]
+            neighborlist_before: NeighborList[Literal[2]]
 
         def _wrapper(state: State, patch: Ptch) -> _ProbeResult:
             result = _p(state, patch)
@@ -1028,7 +1028,7 @@ class IsEwaldState[Params](Protocol):
     @property
     def systems(self) -> Table[SystemId, HasCell[Periodic3D]]: ...
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
     @property
     def ewald_parameters(self) -> Params: ...
 

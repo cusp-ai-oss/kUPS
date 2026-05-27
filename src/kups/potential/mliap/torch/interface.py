@@ -40,7 +40,7 @@ from jax import Array
 
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
-from kups.core.neighborlist import NearestNeighborList
+from kups.core.neighborlist import NeighborList
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
@@ -363,7 +363,7 @@ def make_torch_mliap_potential[
     State,
     P: IsTorchMliapParticles,
     S: HasCell,
-    NNList: NearestNeighborList,
+    NNList: NeighborList[Literal[2]],
 ](
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
@@ -381,7 +381,7 @@ def make_torch_mliap_potential[
     State,
     P: IsTorchMliapParticles,
     S: HasCell,
-    NNList: NearestNeighborList,
+    NNList: NeighborList[Literal[2]],
 ](
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
@@ -456,7 +456,7 @@ class IsTorchMliapState(Protocol):
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
     @property
     def torch_mliap_model(self) -> TorchMliap: ...
 

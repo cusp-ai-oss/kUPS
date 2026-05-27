@@ -10,7 +10,7 @@ accuracy trade-offs.
 ## Core Components
 
 - **[Edges][kups.core.neighborlist.Edges]**: Represents connections between particles with periodic shifts
-- **[NearestNeighborList][kups.core.neighborlist.NearestNeighborList]**: Protocol for neighbor search implementations
+- **[NeighborList][kups.core.neighborlist.NeighborList]**: Protocol for neighbor search implementations
 - **[Pipeline][kups.core.neighborlist.Pipeline]**: Selector → mask sequence → compactor
 
 ## Neighbor List Implementations
@@ -95,7 +95,7 @@ from kups.core.neighborlist.types import (
     IsNeighborListState,
     IsUniversalNeighborlistParams,
     Mask,
-    NearestNeighborList,
+    NeighborList,
     NeighborListPoints,
     NeighborListSystems,
     PipelineContext,
@@ -124,7 +124,7 @@ __all__ = [
     "IsUniversalNeighborlistParams",
     "Mask",
     "MaskOnlyCompactor",
-    "NearestNeighborList",
+    "NeighborList",
     "NeighborListChangesResult",
     "NeighborListPoints",
     "NeighborListSystems",

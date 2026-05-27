@@ -4,7 +4,7 @@
 """Protocols for the neighbor list module.
 
 Defines the core
-[`NearestNeighborList`][kups.core.neighborlist.types.NearestNeighborList]
+[`NeighborList`][kups.core.neighborlist.types.NeighborList]
 call signature, the particle and system trait protocols expected by every
 implementation, the
 [`Mask`][kups.core.neighborlist.types.Mask] /
@@ -20,7 +20,7 @@ protocol used by the ``from_state`` constructors.
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple, Protocol
+from typing import NamedTuple, Protocol
 
 from jax import Array
 
@@ -50,11 +50,12 @@ class NeighborListPoints(
 class NeighborListSystems(HasCell, Protocol): ...
 
 
-class NearestNeighborList(Protocol):
+class NeighborList[D: int](Protocol):
     """Protocol for neighbor list construction algorithms.
 
-    Implementations find pairs of particles within a cutoff distance, handling
-    periodic boundary conditions and inclusion/exclusion masks.
+    Implementations find groups of particles within a cutoff distance, handling
+    periodic boundary conditions and inclusion/exclusion masks. The degree
+    parameter tracks the arity of the emitted edge tuples.
     """
 
     def __call__[P: NeighborListPoints](
@@ -64,8 +65,8 @@ class NearestNeighborList(Protocol):
         systems: Table[SystemId, NeighborListSystems],
         cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
-        """Find all particle pairs within the cutoff distance.
+    ) -> Edges[D]:
+        """Find all particle groups within the cutoff distance.
 
         Args:
             lh: Left-hand particles to find neighbors for
@@ -77,7 +78,7 @@ class NearestNeighborList(Protocol):
                 rh is treated as disjoint from lh.
 
         Returns:
-            Edges connecting particle pairs within cutoff
+            Edges connecting particle groups within cutoff
         """
         ...
 

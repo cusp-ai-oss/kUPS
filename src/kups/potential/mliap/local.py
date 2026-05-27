@@ -49,7 +49,7 @@ from jax import Array
 
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind
-from kups.core.neighborlist import Edges, NearestNeighborList
+from kups.core.neighborlist import Edges, NeighborList
 from kups.core.patch import Accept, Patch, Probe, WithPatch
 from kups.core.potential import EMPTY_LENS, Energy, Potential, PotentialOut
 from kups.core.typing import (
@@ -482,7 +482,7 @@ class LocalMLIAPComposer[
     particles: View[State, Table[ParticleId, P]] = field(static=True)
     systems: View[State, Table[SystemId, S]] = field(static=True)
     cutoffs: View[State, Table[SystemId, Array]] = field(static=True)
-    neighborlist: View[State, NearestNeighborList] = field(static=True)
+    neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
     model: Lens[State, LocalMLIAPData] = field(static=True)
     probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None = field(static=True)
 
@@ -538,7 +538,7 @@ def make_local_mliap_potential[
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
     cutoffs_view: View[State, Table[SystemId, Array]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     model_lens: Lens[State, LocalMLIAPData],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None,
     gradient_lens: Lens[LocalMLIAPInput[State, P, S], Gradients],
@@ -598,7 +598,7 @@ class IsLocalMLIAPState[Model](Protocol):
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
     @property
     def local_mliap_model(self) -> Model: ...
 

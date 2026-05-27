@@ -31,7 +31,7 @@ from jax import Array
 
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View, identity_lens
-from kups.core.neighborlist import NearestNeighborList
+from kups.core.neighborlist import NeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY_LENS,
@@ -360,7 +360,7 @@ def make_lennard_jones_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, LennardJonesParameters],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsLJGraphParticles]] | None,
     gradient_lens: Lens[LJRadiusInp, Gradients],
@@ -405,7 +405,7 @@ class IsLJState[Params](HasLJParticlesAndSystems, Protocol):
     """State with particles, systems, neighbor list, and LJ parameters."""
 
     @property
-    def neighborlist(self) -> NearestNeighborList: ...
+    def neighborlist(self) -> NeighborList[Literal[2]]: ...
     @property
     def lj_parameters(self) -> Params: ...
 
@@ -523,7 +523,7 @@ def make_pair_tail_corrected_lennard_jones_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, PairTailCorrectedLennardJonesParameters],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsLJGraphParticles]] | None,
     gradient_lens: Lens[PCLJInp, Gradients],

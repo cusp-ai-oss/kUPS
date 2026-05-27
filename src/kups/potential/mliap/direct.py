@@ -34,7 +34,7 @@ from jax import Array
 
 from kups.core.data import Table
 from kups.core.lens import Lens, View
-from kups.core.neighborlist import NearestNeighborList
+from kups.core.neighborlist import NeighborList
 from kups.core.patch import Patch, WithPatch
 from kups.core.potential import Potential, PotentialOut
 from kups.core.typing import (
@@ -95,7 +95,7 @@ def make_direct_mliap_potential[
     model_fn: DirectMliapFn[Model, Gradients, Hessians, P, S, Ptch],
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
-    neighborlist_view: View[State, NearestNeighborList],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
     model_view: View[State, Model],
     cutoffs_view: View[State, Table[SystemId, Array]],
     *,
