@@ -38,9 +38,9 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.data import Table
+from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
-from kups.core.neighborlist import Edges
+from kups.core.neighborlist import FixedEdgesNeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY_LENS,
@@ -54,7 +54,6 @@ from kups.core.typing import (
     HasCache,
     HasCell,
     HasPositionsAndLabels,
-    HasSystemIndex,
     Label,
     MaybeCached,
     ParticleId,
@@ -68,15 +67,16 @@ from kups.potential.common.energy import (
     position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
-    EdgeSetGraphConstructor,
+    GraphConstructor,
     GraphPotentialInput,
-    IsEdgeSetGraphProbe,
+    IsGraphProbe,
+    IsRadiusGraphPoints,
     LocalGraphSumComposer,
 )
 
 
 @runtime_checkable
-class IsBondedParticles(HasPositionsAndLabels, HasSystemIndex, Protocol):
+class IsBondedParticles(HasPositionsAndLabels, IsRadiusGraphPoints, Protocol):
     """Particle data with positions, labels, and system index."""
 
     ...
@@ -214,11 +214,10 @@ def make_inversion_potential[
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
-    edges_view: View[State, Edges[Literal[4]]],
+    edge_indices_view: View[State, Index[ParticleId]],
     systems_view: View[State, Table[SystemId, HasCell]],
     parameter_view: View[State, InversionParameters],
-    probe: Probe[State, Ptch, IsEdgeSetGraphProbe[IsBondedParticles, Literal[4]]]
-    | None,
+    probe: Probe[State, Ptch, IsGraphProbe[IsBondedParticles, Literal[4]]] | None,
     gradient_lens: Lens[InversionInput, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -229,10 +228,10 @@ def make_inversion_potential[
 
     Args:
         particles_view: Extracts particle data (positions, species) with system index
-        edges_view: Extracts inversion connectivity (4-tuples: center + 3 neighbors)
+        edge_indices_view: Extracts inversion connectivity (4-tuples: center + 3 neighbors)
         systems_view: Extracts indexed system data (cell)
         parameter_view: Extracts [InversionParameters][kups.potential.classical.inversion.InversionParameters]
-        probe: Grouped probe for incremental updates (particles, edges, capacity)
+        probe: Graph probe for incremental particle and neighbor-list updates
         gradient_lens: Specifies gradients to compute
         hessian_lens: Specifies Hessians to compute
         hessian_idx_view: Hessian index structure
@@ -242,10 +241,12 @@ def make_inversion_potential[
     Returns:
         Inversion [Potential][kups.core.potential.Potential]
     """
-    graph_fn = EdgeSetGraphConstructor(
+    graph_fn = GraphConstructor(
         particles=particles_view,
-        edges=edges_view,
         systems=systems_view,
+        neighborlist=lambda state: FixedEdgesNeighborList[Literal[4]](
+            edge_indices_view(state)
+        ),
         probe=probe,
     )
     composer = LocalGraphSumComposer(
@@ -265,14 +266,14 @@ def make_inversion_potential[
 
 
 class IsInversionState[Params](Protocol):
-    """Protocol for states providing all inputs for the inversion potential."""
+    """Protocol for states providing full-evaluation inversion inputs."""
 
     @property
     def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
     @property
-    def inversion_edges(self) -> Edges[Literal[4]]: ...
+    def inversion_indices(self) -> Index[ParticleId]: ...
     @property
     def inversion_parameters(self) -> Params: ...
 
@@ -309,11 +310,7 @@ def make_inversion_from_state[State, P: Patch](
             HasCache[InversionParameters, PotentialOut[EmptyType, EmptyType]]
         ],
     ],
-    probe: Probe[
-        State,
-        P,
-        IsEdgeSetGraphProbe[IsBondedParticles, Literal[4]],
-    ],
+    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
@@ -327,11 +324,7 @@ def make_inversion_from_state[State, P: Patch](
             HasCache[InversionParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
-    probe: Probe[
-        State,
-        P,
-        IsEdgeSetGraphProbe[IsBondedParticles, Literal[4]],
-    ],
+    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     compute_position_and_cell_gradients: Literal[True],
 ) -> Potential[State, PositionAndCell, EmptyType, P]: ...
@@ -346,10 +339,11 @@ def make_inversion_from_state(
     """Create an inversion potential, optionally with incremental updates.
 
     Args:
-        state: Lens into the sub-state providing particles, cell, edges,
-            and inversion parameters.
-        probe: Detects which particles and edges changed since the last step.
-            None for no incremental updates.
+        state: Lens into the sub-state providing particles, cell, inversion
+            indices, and inversion parameters.
+        probe: If provided, detects particle changes and supplies the
+            before/after fixed-edge neighbor lists for incremental updates.
+            Those neighbor lists carry any required update capacity.
         compute_position_and_cell_gradients: When True, computes gradients
             w.r.t. particle positions and lattice vectors.
 
@@ -380,15 +374,15 @@ def make_inversion_from_state(
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_inversion_potential(
         state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.inversion_edges),
+        state.focus(lambda x: x.inversion_edge_indices),
         state.focus(lambda x: x.systems),
         param_view,
         probe,
         gradient_lens,
         EMPTY_LENS,
         EMPTY_LENS,
-        patch_idx_view,
-        cache_view,
+        patch_idx_view=patch_idx_view,
+        out_cache_lens=cache_view,
     )
 
 

@@ -32,6 +32,7 @@ from jax import Array
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View, identity_lens
 from kups.core.neighborlist import (
+    EmptyNeighborList,
     IsAdaptiveCutoffNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
@@ -70,11 +71,10 @@ from kups.potential.common.energy import (
 )
 from kups.potential.common.graph import (
     FullGraphSumComposer,
+    GraphConstructor,
     GraphPotentialInput,
-    IsRadiusGraphProbe,
+    IsGraphProbe,
     LocalGraphSumComposer,
-    PointCloudConstructor,
-    RadiusGraphConstructor,
 )
 
 type MixingRule = Literal["lorentz_berthelot"]
@@ -367,7 +367,7 @@ def make_lennard_jones_potential[
     systems_view: View[State, Table[SystemId, HasCell]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, LennardJonesParameters],
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[IsLJGraphParticles]] | None,
+    probe: Probe[State, Ptch, IsGraphProbe[IsLJGraphParticles, Literal[2]]] | None,
     gradient_lens: Lens[LJRadiusInp, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -375,7 +375,7 @@ def make_lennard_jones_potential[
     out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create a standard Lennard-Jones potential with sharp cutoff."""
-    graph_fn = RadiusGraphConstructor(
+    graph_fn = GraphConstructor(
         particles=particles_view,
         systems=systems_view,
         neighborlist=neighborlist_view,
@@ -446,7 +446,7 @@ def make_lennard_jones_from_state[State, P: Patch](
         State,
         IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]],
     ],
-    probe: Probe[State, P, IsRadiusGraphProbe],
+    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     neighborlist_factory: NeighborListFactory[
@@ -463,7 +463,7 @@ def make_lennard_jones_from_state[State, P: Patch](
             HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
         ],
     ],
-    probe: Probe[State, P, IsRadiusGraphProbe],
+    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     compute_position_and_cell_gradients: Literal[True],
     neighborlist_factory: NeighborListFactory[
@@ -552,7 +552,7 @@ def make_pair_tail_corrected_lennard_jones_potential[
     systems_view: View[State, Table[SystemId, HasCell]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, PairTailCorrectedLennardJonesParameters],
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[IsLJGraphParticles]] | None,
+    probe: Probe[State, Ptch, IsGraphProbe[IsLJGraphParticles, Literal[2]]] | None,
     gradient_lens: Lens[PCLJInp, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -560,7 +560,7 @@ def make_pair_tail_corrected_lennard_jones_potential[
     out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create a Lennard-Jones potential with smooth pairwise tail correction."""
-    radius_graph_fn = RadiusGraphConstructor(
+    radius_graph_fn = GraphConstructor(
         particles=particles_view,
         systems=systems_view,
         neighborlist=neighborlist_view,
@@ -603,10 +603,11 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
     return PotentialFromEnergy(
         energy_fn=global_lennard_jones_tail_correction_energy,
         composer=FullGraphSumComposer(
-            PointCloudConstructor(
+            GraphConstructor(
                 particles=particles_view,
                 systems=systems_view,
-                probe_particles=None,
+                neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+                probe=None,
             ),
             parameter_view=parameter_view,
         ),
@@ -695,10 +696,11 @@ def make_global_lennard_jones_tail_correction_pressure[State](
     parameter_view: View[State, GlobalTailCorrectedLennardJonesParameters],
 ) -> StateProperty[State, Table[SystemId, Array]]:
     """Create long-range pressure correction for Lennard-Jones systems."""
-    graph_constructor = PointCloudConstructor(
+    graph_constructor = GraphConstructor(
         particles=particles_view,
         systems=systems_view,
-        probe_particles=None,
+        neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+        probe=None,
     )
 
     def pressure(key: Array, state: State) -> Table[SystemId, Array]:

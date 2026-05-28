@@ -48,11 +48,11 @@ from kups.potential.common.energy import (
     position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
+    GraphConstructor,
     GraphPotentialInput,
+    IsGraphProbe,
     IsRadiusGraphPoints,
-    IsRadiusGraphProbe,
     LocalGraphSumComposer,
-    RadiusGraphConstructor,
 )
 
 TO_STANDARD_UNITS = HARTREE * BOHR
@@ -112,7 +112,7 @@ def make_coulomb_vacuum_potential[
     particles_view: View[State, Table[ParticleId, IsCoulombGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell[Vacuum]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[IsCoulombGraphParticles]] | None,
+    probe: Probe[State, Ptch, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]] | None,
     gradient_lens: Lens[CoulombVacuumInput, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -140,7 +140,7 @@ def make_coulomb_vacuum_potential[
     Returns:
         Coulomb potential for vacuum.
     """
-    radius_graph_fn = RadiusGraphConstructor(
+    radius_graph_fn = GraphConstructor(
         particles=particles_view,
         systems=systems_view,
         neighborlist=neighborlist_view,
@@ -198,7 +198,7 @@ def make_coulomb_vacuum_from_state[State](
 @overload
 def make_coulomb_vacuum_from_state[State, P: Patch](
     state: Lens[State, IsCoulombVacuumState],
-    probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
+    probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
@@ -208,7 +208,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch](
 @overload
 def make_coulomb_vacuum_from_state[State, P: Patch](
     state: Lens[State, IsCoulombVacuumState],
-    probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
+    probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     compute_position_and_cell_gradients: Literal[True],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,

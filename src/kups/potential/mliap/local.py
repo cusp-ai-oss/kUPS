@@ -76,10 +76,10 @@ from kups.potential.common.energy import (
     Summand,
 )
 from kups.potential.common.graph import (
+    GraphConstructor,
+    IsGraphProbe,
     IsRadiusGraphPoints,
-    IsRadiusGraphProbe,
     PointCloud,
-    RadiusGraphConstructor,
 )
 
 
@@ -490,7 +490,7 @@ class LocalMLIAPComposer[
     systems: View[State, Table[SystemId, S]] = field(static=True)
     neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
     model: Lens[State, LocalMLIAPData] = field(static=True)
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None = field(static=True)
+    probe: Probe[State, Ptch, IsGraphProbe[P, Literal[2]]] | None = field(static=True)
 
     def __call__(
         self, state: State, patch: Ptch | None
@@ -505,7 +505,7 @@ class LocalMLIAPComposer[
             Sum containing single LocalMLIAPInput summand
         """
 
-        radius_graph_constr = RadiusGraphConstructor(
+        radius_graph_constr = GraphConstructor(
             self.particles,
             self.systems,
             self.neighborlist,
@@ -544,7 +544,7 @@ def make_local_mliap_potential[
     systems_view: View[State, Table[SystemId, S]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     model_lens: Lens[State, LocalMLIAPData],
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None,
+    probe: Probe[State, Ptch, IsGraphProbe[P, Literal[2]]] | None,
     gradient_lens: Lens[LocalMLIAPInput[State, P, S], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -623,7 +623,7 @@ def make_local_mliap_from_state[State, Gradient, Hessian](
 @overload
 def make_local_mliap_from_state[State, Ptch: Patch, Gradient, Hessian](
     state: Lens[State, IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut]]],
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[IsLocalMLIAPGraphParticles]],
+    probe: Probe[State, Ptch, IsGraphProbe[IsLocalMLIAPGraphParticles, Literal[2]]],
     gradient_lens: Lens[LocalMLIAPInput, Gradient] = EMPTY_LENS,
     hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
     hessian_idx_view: Lens[State, Hessian] = EMPTY_LENS,

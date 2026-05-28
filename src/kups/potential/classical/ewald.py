@@ -34,6 +34,7 @@ from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
 from kups.core.neighborlist import (
+    EmptyNeighborList,
     IsAdaptiveCutoffNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
@@ -77,13 +78,13 @@ from kups.potential.common.energy import (
     position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
+    GraphConstructor,
     GraphPotentialInput,
+    IsGraphProbe,
     IsRadiusGraphPoints,
-    IsRadiusGraphProbe,
     LocalGraphSumComposer,
     PointCloud,
-    PointCloudConstructor,
-    RadiusGraphConstructor,
+    empty_graph_probe,
 )
 
 TO_STANDARD_UNITS = HARTREE * BOHR
@@ -698,7 +699,7 @@ def make_ewald_short_range_potential[
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, EwaldParameters],
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
+    probe: Probe[State, Ptch, IsGraphProbe[IsEwaldPointData, Literal[2]]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -710,7 +711,7 @@ def make_ewald_short_range_potential[
     return PotentialFromEnergy(
         energy_fn=ewald_short_range_energy,
         composer=LocalGraphSumComposer(
-            graph_constructor=RadiusGraphConstructor(
+            graph_constructor=GraphConstructor(
                 particles=particles_view,
                 systems=systems_view,
                 neighborlist=neighborlist_view,
@@ -792,10 +793,11 @@ def make_ewald_self_interaction_potential[
     return PotentialFromEnergy(
         energy_fn=ewald_self_interaction_energy,
         composer=LocalGraphSumComposer(
-            graph_constructor=PointCloudConstructor(
+            graph_constructor=GraphConstructor(
                 particles=particles_view,
                 systems=systems_view,
-                probe_particles=probe,
+                neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+                probe=empty_graph_probe(probe),
             ),
             parameter_view=parameter_view,
         ),
@@ -821,7 +823,7 @@ def make_ewald_potential[
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache] | None,
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[IsEwaldPointData]] | None,
+    probe: Probe[State, Ptch, IsGraphProbe[IsEwaldPointData, Literal[2]]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -895,7 +897,7 @@ def make_ewald_potential[
     def _make_probe(
         inclusion_fn: Callable[[IsEwaldPointData], Index[Any]],
         neighborlist_override: NeighborList[Literal[2]] | None = None,
-    ) -> Probe[State, Ptch, IsRadiusGraphProbe[_ParticleData]] | None:
+    ) -> Probe[State, Ptch, IsGraphProbe[_ParticleData, Literal[2]]] | None:
         """Wrap `probe` to convert particle data with `inclusion_fn`.
 
         Args:
@@ -1000,7 +1002,7 @@ def make_ewald_potential[
     excl_view = pipe(particles_view, lambda p: _convert_particles(p, _excl_inclusion))
     excl_probe = _make_probe(_excl_inclusion, all_connected_neighborlist)
 
-    excl_rg = RadiusGraphConstructor(
+    excl_rg = GraphConstructor(
         particles=excl_view,
         systems=systems_view,
         neighborlist=lambda _: all_connected_neighborlist,
@@ -1069,7 +1071,7 @@ def make_ewald_from_state[State, P: Patch](
     state: Lens[
         State, IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
     ],
-    probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
+    probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
@@ -1085,7 +1087,7 @@ def make_ewald_from_state[State, P: Patch](
         State,
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]],
     ],
-    probe: Probe[State, P, IsRadiusGraphProbe[IsEwaldPointData]],
+    probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
     *,
     compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,

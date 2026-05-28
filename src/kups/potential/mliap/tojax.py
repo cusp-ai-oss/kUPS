@@ -34,9 +34,9 @@ from kups.core.utils.msgpack import deserialize as msgpack_deserialize
 from kups.potential.common.energy import PositionAndCell, PotentialFromEnergy
 from kups.potential.common.graph import (
     FullGraphSumComposer,
+    GraphConstructor,
     GraphPotentialInput,
     IsRadiusGraphPoints,
-    RadiusGraphConstructor,
 )
 
 
@@ -202,7 +202,7 @@ def make_tojaxed_potential[State, Gradients, Hessians](
         Jaxified potential.
     """
     model_view = (lambda _: model) if isinstance(model, TojaxedMliap) else model
-    radius_graph_fn = RadiusGraphConstructor(
+    radius_graph_fn = GraphConstructor(
         particles=particles_view,
         systems=systems_view,
         neighborlist=neighborlist_view,
