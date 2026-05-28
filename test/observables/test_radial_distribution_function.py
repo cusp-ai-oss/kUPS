@@ -125,7 +125,7 @@ class TestRadialDistributionFunction:
             systems=view(lambda s: s.systems),  # type: ignore
             rmax=view(lambda s: s.rmax),  # type: ignore
             bins=view(lambda s: s.bins),  # type: ignore
-            neighborlist=MockNeighborList(),
+            neighborlist=lambda s: MockNeighborList(),
         )
         class_result = rdf_calc(jax.random.PRNGKey(42), state)
         assert class_result.shape == (1, 50)
@@ -173,7 +173,9 @@ class TestRadialDistributionFunction:
             8.0,
             40,
             AllDenseNearestNeighborList(
-                avg_edges=FixedCapacity(4), avg_image_candidates=FixedCapacity(4)
+                avg_edges=FixedCapacity(4),
+                avg_image_candidates=FixedCapacity(4),
+                cutoffs=Table((SystemId(0),), jnp.array([8.0])),
             ),
         )
 
@@ -250,7 +252,9 @@ class TestRadialDistributionFunction:
         systems = _make_systems(cell, rmax)
 
         nnlist = AllDenseNearestNeighborList(
-            avg_edges=FixedCapacity(4), avg_image_candidates=FixedCapacity(4)
+            avg_edges=FixedCapacity(4),
+            avg_image_candidates=FixedCapacity(4),
+            cutoffs=Table((SystemId(0),), jnp.array([rmax])),
         )
         result = radial_distribution_function(positions, systems, rmax, bins, nnlist)
 

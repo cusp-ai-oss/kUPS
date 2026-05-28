@@ -99,7 +99,6 @@ class SystemData:
 class State:
     particles: Table[ParticleId, ParticleData]
     systems: Table[SystemId, SystemData]
-    neighborlist: AllDenseNearestNeighborList
     lj_parameters: WithCache[LennardJonesParameters, EmptyCache]
     bond_edges: Edges[Literal[2]]
     harmonic_bond_parameters: WithCache[HarmonicBondParameters, EmptyCache]
@@ -112,6 +111,15 @@ class State:
     dihedral_parameters: WithCache[DihedralParameters, EmptyCache]
     inversion_edges: Edges[Literal[4]]
     inversion_parameters: WithCache[InversionParameters, EmptyCache]
+
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> AllDenseNearestNeighborList:
+        return AllDenseNearestNeighborList(
+            avg_edges=FixedCapacity(N_PARTICLES**2),
+            avg_image_candidates=FixedCapacity(N_PARTICLES**2),
+            cutoffs=cutoffs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -261,15 +269,10 @@ def _build_common(positions: Array | None = None) -> _CommonParts:
 
 def _make_state(positions: Array | None = None) -> State:
     c = _build_common(positions)
-    nl = AllDenseNearestNeighborList(
-        avg_edges=FixedCapacity(N_PARTICLES**2),
-        avg_image_candidates=FixedCapacity(N_PARTICLES**2),
-    )
     ec = _empty_cache
     return State(
         particles=c.particles,
         systems=c.systems,
-        neighborlist=nl,
         lj_parameters=WithCache(c.lj, ec),
         bond_edges=c.bond_edges,
         harmonic_bond_parameters=WithCache(c.hb, ec),
@@ -491,8 +494,12 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
         def radius_probe(state: State, patch: Patch[State]) -> RadiusProbe:
             return RadiusProbe(
                 particles=_point_changes(state, patch),
-                neighborlist_after=state.neighborlist,
-                neighborlist_before=state.neighborlist,
+                neighborlist_after=state.neighborlist(
+                    state.systems.map_data(lambda d: d.cutoff)
+                ),
+                neighborlist_before=state.neighborlist(
+                    state.systems.map_data(lambda d: d.cutoff)
+                ),
             )
 
         return radius_probe

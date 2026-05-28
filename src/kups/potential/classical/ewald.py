@@ -706,7 +706,6 @@ def make_ewald_short_range_potential[
             graph_constructor=RadiusGraphConstructor(
                 particles=particles_view,
                 systems=systems_view,
-                cutoffs=pipe(parameter_view, lambda p: p.cutoff),
                 neighborlist=neighborlist_view,
                 probe=probe,
             ),
@@ -842,7 +841,7 @@ def make_ewald_potential[
     Args:
         particles_view: Indexed particle data (positions, charges, system index).
         systems_view: Indexed system data (cell).
-        neighborlist_view: Full neighbor list.
+        neighborlist_view: Cutoff-bound neighbor list.
         parameter_lens: Lens to EwaldParameters.
         cache_lens: Lens to EwaldCache, or ``None``.
         probe: Probe for incremental updates, or ``None``.
@@ -997,7 +996,6 @@ def make_ewald_potential[
     excl_rg = RadiusGraphConstructor(
         particles=excl_view,
         systems=systems_view,
-        cutoffs=pipe(parameter_lens, lambda p: p.cutoff),
         neighborlist=lambda _: all_connected_neighborlist,
         probe=excl_probe,
     )
@@ -1027,8 +1025,9 @@ class IsEwaldState[Params](Protocol):
     def particles(self) -> Table[ParticleId, IsEwaldPointData]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell[Periodic3D]]: ...
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]: ...
     @property
     def ewald_parameters(self) -> Params: ...
 
@@ -1131,10 +1130,14 @@ def make_ewald_from_state(
     if probe is not None:
         param_view = state.focus(lambda x: x.ewald_parameters.data)
         cache_view = state.focus(lambda x: x.ewald_parameters.cache)
+
+    def neighborlist_view(s):
+        return state(s).neighborlist(param_view(s).cutoff)
+
     return make_ewald_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.neighborlist),
+        neighborlist_view,
         param_view,
         cache_view,
         probe,

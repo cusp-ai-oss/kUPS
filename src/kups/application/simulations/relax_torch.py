@@ -105,9 +105,8 @@ class RelaxTorchState:
     step: Array
     torch_mliap_model: TorchMliap
 
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self)
+    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
+        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 def _load_torch_model(config: MACEModelConfig | UMAModelConfig) -> TorchMliap:

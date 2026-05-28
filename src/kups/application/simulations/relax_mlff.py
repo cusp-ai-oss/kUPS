@@ -72,9 +72,8 @@ class RelaxMlffState:
     step: Array
     jaxified_model: TojaxedMliap
 
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self)
+    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
+        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 def init_state(config: Config, opt_init: OptInit) -> RelaxMlffState:

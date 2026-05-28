@@ -143,10 +143,12 @@ def simple_system():
         full_neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
+            cutoffs=systems.map_data(lambda d: d.cutoff),
         ),
         update_nnlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
+            cutoffs=systems.map_data(lambda d: d.cutoff),
         ),
     )
 
@@ -203,7 +205,6 @@ def composer():
     return LocalMLIAPComposer[State, AtomData, SystemData, AtomPatch](
         particles=lambda s: s.atoms,
         systems=lambda s: s.systems,
-        cutoffs=lambda s: s.systems.map_data(lambda d: d.cutoff),
         neighborlist=lambda s: s.full_neighborlist,
         model=lens(lambda s: s.model_config, cls=State),
         probe=_make_probe,
@@ -216,7 +217,6 @@ def potential():
     return make_local_mliap_potential(
         particles_view=lambda s: s.atoms,
         systems_view=lambda s: s.systems,
-        cutoffs_view=lambda s: s.systems.map_data(lambda d: d.cutoff),
         neighborlist_view=lambda s: s.full_neighborlist,
         model_lens=lens(lambda s: s.model_config, cls=State),
         probe=_make_probe,

@@ -132,6 +132,11 @@ def _systems_from_lvecs(lvecs, cutoffs):
     return _systems_from_cell(cell, cutoffs)
 
 
+def _cutoff_table(cutoffs):
+    """Create a cutoff table with canonical SystemId keys for tests."""
+    return Table(tuple(SystemId(i) for i in range(len(cutoffs))), cutoffs)
+
+
 def _make_rh(lh, rh_positions, rh_batch_mask, rh_index_remap, exclusion_ids=None):
     """Create rh Table data and index remap for testing."""
     n_rh = len(rh_positions)
@@ -164,10 +169,9 @@ def _make_edges(lh_indices, rh_indices, n_particles=None, shifts=None):
 
 
 def _call_nl(nl_instance, lh, systems, cutoffs, rh=None, rh_index_remap=None):
-    """Call a neighbor list with the new API."""
-    return nl_instance(
-        lh=lh, rh=rh, systems=systems, cutoffs=cutoffs, rh_index_remap=rh_index_remap
-    )
+    """Call a cutoff-bound neighbor list."""
+    del cutoffs
+    return nl_instance(lh=lh, rh=rh, systems=systems, rh_index_remap=rh_index_remap)
 
 
 def _make_pipeline_ctx(lh, rh=None, cell=None, rh_index_remap=None):
@@ -351,13 +355,14 @@ class TestNearestNeighborListImplementations:
         params=[
             {
                 "instance_factory": (
-                    lambda candidates, edges, image_candidates=None, **kwargs: (
+                    lambda candidates, edges, cutoffs, image_candidates=None, **kwargs: (
                         DenseNearestNeighborList(
                             avg_candidates=FixedCapacity(candidates),
                             avg_edges=FixedCapacity(edges),
                             avg_image_candidates=FixedCapacity(
                                 image_candidates or candidates
                             ),
+                            cutoffs=cutoffs,
                         )
                     )
                 ),
@@ -365,7 +370,7 @@ class TestNearestNeighborListImplementations:
             },
             {
                 "instance_factory": (
-                    lambda candidates, edges, cells, image_candidates=None, **kwargs: (
+                    lambda candidates, edges, cells, cutoffs, image_candidates=None, **kwargs: (
                         CellListNeighborList(
                             avg_candidates=FixedCapacity(candidates),
                             avg_edges=FixedCapacity(edges),
@@ -373,6 +378,7 @@ class TestNearestNeighborListImplementations:
                             avg_image_candidates=FixedCapacity(
                                 image_candidates or candidates
                             ),
+                            cutoffs=cutoffs,
                         )
                     )
                 ),
@@ -380,12 +386,13 @@ class TestNearestNeighborListImplementations:
             },
             {
                 "instance_factory": (
-                    lambda candidates, edges, cells, image_candidates=None, **kwargs: (
+                    lambda candidates, edges, cells, cutoffs, image_candidates=None, **kwargs: (
                         AllDenseNearestNeighborList(
                             avg_edges=FixedCapacity(edges),
                             avg_image_candidates=FixedCapacity(
                                 image_candidates or edges
                             ),
+                            cutoffs=cutoffs,
                         )
                     )
                 ),
@@ -420,9 +427,6 @@ class TestNearestNeighborListImplementations:
         # Get the instance factory for this implementation
         instance_factory = neighbor_list_impl_info["instance_factory"]
 
-        # Create neighbor list instance using the implementation-specific factory
-        neighbor_list_instance = instance_factory(**params["extras"])
-
         # Create PointSet objects for lh and rh
         lh = _make_lh(
             params["positions"],
@@ -444,11 +448,11 @@ class TestNearestNeighborListImplementations:
             systems, cutoffs = _systems_from_cell(params["cells"], params["cutoffs"])
         else:
             systems, cutoffs = _systems_from_lvecs(params["cells"], params["cutoffs"])
+        neighbor_list_instance = instance_factory(cutoffs=cutoffs, **params["extras"])
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=rh,
             systems=systems,
-            cutoffs=cutoffs,
             rh_index_remap=rh_remap,
         )
 
@@ -843,9 +847,6 @@ class TestNearestNeighborListImplementations:
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            **{"edges": N, "candidates": N, "cells": 64}
-        )
 
         lh = _make_lh(
             positions,
@@ -854,10 +855,11 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            cutoffs=_cut, **{"edges": N, "candidates": N, "cells": 64}
+        )
         while (
-            result := as_result_function(neighbor_list_instance)(
-                lh, None, systems=_sys, cutoffs=_cut
-            )
+            result := as_result_function(neighbor_list_instance)(lh, None, systems=_sys)
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
         result.raise_assertion()
@@ -890,9 +892,6 @@ class TestNearestNeighborListImplementations:
         cutoff = 3
         # Get the instance factory
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            **{"edges": N, "candidates": N, "cells": 64}
-        )
 
         rh_indices = jax.random.choice(jax.random.key(1), N, shape=(M,), replace=False)
         new_positions = jax.random.uniform(
@@ -907,12 +906,14 @@ class TestNearestNeighborListImplementations:
         rh, rh_remap = _make_rh(lh, new_positions, jnp.array([0] * M), rh_indices)
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            cutoffs=_cut, **{"edges": N, "candidates": N, "cells": 64}
+        )
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
                 rh=rh,
                 systems=_sys,
-                cutoffs=_cut,
                 rh_index_remap=rh_remap,
             )
         ).failed_assertions:
@@ -971,14 +972,12 @@ class TestNearestNeighborListImplementations:
         batch_mask_1 = jnp.array([0, 0])
         lv_1 = jnp.diag(jnp.array([1.0, 10.0, 10.0]))[None]
         cell_1 = PeriodicCell(TriclinicFrame.from_matrix(lv_1))
-        nl_1 = instance_factory(
-            candidates=10, edges=10, cells=256, image_candidates=200
-        )
         lh_1 = _make_lh(positions_1, batch_mask_1, jnp.arange(len(batch_mask_1)))
         _sys_1, _cut_1 = _systems_from_cell(cell_1, jnp.array([cutoff]))
-        result_1 = jax.jit(as_result_function(nl_1))(
-            lh=lh_1, rh=None, systems=_sys_1, cutoffs=_cut_1
+        nl_1 = instance_factory(
+            candidates=10, edges=10, cells=256, image_candidates=200, cutoffs=_cut_1
         )
+        result_1 = jax.jit(as_result_function(nl_1))(lh=lh_1, rh=None, systems=_sys_1)
         result_1.raise_assertion()
         valid_1 = {
             (int(e[0]), int(e[1]))
@@ -993,12 +992,12 @@ class TestNearestNeighborListImplementations:
         batch_mask_2 = jnp.array([0, 0])
         lv_2 = jnp.eye(3)[None] * 1.0
         cell_2 = PeriodicCell(TriclinicFrame.from_matrix(lv_2))
-        nl_2 = instance_factory(candidates=4, edges=53, cells=8, image_candidates=600)
         lh_2 = _make_lh(positions_2, batch_mask_2, jnp.arange(len(batch_mask_2)))
         _sys_2, _cut_2 = _systems_from_cell(cell_2, jnp.array([cutoff]))
-        result_2 = jax.jit(as_result_function(nl_2))(
-            lh=lh_2, rh=None, systems=_sys_2, cutoffs=_cut_2
+        nl_2 = instance_factory(
+            candidates=4, edges=53, cells=8, image_candidates=600, cutoffs=_cut_2
         )
+        result_2 = jax.jit(as_result_function(nl_2))(lh=lh_2, rh=None, systems=_sys_2)
         result_2.raise_assertion()
         valid_2 = {
             (int(e[0]), int(e[1]))
@@ -1020,9 +1019,6 @@ class TestNearestNeighborListImplementations:
         cutoff = 1.2
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            candidates=50, edges=50, cells=64, image_candidates=10000
-        )
 
         lh = _make_lh(
             positions,
@@ -1031,12 +1027,14 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            candidates=50, edges=50, cells=64, image_candidates=10000, cutoffs=_cut
+        )
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
                 rh=None,
                 systems=_sys,
-                cutoffs=_cut,
             )
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
@@ -1072,9 +1070,6 @@ class TestNearestNeighborListImplementations:
         cutoffs = jnp.array([0.8, 1.5])
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            candidates=30, edges=20, cells=256, image_candidates=300
-        )
 
         lh = _make_lh(
             positions,
@@ -1085,11 +1080,13 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, cutoffs)
+        neighbor_list_instance = instance_factory(
+            candidates=30, edges=20, cells=256, image_candidates=300, cutoffs=_cut
+        )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
         result.raise_assertion()
 
@@ -1134,8 +1131,6 @@ class TestNearestNeighborListImplementations:
         shuffle = jnp.array([0, 2, 1, 4, 3, 5])
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        nl = instance_factory(candidates=50, edges=53, cells=8, image_candidates=1500)
-        nl = jax.jit(as_result_function(nl))
         data = _make_lh(
             positions,
             batch_mask,
@@ -1143,6 +1138,10 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, cutoffs)
+        nl = instance_factory(
+            candidates=50, edges=53, cells=8, image_candidates=1500, cutoffs=_cut
+        )
+        nl = jax.jit(as_result_function(nl))
 
         def get_edges(idx_order):
             rev_order = np.argsort(idx_order)
@@ -1151,7 +1150,7 @@ class TestNearestNeighborListImplementations:
                 lambda x: x[jnp.asarray(idx_order)], data.data
             )
             reordered = Table(reordered_index, reordered_data)
-            result = nl(reordered, None, systems=_sys, cutoffs=_cut)
+            result = nl(reordered, None, systems=_sys)
             result.raise_assertion()
             mask = (result.value.indices.indices < 6).all(axis=1)
             valid = np.asarray(result.value.indices.indices[mask])
@@ -1180,9 +1179,6 @@ class TestNearestNeighborListImplementations:
         cutoff = 0.8
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            candidates=4, edges=30, cells=12, image_candidates=200
-        )
 
         lh = _make_lh(
             positions,
@@ -1193,11 +1189,13 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            candidates=4, edges=30, cells=12, image_candidates=200, cutoffs=_cut
+        )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
         result.raise_assertion()
 
@@ -1224,9 +1222,6 @@ class TestNearestNeighborListImplementations:
         cutoff = 0.55
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            candidates=1, edges=16, cells=8, image_candidates=125
-        )
 
         lh = _make_lh(
             positions,
@@ -1235,11 +1230,13 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            candidates=1, edges=16, cells=8, image_candidates=125, cutoffs=_cut
+        )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
         result.raise_assertion()
         edges = result.value
@@ -1284,9 +1281,6 @@ class TestNearestNeighborListImplementations:
         cutoff = jnp.inf
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            candidates=4, edges=4, cells=8, image_candidates=4
-        )
 
         lh = _make_lh(
             positions,
@@ -1295,11 +1289,13 @@ class TestNearestNeighborListImplementations:
         )
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            candidates=4, edges=4, cells=8, image_candidates=4, cutoffs=_cut
+        )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
         result.raise_assertion()
         edges = result.value
@@ -1340,19 +1336,18 @@ class TestNearestNeighborListImplementations:
         cutoff = 0.4
 
         instance_factory = neighbor_list_impl["instance_factory"]
-        neighbor_list_instance = instance_factory(
-            candidates=4, edges=30, cells=8, image_candidates=200
-        )
 
         # Same exclusion segment for both particles
         lh = _make_lh(positions, batch_mask, jnp.array([0, 0]))
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
+        neighbor_list_instance = instance_factory(
+            candidates=4, edges=30, cells=8, image_candidates=200, cutoffs=_cut
+        )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
         result.raise_assertion()
         edges = result.value
@@ -1411,7 +1406,9 @@ class TestRefineCutoffNeighborList:
         cutoffs = jnp.array([1.5])  # Should only include distance 1.0 edges
 
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(10)
+            candidates=candidates,
+            avg_edges=FixedCapacity(10),
+            cutoffs=_cutoff_table(cutoffs),
         )
 
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -1419,7 +1416,6 @@ class TestRefineCutoffNeighborList:
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
 
         # Should only get edges with distance <= 1.5
@@ -1464,7 +1460,9 @@ class TestRefineCutoffNeighborList:
         cutoffs = jnp.array([2.1])  # Should include nearest neighbors
 
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(10)
+            candidates=candidates,
+            avg_edges=FixedCapacity(10),
+            cutoffs=_cutoff_table(cutoffs),
         )
 
         _sys, _cut = _systems_from_cell(cell, cutoffs)
@@ -1472,7 +1470,6 @@ class TestRefineCutoffNeighborList:
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
         assert len(edges) >= 0
         assert edges.degree == 2
@@ -1496,7 +1493,9 @@ class TestRefineCutoffNeighborList:
         cutoffs = jnp.array([1.1])
 
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(10)
+            candidates=candidates,
+            avg_edges=FixedCapacity(10),
+            cutoffs=_cutoff_table(cutoffs),
         )
 
         rh, rh_remap = _make_rh(
@@ -1507,7 +1506,6 @@ class TestRefineCutoffNeighborList:
             lh=lh,
             rh=rh,
             systems=_sys,
-            cutoffs=_cut,
             rh_index_remap=rh_remap,
         )
 
@@ -1538,17 +1536,16 @@ class TestRefineCutoffNeighborList:
             jnp.array([1]), jnp.array([2]), n_particles=3
         )
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(4)
+            candidates=candidates,
+            avg_edges=FixedCapacity(4),
+            cutoffs=_cutoff_table(jnp.array([1.0])),
         )
 
-        systems, cutoffs = _systems_from_lvecs(
-            jnp.eye(3)[None] * 1000.0, jnp.array([1.0])
-        )
+        systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
         edges = refinement_nl(
             lh=lh,
             rh=rh,
             systems=systems,
-            cutoffs=cutoffs,
             rh_index_remap=rh_remap,
         )
 
@@ -1579,15 +1576,13 @@ class TestRefineCutoffNeighborList:
             jnp.array([1]), jnp.array([0]), n_particles=2
         )
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(4)
+            candidates=candidates,
+            avg_edges=FixedCapacity(4),
+            cutoffs=_cutoff_table(jnp.array([1.0])),
         )
-        systems, cutoffs = _systems_from_lvecs(
-            jnp.eye(3)[None] * 1000.0, jnp.array([1.0])
-        )
+        systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
 
-        edges = refinement_nl(
-            lh=lh, rh=rh, systems=systems, cutoffs=cutoffs, rh_index_remap=None
-        )
+        edges = refinement_nl(lh=lh, rh=rh, systems=systems, rh_index_remap=None)
 
         npt.assert_array_equal(
             np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
@@ -1616,17 +1611,16 @@ class TestRefineCutoffNeighborList:
             jnp.array([0]), jnp.array([1]), n_particles=2
         )
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(4)
+            candidates=candidates,
+            avg_edges=FixedCapacity(4),
+            cutoffs=_cutoff_table(jnp.array([2.0])),
         )
-        systems, cutoffs = _systems_from_lvecs(
-            jnp.eye(3)[None] * 1000.0, jnp.array([2.0])
-        )
+        systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
 
         edges = refinement_nl(
             lh=lh,
             rh=rh,
             systems=systems,
-            cutoffs=cutoffs,
             rh_index_remap=rh_remap,
         )
 
@@ -1647,7 +1641,9 @@ class TestRefineCutoffNeighborList:
         cutoffs = jnp.array([0.1])  # Much smaller than distance between points (1.0)
 
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(5)
+            candidates=candidates,
+            avg_edges=FixedCapacity(5),
+            cutoffs=_cutoff_table(cutoffs),
         )
 
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -1655,7 +1651,6 @@ class TestRefineCutoffNeighborList:
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
 
         assert edges.degree == 2
@@ -1690,7 +1685,9 @@ class TestRefineCutoffNeighborList:
         cutoffs = jnp.array([1.5, 1.5])  # One cutoff per system
 
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(10)
+            candidates=candidates,
+            avg_edges=FixedCapacity(10),
+            cutoffs=_cutoff_table(cutoffs),
         )
 
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -1698,7 +1695,6 @@ class TestRefineCutoffNeighborList:
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
 
         assert edges.degree == 2
@@ -1719,7 +1715,9 @@ class TestRefineCutoffNeighborList:
         cutoffs = jnp.array([2.0])
 
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(10)
+            candidates=candidates,
+            avg_edges=FixedCapacity(10),
+            cutoffs=_cutoff_table(cutoffs),
         )
 
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -1727,7 +1725,6 @@ class TestRefineCutoffNeighborList:
             lh=lh,
             rh=None,
             systems=_sys,
-            cutoffs=_cut,
         )
 
         # Should exclude all self-interactions due to exclusion segments
@@ -1746,12 +1743,14 @@ class TestRefineCutoffNeighborList:
             lh = self._create_test_pointset(positions)
             candidates = self._create_candidate_edges(jnp.array([0]), jnp.array([1]))
             refinement_nl = RefineCutoffNeighborList(
-                candidates=candidates, avg_edges=FixedCapacity(5)
+                candidates=candidates,
+                avg_edges=FixedCapacity(5),
+                cutoffs=_cutoff_table(jnp.array([2.0])),
             )
             _sys, _cut = _systems_from_lvecs(
                 jnp.eye(3)[None] * 1000.0, jnp.array([2.0])
             )
-            edges = refinement_nl(lh=lh, rh=None, systems=_sys, cutoffs=_cut)
+            edges = refinement_nl(lh=lh, rh=None, systems=_sys)
 
             if len(edges) > 0:
                 diff_vectors = edges.difference_vectors(lh, _sys)
@@ -1775,11 +1774,13 @@ class TestRefineCutoffNeighborList:
 
         candidates = self._create_candidate_edges(jnp.array([0, 1]), jnp.array([1, 2]))
         refinement_nl = RefineCutoffNeighborList(
-            candidates=candidates, avg_edges=FixedCapacity(5)
+            candidates=candidates,
+            avg_edges=FixedCapacity(5),
+            cutoffs=_cutoff_table(jnp.array([10.0])),
         )
 
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
-        edges = refinement_nl(lh=lh, rh=None, systems=_sys, cutoffs=_cut)
+        edges = refinement_nl(lh=lh, rh=None, systems=_sys)
 
         if len(edges) > 0:
             diff_vectors = edges.difference_vectors(lh, _sys)
@@ -1835,10 +1836,8 @@ class TestRefineMaskNeighborList:
         )
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
-        sys, cut = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(
-            lh=lh, rh=rh, systems=sys, cutoffs=cut, rh_index_remap=rh_remap
-        )
+        sys, _ = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
+        edges = refine_nl(lh=lh, rh=rh, systems=sys, rh_index_remap=rh_remap)
 
         raw = edges.indices.indices
         oob = lh.size
@@ -1876,10 +1875,8 @@ class TestRefineMaskNeighborList:
         candidates = _make_edges(jnp.array([0, 2]), jnp.array([1, 3]), n_particles=4)
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
-        sys, cut = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(
-            lh=lh, rh=rh, systems=sys, cutoffs=cut, rh_index_remap=rh_remap
-        )
+        sys, _ = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
+        edges = refine_nl(lh=lh, rh=rh, systems=sys, rh_index_remap=rh_remap)
 
         raw = edges.indices.indices
         oob = lh.size  # MaskOnlyCompactor's OOB sentinel
@@ -1907,14 +1904,12 @@ class TestRefineMaskNeighborList:
         )
         candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
-        systems, cutoffs = _systems_from_lvecs(
+        systems, _ = _systems_from_lvecs(
             jnp.eye(3)[None].repeat(2, axis=0) * 100.0,
             jnp.array([10.0, 10.0]),
         )
 
-        edges = refine_nl(
-            lh=lh, rh=rh, systems=systems, cutoffs=cutoffs, rh_index_remap=None
-        )
+        edges = refine_nl(lh=lh, rh=rh, systems=systems, rh_index_remap=None)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
 
@@ -1936,7 +1931,7 @@ class TestRefineMaskNeighborList:
         )
         candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
-        systems, cutoffs = _systems_from_lvecs(
+        systems, _ = _systems_from_lvecs(
             jnp.eye(3)[None] * 100.0, jnp.array([10.0, 10.0])
         )
 
@@ -1944,7 +1939,6 @@ class TestRefineMaskNeighborList:
             lh=lh,
             rh=rh,
             systems=systems,
-            cutoffs=cutoffs,
             rh_index_remap=rh_remap,
         )
 
@@ -1968,15 +1962,12 @@ class TestRefineMaskNeighborList:
         )
         candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
-        systems, cutoffs = _systems_from_lvecs(
-            jnp.eye(3)[None] * 100.0, jnp.array([10.0])
-        )
+        systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
 
         edges = refine_nl(
             lh=lh,
             rh=rh,
             systems=systems,
-            cutoffs=cutoffs,
             rh_index_remap=rh_remap,
         )
 
@@ -2306,9 +2297,10 @@ def _extract_valid_edge_set(edges: Edges, n_particles: int) -> set[tuple[int, in
 
 def _run_nl_with_retry(nl, lh, rh, systems, cutoffs, rh_remap):
     """Run neighborlist call, retrying on capacity errors."""
+    del cutoffs
     while (
         result := jax.jit(as_result_function(nl))(
-            lh=lh, rh=rh, systems=systems, cutoffs=cutoffs, rh_index_remap=rh_remap
+            lh=lh, rh=rh, systems=systems, rh_index_remap=rh_remap
         )
     ).failed_assertions:
         nl = result.fix_or_raise(nl)
@@ -2320,11 +2312,12 @@ class TestNeighborlistChanges:
     """Tests for the single-call neighborlist_changes utility."""
 
     @staticmethod
-    def _make_nl(capacity=32):
+    def _make_nl(cutoffs, capacity=32):
         return DenseNearestNeighborList(
             avg_candidates=FixedCapacity(capacity),
             avg_edges=FixedCapacity(capacity),
             avg_image_candidates=FixedCapacity(capacity),
+            cutoffs=cutoffs,
         )
 
     def test_matches_separate_calls(self):
@@ -2340,7 +2333,7 @@ class TestNeighborlistChanges:
         batch = jnp.zeros(N, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _systems_from_cell(cell, jnp.array([3.0]))
-        nl = self._make_nl()
+        nl = self._make_nl(cutoffs)
 
         # --- reference: two separate calls ---
         # "after" lh: original positions with changes applied
@@ -2369,7 +2362,7 @@ class TestNeighborlistChanges:
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(rh_remap, rh_table)
-        result = neighborlist_changes(nl, lh, rh_with_indices, systems, cutoffs)
+        result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         added_set = _extract_valid_edge_set(result.added, N)
         removed_set = _extract_valid_edge_set(result.removed, N)
@@ -2400,12 +2393,12 @@ class TestNeighborlistChanges:
         batch = jnp.zeros(3, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _systems_from_cell(cell, jnp.array([1.5]))
-        nl = self._make_nl()
+        nl = self._make_nl(cutoffs)
 
         lh = _make_lh(positions, batch)
         rh_table, rh_remap = _make_rh(lh, new_pos, jnp.zeros(1, dtype=int), changed_idx)
         rh_with_indices = WithIndices(rh_remap, rh_table)
-        result = neighborlist_changes(nl, lh, rh_with_indices, systems, cutoffs)
+        result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         removed = _extract_valid_edge_set(result.removed, 3)
         added = _extract_valid_edge_set(result.added, 3)
@@ -2441,12 +2434,12 @@ class TestNeighborlistChanges:
             )
         )
         systems, cutoffs = _systems_from_cell(cell, jnp.array([1.5, 1.5]))
-        nl = self._make_nl()
+        nl = self._make_nl(cutoffs)
 
         lh = _make_lh(positions, batch)
         rh_table, rh_remap = _make_rh(lh, new_pos, jnp.zeros(1, dtype=int), changed_idx)
         rh_with_indices = WithIndices(rh_remap, rh_table)
-        result = neighborlist_changes(nl, lh, rh_with_indices, systems, cutoffs)
+        result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         added = _extract_valid_edge_set(result.added, 4)
         # Should find edge (0,1) and (1,0) in system 0
@@ -2466,13 +2459,13 @@ class TestNeighborlistChanges:
         batch = jnp.zeros(3, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _systems_from_cell(cell, jnp.array([1.5]))
-        nl = self._make_nl()
+        nl = self._make_nl(cutoffs)
 
         lh = _make_lh(positions, batch)
         rh_table, rh_remap = _make_rh(lh, new_pos, jnp.zeros(1, dtype=int), changed_idx)
         rh_with_indices = WithIndices(rh_remap, rh_table)
         result = neighborlist_changes(
-            nl, lh, rh_with_indices, systems, cutoffs, compaction=compaction
+            nl, lh, rh_with_indices, systems, compaction=compaction
         )
 
         removed = _extract_valid_edge_set(result.removed, 3)
@@ -2493,7 +2486,7 @@ class TestNeighborlistChanges:
         batch = jnp.zeros(N, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, cutoffs = _systems_from_cell(cell, jnp.array([3.0]))
-        nl = self._make_nl(capacity=64)
+        nl = self._make_nl(cutoffs, capacity=64)
 
         # reference
         full_new_pos = positions.at[changed_idx].set(new_positions)
@@ -2517,9 +2510,7 @@ class TestNeighborlistChanges:
         rh_table, rh_remap = _make_rh(
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
-        result = neighborlist_changes(
-            nl, lh, WithIndices(rh_remap, rh_table), systems, cutoffs
-        )
+        result = neighborlist_changes(nl, lh, WithIndices(rh_remap, rh_table), systems)
 
         assert _extract_valid_edge_set(result.added, N) == _extract_valid_edge_set(
             ref_after, N
@@ -2546,9 +2537,10 @@ def _run_cell_list(positions, cell, cutoff):
         avg_edges=FixedCapacity(max(n * n, 8)),
         cells=FixedCapacity(512),
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
+        cutoffs=cutoffs,
     )
     result = jax.jit(as_result_function(nl))(
-        lh=lh, rh=None, systems=systems, cutoffs=cutoffs, rh_index_remap=None
+        lh=lh, rh=None, systems=systems, rh_index_remap=None
     )
     result.raise_assertion()
     return result.value
@@ -2563,9 +2555,10 @@ def _run_dense(positions, cell, cutoff):
         avg_candidates=FixedCapacity(max(n * n, 8)),
         avg_edges=FixedCapacity(max(n * n, 8)),
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
+        cutoffs=cutoffs,
     )
     result = jax.jit(as_result_function(nl))(
-        lh=lh, rh=None, systems=systems, cutoffs=cutoffs, rh_index_remap=None
+        lh=lh, rh=None, systems=systems, rh_index_remap=None
     )
     result.raise_assertion()
     return result.value

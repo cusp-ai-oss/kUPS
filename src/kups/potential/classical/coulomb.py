@@ -105,7 +105,6 @@ def make_coulomb_vacuum_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsCoulombGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell[Vacuum]]],
-    cutoffs_view: View[State, Table[SystemId, Array]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[IsCoulombGraphParticles]] | None,
     gradient_lens: Lens[CoulombVacuumInput, Gradients],
@@ -124,8 +123,7 @@ def make_coulomb_vacuum_potential[
     Args:
         particles_view: Extracts indexed particle data (positions, charges, system index)
         systems_view: Extracts indexed system data (cell)
-        cutoffs_view: Extracts cutoff array from state
-        neighborlist_view: Extracts neighbor list
+        neighborlist_view: Extracts a cutoff-bound neighbor list
         probe: Grouped probe for incremental updates (particles, neighborlist_after, neighborlist_before)
         gradient_lens: Specifies gradients to compute
         hessian_lens: Specifies Hessians to compute
@@ -139,7 +137,6 @@ def make_coulomb_vacuum_potential[
     radius_graph_fn = RadiusGraphConstructor(
         particles=particles_view,
         systems=systems_view,
-        cutoffs=cutoffs_view,
         neighborlist=neighborlist_view,
         probe=probe,
     )
@@ -166,8 +163,9 @@ class IsCoulombVacuumState(Protocol):
     def particles(self) -> Table[ParticleId, IsCoulombGraphParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell[Vacuum]]: ...
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]: ...
     @property
     def coulomb_cutoff(self) -> Table[SystemId, Array]: ...
 
@@ -244,11 +242,15 @@ def make_coulomb_vacuum_from_state(
         patch_idx_view = position_and_cell_idx_view
     if probe is not None:
         patch_idx_view = patch_idx_view or empty_patch_idx_view
+    cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
+
+    def neighborlist_view(s):
+        return state(s).neighborlist(cutoff_view(s))
+
     return make_coulomb_vacuum_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.coulomb_cutoff),
-        state.focus(lambda x: x.neighborlist),
+        neighborlist_view,
         probe,
         gradient_lens,
         EMPTY_LENS,

@@ -55,7 +55,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, jit
 from kups.potential.common.energy import (
     EnergyFunction,
@@ -373,7 +372,6 @@ def make_lennard_jones_potential[
     graph_fn = RadiusGraphConstructor(
         particles=particles_view,
         systems=systems_view,
-        cutoffs=pipe(parameter_view, lambda p: p.cutoff),
         neighborlist=neighborlist_view,
         probe=probe,
     )
@@ -404,8 +402,9 @@ class HasLJParticlesAndSystems(Protocol):
 class IsLJState[Params](HasLJParticlesAndSystems, Protocol):
     """State with particles, systems, neighbor list, and LJ parameters."""
 
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]: ...
     @property
     def lj_parameters(self) -> Params: ...
 
@@ -496,10 +495,14 @@ def make_lennard_jones_from_state(
         param_view = state.focus(lambda x: x.lj_parameters.data)
         cache_view = state.focus(lambda x: x.lj_parameters.cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
+
+    def neighborlist_view(s):
+        return state(s).neighborlist(param_view(s).cutoff)
+
     return make_lennard_jones_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.neighborlist),
+        neighborlist_view,
         param_view,
         probe,
         gradient_lens,
@@ -536,7 +539,6 @@ def make_pair_tail_corrected_lennard_jones_potential[
     radius_graph_fn = RadiusGraphConstructor(
         particles=particles_view,
         systems=systems_view,
-        cutoffs=pipe(parameter_view, lambda p: p.cutoff),
         neighborlist=neighborlist_view,
         probe=probe,
     )

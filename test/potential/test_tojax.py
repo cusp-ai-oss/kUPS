@@ -149,6 +149,7 @@ def simple_system(jaxified_model):
         neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
+            cutoffs=Table((SystemId(0),), jnp.array([5.0])),
         ),
     )
 
@@ -160,7 +161,6 @@ def potential(jaxified_model):
         systems_view=lambda s: s.systems,
         neighborlist_view=lambda s: s.neighborlist,
         model=jaxified_model,
-        cutoffs_view=lambda s: s.systems.map_data(lambda d: d.cutoff),
         gradient_lens=lens(lambda x: ()),
         hessian_lens=lens(lambda x: ()),
         hessian_idx_view=lambda x: (),

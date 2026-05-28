@@ -124,14 +124,14 @@ class RefineMaskNeighborList:
     Example:
         ```python
         # Compute base neighbor list once
-        base_edges = base_nl(particles, None, cells, cutoffs, None)
+        base_edges = base_nl(particles, None, cells)
 
         # Share across potentials with different masks
         lj_nl = RefineMaskNeighborList(candidates=base_edges)
-        lj_edges = lj_nl(lj_particles, None, cells, cutoffs, None)  # 1-4 exclusions
+        lj_edges = lj_nl(lj_particles, None, cells, None)  # 1-4 exclusions
 
         coulomb_nl = RefineMaskNeighborList(candidates=base_edges)
-        coulomb_edges = coulomb_nl(coulomb_particles, None, cells, cutoffs, None)  # 1-2 exclusions only
+        coulomb_edges = coulomb_nl(coulomb_particles, None, cells, None)  # 1-2 exclusions only
         ```
     """
 
@@ -143,7 +143,6 @@ class RefineMaskNeighborList:
         lh: Table[ParticleId, NeighborListPoints],
         rh: Table[ParticleId, NeighborListPoints] | None,
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, rh_index_remap)
@@ -171,6 +170,7 @@ class RefineCutoffNeighborList:
     Attributes:
         candidates: Precomputed edges to refine (should be conservative/over-inclusive).
         avg_edges: Capacity for output edge array.
+        cutoffs: Per-system cutoff distances used by this refinement.
 
     Use cases:
         - Multiple potentials sharing one neighbor list with different cutoffs
@@ -182,19 +182,24 @@ class RefineCutoffNeighborList:
         ```python
         # Compute base neighbor list once with maximum cutoff
         max_cutoff = 15.0  # Maximum of all potential cutoffs
-        base_edges = base_nl(particles, None, cells, max_cutoff, None)
+        base_edges = base_nl(particles, None, cells)
 
         # Share across potentials with different cutoffs
-        lj_nl = RefineCutoffNeighborList(candidates=base_edges, avg_edges=cap1)
-        lj_edges = lj_nl(particles, None, cells, cutoff=10.0, None)  # LJ cutoff
+        lj_nl = RefineCutoffNeighborList(
+            candidates=base_edges, avg_edges=cap1, cutoffs=lj_cutoffs
+        )
+        lj_edges = lj_nl(particles, None, cells)  # LJ cutoff
 
-        coulomb_nl = RefineCutoffNeighborList(candidates=base_edges, avg_edges=cap2)
-        coulomb_edges = coulomb_nl(particles, None, cells, cutoff=15.0, None)  # Coulomb cutoff
+        coulomb_nl = RefineCutoffNeighborList(
+            candidates=base_edges, avg_edges=cap2, cutoffs=coulomb_cutoffs
+        )
+        coulomb_edges = coulomb_nl(particles, None, cells)  # Coulomb cutoff
         ```
     """
 
     candidates: Edges[Literal[2]]
     avg_edges: Capacity[int]
+    cutoffs: Table[SystemId, Array]
 
     @jit
     def __call__(
@@ -202,12 +207,11 @@ class RefineCutoffNeighborList:
         lh: Table[ParticleId, NeighborListPoints],
         rh: Table[ParticleId, NeighborListPoints] | None,
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, rh_index_remap)
         rh_size = rh.size if rh is not None else lh.size
-        cutoffs = Table.broadcast_to(cutoffs, systems)
+        cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
             selector=PrecomputedEdgesSelector(
                 self.candidates, recompute_mic_shifts=True

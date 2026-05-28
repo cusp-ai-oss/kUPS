@@ -120,13 +120,14 @@ def _build_neighborlist(particles, systems, n_particles):
     @jax.jit
     @as_result_function
     def nn_search(neighborlist: AllDenseNearestNeighborList):
-        return neighborlist(particles, None, systems, cutoffs)
+        return neighborlist(particles, None, systems)
 
     # avg_edges is per-particle; total = avg_edges * n_particles.
     # Using n_particles gives total = n_particles^2, sufficient for dense lists.
     statics = AllDenseNearestNeighborList(
         avg_edges=FixedCapacity(n_particles),
         avg_image_candidates=FixedCapacity(n_particles),
+        cutoffs=cutoffs,
     )
     while (edge_result := nn_search(statics)).failed_assertions:
         statics = edge_result.fix_or_raise(statics)

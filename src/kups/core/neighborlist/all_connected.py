@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Literal
 
 import jax.numpy as jnp
-from jax import Array
 
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Index, Table, subselect
@@ -72,14 +71,13 @@ def all_connected_neighborlist(
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints] | None,
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
     rh_index_remap: Index[ParticleId] | None = None,
 ) -> Edges[Literal[2]]:
     """Neighbor list connecting all pairs sharing the same inclusion segment, ignoring distance.
 
     Connects every particle pair that belongs to the same inclusion segment and has
-    differing exclusion segment IDs. The cutoff is ignored for neighbor selection;
-    the cell is used only to compute minimum-image shifts.
+    differing exclusion segment IDs. The cell is used only to compute
+    minimum-image shifts.
 
     Requires ``max_count`` to be set on the inclusion ``Index``.
     """

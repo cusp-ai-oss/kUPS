@@ -90,25 +90,30 @@ class AllDenseNearestNeighborList:
     Attributes:
         avg_edges: Capacity manager for edge array.
         avg_image_candidates: Capacity manager for image candidate pairs.
+        cutoffs: Per-system cutoff distances used by this neighbor list.
 
     Example:
         ```python
         # Construct from state and a lens to the neighbor list parameters:
-        nl = AllDenseNearestNeighborList.new(state, lens(lambda s: s.nl_params))
+        nl = AllDenseNearestNeighborList.new(state, lens(lambda s: s.nl_params), cutoffs)
 
         # Or, if the state implements IsNeighborListState:
-        nl = AllDenseNearestNeighborList.from_state(state)
+        nl = AllDenseNearestNeighborList.from_state(state, cutoffs)
 
-        edges = nl(particles, None, systems, cutoffs, None)
+        edges = nl(particles, None, systems)
         ```
     """
 
     avg_edges: Capacity[int]
     avg_image_candidates: Capacity[int]
+    cutoffs: Table[SystemId, Array]
 
     @classmethod
     def new[S](
-        cls, state: S, lens: Lens[S, IsAllDenseNeighborListParams]
+        cls,
+        state: S,
+        lens: Lens[S, IsAllDenseNeighborListParams],
+        cutoffs: Table[SystemId, Array],
     ) -> AllDenseNearestNeighborList:
         params = lens.get(state)
         return AllDenseNearestNeighborList(
@@ -117,13 +122,16 @@ class AllDenseNearestNeighborList:
                 params.avg_image_candidates,
                 lens.focus(lambda x: x.avg_image_candidates),
             ),
+            cutoffs=cutoffs,
         )
 
     @classmethod
     def from_state(
-        cls, state: IsNeighborListState[IsAllDenseNeighborListParams]
+        cls,
+        state: IsNeighborListState[IsAllDenseNeighborListParams],
+        cutoffs: Table[SystemId, Array],
     ) -> AllDenseNearestNeighborList:
-        return cls.new(state, lens(lambda s: s.neighborlist_params))
+        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
     @jit
     def __call__(
@@ -131,7 +139,6 @@ class AllDenseNearestNeighborList:
         lh: Table[ParticleId, NeighborListPoints],
         rh: Table[ParticleId, NeighborListPoints] | None,
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         if lh.data.inclusion.num_labels >= 2:
@@ -141,7 +148,7 @@ class AllDenseNearestNeighborList:
                 "Consider using DenseNearestNeighborList or CellListNeighborList instead."
             )
         rh_size = rh.size if rh is not None else lh.size
-        cutoffs = Table.broadcast_to(cutoffs, systems)
+        cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
             selector=AllDenseSelector(
                 cutoffs=cutoffs,

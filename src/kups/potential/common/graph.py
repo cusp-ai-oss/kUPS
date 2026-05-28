@@ -224,14 +224,12 @@ class RadiusGraphConstructor[
     Attributes:
         particles: View extracting ``Indexed[ParticleId, P]`` from state.
         systems: View extracting ``Indexed[SystemId, S]`` (cell).
-        cutoffs: View extracting ``Indexed[SystemId, Array]`` from state.
-        neighborlist: View extracting the ``NeighborList`` from state.
+        neighborlist: View extracting a cutoff-bound ``NeighborList`` from state.
         probe: Optional probe for incremental particle + neighbor list changes.
     """
 
     particles: View[State, Table[ParticleId, P]] = field(static=True)
     systems: View[State, Table[SystemId, S]] = field(static=True)
-    cutoffs: View[State, Table[SystemId, Array]] = field(static=True)
     neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
     probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None = field(static=True)
 
@@ -241,7 +239,6 @@ class RadiusGraphConstructor[
     ) -> HyperGraph[P, S, Literal[2]]:
         lh = self.particles(state)
         systems = self.systems(state)
-        cutoffs = self.cutoffs(state)
 
         if patch is not None and self.probe is None and not old_graph:
             new_state = patch(
@@ -251,7 +248,7 @@ class RadiusGraphConstructor[
 
         if patch is None:
             nnlist = self.neighborlist(state)
-            edges = nnlist(lh, None, systems, cutoffs)
+            edges = nnlist(lh, None, systems)
         else:
             assert self.probe is not None, "Expected probe to be set."
             probe = self.probe(state, patch)
@@ -265,7 +262,7 @@ class RadiusGraphConstructor[
                 rh = lh[indices]
                 nnlist = probe.neighborlist_before
             rh_indexed = Table.arange(rh, label=lh.cls)
-            edges = nnlist(lh, rh_indexed, systems, cutoffs, rh_index_remap=indices)
+            edges = nnlist(lh, rh_indexed, systems, rh_index_remap=indices)
         return HyperGraph(lh, systems, edges)
 
 

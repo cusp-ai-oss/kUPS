@@ -80,9 +80,8 @@ class RelaxLjState:
     step: Array
     lj_parameters: LennardJonesParameters
 
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self)
+    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
+        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 def init_state(config: Config, opt_init: OptInit) -> RelaxLjState:

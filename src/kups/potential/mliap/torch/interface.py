@@ -369,7 +369,6 @@ def make_torch_mliap_potential[
     systems_view: View[State, Table[SystemId, S]],
     neighborlist_view: View[State, NNList],
     model: View[State, TorchMliap] | TorchMliap,
-    cutoffs_view: View[State, Table[SystemId, Array]],
     compute_cell_gradients: Literal[False] = False,
     patch_idx_view: View[State, PotentialOut[Array, EmptyType]] | None = None,
     out_cache_lens: Lens[State, PotentialOut[Array, EmptyType]] | None = None,
@@ -387,7 +386,6 @@ def make_torch_mliap_potential[
     systems_view: View[State, Table[SystemId, S]],
     neighborlist_view: View[State, NNList],
     model: View[State, TorchMliap] | TorchMliap,
-    cutoffs_view: View[State, Table[SystemId, Array]],
     compute_cell_gradients: Literal[True],
     patch_idx_view: View[State, PotentialOut[PositionAndCell, EmptyType]] | None = None,
     out_cache_lens: Lens[State, PotentialOut[PositionAndCell, EmptyType]] | None = None,
@@ -399,7 +397,6 @@ def make_torch_mliap_potential(
     systems_view: Any,
     neighborlist_view: Any,
     model: Any,
-    cutoffs_view: Any,
     compute_cell_gradients: bool = False,
     patch_idx_view: Any | None = None,
     out_cache_lens: Any | None = None,
@@ -412,9 +409,8 @@ def make_torch_mliap_potential(
     Args:
         particles_view: Extracts particle data from state.
         systems_view: Extracts system data (cell) from state.
-        neighborlist_view: Extracts neighbor list from state.
+        neighborlist_view: Extracts a cutoff-bound neighbor list from state.
         model: ``TorchMliap`` instance or view to model in state.
-        cutoffs_view: Extracts cutoffs as ``Table[SystemId, Array]``.
         compute_cell_gradients: When ``True``, exposes cell gradients
             (i.e. stress). The wrapped module must produce ``"cell_gradients"``.
         patch_idx_view: Cached output index structure (optional).
@@ -442,7 +438,6 @@ def make_torch_mliap_potential(
         systems_view=systems_view,
         neighborlist_view=neighborlist_view,
         model_view=model_view,
-        cutoffs_view=cutoffs_view,
         patch_idx_view=patch_idx_view,
         out_cache_lens=out_cache_lens,
     )
@@ -455,8 +450,9 @@ class IsTorchMliapState(Protocol):
     def particles(self) -> Table[ParticleId, IsTorchMliapParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]: ...
     @property
     def torch_mliap_model(self) -> TorchMliap: ...
 
@@ -494,11 +490,15 @@ def make_torch_mliap_from_state(
     Returns:
         Configured torch MLFF ``Potential``.
     """
+    model_view = state.focus(lambda x: x.torch_mliap_model)
+
+    def neighborlist_view(s):
+        return state(s).neighborlist(model_view(s).cutoff)
+
     return make_torch_mliap_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.neighborlist),
-        state.focus(lambda x: x.torch_mliap_model),
-        state.focus(lambda x: x.torch_mliap_model.cutoff),
+        neighborlist_view,
+        model_view,
         compute_cell_gradients=compute_position_and_cell_gradients,
     )
