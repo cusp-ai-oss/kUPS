@@ -137,17 +137,17 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     state, cutoff_table = _build_state(atoms, cutoff)
 
     # Loop with a generous bound to avoid pathological growth.
+    result = None
     for _ in range(2):
         nl = nl_cls.from_state(state, cutoff_table)
         result = jax.jit(as_result_function(nl))(
             lh=state.particles,
-            rh=None,
             systems=state.systems,
-            rh_index_remap=None,
         )
         if not result.failed_assertions:
             break
         state = result.fix_or_raise(state)
+    assert result is not None
     result.raise_assertion()
 
     edges = result.value

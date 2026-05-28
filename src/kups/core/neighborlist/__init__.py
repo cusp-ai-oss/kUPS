@@ -7,11 +7,20 @@ This module provides multiple neighbor list algorithms for finding interacting
 pairs of particles within cutoff distances, with different performance and
 accuracy trade-offs.
 
+## Call Contract
+
+Neighbor lists are called as ``neighborlist(lh, systems, *, rh=None,
+for_indices=None)``. ``lh`` is the self-graph/output table. Use keyword-only
+``rh`` only for true bipartite queries. Use keyword-only ``for_indices`` only
+for self-graph updates; it is mutually exclusive with ``rh`` and names affected
+``lh`` ids after the caller has already written updated particle data into
+``lh``.
+
 ## Core Components
 
 - **[Edges][kups.core.neighborlist.Edges]**: Represents connections between particles with periodic shifts
 - **[NeighborList][kups.core.neighborlist.NeighborList]**: Protocol for neighbor search implementations
-- **[Pipeline][kups.core.neighborlist.Pipeline]**: Selector → mask sequence → compactor
+- **[Pipeline][kups.core.neighborlist.Pipeline]**: Selector → mask sequence → compactor → postprocessors
 
 ## Neighbor List Implementations
 
@@ -48,17 +57,17 @@ These cover non-cutoff cases under the same `NeighborList[D]` protocol.
    zero-row ``Edges[D]`` for point-cloud constructions.
 7. **[FixedEdgesNeighborList][kups.core.neighborlist.FixedEdgesNeighborList]**:
    stores fixed edge topology for bonded edge sets supplied by the state and
-   computes current periodic shifts during calls. Patch-shaped calls with
-   ``rh`` and ``rh_index_remap`` return only rows touched by the remapped
-   particle ids.
+   computes current periodic shifts during calls. Affected self-graph calls use
+   ``for_indices`` and return only rows touched by those affected ``lh`` ids.
 
 ## Pipeline Primitives
 
 Every neighbor list above is a [`Pipeline`][kups.core.neighborlist.Pipeline]
 of a [`CandidateSelector`][kups.core.neighborlist.CandidateSelector], a
-``tuple`` of [`Mask`][kups.core.neighborlist.Mask] criteria, and a
-[`Compactor`][kups.core.neighborlist.Compactor]. Users wanting custom
-behavior can compose their own pipeline directly.
+``tuple`` of [`Mask`][kups.core.neighborlist.Mask] criteria, a
+[`Compactor`][kups.core.neighborlist.Compactor], and zero or more
+[`Postprocessor`][kups.core.neighborlist.Postprocessor] transforms. Users
+wanting custom behavior can compose their own pipeline directly.
 """
 
 from kups.core.neighborlist.adaptive import (
@@ -98,14 +107,15 @@ from kups.core.neighborlist.fixed import (
 )
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
-    EdgeInRhMask,
     ExclusionMask,
+    ForIndicesDedupMask,
     InBoundsMask,
     InclusionMatchMask,
-    RemapDedupMask,
+    TouchesForIndicesMask,
 )
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.neighborlist.pipeline import Pipeline
+from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.refine import (
     PrecomputedEdgesSelector,
     RefineCutoffNeighborList,
@@ -123,6 +133,7 @@ from kups.core.neighborlist.types import (
     NeighborListPoints,
     NeighborListSystems,
     PipelineContext,
+    Postprocessor,
 )
 
 __all__ = [
@@ -141,7 +152,7 @@ __all__ = [
     "Edges",
     "EmptyNeighborList",
     "ExclusionMask",
-    "EdgeInRhMask",
+    "TouchesForIndicesMask",
     "FixedEdgesNeighborList",
     "InBoundsMask",
     "InclusionGroupSelector",
@@ -154,6 +165,7 @@ __all__ = [
     "IsUniversalNeighborlistParams",
     "Mask",
     "MaskOnlyCompactor",
+    "MirrorPairEdges",
     "NeighborList",
     "NeighborListChangesResult",
     "NeighborListFactory",
@@ -161,11 +173,12 @@ __all__ = [
     "NeighborListSystems",
     "Pipeline",
     "PipelineContext",
+    "Postprocessor",
     "PrecomputedEdgesSelector",
     "ReduceCompactor",
     "RefineCutoffNeighborList",
     "RefineMaskNeighborList",
-    "RemapDedupMask",
+    "ForIndicesDedupMask",
     "UniversalNeighborlistParameters",
     "adaptive_cutoff_neighborlist_from_state",
     "all_connected_neighborlist",

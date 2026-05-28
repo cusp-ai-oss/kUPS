@@ -7,14 +7,18 @@ Each [`Mask`][kups.core.neighborlist.types.Mask] is a pure function of
 ``(batch, ctx)`` returning a fresh boolean array for its own criterion; the
 [`Pipeline`][kups.core.neighborlist.pipeline.Pipeline] conjuncts all returned
 masks via ``&``. Masks cannot change ``batch.edges`` or
-``batch.is_minimum_image``.
+``batch.is_minimum_image``. Pair-only masks express that restriction in
+their ``CandidateBatch[Literal[2]]`` type annotation.
 """
 
 from __future__ import annotations
 
+from typing import Literal
+
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import MaterializedFrame
 from kups.core.data import Index, Table
 from kups.core.neighborlist.common import real_distance_sq
 from kups.core.neighborlist.types import CandidateBatch, PipelineContext
@@ -30,18 +34,19 @@ class InBoundsMask:
     guard scatter/gather lookups when the candidate buffer is padded.
     """
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
+    def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
         ngraphs = ctx.lh.data.inclusion.num_labels
-        lh_in = (
-            (ctx.lh.data.inclusion.indices < ngraphs)
-            .at[batch.lh_idx]
-            .get(mode="fill", fill_value=False)
-        )
-        rh_in = (
-            (ctx.rh.data.inclusion.indices < ngraphs)
-            .at[batch.rh_idx]
-            .get(mode="fill", fill_value=False)
-        )
+        lh_inclusions = ctx.lh.map_data(lambda d: d.inclusion.indices < ngraphs)
+        if ctx.rh is None:
+            idx = batch.edges.indices.indices_in(lh_inclusions.keys)
+            edge_in = lh_inclusions.data.at[idx].get(mode="fill", fill_value=False)
+            return edge_in.all(axis=-1)
+
+        rh_inclusions = ctx.rh.map_data(lambda d: d.inclusion.indices < ngraphs)
+        lh_idx = batch.lh_idx.indices_in(lh_inclusions.keys)
+        rh_idx = batch.rh_idx.indices_in(rh_inclusions.keys)
+        lh_in = lh_inclusions.data.at[lh_idx].get(mode="fill", fill_value=False)
+        rh_in = rh_inclusions.data.at[rh_idx].get(mode="fill", fill_value=False)
         return lh_in & rh_in
 
 
@@ -49,50 +54,52 @@ class InBoundsMask:
 class InclusionMatchMask:
     """Drops candidates whose lh/rh inclusion segments differ."""
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
-        lh_incl = ctx.lh.data.inclusion.indices[batch.lh_idx]
-        rh_incl = ctx.rh.data.inclusion.indices[batch.rh_idx]
+    def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
+        if ctx.rh is None:
+            edge_incl = ctx.lh[batch.edges.indices].inclusion.indices
+            return (edge_incl == edge_incl[:, :1]).all(axis=-1)
+
+        lh_incl, rh_incl = Index.match(
+            ctx.lh[batch.lh_idx].inclusion, ctx.rh[batch.rh_idx].inclusion
+        )
         return lh_incl == rh_incl
 
 
 @dataclass
-class RemapDedupMask:
-    """Deduplicate the rh→lh remapped subset.
+class ForIndicesDedupMask:
+    """Deduplicate self-graph update candidates.
 
-    When ``ctx.rh_index_remap`` is set, ``rh`` is a subset of ``lh`` and each
-    rh-position maps to an lh-position via ``rh_index_remap``. We then keep
-    only one direction per pair: edges where ``lh_idx`` is **not** in the
-    remap (i.e., the pair is lh-only) or where ``lh_idx >= remapped_rh``.
+    Pair selectors emit candidates in ``lh`` space. When ``ctx.for_indices``
+    is set, the rhs query side was restricted to those affected ``lh`` rows.
+    We keep edges whose lhs endpoint is unaffected, plus one orientation for
+    edges where both endpoints are affected. ``MirrorPairEdges`` restores the
+    reverse orientation after compaction.
 
-    Returns all-True when no remap is in effect.
+    Returns all-True for full self-graphs and bipartite queries.
     """
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
-        if ctx.rh_index_remap is None:
+    def __call__(
+        self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
+    ) -> Array:
+        if ctx.for_indices is None:
             return jnp.ones((batch.lh_idx.size,), dtype=bool)
-        oob = max(ctx.lh.size, ctx.rh.size)
-        rh_remapped = ctx.rh_index_remap.at[batch.rh_idx].get(
-            mode="fill", fill_value=oob
-        )
-        return ~isin(batch.lh_idx, ctx.rh_index_remap, ctx.lh.size) | (
-            batch.lh_idx >= rh_remapped
+        return ~isin(batch.lh_idx.indices, ctx.for_indices, ctx.lh.size) | (
+            batch.lh_idx.indices >= batch.rh_idx.indices
         )
 
 
 @dataclass
-class EdgeInRhMask:
-    """Keep fixed-topology rows touched by ``ctx.rh_index_remap``.
+class TouchesForIndicesMask[D: int]:
+    """Keep fixed-topology rows touched by ``ctx.for_indices``.
 
-    When no remap is active, every row is kept. This lets fixed topology use
-    the same pipeline for full and patch-shaped calls.
+    When no affected-index subset is active, every row is kept. This lets fixed
+    topology use the same pipeline for full and patch-shaped calls.
     """
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
-        if ctx.rh_index_remap is None:
+    def __call__(self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
+        if ctx.for_indices is None:
             return jnp.ones((len(batch.edges),), dtype=bool)
-        return isin(batch.edges.indices.indices, ctx.rh_index_remap, ctx.lh.size).any(
-            -1
-        )
+        return isin(batch.edges.indices.indices, ctx.for_indices, ctx.lh.size).any(-1)
 
 
 @dataclass
@@ -101,14 +108,25 @@ class DistanceCutoffMask:
 
     cutoffs: Table[SystemId, Array]
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
+    def __call__(
+        self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
+    ) -> Array:
         cutoffs = Table.broadcast_to(self.cutoffs, ctx.systems)
         shifts = batch.edges.shifts[:, 0, :]
-        dist_sq = real_distance_sq(
-            ctx.lh, ctx.rh, ctx.systems, batch.lh_idx, batch.rh_idx, shifts
+        frame_table: Table[SystemId, MaterializedFrame] = ctx.systems.map_data(
+            lambda s: s.cell.frame.materialize()
         )
-        cand_sys = ctx.lh.data.system[batch.lh_idx]
-        return dist_sq < cutoffs[cand_sys] ** 2
+        lh_system = ctx.lh[batch.lh_idx].system
+        frames: MaterializedFrame = frame_table[lh_system]
+        if ctx.rh is None:
+            pair_positions = ctx.lh[batch.edges.indices].positions
+            lhs_positions = pair_positions[:, 0]
+            rhs_positions = pair_positions[:, 1]
+        else:
+            lhs_positions = ctx.lh[batch.lh_idx].positions
+            rhs_positions = ctx.rh[batch.rh_idx].positions
+        dist_sq = real_distance_sq(lhs_positions, rhs_positions, frames, shifts)
+        return dist_sq < cutoffs[lh_system] ** 2
 
 
 @dataclass
@@ -119,10 +137,14 @@ class ExclusionMask:
     ``batch.is_minimum_image`` is False for that copy).
     """
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
-        # batch.edges.indices carries a single set of keys; rebuild a rh-keyed
-        # Index so Table indexing aligns when ctx.lh and ctx.rh have distinct keys.
-        lh_view = ctx.lh[Index(ctx.lh.keys, batch.lh_idx)]
-        rh_view = ctx.rh[Index(ctx.rh.keys, batch.rh_idx)]
-        lh_excl, rh_excl = Index.match(lh_view.exclusion, rh_view.exclusion)
+    def __call__(
+        self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
+    ) -> Array:
+        if ctx.rh is None:
+            edge_excl = ctx.lh[batch.edges.indices].exclusion.indices
+            return (edge_excl[:, 0] != edge_excl[:, 1]) | ~batch.is_minimum_image
+
+        lh_excl, rh_excl = Index.match(
+            ctx.lh[batch.lh_idx].exclusion, ctx.rh[batch.rh_idx].exclusion
+        )
         return (lh_excl != rh_excl) | ~batch.is_minimum_image

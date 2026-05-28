@@ -282,7 +282,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch](
         )
 
         neighborlist = probe_neighborlist or neighborlist_factory(cutoffs)
-        edges = neighborlist(nnlist_particles, spheres, systems)
+        edges = neighborlist(nnlist_particles, systems, rh=spheres)
         cell = systems.map_data(lambda s: s.cell)
         groups = self.groups_view(state)
         return Sum(

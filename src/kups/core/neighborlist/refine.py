@@ -19,7 +19,11 @@ from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.data import Index, Table
-from kups.core.neighborlist.common import Candidates, make_batch_with_mic
+from kups.core.neighborlist.common import (
+    Candidates,
+    edge_rhs_table,
+    make_batch_with_mic,
+)
 from kups.core.neighborlist.compact import MaskOnlyCompactor, ReduceCompactor
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.masks import (
@@ -27,6 +31,7 @@ from kups.core.neighborlist.masks import (
     ExclusionMask,
     InBoundsMask,
     InclusionMatchMask,
+    TouchesForIndicesMask,
 )
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.types import (
@@ -43,10 +48,9 @@ from kups.core.utils.jax import dataclass, field, jit
 class PrecomputedEdgesSelector:
     """Selector that wraps precomputed ``Edges`` for both refine variants.
 
-    Precomputed edges use the same index convention as the call that produced
-    them: public lh-space edges when an ``rh`` remap is supplied, and raw
-    rh-space indices for a disjoint ``rh`` without a remap. Remapped ``rh``
-    rows are overlaid onto ``lh`` before this selector runs.
+    Precomputed self-graph edges are already in ``lh`` space. A disjoint
+    bipartite ``rh`` call may still use rhs positions for the second column,
+    matching the edge convention of the original candidate set.
 
     Attributes:
         candidates: Precomputed edges (indices in lh-space).
@@ -64,39 +68,34 @@ class PrecomputedEdgesSelector:
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         if self.recompute_mic_shifts:
             indices = self.candidates.indices.indices
+            rhs = edge_rhs_table(ctx)
             raw_candidates = Candidates(
                 lhs=Index(ctx.lh.keys, indices[:, 0]),
-                rhs=Index(ctx.rh.keys, indices[:, 1]),
+                rhs=Index(rhs.keys, indices[:, 1]),
             )
-            return make_batch_with_mic(raw_candidates, ctx.lh, ctx.rh, ctx.systems)
+            return make_batch_with_mic(raw_candidates, ctx.lh, rhs, ctx.systems)
         indices = self.candidates.indices.indices
         edges = Edges(Index(ctx.lh.keys, indices), self.candidates.shifts)
         return CandidateBatch(
             edges=edges,
             is_minimum_image=jnp.ones((len(self.candidates),), dtype=bool),
+            rhs_keys=edge_rhs_table(ctx).keys,
         )
 
 
 def _resolve_precomputed_inputs(
     lh: Table[ParticleId, NeighborListPoints],
     rh: Table[ParticleId, NeighborListPoints] | None,
-    rh_index_remap: Index[ParticleId] | None,
+    for_indices: Index[ParticleId] | None,
 ) -> tuple[
     Table[ParticleId, NeighborListPoints],
     Table[ParticleId, NeighborListPoints] | None,
 ]:
-    """Return the tables that precomputed refine candidates address.
-
-    With a remap, refine candidates are public ``Edges`` outputs, so both
-    columns are in lh-space. Overlay rh rows onto the corresponding lh slots
-    and run the pipeline as a self-refinement. Without a remap, rh is disjoint
-    and the candidate right column is already in rh-space.
-    """
-    if rh is None:
-        return lh, None
-    if rh_index_remap is None:
-        return lh, rh
-    return lh.update(rh_index_remap, rh.data), None
+    """Return the tables that precomputed refine candidates address."""
+    assert rh is None or for_indices is None, (
+        "Refine neighbor lists cannot combine rh with for_indices."
+    )
+    return lh, rh
 
 
 @dataclass
@@ -124,14 +123,14 @@ class RefineMaskNeighborList:
     Example:
         ```python
         # Compute base neighbor list once
-        base_edges = base_nl(particles, None, cells)
+        base_edges = base_nl(particles, cells)
 
         # Share across potentials with different masks
         lj_nl = RefineMaskNeighborList(candidates=base_edges)
-        lj_edges = lj_nl(lj_particles, None, cells, None)  # 1-4 exclusions
+        lj_edges = lj_nl(lj_particles, cells)  # 1-4 exclusions
 
         coulomb_nl = RefineMaskNeighborList(candidates=base_edges)
-        coulomb_edges = coulomb_nl(coulomb_particles, None, cells, None)  # 1-2 exclusions only
+        coulomb_edges = coulomb_nl(coulomb_particles, cells)  # 1-2 exclusions only
         ```
     """
 
@@ -141,17 +140,23 @@ class RefineMaskNeighborList:
     def __call__(
         self,
         lh: Table[ParticleId, NeighborListPoints],
-        rh: Table[ParticleId, NeighborListPoints] | None,
         systems: Table[SystemId, NeighborListSystems],
-        rh_index_remap: Index[ParticleId] | None = None,
+        *,
+        rh: Table[ParticleId, NeighborListPoints] | None = None,
+        for_indices: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, rh_index_remap)
+        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, for_indices)
         pipeline = Pipeline[Literal[2]](
             selector=PrecomputedEdgesSelector(self.candidates),
-            masks=(InBoundsMask(), InclusionMatchMask(), ExclusionMask()),
+            masks=(
+                InBoundsMask(),
+                InclusionMatchMask(),
+                TouchesForIndicesMask(),
+                ExclusionMask(),
+            ),
             compactor=MaskOnlyCompactor(),
         )
-        return pipeline(resolved_lh, resolved_rh, systems, None)
+        return pipeline(resolved_lh, systems, rh=resolved_rh, for_indices=for_indices)
 
 
 @dataclass
@@ -182,18 +187,18 @@ class RefineCutoffNeighborList:
         ```python
         # Compute base neighbor list once with maximum cutoff
         max_cutoff = 15.0  # Maximum of all potential cutoffs
-        base_edges = base_nl(particles, None, cells)
+        base_edges = base_nl(particles, cells)
 
         # Share across potentials with different cutoffs
         lj_nl = RefineCutoffNeighborList(
             candidates=base_edges, avg_edges=cap1, cutoffs=lj_cutoffs
         )
-        lj_edges = lj_nl(particles, None, cells)  # LJ cutoff
+        lj_edges = lj_nl(particles, cells)  # LJ cutoff
 
         coulomb_nl = RefineCutoffNeighborList(
             candidates=base_edges, avg_edges=cap2, cutoffs=coulomb_cutoffs
         )
-        coulomb_edges = coulomb_nl(particles, None, cells)  # Coulomb cutoff
+        coulomb_edges = coulomb_nl(particles, cells)  # Coulomb cutoff
         ```
     """
 
@@ -205,12 +210,17 @@ class RefineCutoffNeighborList:
     def __call__(
         self,
         lh: Table[ParticleId, NeighborListPoints],
-        rh: Table[ParticleId, NeighborListPoints] | None,
         systems: Table[SystemId, NeighborListSystems],
-        rh_index_remap: Index[ParticleId] | None = None,
+        *,
+        rh: Table[ParticleId, NeighborListPoints] | None = None,
+        for_indices: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, rh_index_remap)
-        rh_size = rh.size if rh is not None else lh.size
+        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, for_indices)
+        query_size = (
+            for_indices.size
+            if for_indices is not None
+            else (rh.size if rh is not None else lh.size)
+        )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
             selector=PrecomputedEdgesSelector(
@@ -220,8 +230,9 @@ class RefineCutoffNeighborList:
                 InBoundsMask(),
                 InclusionMatchMask(),
                 DistanceCutoffMask(cutoffs=cutoffs),
+                TouchesForIndicesMask(),
                 ExclusionMask(),
             ),
-            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(rh_size)),
+            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
         )
-        return pipeline(resolved_lh, resolved_rh, systems, None)
+        return pipeline(resolved_lh, systems, rh=resolved_rh, for_indices=for_indices)

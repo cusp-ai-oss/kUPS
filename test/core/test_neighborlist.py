@@ -31,6 +31,7 @@ from kups.core.neighborlist import (
     Edges,
     EmptyNeighborList,
     FixedEdgesNeighborList,
+    MirrorPairEdges,
     RefineCutoffNeighborList,
     RefineMaskNeighborList,
     UniversalNeighborlistParameters,
@@ -47,14 +48,13 @@ from kups.core.neighborlist.common import (
 from kups.core.neighborlist.compact import (
     MaskOnlyCompactor,
     ReduceCompactor,
-    remap_rh_to_lh,
 )
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
     ExclusionMask,
+    ForIndicesDedupMask,
     InBoundsMask,
     InclusionMatchMask,
-    RemapDedupMask,
 )
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.refine import PrecomputedEdgesSelector
@@ -143,23 +143,23 @@ def _cutoff_table(cutoffs):
     return Table(tuple(SystemId(i) for i in range(len(cutoffs))), cutoffs)
 
 
-def _make_rh(lh, rh_positions, rh_batch_mask, rh_index_remap, exclusion_ids=None):
-    """Create rh Table data and index remap for testing."""
-    n_rh = len(rh_positions)
-    n_sys = int(jnp.max(rh_batch_mask)) + 1
+def _make_rh(lh, update_positions, update_batch_mask, for_indices, exclusion_ids=None):
+    """Create proposed particle data and affected indices for testing."""
+    n_rh = len(update_positions)
+    n_sys = int(jnp.max(update_batch_mask)) + 1
     sys_keys = tuple(range(n_sys))
     rh_pi_keys = tuple(ParticleId(i) for i in range(n_rh))
     if exclusion_ids is None:
-        exclusion_ids = rh_index_remap
+        exclusion_ids = for_indices
     rh_points = SamplePoints(
-        positions=rh_positions,
-        system=Index(sys_keys, rh_batch_mask.astype(int)),
-        inclusion=Index(sys_keys, rh_batch_mask.astype(int)),
+        positions=update_positions,
+        system=Index(sys_keys, update_batch_mask.astype(int)),
+        inclusion=Index(sys_keys, update_batch_mask.astype(int)),
         exclusion=Index.integer(exclusion_ids.astype(int)),
     )
     rh_indexed = Table(rh_pi_keys, rh_points)
-    rh_remap = Index(lh.keys, rh_index_remap.astype(int))
-    return rh_indexed, rh_remap
+    for_indices = Index(lh.keys, for_indices.astype(int))
+    return rh_indexed, for_indices
 
 
 def _make_edges(lh_indices, rh_indices, n_particles=None, shifts=None):
@@ -174,25 +174,29 @@ def _make_edges(lh_indices, rh_indices, n_particles=None, shifts=None):
     return Edges(Index(tuple(ParticleId(i) for i in range(n_particles)), raw), shifts)
 
 
-def _call_nl(nl_instance, lh, systems, cutoffs, rh=None, rh_index_remap=None):
+def _call_nl(nl_instance, lh, systems, cutoffs, rh=None, for_indices=None):
     """Call a cutoff-bound neighbor list."""
     del cutoffs
-    return nl_instance(lh=lh, rh=rh, systems=systems, rh_index_remap=rh_index_remap)
+    return nl_instance(lh=lh, systems=systems, rh=rh, for_indices=for_indices)
 
 
-def _make_pipeline_ctx(lh, rh=None, cell=None, rh_index_remap=None):
+def _make_pipeline_ctx(lh, rh=None, cell=None, for_indices=None):
     """Build a ``PipelineContext`` directly for unit-level mask/compactor tests.
 
     Positions are taken as-is — caller is responsible for the fractional
     convention. Using a unit cell (``eye(3)``) keeps real == fractional so
     ``DistanceCutoffMask`` produces the same numbers either way.
     """
-    if rh is None:
-        rh = lh
+    if for_indices is not None and not isinstance(for_indices, Index):
+        for_indices = Index(lh.keys, for_indices)
+    assert rh is None or for_indices is None
     if cell is None:
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
     systems, _ = _systems_from_cell(cell, jnp.array([1.0]))
-    return PipelineContext(lh=lh, rh=rh, systems=systems, rh_index_remap=rh_index_remap)
+    for_indices_raw = (
+        for_indices.indices_in(lh.keys) if for_indices is not None else None
+    )
+    return PipelineContext(lh=lh, rh=rh, systems=systems, for_indices=for_indices_raw)
 
 
 def _make_batch(lh_keys, lh_idx, rh_idx, shifts=None, is_minimum_image=None):
@@ -433,7 +437,7 @@ class TestNearestNeighborListImplementations:
         # Get the instance factory for this implementation
         instance_factory = neighbor_list_impl_info["instance_factory"]
 
-        # Create PointSet objects for lh and rh
+        # Create the output/self-graph particle table.
         lh = _make_lh(
             params["positions"],
             params["batch_mask"],
@@ -442,13 +446,17 @@ class TestNearestNeighborListImplementations:
             ),
         )
 
-        rh = None
-        rh_remap = None
-        if (rh_pos := params.get("rh_positions", None)) is not None:
-            rh_idx = params.get("rh_index_remap", None)
-            assert rh_idx is not None, "rh_positions requires rh_index_remap in new API"
-            rh_batch_mask = params.get("rh_batch_mask", params["batch_mask"])
-            rh, rh_remap = _make_rh(lh, rh_pos, rh_batch_mask, rh_idx)
+        for_indices = None
+        if (update_positions := params.get("update_positions", None)) is not None:
+            for_indices_raw = params.get("for_indices", None)
+            assert for_indices_raw is not None, (
+                "update_positions requires for_indices in the new API"
+            )
+            update_batch_mask = params.get("update_batch_mask", params["batch_mask"])
+            update, for_indices = _make_rh(
+                lh, update_positions, update_batch_mask, for_indices_raw
+            )
+            lh = lh.update(for_indices, update.data)
 
         if isinstance(params["cells"], Cell):
             systems, cutoffs = _systems_from_cell(params["cells"], params["cutoffs"])
@@ -457,9 +465,8 @@ class TestNearestNeighborListImplementations:
         neighbor_list_instance = instance_factory(cutoffs=cutoffs, **params["extras"])
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
-            rh=rh,
             systems=systems,
-            rh_index_remap=rh_remap,
+            for_indices=for_indices,
         )
 
         return result
@@ -568,22 +575,22 @@ class TestNearestNeighborListImplementations:
             if lh_idx < 4 and rh_idx < 4:  # Valid indices
                 assert batch_mask[lh_idx] == batch_mask[rh_idx]
 
-    def test_rh_positions_basic(self, neighbor_list_impl):
-        """Test basic functionality with separate rh_positions."""
-        # lh has 3 particles, rh selects a subset with different positions.
-        # rh[0] -> lh[2], rh[1] -> lh[0]. Using remap avoids self-interaction
-        # exclusion between lh[0] and rh[0], lh[1] and rh[1].
+    def test_for_indices_update_positions_basic(self, neighbor_list_impl):
+        """Test basic functionality for updated lh positions selected by for_indices."""
+        # lh has 3 particles; two affected rows are updated before the NL call.
+        # update[0] -> lh[2], update[1] -> lh[0]. for_indices selects affected
+        # output ids and self-interactions are still excluded by exclusion ids.
         lh_positions = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
-        rh_positions = jnp.array([[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        rh_index_remap = jnp.array([2, 0])
+        update_positions = jnp.array([[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+        for_indices = jnp.array([2, 0])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=lh_positions,
-            rh_positions=rh_positions,
+            update_positions=update_positions,
             batch_mask=jnp.array([0, 0, 0]),
-            rh_batch_mask=jnp.array([0, 0]),
-            rh_index_remap=rh_index_remap,
+            update_batch_mask=jnp.array([0, 0]),
+            for_indices=for_indices,
             cutoffs=jnp.array([1.5]),
             capacity=20,
         )
@@ -594,18 +601,18 @@ class TestNearestNeighborListImplementations:
         valid_edges = valid_edges[valid_edges[:, 1] < 3]
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
 
-        # lh[1] (2,0,0) vs rh[0] (1,0,0): dist=1.0<1.5, remap[0]=2, edge (1,2)
-        # lh[1] (2,0,0) vs rh[1] (3,0,0): dist=1.0<1.5, remap[1]=0, edge (1,0)
+        # lh[1] (2,0,0) vs updated lh[2] (1,0,0): dist=1.0<1.5, edge (1,2)
+        # lh[1] (2,0,0) vs updated lh[0] (3,0,0): dist=1.0<1.5, edge (1,0)
         # Symmetrized: (2,1) and (0,1)
         assert (1, 2) in edge_set, f"Expected edge (1, 2) not found in {edge_set}"
         assert (2, 1) in edge_set, f"Expected edge (2, 1) not found in {edge_set}"
         assert (1, 0) in edge_set, f"Expected edge (1, 0) not found in {edge_set}"
         assert (0, 1) in edge_set, f"Expected edge (0, 1) not found in {edge_set}"
 
-    def test_rh_batch_boundaries(self, neighbor_list_impl):
-        """Test rh batch masks: edges found within systems, blocked across systems.
+    def test_for_indices_update_batch_boundaries(self, neighbor_list_impl):
+        """Test update batch masks: edges found within systems, blocked across systems.
 
-        Same shapes (4 lh, 2 rh, 2 systems), different values for the two
+        Same shapes (4 lh, 2 updates, 2 systems), different values for the two
         sub-scenarios.
         """
         lh_positions = jnp.array(
@@ -620,14 +627,14 @@ class TestNearestNeighborListImplementations:
         lvecs = jnp.eye(3)[None].repeat(2, axis=0) * 10.0
         cutoffs = jnp.array([1.5, 1.5])
 
-        # Positive case: rh in correct systems, edges should be found
+        # Positive case: updates in correct systems, edges should be found
         result_pos = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=lh_positions,
-            rh_positions=jnp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            update_positions=jnp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
             batch_mask=lh_batch,
-            rh_batch_mask=jnp.array([0, 1]),
-            rh_index_remap=jnp.array([1, 3]),
+            update_batch_mask=jnp.array([0, 1]),
+            for_indices=jnp.array([1, 3]),
             cells=lvecs,
             cutoffs=cutoffs,
             capacity=20,
@@ -645,14 +652,14 @@ class TestNearestNeighborListImplementations:
                     f"Edge ({lh_idx}, {rh_idx}) crosses batch boundary"
                 )
 
-        # Negative case: rh in swapped systems, cross-system edges blocked
+        # Negative case: updates in swapped systems, cross-system edges blocked
         result_neg = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=lh_positions,
-            rh_positions=jnp.array([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]]),
+            update_positions=jnp.array([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]]),
             batch_mask=lh_batch,
-            rh_batch_mask=jnp.array([1, 0]),  # swapped
-            rh_index_remap=jnp.array([3, 1]),
+            update_batch_mask=jnp.array([1, 0]),  # swapped
+            for_indices=jnp.array([3, 1]),
             cells=lvecs,
             cutoffs=cutoffs,
             capacity=20,
@@ -667,11 +674,11 @@ class TestNearestNeighborListImplementations:
             if lh_idx < 4 and rh_idx < 4:
                 assert lh_batch[lh_idx] == lh_batch[rh_idx], (
                     f"Edge ({lh_idx}, {rh_idx}) crosses batch boundary: "
-                    f"lh_batch={lh_batch[lh_idx]}, rh_batch={lh_batch[rh_idx]}"
+                    f"lhs_batch={lh_batch[lh_idx]}, rhs_batch={lh_batch[rh_idx]}"
                 )
 
-    def test_rh_positions_asymmetric_search(self, neighbor_list_impl):
-        """Test asymmetric search with different lh and rh particle sets."""
+    def test_for_indices_update_positions_asymmetric_search(self, neighbor_list_impl):
+        """Test affected-index search with a subset of updated lh particles."""
         lh_positions = jnp.array(
             [
                 [0.0, 0.0, 0.0],
@@ -679,22 +686,22 @@ class TestNearestNeighborListImplementations:
                 [4.0, 0.0, 0.0],
             ]
         )
-        rh_positions = jnp.array(
+        update_positions = jnp.array(
             [
                 [1.0, 0.0, 0.0],
                 [3.0, 0.0, 0.0],
             ]
         )
-        # rh[0] -> lh[0], rh[1] -> lh[2]: maps to non-adjacent particles
-        rh_index_remap = jnp.array([0, 2])
+        # update[0] -> lh[0], update[1] -> lh[2]: non-adjacent affected ids
+        for_indices = jnp.array([0, 2])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=lh_positions,
-            rh_positions=rh_positions,
+            update_positions=update_positions,
             batch_mask=jnp.array([0, 0, 0]),
-            rh_batch_mask=jnp.array([0, 0]),
-            rh_index_remap=rh_index_remap,
+            update_batch_mask=jnp.array([0, 0]),
+            for_indices=for_indices,
             cutoffs=jnp.array([1.5]),
             capacity=20,
         )
@@ -705,28 +712,28 @@ class TestNearestNeighborListImplementations:
         valid_edges = valid_edges[valid_edges[:, 1] < 3]
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
 
-        # lh[0](0,0,0) vs rh[0](1,0,0): dist=1.0<1.5, remap[0]=0, self-excluded
-        # lh[1](2,0,0) vs rh[0](1,0,0): dist=1.0<1.5, remap[0]=0, edge (1,0)
-        # lh[1](2,0,0) vs rh[1](3,0,0): dist=1.0<1.5, remap[1]=2, edge (1,2)
-        # lh[2](4,0,0) vs rh[1](3,0,0): dist=1.0<1.5, remap[1]=2, self-excluded
+        # lh[0](1,0,0) self-excluded against the affected id 0.
+        # lh[1](2,0,0) vs updated lh[0](1,0,0): edge (1,0)
+        # lh[1](2,0,0) vs updated lh[2](3,0,0): edge (1,2)
+        # lh[2](3,0,0) self-excluded against the affected id 2.
         # Symmetrized: (0,1) and (2,1) also appear
         assert (1, 0) in edge_set, f"Expected edge (1, 0) not found in {edge_set}"
         assert (0, 1) in edge_set, f"Expected edge (0, 1) not found in {edge_set}"
         assert (1, 2) in edge_set, f"Expected edge (1, 2) not found in {edge_set}"
         assert (2, 1) in edge_set, f"Expected edge (2, 1) not found in {edge_set}"
 
-    def test_rh_index_remap_for_subsets(self, neighbor_list_impl):
+    def test_for_indices_update_for_subsets(self, neighbor_list_impl):
         positions = jnp.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
         )
-        rh_index_remap = jnp.array([0, 2, 1, 4])
+        for_indices = jnp.array([0, 2, 1])
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=positions,
-            rh_positions=positions,
+            update_positions=positions[:3],
             batch_mask=jnp.array([0, 0, 0, 0]),
-            rh_batch_mask=jnp.array([0, 0, 0, 0]),
-            rh_index_remap=rh_index_remap,
+            update_batch_mask=jnp.array([0, 0, 0]),
+            for_indices=for_indices,
             cutoffs=jnp.array([2.5]),
             extras={"candidates": 20, "edges": 12, "cells": 256},
         )
@@ -761,21 +768,21 @@ class TestNearestNeighborListImplementations:
             )
         )
 
-    def test_rh_index_remap_prevents_self_interaction(self, neighbor_list_impl):
-        """Test that rh_index_remap prevents self-interactions."""
-        # Same positions for lh and rh
+    def test_for_indices_prevents_self_interaction(self, neighbor_list_impl):
+        """Test that self-graph updates still prevent self-interactions."""
+        # Same positions for the full lh table and the affected subset.
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
 
-        # Identity remap - should prevent self-interactions
-        rh_index_remap = jnp.array([0, 1])
+        # Identity affected ids should prevent self-interactions.
+        for_indices = jnp.array([0, 1])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=positions,
-            rh_positions=positions,
+            update_positions=positions,
             batch_mask=jnp.array([0, 0]),
-            rh_batch_mask=jnp.array([0, 0]),
-            rh_index_remap=rh_index_remap,
+            update_batch_mask=jnp.array([0, 0]),
+            for_indices=for_indices,
             cutoffs=jnp.array([1.5]),
             capacity=20,
         )
@@ -786,16 +793,16 @@ class TestNearestNeighborListImplementations:
         valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 2]
         valid_edges = valid_edges[valid_edges[:, 1] < 2]
 
-        # Absorb basic remap assertion: remapping produces edges
-        assert len(valid_edges) > 0, "Should find edges with index remapping"
+        # Absorb basic update assertion: affected-index search produces edges.
+        assert len(valid_edges) > 0, "Should find edges with for_indices"
 
         for i in range(valid_edges.shape[0]):
             lh_idx, rh_idx = valid_edges[i]
             assert lh_idx != rh_idx, f"Found self-interaction: ({lh_idx}, {rh_idx})"
 
-    def test_rh_arguments_combined(self, neighbor_list_impl):
-        """Test all rh_ arguments used together."""
-        # Complex scenario combining all rh_ arguments
+    def test_for_indices_update_arguments_combined(self, neighbor_list_impl):
+        """Test updated positions, systems, and affected ids together."""
+        # Complex scenario combining updated particle data and for_indices.
         lh_positions = jnp.array(
             [
                 [0.0, 0.0, 0.0],  # system 0
@@ -803,24 +810,24 @@ class TestNearestNeighborListImplementations:
                 [0.0, 0.0, 0.0],  # system 0
             ]
         )
-        rh_positions = jnp.array(
+        update_positions = jnp.array(
             [
-                [1.0, 0.0, 0.0],  # will be remapped
-                [1.0, 0.0, 0.0],  # will be remapped
-                [1.0, 0.0, 0.0],  # will be remapped
+                [1.0, 0.0, 0.0],  # updates an affected lh row
+                [1.0, 0.0, 0.0],  # updates an affected lh row
+                [1.0, 0.0, 0.0],  # updates an affected lh row
             ]
         )
 
-        # Remap: rh[0]->original[2], rh[1]->original[0], rh[2]->original[1]
-        rh_index_remap = jnp.array([2, 1, 0])
+        # Affected ids: update[0]->lh[2], update[1]->lh[1], update[2]->lh[0]
+        for_indices = jnp.array([2, 1, 0])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=lh_positions,
-            rh_positions=rh_positions,
+            update_positions=update_positions,
             batch_mask=jnp.array([0, 1, 0]),
-            rh_batch_mask=jnp.array([0, 1, 0]),
-            rh_index_remap=rh_index_remap,
+            update_batch_mask=jnp.array([0, 1, 0]),
+            for_indices=for_indices,
             cells=jnp.eye(3)[None].repeat(2, axis=0) * 10.0,
             cutoffs=jnp.array([1.5, 1.5]),
             capacity=20,
@@ -834,14 +841,13 @@ class TestNearestNeighborListImplementations:
 
         # Check that all edges respect batch constraints
         lh_batch_mask = jnp.array([0, 1, 0])
-        rh_batch_mask = jnp.array([0, 1, 0])
         for i in range(valid_edges.shape[0]):
             lh_idx, rh_idx = valid_edges[i]
             if lh_idx < 3 and rh_idx < 3:  # Valid indices
-                # Check that batch masks match (not remap logic)
-                assert lh_batch_mask[lh_idx] == rh_batch_mask[rh_idx], (
+                # Candidate column 1 is in output/lh index space for updates.
+                assert lh_batch_mask[lh_idx] == lh_batch_mask[rh_idx], (
                     f"Edge ({lh_idx}, {rh_idx}) violates batch constraint: "
-                    f"lh_batch={lh_batch_mask[lh_idx]}, rh_batch={rh_batch_mask[rh_idx]}"
+                    f"lhs_batch={lh_batch_mask[lh_idx]}, rhs_batch={lh_batch_mask[rh_idx]}"
                 )
 
     def test_compare_to_naive(self, neighbor_list_impl):
@@ -865,7 +871,7 @@ class TestNearestNeighborListImplementations:
             cutoffs=_cut, **{"edges": N, "candidates": N, "cells": 64}
         )
         while (
-            result := as_result_function(neighbor_list_instance)(lh, None, systems=_sys)
+            result := as_result_function(neighbor_list_instance)(lh, systems=_sys)
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
         result.raise_assertion()
@@ -909,7 +915,7 @@ class TestNearestNeighborListImplementations:
             jnp.array([0] * N),
             jnp.arange(N),
         )
-        rh, rh_remap = _make_rh(lh, new_positions, jnp.array([0] * M), rh_indices)
+        for_indices = Index(lh.keys, rh_indices)
 
         _sys, _cut = _systems_from_cell(cell, jnp.array([cutoff]))
         neighbor_list_instance = instance_factory(
@@ -918,9 +924,8 @@ class TestNearestNeighborListImplementations:
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
-                rh=rh,
                 systems=_sys,
-                rh_index_remap=rh_remap,
+                for_indices=for_indices,
             )
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
@@ -983,7 +988,7 @@ class TestNearestNeighborListImplementations:
         nl_1 = instance_factory(
             candidates=10, edges=10, cells=256, image_candidates=200, cutoffs=_cut_1
         )
-        result_1 = jax.jit(as_result_function(nl_1))(lh=lh_1, rh=None, systems=_sys_1)
+        result_1 = jax.jit(as_result_function(nl_1))(lh=lh_1, systems=_sys_1)
         result_1.raise_assertion()
         valid_1 = {
             (int(e[0]), int(e[1]))
@@ -1003,7 +1008,7 @@ class TestNearestNeighborListImplementations:
         nl_2 = instance_factory(
             candidates=4, edges=53, cells=8, image_candidates=600, cutoffs=_cut_2
         )
-        result_2 = jax.jit(as_result_function(nl_2))(lh=lh_2, rh=None, systems=_sys_2)
+        result_2 = jax.jit(as_result_function(nl_2))(lh=lh_2, systems=_sys_2)
         result_2.raise_assertion()
         valid_2 = {
             (int(e[0]), int(e[1]))
@@ -1039,7 +1044,6 @@ class TestNearestNeighborListImplementations:
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
                 lh=lh,
-                rh=None,
                 systems=_sys,
             )
         ).failed_assertions:
@@ -1091,7 +1095,6 @@ class TestNearestNeighborListImplementations:
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
         result.raise_assertion()
@@ -1156,7 +1159,7 @@ class TestNearestNeighborListImplementations:
                 lambda x: x[jnp.asarray(idx_order)], data.data
             )
             reordered = Table(reordered_index, reordered_data)
-            result = nl(reordered, None, systems=_sys)
+            result = nl(reordered, systems=_sys)
             result.raise_assertion()
             mask = (result.value.indices.indices < 6).all(axis=1)
             valid = np.asarray(result.value.indices.indices[mask])
@@ -1200,7 +1203,6 @@ class TestNearestNeighborListImplementations:
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
         result.raise_assertion()
@@ -1241,7 +1243,6 @@ class TestNearestNeighborListImplementations:
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
         result.raise_assertion()
@@ -1300,7 +1301,6 @@ class TestNearestNeighborListImplementations:
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
         result.raise_assertion()
@@ -1352,7 +1352,6 @@ class TestNearestNeighborListImplementations:
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
         result.raise_assertion()
@@ -1420,7 +1419,6 @@ class TestRefineCutoffNeighborList:
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
 
@@ -1474,26 +1472,25 @@ class TestRefineCutoffNeighborList:
         _sys, _cut = _systems_from_cell(cell, cutoffs)
         edges = refinement_nl(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
         assert len(edges) >= 0
         assert edges.degree == 2
 
-    def test_with_rh_index_remap(self):
-        """Test refinement with index remapping."""
+    def test_with_for_indices(self):
+        """Test refinement with affected lh indices."""
         lh_positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
 
-        rh_positions = jnp.array([[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        update_positions = jnp.array([[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]])
 
         lh = self._create_test_pointset(lh_positions)
 
-        # Remap indices: only use subset of rh
-        rh_index_remap = jnp.array([1, 2])  # Map to original lh indices
+        # Only use an affected subset of lh.
+        for_indices = jnp.array([1, 2])
 
         # Create candidates
         lh_indices = jnp.array([0, 1])
-        rh_indices = jnp.array([0, 1])  # These will be remapped
+        rh_indices = jnp.array([0, 1])
         candidates = self._create_candidate_edges(lh_indices, rh_indices)
 
         cutoffs = jnp.array([1.1])
@@ -1504,24 +1501,26 @@ class TestRefineCutoffNeighborList:
             cutoffs=_cutoff_table(cutoffs),
         )
 
-        rh, rh_remap = _make_rh(
-            lh, rh_positions, jnp.zeros(len(rh_positions), dtype=int), rh_index_remap
+        rh_update, for_indices = _make_rh(
+            lh,
+            update_positions,
+            jnp.zeros(len(update_positions), dtype=int),
+            for_indices,
         )
+        lh = lh.update(for_indices, rh_update.data)
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
-            rh=rh,
             systems=_sys,
-            rh_index_remap=rh_remap,
+            for_indices=for_indices,
         )
 
         assert edges.degree == 2
-        # Should handle remapping correctly
+        # Should handle affected-index selection correctly.
 
-    def test_rh_remap_uses_rh_positions_for_cutoff(self):
-        """Precomputed edges are in public lh-space, but the remapped rh data
-        may carry positions that differ from lh. RefineCutoff must evaluate
-        distances after overlaying rh onto those lh rows.
+    def test_for_indices_uses_updated_lh_positions_for_cutoff(self):
+        """Precomputed edges are in public lh-space and for_indices updates
+        must evaluate distances after the updated data has been written to lh.
         """
         lh_positions = jnp.array(
             [
@@ -1531,13 +1530,14 @@ class TestRefineCutoffNeighborList:
             ]
         )
         lh = self._create_test_pointset(lh_positions)
-        rh, rh_remap = _make_rh(
+        rh_update, for_indices = _make_rh(
             lh,
             jnp.array([[100.4, 0.0, 0.0]]),
             jnp.zeros(1, dtype=int),
             jnp.array([2]),
             exclusion_ids=jnp.array([20]),
         )
+        lh = lh.update(for_indices, rh_update.data)
         candidates = self._create_candidate_edges(
             jnp.array([1]), jnp.array([2]), n_particles=3
         )
@@ -1550,9 +1550,8 @@ class TestRefineCutoffNeighborList:
         systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
         edges = refinement_nl(
             lh=lh,
-            rh=rh,
             systems=systems,
-            rh_index_remap=rh_remap,
+            for_indices=for_indices,
         )
 
         npt.assert_array_equal(
@@ -1561,7 +1560,7 @@ class TestRefineCutoffNeighborList:
         )
 
     def test_disjoint_rh_uses_rh_positions_for_cutoff(self):
-        """Without a remap, the precomputed candidate right column is in
+        """Without a for_indices, the precomputed candidate right column is in
         rh-space and distance checks must use the separate rh table.
         """
         lh_positions = jnp.array(
@@ -1588,16 +1587,16 @@ class TestRefineCutoffNeighborList:
         )
         systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
 
-        edges = refinement_nl(lh=lh, rh=rh, systems=systems, rh_index_remap=None)
+        edges = refinement_nl(lh=lh, systems=systems, rh=rh)
 
         npt.assert_array_equal(
             np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
             np.array([[1, 0]]),
         )
 
-    def test_rh_remap_uses_rh_exclusion_for_cutoff_refinement(self):
+    def test_for_indices_uses_updated_lh_exclusion_for_cutoff_refinement(self):
         """The cutoff refiner still applies exclusion masks after distance
-        filtering, so remapped rh metadata must be used there too.
+        filtering, so updated lh metadata must be used there too.
         """
         lh_positions = jnp.array(
             [
@@ -1606,13 +1605,14 @@ class TestRefineCutoffNeighborList:
             ]
         )
         lh = self._create_test_pointset(lh_positions, exclusion_offset=0)
-        rh, rh_remap = _make_rh(
+        rh_update, for_indices = _make_rh(
             lh,
             jnp.array([[1.0, 0.0, 0.0]]),
             jnp.zeros(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([0]),
         )
+        lh = lh.update(for_indices, rh_update.data)
         candidates = self._create_candidate_edges(
             jnp.array([0]), jnp.array([1]), n_particles=2
         )
@@ -1625,9 +1625,8 @@ class TestRefineCutoffNeighborList:
 
         edges = refinement_nl(
             lh=lh,
-            rh=rh,
             systems=systems,
-            rh_index_remap=rh_remap,
+            for_indices=for_indices,
         )
 
         assert not np.any(np.asarray(edges.indices.indices[:, 0] < lh.size))
@@ -1655,7 +1654,6 @@ class TestRefineCutoffNeighborList:
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
 
@@ -1699,7 +1697,6 @@ class TestRefineCutoffNeighborList:
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
 
@@ -1729,7 +1726,6 @@ class TestRefineCutoffNeighborList:
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(
             lh=lh,
-            rh=None,
             systems=_sys,
         )
 
@@ -1756,7 +1752,7 @@ class TestRefineCutoffNeighborList:
             _sys, _cut = _systems_from_lvecs(
                 jnp.eye(3)[None] * 1000.0, jnp.array([2.0])
             )
-            edges = refinement_nl(lh=lh, rh=None, systems=_sys)
+            edges = refinement_nl(lh=lh, systems=_sys)
 
             if len(edges) > 0:
                 diff_vectors = edges.difference_vectors(lh, _sys)
@@ -1786,7 +1782,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = _systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
-        edges = refinement_nl(lh=lh, rh=None, systems=_sys)
+        edges = refinement_nl(lh=lh, systems=_sys)
 
         if len(edges) > 0:
             diff_vectors = edges.difference_vectors(lh, _sys)
@@ -1810,40 +1806,29 @@ class TestRefineMaskNeighborList:
     """Test cases for RefineMaskNeighborList.
 
     RefineMask is the post-filter used by MCMC. Its precomputed edges carry
-    indices in **lh-space** (the output of any base NL +
-    ``neighborlist_changes``). When a non-trivial ``rh`` subset plus a remap is
-    provided, those rows are overlaid onto the lh table before filtering so
-    public lh-space edge indices remain valid while rh metadata is honored.
-    Without a remap, the right column remains in raw rh-space.
+    indices in lh-space. For self-graph updates the changed particle data has
+    already been written into lh and for_indices selects affected rows. True
+    bipartite calls pass rh with no for_indices.
     """
 
     def test_mcmc_patch_pattern_with_partial_overlap(self):
-        """Mirror the MCMC patch flow: precomputed edges contain pairs where
-        only some indices are inside the move subset. Concrete check:
-        5-particle ``lh``, ``rh`` = 2-particle subset (move particles),
-        precomputed edges include a pair that touches a non-move particle.
-        All edges must survive (distinct exclusion segments) and the output
-        must be in lh-space.
-        """
+        """Precomputed edges can touch affected and unaffected particles."""
         lh = _make_lh(
             jnp.zeros((5, 3)),
             jnp.zeros(5, dtype=int),
             exclusion_ids=jnp.array([0, 1, 2, 3, 4]),
         )
-        # Move subset = particles 1 and 3 (typical MCMC small move).
-        rh_positions = jnp.zeros((2, 3))
-        rh_remap_arr = jnp.array([1, 3])
-        rh, rh_remap = _make_rh(lh, rh_positions, jnp.zeros(2, dtype=int), rh_remap_arr)
-        # Precomputed edges: (0, 1), (2, 3), (1, 4). The last touches a
-        # particle NOT in the move subset; overlaying rh into lh keeps that
-        # public lh-space edge valid.
+        rh_update, for_indices = _make_rh(
+            lh, jnp.zeros((2, 3)), jnp.zeros(2, dtype=int), jnp.array([1, 3])
+        )
+        lh = lh.update(for_indices, rh_update.data)
         candidates = _make_edges(
             jnp.array([0, 2, 1]), jnp.array([1, 3, 4]), n_particles=5
         )
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         sys, _ = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(lh=lh, rh=rh, systems=sys, rh_index_remap=rh_remap)
+        edges = refine_nl(lh=lh, systems=sys, for_indices=for_indices)
 
         raw = edges.indices.indices
         oob = lh.size
@@ -1854,13 +1839,7 @@ class TestRefineMaskNeighborList:
         npt.assert_array_equal(valid, np.array([[0, 1], [1, 4], [2, 3]]))
 
     def test_full_overlap_with_rh_subset(self):
-        """RefineMask called with a non-trivial ``rh`` subset where every
-        precomputed rh-side index is in the move subset.
-
-        The rh rows are overlaid into the lh table and the precomputed
-        lh-space edges stay in lh-space directly. Output: edges (0, 1) and
-        (2, 3).
-        """
+        """All precomputed edges touch the affected subset."""
         lh_positions = jnp.array(
             [
                 [0.0, 0.0, 0.0],
@@ -1870,22 +1849,21 @@ class TestRefineMaskNeighborList:
             ]
         )
         lh = _make_lh(lh_positions, jnp.zeros(4, dtype=int), jnp.arange(4))
-
-        # rh is the subset {lh[1], lh[3]}; remap takes rh-positions → lh-positions.
-        rh_positions = lh_positions[jnp.array([1, 3])]
-        rh_remap_arr = jnp.array([1, 3])
-        rh, rh_remap = _make_rh(lh, rh_positions, jnp.zeros(2, dtype=int), rh_remap_arr)
-
-        # Precomputed edges with rh-side in lh-space (1, 3 — both are lh-positions
-        # that happen to correspond to rh positions 0 and 1 respectively).
+        rh_update, for_indices = _make_rh(
+            lh,
+            lh_positions[jnp.array([1, 3])],
+            jnp.zeros(2, dtype=int),
+            jnp.array([1, 3]),
+        )
+        lh = lh.update(for_indices, rh_update.data)
         candidates = _make_edges(jnp.array([0, 2]), jnp.array([1, 3]), n_particles=4)
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         sys, _ = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(lh=lh, rh=rh, systems=sys, rh_index_remap=rh_remap)
+        edges = refine_nl(lh=lh, systems=sys, for_indices=for_indices)
 
         raw = edges.indices.indices
-        oob = lh.size  # MaskOnlyCompactor's OOB sentinel
+        oob = lh.size
         valid_mask = (raw[:, 0] < oob) & (raw[:, 1] < oob)
         valid = np.asarray(raw[valid_mask])
         valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
@@ -1893,9 +1871,7 @@ class TestRefineMaskNeighborList:
         npt.assert_array_equal(valid, np.array([[0, 1], [2, 3]]))
 
     def test_disjoint_rh_uses_rh_inclusion(self):
-        """Without a remap, the precomputed candidate right column is in
-        rh-space and masks must read inclusion/exclusion from rh.
-        """
+        """True bipartite refinement reads rhs metadata from rh."""
         lh = _make_lh(
             jnp.zeros((2, 3)),
             jnp.zeros(2, dtype=int),
@@ -1915,67 +1891,55 @@ class TestRefineMaskNeighborList:
             jnp.array([10.0, 10.0]),
         )
 
-        edges = refine_nl(lh=lh, rh=rh, systems=systems, rh_index_remap=None)
+        edges = refine_nl(lh=lh, systems=systems, rh=rh)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
 
-    def test_rh_remap_uses_rh_inclusion(self):
-        """A remapped rh row can belong to a different inclusion segment than
-        the lh row it replaces. RefineMask must use that rh metadata.
-        """
+    def test_for_indices_uses_updated_lh_inclusion(self):
+        """Updated lh rows can move inclusion segments before refinement."""
         lh = _make_lh(
             jnp.zeros((2, 3)),
             jnp.zeros(2, dtype=int),
             exclusion_ids=jnp.array([0, 1]),
         )
-        rh, rh_remap = _make_rh(
+        rh_update, for_indices = _make_rh(
             lh,
             jnp.zeros((1, 3)),
             jnp.ones(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([1]),
         )
+        lh = lh.update(for_indices, rh_update.data)
         candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         systems, _ = _systems_from_lvecs(
             jnp.eye(3)[None] * 100.0, jnp.array([10.0, 10.0])
         )
 
-        edges = refine_nl(
-            lh=lh,
-            rh=rh,
-            systems=systems,
-            rh_index_remap=rh_remap,
-        )
+        edges = refine_nl(lh=lh, systems=systems, for_indices=for_indices)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
 
-    def test_rh_remap_uses_rh_exclusion(self):
-        """A remapped rh row can introduce an exclusion that is not present in
-        the lh table at the same public edge index.
-        """
+    def test_for_indices_uses_updated_lh_exclusion(self):
+        """Updated lh rows can introduce an exclusion before refinement."""
         lh = _make_lh(
             jnp.zeros((2, 3)),
             jnp.zeros(2, dtype=int),
             exclusion_ids=jnp.array([0, 1]),
         )
-        rh, rh_remap = _make_rh(
+        rh_update, for_indices = _make_rh(
             lh,
             jnp.zeros((1, 3)),
             jnp.zeros(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([0]),
         )
+        lh = lh.update(for_indices, rh_update.data)
         candidates = _make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         systems, _ = _systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
 
-        edges = refine_nl(
-            lh=lh,
-            rh=rh,
-            systems=systems,
-            rh_index_remap=rh_remap,
-        )
+        edges = refine_nl(lh=lh, systems=systems, for_indices=for_indices)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
 
@@ -2015,35 +1979,23 @@ class TestInclusionMatchMask:
         assert result.tolist() == [True, False, False, True]
 
 
-class TestRemapDedupMask:
-    def test_no_remap_returns_all_true(self):
+class TestForIndicesDedupMask:
+    def test_no_for_indices_returns_all_true(self):
         lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = _make_pipeline_ctx(lh, rh_index_remap=None)
+        ctx = _make_pipeline_ctx(lh)
         batch = _make_batch(lh.keys, jnp.array([0, 1, 2]), jnp.array([1, 2, 3]))
-        result = RemapDedupMask()(batch, ctx)
+        result = ForIndicesDedupMask()(batch, ctx)
         assert result.tolist() == [True, True, True]
 
-    def test_drops_self_pair_with_remap(self):
-        """When ``rh`` is a remapped subset of ``lh``, dedup keeps an edge only
-        when its lh-side ID is **outside** the remap *or* is not less than the
-        remapped-rh ID."""
+    def test_drops_self_pair_with_for_indices(self):
         lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
-        # rh-pos 0 maps to lh-pos 1; rh-pos 1 maps to lh-pos 3.
-        remap = jnp.array([1, 3])
-        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
-        # Cases:
-        #   (lh=0, rh=0): rh_remapped=1, isin(0,[1,3])=False → ~isin=True → keep.
-        #   (lh=1, rh=1): rh_remapped=3, isin(1,[1,3])=True  → ~isin=False;
-        #                 1 >= 3 = False → drop.
-        #   (lh=3, rh=0): rh_remapped=1, isin(3,[1,3])=True  → ~isin=False;
-        #                 3 >= 1 = True → keep.
+        ctx = _make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
         batch = _make_batch(
             lh.keys,
             jnp.array([0, 1, 3]),
-            jnp.array([0, 1, 0]),
+            jnp.array([1, 3, 1]),
         )
-        result = RemapDedupMask()(batch, ctx)
+        result = ForIndicesDedupMask()(batch, ctx)
         assert result.tolist() == [True, False, True]
 
 
@@ -2115,7 +2067,6 @@ class TestReduceCompactor:
     def test_compacts_to_capacity_size(self):
         lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         ctx = _make_pipeline_ctx(lh)
-        # 5 candidates, 3 surviving. Capacity 6.
         keep = jnp.array([True, False, True, False, True])
         batch = _make_batch(
             lh.keys,
@@ -2124,8 +2075,6 @@ class TestReduceCompactor:
         )
         compactor = ReduceCompactor(avg_edges=FixedCapacity(6))
         edges = compactor(keep, batch, ctx)
-        # jnp.where selects the survivor positions (0, 2, 4) in order. Then
-        # the remaining 3 slots are filled with OOB = lh.size = 4.
         npt.assert_array_equal(
             np.asarray(edges.indices.indices[:, 0]),
             np.array([0, 2, 0, 4, 4, 4]),
@@ -2135,22 +2084,34 @@ class TestReduceCompactor:
             np.array([1, 3, 2, 4, 4, 4]),
         )
 
-    def test_mirrors_each_edge_with_reverse_when_remap_set(self):
-        """When ``rh_index_remap`` is set, ``ReduceCompactor`` doubles each
-        surviving edge with its (rh→lh) reverse, restoring symmetry that
-        ``RemapDedupMask`` removed upstream."""
+    def test_compacts_rows_without_mirroring(self):
+        """ReduceCompactor only compacts; graph symmetry is postprocessing."""
         lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
-        # rh-pos 0 → lh-pos 1; rh-pos 1 → lh-pos 3.
-        remap = jnp.array([1, 3])
-        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
-        # One candidate: lh-pos 0, rh-pos 0 (= lh-pos 1).
+        ctx = _make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
         keep = jnp.array([True])
         shifts = jnp.array([[[0.5, 0.0, 0.0]]])
-        batch = _make_batch(lh.keys, jnp.array([0]), jnp.array([0]), shifts=shifts)
+        batch = _make_batch(lh.keys, jnp.array([0]), jnp.array([1]), shifts=shifts)
         compactor = ReduceCompactor(avg_edges=FixedCapacity(1))
         edges = compactor(keep, batch, ctx)
-        # Output has 2 entries: (0, 1) with shift +s and (1, 0) with shift -s.
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices),
+            np.array([[0, 1]]),
+        )
+        npt.assert_allclose(
+            np.asarray(edges.shifts),
+            np.array([[[0.5, 0.0, 0.0]]]),
+        )
+
+
+class TestMirrorPairEdges:
+    def test_mirrors_each_edge_with_reverse_when_for_indices_set(self):
+        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        ctx = _make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
+        keep = jnp.array([True])
+        shifts = jnp.array([[[0.5, 0.0, 0.0]]])
+        batch = _make_batch(lh.keys, jnp.array([0]), jnp.array([1]), shifts=shifts)
+        compacted = ReduceCompactor(avg_edges=FixedCapacity(1))(keep, batch, ctx)
+        edges = MirrorPairEdges()(compacted, ctx)
         npt.assert_array_equal(
             np.asarray(edges.indices.indices),
             np.array([[0, 1], [1, 0]]),
@@ -2160,46 +2121,74 @@ class TestReduceCompactor:
             np.array([[[0.5, 0.0, 0.0]], [[-0.5, -0.0, -0.0]]]),
         )
 
+    def test_noop_without_for_indices_by_default(self):
+        lh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        ctx = _make_pipeline_ctx(lh)
+        edges = _make_edges(
+            jnp.array([0]),
+            jnp.array([1]),
+            n_particles=2,
+            shifts=jnp.array([[0.25, 0.0, 0.0]]),
+        )
+        out = MirrorPairEdges()(edges, ctx)
+        npt.assert_array_equal(np.asarray(out.indices.indices), np.array([[0, 1]]))
+        npt.assert_allclose(np.asarray(out.shifts), np.array([[[0.25, 0.0, 0.0]]]))
+
+    def test_pipeline_runs_postprocessors_in_order(self):
+        lh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        systems, _ = _systems_from_cell(
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])),
+            jnp.array([1.0]),
+        )
+        candidates = _make_edges(
+            jnp.array([0]),
+            jnp.array([1]),
+            n_particles=2,
+            shifts=jnp.array([[0.25, 0.0, 0.0]]),
+        )
+        pipeline = Pipeline[Literal[2]](
+            selector=PrecomputedEdgesSelector(candidates),
+            masks=(),
+            compactor=ReduceCompactor(avg_edges=FixedCapacity(1)),
+            postprocessors=(
+                MirrorPairEdges(only_when_for_indices=False),
+                MirrorPairEdges(only_when_for_indices=False),
+            ),
+        )
+        edges = pipeline(lh, systems)
+        npt.assert_array_equal(
+            np.asarray(edges.indices.indices),
+            np.array([[0, 1], [1, 0], [1, 0], [0, 1]]),
+        )
+        npt.assert_allclose(
+            np.asarray(edges.shifts),
+            np.array(
+                [
+                    [[0.25, 0.0, 0.0]],
+                    [[-0.25, -0.0, -0.0]],
+                    [[-0.25, -0.0, -0.0]],
+                    [[0.25, 0.0, 0.0]],
+                ]
+            ),
+        )
+
 
 class TestMaskOnlyCompactor:
-    def test_stamps_oob_on_dropped_entries_and_remaps_rh(self):
+    def test_stamps_oob_on_dropped_entries(self):
         lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
-        remap = jnp.array([1, 3])
-        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
-        # 3 candidates with rh-side in rh-space; middle one is dropped.
+        ctx = _make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
         keep = jnp.array([True, False, True])
         batch = _make_batch(
             lh.keys,
             jnp.array([0, 1, 2]),
-            jnp.array([0, 1, 1]),
+            jnp.array([1, 3, 3]),
         )
         edges = MaskOnlyCompactor()(keep, batch, ctx)
-        # Survivors: (lh=0, rh=0→lh1) and (lh=2, rh=1→lh3). Dropped → (oob, oob).
-        oob = lh.size  # MaskOnlyCompactor uses ctx.lh.size
+        oob = lh.size
         npt.assert_array_equal(
             np.asarray(edges.indices.indices),
             np.array([[0, 1], [oob, oob], [2, 3]]),
         )
-
-
-class TestRemapRhToLh:
-    def test_passthrough_without_remap(self):
-        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = _make_pipeline_ctx(lh, rh_index_remap=None)
-        rh_idx = jnp.array([0, 1, 2])
-        npt.assert_array_equal(
-            np.asarray(remap_rh_to_lh(rh_idx, ctx)), np.array([0, 1, 2])
-        )
-
-    def test_translates_rh_to_lh_space_and_fills_oob(self):
-        lh = _make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        rh = _make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
-        remap = jnp.array([1, 3])
-        ctx = _make_pipeline_ctx(lh, rh, rh_index_remap=remap)
-        oob = max(lh.size, rh.size)  # 4
-        result = remap_rh_to_lh(jnp.array([0, 1, 5]), ctx)
-        npt.assert_array_equal(np.asarray(result), np.array([1, 3, oob]))
 
 
 class TestMakeBatchWithMic:
@@ -2285,7 +2274,7 @@ class TestPipelineComposition:
             masks=(DistanceCutoffMask(cutoffs=cutoffs),),
             compactor=MaskOnlyCompactor(),
         )
-        edges = pipeline(lh, None, systems, None)
+        edges = pipeline(lh, systems)
         # First edge survives, second is stamped OOB.
         oob = lh.size
         npt.assert_array_equal(
@@ -2301,12 +2290,12 @@ def _extract_valid_edge_set(edges: Edges, n_particles: int) -> set[tuple[int, in
     return {(int(raw[i, 0]), int(raw[i, 1])) for i in range(len(raw)) if mask[i]}
 
 
-def _run_nl_with_retry(nl, lh, rh, systems, cutoffs, rh_remap):
+def _run_nl_with_retry(nl, lh, systems, cutoffs, for_indices):
     """Run neighborlist call, retrying on capacity errors."""
     del cutoffs
     while (
         result := jax.jit(as_result_function(nl))(
-            lh=lh, rh=rh, systems=systems, rh_index_remap=rh_remap
+            lh=lh, systems=systems, for_indices=for_indices
         )
     ).failed_assertions:
         nl = result.fix_or_raise(nl)
@@ -2345,29 +2334,24 @@ class TestNeighborlistChanges:
         # "after" lh: original positions with changes applied
         full_new_pos = positions.at[changed_idx].set(new_positions)
         lh_after = _make_lh(full_new_pos, batch)
-        rh_after, remap_after = _make_rh(
-            lh_after, new_positions, jnp.zeros(M, dtype=int), changed_idx
-        )
+        for_indices_after = Index(lh_after.keys, changed_idx)
         ref_after = _run_nl_with_retry(
-            nl, lh_after, rh_after, systems, cutoffs, remap_after
+            nl, lh_after, systems, cutoffs, for_indices_after
         )
 
         # "before" lh: original positions
         lh_before = _make_lh(positions, batch)
-        old_data = positions[changed_idx]
-        rh_before, remap_before = _make_rh(
-            lh_before, old_data, jnp.zeros(M, dtype=int), changed_idx
-        )
+        for_indices_before = Index(lh_before.keys, changed_idx)
         ref_removed = _run_nl_with_retry(
-            nl, lh_before, rh_before, systems, cutoffs, remap_before
+            nl, lh_before, systems, cutoffs, for_indices_before
         )
 
         # --- combined call ---
         lh = _make_lh(positions, batch)
-        rh_table, rh_remap = _make_rh(
+        rh_table, for_indices = _make_rh(
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
-        rh_with_indices = WithIndices(rh_remap, rh_table)
+        rh_with_indices = WithIndices(for_indices, rh_table)
         result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         added_set = _extract_valid_edge_set(result.added, N)
@@ -2402,8 +2386,10 @@ class TestNeighborlistChanges:
         nl = self._make_nl(cutoffs)
 
         lh = _make_lh(positions, batch)
-        rh_table, rh_remap = _make_rh(lh, new_pos, jnp.zeros(1, dtype=int), changed_idx)
-        rh_with_indices = WithIndices(rh_remap, rh_table)
+        rh_table, for_indices = _make_rh(
+            lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
+        )
+        rh_with_indices = WithIndices(for_indices, rh_table)
         result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         removed = _extract_valid_edge_set(result.removed, 3)
@@ -2443,8 +2429,10 @@ class TestNeighborlistChanges:
         nl = self._make_nl(cutoffs)
 
         lh = _make_lh(positions, batch)
-        rh_table, rh_remap = _make_rh(lh, new_pos, jnp.zeros(1, dtype=int), changed_idx)
-        rh_with_indices = WithIndices(rh_remap, rh_table)
+        rh_table, for_indices = _make_rh(
+            lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
+        )
+        rh_with_indices = WithIndices(for_indices, rh_table)
         result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         added = _extract_valid_edge_set(result.added, 4)
@@ -2468,8 +2456,10 @@ class TestNeighborlistChanges:
         nl = self._make_nl(cutoffs)
 
         lh = _make_lh(positions, batch)
-        rh_table, rh_remap = _make_rh(lh, new_pos, jnp.zeros(1, dtype=int), changed_idx)
-        rh_with_indices = WithIndices(rh_remap, rh_table)
+        rh_table, for_indices = _make_rh(
+            lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
+        )
+        rh_with_indices = WithIndices(for_indices, rh_table)
         result = neighborlist_changes(
             nl, lh, rh_with_indices, systems, compaction=compaction
         )
@@ -2497,26 +2487,24 @@ class TestNeighborlistChanges:
         # reference
         full_new_pos = positions.at[changed_idx].set(new_positions)
         lh_after = _make_lh(full_new_pos, batch)
-        rh_after, remap_after = _make_rh(
-            lh_after, new_positions, jnp.zeros(M, dtype=int), changed_idx
-        )
+        for_indices_after = Index(lh_after.keys, changed_idx)
         ref_after = _run_nl_with_retry(
-            nl, lh_after, rh_after, systems, cutoffs, remap_after
+            nl, lh_after, systems, cutoffs, for_indices_after
         )
         lh_before = _make_lh(positions, batch)
-        rh_before, remap_before = _make_rh(
-            lh_before, positions[changed_idx], jnp.zeros(M, dtype=int), changed_idx
-        )
+        for_indices_before = Index(lh_before.keys, changed_idx)
         ref_removed = _run_nl_with_retry(
-            nl, lh_before, rh_before, systems, cutoffs, remap_before
+            nl, lh_before, systems, cutoffs, for_indices_before
         )
 
         # combined
         lh = _make_lh(positions, batch)
-        rh_table, rh_remap = _make_rh(
+        rh_table, for_indices = _make_rh(
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
-        result = neighborlist_changes(nl, lh, WithIndices(rh_remap, rh_table), systems)
+        result = neighborlist_changes(
+            nl, lh, WithIndices(for_indices, rh_table), systems
+        )
 
         assert _extract_valid_edge_set(result.added, N) == _extract_valid_edge_set(
             ref_after, N
@@ -2545,9 +2533,7 @@ def _run_cell_list(positions, cell, cutoff):
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
         cutoffs=cutoffs,
     )
-    result = jax.jit(as_result_function(nl))(
-        lh=lh, rh=None, systems=systems, rh_index_remap=None
-    )
+    result = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
     result.raise_assertion()
     return result.value
 
@@ -2563,9 +2549,7 @@ def _run_dense(positions, cell, cutoff):
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
         cutoffs=cutoffs,
     )
-    result = jax.jit(as_result_function(nl))(
-        lh=lh, rh=None, systems=systems, rh_index_remap=None
-    )
+    result = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
     result.raise_assertion()
     return result.value
 
@@ -2802,9 +2786,7 @@ class TestAdaptiveCutoffFactory:
             jnp.array([2.0]),
         )
 
-        result = jax.jit(as_result_function(nl))(
-            lh=lh, rh=None, systems=systems, rh_index_remap=None
-        )
+        result = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
         result.raise_assertion()
         # Sanity: emitted Edges have the expected pair-degree.
         assert result.value.indices.shape[-1] == 2
@@ -2826,41 +2808,53 @@ class TestEmptyNeighborList:
 
     def test_degree_zero_returns_empty_pointcloud(self):
         nl = EmptyNeighborList[Literal[0]](degree=0)
-        edges = nl(_make_simple_lh(4), None, _make_simple_systems())
+        edges = nl(_make_simple_lh(4), _make_simple_systems())
         assert edges.indices.indices.shape == (0, 0)
         assert edges.shifts.shape == (0, 0, 3)
 
     def test_degree_two_returns_pair_shaped_empty(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
-        edges = nl(_make_simple_lh(4), None, _make_simple_systems())
+        edges = nl(_make_simple_lh(4), _make_simple_systems())
         assert edges.indices.indices.shape == (0, 2)
         assert edges.shifts.shape == (0, 1, 3)
 
     def test_degree_three_returns_triple_shaped_empty(self):
         nl = EmptyNeighborList[Literal[3]](degree=3)
-        edges = nl(_make_simple_lh(4), None, _make_simple_systems())
+        edges = nl(_make_simple_lh(4), _make_simple_systems())
         assert edges.indices.indices.shape == (0, 3)
         assert edges.shifts.shape == (0, 2, 3)
 
-    def test_rh_and_remap_arguments_are_ignored(self):
+    def test_rh_or_for_indices_arguments_are_ignored(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _make_simple_lh(4)
+        systems = _make_simple_systems()
         rh = _make_simple_lh(2)
-        remap = Index(lh.keys, jnp.array([0, 2]))
-        edges = nl(lh, rh, _make_simple_systems(), rh_index_remap=remap)
-        assert edges.indices.indices.shape == (0, 2)
+        for_indices = Index(lh.keys, jnp.array([0, 2]))
+        assert nl(lh, systems, rh=rh).indices.indices.shape == (0, 2)
+        assert nl(lh, systems, for_indices=for_indices).indices.indices.shape == (0, 2)
+
+    def test_rh_and_for_indices_are_mutually_exclusive(self):
+        nl = EmptyNeighborList[Literal[2]](degree=2)
+        lh = _make_simple_lh(4)
+        with pytest.raises(AssertionError, match="cannot combine rh with for_indices"):
+            nl(
+                lh,
+                _make_simple_systems(),
+                rh=_make_simple_lh(2),
+                for_indices=Index(lh.keys, jnp.array([0, 2])),
+            )
 
     def test_keys_come_from_lh(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _make_simple_lh(5)
-        edges = nl(lh, None, _make_simple_systems())
+        edges = nl(lh, _make_simple_systems())
         assert edges.indices.keys == lh.keys
 
     def test_jit_compiles(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _make_simple_lh(4)
         systems = _make_simple_systems()
-        edges = jax.jit(lambda l, s: nl(l, None, s))(lh, systems)
+        edges = jax.jit(lambda l, s: nl(l, s))(lh, systems)
         assert edges.indices.indices.shape == (0, 2)
 
 
@@ -2873,7 +2867,7 @@ class TestFixedEdgesNeighborList:
     def test_full_call_roundtrip_indices(self):
         stored = self._make_edges()
         nl = FixedEdgesNeighborList[Literal[2]](indices=stored.indices)
-        out = nl(_make_simple_lh(4), None, _make_simple_systems())
+        out = nl(_make_simple_lh(4), _make_simple_systems())
         npt.assert_array_equal(out.indices.indices, stored.indices.indices)
         npt.assert_array_equal(out.shifts, jnp.zeros_like(stored.shifts))
 
@@ -2888,30 +2882,31 @@ class TestFixedEdgesNeighborList:
             jnp.zeros(2, dtype=int),
         )
         systems = _make_simple_systems()
-        out = nl(lh, None, systems)
+        out = nl(lh, systems)
         npt.assert_allclose(out.shifts, jnp.array([[[1.0, 0.0, 0.0]]]))
         npt.assert_allclose(
             out.difference_vectors(lh, systems),
             jnp.array([[[2.0, 0.0, 0.0]]]),
         )
 
-    def test_full_call_ignores_remap_without_rh(self):
-        stored = self._make_edges()
-        nl = FixedEdgesNeighborList[Literal[2]](indices=stored.indices)
-        lh = _make_simple_lh(4)
-        remap = Index(lh.keys, jnp.array([3, 2, 1, 0]))
-        out = nl(lh, None, _make_simple_systems(), rh_index_remap=remap)
-        npt.assert_array_equal(out.indices.indices, stored.indices.indices)
-
-    def test_patch_call_returns_edges_touched_by_remap(self):
+    def test_for_indices_filters_without_rh(self):
         stored = self._make_edges()
         nl = FixedEdgesNeighborList[Literal[2]](
             indices=stored.indices, avg_edges=FixedCapacity(2)
         )
         lh = _make_simple_lh(4)
-        rh = _make_simple_lh(1)
-        remap = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, rh, _make_simple_systems(), rh_index_remap=remap)
+        for_indices = Index(lh.keys, jnp.array([2]))
+        out = nl(lh, _make_simple_systems(), for_indices=for_indices)
+        npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3]]))
+
+    def test_for_indices_returns_touched_edges(self):
+        stored = self._make_edges()
+        nl = FixedEdgesNeighborList[Literal[2]](
+            indices=stored.indices, avg_edges=FixedCapacity(2)
+        )
+        lh = _make_simple_lh(4)
+        for_indices = Index(lh.keys, jnp.array([2]))
+        out = nl(lh, _make_simple_systems(), for_indices=for_indices)
         npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3]]))
         npt.assert_array_equal(out.shifts, jnp.zeros((2, 1, 3), dtype=int))
 
@@ -2921,31 +2916,29 @@ class TestFixedEdgesNeighborList:
             indices=stored.indices, avg_edges=FixedCapacity(3)
         )
         lh = _make_simple_lh(4)
-        rh = _make_simple_lh(1)
-        remap = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, rh, _make_simple_systems(), rh_index_remap=remap)
+        for_indices = Index(lh.keys, jnp.array([2]))
+        out = nl(lh, _make_simple_systems(), for_indices=for_indices)
         npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3], [4, 4]]))
         npt.assert_array_equal(out.shifts[-1], jnp.zeros((1, 3), dtype=int))
 
-    def test_patch_call_multiplies_avg_edges_by_rh_size(self):
+    def test_for_indices_multiplies_avg_edges_by_affected_count(self):
         stored = self._make_edges()
         nl = FixedEdgesNeighborList[Literal[2]](
             indices=stored.indices, avg_edges=FixedCapacity(2)
         )
         lh = _make_simple_lh(4)
-        rh = _make_simple_lh(2)
-        remap = Index(lh.keys, jnp.array([0, 3]))
-        out = nl(lh, rh, _make_simple_systems(), rh_index_remap=remap)
+        for_indices = Index(lh.keys, jnp.array([0, 3]))
+        out = nl(lh, _make_simple_systems(), for_indices=for_indices)
         npt.assert_array_equal(
             out.indices.indices,
             jnp.array([[0, 1], [2, 3], [4, 4], [4, 4]]),
         )
 
-    def test_patch_call_requires_remap(self):
+    def test_rh_call_is_rejected(self):
         stored = self._make_edges()
         nl = FixedEdgesNeighborList[Literal[2]](indices=stored.indices)
-        with pytest.raises(AssertionError, match="requires rh_index_remap"):
-            nl(_make_simple_lh(4), _make_simple_lh(1), _make_simple_systems())
+        with pytest.raises(AssertionError, match="only supports self-graph"):
+            nl(_make_simple_lh(4), _make_simple_systems(), rh=_make_simple_lh(1))
 
     def test_patch_call_capacity_assertion(self):
         stored = self._make_edges()
@@ -2953,10 +2946,9 @@ class TestFixedEdgesNeighborList:
             indices=stored.indices, avg_edges=FixedCapacity(1)
         )
         lh = _make_simple_lh(4)
-        rh = _make_simple_lh(1)
-        remap = Index(lh.keys, jnp.array([2]))
+        for_indices = Index(lh.keys, jnp.array([2]))
         result = as_result_function(nl)(
-            lh=lh, rh=rh, systems=_make_simple_systems(), rh_index_remap=remap
+            lh=lh, systems=_make_simple_systems(), for_indices=for_indices
         )
         with pytest.raises(CapacityError):
             result.raise_assertion()
@@ -2969,9 +2961,8 @@ class TestFixedEdgesNeighborList:
             indices=edges.indices, avg_edges=FixedCapacity(3)
         )
         lh = _make_simple_lh(5)
-        rh = _make_simple_lh(1)
-        remap = Index(lh.keys, jnp.array([0]))
-        out = nl(lh, rh, _make_simple_systems(), rh_index_remap=remap)
+        for_indices = Index(lh.keys, jnp.array([0]))
+        out = nl(lh, _make_simple_systems(), for_indices=for_indices)
         npt.assert_array_equal(
             out.indices.indices,
             jnp.array([[0, 1, 2], [0, 4, 3], [5, 5, 5]]),
