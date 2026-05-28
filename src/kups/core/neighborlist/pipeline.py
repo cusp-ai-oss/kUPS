@@ -53,7 +53,7 @@ class Pipeline[D: int]:
     ) -> Edges[D]:
         ctx = _prepare(lh, rh, systems, rh_index_remap)
         batch = self.selector(ctx)
-        keep = jnp.ones((batch.lh_idx.size,), dtype=bool)
+        keep = jnp.ones((len(batch.edges),), dtype=bool)
         for mask in self.masks:
             keep &= mask(batch, ctx)
         return self.compactor(keep, batch, ctx)

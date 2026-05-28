@@ -40,6 +40,18 @@ These let one expensive base neighbor list be shared across multiple potentials.
 5. **[RefineCutoffNeighborList][kups.core.neighborlist.RefineCutoffNeighborList]**:
    refine precomputed edges with new cutoff distances.
 
+### Cutoff-Free Implementations
+
+These cover non-cutoff cases under the same `NeighborList[D]` protocol.
+
+6. **[EmptyNeighborList][kups.core.neighborlist.EmptyNeighborList]**: emits a
+   zero-row ``Edges[D]`` for point-cloud constructions.
+7. **[FixedEdgesNeighborList][kups.core.neighborlist.FixedEdgesNeighborList]**:
+   stores fixed edge topology for bonded edge sets supplied by the state and
+   computes current periodic shifts during calls. Patch-shaped calls with
+   ``rh`` and ``rh_index_remap`` return only rows touched by the remapped
+   particle ids.
+
 ## Pipeline Primitives
 
 Every neighbor list above is a [`Pipeline`][kups.core.neighborlist.Pipeline]
@@ -80,8 +92,13 @@ from kups.core.neighborlist.dense import (
     IsDenseNeighborlistParams,
 )
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.fixed import (
+    EmptyNeighborList,
+    FixedEdgesNeighborList,
+)
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
+    EdgeInRhMask,
     ExclusionMask,
     InBoundsMask,
     InclusionMatchMask,
@@ -122,7 +139,10 @@ __all__ = [
     "DenseSelector",
     "DistanceCutoffMask",
     "Edges",
+    "EmptyNeighborList",
     "ExclusionMask",
+    "EdgeInRhMask",
+    "FixedEdgesNeighborList",
     "InBoundsMask",
     "InclusionGroupSelector",
     "InclusionMatchMask",
