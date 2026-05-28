@@ -80,6 +80,22 @@ class RemapDedupMask:
 
 
 @dataclass
+class EdgeInRhMask:
+    """Keep fixed-topology rows touched by ``ctx.rh_index_remap``.
+
+    When no remap is active, every row is kept. This lets fixed topology use
+    the same pipeline for full and patch-shaped calls.
+    """
+
+    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array:
+        if ctx.rh_index_remap is None:
+            return jnp.ones((len(batch.edges),), dtype=bool)
+        return isin(batch.edges.indices.indices, ctx.rh_index_remap, ctx.lh.size).any(
+            -1
+        )
+
+
+@dataclass
 class DistanceCutoffMask:
     """Drops candidates whose squared real-space distance exceeds ``cutoff²``."""
 
