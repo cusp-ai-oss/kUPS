@@ -31,7 +31,13 @@ from jax import Array
 
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View, identity_lens
-from kups.core.neighborlist import NeighborList
+from kups.core.neighborlist import (
+    IsAdaptiveCutoffNeighborListState,
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListFactory,
+    adaptive_cutoff_neighborlist_from_state,
+)
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY_LENS,
@@ -399,12 +405,13 @@ class HasLJParticlesAndSystems(Protocol):
     def systems(self) -> Table[SystemId, HasCell]: ...
 
 
-class IsLJState[Params](HasLJParticlesAndSystems, Protocol):
+class IsLJState[Params](
+    HasLJParticlesAndSystems,
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    Protocol,
+):
     """State with particles, systems, neighbor list, and LJ parameters."""
 
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]: ...
     @property
     def lj_parameters(self) -> Params: ...
 
@@ -415,6 +422,9 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
+    neighborlist_factory: NeighborListFactory[
+        IsLJState[MaybeCached[LennardJonesParameters, Any]]
+    ] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch]: ...
 
 
@@ -424,6 +434,9 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
+    neighborlist_factory: NeighborListFactory[
+        IsLJState[MaybeCached[LennardJonesParameters, Any]]
+    ] = ...,
 ) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
@@ -436,6 +449,9 @@ def make_lennard_jones_from_state[State, P: Patch](
     probe: Probe[State, P, IsRadiusGraphProbe],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
+    neighborlist_factory: NeighborListFactory[
+        IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]]
+    ] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -450,6 +466,11 @@ def make_lennard_jones_from_state[State, P: Patch](
     probe: Probe[State, P, IsRadiusGraphProbe],
     *,
     compute_position_and_cell_gradients: Literal[True],
+    neighborlist_factory: NeighborListFactory[
+        IsLJState[
+            HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
+        ]
+    ] = ...,
 ) -> Potential[State, PositionAndCell, EmptyType, P]: ...
 
 
@@ -458,6 +479,9 @@ def make_lennard_jones_from_state(
     probe: Any = None,
     *,
     compute_position_and_cell_gradients: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        Any
+    ] = adaptive_cutoff_neighborlist_from_state,
 ) -> Any:
     """Create a LJ potential from a typed state, optionally with incremental updates.
 
@@ -497,7 +521,7 @@ def make_lennard_jones_from_state(
         patch_idx_view = patch_idx_view or empty_patch_idx_view
 
     def neighborlist_view(s):
-        return state(s).neighborlist(param_view(s).cutoff)
+        return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_lennard_jones_potential(
         state.focus(lambda x: x.particles),

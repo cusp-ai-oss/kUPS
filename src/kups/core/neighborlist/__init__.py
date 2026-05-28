@@ -49,6 +49,12 @@ of a [`CandidateSelector`][kups.core.neighborlist.CandidateSelector], a
 behavior can compose their own pipeline directly.
 """
 
+from kups.core.neighborlist.adaptive import (
+    CutoffNeighborListPolicy,
+    CutoffNeighborListStrategy,
+    IsAdaptiveCutoffNeighborListState,
+    adaptive_cutoff_neighborlist_from_state,
+)
 from kups.core.neighborlist.all_connected import (
     InclusionGroupSelector,
     all_connected_neighborlist,
@@ -96,6 +102,7 @@ from kups.core.neighborlist.types import (
     IsUniversalNeighborlistParams,
     Mask,
     NeighborList,
+    NeighborListFactory,
     NeighborListPoints,
     NeighborListSystems,
     PipelineContext,
@@ -109,6 +116,8 @@ __all__ = [
     "CellListNeighborList",
     "CellListSelector",
     "Compactor",
+    "CutoffNeighborListPolicy",
+    "CutoffNeighborListStrategy",
     "DenseNearestNeighborList",
     "DenseSelector",
     "DistanceCutoffMask",
@@ -117,6 +126,7 @@ __all__ = [
     "InBoundsMask",
     "InclusionGroupSelector",
     "InclusionMatchMask",
+    "IsAdaptiveCutoffNeighborListState",
     "IsAllDenseNeighborListParams",
     "IsCellListParams",
     "IsDenseNeighborlistParams",
@@ -126,6 +136,7 @@ __all__ = [
     "MaskOnlyCompactor",
     "NeighborList",
     "NeighborListChangesResult",
+    "NeighborListFactory",
     "NeighborListPoints",
     "NeighborListSystems",
     "Pipeline",
@@ -136,6 +147,7 @@ __all__ = [
     "RefineMaskNeighborList",
     "RemapDedupMask",
     "UniversalNeighborlistParameters",
+    "adaptive_cutoff_neighborlist_from_state",
     "all_connected_neighborlist",
     "neighborlist_changes",
 ]

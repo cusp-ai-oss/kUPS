@@ -40,7 +40,13 @@ from jax import Array
 
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
-from kups.core.neighborlist import NeighborList
+from kups.core.neighborlist import (
+    IsAdaptiveCutoffNeighborListState,
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListFactory,
+    adaptive_cutoff_neighborlist_from_state,
+)
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
@@ -443,16 +449,15 @@ def make_torch_mliap_potential(
     )
 
 
-class IsTorchMliapState(Protocol):
+class IsTorchMliapState(
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+):
     """Protocol for states providing all inputs for a torch MLFF potential."""
 
     @property
     def particles(self) -> Table[ParticleId, IsTorchMliapParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]: ...
     @property
     def torch_mliap_model(self) -> TorchMliap: ...
 
@@ -462,6 +467,7 @@ def make_torch_mliap_from_state[State](
     state: Lens[State, IsTorchMliapState],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
+    neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
 ) -> Potential[State, Array, EmptyType, Any]: ...
 
 
@@ -470,6 +476,7 @@ def make_torch_mliap_from_state[State](
     state: Lens[State, IsTorchMliapState],
     *,
     compute_position_and_cell_gradients: Literal[True],
+    neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
 ) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
 
 
@@ -477,6 +484,9 @@ def make_torch_mliap_from_state(
     state: Any,
     *,
     compute_position_and_cell_gradients: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        Any
+    ] = adaptive_cutoff_neighborlist_from_state,
 ) -> Any:
     """Create a torch MLFF potential from a typed state.
 
@@ -493,7 +503,7 @@ def make_torch_mliap_from_state(
     model_view = state.focus(lambda x: x.torch_mliap_model)
 
     def neighborlist_view(s):
-        return state(s).neighborlist(model_view(s).cutoff)
+        return neighborlist_factory(state(s), model_view(s).cutoff)
 
     return make_torch_mliap_potential(
         state.focus(lambda x: x.particles),

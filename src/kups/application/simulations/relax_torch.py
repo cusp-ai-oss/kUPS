@@ -35,11 +35,7 @@ from kups.application.relaxation.simulation import (
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import (
-    DenseNearestNeighborList,
-    NeighborList,
-    UniversalNeighborlistParameters,
-)
+from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.potential.mliap.torch import (
@@ -104,9 +100,6 @@ class RelaxTorchState:
     opt_state: optax.OptState
     step: Array
     torch_mliap_model: TorchMliap
-
-    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 def _load_torch_model(config: MACEModelConfig | UMAModelConfig) -> TorchMliap:

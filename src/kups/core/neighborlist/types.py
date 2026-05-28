@@ -20,7 +20,7 @@ protocol used by the ``from_state`` constructors.
 
 from __future__ import annotations
 
-from typing import NamedTuple, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 from jax import Array
 
@@ -189,6 +189,28 @@ class IsUniversalNeighborlistParams(Protocol):
     def avg_image_candidates(self) -> int: ...
     @property
     def cells(self) -> int: ...
+
+
+class NeighborListFactory[State](Protocol):
+    """Constructs a pair :class:`NeighborList` for a given state and cutoffs.
+
+    Used by radius-based potential factories so the construction strategy
+    can be swapped without coupling the potential to a concrete
+    neighbor-list class. The library default is
+    :func:`kups.core.neighborlist.adaptive_cutoff_neighborlist_from_state`,
+    which is contravariant-compatible with any state satisfying
+    :class:`IsAdaptiveCutoffNeighborListState`.
+
+    The ``State`` type parameter is contravariant (it appears only in
+    input position in ``__call__``), so a factory written against a
+    broader state protocol can be passed where a narrower one is expected.
+    """
+
+    def __call__(
+        self,
+        state: State,
+        cutoffs: Table[SystemId, Array],
+    ) -> NeighborList[Literal[2]]: ...
 
 
 class IsNeighborListState[P](Protocol):

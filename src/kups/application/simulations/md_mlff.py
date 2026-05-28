@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -30,11 +29,7 @@ from kups.application.md.simulation import make_md_propagator, run_md
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import (
-    DenseNearestNeighborList,
-    NeighborList,
-    UniversalNeighborlistParameters,
-)
+from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
 from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_from_state
@@ -68,9 +63,6 @@ class MlffMdState:
     neighborlist_params: UniversalNeighborlistParameters
     step: Array
     jaxified_model: TojaxedMliap
-
-    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 def init_state(key: Array, config: Config) -> MlffMdState:

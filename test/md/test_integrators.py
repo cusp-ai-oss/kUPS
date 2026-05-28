@@ -3,7 +3,7 @@
 
 """Unit tests for MD integrators."""
 
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -823,11 +823,7 @@ def test_stress_matches_ase():
 
     from kups.application.md.data import MdParameters, md_state_from_ase
     from kups.core.lens import identity_lens
-    from kups.core.neighborlist import (
-        DenseNearestNeighborList,
-        NeighborList,
-        UniversalNeighborlistParameters,
-    )
+    from kups.core.neighborlist import UniversalNeighborlistParameters
     from kups.observables.stress import stress_via_virial_theorem
     from kups.potential.classical.lennard_jones import (
         LennardJonesParameters,
@@ -858,11 +854,6 @@ def test_stress_matches_ase():
         neighborlist_params: UniversalNeighborlistParameters
         step: jnp.ndarray
         lj_parameters: LennardJonesParameters
-
-        def neighborlist(
-            self, cutoffs: Table[SystemId, Array]
-        ) -> NeighborList[Literal[2]]:
-            return DenseNearestNeighborList.from_state(self, cutoffs)
 
     lj = LennardJonesParameters.from_dict(
         cutoff=10.0, parameters={"Ar": (sigma, eps)}, mixing_rule="lorentz_berthelot"

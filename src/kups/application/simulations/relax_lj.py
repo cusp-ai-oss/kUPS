@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -33,11 +32,7 @@ from kups.application.relaxation.simulation import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import (
-    DenseNearestNeighborList,
-    NeighborList,
-    UniversalNeighborlistParameters,
-)
+from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.lennard_jones import (
@@ -79,9 +74,6 @@ class RelaxLjState:
     opt_state: optax.OptState
     step: Array
     lj_parameters: LennardJonesParameters
-
-    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 def init_state(config: Config, opt_init: OptInit) -> RelaxLjState:

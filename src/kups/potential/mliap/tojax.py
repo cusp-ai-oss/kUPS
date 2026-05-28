@@ -19,7 +19,13 @@ from jax import Array, export
 
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
-from kups.core.neighborlist import NeighborList
+from kups.core.neighborlist import (
+    IsAdaptiveCutoffNeighborListState,
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListFactory,
+    adaptive_cutoff_neighborlist_from_state,
+)
 from kups.core.patch import IdPatch, WithPatch
 from kups.core.potential import EMPTY_LENS, EmptyType, Energy, Potential, PotentialOut
 from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
@@ -214,16 +220,15 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     )
 
 
-class IsTojaxedState(Protocol):
+class IsTojaxedState(
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+):
     """Protocol for states providing all inputs for the jaxified potential."""
 
     @property
     def particles(self) -> Table[ParticleId, IsTojaxedParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]: ...
     @property
     def jaxified_model(self) -> TojaxedMliap: ...
 
@@ -233,6 +238,7 @@ def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedState],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
+    neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
@@ -241,6 +247,7 @@ def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedState],
     *,
     compute_position_and_cell_gradients: Literal[True],
+    neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
 ) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
 
 
@@ -248,6 +255,9 @@ def make_tojaxed_from_state(
     state: Any,
     *,
     compute_position_and_cell_gradients: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        Any
+    ] = adaptive_cutoff_neighborlist_from_state,
 ) -> Any:
     """Create a jaxified potential from a typed state.
 
@@ -272,7 +282,7 @@ def make_tojaxed_from_state(
     model_view = state.focus(lambda x: x.jaxified_model)
 
     def neighborlist_view(s):
-        return state(s).neighborlist(model_view(s).cutoff)
+        return neighborlist_factory(state(s), model_view(s).cutoff)
 
     return make_tojaxed_potential(
         state.focus(lambda x: x.particles),

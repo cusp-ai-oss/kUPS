@@ -21,15 +21,13 @@ direction of each pair upstream.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.data import Index
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.types import CandidateBatch, PipelineContext
+from kups.core.neighborlist.types import CandidateBatch, Compactor, PipelineContext
 from kups.core.utils.jax import dataclass
 from kups.core.utils.ops import where_broadcast_last
 
@@ -47,7 +45,7 @@ def remap_rh_to_lh(rh_idx: Array, ctx: PipelineContext) -> Array:
 
 
 @dataclass
-class ReduceCompactor:
+class ReduceCompactor[D: int](Compactor[D]):
     """Compacts surviving candidates to a size-bounded ``Edges[2]``.
 
     Applies the shared rh→lh remap, then — when ``ctx.rh_index_remap`` is
@@ -61,9 +59,9 @@ class ReduceCompactor:
     def __call__(
         self,
         keep: Array,
-        batch: CandidateBatch[Literal[2]],
+        batch: CandidateBatch[D],
         ctx: PipelineContext,
-    ) -> Edges[Literal[2]]:
+    ) -> Edges[D]:
         oob = max(ctx.lh.size, ctx.rh.size)
         max_edges = self.avg_edges.generate_assertion(keep.sum())
         sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
@@ -92,7 +90,7 @@ class ReduceCompactor:
 
 
 @dataclass
-class MaskOnlyCompactor:
+class MaskOnlyCompactor[D: int](Compactor[D]):
     """In-place compaction: failing entries become OOB indices and zero shifts.
 
     No size change; preserves the candidate count from the selector. Applies
@@ -103,9 +101,9 @@ class MaskOnlyCompactor:
     def __call__(
         self,
         keep: Array,
-        batch: CandidateBatch[Literal[2]],
+        batch: CandidateBatch[D],
         ctx: PipelineContext,
-    ) -> Edges[Literal[2]]:
+    ) -> Edges[D]:
         oob = ctx.lh.size
         rh_idx_remapped = remap_rh_to_lh(batch.rh_idx, ctx)
         indices_in = jnp.stack([batch.lh_idx, rh_idx_remapped], axis=-1)

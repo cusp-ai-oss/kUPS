@@ -44,6 +44,7 @@ from kups.core.neighborlist import (
     NeighborList,
     RefineMaskNeighborList,
     UniversalNeighborlistParameters,
+    adaptive_cutoff_neighborlist_from_state,
     neighborlist_changes,
 )
 from kups.core.parameter_scheduler import ParameterSchedulerState
@@ -187,9 +188,6 @@ class MCMCState:
         assert motif_size is not None
         return FixedCapacity(motif_size * len(self.systems))
 
-    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self, cutoffs)
-
     @property
     def guest_only(self) -> MCMCState:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
@@ -268,7 +266,7 @@ class MCMCStateUpdate:
         group_changes = WithIndices(proposal.groups.indices, new_groups)
 
         result = neighborlist_changes(
-            state.neighborlist(state.max_cutoff),
+            adaptive_cutoff_neighborlist_from_state(state, state.max_cutoff),
             state.particles,
             particle_changes,
             state.systems,

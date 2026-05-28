@@ -49,7 +49,14 @@ from jax import Array
 
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind
-from kups.core.neighborlist import Edges, NeighborList
+from kups.core.neighborlist import (
+    Edges,
+    IsAdaptiveCutoffNeighborListState,
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListFactory,
+    adaptive_cutoff_neighborlist_from_state,
+)
 from kups.core.patch import Accept, Patch, Probe, WithPatch
 from kups.core.potential import EMPTY_LENS, Energy, Potential, PotentialOut
 from kups.core.typing import (
@@ -585,16 +592,15 @@ def make_local_mliap_potential[
     return potential
 
 
-class IsLocalMLIAPState[Model](Protocol):
+class IsLocalMLIAPState[Model](
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+):
     """Protocol for states providing all inputs for the local MLIAP potential."""
 
     @property
     def particles(self) -> Table[ParticleId, IsLocalMLIAPGraphParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]: ...
     @property
     def local_mliap_model(self) -> Model: ...
 
@@ -607,6 +613,10 @@ def make_local_mliap_from_state[State, Gradient, Hessian](
     hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
     hessian_idx_view: Lens[State, Hessian] = EMPTY_LENS,
     out_idx_view: None = None,
+    *,
+    neighborlist_factory: NeighborListFactory[
+        IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]
+    ] = ...,
 ) -> Potential[State, Gradient, Hessian, Patch]: ...
 
 
@@ -618,6 +628,10 @@ def make_local_mliap_from_state[State, Ptch: Patch, Gradient, Hessian](
     hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
     hessian_idx_view: Lens[State, Hessian] = EMPTY_LENS,
     out_idx_view: Lens[State, PotentialOut[Gradient, Hessian]] | None = None,
+    *,
+    neighborlist_factory: NeighborListFactory[
+        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut]]
+    ] = ...,
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 
 
@@ -628,6 +642,10 @@ def make_local_mliap_from_state(
     hessian_lens: Any = EMPTY_LENS,
     hessian_idx_view: Any = EMPTY_LENS,
     out_idx_view: Any = None,
+    *,
+    neighborlist_factory: NeighborListFactory[
+        Any
+    ] = adaptive_cutoff_neighborlist_from_state,
 ) -> Any:
     """Create a local MLIAP potential from a typed state, optionally with incremental updates.
 
@@ -662,7 +680,7 @@ def make_local_mliap_from_state(
         model_lens = state.focus(_model)
 
         def neighborlist_view(s):
-            return state(s).neighborlist(model_lens(s).cutoff)
+            return neighborlist_factory(state(s), model_lens(s).cutoff)
 
         return make_local_mliap_potential(
             state.focus(lambda x: x.particles),
@@ -687,7 +705,7 @@ def make_local_mliap_from_state(
     model_lens = state.focus(lambda x: x.local_mliap_model.data)
 
     def neighborlist_view(s):
-        return state(s).neighborlist(model_lens(s).cutoff)
+        return neighborlist_factory(state(s), model_lens(s).cutoff)
 
     return make_local_mliap_potential(
         state.focus(lambda x: x.particles),

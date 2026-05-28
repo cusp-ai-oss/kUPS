@@ -323,8 +323,24 @@ class PotentialConfig(NamedTuple):
     edge_field: str | None
 
 
+def _test_nl_factory(
+    state: Any, cutoffs: Table[SystemId, Array]
+) -> AllDenseNearestNeighborList:
+    return AllDenseNearestNeighborList(
+        avg_edges=FixedCapacity(N_PARTICLES**2),
+        avg_image_candidates=FixedCapacity(N_PARTICLES**2),
+        cutoffs=cutoffs,
+    )
+
+
+def _lj_from_state(state: Any, probe: Any = None) -> Any:
+    return make_lennard_jones_from_state(
+        state, probe, neighborlist_factory=_test_nl_factory
+    )
+
+
 _POTENTIALS: list[PotentialConfig] = [
-    PotentialConfig("lennard_jones", make_lennard_jones_from_state, None, None),
+    PotentialConfig("lennard_jones", _lj_from_state, None, None),
     PotentialConfig("harmonic_bond", make_harmonic_bond_from_state, 2, "bond_edges"),
     PotentialConfig("harmonic_angle", make_harmonic_angle_from_state, 3, "angle_edges"),
     PotentialConfig("morse_bond", make_morse_bond_from_state, 2, "bond_edges"),
