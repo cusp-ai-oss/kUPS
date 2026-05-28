@@ -43,7 +43,6 @@ def neighborlist_changes(
     lh: Table[ParticleId, NeighborListPoints],
     rh: WithIndices[ParticleId, Table[ParticleId, NeighborListPoints]],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
     compaction: float = 0.5,
 ) -> NeighborListChangesResult:
     """Compute added/removed edges from a particle change in a single call.
@@ -58,7 +57,6 @@ def neighborlist_changes(
         rh: Proposed changes — ``rh.indices`` maps entries to particle IDs
             in ``lh``, ``rh.data`` holds the new particle data.
         systems: Per-system data (cells, etc.).
-        cutoffs: Per-system cutoff distances.
         compaction: Fraction of total edges allocated per output (0–1).
             0.5 means each of added/removed gets half the buffer.
             1.0 means no compaction — full buffer with masking only.
@@ -79,7 +77,7 @@ def neighborlist_changes(
     )
 
     # single neighborlist call
-    all_edges = neighborlist(lh_combined, rh_combined, systems, cutoffs, combined_remap)
+    all_edges = neighborlist(lh_combined, rh_combined, systems, combined_remap)
 
     # split into removed / added
     raw = all_edges.indices.indices  # (n_edges, 2)

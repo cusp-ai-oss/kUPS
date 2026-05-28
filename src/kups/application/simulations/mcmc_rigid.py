@@ -187,18 +187,18 @@ class MCMCState:
         assert motif_size is not None
         return FixedCapacity(motif_size * len(self.systems))
 
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self)
+    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
+        return DenseNearestNeighborList.from_state(self, cutoffs)
 
     @property
     def guest_only(self) -> MCMCState:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
 
-    @property
-    def blocking_spheres_neighborlist(self) -> NeighborList[Literal[2]]:
+    def blocking_spheres_neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.new(
-            self, lens(lambda x: x.blocking_spheres_neighborlist_params)
+            self, lens(lambda x: x.blocking_spheres_neighborlist_params), cutoffs
         )
 
     @property
@@ -268,11 +268,10 @@ class MCMCStateUpdate:
         group_changes = WithIndices(proposal.groups.indices, new_groups)
 
         result = neighborlist_changes(
-            state.neighborlist,
+            state.neighborlist(state.max_cutoff),
             state.particles,
             particle_changes,
             state.systems,
-            state.max_cutoff,
             compaction=1.0,
         )
         return MCMCStateUpdate(

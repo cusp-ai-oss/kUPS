@@ -859,9 +859,10 @@ def test_stress_matches_ase():
         step: jnp.ndarray
         lj_parameters: LennardJonesParameters
 
-        @property
-        def neighborlist(self) -> NeighborList[Literal[2]]:
-            return DenseNearestNeighborList.from_state(self)
+        def neighborlist(
+            self, cutoffs: Table[SystemId, Array]
+        ) -> NeighborList[Literal[2]]:
+            return DenseNearestNeighborList.from_state(self, cutoffs)
 
     lj = LennardJonesParameters.from_dict(
         cutoff=10.0, parameters={"Ar": (sigma, eps)}, mixing_rule="lorentz_berthelot"

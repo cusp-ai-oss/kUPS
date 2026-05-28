@@ -205,6 +205,7 @@ class CellListNeighborList:
         avg_edges: Capacity for final edge array.
         cells: Capacity for cell hash table (grows with box_size³/cutoff³).
         avg_image_candidates: Capacity for image candidate pairs.
+        cutoffs: Per-system cutoff distances used by this neighbor list.
 
     Algorithm:
         1. Partition space into grid cells of size ~cutoff
@@ -222,12 +223,12 @@ class CellListNeighborList:
     Example:
         ```python
         # Example: 10 Å cutoff in 50 Å box → cutoff/box = 0.2 -- Good for CellList
-        nl = CellListNeighborList.new(state, lens(lambda s: s.nl_params))
+        nl = CellListNeighborList.new(state, lens(lambda s: s.nl_params), cutoffs)
 
         # Or, if the state implements IsNeighborListState:
-        nl = CellListNeighborList.from_state(state)
+        nl = CellListNeighborList.from_state(state, cutoffs)
 
-        edges = nl(particles, None, systems, cutoffs, None)
+        edges = nl(particles, None, systems)
         ```
     """
 
@@ -235,9 +236,15 @@ class CellListNeighborList:
     avg_edges: Capacity[int]
     cells: Capacity[int]
     avg_image_candidates: Capacity[int]
+    cutoffs: Table[SystemId, Array]
 
     @classmethod
-    def new[S](cls, state: S, lens: Lens[S, IsCellListParams]) -> CellListNeighborList:
+    def new[S](
+        cls,
+        state: S,
+        lens: Lens[S, IsCellListParams],
+        cutoffs: Table[SystemId, Array],
+    ) -> CellListNeighborList:
         params = lens.get(state)
         return CellListNeighborList(
             avg_candidates=LensCapacity(
@@ -249,13 +256,16 @@ class CellListNeighborList:
                 lens.focus(lambda x: x.avg_image_candidates),
             ),
             cells=LensCapacity(params.cells, lens.focus(lambda x: x.cells), base=1),
+            cutoffs=cutoffs,
         )
 
     @classmethod
     def from_state(
-        cls, state: IsNeighborListState[IsCellListParams]
+        cls,
+        state: IsNeighborListState[IsCellListParams],
+        cutoffs: Table[SystemId, Array],
     ) -> CellListNeighborList:
-        return cls.new(state, lens(lambda s: s.neighborlist_params))
+        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
     @jit
     def __call__(
@@ -263,11 +273,10 @@ class CellListNeighborList:
         lh: Table[ParticleId, NeighborListPoints],
         rh: Table[ParticleId, NeighborListPoints] | None,
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         rh_size = rh.size if rh is not None else lh.size
-        cutoffs = Table.broadcast_to(cutoffs, systems)
+        cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
             selector=CellListSelector(
                 cutoffs=cutoffs,

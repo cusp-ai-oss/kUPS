@@ -153,9 +153,8 @@ def evaluate_potential[Input, Gradients, Hessians](
 class _RadiusGraphEvalState:
     neighborlist_params: UniversalNeighborlistParameters
 
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]:
-        return DenseNearestNeighborList.from_state(self)
+    def neighborlist(self, cutoffs: Table[SystemId, Array]) -> NeighborList[Literal[2]]:
+        return DenseNearestNeighborList.from_state(self, cutoffs)
 
 
 @no_jax_tracing
@@ -169,7 +168,7 @@ def evaluate_radius_graph_potential[
     point_cloud: PointCloud[P, S],
     parameters: Parameters,
     *,
-    cutoffs: Table[SystemId, Array] | None = None,
+    cutoffs: Table[SystemId, Array],
     energy_fn: EnergyFunction[
         Any,
         GraphPotentialInput[Parameters, P, S, Literal[2]],
@@ -189,8 +188,7 @@ def evaluate_radius_graph_potential[
     Args:
         point_cloud: Particles and systems (cell).
         parameters: Parameters forwarded to ``energy_fn``.
-        cutoffs: Indexed cutoff data per system. If None, tries to extract
-            from ``parameters.cutoff``.
+        cutoffs: Indexed cutoff data per system.
         energy_fn: Edge-based energy function.
         gradient_lens: Lens selecting the differentiation target.
         hessian_lens: Lens selecting the gradient for Hessian computation.
@@ -199,11 +197,6 @@ def evaluate_radius_graph_potential[
     Returns:
         ``PotentialOut`` containing energy, gradients, and Hessians.
     """
-    if cutoffs is None:
-        cutoffs = Table(
-            point_cloud.systems.keys,
-            parameters.cutoff,  # type: ignore[union-attr]
-        )
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         point_cloud.particles.data.system.counts, point_cloud.systems, cutoffs
     )
@@ -214,8 +207,7 @@ def evaluate_radius_graph_potential[
             graph_constructor=RadiusGraphConstructor(
                 particles=constant(point_cloud.particles),
                 systems=constant(point_cloud.systems),
-                cutoffs=constant(cutoffs),
-                neighborlist=lambda s: s.neighborlist,
+                neighborlist=lambda s: s.neighborlist(cutoffs),
                 probe=None,
             ),
             parameter_view=constant(parameters),

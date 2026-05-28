@@ -43,11 +43,12 @@ from jax import Array
 
 from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Index, Table
-from kups.core.lens import View, lens
+from kups.core.lens import View
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     NeighborList,
     NeighborListSystems,
+    UniversalNeighborlistParameters,
 )
 from kups.core.propagator import StateProperty
 from kups.core.result import as_result_function
@@ -91,7 +92,6 @@ def radial_distribution_function(
     rmax: float,
     bins: int,
     neighborlist: NeighborList[Literal[2]],
-    cutoffs: Table[SystemId, Array] | None = None,
 ) -> Array:
     """Compute radial distribution function $g(r)$ from particle positions.
 
@@ -111,11 +111,10 @@ def radial_distribution_function(
 
     Args:
         positions: Indexed particle positions with system assignments.
-        systems: Indexed system data (cells, cutoffs).
+        systems: Indexed system data with cells.
         rmax: Maximum distance to consider (cutoff radius).
         bins: Number of histogram bins for $g(r)$.
-        neighborlist: Neighbor list algorithm for finding pairs.
-        cutoffs: Per-system cutoff distances. Defaults to rmax for all systems.
+        neighborlist: Cutoff-bound neighbor list algorithm for finding pairs.
 
     Returns:
         RDF array, shape `(n_systems, bins)`. The $r$-values for each bin are
@@ -127,12 +126,7 @@ def radial_distribution_function(
         - Assumes uniform density within each system
     """
     nnl_positions = _to_nnlist_points(positions)
-    if cutoffs is None:
-        cutoffs = Table(
-            systems.keys,
-            jnp.full(systems.size, rmax),
-        )
-    edge_result = neighborlist(nnl_positions, None, systems, cutoffs)
+    edge_result = neighborlist(nnl_positions, None, systems)
     diffs = edge_result.difference_vectors(positions, systems)
     dists = jnp.linalg.norm(diffs, axis=(-2, -1))
     dr = rmax / bins
@@ -167,7 +161,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
         systems: View extracting indexed system data from state.
         rmax: View extracting maximum distance (or constant float).
         bins: View extracting number of bins (or constant int).
-        neighborlist: Neighbor list algorithm for pair finding.
+        neighborlist: View extracting a cutoff-bound neighbor list.
 
     Note:
         For offline trajectory analysis of large datasets, use
@@ -181,7 +175,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
     systems: View[State, Table[SystemId, NeighborListSystems]] = field(static=True)
     rmax: View[State, float] = field(static=True)
     bins: View[State, int] = field(static=True)
-    neighborlist: NeighborList[Literal[2]] = field(static=True)
+    neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> Array:
         """Compute RDF from current state.
@@ -198,7 +192,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
             self.systems(state),
             self.rmax(state),
             self.bins(state),
-            self.neighborlist,
+            self.neighborlist(state),
         )
 
 
@@ -267,6 +261,18 @@ def offline_radial_distribution_function(
         - For very large trajectories, use smaller batch_size to avoid OOM errors
     """
 
+    _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])
+    systems = Table.arange(
+        _SystemData(cell, jnp.array([rmax])),
+        label=SystemId,
+    )
+    cutoffs = Table((SystemId(0),), jnp.array([rmax]))
+    particles_per_system = Table((SystemId(0),), jnp.array([positions.shape[-2]]))
+
+    @dataclass
+    class _NeighborListState:
+        neighborlist_params: UniversalNeighborlistParameters
+
     @jit
     @as_result_function
     def rdf_with_capacity(nnlist: DenseNearestNeighborList) -> Array:
@@ -278,14 +284,9 @@ def offline_radial_distribution_function(
                 _RDFParticles(jnp.asarray(pos), system),
                 label=ParticleId,
             )
-            _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])
-            sys_data = Table.arange(
-                _SystemData(cell, jnp.array([rmax])),
-                label=SystemId,
-            )
             return radial_distribution_function(
                 particles,
-                sys_data,
+                systems,
                 rmax=rmax,
                 bins=bins,
                 neighborlist=nnlist,
@@ -295,7 +296,10 @@ def offline_radial_distribution_function(
             rdf, positions.reshape(-1, *positions.shape[-2:]), batch_size=batch_size
         )
 
-    capacity = DenseNearestNeighborList.make(lens(lambda x: x))  # type: ignore[reportArgumentType]  # identity lens causes recursive type
+    params = UniversalNeighborlistParameters.estimate(
+        particles_per_system, systems, cutoffs
+    )
+    capacity = DenseNearestNeighborList.from_state(_NeighborListState(params), cutoffs)
     while (out := rdf_with_capacity(capacity)).failed_assertions:
         capacity = out.fix_or_raise(capacity)
     result = out.value

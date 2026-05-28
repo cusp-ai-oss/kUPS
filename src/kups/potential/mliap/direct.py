@@ -30,8 +30,6 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
-from jax import Array
-
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import NeighborList
@@ -97,7 +95,6 @@ def make_direct_mliap_potential[
     systems_view: View[State, Table[SystemId, S]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     model_view: View[State, Model],
-    cutoffs_view: View[State, Table[SystemId, Array]],
     *,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
@@ -109,9 +106,8 @@ def make_direct_mliap_potential[
             [DirectMliapFn][kups.potential.mliap.direct.DirectMliapFn].
         particles_view: View to extract particles from state.
         systems_view: View to extract systems (cell) from state.
-        neighborlist_view: View to extract neighbor list from state.
+        neighborlist_view: View to extract a cutoff-bound neighbor list from state.
         model_view: View to extract model from state.
-        cutoffs_view: View to extract cutoffs as ``Table[SystemId, Array]``.
         patch_idx_view: View for cached output indices (optional).
         out_cache_lens: Lens for output cache (optional).
 
@@ -122,7 +118,6 @@ def make_direct_mliap_potential[
         RadiusGraphConstructor(
             particles=particles_view,
             systems=systems_view,
-            cutoffs=cutoffs_view,
             neighborlist=neighborlist_view,
             probe=None,
         ),

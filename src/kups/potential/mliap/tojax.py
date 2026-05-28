@@ -173,7 +173,6 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     systems_view: View[State, Table[SystemId, HasCell]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     model: View[State, TojaxedMliap] | TojaxedMliap,
-    cutoffs_view: View[State, Table[SystemId, Array]],
     gradient_lens: Lens[JaxifiedInput, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -185,9 +184,8 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     Args:
         particles_view: Extracts particle data (positions, species).
         systems_view: Extracts system data (cell).
-        neighborlist_view: Extracts neighbor list.
+        neighborlist_view: Extracts a cutoff-bound neighbor list.
         model: Jaxified model instance or view to model in state.
-        cutoffs_view: Extracts cutoffs as ``Table[SystemId, Array]``.
         gradient_lens: Lens specifying which gradients to compute.
         hessian_lens: Lens specifying which Hessians to compute.
         hessian_idx_view: View to hessian index structure.
@@ -201,7 +199,6 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     radius_graph_fn = RadiusGraphConstructor(
         particles=particles_view,
         systems=systems_view,
-        cutoffs=cutoffs_view,
         neighborlist=neighborlist_view,
         probe=None,
     )
@@ -224,8 +221,9 @@ class IsTojaxedState(Protocol):
     def particles(self) -> Table[ParticleId, IsTojaxedParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]: ...
     @property
     def jaxified_model(self) -> TojaxedMliap: ...
 
@@ -271,12 +269,16 @@ def make_tojaxed_from_state(
                 x.graph.systems.map_data(lambda s: s.cell),
             )
         )
+    model_view = state.focus(lambda x: x.jaxified_model)
+
+    def neighborlist_view(s):
+        return state(s).neighborlist(model_view(s).cutoff)
+
     return make_tojaxed_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.neighborlist),
-        state.focus(lambda x: x.jaxified_model),
-        state.focus(lambda x: x.jaxified_model.cutoff),
+        neighborlist_view,
+        model_view,
         gradient_lens,
         EMPTY_LENS,
         EMPTY_LENS,

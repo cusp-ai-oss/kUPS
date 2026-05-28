@@ -63,7 +63,6 @@ class NeighborList[D: int](Protocol):
         lh: Table[ParticleId, P],
         rh: Table[ParticleId, P] | None,
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
         rh_index_remap: Index[ParticleId] | None = None,
     ) -> Edges[D]:
         """Find all particle groups within the cutoff distance.
@@ -72,7 +71,6 @@ class NeighborList[D: int](Protocol):
             lh: Left-hand particles to find neighbors for
             rh: Right-hand particles to search within (or None for self-neighbors)
             systems: Indexed system data with cell information
-            cutoffs: Indexed cutoff data per system
             rh_index_remap: Optional index mapping rh particles back to lh
                 particle IDs for self-interaction exclusion. When ``None``,
                 rh is treated as disjoint from lh.

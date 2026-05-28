@@ -474,14 +474,13 @@ class LocalMLIAPComposer[
     Attributes:
         particles: View to extract indexed particle data from state
         systems: View to extract indexed system data from state
-        neighborlist: View to extract full neighbor list from state
+        neighborlist: View to extract a cutoff-bound neighbor list from state
         model: Lens to access model config in state
         probe: Probe to detect particle changes from patch
     """
 
     particles: View[State, Table[ParticleId, P]] = field(static=True)
     systems: View[State, Table[SystemId, S]] = field(static=True)
-    cutoffs: View[State, Table[SystemId, Array]] = field(static=True)
     neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
     model: Lens[State, LocalMLIAPData] = field(static=True)
     probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None = field(static=True)
@@ -502,7 +501,6 @@ class LocalMLIAPComposer[
         radius_graph_constr = RadiusGraphConstructor(
             self.particles,
             self.systems,
-            self.cutoffs,
             self.neighborlist,
             self.probe,
         )
@@ -537,7 +535,6 @@ def make_local_mliap_potential[
 ](
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
-    cutoffs_view: View[State, Table[SystemId, Array]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     model_lens: Lens[State, LocalMLIAPData],
     probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None,
@@ -555,8 +552,7 @@ def make_local_mliap_potential[
     Args:
         particles_view: Extracts indexed particle data (positions, atomic numbers)
         systems_view: Extracts indexed system data (cell)
-        cutoffs_view: Extracts cutoffs as ``Indexed[SystemId, Array]``
-        neighborlist_view: Extracts full neighbor list
+        neighborlist_view: Extracts a cutoff-bound neighbor list
         model_lens: Lens to access [LocalMLIAPData][kups.potential.mliap.local.LocalMLIAPData]
             containing model functions and cache
         probe: Detects particle changes and provides updated/old neighbor lists
@@ -573,7 +569,6 @@ def make_local_mliap_potential[
     composer = LocalMLIAPComposer[State, P, S, Ptch](
         particles=particles_view,
         systems=systems_view,
-        cutoffs=cutoffs_view,
         neighborlist=neighborlist_view,
         model=model_lens,
         probe=probe,
@@ -597,8 +592,9 @@ class IsLocalMLIAPState[Model](Protocol):
     def particles(self) -> Table[ParticleId, IsLocalMLIAPGraphParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist(
+        self, cutoffs: Table[SystemId, Array]
+    ) -> NeighborList[Literal[2]]: ...
     @property
     def local_mliap_model(self) -> Model: ...
 
@@ -663,12 +659,16 @@ def make_local_mliap_from_state(
         return m.data if isinstance(m, HasCache) else m
 
     if probe is None:
+        model_lens = state.focus(_model)
+
+        def neighborlist_view(s):
+            return state(s).neighborlist(model_lens(s).cutoff)
+
         return make_local_mliap_potential(
             state.focus(lambda x: x.particles),
             state.focus(lambda x: x.systems),
-            state.focus(lambda x: _model(x).cutoff),
-            state.focus(lambda x: x.neighborlist),
-            state.focus(_model),
+            neighborlist_view,
+            model_lens,
             None,
             gradient_lens,
             hessian_lens,
@@ -684,12 +684,16 @@ def make_local_mliap_from_state(
             ).apply(lambda x: jnp.arange(x.size, dtype=int))
         )
 
+    model_lens = state.focus(lambda x: x.local_mliap_model.data)
+
+    def neighborlist_view(s):
+        return state(s).neighborlist(model_lens(s).cutoff)
+
     return make_local_mliap_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.local_mliap_model.data.cutoff),
-        state.focus(lambda x: x.neighborlist),
-        state.focus(lambda x: x.local_mliap_model.data),
+        neighborlist_view,
+        model_lens,
         probe,
         gradient_lens,
         hessian_lens,

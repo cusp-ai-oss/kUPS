@@ -138,12 +138,11 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
 
     # Loop with a generous bound to avoid pathological growth.
     for _ in range(2):
-        nl = nl_cls.from_state(state)
+        nl = nl_cls.from_state(state, cutoff_table)
         result = jax.jit(as_result_function(nl))(
             lh=state.particles,
             rh=None,
             systems=state.systems,
-            cutoffs=cutoff_table,
             rh_index_remap=None,
         )
         if not result.failed_assertions:

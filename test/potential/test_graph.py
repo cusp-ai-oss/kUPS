@@ -76,6 +76,10 @@ def _make_systems(
     return Table.arange(data, label=SystemId)
 
 
+def _system_cutoffs(systems: Table[SystemId, _SystemData]):
+    return systems.map_data(lambda d: d.cutoff)
+
+
 def _make_edges(
     particles: Table[ParticleId, _PointData],
     indices: jax.Array,
@@ -341,7 +345,7 @@ class TestEdgeSetGraphConstructor:
 
 
 class TestRadiusGraphConstructor:
-    def _make_state(self, positions, system_ids, cutoff_val, nnlist):
+    def _make_state(self, positions, system_ids, cutoff_val):
         species = jnp.zeros(len(positions), dtype=int)
         particles = _make_particles(positions, species, system_ids)
         n_sys = int(system_ids.max()) + 1
@@ -352,29 +356,28 @@ class TestRadiusGraphConstructor:
         return {
             "particles": particles,
             "systems": systems,
-            "neighborlist": nnlist,
+            "neighborlist": self._make_nnlist(systems),
         }
 
     def _make_constructor(self):
         return RadiusGraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            cutoffs=view(lambda x: x["systems"].map_data(lambda d: d.cutoff)),
             neighborlist=view(lambda x: x["neighborlist"]),
             probe=None,
         )
 
-    def _make_nnlist(self):
+    def _make_nnlist(self, systems):
         return DenseNearestNeighborList(
             avg_candidates=FixedCapacity(50),
             avg_edges=FixedCapacity(50),
             avg_image_candidates=FixedCapacity(50),
+            cutoffs=_system_cutoffs(systems),
         )
 
     def test_basic(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]])
-        nnlist = self._make_nnlist()
-        state = self._make_state(positions, jnp.array([0, 0]), 1.5, nnlist)
+        state = self._make_state(positions, jnp.array([0, 0]), 1.5)
         constructor = self._make_constructor()
 
         graph = constructor(state, None)
@@ -388,9 +391,8 @@ class TestRadiusGraphConstructor:
 
     def test_cutoff_filters(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]])
-        nnlist = self._make_nnlist()
         # Cutoff too small — no edges
-        state = self._make_state(positions, jnp.array([0, 0]), 0.1, nnlist)
+        state = self._make_state(positions, jnp.array([0, 0]), 0.1)
         graph = self._make_constructor()(state, None)
         valid = graph.edges.indices.indices < 2
         assert not valid.all(-1).any()
@@ -408,8 +410,7 @@ class TestRadiusGraphConstructor:
             ]
         )
         system_ids = jnp.array([0, 0, 0, 1, 1, 1])
-        nnlist = self._make_nnlist()
-        state = self._make_state(positions, system_ids, 1.5, nnlist)
+        state = self._make_state(positions, system_ids, 1.5)
         graph = self._make_constructor()(state, None)
         assert graph.batch_size == 2
 
@@ -748,11 +749,12 @@ class TestEdgeSetGraphConstructorWithPatch:
 
 
 class TestRadiusGraphConstructorWithPatch:
-    def _make_nnlist(self):
+    def _make_nnlist(self, systems):
         return DenseNearestNeighborList(
             avg_candidates=FixedCapacity(50),
             avg_edges=FixedCapacity(50),
             avg_image_candidates=FixedCapacity(50),
+            cutoffs=_system_cutoffs(systems),
         )
 
     def test_fallback_no_probe(self):
@@ -764,7 +766,7 @@ class TestRadiusGraphConstructorWithPatch:
         particles = _make_particles(positions, species, jnp.array([0, 0]))
         new_particles = _make_particles(new_positions, species, jnp.array([0, 0]))
         systems = _make_systems(jnp.eye(3)[None] * 10.0, jnp.array([1.5]))
-        nnlist = self._make_nnlist()
+        nnlist = self._make_nnlist(systems)
 
         state = {"particles": particles, "systems": systems, "neighborlist": nnlist}
         new_state = {
@@ -776,7 +778,6 @@ class TestRadiusGraphConstructorWithPatch:
         constructor = RadiusGraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            cutoffs=view(lambda x: x["systems"].map_data(lambda d: d.cutoff)),
             neighborlist=view(lambda x: x["neighborlist"]),
             probe=None,
         )
@@ -813,7 +814,7 @@ class TestRadiusGraphConstructorWithPatch:
             positions, jnp.zeros(3, dtype=int), jnp.array([0, 0, 0])
         )
         systems = _make_systems(jnp.eye(3)[None] * 10.0, jnp.array([1.5]))
-        nnlist = self._make_nnlist()
+        nnlist = self._make_nnlist(systems)
         probe_result = self._make_radius_probe(
             particles, nnlist, 1, jnp.array([[0.5, 0.0, 0.0]])
         )
@@ -822,7 +823,6 @@ class TestRadiusGraphConstructorWithPatch:
         constructor = RadiusGraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            cutoffs=view(lambda x: x["systems"].map_data(lambda d: d.cutoff)),
             neighborlist=view(lambda x: x["neighborlist"]),
             probe=lambda s, p: probe_result,
         )
@@ -838,7 +838,7 @@ class TestRadiusGraphConstructorWithPatch:
             positions, jnp.zeros(2, dtype=int), jnp.array([0, 0])
         )
         systems = _make_systems(jnp.eye(3)[None] * 10.0, jnp.array([1.5]))
-        nnlist = self._make_nnlist()
+        nnlist = self._make_nnlist(systems)
         probe_result = self._make_radius_probe(
             particles, nnlist, 0, jnp.array([[9.0, 9.0, 9.0]])
         )
@@ -847,7 +847,6 @@ class TestRadiusGraphConstructorWithPatch:
         constructor = RadiusGraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            cutoffs=view(lambda x: x["systems"].map_data(lambda d: d.cutoff)),
             neighborlist=view(lambda x: x["neighborlist"]),
             probe=lambda s, p: probe_result,
         )
