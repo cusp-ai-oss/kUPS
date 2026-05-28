@@ -248,21 +248,18 @@ class RadiusGraphConstructor[
 
         if patch is None:
             nnlist = self.neighborlist(state)
-            edges = nnlist(lh, None, systems)
+            edges = nnlist(lh, systems)
         else:
             assert self.probe is not None, "Expected probe to be set."
             probe = self.probe(state, patch)
             update = probe.particles
             indices = update.indices
             if not old_graph:
-                rh = update.data
-                lh = lh.update(indices, rh)
+                lh = lh.update(indices, update.data)
                 nnlist = probe.neighborlist_after
             else:
-                rh = lh[indices]
                 nnlist = probe.neighborlist_before
-            rh_indexed = Table.arange(rh, label=lh.cls)
-            edges = nnlist(lh, rh_indexed, systems, rh_index_remap=indices)
+            edges = nnlist(lh, systems, for_indices=indices)
         return HyperGraph(lh, systems, edges)
 
 

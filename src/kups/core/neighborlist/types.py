@@ -9,18 +9,19 @@ call signature, the particle and system trait protocols expected by every
 implementation, the
 [`Mask`][kups.core.neighborlist.types.Mask] /
 [`Compactor`][kups.core.neighborlist.types.Compactor] /
+[`Postprocessor`][kups.core.neighborlist.types.Postprocessor] /
 [`CandidateSelector`][kups.core.neighborlist.types.CandidateSelector]
 protocols that compose into a
 [`Pipeline`][kups.core.neighborlist.pipeline.Pipeline], the
 [`CandidateBatch`][kups.core.neighborlist.types.CandidateBatch]
-NamedTuple carried between phases, and the
+dataclass carried between phases, and the
 [`IsNeighborListState`][kups.core.neighborlist.types.IsNeighborListState]
 protocol used by the ``from_state`` constructors.
 """
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple, Protocol
+from typing import Literal, Protocol
 
 from jax import Array
 
@@ -35,7 +36,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
 
 
 class NeighborListPoints(
@@ -61,27 +62,31 @@ class NeighborList[D: int](Protocol):
     def __call__[P: NeighborListPoints](
         self,
         lh: Table[ParticleId, P],
-        rh: Table[ParticleId, P] | None,
         systems: Table[SystemId, NeighborListSystems],
-        rh_index_remap: Index[ParticleId] | None = None,
+        *,
+        rh: Table[ParticleId, P] | None = None,
+        for_indices: Index[ParticleId] | None = None,
     ) -> Edges[D]:
-        """Find all particle groups within the cutoff distance.
+        """Find particle groups for a self-graph or bipartite query.
 
         Args:
-            lh: Left-hand particles to find neighbors for
-            rh: Right-hand particles to search within (or None for self-neighbors)
-            systems: Indexed system data with cell information
-            rh_index_remap: Optional index mapping rh particles back to lh
-                particle IDs for self-interaction exclusion. When ``None``,
-                rh is treated as disjoint from lh.
+            lh: Particle table that returned ``Edges`` index into.
+            rh: Optional bipartite query table. Mutually exclusive with
+                ``for_indices``. When omitted, the neighbor list builds a
+                self-graph over ``lh``.
+            systems: Indexed system data with cell information.
+            for_indices: Optional subset of ``lh`` particle ids whose incident
+                self-graph edges should be returned. The caller must already
+                have written any updated particle data into ``lh``.
 
         Returns:
-            Edges connecting particle groups within cutoff
+            Edges whose columns index ``lh`` for self-graph calls.
         """
         ...
 
 
-class CandidateBatch[D: int](NamedTuple):
+@dataclass
+class CandidateBatch[D: int]:
     """Candidate set of degree ``D`` carried through the pipeline.
 
     Reuses [`Edges[D]`][kups.core.neighborlist.edges.Edges] for the
@@ -91,53 +96,62 @@ class CandidateBatch[D: int](NamedTuple):
     [`ExclusionMask`][kups.core.neighborlist.masks.ExclusionMask] needs to
     keep non-minimum periodic copies of excluded pairs.
 
-    Auto-registered as a JAX PyTree because it is a NamedTuple.
-
     Attributes:
-        edges: Candidate edges (indices + fractional shifts).
+        edges: Candidate edges (indices + fractional shifts). The first column
+            is keyed by ``edges.indices.keys``.
         is_minimum_image: ``(n,)`` bool — True where the candidate's shift
             equals the minimum-image shift; False for non-MIC replicated
             copies emitted by selectors that handle PBC image expansion.
+        rhs_keys: Pair-specific key vocabulary for the second edge column.
+            ``None`` means it uses ``edges.indices.keys``.
     """
 
     edges: Edges[D]
     is_minimum_image: Array
+    rhs_keys: tuple[ParticleId, ...] | None = field(default=None, static=True)
 
     @property
-    def lh_idx(self) -> Array:
-        """Pair-specific: raw lh-side index array of shape ``(n,)``. Only meaningful for ``D == 2``."""
-        return self.edges.indices.indices[:, 0]
+    def lh_idx(self) -> Index[ParticleId]:
+        """Pair-specific: lh-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
+        return self.edges.indices[:, 0]
 
     @property
-    def rh_idx(self) -> Array:
-        """Pair-specific: raw rh-side index array of shape ``(n,)``. Only meaningful for ``D == 2``."""
-        return self.edges.indices.indices[:, 1]
+    def rh_idx(self) -> Index[ParticleId]:
+        """Pair-specific: rh-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
+        return Index(
+            self.rhs_keys or self.edges.indices.keys,
+            self.edges.indices.indices[:, 1],
+        )
 
 
 @dataclass
 class PipelineContext:
     """Read-only inputs shared by every mask and the compactor.
 
-    Positions in ``lh`` and ``rh`` are in **fractional** coordinates
+    Positions in ``lh`` and optional ``rh`` are in **fractional** coordinates
     (transformed by [`_prepare`][kups.core.neighborlist.pipeline._prepare]).
     There is no ``out_of_bounds`` field — masks/compactors that need an
-    OOB sentinel compute ``max(ctx.lh.size, ctx.rh.size)`` locally.
+    OOB sentinel resolve the rhs table first.
 
     Attributes:
         lh: Left-hand particle table in fractional coords.
-        rh: Right-hand particle table in fractional coords (== ``lh`` when
-            the caller passed ``rh=None``).
+        rh: Right-hand particle table in fractional coords for true bipartite
+            queries. ``None`` for full self-graphs and ``for_indices`` updates.
         systems: Indexed system data with cell information.
-        rh_index_remap: Raw remap array mapping rh-positions to lh-space
-            particle IDs, or ``None`` when no remap was supplied. Empty
-            remaps are replaced with a one-element OOB-sentinel array by
-            ``_prepare`` so downstream lookups never see a zero-length array.
+        for_indices: Raw ``lh`` positions to update/query, or ``None`` for a
+            full self-graph or bipartite query.
     """
 
     lh: Table[ParticleId, NeighborListPoints]
-    rh: Table[ParticleId, NeighborListPoints]
+    rh: Table[ParticleId, NeighborListPoints] | None
     systems: Table[SystemId, NeighborListSystems]
-    rh_index_remap: Array | None
+    for_indices: Array | None
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        assert self.rh is None or self.for_indices is None, (
+            "PipelineContext cannot combine rh with for_indices."
+        )
 
 
 class CandidateSelector[D: int](Protocol):
@@ -150,27 +164,37 @@ class CandidateSelector[D: int](Protocol):
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[D]: ...
 
 
-class Mask(Protocol):
+class Mask[D: int](Protocol):
     """Returns this criterion's bool array; pipeline conjuncts the results.
 
-    Degree-agnostic at the type level — the pair-only masks shipped here
-    annotate ``batch: CandidateBatch`` (any ``D``) and internally assume
-    ``D == 2`` via ``batch.lh_idx`` / ``batch.rh_idx``. Higher-degree masks
-    would not use those properties.
+    The degree parameter tracks which candidate arity the mask accepts. Pair
+    masks implement ``Mask[Literal[2]]`` by annotating their ``batch`` argument
+    as ``CandidateBatch[Literal[2]]``; degree-agnostic masks use a generic
+    ``__call__`` method.
 
     Cannot change ``batch.edges``, ``batch.is_minimum_image``, or the
     candidate count. Pure ``(batch, ctx) -> Array``.
     """
 
-    def __call__(self, batch: CandidateBatch, ctx: PipelineContext) -> Array: ...
+    def __call__(self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array: ...
 
 
 class Compactor[D: int](Protocol):
-    """Produces final ``Edges[D]`` from the accumulated ``keep`` mask."""
+    """Produces compacted ``Edges[D]`` from the accumulated ``keep`` mask."""
 
     def __call__(
         self, keep: Array, batch: CandidateBatch[D], ctx: PipelineContext
     ) -> Edges[D]: ...
+
+
+class Postprocessor[D: int](Protocol):
+    """Transforms compacted edges using the pipeline context.
+
+    Postprocessors run sequentially after compaction. They may change the
+    number of rows, but must preserve the edge degree ``D``.
+    """
+
+    def __call__(self, edges: Edges[D], ctx: PipelineContext) -> Edges[D]: ...
 
 
 class IsUniversalNeighborlistParams(Protocol):

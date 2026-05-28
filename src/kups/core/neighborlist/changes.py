@@ -67,17 +67,14 @@ def neighborlist_changes(
     N, k = lh.size, rh.data.size
     p_idx = rh.indices.indices_in(lh.keys)
 
-    # Build a single query with new particles on the left-hand side
-    # (original particles + new particles) and both old and new particles
-    # on the right-hand side (old positions at changed indices + new positions).
+    # Build a single self-graph query with both old and proposed particles in
+    # the left-hand table. ``for_indices`` asks the neighbor list to enumerate
+    # only edges incident to the old/proposed changed rows.
     lh_combined = Table.union((lh, rh.data))
-    rh_combined = Table.union((Table.arange(lh[rh.indices], label=ParticleId), rh.data))
-    combined_remap = Index(
-        lh_combined.keys, jnp.concatenate([p_idx, jnp.arange(k) + N])
-    )
+    for_indices = Index(lh_combined.keys, jnp.concatenate([p_idx, jnp.arange(k) + N]))
 
     # single neighborlist call
-    all_edges = neighborlist(lh_combined, rh_combined, systems, combined_remap)
+    all_edges = neighborlist(lh_combined, systems, for_indices=for_indices)
 
     # split into removed / added
     raw = all_edges.indices.indices  # (n_edges, 2)

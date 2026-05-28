@@ -126,7 +126,7 @@ def radial_distribution_function(
         - Assumes uniform density within each system
     """
     nnl_positions = _to_nnlist_points(positions)
-    edge_result = neighborlist(nnl_positions, None, systems)
+    edge_result = neighborlist(nnl_positions, systems)
     diffs = edge_result.difference_vectors(positions, systems)
     dists = jnp.linalg.norm(diffs, axis=(-2, -1))
     dr = rmax / bins

@@ -17,11 +17,18 @@ import jax.numpy as jnp
 
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Index, Table, subselect
-from kups.core.neighborlist.common import Candidates, candidates_to_batch
+from kups.core.neighborlist.common import (
+    Candidates,
+    candidates_to_batch,
+    edge_rhs_table,
+    lift_query_candidates,
+    query_table,
+)
 from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.masks import ExclusionMask, RemapDedupMask
+from kups.core.neighborlist.masks import ExclusionMask, ForIndicesDedupMask
 from kups.core.neighborlist.pipeline import Pipeline
+from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.types import (
     CandidateBatch,
     NeighborListPoints,
@@ -44,20 +51,23 @@ class InclusionGroupSelector:
     capacity: Capacity[int]
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
+        query = query_table(ctx)
         ngraphs = ctx.lh.data.inclusion.num_labels
         selection_result = subselect(
             ctx.lh.data.inclusion.indices,
-            ctx.rh.data.inclusion.indices,
+            query.data.inclusion.indices,
             output_buffer_size=self.capacity,
             num_segments=ngraphs,
         )
         candidates = Candidates(
             lhs=Index(ctx.lh.keys, selection_result.scatter_idxs),
-            rhs=Index(ctx.rh.keys, selection_result.gather_idxs),
+            rhs=Index(query.keys, selection_result.gather_idxs),
         )
+        candidates = lift_query_candidates(candidates, ctx)
+        rhs = edge_rhs_table(ctx)
         deltas = (
             ctx.lh.data.positions[candidates.lhs.indices]
-            - ctx.rh.data.positions[candidates.rhs.indices]
+            - rhs.data.positions[candidates.rhs.indices]
         )
         shifts = jnp.round(deltas).astype(int)
         return candidates_to_batch(
@@ -69,9 +79,10 @@ class InclusionGroupSelector:
 
 def all_connected_neighborlist(
     lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints] | None,
     systems: Table[SystemId, NeighborListSystems],
-    rh_index_remap: Index[ParticleId] | None = None,
+    *,
+    rh: Table[ParticleId, NeighborListPoints] | None = None,
+    for_indices: Index[ParticleId] | None = None,
 ) -> Edges[Literal[2]]:
     """Neighbor list connecting all pairs sharing the same inclusion segment, ignoring distance.
 
@@ -81,17 +92,19 @@ def all_connected_neighborlist(
 
     Requires ``max_count`` to be set on the inclusion ``Index``.
     """
-    if rh is None:
-        rh = lh
-        rh_index_remap = Index.arange(len(lh), label=ParticleId)
-
     max_count = lh.data.inclusion.max_count
     assert max_count is not None, "inclusion.max_count must be set"
-    capacity = FixedCapacity(max_count).multiply(min(lh.size, rh.size))
+    query_size = (
+        for_indices.size
+        if for_indices is not None
+        else (rh.size if rh is not None else lh.size)
+    )
+    capacity = FixedCapacity(max_count).multiply(min(lh.size, query_size))
 
     pipeline = Pipeline[Literal[2]](
         selector=InclusionGroupSelector(capacity=capacity),
-        masks=(ExclusionMask(), RemapDedupMask()),
+        masks=(ExclusionMask(), ForIndicesDedupMask()),
         compactor=ReduceCompactor(avg_edges=capacity),
+        postprocessors=(MirrorPairEdges(),),
     )
-    return pipeline(lh, rh, systems, rh_index_remap)
+    return pipeline(lh, systems, rh=rh, for_indices=for_indices)

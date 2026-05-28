@@ -31,6 +31,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.capacity import Capacity, FixedCapacity
+from kups.core.cell import MaterializedFrame
 from kups.core.data import Index, Table
 from kups.core.lens import bind
 from kups.core.neighborlist.edges import Edges
@@ -38,6 +39,7 @@ from kups.core.neighborlist.types import (
     CandidateBatch,
     NeighborListPoints,
     NeighborListSystems,
+    PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -66,6 +68,34 @@ class Candidates:
 
     lhs: Index[ParticleId]
     rhs: Index[ParticleId]
+
+
+def edge_rhs_table(ctx: PipelineContext) -> Table[ParticleId, NeighborListPoints]:
+    """Return the table addressed by the second edge column."""
+    return ctx.rh if ctx.rh is not None else ctx.lh
+
+
+def query_table(ctx: PipelineContext) -> Table[ParticleId, NeighborListPoints]:
+    """Return the table used to enumerate rhs/query candidates.
+
+    ``rh`` is reserved for true bipartite calls. ``for_indices`` selects a
+    self-graph update subset from ``lh`` and is lifted back to ``lh`` index
+    space before masks and compaction see the batch.
+    """
+    if ctx.rh is not None:
+        return ctx.rh
+    if ctx.for_indices is None:
+        return ctx.lh
+    return ctx.lh.subset(Index(ctx.lh.keys, ctx.for_indices))
+
+
+def lift_query_candidates(candidates: Candidates, ctx: PipelineContext) -> Candidates:
+    """Convert query-local self-update candidates to ``ctx.lh`` positions."""
+    if ctx.for_indices is None:
+        return candidates
+    oob = ctx.lh.size
+    rhs = ctx.for_indices.at[candidates.rhs.indices].get(mode="fill", fill_value=oob)
+    return Candidates(lhs=candidates.lhs, rhs=Index(ctx.lh.keys, rhs))
 
 
 def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.Array:
@@ -217,7 +247,11 @@ def candidates_to_batch(
         Index(candidates.lhs.keys, indices_2d),
         jnp.expand_dims(shifts, axis=-2),
     )
-    return CandidateBatch(edges=edges, is_minimum_image=is_minimum_image)
+    return CandidateBatch(
+        edges=edges,
+        is_minimum_image=is_minimum_image,
+        rhs_keys=candidates.rhs.keys,
+    )
 
 
 def replicate_for_images(
@@ -277,25 +311,22 @@ def replicate_for_images(
 
 
 def real_distance_sq(
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
-    systems: Table[SystemId, NeighborListSystems],
-    lh_idx: Array,
-    rh_idx: Array,
+    lhs_positions: Array,
+    rhs_positions: Array,
+    frames: MaterializedFrame,
     shifts: Array,
 ) -> Array:
-    """Squared real-space distance between candidate pairs.
+    """Squared real-space distance between already-broadcast candidate pairs.
 
     Args:
-        lh, rh, systems: Pipeline tables (positions in fractional coords).
-        lh_idx, rh_idx: ``(n,)`` raw index arrays.
+        lhs_positions: Fractional left endpoint positions, shape ``(n, 3)``.
+        rhs_positions: Fractional right endpoint positions, shape ``(n, 3)``.
+        frames: Materialized cell frames broadcast to the candidate lhs system.
         shifts: ``(n, 3)`` fractional shifts.
 
     Returns:
         ``(n,)`` array of squared distances in real coordinates.
     """
-    frames = systems.map_data(lambda s: s.cell.frame.materialize())
-    frames = frames[lh.data.system[lh_idx]]
-    deltas = lh.data.positions[lh_idx] - rh.data.positions[rh_idx] - shifts
+    deltas = lhs_positions - rhs_positions - shifts
     real_deltas = frames.to_real(deltas)
     return jnp.einsum("...d,...d->...", real_deltas, real_deltas)
