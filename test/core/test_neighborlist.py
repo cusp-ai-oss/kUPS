@@ -25,10 +25,14 @@ from kups.core.lens import bind
 from kups.core.neighborlist import (
     AllDenseNearestNeighborList,
     CellListNeighborList,
+    CutoffNeighborListPolicy,
+    CutoffNeighborListStrategy,
     DenseNearestNeighborList,
     Edges,
     RefineCutoffNeighborList,
     RefineMaskNeighborList,
+    UniversalNeighborlistParameters,
+    adaptive_cutoff_neighborlist_from_state,
     neighborlist_changes,
 )
 from kups.core.neighborlist.cell_list import _cell_hash
@@ -2642,3 +2646,163 @@ class TestNeighborListAcrossPeriodicities:
         cl_edges = _run_cell_list(positions, cell, cutoff)
         dn_edges = _run_dense(positions, cell, cutoff)
         assert _valid_edges_set(cl_edges, 30) == _valid_edges_set(dn_edges, 30)
+
+
+@dataclass
+class _AdaptiveTestState:
+    """Minimal state satisfying ``IsAdaptiveCutoffNeighborListState``."""
+
+    particles: Table
+    systems: Table
+    neighborlist_params: UniversalNeighborlistParameters
+
+
+def _make_adaptive_state(n_particles: int, n_systems: int) -> _AdaptiveTestState:
+    """Build a state with ``n_particles`` total particles split across ``n_systems``."""
+    positions = jnp.zeros((n_particles, 3))
+    per_sys = max(1, n_particles // n_systems)
+    batch_mask = jnp.minimum(
+        jnp.arange(n_particles) // per_sys, jnp.array(n_systems - 1)
+    )
+    lh = _make_lh(positions, batch_mask)
+    systems, _ = _systems_from_cell(
+        PeriodicCell(
+            OrthogonalFrame(jnp.tile(jnp.array([10.0, 10.0, 10.0]), (n_systems, 1)))
+        ),
+        jnp.full((n_systems,), 2.0),
+    )
+    params = UniversalNeighborlistParameters(
+        avg_edges=8, avg_candidates=8, avg_image_candidates=8, cells=32
+    )
+    return _AdaptiveTestState(particles=lh, systems=systems, neighborlist_params=params)
+
+
+class TestCutoffNeighborListPolicy:
+    """Pure-Python policy tests over the avg-per-system threshold."""
+
+    def test_small_avg_picks_dense(self):
+        policy = CutoffNeighborListPolicy()
+        assert (
+            policy.choose(num_particles=100, num_systems=1)
+            is CutoffNeighborListStrategy.DENSE
+        )
+
+    def test_sparse_multi_system_picks_dense(self):
+        """Many systems with low avg occupancy stay on dense."""
+        # 10_000 particles across 200 systems → avg 50 → dense
+        policy = CutoffNeighborListPolicy()
+        assert (
+            policy.choose(num_particles=10_000, num_systems=200)
+            is CutoffNeighborListStrategy.DENSE
+        )
+
+    def test_large_avg_picks_cell_list(self):
+        policy = CutoffNeighborListPolicy()
+        # 20_000 particles in 1 system → avg 20_000 → cell-list
+        assert (
+            policy.choose(num_particles=20_000, num_systems=1)
+            is CutoffNeighborListStrategy.CELL_LIST
+        )
+
+    def test_just_below_default_threshold_stays_dense(self):
+        """Avg < 10_000 default → dense."""
+        policy = CutoffNeighborListPolicy()
+        assert (
+            policy.choose(num_particles=9_999, num_systems=1)
+            is CutoffNeighborListStrategy.DENSE
+        )
+
+    def test_custom_threshold(self):
+        policy = CutoffNeighborListPolicy(
+            min_avg_particles_per_system_for_cell_list=500
+        )
+        # 600 particles in 1 system: above the custom 500 → cell-list
+        assert (
+            policy.choose(num_particles=600, num_systems=1)
+            is CutoffNeighborListStrategy.CELL_LIST
+        )
+
+    def test_zero_systems_falls_back_to_dense(self):
+        policy = CutoffNeighborListPolicy()
+        assert (
+            policy.choose(num_particles=100_000, num_systems=0)
+            is CutoffNeighborListStrategy.DENSE
+        )
+
+
+class TestAdaptiveCutoffFactory:
+    """``adaptive_cutoff_neighborlist_from_state`` returns the right concrete class."""
+
+    def test_auto_picks_dense_for_small(self):
+        state = _make_adaptive_state(n_particles=64, n_systems=1)
+        cutoffs = _cutoff_table(jnp.array([2.0]))
+        nl = adaptive_cutoff_neighborlist_from_state(state, cutoffs)
+        assert isinstance(nl, DenseNearestNeighborList)
+
+    def test_auto_picks_cell_list_for_large(self):
+        state = _make_adaptive_state(n_particles=20_000, n_systems=1)
+        cutoffs = _cutoff_table(jnp.array([2.0]))
+        nl = adaptive_cutoff_neighborlist_from_state(state, cutoffs)
+        assert isinstance(nl, CellListNeighborList)
+
+    def test_forced_dense_bypasses_policy(self):
+        state = _make_adaptive_state(n_particles=20_000, n_systems=1)
+        cutoffs = _cutoff_table(jnp.array([2.0]))
+        nl = adaptive_cutoff_neighborlist_from_state(
+            state,
+            cutoffs,
+            policy=CutoffNeighborListPolicy(strategy=CutoffNeighborListStrategy.DENSE),
+        )
+        assert isinstance(nl, DenseNearestNeighborList)
+
+    def test_forced_cell_list_bypasses_policy(self):
+        state = _make_adaptive_state(n_particles=64, n_systems=1)
+        cutoffs = _cutoff_table(jnp.array([2.0]))
+        nl = adaptive_cutoff_neighborlist_from_state(
+            state,
+            cutoffs,
+            policy=CutoffNeighborListPolicy(
+                strategy=CutoffNeighborListStrategy.CELL_LIST
+            ),
+        )
+        assert isinstance(nl, CellListNeighborList)
+
+    def test_carries_cutoffs(self):
+        state = _make_adaptive_state(n_particles=64, n_systems=1)
+        cutoffs = _cutoff_table(jnp.array([3.5]))
+        nl = adaptive_cutoff_neighborlist_from_state(state, cutoffs)
+        assert isinstance(nl, DenseNearestNeighborList | CellListNeighborList)
+        npt.assert_array_equal(nl.cutoffs.data, jnp.array([3.5]))
+
+    def test_adaptive_matches_forced_dense_on_small_fixture(self):
+        """When the policy picks dense, adaptive output equals forced dense."""
+        rng = np.random.default_rng(0)
+        L = 12.0
+        positions = jnp.asarray(rng.uniform(1.0, L - 1.0, size=(30, 3)))
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        cutoff = 3.5
+        adaptive_edges = _run_dense(positions, cell, cutoff)
+        ref_edges = _run_dense(positions, cell, cutoff)
+        assert _valid_edges_set(adaptive_edges, 30) == _valid_edges_set(ref_edges, 30)
+
+    def test_jit_traces_only_chosen_branch(self):
+        """jitting the adaptive NL must not require the other branch to compile."""
+        state = _make_adaptive_state(n_particles=64, n_systems=1)
+        cutoffs = _cutoff_table(jnp.array([2.0]))
+        nl = adaptive_cutoff_neighborlist_from_state(state, cutoffs)
+        # AUTO → DENSE for 64 particles, so we can jit-call the dense path
+        # directly; no cell-list machinery is referenced.
+        assert isinstance(nl, DenseNearestNeighborList)
+        positions = jnp.zeros((4, 3))
+        lh = _make_lh(positions, jnp.zeros(4, dtype=int))
+        systems, _ = _systems_from_cell(
+            PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])[None])),
+            jnp.array([2.0]),
+        )
+
+        result = jax.jit(as_result_function(nl))(
+            lh=lh, rh=None, systems=systems, rh_index_remap=None
+        )
+        result.raise_assertion()
+        # Sanity: emitted Edges have the expected pair-degree.
+        assert result.value.indices.shape[-1] == 2

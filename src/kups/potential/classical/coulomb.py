@@ -19,7 +19,13 @@ from kups.core.cell import Vacuum
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
-from kups.core.neighborlist import NeighborList
+from kups.core.neighborlist import (
+    IsAdaptiveCutoffNeighborListState,
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListFactory,
+    adaptive_cutoff_neighborlist_from_state,
+)
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY_LENS,
@@ -156,16 +162,15 @@ def make_coulomb_vacuum_potential[
     return potential
 
 
-class IsCoulombVacuumState(Protocol):
+class IsCoulombVacuumState(
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+):
     """Protocol for states providing all inputs for the Coulomb vacuum potential."""
 
     @property
     def particles(self) -> Table[ParticleId, IsCoulombGraphParticles]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell[Vacuum]]: ...
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]: ...
     @property
     def coulomb_cutoff(self) -> Table[SystemId, Array]: ...
 
@@ -176,6 +181,7 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
+    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Any]: ...
 
 
@@ -185,6 +191,7 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
+    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
 ) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
 
 
@@ -194,6 +201,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch](
     probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
+    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -203,6 +211,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch](
     probe: Probe[State, P, IsRadiusGraphProbe[IsCoulombGraphParticles]],
     *,
     compute_position_and_cell_gradients: Literal[True],
+    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
 ) -> Potential[State, PositionAndCell, EmptyType, P]: ...
 
 
@@ -211,6 +220,9 @@ def make_coulomb_vacuum_from_state(
     probe: Any = None,
     *,
     compute_position_and_cell_gradients: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        Any
+    ] = adaptive_cutoff_neighborlist_from_state,
 ) -> Any:
     """Create a Coulomb vacuum potential from a typed state, optionally with incremental updates.
 
@@ -245,7 +257,7 @@ def make_coulomb_vacuum_from_state(
     cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
 
     def neighborlist_view(s):
-        return state(s).neighborlist(cutoff_view(s))
+        return neighborlist_factory(state(s), cutoff_view(s))
 
     return make_coulomb_vacuum_potential(
         state.focus(lambda x: x.particles),

@@ -33,7 +33,14 @@ from kups.core.cell import Cell, Periodic3D
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
-from kups.core.neighborlist import NeighborList, all_connected_neighborlist
+from kups.core.neighborlist import (
+    IsAdaptiveCutoffNeighborListState,
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListFactory,
+    adaptive_cutoff_neighborlist_from_state,
+    all_connected_neighborlist,
+)
 from kups.core.patch import Accept, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY,
@@ -1018,16 +1025,15 @@ def make_ewald_potential[
     return EwaldPotential((sr_potential, lr_potential, self_potential))
 
 
-class IsEwaldState[Params](Protocol):
+class IsEwaldState[Params](
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+):
     """Protocol for states providing all inputs for the Ewald potential."""
 
     @property
     def particles(self) -> Table[ParticleId, IsEwaldPointData]: ...
     @property
     def systems(self) -> Table[SystemId, HasCell[Periodic3D]]: ...
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]: ...
     @property
     def ewald_parameters(self) -> Params: ...
 
@@ -1039,6 +1045,9 @@ def make_ewald_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        IsEwaldState[MaybeCached[EwaldParameters, Any]]
+    ] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch]: ...
 
 
@@ -1049,6 +1058,9 @@ def make_ewald_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        IsEwaldState[MaybeCached[EwaldParameters, Any]]
+    ] = ...,
 ) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
@@ -1061,6 +1073,9 @@ def make_ewald_from_state[State, P: Patch](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
+    ] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -1074,6 +1089,9 @@ def make_ewald_from_state[State, P: Patch](
     *,
     compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]]
+    ] = ...,
 ) -> EwaldPotential[State, PositionAndCell, EmptyType, P]: ...
 
 
@@ -1083,6 +1101,9 @@ def make_ewald_from_state(
     *,
     compute_position_and_cell_gradients: bool = False,
     include_exclusion_mask: bool = False,
+    neighborlist_factory: NeighborListFactory[
+        Any
+    ] = adaptive_cutoff_neighborlist_from_state,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
 
@@ -1132,7 +1153,7 @@ def make_ewald_from_state(
         cache_view = state.focus(lambda x: x.ewald_parameters.cache)
 
     def neighborlist_view(s):
-        return state(s).neighborlist(param_view(s).cutoff)
+        return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_ewald_potential(
         state.focus(lambda x: x.particles),
