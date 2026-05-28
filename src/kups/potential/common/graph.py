@@ -13,9 +13,7 @@ Key components:
 
 - **[PointCloud][kups.potential.common.graph.PointCloud]**: Indexed particles and systems
 - **[HyperGraph][kups.potential.common.graph.HyperGraph]**: Point cloud with typed edges
-- **[RadiusGraphConstructor][kups.potential.common.graph.RadiusGraphConstructor]**: Builds pairwise graphs from neighbor lists
-- **[EdgeSetGraphConstructor][kups.potential.common.graph.EdgeSetGraphConstructor]**: Builds graphs from explicit edge lists (bonds, angles)
-- **[PointCloudConstructor][kups.potential.common.graph.PointCloudConstructor]**: Builds zero-order graphs (no edges)
+- **[GraphConstructor][kups.potential.common.graph.GraphConstructor]**: Builds graphs from a degree-parametrized neighbor list
 - **[LocalGraphSumComposer][kups.potential.common.graph.LocalGraphSumComposer]**: Incremental energy update plans
 - **[FullGraphSumComposer][kups.potential.common.graph.FullGraphSumComposer]**: Full recomputation plans
 """
@@ -35,10 +33,9 @@ from typing import (
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.capacity import Capacity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import View, bind
-from kups.core.neighborlist import Edges, NeighborList
+from kups.core.neighborlist import Edges, EmptyNeighborList, NeighborList
 from kups.core.patch import Patch, Probe
 from kups.core.typing import (
     HasCell,
@@ -50,7 +47,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field, isin, jit
+from kups.core.utils.jax import dataclass, field, jit
 from kups.potential.common.energy import Sum, SumComposer, Summand
 
 Params = TypeVar("Params", covariant=True)
@@ -165,31 +162,6 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
         return result
 
 
-class GraphConstructor[
-    State,
-    Ptch: Patch,
-    P: HasPositionsAndSystemIndex,
-    S: HasCell,
-    Degree: int,
-](Protocol):
-    """Protocol for constructing molecular graphs from simulation state."""
-
-    def __call__(
-        self, state: State, patch: Ptch | None, old_graph: bool = False
-    ) -> HyperGraph[P, S, Degree]:
-        """Construct a hypergraph from state.
-
-        Args:
-            state: Current simulation state.
-            patch: Optional patch for incremental construction.
-            old_graph: If True, return graph for the pre-update configuration.
-
-        Returns:
-            HyperGraph with particles, systems, and edges.
-        """
-        ...
-
-
 @runtime_checkable
 class IsRadiusGraphPoints(
     HasPositions,
@@ -201,47 +173,82 @@ class IsRadiusGraphPoints(
 
 
 @runtime_checkable
-class IsRadiusGraphProbe[P: IsRadiusGraphPoints](Protocol):
-    """Probe result for radius graph incremental updates."""
+class IsGraphProbe[P: IsRadiusGraphPoints, Degree: int](Protocol):
+    """Probe result for incremental graph construction."""
 
     @property
     def particles(self) -> WithIndices[ParticleId, P]: ...
     @property
-    def neighborlist_after(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist_after(self) -> NeighborList[Degree]: ...
     @property
-    def neighborlist_before(self) -> NeighborList[Literal[2]]: ...
+    def neighborlist_before(self) -> NeighborList[Degree]: ...
 
 
 @dataclass
-class RadiusGraphConstructor[
+class _EmptyGraphProbeResult[P: IsRadiusGraphPoints]:
+    """Unified graph probe result for point-cloud particle updates."""
+
+    particles: WithIndices[ParticleId, P]
+    neighborlist_after: NeighborList[Literal[0]]
+    neighborlist_before: NeighborList[Literal[0]]
+
+
+def empty_graph_probe[
+    State,
+    Ptch: Patch,
+    P: IsRadiusGraphPoints,
+](
+    probe_particles: Probe[State, Ptch, WithIndices[ParticleId, P]] | None,
+) -> Probe[State, Ptch, IsGraphProbe[P, Literal[0]]] | None:
+    """Adapt a particle-only point-cloud probe to the unified graph probe shape."""
+
+    if probe_particles is None:
+        return None
+
+    def probe(state: State, patch: Ptch) -> IsGraphProbe[P, Literal[0]]:
+        empty = EmptyNeighborList[Literal[0]]()
+        return _EmptyGraphProbeResult(
+            particles=probe_particles(state, patch),
+            neighborlist_after=empty,
+            neighborlist_before=empty,
+        )
+
+    return probe
+
+
+@dataclass
+class GraphConstructor[
     State,
     Ptch: Patch,
     P: IsRadiusGraphPoints,
     S: HasCell,
-](GraphConstructor[State, Ptch, P, S, Literal[2]]):
-    """Constructs pairwise graphs from neighbor lists (Degree=2).
+    Degree: int,
+]:
+    """Constructs graphs from a degree-parametrized neighbor list.
 
     Attributes:
-        particles: View extracting ``Indexed[ParticleId, P]`` from state.
+        particles: View extracting ``Indexed[ParticleId, P]``.
         systems: View extracting ``Indexed[SystemId, S]`` (cell).
-        neighborlist: View extracting a cutoff-bound ``NeighborList`` from state.
+        neighborlist: View extracting the neighbor list implementation for the state.
         probe: Optional probe for incremental particle + neighbor list changes.
     """
 
     particles: View[State, Table[ParticleId, P]] = field(static=True)
     systems: View[State, Table[SystemId, S]] = field(static=True)
-    neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
-    probe: Probe[State, Ptch, IsRadiusGraphProbe[P]] | None = field(static=True)
+    neighborlist: View[State, NeighborList[Degree]] = field(static=True)
+    probe: Probe[State, Ptch, IsGraphProbe[P, Degree]] | None = field(static=True)
 
     @jit(static_argnames=("old_graph",))
     def __call__(
         self, state: State, patch: Ptch | None, old_graph: bool = False
-    ) -> HyperGraph[P, S, Literal[2]]:
+    ) -> HyperGraph[P, S, Degree]:
         lh = self.particles(state)
         systems = self.systems(state)
 
-        if patch is not None and self.probe is None and not old_graph:
-            new_state = patch(
+        if patch is not None and self.probe is None:
+            if old_graph:
+                return self(state, None, old_graph=True)
+            new_state: State = patch(
                 state, systems.set_data(jnp.ones(len(systems), dtype=jnp.bool_))
             )
             return self(new_state, None, old_graph=True)
@@ -263,147 +270,6 @@ class RadiusGraphConstructor[
         return HyperGraph(lh, systems, edges)
 
 
-class UpdatedEdges[Degree: int](NamedTuple):
-    """Updated edge information for incremental graph construction."""
-
-    indices: Array
-    edge_data: Edges[Degree]
-
-
-class IsEdgeSetGraphProbe[P: HasPositionsAndSystemIndex, Degree: int](Protocol):
-    """Probe result for edge-set graph incremental updates."""
-
-    @property
-    def particles(self) -> WithIndices[ParticleId, P]: ...
-    @property
-    def edges(self) -> UpdatedEdges[Degree]: ...
-    @property
-    def capacity(self) -> Capacity[int]: ...
-
-
-@dataclass
-class EdgeSetGraphConstructor[
-    State,
-    Ptch: Patch,
-    P: HasPositionsAndSystemIndex,
-    S: HasCell,
-    Degree: int,
-](GraphConstructor[State, Ptch, P, S, Degree]):
-    """Constructs graphs from predefined edge lists (bonds, angles, dihedrals).
-
-    Attributes:
-        particles: View extracting ``Indexed[ParticleId, P]``.
-        systems: View extracting ``Indexed[SystemId, S]``.
-        edges: View extracting ``Edges[Degree]`` from state.
-        probe: Optional probe for incremental particle + edge changes.
-    """
-
-    particles: View[State, Table[ParticleId, P]] = field(static=True)
-    systems: View[State, Table[SystemId, S]] = field(static=True)
-    edges: View[State, Edges[Degree]] = field(static=True)
-    probe: Probe[State, Ptch, IsEdgeSetGraphProbe[P, Degree]] | None = field(
-        static=True
-    )
-
-    @jit(static_argnames=("old_graph",))
-    def __call__(
-        self, state: State, patch: Ptch | None, old_graph: bool = False
-    ) -> HyperGraph[P, S, Degree]:
-        particles = self.particles(state)
-        edges = self.edges(state)
-        systems = self.systems(state)
-
-        if patch is not None and self.probe is None and not old_graph:
-            new_state: State = patch(
-                state, systems.set_data(jnp.ones(len(systems), dtype=jnp.bool_))
-            )
-            return self(new_state, None, old_graph=True)
-
-        if patch is None:
-            return HyperGraph(particles, systems, edges)
-
-        assert self.probe is not None, "Expected probe to be set."
-
-        probe = self.probe(state, patch)
-        update = probe.particles
-        indices = update.indices
-        update_edges = probe.edges
-        edge_idx, update_edge_data = update_edges
-
-        if not old_graph:
-            edges = bind(edges).at(edge_idx).set(update_edge_data)
-            particles = particles.update(indices, update.data)
-
-        capacity = probe.capacity
-        affected_edges = isin(
-            edges.indices.indices, indices.indices, edges.indices.num_labels
-        ).any(-1)
-        required_edges = jnp.sum(affected_edges)
-        capacity = capacity.generate_assertion(required_edges)
-        oob = len(particles)
-        affected_edge_idx = jnp.where(
-            affected_edges, size=capacity.size, fill_value=oob
-        )[0]
-        edge_idx = jnp.concatenate([affected_edge_idx, edge_idx])
-        edge_idx = jnp.unique(edge_idx, size=edge_idx.size, fill_value=oob)
-        edges = Edges(
-            indices=Index(
-                edges.indices.keys,
-                edges.indices.indices.at[edge_idx].get(**edges.indices.scatter_args),
-            ),
-            shifts=edges.shifts.at[edge_idx].get(mode="fill", fill_value=0),
-        )
-        return HyperGraph(particles, systems, edges)
-
-
-@dataclass
-class PointCloudConstructor[
-    State,
-    Ptch: Patch,
-    P: HasPositionsAndSystemIndex,
-    S: HasCell,
-](GraphConstructor[State, Ptch, P, S, Literal[0]]):
-    """Constructs zero-order graphs (Degree=0, no edges).
-
-    Attributes:
-        particles: View extracting ``Indexed[ParticleId, P]``.
-        systems: View extracting ``Indexed[SystemId, S]``.
-        probe_particles: Optional probe returning ``WithIndices[ParticleId, P]``.
-    """
-
-    particles: View[State, Table[ParticleId, P]] = field(static=True)
-    systems: View[State, Table[SystemId, S]] = field(static=True)
-    probe_particles: Probe[State, Ptch, WithIndices[ParticleId, P]] | None = field(
-        static=True
-    )
-
-    @jit(static_argnames=("old_graph",))
-    def __call__(
-        self, state: State, patch: Ptch | None, old_graph: bool = False
-    ) -> HyperGraph[P, S, Literal[0]]:
-        particles = self.particles(state)
-        systems = self.systems(state)
-        edges = Edges(
-            indices=Index(particles.keys, jnp.zeros((0, 0), dtype=int)),
-            shifts=jnp.zeros((0, 0, 3), dtype=int),
-        )
-        if patch is not None and self.probe_particles is None and not old_graph:
-            new_state: State = patch(
-                state, systems.set_data(jnp.ones(len(systems), dtype=jnp.bool_))
-            )
-            return self(new_state, None, old_graph=True)
-
-        if patch is None:
-            return HyperGraph(particles, systems, edges)
-
-        assert self.probe_particles is not None, "Expected probe_particles to be set."
-        update = self.probe_particles(state, patch)
-        indices = update.indices
-        if not old_graph:
-            particles = particles.update(indices, update.data)
-        return HyperGraph(particles, systems, edges)
-
-
 class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
     """Input bundle for graph-based potential energy functions."""
 
@@ -415,7 +281,7 @@ class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
 class LocalGraphSumComposer[
     State,
     Ptch: Patch,
-    P: HasPositionsAndSystemIndex,
+    P: IsRadiusGraphPoints,
     S: HasCell,
     Degree: int,
     Params,
@@ -452,7 +318,7 @@ class LocalGraphSumComposer[
 class FullGraphSumComposer[
     State,
     Ptch: Patch,
-    P: HasPositionsAndSystemIndex,
+    P: IsRadiusGraphPoints,
     S: HasCell,
     Degree: int,
     Params,

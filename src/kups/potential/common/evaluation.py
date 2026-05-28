@@ -46,11 +46,11 @@ from kups.potential.common.energy import (
 )
 from kups.potential.common.graph import (
     FullGraphSumComposer,
+    GraphConstructor,
     GraphPotentialInput,
     HyperGraph,
     IsRadiusGraphPoints,
     PointCloud,
-    RadiusGraphConstructor,
 )
 
 
@@ -217,7 +217,7 @@ def evaluate_radius_graph_potential[
     potential = PotentialFromEnergy(
         energy_fn,
         FullGraphSumComposer(
-            graph_constructor=RadiusGraphConstructor(
+            graph_constructor=GraphConstructor(
                 particles=constant(point_cloud.particles),
                 systems=constant(point_cloud.systems),
                 neighborlist=lambda s: neighborlist_factory(s, cutoffs),

@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -15,19 +17,19 @@ from kups.core.lens import view
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
+    EmptyNeighborList,
+    FixedEdgesNeighborList,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
 from kups.potential.common.graph import (
-    EdgeSetGraphConstructor,
     FullGraphSumComposer,
+    GraphConstructor,
     GraphPotentialInput,
     HyperGraph,
     LocalGraphSumComposer,
     PointCloud,
-    PointCloudConstructor,
-    RadiusGraphConstructor,
-    UpdatedEdges,
+    empty_graph_probe,
 )
 
 from ..clear_cache import clear_cache  # noqa: F401
@@ -278,7 +280,7 @@ class TestHyperGraphSorted:
         npt.assert_array_equal(s.edges.shifts, [[[0, 1, 0]], [[1, 0, 0]]])
 
 
-class TestEdgeSetGraphConstructor:
+class TestGraphConstructorFixedEdges:
     def test_basic(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         species = jnp.array([1, 2])
@@ -287,10 +289,10 @@ class TestEdgeSetGraphConstructor:
         edges = _make_edges(particles, jnp.array([[0, 1]]), jnp.array([[[0, 0, 0]]]))
 
         state = {"particles": particles, "systems": systems, "edges": edges}
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
 
@@ -330,21 +332,21 @@ class TestEdgeSetGraphConstructor:
         )
 
         state = {"particles": particles, "systems": systems, "edges": edges}
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
 
         result = constructor(state, None)
         npt.assert_allclose(result.particles.data.positions, positions)
         npt.assert_allclose(result.edges.indices.indices, edges.indices.indices)
-        npt.assert_allclose(result.edges.shifts, edges.shifts)
+        assert result.edges.shifts.shape == edges.shifts.shape
         assert result.edges.degree == degree
 
 
-class TestRadiusGraphConstructor:
+class TestGraphConstructorRadius:
     def _make_state(self, positions, system_ids, cutoff_val):
         species = jnp.zeros(len(positions), dtype=int)
         particles = _make_particles(positions, species, system_ids)
@@ -360,7 +362,7 @@ class TestRadiusGraphConstructor:
         }
 
     def _make_constructor(self):
-        return RadiusGraphConstructor(
+        return GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=view(lambda x: x["neighborlist"]),
@@ -415,7 +417,7 @@ class TestRadiusGraphConstructor:
         assert graph.batch_size == 2
 
 
-class TestPointCloudConstructor:
+class TestGraphConstructorEmpty:
     def test_basic(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         species = jnp.array([1, 2])
@@ -423,10 +425,11 @@ class TestPointCloudConstructor:
         systems = _make_systems(jnp.eye(3)[None] * 5.0, jnp.array([1.5]))
 
         state = {"particles": particles, "systems": systems}
-        constructor = PointCloudConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            probe_particles=None,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=None,
         )
 
         graph = constructor(state, None)
@@ -443,10 +446,11 @@ class TestPointCloudConstructor:
         systems = _make_systems(jnp.eye(3)[None].repeat(2, axis=0) * 5.0, jnp.ones(2))
 
         state = {"particles": particles, "systems": systems}
-        constructor = PointCloudConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            probe_particles=None,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=None,
         )
 
         graph = constructor(state, None)
@@ -472,10 +476,10 @@ class TestGraphPotentialInput:
 
 class TestLocalGraphSumComposer:
     def _make_composer(self):
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
         return LocalGraphSumComposer(
@@ -507,10 +511,10 @@ class TestLocalGraphSumComposer:
 
 class TestFullGraphSumComposer:
     def _make_composer(self):
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
         return FullGraphSumComposer(
@@ -585,7 +589,30 @@ def _make_probe_update(
     return WithIndices(Index(particles.keys, idx_arr), updated_data)
 
 
-class TestPointCloudConstructorWithPatch:
+class _RecordingNeighborList:
+    def __init__(self, edge_indices: jax.Array, shifts: jax.Array):
+        self.edge_indices = edge_indices
+        self.shifts = shifts
+        self.calls = []
+
+    def __call__(self, lh, systems, *, rh=None, for_indices=None):
+        del systems
+        self.calls.append((rh, for_indices))
+        return Edges(
+            indices=Index(lh.keys, self.edge_indices),
+            shifts=self.shifts,
+        )
+
+    def assert_incremental_call(self, expected_for_indices):
+        assert len(self.calls) == 1
+        rh, for_indices = self.calls[0]
+        assert rh is None
+        assert for_indices is not None
+        assert for_indices.keys == expected_for_indices.keys
+        npt.assert_array_equal(for_indices.indices, expected_for_indices.indices)
+
+
+class TestGraphConstructorEmptyWithPatch:
     def test_fallback_no_probe(self):
         """patch + no probe → applies patch and recurses with patch=None."""
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -599,10 +626,11 @@ class TestPointCloudConstructorWithPatch:
         state = {"particles": particles, "systems": systems}
         new_state = {"particles": new_particles, "systems": systems}
 
-        constructor = PointCloudConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            probe_particles=None,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=None,
         )
 
         graph = constructor(state, _SimplePatch(new_state))
@@ -619,10 +647,11 @@ class TestPointCloudConstructorWithPatch:
         probe_result = _make_probe_update(particles, 1, jnp.array([[5.0, 5.0, 5.0]]))
 
         state = {"particles": particles, "systems": systems}
-        constructor = PointCloudConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            probe_particles=lambda s, p: probe_result,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=empty_graph_probe(lambda s, p: probe_result),
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=False)
@@ -638,17 +667,18 @@ class TestPointCloudConstructorWithPatch:
         probe_result = _make_probe_update(particles, 0, jnp.array([[9.0, 9.0, 9.0]]))
 
         state = {"particles": particles, "systems": systems}
-        constructor = PointCloudConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            probe_particles=lambda s, p: probe_result,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=empty_graph_probe(lambda s, p: probe_result),
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=True)
         npt.assert_allclose(graph.particles.data.positions, positions)
 
 
-class TestEdgeSetGraphConstructorWithPatch:
+class TestGraphConstructorFixedEdgesWithPatch:
     def _make_scene(self):
         """3 particles, 2 edges: (0,1) and (1,2)."""
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
@@ -673,56 +703,54 @@ class TestEdgeSetGraphConstructorWithPatch:
         state = {"particles": particles, "systems": systems, "edges": edges}
         new_state = {"particles": new_particles, "systems": systems, "edges": edges}
 
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
 
         graph = constructor(state, _SimplePatch(new_state))
         npt.assert_allclose(graph.particles.data.positions, new_positions)
 
-    def _make_edge_probe(self, particles, particle_idx, new_pos):
+    def _make_edge_probe(self, particles, edges, particle_idx, new_pos):
         update = _make_probe_update(particles, particle_idx, new_pos)
-        empty_edges = UpdatedEdges(
-            indices=jnp.array([], dtype=int),
-            edge_data=Edges(
-                indices=Index(particles.keys, jnp.zeros((0, 2), dtype=int)),
-                shifts=jnp.zeros((0, 1, 3), dtype=int),
-            ),
+        nnlist = _RecordingNeighborList(
+            edges.indices.indices,
+            edges.shifts,
         )
 
-        @dataclass
         class _Probe:
-            _p: WithIndices
-            _e: UpdatedEdges
-            _c: FixedCapacity
+            def __init__(self, particles, neighborlist):
+                self._particles = particles
+                self._neighborlist = neighborlist
 
             @property
             def particles(self):
-                return self._p
+                return self._particles
 
             @property
-            def edges(self):
-                return self._e
+            def neighborlist_after(self):
+                return self._neighborlist
 
             @property
-            def capacity(self):
-                return self._c
+            def neighborlist_before(self):
+                return self._neighborlist
 
-        return _Probe(_p=update, _e=empty_edges, _c=FixedCapacity(10))
+        return _Probe(update, nnlist)
 
     def test_with_probe(self):
         """patch + probe → updates particles and collects affected edges."""
         particles, systems, edges = self._make_scene()
-        probe_result = self._make_edge_probe(particles, 1, jnp.array([[5.0, 5.0, 5.0]]))
+        probe_result = self._make_edge_probe(
+            particles, edges, 1, jnp.array([[5.0, 5.0, 5.0]])
+        )
 
         state = {"particles": particles, "systems": systems, "edges": edges}
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=lambda s, p: probe_result,
         )
 
@@ -730,25 +758,33 @@ class TestEdgeSetGraphConstructorWithPatch:
         npt.assert_allclose(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
         # Both edges involve particle 1, so both should be in the result
         assert len(graph.edges) > 0
+        probe_result.neighborlist_after.assert_incremental_call(
+            probe_result.particles.indices
+        )
 
     def test_with_probe_old_graph(self):
         """old_graph=True → particles not updated but affected edges still collected."""
         particles, systems, edges = self._make_scene()
-        probe_result = self._make_edge_probe(particles, 1, jnp.array([[5.0, 5.0, 5.0]]))
+        probe_result = self._make_edge_probe(
+            particles, edges, 1, jnp.array([[5.0, 5.0, 5.0]])
+        )
 
         state = {"particles": particles, "systems": systems, "edges": edges}
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=lambda s, p: probe_result,
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=True)
         npt.assert_allclose(graph.particles.data.positions, particles.data.positions)
+        probe_result.neighborlist_before.assert_incremental_call(
+            probe_result.particles.indices
+        )
 
 
-class TestRadiusGraphConstructorWithPatch:
+class TestGraphConstructorRadiusWithPatch:
     def _make_nnlist(self, systems):
         return DenseNearestNeighborList(
             avg_candidates=FixedCapacity(50),
@@ -775,7 +811,7 @@ class TestRadiusGraphConstructorWithPatch:
             "neighborlist": nnlist,
         }
 
-        constructor = RadiusGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=view(lambda x: x["neighborlist"]),
@@ -820,7 +856,7 @@ class TestRadiusGraphConstructorWithPatch:
         )
 
         state = {"particles": particles, "systems": systems, "neighborlist": nnlist}
-        constructor = RadiusGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=view(lambda x: x["neighborlist"]),
@@ -844,7 +880,7 @@ class TestRadiusGraphConstructorWithPatch:
         )
 
         state = {"particles": particles, "systems": systems, "neighborlist": nnlist}
-        constructor = RadiusGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=view(lambda x: x["neighborlist"]),
@@ -865,10 +901,11 @@ class TestLocalGraphSumComposerWithPatch:
 
         state = {"particles": particles, "systems": systems, "params": {"sigma": 1.0}}
 
-        constructor = PointCloudConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            probe_particles=lambda s, p: probe_result,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=empty_graph_probe(lambda s, p: probe_result),
         )
         composer = LocalGraphSumComposer(
             graph_constructor=constructor,
@@ -913,10 +950,10 @@ class TestFullGraphSumComposerWithPatch:
             "params": {"epsilon": 0.5},
         }
 
-        constructor = EdgeSetGraphConstructor(
+        constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
-            edges=view(lambda x: x["edges"]),
+            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
         composer = FullGraphSumComposer(

@@ -7,7 +7,7 @@ For each classical potential the tests verify:
 1. _from_state produces finite energy.
 2. Energy changes when positions are perturbed.
 3. Incremental energy matches full recomputation across multiple perturbation
-   types (move, mask, edge swap).
+   types (move, mask).
 """
 
 from typing import Any, Literal, NamedTuple
@@ -22,7 +22,10 @@ from kups.core.data import WithCache, WithIndices
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import Lens, identity_lens, lens
-from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
+from kups.core.neighborlist import (
+    AllDenseNearestNeighborList,
+    FixedEdgesNeighborList,
+)
 from kups.core.patch import IndexLensPatch, Patch
 from kups.core.potential import EMPTY, EmptyType, PotentialOut
 from kups.core.typing import (
@@ -58,7 +61,6 @@ from kups.potential.classical.morse import (
     MorseBondParameters,
     make_morse_bond_from_state,
 )
-from kups.potential.common.graph import UpdatedEdges
 
 # ---------------------------------------------------------------------------
 # Shared dataclasses
@@ -100,16 +102,16 @@ class State:
     particles: Table[ParticleId, ParticleData]
     systems: Table[SystemId, SystemData]
     lj_parameters: WithCache[LennardJonesParameters, EmptyCache]
-    bond_edges: Edges[Literal[2]]
+    bond_edge_indices: Index[ParticleId]
     harmonic_bond_parameters: WithCache[HarmonicBondParameters, EmptyCache]
-    angle_edges: Edges[Literal[3]]
+    angle_edge_indices: Index[ParticleId]
     harmonic_angle_parameters: WithCache[HarmonicAngleParameters, EmptyCache]
     morse_bond_parameters: WithCache[MorseBondParameters, EmptyCache]
-    cosine_angle_edges: Edges[Literal[3]]
+    cosine_angle_edge_indices: Index[ParticleId]
     cosine_angle_parameters: WithCache[CosineAngleParameters, EmptyCache]
-    dihedral_edges: Edges[Literal[4]]
+    dihedral_edge_indices: Index[ParticleId]
     dihedral_parameters: WithCache[DihedralParameters, EmptyCache]
-    inversion_edges: Edges[Literal[4]]
+    inversion_edge_indices: Index[ParticleId]
     inversion_parameters: WithCache[InversionParameters, EmptyCache]
 
     def neighborlist(
@@ -137,22 +139,22 @@ class RadiusProbe:
 @dataclass
 class EdgeSetProbe2:
     particles: WithIndices[ParticleId, ParticleData]
-    edges: UpdatedEdges[Literal[2]]
-    capacity: FixedCapacity[int]
+    neighborlist_after: FixedEdgesNeighborList[Literal[2]]
+    neighborlist_before: FixedEdgesNeighborList[Literal[2]]
 
 
 @dataclass
 class EdgeSetProbe3:
     particles: WithIndices[ParticleId, ParticleData]
-    edges: UpdatedEdges[Literal[3]]
-    capacity: FixedCapacity[int]
+    neighborlist_after: FixedEdgesNeighborList[Literal[3]]
+    neighborlist_before: FixedEdgesNeighborList[Literal[3]]
 
 
 @dataclass
 class EdgeSetProbe4:
     particles: WithIndices[ParticleId, ParticleData]
-    edges: UpdatedEdges[Literal[4]]
-    capacity: FixedCapacity[int]
+    neighborlist_after: FixedEdgesNeighborList[Literal[4]]
+    neighborlist_before: FixedEdgesNeighborList[Literal[4]]
 
 
 # ---------------------------------------------------------------------------
@@ -184,17 +186,17 @@ def _make_particles(
     return Table.arange(data, label=ParticleId)
 
 
-def _make_edges(pidx: tuple[ParticleId, ...], idx: Array, shifts: Array) -> Edges:
-    return Edges(Index(pidx, idx), shifts)
+def _make_edge_indices(pidx: tuple[ParticleId, ...], idx: Array) -> Index[ParticleId]:
+    return Index(pidx, idx)
 
 
 class _CommonParts(NamedTuple):
     particles: Table[ParticleId, ParticleData]
     systems: Table[SystemId, SystemData]
-    bond_edges: Edges[Literal[2]]
-    angle_edges: Edges[Literal[3]]
-    dihedral_edges: Edges[Literal[4]]
-    inversion_edges: Edges[Literal[4]]
+    bond_edge_indices: Index[ParticleId]
+    angle_edge_indices: Index[ParticleId]
+    dihedral_edge_indices: Index[ParticleId]
+    inversion_edge_indices: Index[ParticleId]
     lj: LennardJonesParameters
     hb: HarmonicBondParameters
     ha: HarmonicAngleParameters
@@ -216,18 +218,10 @@ def _build_common(positions: Array | None = None) -> _CommonParts:
     return _CommonParts(
         particles=particles,
         systems=systems,
-        bond_edges=_make_edges(
-            pidx, jnp.array([[0, 1], [1, 2], [2, 3]]), jnp.zeros((3, 1, 3))
-        ),
-        angle_edges=_make_edges(
-            pidx, jnp.array([[0, 1, 2], [1, 2, 3]]), jnp.zeros((2, 2, 3))
-        ),
-        dihedral_edges=_make_edges(
-            pidx, jnp.array([[0, 1, 2, 3]]), jnp.zeros((1, 3, 3))
-        ),
-        inversion_edges=_make_edges(
-            pidx, jnp.array([[1, 0, 2, 3]]), jnp.zeros((1, 3, 3))
-        ),
+        bond_edge_indices=_make_edge_indices(pidx, jnp.array([[0, 1], [1, 2], [2, 3]])),
+        angle_edge_indices=_make_edge_indices(pidx, jnp.array([[0, 1, 2], [1, 2, 3]])),
+        dihedral_edge_indices=_make_edge_indices(pidx, jnp.array([[0, 1, 2, 3]])),
+        inversion_edge_indices=_make_edge_indices(pidx, jnp.array([[1, 0, 2, 3]])),
         lj=LennardJonesParameters(
             labels=_LABELS,
             sigma=jnp.ones((ns, ns)),
@@ -274,16 +268,16 @@ def _make_state(positions: Array | None = None) -> State:
         particles=c.particles,
         systems=c.systems,
         lj_parameters=WithCache(c.lj, ec),
-        bond_edges=c.bond_edges,
+        bond_edge_indices=c.bond_edge_indices,
         harmonic_bond_parameters=WithCache(c.hb, ec),
-        angle_edges=c.angle_edges,
+        angle_edge_indices=c.angle_edge_indices,
         harmonic_angle_parameters=WithCache(c.ha, ec),
         morse_bond_parameters=WithCache(c.mb, ec),
-        cosine_angle_edges=c.angle_edges,
+        cosine_angle_edge_indices=c.angle_edge_indices,
         cosine_angle_parameters=WithCache(c.ca, ec),
-        dihedral_edges=c.dihedral_edges,
+        dihedral_edge_indices=c.dihedral_edge_indices,
         dihedral_parameters=WithCache(c.dh, ec),
-        inversion_edges=c.inversion_edges,
+        inversion_edge_indices=c.inversion_edge_indices,
         inversion_parameters=WithCache(c.inv, ec),
     )
 
@@ -341,14 +335,20 @@ def _lj_from_state(state: Any, probe: Any = None) -> Any:
 
 _POTENTIALS: list[PotentialConfig] = [
     PotentialConfig("lennard_jones", _lj_from_state, None, None),
-    PotentialConfig("harmonic_bond", make_harmonic_bond_from_state, 2, "bond_edges"),
-    PotentialConfig("harmonic_angle", make_harmonic_angle_from_state, 3, "angle_edges"),
-    PotentialConfig("morse_bond", make_morse_bond_from_state, 2, "bond_edges"),
     PotentialConfig(
-        "cosine_angle", make_cosine_angle_from_state, 3, "cosine_angle_edges"
+        "harmonic_bond", make_harmonic_bond_from_state, 2, "bond_edge_indices"
     ),
-    PotentialConfig("dihedral", make_dihedral_from_state, 4, "dihedral_edges"),
-    PotentialConfig("inversion", make_inversion_from_state, 4, "inversion_edges"),
+    PotentialConfig(
+        "harmonic_angle", make_harmonic_angle_from_state, 3, "angle_edge_indices"
+    ),
+    PotentialConfig("morse_bond", make_morse_bond_from_state, 2, "bond_edge_indices"),
+    PotentialConfig(
+        "cosine_angle", make_cosine_angle_from_state, 3, "cosine_angle_edge_indices"
+    ),
+    PotentialConfig("dihedral", make_dihedral_from_state, 4, "dihedral_edge_indices"),
+    PotentialConfig(
+        "inversion", make_inversion_from_state, 4, "inversion_edge_indices"
+    ),
 ]
 
 
@@ -384,25 +384,25 @@ def _edge_swap() -> PerturbationSpec:
         jnp.array([], dtype=int),
         _INITIAL_POSITIONS,
         edge_updates={
-            "bond_edges": (
+            "bond_edge_indices": (
                 jnp.array([2]),
-                _make_edges(pidx, jnp.array([[0, 3]]), jnp.zeros((1, 1, 3))),
+                _make_edge_indices(pidx, jnp.array([[0, 3]])),
             ),
-            "angle_edges": (
+            "angle_edge_indices": (
                 jnp.array([1]),
-                _make_edges(pidx, jnp.array([[0, 2, 3]]), jnp.zeros((1, 2, 3))),
+                _make_edge_indices(pidx, jnp.array([[0, 2, 3]])),
             ),
-            "cosine_angle_edges": (
+            "cosine_angle_edge_indices": (
                 jnp.array([1]),
-                _make_edges(pidx, jnp.array([[0, 2, 3]]), jnp.zeros((1, 2, 3))),
+                _make_edge_indices(pidx, jnp.array([[0, 2, 3]])),
             ),
-            "dihedral_edges": (
+            "dihedral_edge_indices": (
                 jnp.array([0]),
-                _make_edges(pidx, jnp.array([[3, 1, 2, 0]]), jnp.zeros((1, 3, 3))),
+                _make_edge_indices(pidx, jnp.array([[3, 1, 2, 0]])),
             ),
-            "inversion_edges": (
+            "inversion_edge_indices": (
                 jnp.array([0]),
-                _make_edges(pidx, jnp.array([[0, 1, 2, 3]]), jnp.zeros((1, 3, 3))),
+                _make_edge_indices(pidx, jnp.array([[0, 1, 2, 3]])),
             ),
         },
     )
@@ -416,11 +416,11 @@ _PERTURBATIONS = [_move_single(), _move_multiple(), _mask_particle(), _edge_swap
 # ---------------------------------------------------------------------------
 
 _EDGE_LENSES: dict[str, Lens[State, Any]] = {
-    "bond_edges": lens(lambda s: s.bond_edges, cls=State),
-    "angle_edges": lens(lambda s: s.angle_edges, cls=State),
-    "cosine_angle_edges": lens(lambda s: s.cosine_angle_edges, cls=State),
-    "dihedral_edges": lens(lambda s: s.dihedral_edges, cls=State),
-    "inversion_edges": lens(lambda s: s.inversion_edges, cls=State),
+    "bond_edge_indices": lens(lambda s: s.bond_edge_indices, cls=State),
+    "angle_edge_indices": lens(lambda s: s.angle_edge_indices, cls=State),
+    "cosine_angle_edge_indices": lens(lambda s: s.cosine_angle_edge_indices, cls=State),
+    "dihedral_edge_indices": lens(lambda s: s.dihedral_edge_indices, cls=State),
+    "inversion_edge_indices": lens(lambda s: s.inversion_edge_indices, cls=State),
 }
 
 _PARTICLES_LENS = lens(lambda s: s.particles, cls=State)
@@ -488,21 +488,14 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
         )
         return _make_point_changes(state, new_positions, spec.indices, new_system_ids)
 
-    def _edge_updates(degree: int) -> UpdatedEdges[Any]:
-        pidx = _PARTICLE_INDEX
-        if (
-            spec.edge_updates is not None
-            and pot.edge_field is not None
-            and pot.edge_field in spec.edge_updates
-        ):
-            slot_idx, new_edges = spec.edge_updates[pot.edge_field]
-            return UpdatedEdges(slot_idx, new_edges)
-        return UpdatedEdges(
-            jnp.array([], dtype=int),
-            Edges(
-                Index(pidx, jnp.zeros((0, degree), dtype=int)),
-                jnp.zeros((0, degree - 1, 3)),
-            ),
+    def _fixed_edges_neighborlist[D: int](
+        state: State, degree: D
+    ) -> FixedEdgesNeighborList[D]:
+        del degree
+        assert pot.edge_field is not None
+        edge_indices = getattr(state, pot.edge_field)
+        return FixedEdgesNeighborList(
+            edge_indices, avg_edges=FixedCapacity(N_PARTICLES**2)
         )
 
     if pot.degree is None:
@@ -523,10 +516,11 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
     if pot.degree == 2:
 
         def edge_probe2(state: State, patch: Patch[State]) -> EdgeSetProbe2:
+            nnlist = _fixed_edges_neighborlist(state, 2)
             return EdgeSetProbe2(
                 particles=_point_changes(state, patch),
-                edges=_edge_updates(2),
-                capacity=FixedCapacity(N_PARTICLES**2),
+                neighborlist_after=nnlist,
+                neighborlist_before=nnlist,
             )
 
         return edge_probe2
@@ -534,10 +528,11 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
     if pot.degree == 3:
 
         def edge_probe3(state: State, patch: Patch[State]) -> EdgeSetProbe3:
+            nnlist = _fixed_edges_neighborlist(state, 3)
             return EdgeSetProbe3(
                 particles=_point_changes(state, patch),
-                edges=_edge_updates(3),
-                capacity=FixedCapacity(N_PARTICLES**2),
+                neighborlist_after=nnlist,
+                neighborlist_before=nnlist,
             )
 
         return edge_probe3
@@ -545,10 +540,11 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
     if pot.degree == 4:
 
         def edge_probe4(state: State, patch: Patch[State]) -> EdgeSetProbe4:
+            nnlist = _fixed_edges_neighborlist(state, 4)
             return EdgeSetProbe4(
                 particles=_point_changes(state, patch),
-                edges=_edge_updates(4),
-                capacity=FixedCapacity(N_PARTICLES**2),
+                neighborlist_after=nnlist,
+                neighborlist_before=nnlist,
             )
 
         return edge_probe4
@@ -566,10 +562,11 @@ def _make_reference_state(
         state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
     )
     if spec.edge_updates:
-        for field_name, (slot_idx, new_edges) in spec.edge_updates.items():
+        for field_name, (slot_idx, new_idx) in spec.edge_updates.items():
             el = _EDGE_LENSES[field_name]
             old = el.get(ref)
-            ref = el.set(ref, old.at(slot_idx).set(new_edges))
+            spliced = Index(old.keys, old.indices.at[slot_idx].set(new_idx.indices))
+            ref = el.set(ref, spliced)
     return ref
 
 
@@ -637,11 +634,10 @@ class TestFromStateWithUpdates:
         # Build the reference potential (no probe) for full recomputation.
         basic_pot = pot.factory(state_lens)
 
-        perturbations = [
-            spec
-            for spec in _PERTURBATIONS
-            if not (spec.edge_updates is not None and pot.degree is None)
-        ]
+        # Fixed-edge graph probes update particles and recompute affected fixed
+        # topology rows. Topology-changing patches require a mutable fixed-edge
+        # neighbor list and are intentionally excluded here.
+        perturbations = [spec for spec in _PERTURBATIONS if spec.edge_updates is None]
 
         for spec in perturbations:
             probe = _build_probe(pot, spec)

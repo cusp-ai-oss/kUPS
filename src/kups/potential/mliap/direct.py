@@ -44,9 +44,9 @@ from kups.core.typing import (
 from kups.potential.common.direct import DirectPotential
 from kups.potential.common.graph import (
     FullGraphSumComposer,
+    GraphConstructor,
     GraphPotentialInput,
     IsRadiusGraphPoints,
-    RadiusGraphConstructor,
 )
 
 type DirectMliapInput[
@@ -115,7 +115,7 @@ def make_direct_mliap_potential[
         Configured kUPS ``Potential`` backed by ``DirectPotential``.
     """
     composer = FullGraphSumComposer(
-        RadiusGraphConstructor(
+        GraphConstructor(
             particles=particles_view,
             systems=systems_view,
             neighborlist=neighborlist_view,
