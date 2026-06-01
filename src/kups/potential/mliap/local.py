@@ -40,6 +40,7 @@ Example:
 
 import json
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol, overload
 
@@ -47,6 +48,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
@@ -64,6 +66,7 @@ from kups.core.typing import (
     HasCell,
     HasPositionsAndAtomicNumbers,
     HasSystemIndex,
+    IsState,
     MaybeCached,
     ParticleId,
     SystemId,
@@ -83,7 +86,9 @@ from kups.potential.common.graph import (
 )
 
 
-def _make_dtype_converter(precision: Literal["32bit", "64bit"]):
+def _make_dtype_converter(
+    precision: Literal["32bit", "64bit"],
+) -> Callable[[Array], Array]:
     """Create a dtype conversion function based on precision."""
 
     def convert_dtype(x: jnp.ndarray) -> jnp.ndarray:
@@ -209,14 +214,14 @@ class LocalMLIAPData:
 
         convert = _make_dtype_converter(metadata["precision"])
 
-        def init_fn(atomic_numbers):
+        def init_fn(atomic_numbers: Array) -> Array:
             return sequential_vmap_with_vjp(exported_init.call)(convert(atomic_numbers))
 
-        def edge_fn(node1, node2, difference_vectors):
+        def edge_fn(node1: Array, node2: Array, difference_vectors: Array) -> Array:
             fn = sequential_vmap_with_vjp(exported_edge.call)
             return fn(convert(node1), convert(node2), convert(difference_vectors))
 
-        def readout_fn(node_emb, msg_sum):
+        def readout_fn(node_emb: Array, msg_sum: Array) -> Array:
             return sequential_vmap_with_vjp(exported_readout.call)(
                 convert(node_emb), convert(msg_sum)
             )
@@ -245,7 +250,7 @@ class LocalMLIAPData:
 class LocalMLIAPInput[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ]:
     """Input bundle for local MLIAP energy computation.
 
@@ -317,7 +322,7 @@ class LocalMLIAPPatch[State](Patch[State]):
 def local_mliap_energy_full[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     inp: LocalMLIAPInput[State, P, S],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -364,7 +369,7 @@ def local_mliap_energy_full[
 def local_mliap_energy_update[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     inp: LocalMLIAPInput[State, P, S],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -439,7 +444,7 @@ def local_mliap_energy_update[
 def local_mliap_energy[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     inp: LocalMLIAPInput[State, P, S],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -464,8 +469,8 @@ def local_mliap_energy[
 class LocalMLIAPComposer[
     State,
     P: IsLocalMLIAPGraphParticles,
-    S: HasCell,
-    Ptch: Patch,
+    S: HasCell[AnyPeriodicity],
+    Ptch: Patch[Any],
 ]:
     """Composes simulation state into LocalMLIAP input.
 
@@ -534,11 +539,11 @@ class LocalMLIAPComposer[
 
 def make_local_mliap_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
     P: IsLocalMLIAPGraphParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     particles_view: View[State, Table[ParticleId, P]],
     systems_view: View[State, Table[SystemId, S]],
@@ -593,14 +598,12 @@ def make_local_mliap_potential[
 
 
 class IsLocalMLIAPState[Model](
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+    IsState[IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    Protocol,
 ):
     """Protocol for states providing all inputs for the local MLIAP potential."""
 
-    @property
-    def particles(self) -> Table[ParticleId, IsLocalMLIAPGraphParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def local_mliap_model(self) -> Model: ...
 
@@ -609,28 +612,37 @@ class IsLocalMLIAPState[Model](
 def make_local_mliap_from_state[State, Gradient, Hessian](
     state: Lens[State, IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]],
     probe: None = None,
-    gradient_lens: Lens[LocalMLIAPInput, Gradient] = EMPTY_LENS,
-    hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
-    hessian_idx_view: Lens[State, Hessian] = EMPTY_LENS,
+    gradient_lens: Lens[
+        LocalMLIAPInput[State, IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
+        Gradient,
+    ] = ...,
+    hessian_lens: Lens[Gradient, Hessian] = ...,
+    hessian_idx_view: Lens[State, Hessian] = ...,
     out_idx_view: None = None,
     *,
     neighborlist_factory: NeighborListFactory[
         IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]
     ] = ...,
-) -> Potential[State, Gradient, Hessian, Patch]: ...
+) -> Potential[State, Gradient, Hessian, Patch[Any]]: ...
 
 
 @overload
-def make_local_mliap_from_state[State, Ptch: Patch, Gradient, Hessian](
-    state: Lens[State, IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut]]],
+def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
+    state: Lens[
+        State,
+        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut[Gradient, Hessian]]],
+    ],
     probe: Probe[State, Ptch, IsGraphProbe[IsLocalMLIAPGraphParticles, Literal[2]]],
-    gradient_lens: Lens[LocalMLIAPInput, Gradient] = EMPTY_LENS,
-    hessian_lens: Lens[Gradient, Hessian] = EMPTY_LENS,
-    hessian_idx_view: Lens[State, Hessian] = EMPTY_LENS,
+    gradient_lens: Lens[
+        LocalMLIAPInput[State, IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
+        Gradient,
+    ] = ...,
+    hessian_lens: Lens[Gradient, Hessian] = ...,
+    hessian_idx_view: Lens[State, Hessian] = ...,
     out_idx_view: Lens[State, PotentialOut[Gradient, Hessian]] | None = None,
     *,
     neighborlist_factory: NeighborListFactory[
-        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut]]
+        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut[Gradient, Hessian]]]
     ] = ...,
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 
@@ -679,7 +691,7 @@ def make_local_mliap_from_state(
     if probe is None:
         model_lens = state.focus(_model)
 
-        def neighborlist_view(s):
+        def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
             return neighborlist_factory(state(s), model_lens(s).cutoff)
 
         return make_local_mliap_potential(
@@ -704,7 +716,7 @@ def make_local_mliap_from_state(
 
     model_lens = state.focus(lambda x: x.local_mliap_model.data)
 
-    def neighborlist_view(s):
+    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_lens(s).cutoff)
 
     return make_local_mliap_potential(

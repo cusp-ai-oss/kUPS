@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Self
+from typing import Any, Self
 
 import jax
 import numpy as np
@@ -12,7 +12,7 @@ from kups.core.lens import BoundLens, bind
 class Batched:
     """Mixin that validates consistent leading batch dimension across pytree leaves."""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate that all array leaves share the same leading dimension.
 
         Raises:
@@ -31,7 +31,7 @@ class Batched:
                 raise ValueError(
                     f"Batched cannot be initialized with no leading dimension. Got shapes: {shapes}."
                 )
-            errors = []
+            errors: list[tuple[int, tuple[int, ...]]] = []
             for i, shape in enumerate(shapes[1:]):
                 if len(shape) == 0 or shape[0] != reference[0]:
                     errors.append((i + 1, shape))
@@ -68,10 +68,10 @@ class Sliceable(Batched):
     via ``self[index]``.
     """
 
-    def at[S](self: S, index, **kwargs) -> BoundLens[S, S]:
+    def at[S](self: S, index: Any, **kwargs: Any) -> BoundLens[S, S]:
         """Return a bound lens focused on ``index``."""
         return bind(self).at(index, **kwargs)
 
-    def __getitem__(self, index) -> Self:
+    def __getitem__(self, index: Any) -> Self:
         """Gather entries at ``index``."""
         return self.at(index).get()

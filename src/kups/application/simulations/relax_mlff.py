@@ -80,7 +80,8 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxMlffState:
     """
     model_path = get_model_path(config.model_path)
     jaxified_model = TojaxedMliap.from_zip_file(model_path)
-    all_particles, all_systems = [], []
+    all_particles: list[Table[ParticleId, RelaxParticles]] = []
+    all_systems: list[Table[SystemId, RelaxSystems]] = []
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
         particles_i, systems_i = relax_state_from_ase(inp_file)

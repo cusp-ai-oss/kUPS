@@ -31,7 +31,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.capacity import Capacity, FixedCapacity
-from kups.core.cell import MaterializedFrame
+from kups.core.cell import AnyPeriodicity, Cell, MaterializedFrame
 from kups.core.data import Index, Table
 from kups.core.lens import bind
 from kups.core.neighborlist.edges import Edges
@@ -157,7 +157,7 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     return coords - half
 
 
-def _candidate_image_counts(cells, cutoffs: Array) -> Array:
+def _candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array:
     """Return per-system, per-axis image counts for candidate replication.
 
     Periodic axes covered by the minimum-image convention use one image. Wider

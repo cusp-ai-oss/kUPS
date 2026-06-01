@@ -20,9 +20,9 @@ repos:
 
   - repo: local # Run pyright type checker
     hooks:
-      - id: pyright
-        name: pyright check
-        entry: uv run pyright src/
+      - id: pyrefly
+        name: pyrefly check
+        entry: uv run pyrefly check src/
         language: system
         types: [python]
         files: ^src/

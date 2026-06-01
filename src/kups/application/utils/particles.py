@@ -13,7 +13,7 @@ import ase.io
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, TriclinicFrame, to_lower_triangular
+from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
@@ -59,7 +59,9 @@ def default_exclusion(n: int) -> Index[ExclusionId]:
 
 def particles_from_ase(
     atoms: ase.Atoms | str | Path,
-) -> tuple[Table[ParticleId, Particles], Cell, Callable[[Array], Array]]:
+) -> tuple[
+    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+]:
     """Build particle data and cell from an ASE Atoms object or file path.
 
     Args:

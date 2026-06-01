@@ -25,6 +25,7 @@ from typing import Literal, Protocol
 
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.neighborlist.edges import Edges
 from kups.core.typing import (
@@ -48,7 +49,7 @@ class NeighborListPoints(
 ): ...
 
 
-class NeighborListSystems(HasCell, Protocol): ...
+class NeighborListSystems(HasCell[AnyPeriodicity], Protocol): ...
 
 
 class NeighborList[D: int](Protocol):

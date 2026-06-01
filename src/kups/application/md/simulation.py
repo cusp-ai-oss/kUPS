@@ -13,7 +13,7 @@ from kups.application.md.data import (
 )
 from kups.application.md.logging import MDLoggedData
 from kups.application.utils.propagate import run_simulation_cycles, run_warmup_cycles
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
@@ -33,7 +33,7 @@ from kups.core.propagator import (
     step_counter_propagator,
 )
 from kups.core.storage import HDF5StorageWriter
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import IsState, ParticleId, SystemId
 from kups.core.utils.functools import identity
 from kups.core.utils.jax import key_chain
 from kups.md.integrators import Integrator, make_md_step_from_state
@@ -50,10 +50,10 @@ class IsMdGradients(Protocol):
     @property
     def positions(self) -> Table[ParticleId, Array]: ...
     @property
-    def cell(self) -> Table[SystemId, Cell]: ...
+    def cell(self) -> Table[SystemId, Cell[AnyPeriodicity]]: ...
 
 
-class IsMdState(Protocol):
+class IsMdState(IsState[MDParticles, MDSystems], Protocol):
     """Protocol for the full MD simulation state.
 
     Attributes:
@@ -62,10 +62,6 @@ class IsMdState(Protocol):
         step: Current simulation step counter.
     """
 
-    @property
-    def particles(self) -> Table[ParticleId, MDParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, MDSystems]: ...
     @property
     def step(self) -> Array: ...
 
@@ -101,11 +97,12 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
                     EMPTY,
                 )
             ),
+            # pyrefly: ignore [bad-argument-type]
             lambda x: PotentialOut(
                 x.systems.index,  # type: ignore
                 (x.particles.data.system, x.systems.index),
                 EMPTY,
-            ),  # type: ignore
+            ),
         )
     )
     md_propagator = make_md_step_from_state(

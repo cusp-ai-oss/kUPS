@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import functools
-
 import jax.numpy as jnp
 from jax import Array
 
@@ -47,7 +45,7 @@ def offsets_from_counts(counts: Array) -> Array:
     return jnp.cumulative_sum(counts, include_initial=True)[:-1]
 
 
-@functools.partial(jit, static_argnames=("num_segments", "is_sorted"))
+@jit(static_argnames=("num_segments", "is_sorted"))
 def subselect(
     target_ids: Array,
     segment_ids: Array,

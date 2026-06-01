@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array, export
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import (
@@ -26,9 +27,9 @@ from kups.core.neighborlist import (
     NeighborListFactory,
     adaptive_cutoff_neighborlist_from_state,
 )
-from kups.core.patch import IdPatch, WithPatch
+from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import EMPTY_LENS, EmptyType, Energy, Potential, PotentialOut
-from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
+from kups.core.typing import HasAtomicNumbers, HasCell, IsState, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp
 from kups.core.utils.msgpack import deserialize as msgpack_deserialize
 from kups.potential.common.energy import PositionAndCell, PotentialFromEnergy
@@ -106,7 +107,7 @@ class TojaxedMliap:
     def call(self, input: AtomGraphInput) -> Array:
         """Call the jaxified model on the given input."""
         args = (self.params, input)
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         leafes = self.model.in_tree.flatten_up_to((args, kwargs))
         leafes = jax.tree.map(
             jax.lax.convert_element_type,
@@ -118,13 +119,13 @@ class TojaxedMliap:
 
 
 type JaxifiedInput = GraphPotentialInput[
-    TojaxedMliap, IsTojaxedParticles, HasCell, Literal[2]
+    TojaxedMliap, IsTojaxedParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
 def tojaxed_energy(
     inp: JaxifiedInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute energy using a jaxified model.
 
     Prepares graph data and calls the exported model.
@@ -171,12 +172,14 @@ def tojaxed_energy(
         spin=jnp.zeros(n_sys),
     )
     energy = sequential_vmap_with_vjp(inp.parameters.call)(input_dict)
-    return WithPatch(graph.systems.set_data(energy[:-1]), IdPatch())  # Remove padding
+    return WithPatch(
+        graph.systems.set_data(energy[:-1]), IdPatch[Any]()
+    )  # Remove padding
 
 
 def make_tojaxed_potential[State, Gradients, Hessians](
     particles_view: View[State, Table[ParticleId, IsTojaxedParticles]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     model: View[State, TojaxedMliap] | TojaxedMliap,
     gradient_lens: Lens[JaxifiedInput, Gradients],
@@ -184,7 +187,7 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
-) -> PotentialFromEnergy[State, JaxifiedInput, Gradients, Hessians, Any]:
+) -> PotentialFromEnergy[State, JaxifiedInput, Gradients, Hessians, Patch[Any]]:
     """Create a jaxified machine learning potential.
 
     Args:
@@ -221,14 +224,12 @@ def make_tojaxed_potential[State, Gradients, Hessians](
 
 
 class IsTojaxedState(
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+    IsState[IsTojaxedParticles, HasCell[AnyPeriodicity]],
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    Protocol,
 ):
     """Protocol for states providing all inputs for the jaxified potential."""
 
-    @property
-    def particles(self) -> Table[ParticleId, IsTojaxedParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def jaxified_model(self) -> TojaxedMliap: ...
 
@@ -239,7 +240,7 @@ def make_tojaxed_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
-) -> Potential[State, EmptyType, EmptyType, Any]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -248,7 +249,7 @@ def make_tojaxed_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[True],
     neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 def make_tojaxed_from_state(
@@ -281,7 +282,7 @@ def make_tojaxed_from_state(
         )
     model_view = state.focus(lambda x: x.jaxified_model)
 
-    def neighborlist_view(s):
+    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_view(s).cutoff)
 
     return make_tojaxed_potential(

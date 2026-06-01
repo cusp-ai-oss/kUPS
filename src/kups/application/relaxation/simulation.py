@@ -16,7 +16,7 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import run_simulation_cycles
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
@@ -35,19 +35,15 @@ from kups.core.propagator import (
     step_counter_propagator,
 )
 from kups.core.storage import HDF5StorageWriter
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import IsState, ParticleId, SystemId
 from kups.core.utils.functools import identity
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.propagator import RelaxationPropagator
 
 
-class IsRelaxState(Protocol):
+class IsRelaxState(IsState[RelaxParticles, RelaxSystems], Protocol):
     """Protocol for relaxation simulation states."""
 
-    @property
-    def particles(self) -> Table[ParticleId, RelaxParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, RelaxSystems]: ...
     @property
     def opt_state(self) -> optax.OptState: ...
     @property
@@ -60,7 +56,7 @@ class IsRelaxGradients(Protocol):
     @property
     def positions(self) -> Table[ParticleId, Array]: ...
     @property
-    def cell(self) -> Table[SystemId, Cell]: ...
+    def cell(self) -> Table[SystemId, Cell[AnyPeriodicity]]: ...
 
 
 class OptInit(Protocol):
@@ -76,7 +72,7 @@ class OptInit(Protocol):
 def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     state_lens: Lens[State, State],
     potential: Potential[State, Gradients, EmptyType, Any],
-    optimizer: Optimizer,
+    optimizer: Optimizer[Any, Any],
     optimize_cell: bool = False,
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
@@ -93,26 +89,29 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
         optimisation step and *opt_init* initialises the optimizer state.
     """
     # Cache the gradient and forces within the state
+    pot = MappedPotential(
+        potential, lambda x: (x.positions.data, x.cell.data), identity
+    )
     pot = CachedPotential(
-        MappedPotential(potential, lambda x: (x.positions.data, x.cell.data), identity),
+        pot,
         lens(
             lambda x: PotentialOut(
                 x.systems.map_data(lambda x: x.potential_energy),
-                (
-                    x.particles.data.position_gradients,
-                    x.systems.data.cell_gradients,
-                ),
+                (x.particles.data.position_gradients, x.systems.data.cell_gradients),
                 EMPTY,
             )
         ),
+        # pyrefly: ignore [bad-argument-type]
         lambda x: PotentialOut(
             x.systems.index,  # type: ignore
             (x.particles.data.system, x.systems.index),
             EMPTY,
-        ),  # type: ignore
+        ),
     )
 
-    def relax_prop_and_opt_init[T](prop_view: View[tuple[Array, Cell], T]):
+    def relax_prop_and_opt_init[T](
+        prop_view: View[tuple[Array, Cell[AnyPeriodicity]], T],
+    ):
         prop_lens = state_lens.focus(
             lambda x: prop_view((x.particles.data.positions, x.systems.data.cell))
         )

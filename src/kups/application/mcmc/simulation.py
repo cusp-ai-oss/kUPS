@@ -23,7 +23,7 @@ def run_mcmc[State](
     propagator: Propagator[State],
     state: State,
     config: RunConfig,
-    logged_data: MCMCLoggedData,
+    logged_data: MCMCLoggedData[State],
 ) -> State:
     """Run a µVT MCMC simulation with warmup and production phases.
 

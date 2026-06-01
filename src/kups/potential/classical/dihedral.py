@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
@@ -41,6 +42,7 @@ from kups.core.typing import (
     HasCache,
     HasCell,
     HasPositionsAndLabels,
+    IsState,
     Label,
     MaybeCached,
     ParticleId,
@@ -207,13 +209,13 @@ class DihedralParameters:
 
 
 type DihedralInput = GraphPotentialInput[
-    DihedralParameters, IsBondedParticles, HasCell, Literal[4]
+    DihedralParameters, IsBondedParticles, HasCell[AnyPeriodicity], Literal[4]
 ]
 
 
 def dihedral_energy(
     inp: DihedralInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     r"""Compute UFF dihedral/torsion energy for all dihedrals.
 
     Args:
@@ -270,18 +272,18 @@ def dihedral_energy(
     edge_energy = 0.5 * V * (1.0 - jnp.cos(n * phi0) * jnp.cos(n * phi))
 
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 def make_dihedral_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edge_indices_view: View[State, Index[ParticleId]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, DihedralParameters],
     probe: Probe[State, Ptch, IsGraphProbe[IsBondedParticles, Literal[4]]] | None,
     gradient_lens: Lens[DihedralInput, Gradients],
@@ -331,15 +333,13 @@ def make_dihedral_potential[
     return potential
 
 
-class IsDihedralState[Params](Protocol):
+class IsDihedralState[Params](
+    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
+):
     """Protocol for states providing full-evaluation dihedral inputs."""
 
     @property
-    def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def dihedral_indices(self) -> Index[ParticleId]: ...
+    def dihedral_edge_indices(self) -> Index[ParticleId]: ...
     @property
     def dihedral_parameters(self) -> Params: ...
 
@@ -350,7 +350,7 @@ def make_dihedral_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -359,11 +359,11 @@ def make_dihedral_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_dihedral_from_state[State, P: Patch](
+def make_dihedral_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsDihedralState[
@@ -377,7 +377,7 @@ def make_dihedral_from_state[State, P: Patch](
 
 
 @overload
-def make_dihedral_from_state[State, P: Patch](
+def make_dihedral_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsDihedralState[
@@ -447,4 +447,4 @@ def make_dihedral_from_state(
 
 
 if TYPE_CHECKING:
-    _: EnergyFunction = dihedral_energy
+    _: EnergyFunction[Any, DihedralInput] = dihedral_energy

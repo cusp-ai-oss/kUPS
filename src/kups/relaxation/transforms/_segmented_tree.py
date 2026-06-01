@@ -48,6 +48,7 @@ from jax import Array
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.lens import bind
+from kups.core.typing import PyTree
 from kups.core.utils.jax import tree_structure
 
 
@@ -56,11 +57,11 @@ def _is_index(x: Any) -> bool:
 
 
 def _layout_and_leaves(
-    index_prefix: Any, *trees: Any
-) -> tuple[list[Index], tuple[list[Array], ...]]:
+    index_prefix: PyTree, *trees: PyTree
+) -> tuple[list[Index[SupportsSorting]], tuple[list[Array], ...]]:
     structure = tree_structure(index_prefix, is_leaf=_is_index)
-    idx_leaves = []
-    tree_leaves = tuple([] for _ in trees)
+    idx_leaves: list[Index[SupportsSorting]] = []
+    tree_leaves = tuple(list[Array]() for _ in trees)
     for idx_leaf, *subtrees in zip(
         structure.flatten_up_to(index_prefix),
         *[structure.flatten_up_to(t) for t in trees],
@@ -89,7 +90,9 @@ def _layout_and_leaves(
     return idx_leaves, tree_leaves
 
 
-def tree_vdot(a: Any, b: Any, reduce_index: Any) -> Table[SupportsSorting, Array]:
+def tree_vdot(
+    a: PyTree, b: PyTree, reduce_index: PyTree
+) -> Table[SupportsSorting, Array]:
     """Per-segment inner product across a pytree.
 
     For each leaf, contracts every axis except the leading row axis to
@@ -125,7 +128,9 @@ def tree_vdot(a: Any, b: Any, reduce_index: Any) -> Table[SupportsSorting, Array
     )
 
 
-def tree_segment_max(tree: Any, reduce_index: Any) -> Table[SupportsSorting, Array]:
+def tree_segment_max(
+    tree: PyTree, reduce_index: PyTree
+) -> Table[SupportsSorting, Array]:
     """Per-segment maximum across all leaves of ``tree``.
 
     For each leaf, any trailing axes beyond the leading row axis are
@@ -162,7 +167,9 @@ def tree_segment_max(tree: Any, reduce_index: Any) -> Table[SupportsSorting, Arr
     )
 
 
-def tree_segment_norm(tree: Any, reduce_index: Any) -> Table[SupportsSorting, Array]:
+def tree_segment_norm(
+    tree: PyTree, reduce_index: PyTree
+) -> Table[SupportsSorting, Array]:
     """Per-segment L2 norm across all leaves of ``tree``.
 
     Equivalent to ``tree_vdot(tree, tree, reduce_index).map_data(jnp.sqrt)``:
@@ -180,11 +187,11 @@ def tree_segment_norm(tree: Any, reduce_index: Any) -> Table[SupportsSorting, Ar
     return tree_vdot(tree, tree, reduce_index).map_data(jnp.sqrt)
 
 
-def tree_scale_per_row(
-    tree: Any,
+def tree_scale_per_row[P](
+    tree: P,
     scale: Table[SupportsSorting, Array],
-    reduce_index: Any,
-) -> Any:
+    reduce_index: PyTree,
+) -> P:
     """Multiply each row of every leaf by a (possibly per-segment) scalar.
 
     Args:
@@ -205,11 +212,11 @@ def tree_scale_per_row(
     return jax.tree.unflatten(jax.tree.structure(tree), scaled)
 
 
-def tree_clip_per_row(
-    tree: Any,
+def tree_clip_per_row[P](
+    tree: P,
     limit: Table[SupportsSorting, Array],
-    reduce_index: Any,
-) -> Any:
+    reduce_index: PyTree,
+) -> P:
     """Per-component clip of every leaf to ``±limit[segment]``.
 
     For each leaf row at position ``r`` (segment ``layout_leaf.indices[r]``),
@@ -226,7 +233,7 @@ def tree_clip_per_row(
         Pytree with the same structure as ``tree``.
     """
     layout, (leaves,) = _layout_and_leaves(reduce_index, tree)
-    clipped = []
+    clipped: list[Array] = []
     for leaf, idx in zip(leaves, layout, strict=True):
         per_row = limit[idx]
         broadcast = per_row.reshape(per_row.shape + (1,) * (leaf.ndim - per_row.ndim))
@@ -234,12 +241,12 @@ def tree_clip_per_row(
     return jax.tree.unflatten(jax.tree.structure(tree), clipped)
 
 
-def tree_where_per_row(
+def tree_where_per_row[P](
     mask: Table[SupportsSorting, Array],
-    a: Any,
-    b: Any,
-    reduce_index: Any,
-) -> Any:
+    a: P,
+    b: P,
+    reduce_index: PyTree,
+) -> P:
     """Per-component select between ``a`` and ``b`` based on a per-segment mask.
 
     For each leaf row at position ``r`` (segment ``layout_leaf.indices[r]``),
@@ -258,7 +265,7 @@ def tree_where_per_row(
         Pytree with the same structure as ``a``.
     """
     layout, (a_leaves, b_leaves) = _layout_and_leaves(reduce_index, a, b)
-    out = []
+    out: list[Array] = []
     for la, lb, idx in zip(a_leaves, b_leaves, layout, strict=True):
         per_row = mask[idx]
         broadcast = per_row.reshape(per_row.shape + (1,) * (la.ndim - per_row.ndim))

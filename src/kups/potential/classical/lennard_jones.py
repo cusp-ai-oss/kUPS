@@ -23,12 +23,14 @@ from typing import (
     assert_never,
     cast,
     overload,
+    override,
     runtime_checkable,
 )
 
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View, identity_lens
 from kups.core.neighborlist import (
@@ -57,6 +59,7 @@ from kups.core.typing import (
     HasLabels,
     HasPositions,
     HasSystemIndex,
+    IsState,
     Label,
     MaybeCached,
     ParticleId,
@@ -147,7 +150,7 @@ class LennardJonesParameters:
 
 
 type LennardJonesInput = GraphPotentialInput[
-    LennardJonesParameters, IsLennardJonesParticles, HasCell, Literal[2]
+    LennardJonesParameters, IsLennardJonesParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
@@ -175,12 +178,12 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
 
 def lennard_jones_energy(
     inp: LennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], Patch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute total Lennard-Jones energy per system."""
     graph = inp.graph
     edge_energy = lennard_jones_edge_energy(inp)
     total_energies = graph.edge_batch_mask.sum_over(edge_energy) / 2
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 @dataclass
@@ -197,7 +200,7 @@ class PairTailCorrectedLennardJonesParameters(LennardJonesParameters):
 type PairTailCorrectedLennardJonesInput = GraphPotentialInput[
     PairTailCorrectedLennardJonesParameters,
     IsLennardJonesParticles,
-    HasCell,
+    HasCell[AnyPeriodicity],
     Literal[2],
 ]
 
@@ -205,7 +208,7 @@ type PairTailCorrectedLennardJonesInput = GraphPotentialInput[
 @jit
 def pair_tail_corrected_lennard_jones_energy(
     inp: PairTailCorrectedLennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], Patch[Any]]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute Lennard-Jones energy with smooth pairwise tail correction."""
     graph = inp.graph
     r: Array = jnp.linalg.norm(graph.edge_shifts, axis=(-2, -1))
@@ -224,7 +227,7 @@ def pair_tail_corrected_lennard_jones_energy(
     )
     corrected_edge_energy = jnp.where(remove, 0.0, corrected_edge_energy)
     total_energies = batch.sum_over(corrected_edge_energy) / 2
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 @dataclass
@@ -238,6 +241,7 @@ class GlobalTailCorrectedLennardJonesParameters(LennardJonesParameters):
     tail_corrected: Array  # (n_species, n_species) bool
 
     @classmethod
+    @override
     def from_dict(
         cls,
         cutoff: float | Array,
@@ -273,7 +277,7 @@ class GlobalTailCorrectedLennardJonesParameters(LennardJonesParameters):
 type GlobalTailCorrectedLennardJonesInput = GraphPotentialInput[
     GlobalTailCorrectedLennardJonesParameters,
     IsLennardJonesParticles,
-    HasCell,
+    HasCell[AnyPeriodicity],
     Literal[0],
 ]
 
@@ -306,7 +310,7 @@ def _global_tail_correction_common(
 @jit
 def global_lennard_jones_tail_correction_energy(
     inp: GlobalTailCorrectedLennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], Patch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute analytical long-range tail correction energy."""
     density, _volume, term1, term2, tail_mask, n_graphs = (
         _global_tail_correction_common(inp)
@@ -317,13 +321,13 @@ def global_lennard_jones_tail_correction_energy(
     result *= tail_mask
     total_energies = Table.arange(result.sum(axis=(1, 2)), label=SystemId)
     assert len(total_energies) == n_graphs
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 @jit
 def global_lennard_jones_tail_correction_pressure(
     inp: GlobalTailCorrectedLennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], Patch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute analytical long-range tail correction for pressure."""
     density, volume, term1, term2, tail_mask, n_graphs = _global_tail_correction_common(
         inp
@@ -342,7 +346,7 @@ def global_lennard_jones_tail_correction_pressure(
     result *= tail_mask
     total_pressure = Table.arange(result.sum(axis=(1, 2)), label=SystemId)
     assert len(total_pressure) == n_graphs
-    return WithPatch(total_pressure, IdPatch())
+    return WithPatch(total_pressure, IdPatch[Any]())
 
 
 # --- Factory functions ---
@@ -353,18 +357,18 @@ class IsLJGraphParticles(
 
 
 type LJRadiusInp = GraphPotentialInput[
-    LennardJonesParameters, IsLJGraphParticles, HasCell, Literal[2]
+    LennardJonesParameters, IsLJGraphParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
 def make_lennard_jones_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, LennardJonesParameters],
     probe: Probe[State, Ptch, IsGraphProbe[IsLJGraphParticles, Literal[2]]] | None,
@@ -396,13 +400,9 @@ def make_lennard_jones_potential[
     )
 
 
-class HasLJParticlesAndSystems(Protocol):
-    """Protocol for states with indexed particles and systems."""
-
-    @property
-    def particles(self) -> Table[ParticleId, IsLJGraphParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
+class HasLJParticlesAndSystems(
+    IsState[IsLJGraphParticles, HasCell[AnyPeriodicity]], Protocol
+): ...
 
 
 class IsLJState[Params](
@@ -425,7 +425,7 @@ def make_lennard_jones_from_state[State](
     neighborlist_factory: NeighborListFactory[
         IsLJState[MaybeCached[LennardJonesParameters, Any]]
     ] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -437,11 +437,11 @@ def make_lennard_jones_from_state[State](
     neighborlist_factory: NeighborListFactory[
         IsLJState[MaybeCached[LennardJonesParameters, Any]]
     ] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_lennard_jones_from_state[State, P: Patch](
+def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]],
@@ -456,7 +456,7 @@ def make_lennard_jones_from_state[State, P: Patch](
 
 
 @overload
-def make_lennard_jones_from_state[State, P: Patch](
+def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsLJState[
@@ -500,7 +500,7 @@ def make_lennard_jones_from_state(
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
     if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[GraphPotentialInput, PositionAndCell](
+        gradient_lens = SimpleLens[LJRadiusInp, PositionAndCell](
             lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),
                 x.graph.systems.map_data(lambda s: s.cell),
@@ -520,7 +520,7 @@ def make_lennard_jones_from_state(
         cache_view = state.focus(lambda x: x.lj_parameters.cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
 
-    def neighborlist_view(s):
+    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_lennard_jones_potential(
@@ -538,18 +538,21 @@ def make_lennard_jones_from_state(
 
 
 type PCLJInp = GraphPotentialInput[
-    PairTailCorrectedLennardJonesParameters, IsLJGraphParticles, HasCell, Literal[2]
+    PairTailCorrectedLennardJonesParameters,
+    IsLJGraphParticles,
+    HasCell[AnyPeriodicity],
+    Literal[2],
 ]
 
 
 def make_pair_tail_corrected_lennard_jones_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, PairTailCorrectedLennardJonesParameters],
     probe: Probe[State, Ptch, IsGraphProbe[IsLJGraphParticles, Literal[2]]] | None,
@@ -584,14 +587,14 @@ def make_pair_tail_corrected_lennard_jones_potential[
 type GCLJInp = GraphPotentialInput[
     GlobalTailCorrectedLennardJonesParameters,
     IsLJGraphParticles,
-    HasCell,
+    HasCell[AnyPeriodicity],
     Literal[0],
 ]
 
 
 def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessians](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, GlobalTailCorrectedLennardJonesParameters],
     gradient_lens: Lens[GCLJInp, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
@@ -620,7 +623,10 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
 
 
 type IsGlobalTailCorrectedIsLJState = IsLJState[
-    MaybeCached[GlobalTailCorrectedLennardJonesParameters, PotentialOut]
+    MaybeCached[
+        GlobalTailCorrectedLennardJonesParameters,
+        PotentialOut[Any, Any],
+    ]
 ]
 
 
@@ -632,7 +638,7 @@ def make_lennard_jones_tail_correction_from_state[
     state: Lens[InState, State],
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[InState, EmptyType, EmptyType, Patch]: ...
+) -> Potential[InState, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -643,7 +649,7 @@ def make_lennard_jones_tail_correction_from_state[
     state: Lens[InState, State],
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[InState, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[InState, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 def make_lennard_jones_tail_correction_from_state(
@@ -665,7 +671,7 @@ def make_lennard_jones_tail_correction_from_state(
     """
     gradient_lens: Any = EMPTY_LENS
     if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[GraphPotentialInput, PositionAndCell](
+        gradient_lens = SimpleLens[GCLJInp, PositionAndCell](
             lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),
                 x.graph.systems.map_data(lambda s: s.cell),
@@ -692,7 +698,7 @@ def make_lennard_jones_tail_correction_from_state(
 
 def make_global_lennard_jones_tail_correction_pressure[State](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, GlobalTailCorrectedLennardJonesParameters],
 ) -> StateProperty[State, Table[SystemId, Array]]:
     """Create long-range pressure correction for Lennard-Jones systems."""

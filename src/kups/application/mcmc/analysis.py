@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import jax.numpy as jnp
 from jax import Array
@@ -353,7 +353,7 @@ def analyze_widom_file(
     n_blocks: int | None = None,
 ) -> dict[SystemId, WidomAnalysisResult]:
     """Analyze a ``kups_mcmc_widom`` HDF5 output."""
-    with HDF5StorageReader[WidomLoggedData](hdf5_path) as reader:
+    with HDF5StorageReader[WidomLoggedData[Any]](hdf5_path) as reader:
         fixed = reader.focus_group(lambda s: s.fixed)[...]
         per_step = reader.focus_group(lambda s: s.per_step)[...]
     return analyze_widom(fixed, per_step, n_blocks)
@@ -378,7 +378,7 @@ def analyze_mcmc_file(
     Returns:
         Per-system analysis results keyed by ``SystemId``.
     """
-    with HDF5StorageReader[MCMCLoggedData](hdf5_path) as reader:
+    with HDF5StorageReader[MCMCLoggedData[Any]](hdf5_path) as reader:
         fixed = reader.focus_group(lambda s: s.fixed)[...]
         per_step = reader.focus_group(lambda s: s.per_step)[...]
 

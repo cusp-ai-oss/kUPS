@@ -24,7 +24,7 @@ Propagators are composable and JIT-compilable, enabling efficient simulation loo
 """
 
 import logging
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol, Self
 
 import jax
 import jax.core
@@ -235,7 +235,7 @@ class ChangesFn[State, Changes](Protocol):
     ) -> tuple[Changes, LogProbabilityRatio]: ...
 
 
-class PatchFn[State, Changes, Move: Patch](Protocol):
+class PatchFn[State, Changes, Move: Patch[Any]](Protocol):
     """Protocol for functions that convert move proposals to state patches."""
 
     def __call__(self, key: Array, state: State, proposal: Changes) -> Move: ...
@@ -273,7 +273,7 @@ def propose_mixed[State, Changes](
     return selected, log_ratio, which
 
 
-class LogProbabilityRatioFn[State, Move: Patch](Protocol):
+class LogProbabilityRatioFn[State, Move: Patch[Any]](Protocol):
     """Protocol for computing target density ratios.
 
     Computes log probability ratio of target distribution (e.g., Boltzmann factor).
@@ -285,7 +285,7 @@ class LogProbabilityRatioFn[State, Move: Patch](Protocol):
 
 
 @dataclass
-class MCMCPropagator[State, Changes, Move: Patch](Propagator[State]):
+class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
     """Metropolis-Hastings Monte Carlo propagator with acceptance/rejection.
 
     Supports both single-move and mixed-move scenarios. When multiple
@@ -374,7 +374,7 @@ class SwitchPropagator[State](Propagator[State]):
     propagators: tuple[Propagator[State], ...] = field(static=True)
     probabilities: View[State, Array] = field(static=True)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if len(self.propagators) == 0:
             raise ValueError("At least one propagator must be provided.")
 
@@ -422,7 +422,7 @@ class SequentialPropagator[State](Propagator[State]):
 
     propagators: tuple[Propagator[State], ...] = field(static=True)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert len(self.propagators) > 0, "At least one propagator must be provided."
 
     def __call__(self, key: Array, state: State) -> State:
@@ -465,7 +465,7 @@ class PalindromePropagator[State](Propagator[State]):
 
     propagators: tuple[Propagator[State], ...] = field(static=True)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert len(self.propagators) > 0, "At least one propagator must be provided."
 
     def __call__(self, key: Array, state: State) -> State:
@@ -522,7 +522,7 @@ class LoopPropagator[State](Propagator[State]):
             state = self.propagator(subkey, state)
             return i + 1, key, state
 
-        def cond(carry):
+        def cond(carry: tuple[Array, Array, State]) -> Array:
             i, _, _ = carry
             return i < repetitions
 
@@ -680,10 +680,10 @@ class BakeConstantsPropagator[State](Propagator[State]):
     consts: tuple[np.ndarray, ...] = field(static=True)
 
     @classmethod
-    def new(cls, propagator: Propagator[State], state: State):
+    def new(cls, propagator: Propagator[State], state: State) -> Self:
         leaf_mask: tuple[bool, ...] = ()
 
-        def f(key, state):
+        def f(key: Array, state: State) -> None:
             nonlocal leaf_mask
             with jax.disable_jit():
                 out = propagator(key, state)

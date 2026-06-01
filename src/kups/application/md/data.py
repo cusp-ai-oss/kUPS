@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import ase
 import jax
@@ -18,7 +19,7 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, ParticleId, SystemId
@@ -160,7 +161,7 @@ class MDParticles(Particles):
     momenta: Array
     exclusion: Index[ExclusionId] = field(default=None, kw_only=True)  # type: ignore
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.exclusion is None:
             object.__setattr__(self, "exclusion", default_exclusion(len(self.charges)))
 
@@ -202,9 +203,9 @@ class MDSystems:
         potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
     """
 
-    cell: Cell
+    cell: Cell[Any]
     integrator_params: IntegratorParams
-    cell_gradients: Cell
+    cell_gradients: Cell[Any]
     cell_momentum: Array
     potential_energy: Array
 
@@ -338,7 +339,9 @@ def _gao_barostat_mass(
     return jnp.tril(M)
 
 
-def _build_integrator_params(config: MdParameters, cell: Cell) -> IntegratorParams:
+def _build_integrator_params(
+    config: MdParameters, cell: Cell[AnyPeriodicity]
+) -> IntegratorParams:
     """Construct the concrete integrator-params dataclass matching ``config.integrator``."""
     time_step = jnp.array([config.time_step * FEMTO_SECOND])
     temperature = jnp.array([config.temperature])

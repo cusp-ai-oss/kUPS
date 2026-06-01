@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
@@ -32,6 +33,7 @@ from kups.core.typing import (
     HasCache,
     HasCell,
     HasPositionsAndLabels,
+    IsState,
     Label,
     MaybeCached,
     ParticleId,
@@ -76,13 +78,13 @@ class HarmonicBondParameters:
 
 
 type HarmonicBondInput = GraphPotentialInput[
-    HarmonicBondParameters, IsBondedParticles, HasCell, Literal[2]
+    HarmonicBondParameters, IsBondedParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
 def harmonic_bond_energy(
     inp: HarmonicBondInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute harmonic bond energy for all bonds.
 
     Calculates energy as k(r - r₀)² for each bond and sums over all systems.
@@ -104,7 +106,7 @@ def harmonic_bond_energy(
     k = inp.parameters.k[edg_species[:, 0], edg_species[:, 1]]
     edge_energy = (jnp.linalg.norm(graph.edge_shifts[:, 0], axis=-1) - x0) ** 2 * k
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 @dataclass
@@ -123,13 +125,13 @@ class HarmonicAngleParameters:
 
 
 type HarmonicAngleInput = GraphPotentialInput[
-    HarmonicAngleParameters, IsBondedParticles, HasCell, Literal[3]
+    HarmonicAngleParameters, IsBondedParticles, HasCell[AnyPeriodicity], Literal[3]
 ]
 
 
 def harmonic_angle_energy(
     inp: HarmonicAngleInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute harmonic angle energy for all angles.
 
     Calculates energy as k(θ - θ₀)² for each angle triplet and sums over all systems.
@@ -160,18 +162,18 @@ def harmonic_angle_energy(
     angle = jnp.rad2deg(angle)
     edge_energy = (angle - theta0) ** 2 * k
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 def make_harmonic_bond_potential[
     State,
-    P: Patch,
+    P: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edge_indices_view: View[State, Index[ParticleId]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, HarmonicBondParameters],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]] | None,
     gradient_lens: Lens[HarmonicBondInput, Gradients],
@@ -226,13 +228,13 @@ def make_harmonic_bond_potential[
 
 def make_harmonic_angle_potential[
     State,
-    P: Patch,
+    P: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edge_indices_view: View[State, Index[ParticleId]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, HarmonicAngleParameters],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]] | None,
     gradient_lens: Lens[HarmonicAngleInput, Gradients],
@@ -285,13 +287,9 @@ def make_harmonic_angle_potential[
     return potential
 
 
-class HasBondedParticlesAndSystems(Protocol):
-    """Protocol for states with indexed particles and systems containing a cell."""
-
-    @property
-    def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
+class HasBondedParticlesAndSystems(
+    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
+): ...
 
 
 class IsHarmonicBondState[Params](HasBondedParticlesAndSystems, Protocol):
@@ -312,7 +310,7 @@ def make_harmonic_bond_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -324,11 +322,11 @@ def make_harmonic_bond_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_harmonic_bond_from_state[State, P: Patch](
+def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicBondState[
@@ -342,7 +340,7 @@ def make_harmonic_bond_from_state[State, P: Patch](
 
 
 @overload
-def make_harmonic_bond_from_state[State, P: Patch](
+def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicBondState[
@@ -437,7 +435,7 @@ def make_harmonic_angle_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -449,11 +447,11 @@ def make_harmonic_angle_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_harmonic_angle_from_state[State, P: Patch](
+def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicAngleState[
@@ -467,7 +465,7 @@ def make_harmonic_angle_from_state[State, P: Patch](
 
 
 @overload
-def make_harmonic_angle_from_state[State, P: Patch](
+def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicAngleState[
@@ -545,5 +543,5 @@ def make_harmonic_angle_from_state(
 
 
 if TYPE_CHECKING:
-    _hb: EnergyFunction = harmonic_bond_energy
-    _ha: EnergyFunction = harmonic_angle_energy
+    _hb: EnergyFunction[Any, HarmonicBondInput] = harmonic_bond_energy
+    _ha: EnergyFunction[Any, HarmonicAngleInput] = harmonic_angle_energy

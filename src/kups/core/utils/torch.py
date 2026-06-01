@@ -78,7 +78,7 @@ __all__ = [
 ]
 
 _DEVICE_CACHE: dict[int, dict[torch.device, torch.nn.Module]] = {}
-_OUTPUT_CACHE: dict[int, dict[tuple, tuple]] = {}
+_OUTPUT_CACHE: dict[int, dict[tuple[Any, ...], tuple[Any, ...]]] = {}
 _CACHE_LOCK = threading.Lock()
 
 _JAX_TO_TORCH_DTYPE = {
@@ -120,7 +120,7 @@ def _jax_to_torch_dtype(jax_dtype: Any) -> torch.dtype:
     return _JAX_TO_TORCH_DTYPE[name]
 
 
-def _torch_to_jax_dtype(torch_dtype: Any) -> Any:
+def _torch_to_jax_dtype(torch_dtype: torch.dtype) -> Any:
     """Convert torch dtype to JAX dtype."""
     if torch_dtype not in _TORCH_TO_JAX_DTYPE:
         raise ValueError(f"Unsupported torch dtype: {torch_dtype}")
@@ -242,7 +242,7 @@ def _assemble_flat(
     """
     scalar_it = iter(scalar_vals)
     tensor_it = iter(tensors)
-    result = []
+    result: list[Any] = []
     for spec in flat_spec:
         if isinstance(spec, ScalarSpec):
             result.append(next(scalar_it))
@@ -313,7 +313,7 @@ class TorchModuleWrapper:
     """
 
     module: torch.nn.Module = field(static=True)
-    input_spec: Any | None = field(static=True, default=None)
+    input_spec: list[InputSpecLeaf] | None = field(static=True, default=None)
     vmap_method: str = field(static=True, default="broadcast_all")
     requires_grad: bool = field(static=True, default=False)
     enable_vjp: bool = field(static=True, default=False)
@@ -330,7 +330,7 @@ class TorchModuleWrapper:
                 cache[device] = self.module.to(device)
             return cache[device]
 
-    def _grad_context(self) -> Any:
+    def _grad_context(self) -> contextlib.AbstractContextManager[None]:
         """Return context manager for gradient control.
 
         Returns torch.no_grad() for better performance when requires_grad=False,
@@ -602,7 +602,7 @@ class TorchModuleWrapper:
             vmap_method=self.vmap_method,
         )(*inputs, *grad_flat)
 
-        result = []
+        result: list[Any] = []
         grad_idx = 0
         for i in range(len(inputs)):
             if needs_grad[i]:

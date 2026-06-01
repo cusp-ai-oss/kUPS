@@ -11,9 +11,12 @@ pairs (``Degree=2``), angles (``Degree=3``), dihedrals (``Degree=4``), etc.
 
 from __future__ import annotations
 
+from typing import override
+
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Sliceable, Table
 from kups.core.typing import (
     HasCell,
@@ -57,7 +60,7 @@ class Edges[Degree: int](Sliceable):
     indices: Index[ParticleId]  # (n_edges, Degree)
     shifts: Array  # (n_edges, Degree - 1, 3)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Resolve the underlying array for validation
         raw = self.indices.indices if isinstance(self.indices, Index) else self.indices
         if not isinstance(raw, Array):
@@ -77,7 +80,7 @@ class Edges[Degree: int](Sliceable):
     def difference_vectors(
         self,
         particles: Table[ParticleId, HasPositionsAndSystemIndex],
-        systems: Table[SystemId, HasCell],
+        systems: Table[SystemId, HasCell[AnyPeriodicity]],
     ) -> Array:
         """Compute difference vectors between connected particles.
 
@@ -99,7 +102,7 @@ class Edges[Degree: int](Sliceable):
     def absolute_shifts(
         self,
         particles: Table[ParticleId, HasPositionsAndSystemIndex],
-        systems: Table[SystemId, HasCell],
+        systems: Table[SystemId, HasCell[AnyPeriodicity]],
     ) -> Array:
         """Compute absolute shift vectors for all particles in each edge.
 
@@ -120,5 +123,6 @@ class Edges[Degree: int](Sliceable):
     def degree(self) -> int:
         return self.indices.shape[-1]
 
+    @override
     def __len__(self) -> int:
         return self.indices.shape[0]

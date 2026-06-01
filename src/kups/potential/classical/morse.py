@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
@@ -38,6 +39,7 @@ from kups.core.typing import (
     HasCache,
     HasCell,
     HasPositionsAndLabels,
+    IsState,
     Label,
     MaybeCached,
     ParticleId,
@@ -135,13 +137,13 @@ class MorseBondParameters:
 
 
 type MorseBondInput = GraphPotentialInput[
-    MorseBondParameters, IsBondedParticles, HasCell, Literal[2]
+    MorseBondParameters, IsBondedParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
 def morse_bond_energy(
     inp: MorseBondInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     r"""Compute Morse bond energy for all bonds.
 
     Calculates energy as $D [1 - e^{-\alpha(r - r_0)}]^2$ for each bond.
@@ -165,18 +167,18 @@ def morse_bond_energy(
     r = jnp.linalg.norm(graph.edge_shifts[:, 0], axis=-1)
     edge_energy = D * (1 - jnp.exp(-alpha * (r - r0))) ** 2
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 def make_morse_bond_potential[
     State,
-    P: Patch,
+    P: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edge_indices_view: View[State, Index[ParticleId]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, MorseBondParameters],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]] | None,
     gradient_lens: Lens[MorseBondInput, Gradients],
@@ -226,15 +228,13 @@ def make_morse_bond_potential[
     return potential
 
 
-class IsMorseBondState[Params](Protocol):
+class IsMorseBondState[Params](
+    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
+):
     """Protocol for states providing full-evaluation Morse bond inputs."""
 
     @property
-    def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def morse_bond_indices(self) -> Index[ParticleId]: ...
+    def bond_edge_indices(self) -> Index[ParticleId]: ...
     @property
     def morse_bond_parameters(self) -> Params: ...
 
@@ -245,7 +245,7 @@ def make_morse_bond_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -254,11 +254,11 @@ def make_morse_bond_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_morse_bond_from_state[State, P: Patch](
+def make_morse_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsMorseBondState[
@@ -272,7 +272,7 @@ def make_morse_bond_from_state[State, P: Patch](
 
 
 @overload
-def make_morse_bond_from_state[State, P: Patch](
+def make_morse_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsMorseBondState[
@@ -343,4 +343,4 @@ def make_morse_bond_from_state(
 
 
 if TYPE_CHECKING:
-    _: EnergyFunction = morse_bond_energy
+    _: EnergyFunction[Any, MorseBondInput] = morse_bond_energy

@@ -11,8 +11,10 @@ from typing import (
     Self,
     Sequence,
     TypeVar,
+    cast,
     no_type_check,
     overload,
+    override,
 )
 
 import jax
@@ -110,13 +112,13 @@ class Table(Batched, Generic[TKey, TData]):
         raise ValueError("Key type cannot be inferred from empty Table.")
 
     @skip_post_init_if_disabled
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         n = len(self.keys)
         assert len(np.unique(np.asarray(self.keys, dtype=object))) == n, (
             "Primary keys must be unique"
         )
 
-        def _validate_and_broadcast(leaf):
+        def _validate_and_broadcast(leaf: Any) -> Any:
             if isinstance(leaf, (Index, Table)):
                 return leaf
             dim = leaf.shape[0]
@@ -142,6 +144,7 @@ class Table(Batched, Generic[TKey, TData]):
         object.__setattr__(self, "_cls", self.cls)
         object.__setattr__(self, "data", updated_data)
 
+    @override
     def __str__(self) -> str:
         keys_str = _format_keys(self.keys)
         return f"Table({self.cls.__name__}, keys={keys_str}, data={self.data})"
@@ -168,7 +171,7 @@ class Table(Batched, Generic[TKey, TData]):
         return bind(self.data).at(index.indices_in(self.keys), args=args)
 
     def update[D](
-        self: Table[TKey, D], index: Index[TKey], data: D, **kwargs
+        self: Table[TKey, D], index: Index[TKey], data: D, **kwargs: Any
     ) -> Table[TKey, D]:
         """Write ``data`` into rows selected by ``index``."""
         return (
@@ -240,7 +243,7 @@ class Table(Batched, Generic[TKey, TData]):
     @overload
     def __getitem__(self, index: Index[TKey]) -> TData: ...
     @no_type_check
-    def __getitem__(self, index):
+    def __getitem__(self, index: Any) -> Any:
         """Retrieve data entries selected by ``index``."""
         if isinstance(index, tuple):
             result = self
@@ -250,11 +253,13 @@ class Table(Batched, Generic[TKey, TData]):
         idx = index.indices_in(self.keys)
         return bind(self.data).at((idx,)).get()
 
+    @override
     def __len__(self) -> int:
         """Number of entries along the leading axis."""
         return len(self.keys)
 
     @property
+    @override
     def size(self) -> int:
         """Number of entries along the leading axis (same as ``len()``)."""
         return len(self)
@@ -314,7 +319,7 @@ class Table(Batched, Generic[TKey, TData]):
         /,
     ) -> Table[L, tuple[D, T1, T2, T3, T4, T5]]: ...
     @staticmethod
-    def join(base: Table, *others: Table) -> Table:
+    def join(base: Table[Any, Any], *others: Table[Any, Any]) -> Table[Any, Any]:
         """Join multiple ``Table`` objects on matching keys into tuple data.
 
         Performs a SQL-style ``JOIN`` on key equality. All arguments must
@@ -346,7 +351,7 @@ class Table(Batched, Generic[TKey, TData]):
             raise ValueError("merge_tables requires at least two arguments")
         base, *others = Table.broadcast(base, *others)  # type: ignore
 
-        def _align(other: Table, i: int):
+        def _align(other: Table[Any, Any], i: int) -> Any:
             if other.keys == base.keys:
                 return other.data
             if set(other.keys) != set(base.keys):
@@ -413,7 +418,7 @@ class Table(Batched, Generic[TKey, TData]):
     def __add__[D](
         self: Table[TKey, SupportsAdd[D]], other: D
     ) -> Table[TKey, TData]: ...
-    def __add__(self, other) -> Table[TKey, TData]:
+    def __add__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a + b, self, other)
 
     @overload
@@ -424,7 +429,7 @@ class Table(Batched, Generic[TKey, TData]):
     def __sub__[D](
         self: Table[TKey, SupportsSub[D]], other: D
     ) -> Table[TKey, TData]: ...
-    def __sub__(self, other) -> Table[TKey, TData]:
+    def __sub__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a - b, self, other)
 
     @overload
@@ -435,7 +440,7 @@ class Table(Batched, Generic[TKey, TData]):
     def __mul__[D](
         self: Table[TKey, SupportsMul[D]], other: D
     ) -> Table[TKey, TData]: ...
-    def __mul__(self, other) -> Table[TKey, TData]:
+    def __mul__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a * b, self, other)
 
     @overload
@@ -446,7 +451,7 @@ class Table(Batched, Generic[TKey, TData]):
     def __truediv__[D](
         self: Table[TKey, SupportsTrueDiv[D]], other: D
     ) -> Table[TKey, TData]: ...
-    def __truediv__(self, other) -> Table[TKey, TData]:
+    def __truediv__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a / b, self, other)
 
     @overload
@@ -457,7 +462,7 @@ class Table(Batched, Generic[TKey, TData]):
     def __floordiv__[D](
         self: Table[TKey, SupportsFloorDiv[D]], other: D
     ) -> Table[TKey, TData]: ...
-    def __floordiv__(self, other) -> Table[TKey, TData]:
+    def __floordiv__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a // b, self, other)
 
     @overload
@@ -466,7 +471,7 @@ class Table(Batched, Generic[TKey, TData]):
     ) -> Table[TKey, TData]: ...
     @overload
     def __gt__[D](self: Table[TKey, SupportsGt[D]], other: D) -> Table[TKey, TData]: ...
-    def __gt__(self, other) -> Table[TKey, TData]:
+    def __gt__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a > b, self, other)
 
     @staticmethod
@@ -500,8 +505,8 @@ class Table(Batched, Generic[TKey, TData]):
     ) -> tuple[Table[L, Any], ...]: ...
     @staticmethod
     def broadcast(
-        *items: Table,
-    ) -> tuple[Table, ...]:
+        *items: Table[Any, Any],
+    ) -> tuple[Table[Any, Any], ...]:
         """Broadcast ``Table`` containers to a common leading-axis size.
 
         Analogous to NumPy broadcasting: all inputs must share the same
@@ -616,7 +621,9 @@ class Table(Batched, Generic[TKey, TData]):
         /,
     ) -> tuple[Table[L1, D1], Table[L2, D2], Table[L3, D3], Table[L4, D4]]: ...
     @staticmethod
-    def union(*groups: Sequence[Table]) -> tuple[Table, ...] | Table:
+    def union(
+        *groups: Sequence[Table[Any, Any]],
+    ) -> tuple[Table[Any, Any], ...] | Table[Any, Any]:
         """Concatenate multiple ``Table`` sequences (SQL ``UNION ALL``).
 
         Each positional argument is a sequence of ``Table`` objects that
@@ -657,7 +664,7 @@ class Table(Batched, Generic[TKey, TData]):
         assert all(len(g) == n for g in groups), "All groups must have the same length"
         groups = tuple(zip(*map(lambda x: Table.match(*x), zip(*groups))))
 
-        def _key_type(group: Sequence[Table]) -> type | None:
+        def _key_type(group: Sequence[Table[Any, Any]]) -> type | None:
             for item in group:
                 if item._cls is not None:
                     return item._cls
@@ -677,18 +684,26 @@ class Table(Batched, Generic[TKey, TData]):
                 offsets[lt].append(acc)
                 acc += len(item)
 
-        def _shift_key(key, off: int):
+        def _shift_key(key: SupportsSorting, off: int) -> Any:
             return type(key)(int(key) + off) if isinstance(key, int) else key
 
-        def _concat_leaves(*leaves):
+        def _concat_leaves[K: int](*leaves: Index[K] | Array) -> Index[K] | Array:
             if isinstance(leaves[0], Index):
+                assert all(isinstance(l, Index) for l in leaves), (
+                    "Expected all leaves to be Index"
+                )
+                leaves = cast(tuple[Index[K], ...], leaves)
                 if leaves[0].cls in offsets:
                     return Index.concatenate(*leaves, shift_keys=True)
                 return Index.concatenate(*leaves)
+            assert all(isinstance(l, Array) for l in leaves), (
+                "Expected all leaves to be Array"
+            )
+            leaves = cast(tuple[Array, ...], leaves)
             return jnp.concatenate(leaves, axis=0)
 
         is_index = lambda x: isinstance(x, Index)  # noqa: E731
-        results: list[Table] = []
+        results: list[Table[Any, Any]] = []
         for group in groups:
             lt = _key_type(group)
             if lt is None:
@@ -750,7 +765,9 @@ class Table(Batched, Generic[TKey, TData]):
         /,
     ) -> tuple[Table[L1, D1], Table[L2, D2], Table[L3, D3], Table[L4, D4]]: ...
     @staticmethod
-    def match(*groups: Table) -> tuple[Table, ...] | Table:
+    def match(
+        *groups: Table[Any, Any],
+    ) -> tuple[Table[Any, Any], ...] | Table[Any, Any]:
         """Align leaf ``Index`` keys across multiple ``Table`` containers.
 
         Ensures that all ``Index`` leaves of the same key type share an
@@ -773,7 +790,7 @@ class Table(Batched, Generic[TKey, TData]):
         """
         indices = {g.cls: g.keys for g in groups}
 
-        def traversal(x):
+        def traversal(x: Any) -> Any:
             if not isinstance(x, Index):
                 return x
             if x.cls in indices:
@@ -836,10 +853,12 @@ class Table(Batched, Generic[TKey, TData]):
         return wrapped
 
 
-def _table_operator(op, self, other):
+def _table_operator[K: SupportsSorting, A1, A2, A3](
+    op: Callable[[A1, A2], A3], self: Table[K, A1], other: Table[K, A2] | A2
+) -> Table[K, A3]:
     if isinstance(other, Table):
         assert self.keys == other.keys
-        return bind(self, lambda x: x.data).set(op(self.data, other.data))
+        return self.set_data(op(self.data, other.data))
     else:
         # TODO: This should probably only be allowed when broadcasting?
-        return bind(self, lambda x: x.data).set(op(self.data, other))
+        return self.set_data(op(self.data, other))

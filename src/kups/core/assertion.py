@@ -23,7 +23,7 @@ import traceback
 import typing
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Final, Self, no_type_check
+from typing import Any, Final, Self, no_type_check, override
 
 import jax
 import jax.interpreters.partial_eval as pe
@@ -58,6 +58,7 @@ from kups.core.utils.jax import dataclass, field
 try:
     from jax import typeof as get_aval
 except ImportError:
+    # pyrefly: ignore [missing-module-attribute]
     from jax.core import get_aval  # pyright: ignore[reportAttributeAccessIssue]
 
 # Type alias for fix functions that take a state and fix arguments, returning a new state
@@ -136,11 +137,12 @@ class RuntimeAssertion[State, FixArgs]:
         """Check if the assertion has failed."""
         return not self.valid()
 
+    @override
     def __str__(self) -> str:
         """Return the formatted assertion message."""
         return self.message.format(**self.fmt_args)
 
-    def check(self):
+    def check(self) -> None:
         """
         Check the assertion and raise an exception if it fails.
 
@@ -184,7 +186,7 @@ class RuntimeAssertion[State, FixArgs]:
         return self.fix_fn(state, self.fix_args)
 
 
-def _make_noop_primitive(name: str):
+def _make_noop_primitive(name: str) -> Primitive:
     primitive = Primitive(name)
     primitive.multiple_results = True
     primitive.def_impl(lambda *args, **kwargs: args)
@@ -196,24 +198,32 @@ def _make_noop_primitive(name: str):
         )(ctx, *args),
     )
 
-    def noop_p_jvp(primals, tangents, **kwargs):
+    def noop_p_jvp(
+        primals: tuple[Any, ...], tangents: tuple[Any, ...], **kwargs: Any
+    ) -> tuple[Any, tuple[Any, ...]]:
         primal_out = primitive.bind(*primals, **kwargs)
         tangent_out = tangents
         return primal_out, tangent_out
 
     ad.primitive_jvps[primitive] = noop_p_jvp
 
-    def noop_p_transpose(cotangent, primals, **kwargs):
+    def noop_p_transpose(
+        cotangent: Any, primals: tuple[Any, ...], **kwargs: Any
+    ) -> list[Any]:
         return [cotangent]
 
     ad.primitive_transposes[primitive] = noop_p_transpose
 
-    def noop_p_batcher(batched_args, batch_dims, **kwargs):
+    def noop_p_batcher(
+        batched_args: tuple[Any, ...], batch_dims: tuple[Any, ...], **kwargs: Any
+    ) -> tuple[Any, tuple[Any, ...]]:
         return primitive.bind(*batched_args, **kwargs), batch_dims
 
     batching.primitive_batchers[primitive] = noop_p_batcher
 
-    def noop_p_dce_rule(used_outputs, eqn: JaxprEqn, **kwargs):
+    def noop_p_dce_rule(
+        used_outputs: list[bool], eqn: JaxprEqn, **kwargs: Any
+    ) -> tuple[list[bool], JaxprEqn]:
         return [True] * len(used_outputs), eqn
 
     pe.dce_rules[primitive] = noop_p_dce_rule
@@ -230,7 +240,7 @@ def _scalar_bool(x: ShapedArray) -> ShapedArray:
         return ShapedArray((), jnp.bool, sharding=x.sharding, vma=mat)
 
 
-def _make_constant_primitive(name: str):
+def _make_constant_primitive(name: str) -> Primitive:
     primitive = Primitive(name)
     primitive.multiple_results = False
     primitive.def_impl(lambda x: jnp.ones_like(x, shape=(), dtype=jnp.bool))
@@ -240,24 +250,30 @@ def _make_constant_primitive(name: str):
         lambda ctx, *args, **kwargs: [mlir.ir_constant(True, aval=ctx.avals_out[0])],
     )
 
-    def constant_p_jvp(primals, tangents):
+    def constant_p_jvp(
+        primals: tuple[Any, ...], tangents: tuple[Any, ...]
+    ) -> tuple[Array, Array]:
         primal_out = primitive.bind(*primals)
         return primal_out, jnp.zeros_like(primal_out)
 
     ad.primitive_jvps[primitive] = constant_p_jvp
 
-    def constant_p_transpose(cotangent, primals):
+    def constant_p_transpose(cotangent: Any, primals: tuple[Any, ...]) -> list[Any]:
         return [cotangent]
 
     ad.primitive_transposes[primitive] = constant_p_transpose
 
-    def constant_p_batcher(batched_args, batch_dims, **kwargs):
+    def constant_p_batcher(
+        batched_args: tuple[Any, ...], batch_dims: tuple[Any, ...], **kwargs: Any
+    ) -> tuple[Any, tuple[Any, ...]]:
         return primitive.bind(*batched_args, **kwargs), batch_dims
 
     batching.primitive_batchers[primitive] = constant_p_batcher
 
-    def noop_p_dce_rule(used_outputs, eqn: JaxprEqn, **kwargs):
-        return [], eqn
+    def noop_p_dce_rule(
+        used_outputs: list[bool], eqn: JaxprEqn, **kwargs: Any
+    ) -> tuple[list[bool], JaxprEqn]:
+        return list[bool](), eqn
 
     pe.dce_rules[primitive] = noop_p_dce_rule
     return primitive
@@ -284,7 +300,7 @@ def runtime_assert[State, FixArgs](
     static_info: dict[str, Any] | None = None,
     fix_fn: Fix[State, FixArgs] | None = None,
     fix_args: FixArgs | _NO_ARGS = NO_ARGS,
-):
+) -> None:
     """
     Create a runtime assertion that integrates with JAX transformations.
 
@@ -392,9 +408,9 @@ def check_assertions(like: Array | None = None) -> Array:
 
 @dataclass
 class AssertionContext:
-    assertions: tuple[RuntimeAssertion, ...] = ()
+    assertions: tuple[RuntimeAssertion[Any, Any], ...] = ()
 
-    def add_assertion(self: Self, assertion: RuntimeAssertion) -> Self:
+    def add_assertion(self: Self, assertion: RuntimeAssertion[Any, Any]) -> Self:
         return (
             bind(self)
             .focus(lambda ctx: ctx.assertions)
@@ -420,7 +436,7 @@ def _strip_ctx_tracebacks(ctx: AssertionContext, *, note: str = "") -> Assertion
     if not ctx.assertions:
         return ctx
 
-    def _replace_msg(a: RuntimeAssertion) -> RuntimeAssertion:
+    def _replace_msg(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
         stripped = _strip_traceback(a.message)
         if note and stripped != a.message:
             stripped += note
@@ -429,7 +445,7 @@ def _strip_ctx_tracebacks(ctx: AssertionContext, *, note: str = "") -> Assertion
     return AssertionContext(assertions=tuple(map(_replace_msg, ctx.assertions)))
 
 
-def _normalize_ctx_for_comparison(out_info: tuple) -> tuple:
+def _normalize_ctx_for_comparison(out_info: tuple[Any, ...]) -> tuple[Any, ...]:
     """Strip traceback suffixes from assertion messages for structural comparison."""
     outvals, ctx = out_info
     if not isinstance(ctx, AssertionContext):
@@ -437,7 +453,7 @@ def _normalize_ctx_for_comparison(out_info: tuple) -> tuple:
     return (outvals, _strip_ctx_tracebacks(ctx))
 
 
-def _assert_same_tree[PyTree](old: PyTree, new: PyTree):
+def _assert_same_tree[PyTree](old: PyTree, new: PyTree) -> None:
     """Compare pytree structure and leaf shapes/dtypes."""
     old_leaves, old_tree_def = jax.tree.flatten(old)
     new_leaves, new_tree_def = jax.tree.flatten(new)
@@ -445,7 +461,7 @@ def _assert_same_tree[PyTree](old: PyTree, new: PyTree):
         raise ValueError(
             f"Function modified the tree structure: {new_tree_def} != {old_tree_def}"
         )
-    leaf_mismatches = []
+    leaf_mismatches: list[str] = []
     for x, y in zip(old_leaves, new_leaves, strict=True):
         xaval = get_aval(x)
         yaval = get_aval(y)
@@ -462,7 +478,7 @@ def check_assertion_handler(
     ctx: AssertionContext,
     eqn: JaxprEqn,
     invals: list[TracerValue],
-):
+) -> HandlerResult[AssertionContext]:
     return HandlerResult(ctx, [ctx.check_assertions()])
 
 
@@ -471,7 +487,7 @@ def assertion_handler(
     ctx: AssertionContext,
     eqn: JaxprEqn,
     invals: list[TracerValue],
-):
+) -> HandlerResult[AssertionContext]:
     # meta-data for assertion
     _, bind_params = get_bind_params(eqn)
     message = bind_params["message"]
@@ -554,8 +570,10 @@ def cond_handler(
 
     # Wrap branches to strip tracebacks from output contexts so that
     # jax.lax.cond sees matching pytree structures across branches.
-    def _wrap_branch(fn: Callable) -> Callable:
-        def wrapped(ctx: AssertionContext, *args: Any) -> Any:
+    def _wrap_branch(
+        fn: Callable[..., tuple[Any, AssertionContext]],
+    ) -> Callable[..., tuple[Any, AssertionContext]]:
+        def wrapped(ctx: AssertionContext, *args: Any) -> tuple[Any, AssertionContext]:
             outvals, ctx_out = fn(ctx, *args)
             return outvals, _strip_ctx_tracebacks(
                 ctx_out, note="\n(traceback unavailable: assertion inside cond branch)"
@@ -576,13 +594,13 @@ def scan_handler(
     ctx: AssertionContext,
     eqn: JaxprEqn,
     invals: list[TracerValue],
-):
+) -> HandlerResult[AssertionContext]:
     def init_with_true(
         old: AssertionContext, new: AssertionContext
     ) -> AssertionContext:
         """Initialize all assertions to be true."""
 
-        def initialize(a: RuntimeAssertion) -> RuntimeAssertion:
+        def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
             a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
             a = (
                 bind(a)
@@ -603,7 +621,7 @@ def scan_handler(
         return AssertionContext(
             tuple(
                 typing.cast(
-                    RuntimeAssertion,
+                    RuntimeAssertion[Any, Any],
                     jax.tree.map(partial(jnp.where, new.predicate), old, new),
                 )
                 for old, new in zip(old.assertions, new.assertions)
@@ -626,7 +644,7 @@ def while_handler(
     ctx: AssertionContext,
     eqn: JaxprEqn,
     invals: list[TracerValue],
-):
+) -> HandlerResult[AssertionContext]:
     def init_with_true(
         old: AssertionContext, new: AssertionContext
     ) -> AssertionContext:
@@ -638,7 +656,7 @@ def while_handler(
                 return jnp.full_like(x, fill_value=jnp.iinfo(x.dtype).min)
             return jnp.full_like(x, fill_value=-jnp.inf)
 
-        def initialize(a: RuntimeAssertion) -> RuntimeAssertion:
+        def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
             a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
             a = (
                 bind(a)
@@ -688,7 +706,7 @@ def shard_map_handler(
     invals: list[TracerValue],
     *,
     context_sharding: jax.sharding.PartitionSpec | None = None,
-):
+) -> HandlerResult[AssertionContext]:
     def declare_ctx_in_specs(ctx: AssertionContext) -> AssertionContext:
         return jax.tree.map(lambda _: context_sharding, ctx)
 
@@ -738,7 +756,7 @@ def with_runtime_assertions[**P, R](
     fn: Callable[P, R],
     policy: InterpreterPolicy = InterpreterPolicy.RAISE,
     context_sharding: jax.sharding.PartitionSpec | None = None,
-) -> Callable[P, tuple[R, tuple[RuntimeAssertion, ...]]]:
+) -> Callable[P, tuple[R, tuple[RuntimeAssertion[Any, Any], ...]]]:
     """
     Decorator that enables runtime assertion tracing for JAX functions.
 
@@ -836,7 +854,7 @@ def with_runtime_assertions[**P, R](
 
     def wrapped(
         *args: P.args, **kwargs: P.kwargs
-    ) -> tuple[R, tuple[RuntimeAssertion, ...]]:
+    ) -> tuple[R, tuple[RuntimeAssertion[Any, Any], ...]]:
         ctx = AssertionContext()
         outvals, ctx = reinterpreted(ctx, *args, **kwargs)
         return outvals, ctx.assertions

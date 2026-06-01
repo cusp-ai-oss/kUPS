@@ -62,7 +62,7 @@ class MACEModelConfig(BaseModel):
 
     backend: Literal["mace"] = "mace"
     model_path: str | Path
-    device: str = "cuda"
+    device: Literal["cpu", "cuda"] = "cuda"
     dtype: Literal["float32", "float64"] = "float32"
 
 
@@ -71,7 +71,7 @@ class UMAModelConfig(BaseModel):
 
     backend: Literal["uma"] = "uma"
     model_path: str | Path
-    device: str = "cuda"
+    device: Literal["cpu", "cuda"] = "cuda"
     task_name: Literal["omat", "omol", "oc20", "odac", "omc"] = "omat"
     inference_settings: Literal["default", "turbo"] = "default"
 
@@ -127,7 +127,8 @@ def _load_torch_model(config: MACEModelConfig | UMAModelConfig) -> TorchMliap:
 def init_state(config: Config, opt_init: OptInit) -> RelaxTorchState:
     """Initialise relaxation state from config."""
     torch_mliap_model = _load_torch_model(config.model)
-    all_particles, all_systems = [], []
+    all_particles: list[Table[ParticleId, RelaxParticles]] = []
+    all_systems: list[Table[SystemId, RelaxSystems]] = []
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
         particles_i, systems_i = relax_state_from_ase(inp_file)

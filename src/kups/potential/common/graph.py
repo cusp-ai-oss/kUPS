@@ -21,6 +21,7 @@ Key components:
 from __future__ import annotations
 
 from typing import (
+    Any,
     Generic,
     Literal,
     NamedTuple,
@@ -33,6 +34,7 @@ from typing import (
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import View, bind
 from kups.core.neighborlist import Edges, EmptyNeighborList, NeighborList
@@ -52,7 +54,7 @@ from kups.potential.common.energy import Sum, SumComposer, Summand
 
 Params = TypeVar("Params", covariant=True)
 Part = TypeVar("Part", covariant=True, bound=HasPositionsAndSystemIndex)
-Sys = TypeVar("Sys", covariant=True, bound=HasCell)
+Sys = TypeVar("Sys", covariant=True, bound=HasCell[AnyPeriodicity])
 Degree = TypeVar("Degree", bound=int)
 
 
@@ -195,7 +197,7 @@ class _EmptyGraphProbeResult[P: IsRadiusGraphPoints]:
 
 def empty_graph_probe[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
 ](
     probe_particles: Probe[State, Ptch, WithIndices[ParticleId, P]] | None,
@@ -219,9 +221,9 @@ def empty_graph_probe[
 @dataclass
 class GraphConstructor[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
     Degree: int,
 ]:
     """Constructs graphs from a degree-parametrized neighbor list.
@@ -280,9 +282,9 @@ class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
 @dataclass
 class LocalGraphSumComposer[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
     Degree: int,
     Params,
 ](SumComposer[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):
@@ -317,9 +319,9 @@ class LocalGraphSumComposer[
 @dataclass
 class FullGraphSumComposer[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
     Degree: int,
     Params,
 ](SumComposer[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):

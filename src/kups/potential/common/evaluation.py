@@ -10,13 +10,14 @@ forces, and Hessians for analysis or initialisation purposes.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 
 import jax
 import jax.core
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity, Periodic3D
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View, lens
 from kups.core.neighborlist import (
@@ -28,7 +29,7 @@ from kups.core.neighborlist import (
 from kups.core.patch import Patch, WithPatch
 from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
 from kups.core.result import Result, as_result_function
-from kups.core.typing import HasCell, ParticleId, SystemId
+from kups.core.typing import ExclusionId, HasCell, InclusionId, SystemId
 from kups.core.utils.functools import constant
 from kups.core.utils.jax import dataclass, field, no_jax_tracing
 from kups.potential.classical.ewald import (
@@ -54,7 +55,7 @@ from kups.potential.common.graph import (
 )
 
 
-def potential_with_assertions[State, G, H, P: Patch](
+def potential_with_assertions[State, G, H, P: Patch[Any]](
     potential: Potential[State, G, H, P],
 ) -> Callable[
     [State, P | None], Result[State, WithPatch[PotentialOut[G, H], Patch[State]]]
@@ -72,7 +73,7 @@ def potential_with_assertions[State, G, H, P: Patch](
 
 
 @no_jax_tracing
-def evaluate_potential_and_fix[State, Gradients, Hessians, P: Patch](
+def evaluate_potential_and_fix[State, Gradients, Hessians, P: Patch[Any]](
     potential: Callable[
         [State, P | None],
         Result[State, WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]],
@@ -167,14 +168,14 @@ def evaluate_radius_graph_potential[
     Gradients,
     Hessians,
     P: IsRadiusGraphPoints,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     point_cloud: PointCloud[P, S],
     parameters: Parameters,
     *,
     cutoffs: Table[SystemId, Array],
     energy_fn: EnergyFunction[
-        Any,
+        _RadiusGraphEvalState,
         GraphPotentialInput[Parameters, P, S, Literal[2]],
     ],
     gradient_lens: Lens[
@@ -241,8 +242,8 @@ class _EwaldRadiusGraphPointsImpl:
 
     positions: Array
     system: Index[SystemId]
-    inclusion: Index[SystemId]
-    exclusion: Index[ParticleId]
+    inclusion: Index[InclusionId]
+    exclusion: Index[ExclusionId]
     charges: Array
 
 
@@ -251,13 +252,15 @@ def evaluate_ewald_potential[
     Gradients,
     Hessians,
 ](
-    point_cloud: PointCloud[IsEwaldPointData, HasCell],
+    point_cloud: PointCloud[IsEwaldPointData, HasCell[Periodic3D]],
     parameters: EwaldParameters,
     *,
-    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell], Gradients] = EMPTY_LENS,
+    gradient_lens: Lens[
+        PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients
+    ] = EMPTY_LENS,
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[
-        PointCloud[IsEwaldPointData, HasCell], Hessians
+        PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Hessians
     ] = EMPTY_LENS,
 ) -> PotentialOut[Gradients, Hessians]:
     """Evaluate the full Ewald potential: long-range + short-range + self-interaction.
@@ -290,13 +293,15 @@ def evaluate_ewald_potential[
         _EwaldRadiusGraphPointsImpl(
             positions=point_cloud.particles.data.positions,
             system=point_cloud.particles.data.system,
-            inclusion=point_cloud.particles.data.system,
-            exclusion=Index(pi_keys, jnp.arange(n_particles)),
+            inclusion=cast(Index[InclusionId], point_cloud.particles.data.system),
+            exclusion=cast(Index[ExclusionId], Index(pi_keys, jnp.arange(n_particles))),
             charges=point_cloud.particles.data.charges,
         ),
     )
 
-    sr_cloud: PointCloud = PointCloud(sr_particles, point_cloud.systems)
+    sr_cloud: PointCloud[_EwaldRadiusGraphPointsImpl, HasCell[Periodic3D]] = PointCloud(
+        sr_particles, point_cloud.systems
+    )
     sr_cutoffs = Table(
         point_cloud.systems.keys,
         jnp.broadcast_to(

@@ -135,7 +135,7 @@ def warmup_and_sample[State](
             "Not enough warmup cycles to take the requested number of states."
         )
 
-    states = []
+    states: list[State] = []
     with tqdm.trange(warmup_cycles, disable=not print_progress) as pbar:
         for i in pbar:
             state = propagate_and_fix(propagator, next(chain), state)
@@ -150,7 +150,7 @@ BATCH_P = jax.P("batch")
 BATCH_SHARDING = jax.NamedSharding(BATCH_MESH, BATCH_P)
 
 
-def data_parallelism_vmap[C: Callable](f: C) -> C:
+def data_parallelism_vmap[C: Callable[..., Any]](f: C) -> C:
     """Vmap ``f`` with multi-device sharding when available.
 
     On a single device the function is simply vmapped and JIT-compiled.

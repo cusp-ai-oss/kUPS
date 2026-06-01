@@ -11,6 +11,7 @@ from jax import Array
 from typing_extensions import Protocol
 
 from kups.core.cell import (
+    AnyPeriodicity,
     Cell,
     Periodic3D,
     TriclinicFrame,
@@ -151,7 +152,7 @@ class WrapFlow[State, PyTree](Flow[State, PyTree]):
         ```
     """
 
-    cell: View[State, Cell] = field(static=True)
+    cell: View[State, Cell[AnyPeriodicity]] = field(static=True)
     flow: Flow[State, PyTree] = field(static=True)
 
     def __call__(

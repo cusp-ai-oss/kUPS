@@ -38,6 +38,7 @@ from typing import (
     Generic,
     Iterator,
     Protocol,
+    Self,
     TypeVar,
     overload,
     override,
@@ -87,6 +88,7 @@ class _View[S, R]:
     def __call__[S2](self: _View[S2, R], state: S2) -> R:
         return self.where(state)
 
+    @override
     def __repr__(self) -> str:
         return f"View(where={self.where})"
 
@@ -402,26 +404,34 @@ class BoundLens(Protocol[S, R]):
 class BaseLens(Lens[S, R], abc.ABC):
     """Base class for lens implementations."""
 
+    @override
     def focus[B](self, where: Callable[[R], B]) -> Lens[S, B]:
+        # pyrefly: ignore [bad-argument-type]
         return NestedLens(self, SimpleLens(view(where)))
 
+    @override
     def apply[S2](self: BaseLens[S2, R], state: S2, modifier: Modifier[R]) -> S2:
         """Apply a modifier function to the focused value."""
         return self.set(state, modifier(self.get(state)))
 
+    @override
     def bind[S2](self: BaseLens[S2, R], state: S2) -> BoundLens[S2, R]:
         """Bind this lens to a specific data structure."""
         return SimpleBoundLens(self, state)
 
-    def at(self, idxs, *, args: ScatterArgs | None = None) -> Lens[S, R]:
+    @override
+    def at(self, idxs: Any, *, args: ScatterArgs | None = None) -> Lens[S, R]:
         """Create a lens that slices the focused pytree at the given indices."""
+        # pyrefly: ignore [bad-argument-type]
         return IndexLens(self, idxs, args=args if args is not None else {})
 
+    @override
     def merge[S2, R2](
         self: BaseLens[S2, R], other: Lens[S2, R2]
     ) -> Lens[S2, tuple[R, R2]]:
         return MergedLens(self, other)
 
+    @override
     def nest[U, R2](self: Lens[S, R2], other: Lens[R2, U]) -> Lens[S, U]:
         if not isinstance(other, Lens):
             raise TypeError(
@@ -462,10 +472,12 @@ class SimpleLens(BaseLens[S, R]):
         """Focus this lens on a deeper part of the data structure."""
         return SimpleLens(pipe(self._get, where))
 
+    @override
     def get[S2](self: SimpleLens[S2, R], state: S2) -> R:
         """Get the focused value using the provided view function."""
         return self._get(state)
 
+    @override
     def set[S2, R2](self: SimpleLens[S2, R2], state: S2, value: R2) -> S2:
         """Set the focused value using traversal lens."""
         try:
@@ -484,9 +496,11 @@ class ConstLens(BaseLens[S, R]):
 
     value: R
 
+    @override
     def get[S2](self: ConstLens[S2, R], state: S2) -> R:
         return self.value
 
+    @override
     def set[S2, R2](self: ConstLens[S2, R2], state: S2, value: R2) -> S2:
         return state
 
@@ -507,11 +521,13 @@ class MergedLens(BaseLens[S, tuple[R, R2]]):
     left: Lens[S, R] = field(static=True)
     right: Lens[S, R2] = field(static=True)
 
+    @override
     def get[S2](self: MergedLens[S2, R, R2], state: S2) -> tuple[R, R2]:
         return self.left.get(state), self.right.get(state)
 
     # pyright throws: "object*" is not assignable to "tuple[R3@set, R4@set]"
     # It sounds like an inference issue as I cannot follow where object* is inferred.
+    @override
     def set[S2, R3, R4](  # type: ignore[reportIncompatibleMethodOverride]
         self: MergedLens[S2, R3, R4], state: S2, /, value: tuple[R3, R4]
     ) -> S2:
@@ -531,10 +547,12 @@ class NestedLens(BaseLens[S, R2], Generic[S, R, R2]):
     outer: Lens[S, R] = field(static=True)
     inner: Lens[R, R2] = field(static=True)
 
+    @override
     def get[S2](self: NestedLens[S2, R, R2], state: S2) -> R2:
         """Get value by applying outer lens then inner lens."""
         return self.inner.get(self.outer.get(state))
 
+    @override
     def set[S2, R3](self: NestedLens[S2, R, R3], state: S2, value: R3) -> S2:
         """Set value by getting outer value, setting inner value, then setting outer."""
         inner = self.inner.set(self.outer.get(state), value)
@@ -552,32 +570,39 @@ class SimpleBoundLens(BoundLens[S, R]):
     lens: Lens[S, R] = field(static=True)
     target: S
 
+    @override
     def focus[B](self, where: Callable[[R], B]) -> BoundLens[S, B]:
         """Focus deeper and maintain the binding to the same target."""
         return self.lens.focus(where).bind(self.target)
 
+    @override
     def get(self) -> R:
         """Get the focused value from the bound target."""
         return self.lens.get(self.target)
 
+    @override
     def set[R2](self: SimpleBoundLens[S, R2], value: R2) -> S:
         """Set the focused value in the bound target."""
         return self.lens.set(self.target, value)
 
+    @override
     def apply(self, modifier: Modifier[R]) -> S:
         """Apply a modifier to the focused value in the bound target."""
         return self.lens.set(self.target, modifier(self.lens.get(self.target)))
 
-    def at(self, idxs, *, args: ScatterArgs | None = None) -> BoundLens[S, R]:
+    @override
+    def at(self, idxs: Any, *, args: ScatterArgs | None = None) -> BoundLens[S, R]:
         """Create a slicing bound lens for the same target."""
         return self.lens.at(idxs, args=args).bind(self.target)
 
+    @override
     def merge[S2, R2](
         self: SimpleBoundLens[S2, R], other: Lens[S2, R2]
     ) -> BoundLens[S2, tuple[R, R2]]:
         """Merge this bound lens with another lens to access multiple values."""
         return self.lens.merge(other).bind(self.target)
 
+    @override
     def nest[U, R2](
         self: SimpleBoundLens[S, R2], other: Lens[R2, U]
     ) -> BoundLens[S, U]:
@@ -610,10 +635,12 @@ class LambdaLens(BaseLens[S, R]):
     _get: View[S, R] = field(static=True)
     _set: Update[S, R] = field(static=True)
 
+    @override
     def get[S2](self: LambdaLens[S2, R], state: S2) -> R:
         """Get the focused value using the custom getter function."""
         return self._get(state)
 
+    @override
     def set[S2, R2](self: LambdaLens[S2, R2], state: S2, value: R2) -> S2:
         """Set the focused value using the custom setter function."""
         return self._set(state, value)
@@ -631,19 +658,21 @@ class IndexLens(BaseLens[S, R]):
     idxs: Array
     args: ScatterArgs = field(default_factory=lambda: {}, static=True)
 
+    @override
     def focus[B](self, where: Callable[[R], B]) -> Lens[S, B]:
         """Focus deeper on the indexed data."""
         raise RuntimeError(
             "IndexLens cannot be focused further. Please reorder your lenses."
         )
 
+    @override
     def get[S2](self: IndexLens[S2, R], state: S2) -> R:
         """Get values by applying array indexing to the focused data."""
 
-        def _array_getter(scatter_args: ScatterArgs, arr: Array):
+        def _array_getter(scatter_args: ScatterArgs, arr: Array) -> Array:
             return arr.at[self.idxs].get(**scatter_args)
 
-        def _getter(arr: Array | HasScatterArgs):
+        def _getter(arr: Array | HasScatterArgs) -> Array | HasScatterArgs:
             if isinstance(arr, Array):
                 return _array_getter(self.args, arr)
             return tree_map(
@@ -656,13 +685,15 @@ class IndexLens(BaseLens[S, R]):
             is_leaf=lambda x: isinstance(x, (Array, HasScatterArgs)),
         )
 
+    @override
     def set[S2, R2](self: IndexLens[S2, R2], state: S2, value: R2) -> S2:
         """Set values by applying array indexing to the focused data."""
         return self.lens.set(
             state, tree_scatter_set(self.lens.get(state), value, self.idxs, self.args)
         )
 
-    def at(self, idxs, **extra_kwargs) -> Lens[S, R]:
+    @override
+    def at(self, idxs: Any, **extra_kwargs: Any) -> Lens[S, R]:
         """Create a nested index lens for further slicing."""
         raise RuntimeError(
             "IndexLens cannot be sliced further. Please merge your lenses."
@@ -874,9 +905,11 @@ class _PathTraversal:
         return item in self.current
 
     # Comparison operators
+    @override
     def __eq__(self, other: Any) -> bool:
         return self.current == other
 
+    @override
     def __ne__(self, other: Any) -> bool:
         return self.current != other
 
@@ -1142,6 +1175,7 @@ class _ItemLens:
         return obj[self.key]
 
     def set(self, obj: Any, value: Any) -> Any:
+        # pyrefly: ignore [implicit-any-type-argument]
         if isinstance(obj, MutableSequence | MutableMapping):
             new_obj = copy.copy(obj)
             new_obj[self.key] = value
@@ -1181,7 +1215,7 @@ class _ChainedLens:
 
 @dataclass
 class _TreeLens:
-    treedef: PyTreeDef
+    treedef: PyTreeDef[Any]
     children: tuple[_UntypedLens, ...]
 
     def get(self, obj: Any) -> Any:
@@ -1195,7 +1229,7 @@ class _TreeLens:
         return obj
 
 
-def _is_traversal(obj: Any):
+def _is_traversal(obj: object) -> bool:
     return isinstance(obj, _PathTraversal)
 
 
@@ -1256,7 +1290,7 @@ class HasLensFields(metaclass=FieldMetaAccess):
         HasLensFields itself cannot be instantiated. It must be subclassed.
     """
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         if cls is HasLensFields:
             raise TypeError(
                 "Can't instantiate abstract class {}".format(HasLensFields.__name__)
@@ -1324,7 +1358,7 @@ class LensField[B](abc.ABC):
           with default values or field options
     """
 
-    def __new__(cls):
+    def __new__(cls) -> Self:
         if cls is LensField:
             raise TypeError(
                 "Can't instantiate abstract class {}".format(LensField.__name__)
@@ -1340,17 +1374,17 @@ class LensField[B](abc.ABC):
     def __get__(self, instance: Any, owner: type[HasLensFields]) -> B: ...
 
     @abc.abstractmethod
-    def __get__(self, instance, owner) -> Any: ...
+    def __get__(self, instance: Any, owner: Any) -> Any: ...
 
     @abc.abstractmethod
-    def __set__(self, instance: HasLensFields, value: B): ...
+    def __set__(self, instance: HasLensFields, value: B) -> None: ...
 
     @abc.abstractmethod
     def __set_name__(self, owner: HasLensFields, name: str) -> None: ...
 
 
 @register_field_handler(LensField)
-def _lens_field_handler(cls, name):
+def _lens_field_handler(cls: type, name: str) -> Lens[Any, Any]:
     """Field handler for LensField-annotated fields.
 
     Creates a Lens that focuses on the specified field of the given class.
@@ -1418,7 +1452,7 @@ class lens_property[S, B]:
         - Setting through the lens creates a new instance with the updated value
     """
 
-    def __init__(self, fget: Callable[[S], B]):
+    def __init__(self, fget: Callable[[S], B]) -> None:
         self._fget = fget
         self._name: str | None = None
         ft.update_wrapper(self, fget)  # type: ignore[arg-type]

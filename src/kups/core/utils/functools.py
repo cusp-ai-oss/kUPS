@@ -127,6 +127,7 @@ def unpack_args[*A, B](f: Callable[[tuple[*A]], B]) -> Callable[[*A], B]:
     def unpacked(*args: *A) -> B:
         return f(args)
 
+    # pyrefly: ignore [bad-return]
     return unpacked
 
 
@@ -262,7 +263,7 @@ def select_nth(n: int) -> Callable[..., Any]:
         A callable ``(*args) -> args[n]``.
     """
 
-    def fn(*args):
+    def fn(*args: Any):
         return args[n]
 
     return fn

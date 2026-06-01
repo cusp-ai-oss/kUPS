@@ -224,8 +224,8 @@ def block_transform(
             if max_blocks // (2**i) >= min_blocks
         ]
 
-    block_sizes = []
-    sems = []
+    block_sizes: list[int] = []
+    sems: list[Array] = []
     mean = None
 
     for n_blocks in n_blocks_range:

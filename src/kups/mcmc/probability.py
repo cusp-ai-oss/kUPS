@@ -28,6 +28,7 @@ from typing import Any, Protocol
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.lens import Lens, View
@@ -57,7 +58,7 @@ from kups.core.utils.math import log_factorial_ratio
 
 
 @dataclass
-class BoltzmannLogProbabilityRatio[State, Move: Patch](
+class BoltzmannLogProbabilityRatio[State, Move: Patch[Any]](
     LogProbabilityRatioFn[State, Move]
 ):
     """Boltzmann acceptance criterion for canonical (NVT) ensemble.
@@ -113,7 +114,7 @@ NVTLogLikelihoodRatio = BoltzmannLogProbabilityRatio
 
 
 @dataclass
-class LogFugacityRatio[State, Move: Patch](LogProbabilityRatioFn[State, Move]):
+class LogFugacityRatio[State, Move: Patch[Any]](LogProbabilityRatioFn[State, Move]):
     """Chemical potential contribution for grand canonical (μVT) moves.
 
     Computes the log probability ratio from particle number changes in GCMC:
@@ -173,7 +174,9 @@ class LogFugacityRatio[State, Move: Patch](LogProbabilityRatioFn[State, Move]):
 
 
 @dataclass
-class MuVTLogProbabilityRatio[State, Move: Patch](LogProbabilityRatioFn[State, Move]):
+class MuVTLogProbabilityRatio[State, Move: Patch[Any]](
+    LogProbabilityRatioFn[State, Move]
+):
     """Combined acceptance criterion for grand canonical (μVT) ensemble.
 
     Combines chemical potential and Boltzmann factors for GCMC acceptance:
@@ -245,7 +248,7 @@ def motif_counts(groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
 
     @jit
     @vectorize(signature="(n),(n)->(k,d)")
-    def _f(batch: Array, species: Array):
+    def _f(batch: Array, species: Array) -> Array:
         return (
             jnp.zeros((num_systems, num_motifs), dtype=int)
             .at[batch, species]
@@ -265,7 +268,7 @@ class IsBoltzmannState(Protocol):
     def systems(self) -> Table[SystemId, IsBoltzmannSystems]: ...
 
 
-class IsFugacitySystems(HasLogActivity, HasCell, Protocol): ...
+class IsFugacitySystems(HasLogActivity, HasCell[AnyPeriodicity], Protocol): ...
 
 
 class IsFugacityState(Protocol):
@@ -278,7 +281,11 @@ class IsFugacityState(Protocol):
 
 
 class MuVTSystems(
-    HasLogActivity, HasCell, HasTemperature, HasPotentialEnergy, Protocol
+    HasLogActivity,
+    HasCell[AnyPeriodicity],
+    HasTemperature,
+    HasPotentialEnergy,
+    Protocol,
 ): ...
 
 
@@ -291,7 +298,7 @@ class IsMuVTState(Protocol):
     def systems(self) -> Table[SystemId, MuVTSystems]: ...
 
 
-def make_boltzmann_probability_ratio[State, Move: Patch](
+def make_boltzmann_probability_ratio[State, Move: Patch[Any]](
     state: Lens[State, IsBoltzmannState], potential: Potential[State, Any, Any, Move]
 ) -> tuple[
     CachedPotential[State, EmptyType, EmptyType, Move],
@@ -330,7 +337,7 @@ def make_boltzmann_probability_ratio[State, Move: Patch](
     )
 
 
-def make_fugacity_probability_ratio[State, Move: Patch](
+def make_fugacity_probability_ratio[State, Move: Patch[Any]](
     state: Lens[State, IsFugacityState],
 ) -> LogFugacityRatio[State, Any]:
     """Build the fugacity (chemical potential) acceptance criterion for GCMC.
@@ -365,7 +372,7 @@ def make_fugacity_probability_ratio[State, Move: Patch](
     )
 
 
-def make_muvt_probability_ratio[State, Move: Patch](
+def make_muvt_probability_ratio[State, Move: Patch[Any]](
     state: Lens[State, IsMuVTState], potential: Potential[State, Any, Any, Move]
 ) -> tuple[
     CachedPotential[State, EmptyType, EmptyType, Move],

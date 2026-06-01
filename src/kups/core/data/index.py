@@ -9,11 +9,13 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    Generator,
     Literal,
     Protocol,
     Self,
     Sequence,
     overload,
+    override,
 )
 
 import jax
@@ -41,11 +43,11 @@ if TYPE_CHECKING:
 
 
 class SupportsDunderLT(Protocol):
-    def __lt__(self, other, /) -> bool: ...
+    def __lt__(self, other: Any, /) -> bool: ...
 
 
 class SupportsDunderGT(Protocol):
-    def __gt__(self, other, /) -> bool: ...
+    def __gt__(self, other: Any, /) -> bool: ...
 
 
 type SupportsSorting = SupportsDunderLT | SupportsDunderGT
@@ -100,7 +102,7 @@ class Index[Key: SupportsSorting]:
         raise ValueError("Key class cannot be inferred.")
 
     @skip_post_init_if_disabled
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.indices, Array):
             return
         assert jnp.issubdtype(self.indices.dtype, jnp.integer)
@@ -222,23 +224,23 @@ class Index[Key: SupportsSorting]:
         """Support ``np.asarray(index)`` by returning decoded keys."""
         return self.value
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[Index[Key]]:
         """Iterate over elements, yielding scalar ``Index`` per entry."""
         return (
             Index(self.keys, i, max_count=self.max_count, _cls=self.cls)
             for i in self.indices
         )
 
-    def __len__(self):
+    def __len__(self) -> int:
         """Number of elements along the first axis."""
         return len(self.indices)
 
-    def __getitem__(self, item) -> Index[Key]:
+    def __getitem__(self, item: Any) -> Index[Key]:
         """Index into the underlying integer array, preserving keys."""
         return self._forward_to_data("__getitem__", item)
 
     @property
-    def num_labels(self):
+    def num_labels(self) -> int:
         """Number of unique keys in the vocabulary."""
         return len(self.keys)
 
@@ -250,11 +252,11 @@ class Index[Key: SupportsSorting]:
         """Flatten to 1-D, preserving keys."""
         return self._forward_to_data("ravel")
 
-    def reshape(self, *args, **kwargs) -> Index[Key]:
+    def reshape(self, *args: Any, **kwargs: Any) -> Index[Key]:
         """Reshape the index array, preserving keys."""
         return self._forward_to_data("reshape", *args, **kwargs)
 
-    def _forward_to_data(self, name: str, *args, **kwargs) -> Index[Key]:
+    def _forward_to_data(self, name: str, *args: Any, **kwargs: Any) -> Index[Key]:
         return Index(
             self.keys,
             getattr(self.indices, name)(*args, **kwargs),
@@ -468,10 +470,12 @@ class Index[Key: SupportsSorting]:
         max_item = len(all_keys)
         return isin(lh_idx, rh_idx, max_item)
 
+    @override
     def __str__(self) -> str:
         keys_str = _format_keys(self.keys)
         return f"Index({self.cls.__name__}, keys={keys_str}, shape={self.shape})"
 
+    @override
     def __repr__(self) -> str:
         keys_str = _format_keys(self.keys)
         try:
@@ -603,7 +607,7 @@ class Index[Key: SupportsSorting]:
         /,
     ) -> Index[tuple[L1, L2, L3, L4]]: ...
     @staticmethod
-    def combine(*indices: Index) -> Index:
+    def combine(*indices: Index[Any]) -> Index[Any]:
         """Combines multiple indices into a single index of tuple keys.
 
         The key set is the full Cartesian product of all input key sets.
@@ -657,9 +661,9 @@ class Index[Key: SupportsSorting]:
     ) -> Index[K]: ...
     @staticmethod
     def concatenate(  # type: ignore[misc]
-        *indices: Index,
+        *indices: Index[Any],
         shift_keys: bool = False,
-    ) -> Index:
+    ) -> Index[Any]:
         """Concatenate Index objects.
 
         Args:
@@ -813,7 +817,7 @@ def unify_keys_by_cls[T](tree: T) -> T:
         Same-structured pytree with unified Index keys per cls.
     """
     vals, tree_def = jax.tree.flatten(tree, is_leaf=lambda x: isinstance(x, Index))
-    shared_cls: dict[type, list[tuple[int, Index]]] = defaultdict(list)
+    shared_cls: dict[type, list[tuple[int, Index[Any]]]] = defaultdict(list)
     for i, v in enumerate(vals):
         if isinstance(v, Index):
             shared_cls[v.cls].append((i, v))

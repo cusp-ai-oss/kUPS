@@ -17,7 +17,7 @@ For per-particle (rather than per-system) caps, see
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import jax
 import jax.numpy as jnp
@@ -58,12 +58,14 @@ class ClipByGlobalNorm[Params](Optimizer[Params, ClipByGlobalNormState]):
 
     max_norm: float = field(static=True)
 
+    @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ClipByGlobalNormState:
         del parameters
         return ClipByGlobalNormState(index_prefix=tree_copy(index_prefix))
 
+    @override
     def update(
         self,
         updates: Params,

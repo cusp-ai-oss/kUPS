@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from jax import Array
 
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.utils.jax import dataclass
 
 
@@ -57,7 +57,7 @@ class Host:
     """
 
     atoms: Atoms
-    cell: Cell
+    cell: Cell[AnyPeriodicity]
 
 
 @dataclass

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Protocol
-
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -14,18 +12,11 @@ from jax import Array
 from kups.application.relaxation.data import RelaxParticles, RelaxSystems
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import IsState, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import stress_via_virial_theorem
 
-
-class HasRelaxData(Protocol):
-    """Protocol for states that can provide relaxation logging data."""
-
-    @property
-    def particles(self) -> Table[ParticleId, RelaxParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, RelaxSystems]: ...
+type HasRelaxData = IsState[RelaxParticles, RelaxSystems]
 
 
 @dataclass

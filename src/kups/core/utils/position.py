@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.typing import HasPositionsAndGroupIndex, HasWeights, ParticleId
 from kups.core.utils.jax import jit
@@ -21,7 +21,7 @@ from kups.core.utils.jax import jit
 
 @jit
 def center_of_mass[P: HasPositionsAndGroupIndex](
-    particles: Table[ParticleId, P], cells: Cell
+    particles: Table[ParticleId, P], cells: Cell[AnyPeriodicity]
 ) -> Array:
     """Compute center of mass for indexed particle groups.
 
@@ -89,7 +89,7 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
 @jit
 def to_relative_positions[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P],
-    cells: Cell,
+    cells: Cell[AnyPeriodicity],
     center_of_masses: Array | None = None,
 ) -> Array:
     """Calculate particle positions relative to their group's center of mass.
@@ -127,7 +127,7 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
 @jit
 def to_absolute_positions[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P],
-    cells: Cell,
+    cells: Cell[AnyPeriodicity],
     center_of_masses: Array,
 ) -> Array:
     """Calculate absolute positions from relative positions and group COMs.

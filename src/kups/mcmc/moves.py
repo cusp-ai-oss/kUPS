@@ -22,7 +22,7 @@ Moves generate proposals compatible with [MCMCPropagator][kups.core.propagator.M
 from __future__ import annotations
 
 import abc
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, override, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -30,7 +30,7 @@ from jax import Array
 
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Buffered, Index, Table, WithIndices, subselect
 from kups.core.lens import Lens, View, bind
 from kups.core.parameter_scheduler import (
@@ -158,7 +158,7 @@ class _RotPositions:
 def random_rotate_groups(
     key: Array,
     particles: Table[ParticleId, HasPositionsGroupSystem],
-    systems: Table[SystemId, HasCell],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Array,
 ) -> Array:
     """Rotate molecular groups around their centers of mass.
@@ -200,7 +200,7 @@ def random_rotate_groups(
 def translate_groups(
     translations: Table[SystemId, Array],
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
-    systems: Table[SystemId, HasCell],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
 ) -> Array:
     """Apply rigid body translations to particles with periodic wrapping.
 
@@ -223,7 +223,7 @@ def propose_group_translation(
     key: Array,
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
-    systems: Table[SystemId, HasCell],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Table[SystemId, Array],
     capacity: Capacity[int],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
@@ -248,7 +248,7 @@ def propose_group_rotation(
     key: Array,
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
-    systems: Table[SystemId, HasCell],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Table[SystemId, Array],
     capacity: Capacity[int],
 ) -> ParticlePositionChanges:
@@ -269,7 +269,7 @@ def propose_reinsertion(
     key: Array,
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
-    systems: Table[SystemId, HasCell],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
     capacity: Capacity[int],
 ) -> ParticlePositionChanges:
     """Propose a random reinsertion (new position + rotation) of one group per system."""
@@ -298,7 +298,7 @@ def propose_reinsertion(
 def propose_particle_translation(
     key: Array,
     particles: BatchedPositions,
-    systems: Table[SystemId, HasCell],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Table[SystemId, Array],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
 ) -> ParticlePositionChanges:
@@ -337,7 +337,7 @@ class ParticleTranslationMove[State](MonteCarloMove[State, ParticlePositionChang
     """
 
     positions: View[State, BatchedPositions] = field(static=True)
-    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]] = field(static=True)
     step_width: View[State, Table[SystemId, Array]] = field(static=True)
     distribution: SymmetricTranslationDistribution = field(
         static=True, default=jax.random.normal
@@ -373,7 +373,7 @@ class GroupTranslationMove[State](MonteCarloMove[State, ParticlePositionChanges]
 
     particles: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
-    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]] = field(static=True)
     step_width: View[State, Table[SystemId, Array]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
     distribution: SymmetricTranslationDistribution = field(
@@ -410,7 +410,7 @@ class GroupRotationMove[State](MonteCarloMove[State, ParticlePositionChanges]):
 
     particles: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
-    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]] = field(static=True)
     step_width: View[State, Table[SystemId, Array]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
 
@@ -442,7 +442,7 @@ class ReinsertionMove[State](MonteCarloMove[State, ParticlePositionChanges]):
 
     positions: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
-    systems: View[State, Table[SystemId, HasCell]] = field(static=True)
+    systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
 
     def __call__(
@@ -575,7 +575,7 @@ def insert_random_motif(
     motifs: Table[MotifParticleId, IsMotifData],
     particles: Buffered[ParticleId, HasPositionsGroupSystem],
     groups: Buffered[GroupId, HasMotifAndSystemIndex],
-    cell: Table[SystemId, Cell],
+    cell: Table[SystemId, Cell[AnyPeriodicity]],
     capacity: Capacity[int],
 ) -> ExchangeChanges:
     """Generate a GCMC insertion move for random molecular motifs.
@@ -793,7 +793,7 @@ class ExchangeMove[State](MonteCarloMove[State, ExchangeChanges]):
     )
     groups: View[State, Buffered[GroupId, HasMotifAndSystemIndex]] = field(static=True)
     motifs: View[State, Table[MotifParticleId, IsMotifData]] = field(static=True)
-    cell: View[State, Table[SystemId, Cell]] = field(static=True)
+    cell: View[State, Table[SystemId, Cell[AnyPeriodicity]]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
 
     def _zero_ratio(self, state: State) -> LogProbabilityRatio:
@@ -873,7 +873,7 @@ class IsMCMCMoveState(Protocol):
     @property
     def groups(self) -> Table[GroupId, HasSystemIndex]: ...
     @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
+    def systems(self) -> Table[SystemId, HasCell[AnyPeriodicity]]: ...
     @property
     def move_capacity(self) -> Capacity[int]: ...
 
@@ -916,8 +916,10 @@ class IsGCMCState(IsDisplacementState, Protocol):
     """State protocol for the combined displacement + exchange move."""
 
     @property
+    @override
     def particles(self) -> Buffered[ParticleId, IsExchangeParticles]: ...
     @property
+    @override
     def groups(self) -> Buffered[GroupId, HasMotifAndSystemIndex]: ...
     @property
     def motifs(self) -> Table[MotifParticleId, IsMotifData]: ...
@@ -929,8 +931,10 @@ class IsExchangeState(IsMCMCMoveState, Protocol):
     """State protocol for particle exchange (grand canonical) MCMC moves."""
 
     @property
+    @override
     def particles(self) -> Buffered[ParticleId, HasPositionsGroupSystem]: ...
     @property
+    @override
     def groups(self) -> Buffered[GroupId, HasMotifAndSystemIndex]: ...
     @property
     def motifs(self) -> Table[MotifParticleId, IsMotifData]: ...
@@ -938,12 +942,16 @@ class IsExchangeState(IsMCMCMoveState, Protocol):
     def exchange_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
 
 
-def _sched(params_lens: Lens) -> PropertyScheduler:
+def _scheduler[S](
+    params_lens: Lens[S, Table[SystemId, ParameterSchedulerState]],
+) -> PropertyScheduler[
+    S, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
+]:
     """Create a PropertyScheduler for acceptance-based step-width tuning."""
     return PropertyScheduler(params_lens, Table.transform(acceptance_target_schedule))
 
 
-def make_group_translation_mcmc_propagator[State, Move: Patch](
+def make_group_translation_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsTranslationState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
@@ -963,11 +971,11 @@ def make_group_translation_mcmc_propagator[State, Move: Patch](
         patch_fn,
         (move,),
         probability_fn,
-        (_sched(state.focus(lambda x: x.translation_params)),),
+        (_scheduler(state.focus(lambda x: x.translation_params)),),
     )
 
 
-def make_group_rotation_mcmc_propagator[State, Move: Patch](
+def make_group_rotation_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsRotationState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
@@ -986,11 +994,11 @@ def make_group_rotation_mcmc_propagator[State, Move: Patch](
         patch_fn,
         (move,),
         probability_fn,
-        (_sched(state.focus(lambda x: x.rotation_params)),),
+        (_scheduler(state.focus(lambda x: x.rotation_params)),),
     )
 
 
-def make_reinsertion_mcmc_propagator[State, Move: Patch](
+def make_reinsertion_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsReinsertionState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
@@ -1006,11 +1014,11 @@ def make_reinsertion_mcmc_propagator[State, Move: Patch](
         patch_fn,
         (move,),
         probability_fn,
-        (_sched(state.focus(lambda x: x.reinsertion_params)),),
+        (_scheduler(state.focus(lambda x: x.reinsertion_params)),),
     )
 
 
-def make_displacement_mcmc_propagator[State, Move: Patch](
+def make_displacement_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsDisplacementState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
@@ -1025,7 +1033,11 @@ def make_displacement_mcmc_propagator[State, Move: Patch](
     """
     propose_fns: list[ChangesFn[State, ParticlePositionChanges]] = []
     wts: list[float] = []
-    schedulers: list[PropertyScheduler] = []
+    schedulers: list[
+        PropertyScheduler[
+            State, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
+        ]
+    ] = []
 
     if translation_weight > 0:
         propose_fns.append(
@@ -1043,7 +1055,7 @@ def make_displacement_mcmc_propagator[State, Move: Patch](
             )
         )
         wts.append(translation_weight)
-        schedulers.append(_sched(state.focus(lambda x: x.translation_params)))
+        schedulers.append(_scheduler(state.focus(lambda x: x.translation_params)))
 
     if rotation_weight > 0:
         propose_fns.append(
@@ -1061,7 +1073,7 @@ def make_displacement_mcmc_propagator[State, Move: Patch](
             )
         )
         wts.append(rotation_weight)
-        schedulers.append(_sched(state.focus(lambda x: x.rotation_params)))
+        schedulers.append(_scheduler(state.focus(lambda x: x.rotation_params)))
 
     if reinsertion_weight > 0:
         propose_fns.append(
@@ -1073,7 +1085,7 @@ def make_displacement_mcmc_propagator[State, Move: Patch](
             )
         )
         wts.append(reinsertion_weight)
-        schedulers.append(_sched(state.focus(lambda x: x.reinsertion_params)))
+        schedulers.append(_scheduler(state.focus(lambda x: x.reinsertion_params)))
 
     return MCMCPropagator(
         patch_fn,
@@ -1084,7 +1096,7 @@ def make_displacement_mcmc_propagator[State, Move: Patch](
     )
 
 
-def make_exchange_mcmc_propagator[State, Move: Patch](
+def make_exchange_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsExchangeState],
     patch_fn: PatchFn[State, ExchangeChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
@@ -1101,11 +1113,11 @@ def make_exchange_mcmc_propagator[State, Move: Patch](
         patch_fn,
         (move,),
         probability_fn,
-        (_sched(state.focus(lambda x: x.exchange_params)),),
+        (_scheduler(state.focus(lambda x: x.exchange_params)),),
     )
 
 
-def make_gcmc_mcmc_propagator[State, Move: Patch](
+def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsGCMCState],
     patch_fn: PatchFn[State, ExchangeChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
@@ -1163,17 +1175,31 @@ def make_gcmc_mcmc_propagator[State, Move: Patch](
 
         return wrapper  # type: ignore[return-value]
 
-    def _sched(params_lens: Lens) -> PropertyScheduler:
+    def _sched(
+        params_lens: Lens[State, Table[SystemId, ParameterSchedulerState]],
+    ) -> PropertyScheduler[
+        State, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
+    ]:
         return PropertyScheduler(
             params_lens, Table.transform(acceptance_target_schedule)
         )
 
     propose_fns: list[ChangesFn[State, ExchangeChanges]] = []
     wts: list[float] = []
-    schedulers: list[PropertyScheduler] = []
+    schedulers: list[
+        PropertyScheduler[
+            State, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
+        ]
+    ] = []
 
     # Displacement moves (symmetric, lifted to ExchangeChanges)
-    _moves: list[tuple[float, Callable, Lens]] = []
+    _moves: list[
+        tuple[
+            float,
+            Callable[[Array, State], ParticlePositionChanges],
+            Lens[State, Table[SystemId, ParameterSchedulerState]],
+        ]
+    ] = []
     if translation_weight > 0:
         _moves.append(
             (
