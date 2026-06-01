@@ -345,7 +345,7 @@ if TYPE_CHECKING:
         a: LensCapacityFix[S, V],
         c: LensCapacity[S, V],
         c2: MultipliedCapacity[V],
-    ):
+    ) -> None:
         _: Fix[S, Array] = a
         __: Capacity[V] = c
         ___: Capacity[V] = c2

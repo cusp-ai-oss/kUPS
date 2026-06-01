@@ -8,13 +8,15 @@ sub-types used as type-safe index labels, plus ``Has*`` protocols for structural
 duck-typing of simulation data (positions, momenta, forces, etc.).
 """
 
-from typing import Any, Protocol, Union, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, Union, runtime_checkable
 
 import numpy as np
 from jax import Array
 
 from kups.core.cell import Cell
 from kups.core.data import Index, Table
+
+_P_co = TypeVar("_P_co", bound=tuple[bool, bool, bool], covariant=True)
 
 DType = np.dtype
 type PyTree = Any
@@ -260,7 +262,7 @@ class HasLogActivity(Protocol):
 
 
 @runtime_checkable
-class HasCell[P: tuple[bool, bool, bool]](Protocol):
+class HasCell(Protocol, Generic[_P_co]):
     """Protocol for entities with cell parameters.
 
     Generic over the periodicity literal ``P``, mirroring
@@ -272,7 +274,7 @@ class HasCell[P: tuple[bool, bool, bool]](Protocol):
     """
 
     @property
-    def cell(self) -> Cell[P]: ...
+    def cell(self) -> Cell[_P_co]: ...
 
 
 @runtime_checkable

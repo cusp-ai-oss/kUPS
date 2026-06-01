@@ -32,7 +32,7 @@ Requires the ``uma`` extras group: ``uv sync --extra uma``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 import torch  # pyright: ignore[reportMissingImports]
 
@@ -96,7 +96,8 @@ class UMAModule(torch.nn.Module):
         self.task_name = str(task_name)
         self.compute_cell_gradients = compute_cell_gradients
 
-    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    @override
+    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:  # type: ignore
         """Run UMA on a universal ``AtomGraphInput`` and return gradients.
 
         Args:
@@ -255,7 +256,7 @@ class UMAModule(torch.nn.Module):
 
 def load_uma(
     model_path: str | Path,
-    device: str = "cuda",
+    device: Literal["cpu", "cuda"] = "cuda",
     task_name: UMATaskName | str = "omat",
     compute_cell_gradients: bool = False,
     cutoff: float = 6.0,
@@ -318,7 +319,7 @@ def load_uma(
 
     predict_unit = load_predict_unit(
         path=str(path),
-        device=device,  # pyright: ignore[reportArgumentType]
+        device=device,
         inference_settings=settings,
     )
     module = UMAModule(

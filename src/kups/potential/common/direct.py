@@ -8,7 +8,7 @@ force fields) into the kUPS Potential protocol. Unlike PotentialFromEnergy which
 uses autodiff, this passes through whatever gradients/Hessians the model provides.
 """
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
@@ -31,7 +31,7 @@ class DirectPotential[
     Input,
     Gradients,
     Hessians,
-    StatePatch: Patch,
+    StatePatch: Patch[Any],
 ](Potential[State, Gradients, Hessians, StatePatch]):
     """Potential wrapping models that directly produce gradients.
 
@@ -78,7 +78,7 @@ class DirectPotential[
                 total, self.patch_idx_view(state), self.cache_lens
             )
         else:
-            cache_patch = IdPatch()
+            cache_patch = IdPatch[State]()
 
         out_patch = ComposedPatch((cache_patch, *patches))
         return WithPatch(total, out_patch)

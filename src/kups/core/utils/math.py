@@ -211,7 +211,7 @@ def triangular_3x3_matmul(
     cuda = jax.devices()[0].device_kind == "cuda"
 
     @vectorize(signature="(3,3),(3)->(3)")
-    def inner(L: Array, x: Array):
+    def inner(L: Array, x: Array) -> Array:
         if cuda:
             if side is MatmulSide.RIGHT:
                 return jnp.einsum("ji,j->i", L, x)

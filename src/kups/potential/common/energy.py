@@ -18,13 +18,13 @@ differences rather than full recomputation (e.g., subtract old particle contribu
 add new particle contribution, reuse rest).
 """
 
-from typing import TYPE_CHECKING, NamedTuple, Protocol, Sequence, no_type_check
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, Sequence, no_type_check
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
@@ -36,7 +36,7 @@ from kups.core.potential import (
     PotentialOut,
     empty_patch_idx_view,
 )
-from kups.core.typing import HasPositionsAndSystemIndex, ParticleId, SystemId
+from kups.core.typing import HasPositionsAndSystemIndex, IsState, ParticleId, SystemId
 from kups.core.utils.jax import (
     dataclass,
     field,
@@ -46,17 +46,14 @@ from kups.core.utils.jax import (
     tree_structure,
 )
 
-
-class IsStateWithParticlesAndCell(Protocol):
-    @property
-    def particles(self) -> Table[ParticleId, HasPositionsAndSystemIndex]: ...
-    @property
-    def systems(self) -> Table[SystemId, Cell]: ...
+type IsStateWithParticlesAndCell = IsState[
+    HasPositionsAndSystemIndex, Cell[AnyPeriodicity]
+]
 
 
 class PositionAndCell(NamedTuple):
     positions: Table[ParticleId, Array]
-    cell: Table[SystemId, Cell]
+    cell: Table[SystemId, Cell[AnyPeriodicity]]
 
 
 @no_type_check
@@ -96,12 +93,12 @@ class Sum[Input](list[Summand[Input]]):
         add_previous_total: Whether to include previous total energy in plan
     """
 
-    def __init__(self, *args: Summand[Input], add_previous_total: bool = False):
+    def __init__(self, *args: Summand[Input], add_previous_total: bool = False) -> None:
         super().__init__(args)
         self.add_previous_total = add_previous_total
 
 
-class SumComposer[State, Input, StatePatch: Patch](Protocol):
+class SumComposer[State, Input, StatePatch: Patch[Any]](Protocol):
     """Protocol for generating incremental energy update plans.
 
     Given a state and proposed patch, returns a sum of weighted configurations
@@ -133,13 +130,13 @@ class SumComposer[State, Input, StatePatch: Patch](Protocol):
 
 
 @dataclass
-class IdentityComposer[Input](SumComposer[Input, Input, Patch]):
+class IdentityComposer[Input](SumComposer[Input, Input, Patch[Any]]):
     """Simple composer that always returns input state unchanged.
 
     Used for potentials without incremental update support (always full recomputation).
     """
 
-    def __call__(self, state: Input, patch: Patch | None) -> Sum[Input]:
+    def __call__(self, state: Input, patch: Patch[Any] | None) -> Sum[Input]:
         if patch is not None:
             raise ValueError("IdentityComposer does not support patches.")
         return Sum(Summand(state))
@@ -149,7 +146,7 @@ class IdentityComposer[Input](SumComposer[Input, Input, Patch]):
 # correctly infer this when provided as a generic argument.
 type EnergyAndCachePatch[State] = (
     WithPatch[Table[SystemId, Energy], Patch[State]]
-    | WithPatch[Table[SystemId, Energy], IdPatch]
+    | WithPatch[Table[SystemId, Energy], IdPatch[State]]
 )
 
 
@@ -179,7 +176,7 @@ class PotentialFromEnergy[
     Input,
     Gradients,
     Hessians,
-    StatePatch: Patch,
+    StatePatch: Patch[Any],
 ]:
     """Converts energy functions to full potentials with gradients and Hessians.
 
@@ -311,7 +308,7 @@ class PotentialFromEnergy[
             for i, idx in enumerate(h_tree.flatten_up_to(h_idx)):
 
                 @jax.vmap
-                def hessian_vec_fn(idx: Array):
+                def hessian_vec_fn(idx: Array) -> Array:
                     a, b = idx
                     tangent = list(map(jnp.zeros_like, h_inp_list))
                     # Set a 1 to the specific element in the flattened input
@@ -350,12 +347,12 @@ class PotentialFromEnergy[
                 total, self.patch_idx_view(state), self.cache_lens
             )
         else:
-            cache_patch = IdPatch()
+            cache_patch = IdPatch[State]()
         out_patch = ComposedPatch((cache_patch, *patches))
         return WithPatch(total, out_patch)
 
 
 if TYPE_CHECKING:
 
-    def __(a: PotentialFromEnergy):
-        _: Potential = a
+    def __(a: PotentialFromEnergy[Any, Any, Any, Any, Patch[Any]]) -> None:
+        _: Potential[Any, Any, Any, Patch[Any]] = a

@@ -12,6 +12,7 @@ snapshots are logged per cycle to HDF5 and reduced post-hoc via
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -24,6 +25,9 @@ from kups.application.mcmc.analysis import analyze_widom_file
 from kups.application.mcmc.data import (
     AdsorbateConfig,
     HostConfig,
+    MCMCGroup,
+    MCMCParticles,
+    MCMCSystems,
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import IsWidomState, make_widom_logged_data
@@ -63,7 +67,7 @@ from kups.core.propagator import (
 )
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
-from kups.core.typing import SystemId
+from kups.core.typing import GroupId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
 from kups.mcmc.moves import (
     ExchangeChanges,
@@ -142,7 +146,9 @@ def _probe(state: WidomState, update: MCMCStateUpdate) -> MCMCStateUpdate:
 def init_state(key: Array, config: Config) -> WidomState:
     """Build the batched Widom state via one ``mcmc_state_from_config`` call per host."""
     chain = key_chain(key)
-    ps, gs, ss = [], [], []
+    ps: list[Table[ParticleId, MCMCParticles]] = []
+    gs: list[Table[GroupId, MCMCGroup]] = []
+    ss: list[Table[SystemId, MCMCSystems]] = []
     motifs = None
     for host in config.hosts:
         p, g, s, m = mcmc_state_from_config(next(chain), host, config.adsorbates)
@@ -240,7 +246,7 @@ def _update_widom_stats(
     return stats.update(ln_alpha, delta_u)
 
 
-def make_widom_probe_from_state[S: IsWidomState, Move: Patch](
+def make_widom_probe_from_state[S: IsWidomState, Move: Patch[Any]](
     state: Lens[S, IsWidomState],
     patch_fn: PatchFn[S, ExchangeChanges, Move],
     log_probability_ratio_fn: LogProbabilityRatioFn[S, Move],

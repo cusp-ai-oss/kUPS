@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import ase
 import jax.numpy as jnp
@@ -39,7 +40,7 @@ class RelaxParticles(Particles):
     position_gradients: Array
     exclusion: Index[ExclusionId] = field(default=None, kw_only=True)  # type: ignore
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.exclusion is None:
             object.__setattr__(self, "exclusion", default_exclusion(len(self.charges)))
 
@@ -53,9 +54,9 @@ class RelaxParticles(Particles):
 class RelaxSystems:
     """System-level data for structure relaxation."""
 
-    cell: Cell
+    cell: Cell[Any]
     """Cell geometry, batched with shape (1,)."""
-    cell_gradients: Cell
+    cell_gradients: Cell[Any]
     """Energy gradient w.r.t. the cell, stored on the same
     :class:`~kups.core.cell.Frame` as :attr:`cell` (i.e. the 6 lower-triangular
     entries of ``∂U/∂h`` for a :class:`~kups.core.cell.TriclinicFrame`). Stress

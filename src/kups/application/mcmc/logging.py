@@ -119,7 +119,7 @@ class MCMCLoggedData[S]:
 def make_mcmc_logged_data[S: IsMCMCState](
     state: S,
     stress_fn: StateProperty[S, Table[SystemId, StressResult]] | None = None,
-) -> MCMCLoggedData:
+) -> MCMCLoggedData[S]:
     """Create MCMC logging config that logs host particles once and adsorbate buffer per step.
 
     Host particles are identified by having out-of-bounds group indices

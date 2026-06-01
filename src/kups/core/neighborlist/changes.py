@@ -12,7 +12,6 @@ returning both as
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Literal, NamedTuple
 
 import jax.numpy as jnp
@@ -37,7 +36,7 @@ class NeighborListChangesResult(NamedTuple):
     removed: Edges[Literal[2]]
 
 
-@partial(jit, static_argnames=("compaction",))
+@jit(static_argnames=("compaction",))
 def neighborlist_changes(
     neighborlist: NeighborList[Literal[2]],
     lh: Table[ParticleId, NeighborListPoints],

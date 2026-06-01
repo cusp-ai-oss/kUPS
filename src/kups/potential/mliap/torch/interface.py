@@ -38,6 +38,7 @@ import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
@@ -52,6 +53,7 @@ from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
     HasAtomicNumbers,
     HasCell,
+    IsState,
     ParticleId,
     SystemId,
 )
@@ -239,7 +241,7 @@ class TorchMliap:
 
 type TorchMliapInput[
     P: IsTorchMliapParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ] = GraphPotentialInput[TorchMliap, P, S, Literal[2]]
 
 
@@ -282,35 +284,35 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
 @overload
 def torch_mliap_model_fn[
     P: IsTorchMliapParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     inp: TorchMliapInput[P, S],
     *,
     compute_cell_gradients: Literal[False] = False,
-) -> WithPatch[PotentialOut[Array, EmptyType], IdPatch]: ...
+) -> WithPatch[PotentialOut[Array, EmptyType], IdPatch[Any]]: ...
 
 
 @overload
 def torch_mliap_model_fn[
     P: IsTorchMliapParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     inp: TorchMliapInput[P, S],
     *,
     compute_cell_gradients: Literal[True],
-) -> WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch]: ...
+) -> WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch[Any]]: ...
 
 
 def torch_mliap_model_fn[
     P: IsTorchMliapParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ](
     inp: TorchMliapInput[P, S],
     *,
     compute_cell_gradients: bool = False,
 ) -> (
-    WithPatch[PotentialOut[Array, EmptyType], IdPatch]
-    | WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch]
+    WithPatch[PotentialOut[Array, EmptyType], IdPatch[Any]]
+    | WithPatch[PotentialOut[PositionAndCell, EmptyType], IdPatch[Any]]
 ):
     """Run a ``TorchMliap`` on a graph input and package the result.
 
@@ -356,11 +358,11 @@ def torch_mliap_model_fn[
         )
         return WithPatch(
             PotentialOut(energy_table, gradients, EMPTY),
-            IdPatch(),
+            IdPatch[Any](),
         )
     return WithPatch(
         PotentialOut(energy_table, pos_grad, EMPTY),
-        IdPatch(),
+        IdPatch[Any](),
     )
 
 
@@ -368,7 +370,7 @@ def torch_mliap_model_fn[
 def make_torch_mliap_potential[
     State,
     P: IsTorchMliapParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
     NNList: NeighborList[Literal[2]],
 ](
     particles_view: View[State, Table[ParticleId, P]],
@@ -385,7 +387,7 @@ def make_torch_mliap_potential[
 def make_torch_mliap_potential[
     State,
     P: IsTorchMliapParticles,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
     NNList: NeighborList[Literal[2]],
 ](
     particles_view: View[State, Table[ParticleId, P]],
@@ -450,14 +452,12 @@ def make_torch_mliap_potential(
 
 
 class IsTorchMliapState(
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+    IsState[IsTorchMliapParticles, HasCell[AnyPeriodicity]],
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    Protocol,
 ):
     """Protocol for states providing all inputs for a torch MLFF potential."""
 
-    @property
-    def particles(self) -> Table[ParticleId, IsTorchMliapParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
     @property
     def torch_mliap_model(self) -> TorchMliap: ...
 
@@ -468,7 +468,7 @@ def make_torch_mliap_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
-) -> Potential[State, Array, EmptyType, Any]: ...
+) -> Potential[State, Array, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -477,7 +477,7 @@ def make_torch_mliap_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[True],
     neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 def make_torch_mliap_from_state(
@@ -502,7 +502,7 @@ def make_torch_mliap_from_state(
     """
     model_view = state.focus(lambda x: x.torch_mliap_model)
 
-    def neighborlist_view(s):
+    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_view(s).cutoff)
 
     return make_torch_mliap_potential(

@@ -27,7 +27,7 @@ Requires the ``torch`` dependency group: ``uv sync --group torch``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, cast, override
 
 import torch  # pyright: ignore[reportMissingImports]
 import torch.nn.functional as F  # pyright: ignore[reportMissingImports]
@@ -81,7 +81,8 @@ class MACEModule(torch.nn.Module):
         self.num_species = num_species
         self.compute_cell_gradients = compute_cell_gradients
 
-    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    @override
+    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:  # type: ignore
         """Run MACE on a universal ``AtomGraphInput`` and return gradients.
 
         Args:

@@ -15,7 +15,7 @@ from typing import Any, Literal, Protocol, overload
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Vacuum
+from kups.core.cell import AnyPeriodicity, Vacuum
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
 from kups.core.lens import Lens, SimpleLens, View
@@ -39,6 +39,7 @@ from kups.core.typing import (
     HasCell,
     HasCharges,
     HasPositionsAndSystemIndex,
+    IsState,
     ParticleId,
     SystemId,
 )
@@ -71,24 +72,24 @@ type CoulombVacuumInput = GraphPotentialInput[
 # which calls the pairwise sum on a periodic cell where CoulombVacuumInput
 # would not type-check.
 type _PairwiseCoulombInput = GraphPotentialInput[
-    Any, IsCoulombGraphParticles, HasCell, Literal[2]
+    Any, IsCoulombGraphParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
 def _pairwise_coulomb_energy(
     inp: _PairwiseCoulombInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     edg = inp.graph.particles[inp.graph.edges.indices]
     qij = edg.charges[:, 0] * edg.charges[:, 1]
     dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
     energies = inp.graph.edge_batch_mask.sum_over(qij / dists) / 2 * TO_STANDARD_UNITS
     assert len(energies) == inp.graph.batch_size
-    return WithPatch(energies, IdPatch())
+    return WithPatch(energies, IdPatch[Any]())
 
 
 def coulomb_vacuum_energy(
     inp: CoulombVacuumInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute Coulomb electrostatic energy for vacuum systems.
 
     Calculates pairwise electrostatic energy using Coulomb's law over all
@@ -105,7 +106,7 @@ def coulomb_vacuum_energy(
 
 def make_coulomb_vacuum_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
@@ -163,14 +164,12 @@ def make_coulomb_vacuum_potential[
 
 
 class IsCoulombVacuumState(
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+    IsState[IsCoulombGraphParticles, HasCell[Vacuum]],
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    Protocol,
 ):
     """Protocol for states providing all inputs for the Coulomb vacuum potential."""
 
-    @property
-    def particles(self) -> Table[ParticleId, IsCoulombGraphParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell[Vacuum]]: ...
     @property
     def coulomb_cutoff(self) -> Table[SystemId, Array]: ...
 
@@ -182,7 +181,7 @@ def make_coulomb_vacuum_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, EmptyType, EmptyType, Any]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -192,11 +191,11 @@ def make_coulomb_vacuum_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[True],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Any]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_coulomb_vacuum_from_state[State, P: Patch](
+def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     state: Lens[State, IsCoulombVacuumState],
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
@@ -206,7 +205,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch](
 
 
 @overload
-def make_coulomb_vacuum_from_state[State, P: Patch](
+def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     state: Lens[State, IsCoulombVacuumState],
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
@@ -256,7 +255,7 @@ def make_coulomb_vacuum_from_state(
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
 
-    def neighborlist_view(s):
+    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), cutoff_view(s))
 
     return make_coulomb_vacuum_potential(

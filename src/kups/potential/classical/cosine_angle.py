@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
@@ -43,6 +44,7 @@ from kups.core.typing import (
     HasCache,
     HasCell,
     HasPositionsAndLabels,
+    IsState,
     Label,
     MaybeCached,
     ParticleId,
@@ -145,7 +147,7 @@ class CosineAngleParameters:
 
 
 type CosineAngleInput = GraphPotentialInput[
-    CosineAngleParameters, IsBondedParticles, HasCell, Literal[3]
+    CosineAngleParameters, IsBondedParticles, HasCell[AnyPeriodicity], Literal[3]
 ]
 
 
@@ -169,7 +171,7 @@ def _compute_cosine_coefficients(theta0: Array) -> tuple[Array, Array, Array]:
 
 def cosine_angle_energy(
     inp: CosineAngleInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     r"""Compute UFF-style cosine angle energy for all angles.
 
     Calculates energy using the general cosine form:
@@ -218,18 +220,18 @@ def cosine_angle_energy(
     edge_energy = jnp.where(is_linear, energy_linear, energy_general)
 
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 def make_cosine_angle_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edge_indices_view: View[State, Index[ParticleId]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, CosineAngleParameters],
     probe: Probe[State, Ptch, IsGraphProbe[IsBondedParticles, Literal[3]]] | None,
     gradient_lens: Lens[CosineAngleInput, Gradients],
@@ -279,15 +281,13 @@ def make_cosine_angle_potential[
     return potential
 
 
-class IsCosineAngleState[Params](Protocol):
+class IsCosineAngleState[Params](
+    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
+):
     """Protocol for states providing full-evaluation cosine angle inputs."""
 
     @property
-    def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def cosine_angle_indices(self) -> Index[ParticleId]: ...
+    def cosine_angle_edge_indices(self) -> Index[ParticleId]: ...
     @property
     def cosine_angle_parameters(self) -> Params: ...
 
@@ -301,7 +301,7 @@ def make_cosine_angle_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -313,11 +313,11 @@ def make_cosine_angle_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_cosine_angle_from_state[State, P: Patch](
+def make_cosine_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsCosineAngleState[
@@ -331,7 +331,7 @@ def make_cosine_angle_from_state[State, P: Patch](
 
 
 @overload
-def make_cosine_angle_from_state[State, P: Patch](
+def make_cosine_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsCosineAngleState[
@@ -401,4 +401,4 @@ def make_cosine_angle_from_state(
 
 
 if TYPE_CHECKING:
-    _: EnergyFunction = cosine_angle_energy
+    _: EnergyFunction[Any, CosineAngleInput] = cosine_angle_energy

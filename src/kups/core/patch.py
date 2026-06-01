@@ -48,7 +48,7 @@ class Patch[State](Protocol):
     def __call__(self, state: State, accept: Accept, /) -> State: ...
 
 
-class Probe[State, P: Patch, R](Protocol):
+class Probe[State, P: Patch[Any], R](Protocol):
     """Protocol for functions that extract information from state and patches.
 
     Probes are used to query simulation state and patch information, typically
@@ -107,7 +107,7 @@ class IndexLensPatch[State, T](Patch[State]):
     lens: Lens[State, T] = field(static=True)
 
     def __call__(self, state: State, accept: Accept) -> State:
-        def inner(idx, new_val, old_val):
+        def inner(idx: Any, new_val: Any, old_val: Any) -> Any:
             assert isinstance(idx, Index), "mask_idx must be an Index"
             return tree_map(
                 lambda a, b: where_broadcast_last(accept[idx], a, b), new_val, old_val
@@ -183,7 +183,7 @@ class WithPatch(Generic[T_Data, T_Patch]):
         """
         return WithPatch(view(self.data), self.patch)
 
-    def map_patch[P: Patch](self, view: View[T_Patch, P]) -> WithPatch[T_Data, P]:
+    def map_patch[P: Patch[Any]](self, view: View[T_Patch, P]) -> WithPatch[T_Data, P]:
         """Transform patch while preserving data.
 
         Args:
@@ -194,7 +194,7 @@ class WithPatch(Generic[T_Data, T_Patch]):
         """
         return WithPatch(self.data, view(self.patch))
 
-    def compose_patch(self, other: Patch) -> WithPatch[T_Data, ComposedPatch]:
+    def compose_patch(self, other: Patch[Any]) -> WithPatch[T_Data, ComposedPatch[Any]]:
         """Compose another patch after this one.
 
         Args:
@@ -205,9 +205,9 @@ class WithPatch(Generic[T_Data, T_Patch]):
         """
         return WithPatch(self.data, ComposedPatch((self.patch, other)))
 
-    def __add__[D: Addable, P1: Patch, P2: Patch](
+    def __add__[D: Addable, P1: Patch[Any], P2: Patch[Any]](
         self: WithPatch[D, P1], other: WithPatch[D, P2]
-    ) -> WithPatch[D, ComposedPatch]:
+    ) -> WithPatch[D, ComposedPatch[Any]]:
         """Add two WithPatch instances by adding data and composing patches.
 
         Requires T_Data to support __add__. Returns WithPatch with summed data

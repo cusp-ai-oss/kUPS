@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple, override
 
 import ase
 import ase.data
@@ -18,7 +18,7 @@ from jax import Array
 from pydantic import BaseModel, model_validator
 
 from kups.application.utils.particles import Particles, particles_from_ase
-from kups.core.cell import Cell, make_supercell
+from kups.core.cell import AnyPeriodicity, Cell, is_3d_periodic, make_supercell
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
 from kups.core.data import Index, Table
 from kups.core.data.buffered import Buffered
@@ -225,13 +225,14 @@ class MCMCParticles(Particles):
     motif: Index[MotifParticleId]
     position_gradients: Array = field(default=None)  # type: ignore[assignment]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.position_gradients is None:
             object.__setattr__(
                 self, "position_gradients", jnp.zeros_like(self.positions)
             )
 
     @property
+    @override
     def inclusion(self) -> Index[InclusionId]:
         """Inclusion index derived from the system index."""
         return Index(
@@ -283,13 +284,13 @@ class MCMCSystems:
         log_fugacity: Log fugacity per species (dimensionless), shape ``(n_systems, n_species)``.
     """
 
-    cell: Cell
+    cell: Cell[Any]
     temperature: Array
     potential_energy: Array
     log_fugacity: Array
-    cell_gradients: Cell = field(default=None)  # type: ignore[assignment]
+    cell_gradients: Cell[Any] = field(default=None)  # type: ignore[assignment]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.cell_gradients is None:
             object.__setattr__(self, "cell_gradients", tree_zeros_like(self.cell))
 
@@ -304,7 +305,7 @@ class MCMCSystems:
 def _make_molecule(
     motifs: Table[MotifParticleId, MotifParticles],
     species_idx: Index[MotifId],
-    cell: Cell,
+    cell: Cell[AnyPeriodicity],
     key: Array,
 ) -> tuple[Table[ParticleId, MCMCParticles], Table[GroupId, MCMCGroup]]:
     """Place one adsorbate molecule at a random position within the unit cell.
@@ -371,6 +372,9 @@ def mcmc_state_from_config(
         Tuple of ``(particles, groups, system, motifs)``.
     """
     hp, cell, _ = particles_from_ase(host.cif_file)
+    assert is_3d_periodic(cell), (
+        "Only 3D periodic cells are supported for MCMC simulations"
+    )
     p = hp.data
     n_host = len(hp.keys)
     if host.cell_replication is not None:

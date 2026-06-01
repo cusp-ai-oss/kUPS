@@ -23,7 +23,7 @@ References:
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 import jax.numpy as jnp
 from jax import Array
@@ -47,7 +47,7 @@ type Energy = Array
 r"""Potential energy [energy]."""
 
 
-def widom_test[State, Changes, Move: Patch](
+def widom_test[State, Changes, Move: Patch[Any]](
     key: Array,
     state: State,
     propose_fn: ChangesFn[State, Changes],
@@ -132,7 +132,7 @@ class WidomStatistics:
 
 
 @dataclass
-class GhostProbe[State, Changes, Move: Patch, Stat](Propagator[State]):
+class GhostProbe[State, Changes, Move: Patch[Any], Stat](Propagator[State]):
     r"""Propagator running one ghost move and updating a lens-accessed statistic.
 
     Attributes:

@@ -10,7 +10,7 @@ accessing fields as class attributes.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol, get_origin, get_type_hints
+from typing import Any, Callable, Protocol, get_origin, get_type_hints, override
 
 
 class FieldHandler(Protocol):
@@ -23,10 +23,10 @@ class FieldHandler(Protocol):
     (e.g., a Lens object).
     """
 
-    def __call__(self, cls, name) -> Any: ...
+    def __call__(self, cls: type, name: str) -> Any: ...
 
 
-_FIELD_HANDLERS: dict[Any, FieldHandler] = {}
+_FIELD_HANDLERS: dict[type, FieldHandler] = {}
 
 
 def register_field_handler(field_type: type) -> Callable[[FieldHandler], FieldHandler]:
@@ -80,7 +80,8 @@ class FieldMetaAccess(type):
         >>> point.x  # Returns 5.0 (normal instance access)
     """
 
-    def __getattribute__(cls, name):
+    @override
+    def __getattribute__(cls, name: str) -> Any:
         try:
             dataclass_fields = object.__getattribute__(cls, "__dataclass_fields__")
         except AttributeError:

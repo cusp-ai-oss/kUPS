@@ -42,13 +42,13 @@ composes the same way:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.data.index import Index
+from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
@@ -74,9 +74,9 @@ class ScaleByFireState:
     """
 
     velocity: PyTree
-    dt: Table[Any, Array]
-    alpha: Table[Any, Array]
-    n_pos: Table[Any, Array]
+    dt: Table[SupportsSorting, Array]
+    alpha: Table[SupportsSorting, Array]
+    n_pos: Table[SupportsSorting, Array]
     index_prefix: PyTree
 
 
@@ -145,6 +145,7 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
     def _dt_min(self) -> float:
         return self.dt_min if self.dt_min is not None else self.dt_start * 1e-4
 
+    @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ScaleByFireState:
@@ -164,6 +165,7 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
             index_prefix=tree_copy(index_prefix),
         )
 
+    @override
     def update(
         self,
         updates: Params,

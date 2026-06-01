@@ -58,7 +58,7 @@ class Quaternion(Sliceable):
 
     components: Array
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Skip checks for tracers/wrappers
         if not isinstance(self.components, jax.Array):
             return

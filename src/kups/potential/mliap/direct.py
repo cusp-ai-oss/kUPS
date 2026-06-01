@@ -28,8 +28,9 @@ Example:
 
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import NeighborList
@@ -52,7 +53,7 @@ from kups.potential.common.graph import (
 type DirectMliapInput[
     Model,
     P: HasPositionsAndSystemIndex,
-    S: HasCell,
+    S: HasCell[AnyPeriodicity],
 ] = GraphPotentialInput[Model, P, S, Literal[2]]
 
 
@@ -61,8 +62,8 @@ class DirectMliapFn[
     Gradients,
     Hessians,
     P: HasPositionsAndSystemIndex,
-    S: HasCell,
-    Ptch: Patch,
+    S: HasCell[AnyPeriodicity],
+    Ptch: Patch[Any],
 ](Protocol):
     """Protocol for a direct MLIAP model function.
 
@@ -87,8 +88,8 @@ def make_direct_mliap_potential[
     Gradients,
     Hessians,
     P: IsRadiusGraphPoints,
-    S: HasCell,
-    Ptch: Patch,
+    S: HasCell[AnyPeriodicity],
+    Ptch: Patch[Any],
 ](
     model_fn: DirectMliapFn[Model, Gradients, Hessians, P, S, Ptch],
     particles_view: View[State, Table[ParticleId, P]],

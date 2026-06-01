@@ -14,7 +14,8 @@ import dataclasses
 import functools
 import math
 import threading
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
+from copy import copy
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -30,6 +31,7 @@ from typing import (
     Union,
     cast,
     dataclass_transform,
+    no_type_check,
     overload,
     runtime_checkable,
 )
@@ -56,7 +58,7 @@ if TYPE_CHECKING:
 
 
 @overload
-def jit[C: Callable](
+def jit[C: Callable[..., Any]](
     fn: C,
     *,
     in_shardings: Any = ...,
@@ -75,7 +77,7 @@ def jit[C: Callable](
 
 
 @overload
-def jit[C: Callable](
+def jit[C: Callable[..., Any]](
     fn: None = None,
     *,
     in_shardings: Any = ...,
@@ -93,7 +95,7 @@ def jit[C: Callable](
 ) -> Callable[[C], C]: ...
 
 
-def jit[C: Callable](
+def jit[C: Callable[..., Any]](
     fn: C | None = None,
     *,
     in_shardings: Any = None,
@@ -192,7 +194,7 @@ def jit[C: Callable](
         # validation logic is traced and compiled into the program rather than
         # running on the host. Outside of jit, post-init is disabled to avoid
         # redundant host-side checks on the jitted outputs.
-        def f_closed(*args, **kwargs):
+        def f_closed(*args: Any, **kwargs: Any):
             with enable_post_init():
                 return fun(*args, **kwargs)
 
@@ -201,7 +203,7 @@ def jit[C: Callable](
         )
         f_jitted = jax.jit(f_closed, **jit_kwargs)
 
-        def f_result(*args, **kwargs):
+        def f_result(*args: Any, **kwargs: Any):
             with no_post_init():
                 return f_jitted(*args, **kwargs)
 
@@ -212,14 +214,14 @@ def jit[C: Callable](
     return inner_jit(fn)
 
 
-def shard_map[C: Callable](
+def shard_map[C: Callable[..., Any]](
     f: C,
     /,
     *,
     out_specs: Any,
     in_specs: Any = None,
     mesh: jax.sharding.Mesh | None = None,
-    axis_names: frozenset = frozenset(),
+    axis_names: frozenset[str] = frozenset(),
     check_vma: bool = True,
 ) -> C:
     """Map a function over shards of data for multi-device parallel computation.
@@ -296,14 +298,14 @@ def shard_map[C: Callable](
     sharded_f = jax.shard_map(f, **shard_kwargs)  # type: ignore
 
     @functools.wraps(f)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any):
         return sharded_f(*args, **kwargs)
 
     return wrapper  # type: ignore
 
 
 @overload
-def vectorize[C: Callable](
+def vectorize[C: Callable[..., Any]](
     pyfunc: None = None,
     *,
     excluded: frozenset[int] = ...,
@@ -312,7 +314,7 @@ def vectorize[C: Callable](
 
 
 @overload
-def vectorize[C: Callable](
+def vectorize[C: Callable[..., Any]](
     pyfunc: C,
     *,
     excluded: frozenset[int] = ...,
@@ -320,7 +322,7 @@ def vectorize[C: Callable](
 ) -> C: ...
 
 
-def vectorize[C: Callable](
+def vectorize[C: Callable[..., Any]](
     pyfunc: C | None = None,
     *,
     excluded: frozenset[int] = frozenset(),
@@ -368,7 +370,7 @@ def vectorize[C: Callable](
         vectorized = jnp.vectorize(fun, excluded=excluded, signature=signature)
 
         @functools.wraps(fun)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any):
             return vectorized(*args, **kwargs)
 
         return wrapper  # type: ignore
@@ -391,6 +393,7 @@ def linearize[*T, R1](
 ) -> tuple[R1, Callable[[*T], R1]]: ...
 
 
+@no_type_check
 def linearize[*T, R1, R2](
     fn: Callable[[*T], R1] | Callable[[*T], tuple[R1, R2]],
     *primals: *T,
@@ -548,12 +551,12 @@ def lens_field[T](
     *,
     default: T | dataclasses._MISSING_TYPE = dataclasses.MISSING,
     default_factory: Callable[[], T] | dataclasses._MISSING_TYPE = dataclasses.MISSING,
-    init=True,
-    repr=True,
-    hash=None,
-    compare=True,
-    metadata=None,
-    kw_only=dataclasses.MISSING,
+    init: bool = True,
+    repr: bool = True,
+    hash: bool | None = None,
+    compare: bool = True,
+    metadata: Mapping[Any, Any] | None = None,
+    kw_only: bool | dataclasses._MISSING_TYPE = dataclasses.MISSING,
     static: bool = False,
 ) -> LensField[T]:
     """Create a field for use with LensField annotations.
@@ -639,8 +642,8 @@ def dataclass[T: type](
 
 
 @dataclass_transform(field_specifiers=(field, dataclasses.Field), frozen_default=True)
-def dataclass[T: type](
-    cls: T | None = None,
+def dataclass[T](
+    cls: type[T] | None = None,
     /,
     *,
     init: bool = True,
@@ -653,7 +656,7 @@ def dataclass[T: type](
     kw_only: bool = False,
     slots: bool = False,
     weakref_slot: bool = False,
-) -> T | Callable[[T], T]:
+) -> type[T] | Callable[[type[T]], type[T]]:
     """Create a dataclass that works as a JAX PyTree.
 
     Combines Python's `@dataclass` with JAX's PyTree registration, enabling
@@ -707,7 +710,8 @@ def dataclass[T: type](
         `frozen=True`.
     """
 
-    def make_dataclass(cls: T) -> T:
+    @no_type_check
+    def make_dataclass(cls: type[T]) -> type[T]:
         # https://github.com/jax-ml/jax/pull/24664
         if "_jax_dataclass" in cls.__dict__:
             return cls
@@ -724,7 +728,7 @@ def dataclass[T: type](
             slots=slots,
             weakref_slot=weakref_slot,
         )  # type: ignore
-        dcls._jax_dataclass = True
+        setattr(dcls, "_jax_dataclass", True)
         # All static fields land in aux_data so sibling subclasses pinning
         # the same field to different `init=False` defaults (e.g.
         # PeriodicCell vs VacuumCell) produce distinct treedefs; the
@@ -741,7 +745,11 @@ def dataclass[T: type](
             f.name for f in all_fields if f.init and f.metadata.get("static", False)
         )
 
-        def _flatten_with_keys(x, _data=data_fields, _meta=meta_fields):
+        def _flatten_with_keys(
+            x: T,
+            _data: tuple[str, ...] = data_fields,
+            _meta: tuple[str, ...] = meta_fields,
+        ):
             children = tuple(
                 (jax.tree_util.GetAttrKey(n), getattr(x, n)) for n in _data
             )
@@ -749,13 +757,13 @@ def dataclass[T: type](
             return children, aux
 
         def _unflatten(
-            meta,
-            data,
-            _cls=dcls,
-            _data=data_fields,
-            _meta=meta_fields,
-            _init_meta=frozenset(init_meta_fields),
-        ):
+            meta: tuple[object, ...],
+            data: Iterable[Any],
+            _cls: type = dcls,
+            _data: tuple[str, ...] = data_fields,
+            _meta: tuple[str, ...] = meta_fields,
+            _init_meta: frozenset[str] = frozenset(init_meta_fields),
+        ) -> T:
             kwargs = dict(zip(_data, data))
             kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
             return _cls(**kwargs)
@@ -781,15 +789,15 @@ def _set_post_init(active: bool):
         _no_post_init.active = before_value
 
 
-def no_post_init():
+def no_post_init() -> AbstractContextManager[None]:
     return _set_post_init(True)
 
 
-def enable_post_init():
+def enable_post_init() -> AbstractContextManager[None]:
     return _set_post_init(False)
 
 
-def skip_post_init_if_disabled(post_init: Callable):
+def skip_post_init_if_disabled(post_init: Callable[..., None]):
     """Skip ``__post_init__`` validation when inside a :func:`no_post_init` context.
 
     JAX dataclass containers like ``Table`` and ``Buffered`` validate
@@ -800,7 +808,7 @@ def skip_post_init_if_disabled(post_init: Callable):
     ``__post_init__`` with this function to opt into that suppression.
     """
 
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: object, *args: Any, **kwargs: Any):
         if getattr(_no_post_init, "active", False):
             return
         return post_init(self, *args, **kwargs)
@@ -842,16 +850,16 @@ def tree_scatter_set[T](item: T, value: T, idxs: Array, args: ScatterArgs) -> T:
         Updated pytree with the same structure as ``item``.
     """
 
-    def _is_leaf(x):
+    def _is_leaf(x: object) -> bool:
         return isinstance(x, HasScatterArgs)
 
-    def _array_setter(scatter_args: ScatterArgs, arr: Array, val: Array):
+    def _array_setter(scatter_args: ScatterArgs, arr: Array, val: Array) -> Array:
         if getattr(idxs, "size", -1) == 0:
             return arr
         # Remove fill_value (not accepted by .at[].set) without mutating caller
-        set_args: ScatterArgs = {
-            k: v for k, v in scatter_args.items() if k != "fill_value"
-        }  # type: ignore[assignment]
+        set_args = copy(scatter_args)
+        if "fill_value" in set_args:
+            del set_args["fill_value"]
         return arr.at[idxs].set(val, **set_args)
 
     def _setter[L: Array | HasScatterArgs](arr: L, val: L):
@@ -962,7 +970,7 @@ def non_differentiable[T](x: T) -> T:
 
 
 @non_differentiable.defjvp
-def non_differentiable_jvp(primals, tangents):
+def non_differentiable_jvp(primals: tuple[Any, ...], tangents: tuple[Any, ...]):
     raise NotImplementedError("Function is not differentiable.")
 
 
@@ -972,7 +980,7 @@ class NotJaxCompatibleError(Exception):
     pass
 
 
-def no_jax_tracing[C: Callable](fn: C) -> C:
+def no_jax_tracing[C: Callable[..., Any]](fn: C) -> C:
     """Decorator to mark functions that should not be used within JAX transformations.
 
     Checks if any input pytree contains a JAX tracer. If so, raises NotJaxCompatibleError.
@@ -1001,12 +1009,12 @@ def no_jax_tracing[C: Callable](fn: C) -> C:
         ```
     """
 
-    def _contains_tracer(x: Any) -> bool:
+    def _contains_tracer(x: object) -> bool:
         leaves = jax.tree_util.tree_leaves(x)
         return any(isinstance(leaf, jax.core.Tracer) for leaf in leaves)
 
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any):
         for arg in args:
             if _contains_tracer(arg):
                 raise NotJaxCompatibleError(
@@ -1039,7 +1047,7 @@ class SupportsTreeMatch(Protocol):
 
 
 def tree_map[T, *S](
-    fn: Callable,
+    fn: Callable[..., Any],
     tree: T,
     *trees: *S,  # type: ignore[reportInvalidTypeVarUse]
     is_leaf: Callable[[Any], bool] | None = None,
@@ -1066,15 +1074,17 @@ def tree_map[T, *S](
     """
     _leaf_tree_def = jax.tree.structure(0)
 
-    def _has_tree_match(x):
+    def _has_tree_match(x: object) -> bool:
         return isinstance(x, SupportsTreeMatch)
 
-    def _is_leaf(x):
+    def _is_leaf(x: object) -> bool:
         return _has_tree_match(x) or (bool(is_leaf) and is_leaf(x))
 
-    def _fn(x, *other):
+    def _fn(x: Any, *other: Any):
         if _has_tree_match(x) and other:
-            x, *other = x.__tree_match__(*other)
+            matched = x.__tree_match__(*other)
+            x = matched[0]
+            other = matched[1:]
         if (is_leaf and is_leaf(x)) or jax.tree.structure(x) == _leaf_tree_def:
             return fn(x, *other)
         struc = tree_structure(x, is_leaf=lambda y: y is not x and _is_leaf(y))
@@ -1134,6 +1144,7 @@ def tree_where_broadcast_last[T](accept: Array, tree1: T, tree2: T) -> T:
     return tree_map(lambda a, b: where_broadcast_last(accept, a, b), tree1, tree2)
 
 
+@no_type_check
 def sequential_vmap_with_vjp[*P, R](func: Callable[[*P], R]) -> Callable[[*P], R]:
     """Create a sequentially vmapped function with custom VJP support.
 

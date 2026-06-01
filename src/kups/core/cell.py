@@ -101,7 +101,7 @@ from __future__ import annotations
 import math
 from enum import Enum
 from functools import partial
-from typing import Any, Literal, Protocol, Self, TypeGuard, overload
+from typing import Any, Generic, Literal, Protocol, Self, TypeGuard, TypeVar, overload
 
 import jax
 import jax.numpy as jnp
@@ -112,6 +112,8 @@ from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.math import triangular_3x3_det_and_inverse, triangular_3x3_matmul
+
+_P = TypeVar("_P", bound=tuple[bool, bool, bool], covariant=True)
 
 
 class CoordinateSpace(Enum):
@@ -544,7 +546,7 @@ def _wrap(
 
 
 @dataclass
-class Cell[P: tuple[bool, bool, bool]](Sliceable):
+class Cell(Sliceable, Generic[_P]):
     """A [Frame][kups.core.cell.Frame] plus per-axis boundary semantics.
 
     Generic over the periodicity literal ``P`` (a length-3 tuple of
@@ -564,7 +566,7 @@ class Cell[P: tuple[bool, bool, bool]](Sliceable):
     """
 
     frame: Frame
-    periodic: P = field(static=True)
+    periodic: _P = field(static=True)
 
     @property
     def vectors(self) -> Array:
@@ -676,7 +678,7 @@ class VacuumCell(Cell[Vacuum]):
     periodic: Vacuum = field(default=(False, False, False), init=False, static=True)
 
 
-def min_multiplicity(cell: Cell, cutoff: float | Array) -> Array:
+def min_multiplicity[P: AnyPeriodicity](cell: Cell[P], cutoff: float | Array) -> Array:
     """Minimum supercell replication per axis for a given cutoff.
 
     Returns 1 for non-periodic axes (no replication needed).
@@ -748,7 +750,7 @@ def is_3d_periodic[P: tuple[bool, bool, bool]](
     return all(cell.periodic)
 
 
-def require_periodic_3d(cell: Cell) -> None:
+def require_periodic_3d[P: AnyPeriodicity](cell: Cell[P]) -> None:
     """Raise ``TypeError`` unless ``cell`` is fully 3D-periodic.
 
     Equivalent to asserting ``isinstance(cell, PeriodicCell)`` but with a
@@ -761,7 +763,7 @@ def require_periodic_3d(cell: Cell) -> None:
         )
 
 
-def require_triclinic_frame(cell: Cell) -> None:
+def require_triclinic_frame[P: AnyPeriodicity](cell: Cell[P]) -> None:
     """Raise ``TypeError`` unless ``cell.frame`` is a
     [TriclinicFrame][kups.core.cell.TriclinicFrame].
 
@@ -780,7 +782,7 @@ def require_triclinic_frame(cell: Cell) -> None:
         )
 
 
-def require_periodic_3d_triclinic(cell: Cell) -> None:
+def require_periodic_3d_triclinic[P: AnyPeriodicity](cell: Cell[P]) -> None:
     """Shorthand for ``require_periodic_3d(cell); require_triclinic_frame(cell)``."""
     require_periodic_3d(cell)
     require_triclinic_frame(cell)

@@ -43,13 +43,13 @@ LAMMPS ``dmax`` (``max_step``) is independent of these:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.data.index import Index
+from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
@@ -81,9 +81,9 @@ class ScaleByFire2State:
     """
 
     velocity: PyTree
-    dt: Table[Any, Array]
-    alpha: Table[Any, Array]
-    n_pos: Table[Any, Array]
+    dt: Table[SupportsSorting, Array]
+    alpha: Table[SupportsSorting, Array]
+    n_pos: Table[SupportsSorting, Array]
     n_total: Array
     index_prefix: PyTree
 
@@ -151,6 +151,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
     halfstepback: bool = field(static=True, default=True)
     delaystep_start: bool = field(static=True, default=True)
 
+    @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ScaleByFire2State:
@@ -171,6 +172,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             index_prefix=tree_copy(index_prefix),
         )
 
+    @override
     def update(
         self,
         updates: Params,

@@ -21,7 +21,7 @@ from kups.relaxation.transforms.fire2 import ScaleByFire2
 from kups.relaxation.transforms.lbfgs import ScaleByAseLbfgs
 from kups.relaxation.transforms.max_step_size import MaxStepSize
 
-Transform = str | dict[str, bool | int | float | str | list | None]
+Transform = str | dict[str, bool | int | float | str | list[Any] | None]
 """A single transform spec: either a name string or a dict with ``"transform"`` key."""
 
 TransformationConfig = list[Transform]
@@ -36,7 +36,9 @@ _CUSTOM_TRANSFORMS: dict[str, Any] = {
 }
 
 
-def get_transform(transform: Transform) -> optax.GradientTransformation | Optimizer:
+def get_transform(
+    transform: Transform,
+) -> optax.GradientTransformation | Optimizer[Any, Any]:
     """Convert a transform config entry to an Optax GradientTransformation.
 
     Args:
@@ -69,7 +71,7 @@ def get_transform(transform: Transform) -> optax.GradientTransformation | Optimi
 
 def get_transformations(
     transformations: TransformationConfig,
-) -> list[optax.GradientTransformation | Optimizer]:
+) -> list[optax.GradientTransformation | Optimizer[Any, Any]]:
     """Convert a list of transform configs to Optax GradientTransformations.
 
     Args:
@@ -81,7 +83,7 @@ def get_transformations(
     return [get_transform(t) for t in transformations]
 
 
-def make_optimizer(transformations: TransformationConfig) -> Optimizer:
+def make_optimizer(transformations: TransformationConfig) -> Optimizer[Any, Any]:
     """Create a chained optimizer from a list of transform configs.
 
     Args:

@@ -78,7 +78,8 @@ def init_state(key: Array, config: Config) -> MlffMdState:
     model_path = get_model_path(config.model_path)
     jaxified_model = TojaxedMliap.from_zip_file(model_path)
     mb_key = key if config.md.initialize_momenta else None
-    all_particles, all_systems = [], []
+    all_particles: list[Table[ParticleId, MDParticles]] = []
+    all_systems: list[Table[SystemId, MDSystems]] = []
     for inp_file in config.inp_files:
         particles_i, systems_i = md_state_from_ase(inp_file, config.md, key=mb_key)
         all_particles.append(particles_i)

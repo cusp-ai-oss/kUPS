@@ -58,7 +58,7 @@ class IsCellListParams(Protocol):
     def avg_image_candidates(self) -> int: ...
 
 
-def _cell_hash(coordinate: Array, num_cells: Array):
+def _cell_hash(coordinate: Array, num_cells: Array) -> Array:
     """Hash folded fractional coordinates into row-major cell bins.
 
     Boundary values are clamped into the valid bin range for each axis.
@@ -68,7 +68,7 @@ def _cell_hash(coordinate: Array, num_cells: Array):
     return (bin_idx * factor).sum(axis=-1)
 
 
-def _cell_stencil(dim: int):
+def _cell_stencil(dim: int) -> Array:
     with jax.ensure_compile_time_eval():
         return jnp.stack(
             jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),

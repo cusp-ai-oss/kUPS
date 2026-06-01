@@ -29,7 +29,7 @@ import scipy.special
 from jax import Array
 from scipy.special import erfc
 
-from kups.core.cell import Cell, Periodic3D
+from kups.core.cell import AnyPeriodicity, Cell, Periodic3D
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
@@ -59,6 +59,7 @@ from kups.core.typing import (
     HasCell,
     HasCharges,
     InclusionId,
+    IsState,
     MaybeCached,
     ParticleId,
     SystemId,
@@ -242,7 +243,7 @@ type EwaldShortRangeInput = GraphPotentialInput[
 """Input type for the real-space short-range Ewald energy."""
 
 type EwaldSelfInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasCell[Periodic3D], Any
+    EwaldParameters, IsEwaldPointData, HasCell[Periodic3D], Literal[0]
 ]
 """Input type for the Ewald self-interaction correction."""
 
@@ -261,7 +262,7 @@ class EwaldLongRangeInput[State]:
 
     point_cloud: PointCloud[IsEwaldPointData, HasCell[Periodic3D]]
     parameters: EwaldParameters
-    cache: EwaldCache | None = None
+    cache: EwaldCache[Any, Any] | None = None
     cache_lens: Lens[State, EwaldCache[Any, Any]] | None = None
     changes_from_prev: WithIndices[ParticleId, IsEwaldPointData] | None = None
 
@@ -281,7 +282,7 @@ class EwaldLongRangeInput[State]:
 
 def ewald_self_interaction_energy(
     inp: EwaldSelfInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Self-interaction correction for Ewald summation.
 
     Removes the artificial interaction of each charge with its own Gaussian
@@ -304,12 +305,12 @@ def ewald_self_interaction_energy(
         / jnp.sqrt(jnp.pi)
     )
     energies *= TO_STANDARD_UNITS
-    return WithPatch(Table.arange(energies, label=SystemId), IdPatch())
+    return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
 
 
 def ewald_short_range_energy(
     inp: EwaldShortRangeInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Real-space (short-range) screened Coulomb energy.
 
     Math: ``E_sr = 1/2 * TO_STANDARD_UNITS * sum_{i<j} q_i*q_j * erfc(alpha*r_ij) / r_ij``.
@@ -327,12 +328,12 @@ def ewald_short_range_energy(
     mask = dists < inp.parameters.cutoff[edge_systems]
     energies *= mask
     total = inp.graph.edge_batch_mask.sum_over(energies) / 2 * TO_STANDARD_UNITS
-    return WithPatch(total, IdPatch())
+    return WithPatch(total, IdPatch[Any]())
 
 
 def exclusion_correction_energy(
     inp: EwaldShortRangeInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Correction for excluded pairs (e.g., bonded atoms).
 
     Math: ``E_excl = E_sr(excluded) - E_vacuum(excluded)``.
@@ -347,11 +348,11 @@ def exclusion_correction_energy(
             ewald_short_range_energy(inp).data,
             _pairwise_coulomb_energy(inp).data,
         ),
-        IdPatch(),
+        IdPatch[Any](),
     )
 
 
-def long_range(inp: EwaldLongRangeInput, structure_factor: Array) -> Energy:
+def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy:
     """Reciprocal-space energy from structure factors.
 
     Math: ``E_lr = sum_k P(k) * |S(k)|^2`` where ``P(k)`` is the prefactor
@@ -365,7 +366,7 @@ def long_range(inp: EwaldLongRangeInput, structure_factor: Array) -> Energy:
     )
 
 
-def prefactor(inp: EwaldLongRangeInput) -> Array:
+def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
     """Reciprocal-space prefactor for each k-vector.
 
     Math: ``P(k) = 2*pi/V * exp(-k^2 / (4*alpha^2)) / k^2`` for k != 0,
@@ -453,9 +454,9 @@ def _structure_factor_update(
     charges: Array,
     kvecs: Array,
     batch_mask: Index[SystemId],
-    cache: EwaldCache,
+    cache: EwaldCache[Any, Any],
     changes: WithIndices[ParticleId, IsEwaldPointData],
-):
+) -> Array:
     """Incremental structure factor update.
 
     Math: ``S'(k) = S(k) + dS(k)`` where
@@ -494,7 +495,7 @@ def _structure_factor_update(
 @functools.partial(_structure_factor_update.defjvp, symbolic_zeros=True)
 def _structure_factor_update_jvp(
     batch_mask: Index[SystemId],
-    cache: EwaldCache,
+    cache: EwaldCache[Any, Any],
     changes: WithIndices[ParticleId, IsEwaldPointData],
     primals: tuple[Array, Array, Array],
     tangents: tuple[Array, Array, Array],
@@ -582,7 +583,7 @@ def structure_factor[State](
     patch = (
         EwaldCachePatch(sk, inp.point_cloud.systems.index, inp.cache_lens)
         if inp.cache_lens is not None
-        else IdPatch()
+        else IdPatch[State]()
     )
     return sk, patch
 
@@ -609,7 +610,7 @@ def ewald_long_range_energy[State](
 @dataclass
 class EwaldLongRangeComposer[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
 ]:
     """Composer for the long-range Ewald potential.
 
@@ -625,7 +626,7 @@ class EwaldLongRangeComposer[
         static=True
     )
     parameters: Lens[State, EwaldParameters] = field(static=True)
-    cache: Lens[State, EwaldCache] | None = field(static=True)
+    cache: Lens[State, EwaldCache[Any, Any]] | None = field(static=True)
 
     def __call__(
         self, state: State, patch: Ptch | None
@@ -663,35 +664,35 @@ class EwaldLongRangeComposer[
 
 
 @dataclass
-class EwaldPotential[State, Gradients, Hessians, P: Patch](
+class EwaldPotential[State, Gradients, Hessians, P: Patch[Any]](
     SummedPotential[State, Gradients, Hessians, P]
 ):
     """Complete Ewald potential with named access to each component term."""
 
     @property
-    def short_range(self):
+    def short_range(self) -> Potential[State, Gradients, Hessians, P]:
         """Real-space short-range potential component."""
         return self.potentials[0]
 
     @property
-    def long_range(self):
+    def long_range(self) -> Potential[State, Gradients, Hessians, P]:
         """Reciprocal-space long-range potential component."""
         return self.potentials[1]
 
     @property
-    def self_interaction(self):
+    def self_interaction(self) -> Potential[State, Gradients, Hessians, P]:
         """Self-interaction correction term."""
         return self.potentials[2]
 
     @property
-    def exclusion_correction(self):
+    def exclusion_correction(self) -> Potential[State, Gradients, Hessians, P]:
         """Exclusion correction: subtracts vacuum Coulomb energy for bonded/excluded pairs."""
         return self.potentials[3]
 
 
 def make_ewald_short_range_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
@@ -705,7 +706,7 @@ def make_ewald_short_range_potential[
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
-) -> Potential[State, Gradients, Hessians, Any]:
+) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the Ewald real-space (short-range) potential."""
 
     return PotentialFromEnergy(
@@ -720,7 +721,9 @@ def make_ewald_short_range_potential[
             parameter_view=parameter_view,
         ),
         gradient_lens=NestedLens(
-            SimpleLens[GraphPotentialInput, PointCloud](lambda state: state.graph),
+            SimpleLens[
+                EwaldShortRangeInput, PointCloud[IsEwaldPointData, HasCell[Periodic3D]]
+            ](lambda state: state.graph),
             gradient_lens,
         ),
         hessian_lens=hessian_lens,
@@ -732,14 +735,14 @@ def make_ewald_short_range_potential[
 
 def make_ewald_long_range_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
     parameter_lens: Lens[State, EwaldParameters],
-    cache_lens: Lens[State, EwaldCache] | None,
+    cache_lens: Lens[State, EwaldCache[Gradients, Hessians]] | None,
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
         PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients
@@ -747,7 +750,7 @@ def make_ewald_long_range_potential[
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-) -> Potential[State, Gradients, Hessians, Any]:
+) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the Ewald reciprocal-space (long-range) potential."""
     return PotentialFromEnergy(
         energy_fn=ewald_long_range_energy,
@@ -759,9 +762,10 @@ def make_ewald_long_range_potential[
             cache=cache_lens,
         ),
         gradient_lens=NestedLens(
-            SimpleLens[EwaldLongRangeInput, PointCloud](
-                lambda state: state.point_cloud
-            ),
+            SimpleLens[
+                EwaldLongRangeInput[State],
+                PointCloud[IsEwaldPointData, HasCell[Periodic3D]],
+            ](lambda state: state.point_cloud),
             gradient_lens,
         ),
         hessian_lens=hessian_lens,
@@ -773,7 +777,7 @@ def make_ewald_long_range_potential[
 
 def make_ewald_self_interaction_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
@@ -788,7 +792,7 @@ def make_ewald_self_interaction_potential[
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
-) -> Potential[State, Gradients, Hessians, Any]:
+) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the Ewald self-interaction correction potential."""
     return PotentialFromEnergy(
         energy_fn=ewald_self_interaction_energy,
@@ -802,7 +806,9 @@ def make_ewald_self_interaction_potential[
             parameter_view=parameter_view,
         ),
         gradient_lens=NestedLens(
-            SimpleLens[GraphPotentialInput, PointCloud](lambda state: state.graph),
+            SimpleLens[
+                EwaldSelfInput, PointCloud[IsEwaldPointData, HasCell[Periodic3D]]
+            ](lambda state: state.graph),
             gradient_lens,
         ),
         hessian_lens=hessian_lens,
@@ -814,7 +820,7 @@ def make_ewald_self_interaction_potential[
 
 def make_ewald_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
@@ -822,7 +828,7 @@ def make_ewald_potential[
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_lens: Lens[State, EwaldParameters],
-    cache_lens: Lens[State, EwaldCache] | None,
+    cache_lens: Lens[State, EwaldCache[Gradients, Hessians]] | None,
     probe: Probe[State, Ptch, IsGraphProbe[IsEwaldPointData, Literal[2]]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
@@ -877,7 +883,7 @@ def make_ewald_potential[
 
     def _convert_particles(
         indexed: Table[ParticleId, IsEwaldPointData],
-        inclusion_fn: Callable[[IsEwaldPointData], Index[Any]],
+        inclusion_fn: Callable[[IsEwaldPointData], Index[InclusionId]],
     ) -> Table[ParticleId, _ParticleData]:
         """Convert particles, deriving inclusion from `inclusion_fn`."""
         p = indexed.data
@@ -895,7 +901,7 @@ def make_ewald_potential[
         )
 
     def _make_probe(
-        inclusion_fn: Callable[[IsEwaldPointData], Index[Any]],
+        inclusion_fn: Callable[[IsEwaldPointData], Index[InclusionId]],
         neighborlist_override: NeighborList[Literal[2]] | None = None,
     ) -> Probe[State, Ptch, IsGraphProbe[_ParticleData, Literal[2]]] | None:
         """Wrap `probe` to convert particle data with `inclusion_fn`.
@@ -1012,7 +1018,12 @@ def make_ewald_potential[
         energy_fn=exclusion_correction_energy,
         composer=LocalGraphSumComposer(excl_rg, parameter_lens),
         gradient_lens=NestedLens(
-            SimpleLens[GraphPotentialInput, PointCloud](lambda state: state.graph),
+            SimpleLens[
+                GraphPotentialInput[
+                    EwaldParameters, _ParticleData, HasCell[Periodic3D], Literal[2]
+                ],
+                PointCloud[_ParticleData, HasCell[Periodic3D]],
+            ](lambda state: state.graph),
             gradient_lens,
         ),
         hessian_lens=hessian_lens,
@@ -1028,14 +1039,12 @@ def make_ewald_potential[
 
 
 class IsEwaldState[Params](
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams], Protocol
+    IsState[IsEwaldPointData, HasCell[Periodic3D]],
+    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    Protocol,
 ):
     """Protocol for states providing all inputs for the Ewald potential."""
 
-    @property
-    def particles(self) -> Table[ParticleId, IsEwaldPointData]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell[Periodic3D]]: ...
     @property
     def ewald_parameters(self) -> Params: ...
 
@@ -1050,7 +1059,7 @@ def make_ewald_from_state[State](
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
-) -> EwaldPotential[State, EmptyType, EmptyType, Patch]: ...
+) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -1063,11 +1072,11 @@ def make_ewald_from_state[State](
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
-) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_ewald_from_state[State, P: Patch](
+def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
         State, IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
     ],
@@ -1082,7 +1091,7 @@ def make_ewald_from_state[State, P: Patch](
 
 
 @overload
-def make_ewald_from_state[State, P: Patch](
+def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]],
@@ -1135,7 +1144,9 @@ def make_ewald_from_state(
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view = empty_patch_idx_view
     if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[PointCloud, PositionAndCell](
+        gradient_lens = SimpleLens[
+            PointCloud[IsEwaldPointData, HasCell[Periodic3D]], PositionAndCell
+        ](
             lambda pc: PositionAndCell(
                 pc.particles.map_data(lambda p: p.positions),
                 pc.systems.map_data(lambda s: s.cell),
@@ -1154,7 +1165,7 @@ def make_ewald_from_state(
         param_view = state.focus(lambda x: x.ewald_parameters.data)
         cache_view = state.focus(lambda x: x.ewald_parameters.cache)
 
-    def neighborlist_view(s):
+    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_ewald_potential(
@@ -1187,7 +1198,7 @@ class EwaldParameterEstimates:
 @no_jax_tracing
 def estimate_ewald_parameters(
     charges: Array,
-    cell: Cell,
+    cell: Cell[AnyPeriodicity],
     /,
     real_cutoff: float | None = None,
     alpha: float | None = None,
@@ -1230,13 +1241,13 @@ def estimate_ewald_parameters(
         attempts = np.linspace(bounds[0], bounds[1], n)  # type: ignore
         return attempts[np.argmin([f(x) for x in attempts])]
 
-    def real_space_error(rc, alpha):
+    def real_space_error(rc: float, alpha: float):
         """Standard Ewald real space error estimate"""
         if rc <= 0 or alpha <= 0:
             return np.inf
         return (Q2 / np.sqrt(N)) * (erfc(alpha * rc) / rc)
 
-    def recip_space_error(kc, alpha):
+    def recip_space_error(kc: float, alpha: float):
         """Standard Ewald reciprocal space error estimate"""
         if kc <= 0 or alpha <= 0:
             return np.inf
@@ -1246,9 +1257,9 @@ def estimate_ewald_parameters(
             return 0.0
         return (Q2 * alpha / (np.sqrt(N) * np.pi)) * np.exp(exp_arg)
 
-    def optimal_rc(alpha):
+    def optimal_rc(alpha: float) -> float:
         # Solve for rc s.t. real_space_error(rc, alpha) ≈ eps_target
-        def real_error_diff(rc):
+        def real_error_diff(rc: float) -> float:
             return abs(real_space_error(rc, alpha) - eps_target)
 
         # Use reasonable bounds for rc based on system size
@@ -1262,10 +1273,10 @@ def estimate_ewald_parameters(
             return np.inf
         return rc_opt
 
-    def optimal_kc(alpha):
+    def optimal_kc(alpha: float) -> float:
         """Find kc that gives the target reciprocal space error"""
 
-        def recip_error_diff(kc):
+        def recip_error_diff(kc: float) -> float:
             # Also minimize kc if all things being equal
             return abs(recip_space_error(kc, alpha) - eps_target)  # + kc * eps_target
 
@@ -1341,7 +1352,7 @@ def estimate_ewald_parameters(
 
 
 @no_jax_tracing
-def kvecs_from_kmax(cell: Cell, kmax: float) -> Array:
+def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
     """Generate integer k-vector coefficients within a sphere of radius ``kmax``.
 
     Args:
@@ -1361,9 +1372,9 @@ def kvecs_from_kmax(cell: Cell, kmax: float) -> Array:
 
 
 if TYPE_CHECKING:
-    _lr: EnergyFunction = ewald_long_range_energy
-    _si: EnergyFunction = ewald_self_interaction_energy
-    _sr: EnergyFunction = ewald_short_range_energy
+    _lr: EnergyFunction[Any, EwaldLongRangeInput[Any]] = ewald_long_range_energy
+    _si: EnergyFunction[Any, EwaldSelfInput] = ewald_self_interaction_energy
+    _sr: EnergyFunction[Any, EwaldShortRangeInput] = ewald_short_range_energy
 
-    def _check_composer(c: EwaldLongRangeComposer):
-        _: SumComposer = c
+    def _check_composer(c: EwaldLongRangeComposer[Any, Any]) -> None:
+        _: SumComposer[Any, Any, Any] = c

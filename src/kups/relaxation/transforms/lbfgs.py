@@ -16,13 +16,13 @@ bit-identical to running them one at a time.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.data.index import Index
+from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
@@ -55,7 +55,7 @@ class ScaleByAseLbfgsState:
     updates: PyTree
     diff_params_memory: PyTree
     diff_updates_memory: PyTree
-    weights_memory: Table[Any, Array]
+    weights_memory: Table[SupportsSorting, Array]
     index_prefix: PyTree
 
 
@@ -82,6 +82,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
         if self.memory_size < 1:
             raise ValueError("memory_size must be >= 1")
 
+    @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ScaleByAseLbfgsState:
@@ -108,6 +109,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
             index_prefix=tree_copy(index_prefix),
         )
 
+    @override
     def update(
         self,
         updates: Params,
@@ -179,7 +181,7 @@ def _precondition_by_lbfgs_segmented[P](
     identity_scale: Array | float,
     memory_idx: Array,
     index_prefix: PyTree,
-    keys: tuple,
+    keys: tuple[SupportsSorting, ...],
 ) -> P:
     """Per-system version of ``optax._src.transform._precondition_by_lbfgs``.
 
@@ -193,7 +195,7 @@ def _precondition_by_lbfgs_segmented[P](
     memory_size = weights_data.shape[1]
     indices = (memory_idx + jnp.arange(memory_size)) % memory_size
 
-    def right_product(q, mem_idx):
+    def right_product(q: P, mem_idx: Array) -> tuple[P, Array]:
         s_i = jax.tree.map(lambda x: x[mem_idx], diff_params_memory)
         y_i = jax.tree.map(lambda x: x[mem_idx], diff_updates_memory)
         rho_i = weights_data[:, mem_idx]
@@ -206,7 +208,7 @@ def _precondition_by_lbfgs_segmented[P](
     q, alphas = jax.lax.scan(right_product, updates, indices, reverse=True)
     q = jax.tree.map(lambda x: identity_scale * x, q)
 
-    def left_product(q, args):
+    def left_product(q: P, args: tuple[Array, Array]) -> tuple[P, Array]:
         mem_idx, alpha = args
         s_i = jax.tree.map(lambda x: x[mem_idx], diff_params_memory)
         y_i = jax.tree.map(lambda x: x[mem_idx], diff_updates_memory)

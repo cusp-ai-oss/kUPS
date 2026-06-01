@@ -50,7 +50,7 @@ class Result[State, Return]:
         yield from self.assertions
 
     @skip_post_init_if_disabled
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Let's precompute _all_pass to compute its value during initialization.
         # This way we avoid computing it multiple times when checking assertions later.
         if self._all_pass is None:
@@ -61,7 +61,7 @@ class Result[State, Return]:
             )
 
     @no_jax_tracing
-    def raise_assertion(self):
+    def raise_assertion(self) -> None:
         """Raises an assertion error if any of the runtime assertions failed.
 
         Note:

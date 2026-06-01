@@ -9,7 +9,7 @@ factory out of here avoids a circular import with
 :mod:`kups.relaxation.transforms`.
 """
 
-from typing import Any, Protocol, no_type_check
+from typing import Any, Protocol, no_type_check, override
 
 import optax
 
@@ -43,10 +43,11 @@ class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
         Optimizer[Params, PyTree] | optax.GradientTransformationExtraArgs, ...
     ]
 
+    @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ChainOptState:
-        states = []
+        states: list[PyTree] = []
         for optimizer in self.optimizers:
             if isinstance(optimizer, optax.GradientTransformation):
                 state = optimizer.init(parameters)  # type: ignore
@@ -55,6 +56,7 @@ class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
             states.append(state)
         return tuple(states)
 
+    @override
     @no_type_check  # optax is not well typed
     def update(
         self,
@@ -63,7 +65,7 @@ class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
         params: Params | None = None,
         **extra_args: Any,
     ) -> tuple[Params, ChainOptState]:
-        new_states = []
+        new_states: list[PyTree] = []
         for optimizer, opt_state in zip(self.optimizers, state, strict=True):
             updates, new_opt_state = optimizer.update(
                 updates, opt_state, params=params, **extra_args

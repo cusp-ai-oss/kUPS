@@ -293,17 +293,17 @@ class MCMCStateUpdate:
         )
 
     @property
-    def particles(self):
+    def particles(self) -> WithIndices[ParticleId, MCMCParticles]:
         """Proposed particle data (without the buffer wrapper)."""
         return self._particles.map_data(lambda x: x.data)
 
     @property
-    def neighborlist_before(self):
+    def neighborlist_before(self) -> RefineMaskNeighborList:
         """Neighbor list for the *current* (pre-move) configuration."""
         return RefineMaskNeighborList(self.edges_before)
 
     @property
-    def neighborlist_after(self):
+    def neighborlist_after(self) -> RefineMaskNeighborList:
         """Neighbor list for the *proposed* (post-move) configuration."""
         return RefineMaskNeighborList(self.edges_after)
 

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from types import EllipsisType
-from typing import Any, Protocol, Self, cast
+from typing import Any, Protocol, Self, cast, override
 
 import h5py
 import jax
@@ -47,13 +47,16 @@ class LoggingFrequency(Protocol):
 class Once(LoggingFrequency):
     """Logs data only at step 0, creating scalar datasets without time dimension."""
 
+    @override
     def should_log(self, step: int) -> bool:
         return step == 0
 
+    @override
     def leading_shape(self, total_steps: int) -> tuple[int, ...]:
         return ()
 
-    def dataset_index(self, step: int):
+    @override
+    def dataset_index(self, step: int) -> EllipsisType:
         return ...
 
 
@@ -67,13 +70,16 @@ class EveryNStep(LoggingFrequency):
 
     n: int
 
+    @override
     def should_log(self, step: int) -> bool:
         return step % self.n == 0
 
+    @override
     def leading_shape(self, total_steps: int) -> tuple[int, ...]:
         num_logged = (total_steps + self.n - 1) // self.n
         return (num_logged,)
 
+    @override
     def dataset_index(self, step: int) -> Index:
         return step // self.n
 
@@ -165,7 +171,7 @@ class HDF5StorageWriter[State, WriterConfig]:
         assert self._bg_writer is not None, "Must be used inside a with-block"
         self._bg_writer.write(state, step)
 
-    def _prepare_write(self, state: State, step: int):
+    def _prepare_write(self, state: State, step: int) -> list[tuple[int, Index, Any]]:
         """Extract loggable data on the main thread (before JAX donation)."""
         to_log: list[tuple[int, Index, Any]] = []
         for i, group in enumerate(self._group_writers):
@@ -174,7 +180,7 @@ class HDF5StorageWriter[State, WriterConfig]:
                 to_log.append((i, index, group.view(state)))
         return to_log
 
-    def _write(self, to_write: list[tuple[int, Index, Any]]):
+    def _write(self, to_write: list[tuple[int, Index, Any]]) -> None:
         for i, idx, data in to_write:
             self._group_writers[i].writer.write(data, idx)
 
@@ -186,7 +192,6 @@ def _init_group_writers[S, WC](
     total_steps: int,
 ) -> list[GroupWriters[S, Any]]:
     """Shared init logic: create HDF5 groups and datasets from config."""
-    confs_and_paths: list[tuple[jax.tree_util.KeyPath, WriterGroupConfig[S, Any]]]
     confs_and_paths, conf_structure = jax.tree.flatten_with_path(
         config, is_leaf=lambda x: isinstance(x, WriterGroupConfig)
     )
@@ -240,7 +245,7 @@ class Hdf5ObjWriter[Storage]:
         hdf5_group.attrs["paths"] = json.dumps(paths)
         return Hdf5ObjWriter(datasets)
 
-    def write(self, state: Storage, index: Index):
+    def write(self, state: Storage, index: Index) -> None:
         for dataset, value in zip(self.datasets, jax.tree.leaves(state)):
             dataset[index] = np.asarray(value)
 
@@ -334,7 +339,9 @@ class GroupReader[Storage]:
         if index is None:
             index = slice(None)
 
-        def read_dataset(path):
+        def read_dataset(
+            path: str,
+        ) -> np.ndarray[tuple[int, ...], np.dtype[np.generic]]:
             dataset = self.group["".join(map(str, path))]
             return dataset[index]  # type: ignore - pylance doesn't understand h5py correctly.
 
@@ -350,10 +357,10 @@ class BackgroundWriter[State, WriterConfig]:
     """Background thread worker that asynchronously writes pre-extracted data to HDF5."""
 
     storage_writer: HDF5StorageWriter[State, WriterConfig]
-    data_queue: queue.Queue
+    data_queue: queue.Queue[list[tuple[int, Index, Any]]]
     running: threading.Event
 
-    def start(self):
+    def start(self) -> None:
         """Main loop for the background writer thread."""
         logging.info("Writer thread started")
         while self.running.is_set():
@@ -367,15 +374,15 @@ class BackgroundWriter[State, WriterConfig]:
                 logging.error(f"Error processing data: {e}")
         logging.info("Writer thread stopped")
 
-    def write(self, state: State, step: int):
+    def write(self, state: State, step: int) -> None:
         """Queue state data for asynchronous writing to HDF5."""
         self.data_queue.put(self.storage_writer._prepare_write(state, step))
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the background writer thread gracefully."""
         self.flush()
         self.running.clear()
 
-    def flush(self):
+    def flush(self) -> None:
         """Wait for all queued write operations to complete."""
         self.data_queue.join()

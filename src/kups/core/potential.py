@@ -31,7 +31,11 @@ from kups.core.data.index import Index
 from kups.core.lens import Lens, View, bind, const_lens
 from kups.core.patch import ComposedPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.propagator import Propagator
-from kups.core.typing import HasPositionsAndSystemIndex, ParticleId, SystemId
+from kups.core.typing import (
+    HasParticles,
+    HasPositionsAndSystemIndex,
+    SystemId,
+)
 from kups.core.utils.jax import dataclass, field, tree_map
 
 type Energy = Array
@@ -62,9 +66,7 @@ This is useful for potentials that don't compute gradients or Hessians.
 """
 
 
-class IsStateWithParticles(Protocol):
-    @property
-    def particles(self) -> Table[ParticleId, HasPositionsAndSystemIndex]: ...
+type IsStateWithParticles = HasParticles[HasPositionsAndSystemIndex]
 
 
 def empty_patch_idx_view(
@@ -143,7 +145,7 @@ class Potential[
     State,
     Gradients,
     Hessians,
-    StatePatch: Patch,
+    StatePatch: Patch[Any],
 ](Protocol):
     """Protocol for potential energy functions.
 
@@ -199,7 +201,7 @@ class Potential[
 
 
 @dataclass
-class SummedPotential[State, Gradients, Hessians, StatePatch: Patch](
+class SummedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
     Potential[State, Gradients, Hessians, StatePatch]
 ):
     """Compose multiple potentials by summing their outputs.
@@ -236,7 +238,7 @@ class SummedPotential[State, Gradients, Hessians, StatePatch: Patch](
         static=True
     )
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if len(self.potentials) == 0:
             raise ValueError("At least one potential must be provided")
 
@@ -261,7 +263,7 @@ class SummedPotential[State, Gradients, Hessians, StatePatch: Patch](
         return sum(outs[1:], outs[0])
 
 
-def sum_potentials[State, Gradients, Hessians, StatePatch: Patch](
+def sum_potentials[State, Gradients, Hessians, StatePatch: Patch[Any]](
     *potentials: Potential[State, Gradients, Hessians, StatePatch],
 ) -> Potential[State, Gradients, Hessians, StatePatch]:
     """Compose multiple potentials by summing their outputs.
@@ -279,7 +281,7 @@ def sum_potentials[State, Gradients, Hessians, StatePatch: Patch](
 
 
 @dataclass
-class ScaledPotential[State, Gradients, Hessians, StatePatch: Patch](
+class ScaledPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
     Potential[State, Gradients, Hessians, StatePatch]
 ):
     """Scale a potential's output by a constant factor.
@@ -325,7 +327,7 @@ class ScaledPotential[State, Gradients, Hessians, StatePatch: Patch](
 
 
 @dataclass
-class CachedPotential[State, Gradients, Hessians, StatePatch: Patch](
+class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
     Potential[State, Gradients, Hessians, StatePatch]
 ):
     """Wrap a potential with caching for efficient incremental updates.
@@ -362,7 +364,7 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch](
     """
 
     potential: Potential[State, Gradients, Hessians, StatePatch] = field(static=True)
-    cache: Lens[State, PotentialOut[Gradients, Hessians]] = field(static=True)
+    cache: Lens[State, PotentialOut[Any, Any]] = field(static=True)
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = field(
         static=True, default=None
     )
@@ -410,7 +412,7 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch](
 
 
 @dataclass
-class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch](
+class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch[Any]](
     Potential[State, OutGrad, OutHess, StatePatch]
 ):
     """Wrap a potential and transform its gradient and hessian outputs.
@@ -455,7 +457,7 @@ class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch
 
 
 @dataclass
-class PotentialAsPropagator[State, Gradients, Hessians, StatePatch: Patch](
+class PotentialAsPropagator[State, Gradients, Hessians, StatePatch: Patch[Any]](
     Propagator[State]
 ):
     """Adapt a potential to the [Propagator][kups.core.propagator.Propagator] interface.

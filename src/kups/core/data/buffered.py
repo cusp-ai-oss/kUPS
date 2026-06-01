@@ -3,7 +3,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Generic, TypeVar, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generic,
+    TypeVar,
+    cast,
+    overload,
+    override,
+)
 
 import jax
 import jax.numpy as jnp
@@ -16,13 +25,13 @@ from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled, tr
 from kups.core.utils.ops import pad_axis
 
 if TYPE_CHECKING:
-    from kups.core.typing import HasSystemIndex
+    from kups.core.typing import HasSystemIndex, SystemId
 
 TLabel = TypeVar("TLabel", covariant=True, bound=SupportsSorting)
 TData = TypeVar("TData", covariant=True)
 
 
-def system_view(x: HasSystemIndex):
+def system_view(x: HasSystemIndex) -> Index[SystemId]:
     """Default view function: extracts the ``system`` :class:`Index` leaf.
 
     Used as the default ``view`` argument for :class:`Buffered` and
@@ -50,7 +59,8 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             from the data.
     """
 
-    view: Callable[[TData], Index] = field(static=True)
+    # pyrefly: ignore [invalid-variance]
+    view: Callable[[TData], Index[Any]] = field(static=True)
 
     @property
     def occupation(self) -> Array:
@@ -63,7 +73,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         return self.occupation.sum()
 
     @skip_post_init_if_disabled
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         super().__post_init__()
         mask = self.occupation
         try:
@@ -78,7 +88,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             f"View must point towards an Index. Got {viewed_leaf}."
         )
 
-        def _sanitize(leaf):
+        def _sanitize(leaf: Any) -> Any:
             if isinstance(leaf, Index):
                 if leaf is viewed_leaf:
                     return leaf  # source of truth — do not sanitize
@@ -112,13 +122,14 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         return Index(self.keys, data)
 
     @classmethod
+    @override
     def arange[L: SupportsSorting, D](
         cls,
         data: D,
         *,
         num_occupied: int | None = None,
         label: Callable[[int], L] = int,
-        view: Callable[[D], Index] = system_view,
+        view: Callable[[D], Index[Any]] = system_view,
     ) -> Buffered[L, D]:
         """Create a ``Buffered`` with integer labels ``(0, 1, ..., n-1)``.
 
@@ -150,7 +161,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
 
     @classmethod
     def full[D](
-        cls, table: Table[TLabel, D], *, view: Callable[[D], Index] = system_view
+        cls, table: Table[TLabel, D], *, view: Callable[[D], Index[Any]] = system_view
     ) -> Buffered[TLabel, D]:
         """Create a fully-occupied ``Buffered`` from a ``Table``.
 
@@ -169,7 +180,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         table: Table[L, D],
         num_free: int,
         *,
-        view: Callable[[D], Index] = system_view,
+        view: Callable[[D], Index[Any]] = system_view,
     ) -> Buffered[L, D]:
         """Convert a ``Table`` to a ``Buffered`` with extra free rows.
 
@@ -197,8 +208,9 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             new_data = bind(new_data, view).set(masked)
         return Buffered(table.keys + new_idx, new_data, view)
 
+    @override
     def update[D](
-        self: Buffered[TLabel, D], index: Index[TLabel], data: D, **kwargs
+        self: Buffered[TLabel, D], index: Index[TLabel], data: D, **kwargs: Any
     ) -> Buffered[TLabel, D]:
         """Update rows, returning ``Buffered``.
 
@@ -207,6 +219,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         """
         return cast(Buffered[TLabel, D], super().update(index, data, **kwargs))  # type: ignore
 
+    @override
     def update_if[D, L: SupportsSorting](
         self: Buffered[TLabel, D],
         accept: Table[L, Array],
@@ -217,7 +230,10 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         return cast(Buffered[TLabel, D], super().update_if(accept, indices, new_data))  # type: ignore
 
 
-_BufferGroup = tuple[Table, int] | tuple[Table, int, Callable]
+_BufferGroup = (
+    tuple[Table[Any, Any], int]
+    | tuple[Table[Any, Any], int, Callable[[Any], Index[Any]]]
+)
 """Either ``(Table, num_free)`` or ``(Table, num_free, view)``."""
 
 
@@ -267,13 +283,13 @@ def add_buffers[
 # 3-tuple overloads: explicit view, no HasSystemIndex bound
 @overload
 def add_buffers[L1: int, D1](
-    group1: tuple[Table[L1, D1], int, Callable[[D1], Index]],
+    group1: tuple[Table[L1, D1], int, Callable[[D1], Index[Any]]],
     /,
 ) -> tuple[Buffered[L1, D1]]: ...
 @overload
 def add_buffers[L1: int, D1, L2: int, D2](
-    group1: tuple[Table[L1, D1], int, Callable[[D1], Index]],
-    group2: tuple[Table[L2, D2], int, Callable[[D2], Index]],
+    group1: tuple[Table[L1, D1], int, Callable[[D1], Index[Any]]],
+    group2: tuple[Table[L2, D2], int, Callable[[D2], Index[Any]]],
     /,
 ) -> tuple[Buffered[L1, D1], Buffered[L2, D2]]: ...
 @overload
@@ -285,9 +301,9 @@ def add_buffers[
     L3: int,
     D3,
 ](
-    group1: tuple[Table[L1, D1], int, Callable[[D1], Index]],
-    group2: tuple[Table[L2, D2], int, Callable[[D2], Index]],
-    group3: tuple[Table[L3, D3], int, Callable[[D3], Index]],
+    group1: tuple[Table[L1, D1], int, Callable[[D1], Index[Any]]],
+    group2: tuple[Table[L2, D2], int, Callable[[D2], Index[Any]]],
+    group3: tuple[Table[L3, D3], int, Callable[[D3], Index[Any]]],
     /,
 ) -> tuple[Buffered[L1, D1], Buffered[L2, D2], Buffered[L3, D3]]: ...
 @overload
@@ -301,17 +317,17 @@ def add_buffers[
     L4: int,
     D4,
 ](
-    group1: tuple[Table[L1, D1], int, Callable[[D1], Index]],
-    group2: tuple[Table[L2, D2], int, Callable[[D2], Index]],
-    group3: tuple[Table[L3, D3], int, Callable[[D3], Index]],
-    group4: tuple[Table[L4, D4], int, Callable[[D4], Index]],
+    group1: tuple[Table[L1, D1], int, Callable[[D1], Index[Any]]],
+    group2: tuple[Table[L2, D2], int, Callable[[D2], Index[Any]]],
+    group3: tuple[Table[L3, D3], int, Callable[[D3], Index[Any]]],
+    group4: tuple[Table[L4, D4], int, Callable[[D4], Index[Any]]],
     /,
 ) -> tuple[Buffered[L1, D1], Buffered[L2, D2], Buffered[L3, D3], Buffered[L4, D4]]: ...
 
 
 def add_buffers(
     *groups: _BufferGroup,
-) -> tuple[Buffered, ...] | Buffered:
+) -> tuple[Buffered[Any, Any], ...] | Buffered[Any, Any]:
     """Convert ``Table`` containers to ``Buffered`` with extra free rows.
 
     Each argument is either a ``(table, num_free)`` pair (uses
@@ -324,14 +340,18 @@ def add_buffers(
         Tuple of ``Buffered`` containers, one per input group.
     """
 
-    def _normalize(g: _BufferGroup) -> tuple[Table, int, Callable]:
+    def _normalize(
+        g: _BufferGroup,
+    ) -> tuple[Table[Any, Any], int, Callable[[Any], Index[Any]]]:
         if len(g) == 2:
             return (g[0], g[1], system_view)
         return g  # type: ignore[return-value]
 
     normalized = [_normalize(g) for g in groups]
 
-    def generate_padding(item: tuple[Table, int, Callable]) -> Table:
+    def generate_padding(
+        item: tuple[Table[Any, Any], int, Callable[[Any], Index[Any]]],
+    ) -> Table[Any, Any]:
         idx, pad, _view = item
         empty = tree_map(
             lambda x: jnp.zeros_like(x, shape=(pad, *x.shape[1:])), idx.data
@@ -339,7 +359,11 @@ def add_buffers(
         padding = Table.arange(empty, label=idx.cls)
         return padding
 
-    def to_buffered(item: tuple[tuple[Table, int, Callable], Table]) -> Buffered:
+    def to_buffered(
+        item: tuple[
+            tuple[Table[Any, Any], int, Callable[[Any], Index[Any]]], Table[Any, Any]
+        ],
+    ) -> Buffered[Any, Any]:
         (inp, _, view_fn), result = item
         n_occ = len(inp)
         mask = jnp.arange(len(result)) < n_occ
@@ -352,7 +376,7 @@ def add_buffers(
     padded = list(map(generate_padding, normalized))
     # Set keys for padded tables to match their sizes.
     keys = {t.cls: t.keys for t in padded}
-    padded = jax.tree.map(
+    padded = tree_map(
         lambda x: (
             x.update_labels(keys[x.cls], allow_missing=True)
             if isinstance(x, Index) and x.cls in keys
@@ -361,7 +385,8 @@ def add_buffers(
         padded,
         is_leaf=lambda x: isinstance(x, Index),
     )
-    unbuffered_result = Table.union(*zip(tables, padded))
+    unbuffered_result = Table.union(*zip(tables, padded, strict=True))
+    # pyrefly: ignore [bad-argument-type]
     buffered = tuple(map(to_buffered, zip(normalized, unbuffered_result)))
     if len(buffered) == 1:
         return buffered

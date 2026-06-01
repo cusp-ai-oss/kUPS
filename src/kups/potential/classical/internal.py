@@ -8,6 +8,8 @@ energies of rigid molecules. Useful when only intermolecular interactions should
 be computed (e.g., rigid body Monte Carlo with pre-optimized geometries).
 """
 
+from typing import Any
+
 import jax.numpy as jnp
 from jax import Array
 
@@ -33,7 +35,7 @@ class MotifData:
 
 
 @dataclass
-class InternalEnergies[State, StatePatch: Patch](
+class InternalEnergies[State, StatePatch: Patch[Any]](
     Potential[State, EmptyType, EmptyType, StatePatch]
 ):
     """Potential providing fixed internal energies for molecular motifs.
@@ -68,4 +70,4 @@ class InternalEnergies[State, StatePatch: Patch](
         motif_energies = self.motif_potential_out(state)
 
         out_energies = motifs.data.system.sum_over(motif_energies[motifs.data.values])
-        return WithPatch(PotentialOut(out_energies, EMPTY, EMPTY), IdPatch())
+        return WithPatch(PotentialOut(out_energies, EMPTY, EMPTY), IdPatch[Any]())

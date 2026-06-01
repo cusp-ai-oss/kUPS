@@ -13,7 +13,7 @@ systems through one optimizer is bit-identical to running them one at a time.
 from __future__ import annotations
 
 import functools
-from typing import Any
+from typing import Any, override
 
 import jax
 import jax.numpy as jnp
@@ -57,12 +57,14 @@ class MaxStepSize[Params](Optimizer[Params, MaxStepSizeState]):
 
     max_step_size: float = field(static=True)
 
+    @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> MaxStepSizeState:
         del parameters
         return MaxStepSizeState(index_prefix=tree_copy(index_prefix))
 
+    @override
     def update(
         self,
         updates: Params,

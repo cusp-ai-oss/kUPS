@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, SimpleLens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
@@ -54,6 +55,7 @@ from kups.core.typing import (
     HasCache,
     HasCell,
     HasPositionsAndLabels,
+    IsState,
     Label,
     MaybeCached,
     ParticleId,
@@ -129,13 +131,13 @@ class InversionParameters:
 
 
 type InversionInput = GraphPotentialInput[
-    InversionParameters, IsBondedParticles, HasCell, Literal[4]
+    InversionParameters, IsBondedParticles, HasCell[AnyPeriodicity], Literal[4]
 ]
 
 
 def inversion_energy(
     inp: InversionInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     r"""Compute UFF-style inversion energy for all inversion centers.
 
     Args:
@@ -204,18 +206,18 @@ def inversion_energy(
     edge_energy = k_scaled * (c0 + c1 * cos_omega + c2 * cos_2omega)
 
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
-    return WithPatch(total_energies, IdPatch())
+    return WithPatch(total_energies, IdPatch[Any]())
 
 
 def make_inversion_potential[
     State,
-    Ptch: Patch,
+    Ptch: Patch[Any],
     Gradients,
     Hessians,
 ](
     particles_view: View[State, Table[ParticleId, IsBondedParticles]],
     edge_indices_view: View[State, Index[ParticleId]],
-    systems_view: View[State, Table[SystemId, HasCell]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, InversionParameters],
     probe: Probe[State, Ptch, IsGraphProbe[IsBondedParticles, Literal[4]]] | None,
     gradient_lens: Lens[InversionInput, Gradients],
@@ -265,15 +267,13 @@ def make_inversion_potential[
     return potential
 
 
-class IsInversionState[Params](Protocol):
+class IsInversionState[Params](
+    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
+):
     """Protocol for states providing full-evaluation inversion inputs."""
 
     @property
-    def particles(self) -> Table[ParticleId, IsBondedParticles]: ...
-    @property
-    def systems(self) -> Table[SystemId, HasCell]: ...
-    @property
-    def inversion_indices(self) -> Index[ParticleId]: ...
+    def inversion_edge_indices(self) -> Index[ParticleId]: ...
     @property
     def inversion_parameters(self) -> Params: ...
 
@@ -287,7 +287,7 @@ def make_inversion_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch]: ...
+) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -299,11 +299,11 @@ def make_inversion_from_state[State](
     probe: None = None,
     *,
     compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch]: ...
+) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_inversion_from_state[State, P: Patch](
+def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsInversionState[
@@ -317,7 +317,7 @@ def make_inversion_from_state[State, P: Patch](
 
 
 @overload
-def make_inversion_from_state[State, P: Patch](
+def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsInversionState[
@@ -387,4 +387,4 @@ def make_inversion_from_state(
 
 
 if TYPE_CHECKING:
-    _: EnergyFunction = inversion_energy
+    _: EnergyFunction[Any, InversionInput] = inversion_energy
