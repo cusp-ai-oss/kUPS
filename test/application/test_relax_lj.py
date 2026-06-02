@@ -13,8 +13,6 @@ from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import RelaxParameters, RelaxRunConfig
 from kups.application.simulations.relax_lj import Config, LjConfig, run
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 def _ar_cif(rattle: float) -> str:
     """Write a rattled fcc-argon supercell as a P1 CIF with uniform ``Ar`` labels.

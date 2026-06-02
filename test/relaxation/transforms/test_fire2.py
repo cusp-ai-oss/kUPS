@@ -24,8 +24,6 @@ from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
 from kups.relaxation.transforms.fire2 import ScaleByFire2, ScaleByFire2State
 from kups.relaxation.transforms.max_step_size import MaxStepSize
 
-from ...clear_cache import clear_cache  # noqa: F401
-
 
 def _system_index(system_ids: list[int], num_systems: int) -> Index[SystemId]:
     keys = tuple(SystemId(i) for i in range(num_systems))

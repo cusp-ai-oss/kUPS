@@ -34,8 +34,6 @@ from kups.potential.classical.ewald import (
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 @dataclass
 class PointCloudParticles:

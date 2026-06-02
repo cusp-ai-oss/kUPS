@@ -21,8 +21,6 @@ from kups.core.storage import (
 )
 from kups.core.utils.jax import dataclass
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 @dataclass
 class SimpleState:

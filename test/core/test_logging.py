@@ -12,8 +12,6 @@ from unittest.mock import MagicMock, patch
 from kups.core.lens import view
 from kups.core.logging import CompositeLogger, NullLogger, ProfileLogger, TqdmLogger
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 class CounterLogger:
     """Simple logger that records calls for testing."""

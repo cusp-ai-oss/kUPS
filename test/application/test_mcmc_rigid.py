@@ -1,7 +1,6 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-import gc
 import tempfile
 
 import jax
@@ -62,17 +61,6 @@ from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
 )
-
-
-@pytest.fixture(autouse=True, scope="module")
-def clear_cache():
-    """Override class-scoped clear_cache: clear once per module, not per class."""
-    jax.clear_caches()
-    gc.collect()
-    yield
-    jax.clear_caches()
-    gc.collect()
-
 
 L = 15.0  # box side (Ang)
 N_MAX = 3  # max molecules (2 real + 1 empty slot for exchange)

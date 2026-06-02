@@ -23,8 +23,6 @@ from kups.relaxation.optimizer import Optimizer, chain
 from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
 from kups.relaxation.transforms.fire import ScaleByFire, ScaleByFireState
 
-from ...clear_cache import clear_cache  # noqa: F401
-
 
 def _system_index(system_ids: list[int], num_systems: int) -> Index[SystemId]:
     keys = tuple(SystemId(i) for i in range(num_systems))

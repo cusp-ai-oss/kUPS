@@ -29,8 +29,6 @@ from kups.core.utils.msgpack import serialize as msgpack_serialize
 from kups.potential.common.energy import PotentialFromEnergy
 from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_potential
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 # --- Data structures ---
 
 

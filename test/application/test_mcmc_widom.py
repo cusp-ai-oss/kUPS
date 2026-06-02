@@ -29,8 +29,6 @@ from kups.application.simulations.mcmc_widom import (
 )
 from kups.core.propagator import Propagator
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 L = 10.0  # box side (Å)
 
 

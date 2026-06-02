@@ -18,8 +18,6 @@ from kups.potential.classical.lennard_jones import (
 from kups.potential.common.evaluation import evaluate_radius_graph_potential
 from kups.potential.common.graph import PointCloud
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 @dataclass
 class _Particles:
