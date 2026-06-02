@@ -24,8 +24,6 @@ from kups.observables.radial_distribution_function import (
     radial_distribution_function,
 )
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])
 
 

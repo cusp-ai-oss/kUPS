@@ -20,8 +20,6 @@ from kups.relaxation.transforms import (
     ScaleByFire,
 )
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 class TestGetTransform:
     def test_string_optax_transform(self):

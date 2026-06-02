@@ -32,8 +32,6 @@ from kups.potential.common.graph import (
     empty_graph_probe,
 )
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 @dataclass
 class _PointData:

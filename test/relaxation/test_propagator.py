@@ -16,8 +16,6 @@ from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass
 from kups.relaxation.propagator import RelaxationPropagator
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 @dataclass
 class PotentialState:

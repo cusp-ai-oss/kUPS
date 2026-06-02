@@ -43,8 +43,6 @@ from kups.md.observables import (
     particle_kinetic_energy,
 )
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 # ============================================================================
 # Data Classes
 # ============================================================================

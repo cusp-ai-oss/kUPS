@@ -28,8 +28,6 @@ from kups.potential.mliap.local import (
     make_local_mliap_potential,
 )
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 # Test data structures
 @dataclass

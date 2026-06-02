@@ -22,8 +22,6 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.typing import Label, MotifId
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 L = 10.0  # cubic box side (Ang)
 
 

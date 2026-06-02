@@ -13,8 +13,6 @@ from kups.application.md.analysis import analyze_md_file
 from kups.application.md.data import MdParameters, MdRunConfig
 from kups.application.simulations.md_lj import Config, LjConfig, run
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 def _ar_cif(rattle: float = 0.0) -> str:
     """Write a small fcc-argon supercell (32 atoms, ~10.6 Å cube) as a P1 CIF.

@@ -129,7 +129,7 @@ JAX_ENABLE_X64 = "True"
 JAX_PLATFORMS = { value = "cpu", "skip_if_set" = true }
 
 [tool.pytest.ini_options]
-addopts = "-n auto --durations=10 --dist worksteal -v --color=yes --cov=kups"
+addopts = "-n auto --durations=10 --dist loadfile -v --color=yes --cov=kups"
 
 [tool.pyright]
 venvPath = "."

@@ -25,8 +25,6 @@ from kups.potential.classical.lennard_jones import (
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 @dataclass
 class _LJPointData:

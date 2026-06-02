@@ -29,8 +29,6 @@ from kups.mcmc.moves import (
     translate_groups,
 )
 
-from ..clear_cache import clear_cache  # noqa: F401
-
 
 def _make_index(token, ids, n, max_count=None):
     return Index.integer(ids, n=n, label=token, max_count=max_count)
