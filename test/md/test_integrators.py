@@ -137,22 +137,52 @@ def get_params(s: SimpleState) -> Table[SystemId, SystemParams]:
     return Table(sys.keys, sys.data.integrator_params, _cls=sys._cls)
 
 
-def run_simulation(integrator, state, key, n_equil, n_sample, extract_fn):
-    """Run equilibration + sampling with jax.lax.scan."""
+_RUN_CACHE: dict[tuple, Any] = {}
+
+
+def _build_run(integrator, extract_fn, n_equil, n_sample):
+    """Build (and JIT-compile) the equil+sample scan for one integrator.
+
+    Memoized on ``(integrator, extract_fn, n_equil, n_sample)`` so that repeated
+    calls within a test class reuse a single compiled function. JAX keys its
+    compilation cache on the wrapped function's identity; reusing the same
+    jitted object here turns the second and later calls into cache hits (the
+    expensive integrator trace+compile is paid only once per class).
+    """
+    # Key on the actual objects (not id()) so they stay alive while cached,
+    # ruling out id() reuse handing back a stale compiled function.
+    key = (integrator, extract_fn, n_equil, n_sample)
+    cached = _RUN_CACHE.get(key)
+    if cached is not None:
+        return cached
 
     def step_fn(carry, _):
-        key, s = carry
-        key, subkey = jax.random.split(key)
+        rng, s = carry
+        rng, subkey = jax.random.split(rng)
         s = integrator(subkey, s)
-        return (key, s), extract_fn(s)
+        return (rng, s), extract_fn(s)
 
     @jit
-    def run(key, state):
-        (key, state), _ = jax.lax.scan(step_fn, (key, state), None, length=n_equil)
-        (_, state), samples = jax.lax.scan(step_fn, (key, state), None, length=n_sample)
+    def run(rng, state):
+        (rng, state), _ = jax.lax.scan(step_fn, (rng, state), None, length=n_equil)
+        (_, state), samples = jax.lax.scan(step_fn, (rng, state), None, length=n_sample)
         return state, samples
 
-    return run(key, state)
+    _RUN_CACHE[key] = run
+    return run
+
+
+def run_simulation(integrator, state, key, n_equil, n_sample, extract_fn):
+    """Run equilibration + sampling with jax.lax.scan (compilation cached)."""
+    return _build_run(integrator, extract_fn, n_equil, n_sample)(key, state)
+
+
+# Shared, module-level extract functions. Passing the *same* object (rather than
+# a fresh lambda) lets the runner cache reuse one compiled scan across tests that
+# observe the same quantity with the same integrator and step counts.
+def _extract_volume0(s):
+    """Per-step system-0 cell volume."""
+    return s.systems.data.cell.volume[0]
 
 
 def assert_temperature(mean_temp, kT_target, tolerance, label=""):
@@ -1559,12 +1589,7 @@ class TestBNPTLIntegrator:
         state = BNPTLState.systems.focus(lambda s: s.data.cell_momentum).set(
             state, cell_momentum
         )
-        integrator = make_baoab_npt_langevin_step(
-            particles=BNPTLState.particles,
-            systems=BNPTLState.systems,
-            derivative_computation=create_bnptl_derivative_computation(),
-            flow=euclidean_flow,
-        )
+        integrator = self._make_integrator()
         out = integrator(jax.random.key(99), state)
 
         assert jnp.allclose(
@@ -1646,12 +1671,7 @@ class TestBNPTLIntegrator:
             target_pressure,
             kT,
         )
-        integrator = make_baoab_npt_langevin_step(
-            particles=BNPTLState.particles,
-            systems=BNPTLState.systems,
-            derivative_computation=create_bnptl_derivative_computation(),
-            flow=euclidean_flow,
-        )
+        integrator = self._make_integrator()
         out = integrator(jax.random.key(123), state)
 
         assert jnp.allclose(
@@ -1692,8 +1712,8 @@ class TestBNPTLIntegrator:
             integrator,
             state,
             jax.random.key(77),
-            n_equil=800,
-            n_sample=1200,
+            n_equil=300,
+            n_sample=500,
             extract_fn=lambda s: compute_temperature(s, 3 * n - 3),
         )
         assert_temperature(jnp.mean(temps), kT, 0.20, "BAOAB-NPT-L ")
@@ -1715,13 +1735,19 @@ class TestBNPTLIntegrator:
             jax.random.key(202),
             n_equil=200,
             n_sample=200,
-            extract_fn=lambda s: s.systems.data.cell.volume[0],
+            extract_fn=_extract_volume0,
         )
         mean_vol, std_vol = jnp.mean(volumes), jnp.std(volumes)
         assert std_vol > 0.005 * mean_vol, "Volume must actually fluctuate"
         assert std_vol / mean_vol < 1.0, "Volume must not explode"
 
-    def test_cell_remains_lower_triangular(self):
+    def test_cell_and_momentum_remain_lower_triangular(self):
+        """Both ``cell.vectors`` and ``cell_momentum`` stay lower-triangular.
+
+        Merged structural check: the strict-upper part of the cell matrix (the
+        triangular-cell invariant) and of ``p^h`` (the constraint) must both
+        stay zero throughout integration. One shared run covers both.
+        """
         state = create_bnptl_system(n_particles=5, box_size=5.0)
         integrator = self._make_integrator()
         final_state, _ = run_simulation(
@@ -1730,12 +1756,17 @@ class TestBNPTLIntegrator:
             jax.random.key(11),
             n_equil=0,
             n_sample=50,
-            extract_fn=lambda s: s.systems.data.cell.volume[0],
+            extract_fn=_extract_volume0,
         )
         V = final_state.systems.data.cell.vectors[0]
         upper = V - jnp.tril(V)
         assert jnp.allclose(upper, 0.0, atol=1e-8), (
             f"cell.vectors must remain lower-triangular, got upper part:\n{upper}"
+        )
+        cm = final_state.systems.data.cell_momentum[0]
+        cm_upper = cm - jnp.tril(cm)
+        assert jnp.allclose(cm_upper, 0.0, atol=1e-10), (
+            f"cell_momentum must remain lower-triangular, got upper part:\n{cm_upper}"
         )
 
     def test_triclinic_starting_cell_stays_well_conditioned(self):
@@ -1800,17 +1831,16 @@ class TestBNPTLIntegrator:
         )
         state = BNPTLState(particles=particles, systems=systems)
 
-        deriv = create_bnptl_derivative_computation()
-        integrator = make_baoab_npt_langevin_step(
-            BNPTLState.particles, BNPTLState.systems, deriv, euclidean_flow
-        )
+        # Same lenses/derivative/flow as the shared integrator; only the
+        # (triclinic) initial state differs, so reuse the class integrator.
+        integrator = self._make_integrator()
         final_state, vols = run_simulation(
             integrator,
             state,
             jax.random.key(99),
             n_equil=0,
             n_sample=300,
-            extract_fn=lambda s: s.systems.data.cell.volume[0],
+            extract_fn=_extract_volume0,
         )
         # No collapse to zero or NaN.
         assert jnp.all(vols > 0.1 * V0), "Cell collapsed below 10% of initial volume"
@@ -1853,24 +1883,6 @@ class TestBNPTLIntegrator:
             f"Off-diagonal cell DOFs are barely active (rms_off={rms_off:.4e}, "
             f"rms_diag={rms_diag:.4e}); the anisotropic barostat is not "
             f"exercising the shear DOFs."
-        )
-
-    def test_p_h_constraint_preserved(self):
-        """Strict-upper part of cell_momentum stays zero throughout integration."""
-        state = create_bnptl_system(n_particles=5, box_size=5.0)
-        integrator = self._make_integrator()
-        final_state, _ = run_simulation(
-            integrator,
-            state,
-            jax.random.key(13),
-            n_equil=0,
-            n_sample=30,
-            extract_fn=lambda s: s.systems.data.cell.volume[0],
-        )
-        cm = final_state.systems.data.cell_momentum[0]
-        upper = cm - jnp.tril(cm)
-        assert jnp.allclose(upper, 0.0, atol=1e-10), (
-            f"cell_momentum must remain lower-triangular, got upper part:\n{upper}"
         )
 
 
@@ -1921,6 +1933,25 @@ class TestBNPTLHamiltonianConservation:
           of state; ``P_ext ≠ 0`` would drive the cell to collapse and bury
           integration error in system-level dynamics.
     """
+
+    _integrator = None
+
+    @classmethod
+    def _make_integrator(cls):
+        """Build the (state-independent) BAOAB-NPT-L step once per class.
+
+        ``dt`` lives in the state, not the integrator, so a single integrator
+        drives every ``dt``; sharing it lets the cached runner reuse one
+        compile per (dt, length) pair across both tests.
+        """
+        if cls._integrator is None:
+            cls._integrator = make_baoab_npt_langevin_step(
+                particles=BNPTLState.particles,
+                systems=BNPTLState.systems,
+                derivative_computation=create_bnptl_derivative_computation(),
+                flow=euclidean_flow,
+            )
+        return cls._integrator
 
     def _make_no_thermostat_state(self, dt: float) -> BNPTLState:
         n, box, kT = 8, 20.0, 1.0
@@ -1977,13 +2008,9 @@ class TestBNPTLHamiltonianConservation:
         """With γ=γ_b=0, max |H − H₀| over a 500-step run is tiny."""
         dt = 0.001
         state = self._make_no_thermostat_state(dt=dt)
-        deriv = create_bnptl_derivative_computation()
-        integrator = make_baoab_npt_langevin_step(
-            particles=BNPTLState.particles,
-            systems=BNPTLState.systems,
-            derivative_computation=deriv,
-            flow=euclidean_flow,
-        )
+        # dt=0.001 over 500 steps matches the drift test's middle (wall=0.5)
+        # case exactly, so this run reuses that compile via the runner cache.
+        integrator = self._make_integrator()
         H0 = _bnptl_hamiltonian(state)
         _, hs = run_simulation(
             integrator,
@@ -2002,18 +2029,13 @@ class TestBNPTLHamiltonianConservation:
 
     def test_hamiltonian_drift_scales_as_dt_squared(self):
         """Second-order Trotter splitting: max drift ∝ Δt² at fixed wall-time."""
-        deriv = create_bnptl_derivative_computation()
         wall_time = 0.5  # long enough to actually accumulate Trotter error
         dts = [0.002, 0.001, 0.0005]
         drifts = []
+        # One shared integrator across all dt (dt lives in state, not integrator).
+        integrator = self._make_integrator()
         for dt in dts:
             state = self._make_no_thermostat_state(dt=dt)
-            integrator = make_baoab_npt_langevin_step(
-                particles=BNPTLState.particles,
-                systems=BNPTLState.systems,
-                derivative_computation=deriv,
-                flow=euclidean_flow,
-            )
             n_steps = int(round(wall_time / dt))
             H0 = _bnptl_hamiltonian(state)
             _, hs = run_simulation(

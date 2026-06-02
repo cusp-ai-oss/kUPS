@@ -38,6 +38,7 @@ from kups.application.simulations.mcmc_rigid import (
     MCMCStateUpdate,
 )
 from kups.application.utils.propagate import (
+    make_cycle_function,
     run_simulation_cycles,
     run_warmup_cycles,
 )
@@ -343,11 +344,9 @@ def run(config: Config) -> WidomState:
     init_prop, propagator = make_propagator(state, config.run)
     state = propagate_and_fix(as_result_function(init_prop), next(chain), state)
 
-    # `run_warmup_cycles` / `run_simulation_cycles` wrap the propagator in
-    # `jit(..., donate_argnums=(1,))` so XLA reuses state buffers in-place;
-    # a naked Python loop skips the donation and leaks O(state size) per cycle.
+    cycle_fn = make_cycle_function(propagator)
     state = run_warmup_cycles(
-        next(chain), propagator, state, config.run.num_warmup_cycles
+        next(chain), cycle_fn, state, config.run.num_warmup_cycles
     )
     state = bind(state, lambda x: x.widom_statistics.data).apply(WidomStatistics.reset)
 
@@ -359,7 +358,7 @@ def run(config: Config) -> WidomState:
         TqdmLogger(config.run.num_cycles),
     )
     return run_simulation_cycles(
-        next(chain), propagator, state, config.run.num_cycles, logger
+        next(chain), cycle_fn, state, config.run.num_cycles, logger
     )
 
 

@@ -16,7 +16,29 @@ from .conftest import make_particles, make_systems
 
 _LABELS = ("A", "B")
 
-_jit_energy = jax.jit(inversion_energy)
+_SINGLE_SPECIES = ["A", "A", "A", "A"]
+_SINGLE_SYSTEM_IDS = [0, 0, 0, 0]
+_SINGLE_CELLS_LV = jnp.eye(3)[None] * 10.0
+
+
+def _single_inversion_energy(positions: jax.Array, params: InversionParameters):
+    """Energy of one A-A-A-A inversion; params traced for grad/jit reuse."""
+    particles = make_particles(positions, _SINGLE_SPECIES, _SINGLE_SYSTEM_IDS)
+    systems = make_systems(_SINGLE_CELLS_LV)
+    edges = Edges(
+        indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
+        shifts=jnp.zeros((1, 3, 3)),
+    )
+    graph = HyperGraph(particles, systems, edges)
+    return inversion_energy(
+        GraphPotentialInput(graph=graph, parameters=params)
+    ).data.data[0]
+
+
+# Shared jitted energy/gradient: params is a traced argument so a single
+# compilation is reused across all parameter variations.
+_jit_single_energy = jax.jit(_single_inversion_energy)
+_jit_single_gradient = jax.jit(jax.grad(_single_inversion_energy))
 
 
 def _make_positions(h: float) -> jax.Array:
@@ -47,9 +69,9 @@ class TestInversionEnergy:
 
     @classmethod
     def setup_class(cls):
-        cls.cells_lv = jnp.eye(3)[None] * 10.0
-        cls.species = ["A", "A", "A", "A"]
-        cls.system_ids = [0, 0, 0, 0]
+        cls.cells_lv = _SINGLE_CELLS_LV
+        cls.species = _SINGLE_SPECIES
+        cls.system_ids = _SINGLE_SYSTEM_IDS
         shape = (2, 2, 2, 2)
         cls.omega0 = jnp.zeros(shape)
         cls.k = jnp.ones(shape) * 10.0
@@ -65,13 +87,10 @@ class TestInversionEnergy:
         return HyperGraph(particles, systems, edges)
 
     def _energy(self, positions, params):
-        graph = self._make_graph(positions)
-        return _jit_energy(
-            GraphPotentialInput(graph=graph, parameters=params)
-        ).data.data[0]
+        return _jit_single_energy(positions, params)
 
     def _gradient(self, positions, params):
-        return jax.jit(jax.grad(lambda p: self._energy(p, params)))(positions)
+        return _jit_single_gradient(positions, params)
 
     def test_energy_values(self):
         """Merged: equilibrium, nonequilibrium, and formula tests."""

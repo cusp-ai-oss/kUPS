@@ -11,7 +11,11 @@ from jax import Array
 
 from kups.application.mcmc.data import RunConfig
 from kups.application.mcmc.logging import MCMCLoggedData
-from kups.application.utils.propagate import run_simulation_cycles, run_warmup_cycles
+from kups.application.utils.propagate import (
+    make_cycle_function,
+    run_simulation_cycles,
+    run_warmup_cycles,
+)
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.propagator import Propagator
 from kups.core.storage import HDF5StorageWriter
@@ -38,15 +42,16 @@ def run_mcmc[State](
         Final simulation state after production run.
     """
     chain = key_chain(key)
+    cycle_fn = make_cycle_function(propagator)
     logging.info("Warming up (%d cycles)...", config.num_warmup_cycles)
-    state = run_warmup_cycles(next(chain), propagator, state, config.num_warmup_cycles)
+    state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_cycles)
     logging.info("Production run (%d cycles)...", config.num_cycles)
     logger = CompositeLogger(
         HDF5StorageWriter(config.out_file, logged_data, state, config.num_cycles),
         TqdmLogger(config.num_cycles),
     )
     state = run_simulation_cycles(
-        next(chain), propagator, state, config.num_cycles, logger
+        next(chain), cycle_fn, state, config.num_cycles, logger
     )
     logging.info("Done.")
     return state

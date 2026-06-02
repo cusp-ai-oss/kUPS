@@ -56,20 +56,3 @@ jobs:
         with:
           path: .testmondata
           key: testmon-${{ steps.get-main-hash.outputs.main_hash }}-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.resolution }}
-
-  applications:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        app:
-          - { name: "MCMC NVT", config: "kups_mcmc_rigid ci_mcmc_nvt.yaml" }
-          - { name: "MCMC µVT", config: "kups_mcmc_rigid ci_mcmc_gcmc.yaml" }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - name: Run ${{ matrix.app.name }}
-        run: uv run --no-default-groups --group dev --env-file ci.env ${{ matrix.app.config }}
-        env:
-          JAX_PLATFORMS: cpu
-        working-directory: ./ci

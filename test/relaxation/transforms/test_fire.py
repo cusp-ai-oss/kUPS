@@ -8,14 +8,18 @@ direction), matching the optax composability convention. Tests therefore
 pass ``-grad`` (or pre-flipped forces) into :meth:`update`.
 """
 
+from typing import Any
+
+import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import optax
+from jax import Array
 
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import SystemId
-from kups.relaxation.optimizer import chain
+from kups.relaxation.optimizer import Optimizer, chain
 from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
 from kups.relaxation.transforms.fire import ScaleByFire, ScaleByFireState
 
@@ -25,6 +29,24 @@ from ...clear_cache import clear_cache  # noqa: F401
 def _system_index(system_ids: list[int], num_systems: int) -> Index[SystemId]:
     keys = tuple(SystemId(i) for i in range(num_systems))
     return Index(keys, jnp.array(system_ids), _cls=SystemId)
+
+
+def _run_force(
+    opt: Optimizer[Array, Any], x: Array, state: Any, steps: int
+) -> tuple[Array, Any]:
+    """Run ``steps`` of ``opt`` on a quadratic (force ``F = -x``) via one scan.
+
+    Folding the loop into a single ``lax.scan`` compiles the step once instead
+    of re-tracing every Python iteration; the trajectory is bit-identical.
+    """
+
+    def body(carry: tuple[Array, Any], _: None) -> tuple[tuple[Array, Any], None]:
+        x, state = carry
+        upd, state = opt.update(-x, state, x)
+        return (jnp.asarray(optax.apply_updates(x, upd)), state), None
+
+    (x, state), _ = jax.lax.scan(body, (x, state), None, length=steps)
+    return x, state
 
 
 class TestScaleByFireGlobalFallback:
@@ -49,10 +71,7 @@ class TestScaleByFireGlobalFallback:
         # L(x) = 0.5·x²  ⇒  ∇L = x, force F = -x.
         new = ScaleByFire(dt_start=0.05, dt_max=0.5)
         x = jnp.array([5.0])
-        state = new.init(x)
-        for _ in range(100):
-            upd, state = new.update(-x, state, x)
-            x = jnp.asarray(optax.apply_updates(x, upd))
+        x, _ = _run_force(new, x, new.init(x), 100)
         npt.assert_allclose(x, jnp.zeros(1), atol=1e-2)
 
 
@@ -62,11 +81,7 @@ class TestScaleByFirePerSystem:
 
         def run_alone(x0: jnp.ndarray) -> jnp.ndarray:
             opt = ScaleByFire(dt_start=0.1)
-            state = opt.init(x0)
-            x = x0
-            for _ in range(8):
-                upd, state = opt.update(-x, state, x)
-                x = jnp.asarray(optax.apply_updates(x, upd))
+            x, _ = _run_force(opt, x0, opt.init(x0), 8)
             return x
 
         x_a = jnp.array([5.0, -3.0])
@@ -76,12 +91,7 @@ class TestScaleByFirePerSystem:
         opt = ScaleByFire(dt_start=0.1)
         batched = jnp.concatenate([x_a, x_b])
         idx = _system_index([0, 0, 1, 1], 2)
-        state = opt.init(batched, index_prefix=idx)
-        x = batched
-        for _ in range(8):
-            upd, state = opt.update(-x, state, x)
-            x = jnp.asarray(optax.apply_updates(x, upd))
-
+        x, _ = _run_force(opt, batched, opt.init(batched, index_prefix=idx), 8)
         npt.assert_allclose(x, sep, atol=1e-6)
 
     def test_dt_evolves_per_system(self):
@@ -138,18 +148,19 @@ class TestScaleByFireComposability:
         direct = ScaleByFire(dt_start=0.05, dt_max=0.5)
         composed = chain(optax.scale(-1.0), ScaleByFire(dt_start=0.05, dt_max=0.5))
 
-        x_direct = x0
-        s_direct = direct.init(x_direct)
-        x_composed = x0
-        s_composed = composed.init(x_composed)
-
-        for _ in range(20):
+        def body(
+            carry: tuple[Array, Any, Array, Any], _: None
+        ) -> tuple[tuple[Array, Any, Array, Any], None]:
             # Quadratic: ∇L = x, force = -x.
-            upd_d, s_direct = direct.update(-x_direct, s_direct, x_direct)
-            x_direct = jnp.asarray(optax.apply_updates(x_direct, upd_d))
-            upd_c, s_composed = composed.update(x_composed, s_composed, x_composed)
-            x_composed = jnp.asarray(optax.apply_updates(x_composed, upd_c))
+            x_d, s_d, x_c, s_c = carry
+            upd_d, s_d = direct.update(-x_d, s_d, x_d)
+            x_d = jnp.asarray(optax.apply_updates(x_d, upd_d))
+            upd_c, s_c = composed.update(x_c, s_c, x_c)
+            x_c = jnp.asarray(optax.apply_updates(x_c, upd_c))
+            return (x_d, s_d, x_c, s_c), None
 
+        init = (x0, direct.init(x0), x0, composed.init(x0))
+        (x_direct, _, x_composed, _), _ = jax.lax.scan(body, init, None, length=20)
         npt.assert_allclose(x_composed, x_direct, atol=1e-6)
 
     def test_chain_with_clip_caps_input_force(self):

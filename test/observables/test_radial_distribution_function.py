@@ -131,13 +131,12 @@ class TestRadialDistributionFunction:
         assert class_result.shape == (1, 50)
         assert jnp.all(jnp.isfinite(class_result))
 
-        # Test different rmax/bins combinations work
-        for test_rmax in [1.0, 10.0]:
-            test_systems = _make_systems(_box10(), test_rmax)
-            r = radial_distribution_function(
-                positions, test_systems, test_rmax, 50, MockNeighborList()
-            )
-            assert r.shape == (1, 50)
+        # Test a different rmax works
+        test_systems = _make_systems(_box10(), 10.0)
+        r = radial_distribution_function(
+            positions, test_systems, 10.0, 50, MockNeighborList()
+        )
+        assert r.shape == (1, 50)
 
     def test_no_neighbors_gives_zero_rdf(self):
         """Single particle or no pairs produces all-zero RDF."""

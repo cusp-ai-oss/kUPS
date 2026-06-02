@@ -122,6 +122,9 @@ class TestSanitization:
         npt.assert_array_equal(buf.data.values[0], [1.0, 1.0])
 
 
+_jit_select_free = jax.jit(lambda buf, n: buf.select_free(n), static_argnames="n")
+
+
 class TestSelectFree:
     def test_select_free(self):
         """Merged: num_occupied count, returns_index, fill_value, usable_with_at."""
@@ -130,10 +133,10 @@ class TestSelectFree:
         buf = Buffered(tuple(range(5)), data, _view)
         npt.assert_array_equal(buf.num_occupied, 3)
 
-        # returns index
+        # returns index (jitted to avoid eager per-op dispatch overhead)
         data = _td([0.0] * 4, [True, False, True, False])
         buf = Buffered(tuple(range(4)), data, _view)
-        free = buf.select_free(2)
+        free = _jit_select_free(buf, 2)
         assert isinstance(free, Index)
         assert free.keys == (0, 1, 2, 3)
         npt.assert_array_equal(free.indices, [1, 3])
@@ -141,13 +144,13 @@ class TestSelectFree:
         # fill value when fewer free
         data = _td([0.0] * 3, [True, False, True])
         buf = Buffered(tuple(range(3)), data, _view)
-        free = buf.select_free(3)
+        free = _jit_select_free(buf, 3)
         npt.assert_array_equal(free.indices, [1, 3, 3])
 
         # usable with at
         data = _td([1.0, 0.0, 3.0], [True, False, True])
         buf = Buffered(("a", "b", "c"), data, _view)
-        free = buf.select_free(1)
+        free = _jit_select_free(buf, 1)
         updated = buf.at(free).set(_td([99.0], [True]))
         npt.assert_array_equal(updated.values, [1.0, 99.0, 3.0])
 

@@ -12,7 +12,11 @@ from kups.application.md.data import (
     MDSystems,
 )
 from kups.application.md.logging import MDLoggedData
-from kups.application.utils.propagate import run_simulation_cycles, run_warmup_cycles
+from kups.application.utils.propagate import (
+    make_cycle_function,
+    run_simulation_cycles,
+    run_warmup_cycles,
+)
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
@@ -130,8 +134,9 @@ def run_md[State: IsMdState](
         Final simulation state after production run.
     """
     chain = key_chain(key)
+    cycle_fn = make_cycle_function(propagator)
     logging.info("Warmup")
-    state = run_warmup_cycles(next(chain), propagator, state, config.num_warmup_steps)
+    state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
     logger = CompositeLogger(
@@ -139,6 +144,6 @@ def run_md[State: IsMdState](
         HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps),
     )
     state = run_simulation_cycles(
-        next(chain), propagator, state, config.num_steps, logger
+        next(chain), cycle_fn, state, config.num_steps, logger
     )
     return state

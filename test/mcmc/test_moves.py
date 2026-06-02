@@ -99,9 +99,9 @@ class GroupData:
 class TestRandomSelectGroups:
     @classmethod
     def setup_class(cls):
-        cls.n_groups_per_sys = 10
-        cls.max_group_size = 3
-        cls.n_sys = 5
+        cls.n_groups_per_sys = 4
+        cls.max_group_size = 2
+        cls.n_sys = 3
         cls.group_system_ids = Table.arange(
             SystemData(
                 system=_make_index(
@@ -137,12 +137,17 @@ class TestRandomSelectGroups:
             ),
             label=ParticleId,
         )
-        cls.capacity = LensCapacity(15, lens(lambda x: x))
+        cls.capacity = LensCapacity(cls.n_sys * cls.max_group_size, lens(lambda x: x))
+        cls.jit_select = staticmethod(
+            jax.jit(
+                as_result_function(random_select_groups), static_argnames="capacity"
+            )
+        )
 
     def test_basic(self):
         key = jax.random.key(0)
         chain = key_chain(key)
-        index_result = as_result_function(random_select_groups)(
+        index_result = self.jit_select(
             next(chain),
             self.group_system_ids,
             self.particle_data,
@@ -188,7 +193,7 @@ class TestRandomSelectGroups:
             .focus(lambda x: x.data.system.indices)
             .set(particle_data.data.system.indices[permutation])
         )
-        index_result = as_result_function(random_select_groups)(
+        index_result = self.jit_select(
             next(chain), group_system_ids, particle_data, capacity=self.capacity
         )
         index_result.raise_assertion()
@@ -205,7 +210,7 @@ class TestRandomSelectGroups:
     def test_insufficient_capacity(self):
         key = jax.random.key(0)
         chain = key_chain(key)
-        index_result = as_result_function(random_select_groups)(
+        index_result = self.jit_select(
             next(chain),
             self.group_system_ids,
             self.particle_data,
@@ -1313,7 +1318,7 @@ class TestInsertRandomMotif:
     def test_insert_random_motif(self):
         particles, groups, motifs, cell = _exchange_state()
         cap = LensCapacity(1, lens(lambda x: x, cls=int))
-        result = insert_random_motif(
+        result = jax.jit(insert_random_motif, static_argnums=5)(
             jax.random.key(0), motifs, particles, groups, cell, cap
         )
         # Type checks
@@ -1336,7 +1341,9 @@ class TestDeleteRandomMotif:
     def test_delete_random_motif(self):
         particles, groups, motifs, _ = _exchange_state()
         cap = LensCapacity(1, lens(lambda x: x, cls=int))
-        result = delete_random_motif(jax.random.key(0), motifs, particles, groups, cap)
+        result = jax.jit(delete_random_motif, static_argnums=4)(
+            jax.random.key(0), motifs, particles, groups, cap
+        )
         # Type checks
         assert isinstance(result, ExchangeChanges)
         assert isinstance(result.particles, WithIndices)

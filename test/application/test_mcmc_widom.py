@@ -10,6 +10,7 @@ import tempfile
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
 from kups.application.mcmc.analysis import analyze_widom_file
 from kups.application.mcmc.data import (
@@ -21,10 +22,12 @@ from kups.application.simulations.mcmc_rigid import EwaldConfig, LJConfig
 from kups.application.simulations.mcmc_widom import (
     Config,
     WidomRunConfig,
+    WidomState,
     init_state,
     make_propagator,
     run,
 )
+from kups.core.propagator import Propagator
 
 from ..clear_cache import clear_cache  # noqa: F401
 
@@ -130,46 +133,65 @@ def _config(host: HostConfig, run_config: WidomRunConfig | None = None) -> Confi
     )
 
 
-class TestInitState:
-    def test_no_blocking_spheres_by_default(self):
-        cif = _write_cubic_ar_cif()
-        state = init_state(jax.random.key(0), _config(_host(cif)))
-        assert not state.has_blocking_spheres
-        assert state.blocking_spheres_parameters.radii.shape == (0,)
+_SPHERES = ((BlockingSphereConfig(center=(5.0, 5.0, 5.0), radius=2.0),),)
 
-    def test_blocking_spheres_flow_through(self):
-        cif = _write_cubic_ar_cif()
-        spheres = ((BlockingSphereConfig(center=(5.0, 5.0, 5.0), radius=2.0),),)
-        state = init_state(
-            jax.random.key(0), _config(_host(cif, blocking_spheres=spheres))
+
+class TestInitState:
+    """``init_state`` is run once per host variant and shared across asserts."""
+
+    @pytest.fixture(scope="class")
+    def plain_state(self) -> WidomState:
+        return init_state(jax.random.key(0), _config(_host(_write_cubic_ar_cif())))
+
+    @pytest.fixture(scope="class")
+    def blocked_state(self) -> WidomState:
+        config = _config(_host(_write_cubic_ar_cif(), blocking_spheres=_SPHERES))
+        return init_state(jax.random.key(0), config)
+
+    def test_no_blocking_spheres_by_default(self, plain_state):
+        assert not plain_state.has_blocking_spheres
+        assert plain_state.blocking_spheres_parameters.radii.shape == (0,)
+
+    def test_blocking_spheres_flow_through(self, blocked_state):
+        assert blocked_state.has_blocking_spheres
+        assert blocked_state.blocking_spheres_parameters.radii.shape[0] == 1
+        npt.assert_allclose(
+            blocked_state.blocking_spheres_parameters.radii, jnp.array([2.0])
         )
-        assert state.has_blocking_spheres
-        assert state.blocking_spheres_parameters.radii.shape[0] == 1
-        npt.assert_allclose(state.blocking_spheres_parameters.radii, jnp.array([2.0]))
 
 
 class TestMakePropagator:
-    def test_returns_init_and_production_pair(self):
-        cif = _write_cubic_ar_cif()
-        config = _config(_host(cif))
+    """``init_state`` + ``make_propagator`` shared per host variant."""
+
+    @pytest.fixture(scope="class")
+    def plain(
+        self,
+    ) -> tuple[WidomState, tuple[Propagator[WidomState], Propagator[WidomState]]]:
+        config = _config(_host(_write_cubic_ar_cif()))
         state = init_state(jax.random.key(0), config)
-        init_prop, production = make_propagator(state, config.run)
+        return state, make_propagator(state, config.run)
+
+    @pytest.fixture(scope="class")
+    def blocked(
+        self,
+    ) -> tuple[WidomState, tuple[Propagator[WidomState], Propagator[WidomState]]]:
+        config = _config(_host(_write_cubic_ar_cif(), blocking_spheres=_SPHERES))
+        state = init_state(jax.random.key(0), config)
+        return state, make_propagator(state, config.run)
+
+    def test_returns_init_and_production_pair(self, plain):
+        _, (init_prop, production) = plain
         # Both must be callable propagators.
         assert callable(init_prop)
         assert callable(production)
 
-    def test_blocking_spheres_state_pathway(self):
+    def test_blocking_spheres_state_pathway(self, blocked):
         """A blocking-sphere-bearing host produces a state where the
         propagator builds the blocking-spheres potential branch."""
-        cif = _write_cubic_ar_cif()
-        spheres = ((BlockingSphereConfig(center=(5.0, 5.0, 5.0), radius=2.0),),)
-        config = _config(_host(cif, blocking_spheres=spheres))
-        state = init_state(jax.random.key(0), config)
-        assert state.has_blocking_spheres
+        state, (init_prop, production) = blocked
         # ``make_propagator`` reads ``state.has_blocking_spheres`` to decide
-        # whether to add the blocking term; ensure it executes that branch
-        # without error.
-        init_prop, production = make_propagator(state, config.run)
+        # whether to add the blocking term; ensure it executes that branch.
+        assert state.has_blocking_spheres
         assert callable(init_prop)
         assert callable(production)
 
@@ -177,19 +199,22 @@ class TestMakePropagator:
 class TestRun:
     """End-to-end smoke: a short run writes an HDF5 file the analyzer can read."""
 
-    def test_state_has_accumulated_widom_statistics(self):
-        cif = _write_cubic_ar_cif()
-        config = _config(_host(cif))
-        state = run(config)
+    @pytest.fixture(scope="class")
+    def run_result(self) -> tuple[WidomState, Config]:
+        """Run the (deterministic, seed=0) simulation once; share state + file."""
+        config = _config(_host(_write_cubic_ar_cif()))
+        return run(config), config
+
+    def test_state_has_accumulated_widom_statistics(self, run_result):
+        state, _ = run_result
         stats = state.widom_statistics.data
+        # n_samples == num_widom_per_cycle * num_cycles
         assert int(stats.n_samples[0]) == 4 * 2
         assert jnp.isfinite(stats.sum_boltzmann[0]).item()
         assert float(stats.sum_boltzmann[0]) > 0.0
 
-    def test_analyzer_reads_back_physical_outputs(self):
-        cif = _write_cubic_ar_cif()
-        config = _config(_host(cif))
-        run(config)
+    def test_analyzer_reads_back_physical_outputs(self, run_result):
+        _, config = run_result
         results = analyze_widom_file(config.run.out_file, n_blocks=2)
         assert len(results) == 1
         result = next(iter(results.values()))
