@@ -391,54 +391,69 @@ class TestToCls:
         assert not Index((0, 1), jnp.array([0, 2, 1])).to_cls(ParticleId).valid_mask[1]
 
 
+_jit_where_rect = jax.jit(
+    lambda hay, needle, max_count: hay.where_rectangular(needle, max_count=max_count),
+    static_argnames="max_count",
+)
+_jit_where_flat = jax.jit(
+    lambda hay, needle, capacity: hay.where_flat(needle, capacity=capacity),
+    static_argnames="capacity",
+)
+_jit_subselect = jax.jit(
+    lambda hay, needle, capacity: hay.subselect(needle, capacity=capacity),
+    static_argnames="capacity",
+)
+
+
 class TestWhereAndSubselect:
     def test_where_and_subselect(self):
-        # where_rectangular
+        # where_rectangular (jitted to avoid eager per-op dispatch overhead)
         sa = Index.new(["H", "O", "H", "O", "H"])
-        result = sa.where_rectangular(Index.new(["H", "O"]), max_count=3)
+        result = _jit_where_rect(sa, Index.new(["H", "O"]), max_count=3)
         npt.assert_array_equal(result[0], [0, 2, 4])
         npt.assert_array_equal(result[1, :2], [1, 3])
         assert result[1, 2] == 5
         # Single label
         sa2 = Index.new(["X", "X", "X"])
-        result2 = sa2.where_rectangular(Index.new(["X"]), max_count=4)
+        result2 = _jit_where_rect(sa2, Index.new(["X"]), max_count=4)
         npt.assert_array_equal(result2[0, :3], [0, 1, 2])
         assert result2[0, 3] == 3
         # Different key order
         sa3 = Index.new(["H", "O", "H"])
-        result3 = sa3.where_rectangular(Index.new(["O"]), max_count=2)
+        result3 = _jit_where_rect(sa3, Index.new(["O"]), max_count=2)
         npt.assert_array_equal(result3[0, :1], [1])
         assert result3[0, 1] == 3
 
         # where_flat
         npt.assert_array_equal(
-            sa.where_flat(Index.new(["H"]), capacity=FixedCapacity(3)), [0, 2, 4]
+            _jit_where_flat(sa, Index.new(["H"]), capacity=FixedCapacity(3)), [0, 2, 4]
         )
         sa4 = Index.new(["A", "B", "C", "A", "B"])
         npt.assert_array_equal(
-            sa4.where_flat(Index.new(["A", "C"]), capacity=FixedCapacity(3)), [0, 2, 3]
+            _jit_where_flat(sa4, Index.new(["A", "C"]), capacity=FixedCapacity(3)),
+            [0, 2, 3],
         )
 
         # subselect
-        sub = sa.subselect(Index.new(["O"]), capacity=FixedCapacity(2))
+        sub = _jit_subselect(sa, Index.new(["O"]), capacity=FixedCapacity(2))
         assert isinstance(sub.scatter, Index) and isinstance(sub.gather, Index)
         npt.assert_array_equal(sub.scatter.value, ["O", "O"])
         npt.assert_array_equal(sub.gather.value, ["O", "O"])
         # Multiple needles
-        sub2 = sa4.subselect(Index.new(["A", "C"]), capacity=FixedCapacity(3))
+        sub2 = _jit_subselect(sa4, Index.new(["A", "C"]), capacity=FixedCapacity(3))
         npt.assert_array_equal(sorted(sub2.gather.value), ["A", "A", "C"])
         # Key spaces
         sa5 = Index.new(["X", "Y", "X", "Z"])
-        sub3 = sa5.subselect(Index.new(["Y"]), capacity=FixedCapacity(1))
+        sub3 = _jit_subselect(sa5, Index.new(["Y"]), capacity=FixedCapacity(1))
         assert sub3.scatter.keys == ("Y",) and sub3.gather.keys == ("X", "Y", "Z")
         # OOB with overcapacity
-        sub4 = Index.new(["A", "B", "A"]).subselect(
-            Index.new(["B"]), capacity=FixedCapacity(3)
+        sub4 = _jit_subselect(
+            Index.new(["A", "B", "A"]), Index.new(["B"]), capacity=FixedCapacity(3)
         )
         assert int((sub4.scatter.indices < len(sub4.scatter.keys)).sum()) == 1
         # Iter unpacking
-        scatter, gather = Index.new(["A", "B", "A"]).subselect(
-            Index.new(["A"]), capacity=FixedCapacity(2)
+        scatter, gather = _jit_subselect(
+            Index.new(["A", "B", "A"]), Index.new(["A"]), capacity=FixedCapacity(2)
         )
         assert isinstance(scatter, Index) and isinstance(gather, Index)
 

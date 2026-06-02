@@ -7,7 +7,7 @@ import jax
 import pytest
 
 
-@pytest.fixture(autouse=True, scope="class")
+@pytest.fixture(autouse=True, scope="module")
 def clear_cache():
     # Ensure that before and after every module we clear JAX's caches
     jax.clear_caches()

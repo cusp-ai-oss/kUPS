@@ -223,7 +223,9 @@ class TestEwald:
         charges = jnp.array([1.0, -1.0, 1.0, -1.0])
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * 20.0))
 
-        estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-4)
+        # The exclusion-correction identity is independent of Ewald precision
+        # (e_excl is checked analytically), so a coarse k-space suffices here.
+        estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-3)
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([estimates.alpha])),
             cutoff=Table((SystemId(0),), jnp.array([estimates.real_cutoff])),

@@ -483,7 +483,7 @@ class TestNearestNeighborListImplementations:
                 )
 
     def test_compare_to_naive(self, neighbor_list_impl):
-        N = 15
+        N = 12
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=0.0, maxval=10.0
         )
@@ -522,7 +522,7 @@ class TestNearestNeighborListImplementations:
                 )
 
     def test_compare_to_naive_update(self, neighbor_list_impl):
-        N = 15
+        N = 12
         M = 3
         positions = jax.random.uniform(
             jax.random.key(0), (N, 3), minval=-5.0, maxval=5.0

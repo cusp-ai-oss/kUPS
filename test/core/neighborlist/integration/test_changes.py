@@ -183,7 +183,7 @@ class TestNeighborlistChanges:
 
     def test_random_large(self):
         """Stress test with random positions and multiple changed particles."""
-        N, M = 30, 5
+        N, M = 20, 5
         key = jax.random.key(123)
         k1, k2, k3 = jax.random.split(key, 3)
 

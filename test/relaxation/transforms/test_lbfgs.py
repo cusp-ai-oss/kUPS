@@ -3,11 +3,14 @@
 
 """Tests for the per-system ASE-flavor L-BFGS transform."""
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import optax
 import pytest
+from jax import Array
 
 from kups.core.data.index import Index
 from kups.core.typing import SystemId
@@ -22,6 +25,30 @@ from ...clear_cache import clear_cache  # noqa: F401
 def _system_index(system_ids: list[int], num_systems: int) -> Index[SystemId]:
     keys = tuple(SystemId(i) for i in range(num_systems))
     return Index(keys, jnp.array(system_ids), _cls=SystemId)
+
+
+def _run_grad(
+    opt: ScaleByAseLbfgs[Any],
+    x: Array,
+    state: ScaleByAseLbfgsState,
+    steps: int,
+) -> tuple[Array, ScaleByAseLbfgsState]:
+    """Run ``steps`` of ``opt`` on a quadratic (gradient ``∇L = x``) via one scan.
+
+    Folding the loop into a single ``lax.scan`` compiles the step once instead
+    of re-tracing every Python iteration; the trajectory is bit-identical.
+    """
+
+    def body(
+        carry: tuple[Any, ScaleByAseLbfgsState], _: None
+    ) -> tuple[tuple[Any, ScaleByAseLbfgsState], None]:
+        x, state = carry
+        upd, state = opt.update(x, state, x)
+        x = optax.apply_updates(x, jax.tree.map(lambda u: -u, upd))
+        return (x, state), None
+
+    (x, state), _ = jax.lax.scan(body, (x, state), None, length=steps)
+    return jnp.asarray(x), state
 
 
 class TestScaleByASELBFGSGlobalFallback:
@@ -75,20 +102,14 @@ class TestScaleByASELBFGSGlobalFallback:
     def test_convergence_on_quadratic(self):
         opt = ScaleByAseLbfgs(memory_size=10, alpha=1.0)
         x = jnp.array([5.0, -3.0, 2.0])
-        state = opt.init(x)
-        for _ in range(15):
-            upd, state = opt.update(x, state, x)
-            x = optax.apply_updates(x, jax.tree.map(lambda u: -u, upd))
+        x, _ = _run_grad(opt, x, opt.init(x), 15)
         npt.assert_allclose(x, jnp.zeros(3), atol=1e-4)
 
     def test_memory_wraps_around(self):
         memory_size = 3
         opt = ScaleByAseLbfgs(memory_size=memory_size, alpha=1.0)
         x = jnp.array([5.0])
-        state = opt.init(x)
-        for _ in range(memory_size + 5):
-            upd, state = opt.update(x, state, x)
-            x = optax.apply_updates(x, jax.tree.map(lambda u: -u, upd))
+        _, state = _run_grad(opt, x, opt.init(x), memory_size + 5)
         assert int(state.count) == memory_size + 5
 
 
@@ -98,12 +119,8 @@ class TestScaleByASELBFGSPerSystem:
 
         def run_alone(x0: jnp.ndarray) -> jnp.ndarray:
             opt = ScaleByAseLbfgs(memory_size=5, alpha=10.0)
-            state = opt.init(x0)
-            x = x0
-            for _ in range(6):
-                upd, state = opt.update(x, state, x)
-                x = optax.apply_updates(x, jax.tree.map(lambda u: -u, upd))
-            return jnp.asarray(x)
+            x, _ = _run_grad(opt, x0, opt.init(x0), 6)
+            return x
 
         x_a = jnp.array([5.0, -3.0])
         x_b = jnp.array([0.5, 0.2])
@@ -112,12 +129,7 @@ class TestScaleByASELBFGSPerSystem:
         opt = ScaleByAseLbfgs(memory_size=5, alpha=10.0)
         batched = jnp.concatenate([x_a, x_b])
         idx = _system_index([0, 0, 1, 1], 2)
-        state = opt.init(batched, index_prefix=idx)
-        x = batched
-        for _ in range(6):
-            upd, state = opt.update(x, state, x)
-            x = optax.apply_updates(x, jax.tree.map(lambda u: -u, upd))
-
+        x, _ = _run_grad(opt, batched, opt.init(batched, index_prefix=idx), 6)
         npt.assert_allclose(x, sep, atol=1e-6)
 
     def test_per_system_block_diagonal(self):

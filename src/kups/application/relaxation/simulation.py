@@ -15,7 +15,7 @@ from kups.application.relaxation.data import (
     RelaxSystems,
 )
 from kups.application.relaxation.logging import RelaxLoggedData
-from kups.application.utils.propagate import run_simulation_cycles
+from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View, lens
@@ -172,6 +172,11 @@ def run_relax[State: IsRelaxState](
         HDF5StorageWriter(config.out_file, RelaxLoggedData(), state, config.max_steps),
     )
     state = run_simulation_cycles(
-        key, propagator, state, config.max_steps, logger, convergence_fn=converged
+        key,
+        make_cycle_function(propagator),
+        state,
+        config.max_steps,
+        logger,
+        convergence_fn=converged,
     )
     return state
