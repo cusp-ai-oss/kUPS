@@ -119,11 +119,17 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jax.flatten_util import ravel_pytree
+from jax.scipy.linalg import expm
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
 from kups.core.utils.jax import dataclass, field
-from kups.core.utils.math import triangular_3x3_det_and_inverse, triangular_3x3_matmul
+from kups.core.utils.math import (
+    triangular_3x3_det_and_inverse,
+    triangular_3x3_from_tril,
+    triangular_3x3_logm,
+    triangular_3x3_matmul,
+)
 
 _P = TypeVar("_P", bound=tuple[bool, bool, bool], covariant=True)
 
@@ -496,15 +502,7 @@ class TriclinicFrame(LinearFrame, Sliceable):
     @property
     @override
     def vectors(self) -> Array:
-        zero = jnp.zeros_like(self.tril[..., :1])
-        return jnp.stack(
-            [
-                jnp.concatenate([self.tril[..., 0:1], zero, zero], axis=-1),
-                jnp.concatenate([self.tril[..., 1:3], zero], axis=-1),
-                self.tril[..., 3:6],
-            ],
-            axis=-2,
-        )
+        return triangular_3x3_from_tril(self.tril)
 
     @property
     @override
@@ -543,6 +541,66 @@ class TriclinicFrame(LinearFrame, Sliceable):
     @override
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.tril * jnp.asarray(other)[..., None])
+
+
+@dataclass
+class LogTriclinicFrame(BaseFrame, Sliceable):
+    """Triclinic [Frame][kups.core.cell.Frame] parameterised in the matrix log.
+
+    Stores the 6 lower-triangular elements of a matrix ``A``; the basis vectors
+    are ``expm(A)``. Because ``A`` is lower-triangular, ``expm(A)`` is too (its
+    diagonal is ``exp`` of ``A``'s diagonal), so the lower-triangular convention
+    shared by every other frame is preserved.
+
+    The exponential map is unconstrained: any ``A`` yields a basis with strictly
+    positive volume ``exp(tr A)``, so gradient-based cell relaxation in ``A`` never
+    has to guard against a collapsing or inverting cell. Unlike
+    [TriclinicFrame][kups.core.cell.TriclinicFrame], ``vectors`` is a *nonlinear*
+    function of the parameters, so the parameter/cartesian gradient maps use the
+    general inverse-Jacobian path on [BaseFrame][kups.core.cell.BaseFrame] rather
+    than a constant-Jacobian shortcut.
+
+    Attributes:
+        tril: Lower-triangular elements ``[A00, A10, A11, A20, A21, A22]`` of
+            ``A``, shape ``(..., 6)``.
+    """
+
+    tril: Array
+
+    @classmethod
+    @override
+    def from_matrix(cls, vecs: Array) -> Self:
+        """Construct from a lower-triangular basis matrix ``L`` (positive
+        diagonal), shape ``(..., 3, 3)``, storing ``logm(L)`` so that
+        ``vectors == L``."""
+        return cls(triangular_3x3_logm(jnp.asarray(vecs))[..., *np.tril_indices(3)])
+
+    @property
+    @override
+    def vectors(self) -> Array:
+        return expm(triangular_3x3_from_tril(self.tril))
+
+    @property
+    @override
+    def volume(self) -> Array:
+        # det(expm(A)) = exp(tr A); the diagonal of A is tril[0], tril[2], tril[5].
+        return jnp.exp(self.tril[..., 0] + self.tril[..., 2] + self.tril[..., 5])
+
+    @override
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
+        # Per-axis row scaling has no closed form in A (diag(m) does not commute
+        # with A), so scale the basis matrix and re-take the log.
+        m = jnp.asarray(multiplicities)
+        log_matrix = triangular_3x3_logm(self.vectors * m[:, None])
+        return type(self)(log_matrix[..., *np.tril_indices(3)])
+
+    @override
+    def __mul__(self, other: Array | float | int) -> Self:
+        # Uniform scaling commutes: expm(A + log(s) I) = s * expm(A), so add
+        # log(s) to the diagonal elements A00, A11, A22 (tril indices 0, 2, 5).
+        log_scale = jnp.log(jnp.asarray(other))[..., None]
+        diagonal = jnp.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
+        return type(self)(self.tril + log_scale * diagonal)
 
 
 @dataclass
