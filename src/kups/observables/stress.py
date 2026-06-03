@@ -160,11 +160,12 @@ def stress_via_virial_theorem(
     Returns:
         Symmetric stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
+    cell = systems.data.cell
     stress = _stress_via_virial_theorem(
         particles.data.position_gradients,
-        systems.data.cell_gradients.vectors,
+        cell.frame.vectors_gradient(systems.data.cell_gradients.frame),
         particles.data.positions,
-        systems.data.cell.vectors,
+        cell.vectors,
         particles.data.system,
     )
     return Table(systems.keys, stress)
@@ -186,15 +187,16 @@ def molecular_stress_via_virial_theorem(
         Symmetric stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
     group_cells = systems[groups.data.system].cell
+    cell = systems.data.cell
     stress = _molecular_stress_via_virial_theorem(
         particles.data.position_gradients,
-        systems.data.cell_gradients.vectors,
+        cell.frame.vectors_gradient(systems.data.cell_gradients.frame),
         particles.data.positions,
         particles.data.group,
         group_cells,
         particles.data.system,
-        systems.data.cell.vectors,
-        systems.data.cell.volume,
+        cell.vectors,
+        cell.volume,
     )
     return Table(systems.keys, stress)
 

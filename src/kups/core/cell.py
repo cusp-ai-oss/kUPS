@@ -98,15 +98,27 @@ Frame vectors follow the row convention: ``r_real = r_frac @ frame.vectors``.
 
 from __future__ import annotations
 
+import abc
 import math
 from enum import Enum
 from functools import partial
-from typing import Any, Generic, Literal, Protocol, Self, TypeGuard, TypeVar, overload
+from typing import (
+    Any,
+    Generic,
+    Literal,
+    Protocol,
+    Self,
+    TypeGuard,
+    TypeVar,
+    overload,
+    override,
+)
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.flatten_util import ravel_pytree
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
@@ -167,10 +179,16 @@ class Frame(Protocol):
     label implies a periodic interpretation that does not apply to all
     Frame uses (e.g. the bounding box of a vacuum simulation).
 
-    Concrete implementations:
+    The parameterised implementations subclass
+    [BaseFrame][kups.core.cell.BaseFrame], which implements every operation
+    derivable from [`vectors`][kups.core.cell.Frame.vectors]:
 
     - [OrthogonalFrame][kups.core.cell.OrthogonalFrame]: 3 DOF (lengths).
     - [TriclinicFrame][kups.core.cell.TriclinicFrame]: 6 DOF (lower-triangular).
+
+    [MaterializedFrame][kups.core.cell.MaterializedFrame] stores the basis
+    matrix, inverse and volume directly and implements this interface without
+    going through ``BaseFrame``.
     """
 
     @property
@@ -248,6 +266,147 @@ class Frame(Protocol):
         """
         ...
 
+    def parameter_gradient(self, vectors_grad: Array) -> Self:
+        """Pull a cartesian ``∂E/∂h`` matrix back onto the frame's parameter
+        space, returning a same-type frame whose parameter leaves hold
+        ``∂E/∂θ``.
+
+        Implements ``∂E/∂θ = Jᵀ·∂E/∂h`` with ``J = ∂vectors/∂θ`` via the
+        vector-Jacobian product of [`vectors`][kups.core.cell.Frame.vectors].
+        General for any parameterisation — the vjp linearises at the current
+        parameters, so it is correct even when ``vectors`` is a nonlinear
+        function of the parameters. Inverse of
+        [`vectors_gradient`][kups.core.cell.Frame.vectors_gradient].
+        """
+        ...
+
+    def vectors_gradient(self, parameter_grad: Frame) -> Array:
+        """Map a parameter-space gradient frame (``parameter_grad`` holding
+        ``∂E/∂θ`` in its parameter leaves) to the cartesian ``∂E/∂h`` matrix,
+        shape ``(..., 3, 3)``.
+
+        Implements ``vec(∂E/∂h) = (Jᵀ)⁺·∂E/∂θ`` with ``J = ∂vectors/∂θ`` — the
+        pseudo-inverse of the Jacobian, evaluated at this frame's parameters.
+        For a parameterisation whose ``vectors`` map is linear with orthonormal
+        Jacobian (``TriclinicFrame``, ``OrthogonalFrame``) this reduces to
+        reconstructing the matrix from the gradient frame; the general path
+        covers nonlinear parameterisations. Inverse of
+        [`parameter_gradient`][kups.core.cell.Frame.parameter_gradient].
+        """
+        ...
+
+
+class BaseFrame(Frame, abc.ABC):
+    """Abstract base implementing every [Frame][kups.core.cell.Frame]
+    operation that derives purely from
+    [`vectors`][kups.core.cell.Frame.vectors].
+
+    Concrete frames subclass ``BaseFrame`` and supply only their
+    parameterisation — the ``vectors`` primitive plus
+    [`from_matrix`][kups.core.cell.Frame.from_matrix],
+    [`tile`][kups.core.cell.Frame.tile] and ``__mul__``. The lower-triangular
+    convention shared by all frames lets the basis inverse, volume,
+    perpendicular lengths, and coordinate transforms be computed here once via
+    the triangular fast paths in
+    [kups.core.utils.math][kups.core.utils.math]. Subclasses may override any
+    of these with cheaper specialised forms (e.g. ``OrthogonalFrame``'s
+    diagonal paths).
+
+    Mirrors the [Lens][kups.core.lens.Lens] /
+    [BaseLens][kups.core.lens.BaseLens] split: ``Frame`` is the structural
+    interface, ``BaseFrame`` the shared implementation.
+    """
+
+    @classmethod
+    @abc.abstractmethod
+    @override
+    def from_matrix(cls, vecs: Array) -> Self: ...
+
+    @abc.abstractmethod
+    @override
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self: ...
+
+    @abc.abstractmethod
+    @override
+    def __mul__(self, other: Array | float | int) -> Self: ...
+
+    @property
+    @override
+    def inverse_vectors(self) -> Array:
+        return triangular_3x3_det_and_inverse(self.vectors)[1]
+
+    @property
+    @override
+    def volume(self) -> Array:
+        diagonal = jnp.diagonal(self.vectors, axis1=-2, axis2=-1)
+        return jnp.abs(diagonal.prod(axis=-1))
+
+    @property
+    @override
+    def perpendicular_lengths(self) -> Array:
+        v = self.vectors
+        a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
+        vol = self.volume
+        Lx = vol / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
+        Ly = vol / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
+        Lz = vol / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
+        return jnp.stack([Lx, Ly, Lz], axis=-1)
+
+    @override
+    def to_fractional(self, r: Array) -> Array:
+        return triangular_3x3_matmul(self.inverse_vectors, r)
+
+    @override
+    def to_real(self, r_frac: Array) -> Array:
+        return triangular_3x3_matmul(self.vectors, r_frac)
+
+    @override
+    def materialize(self) -> MaterializedFrame:
+        vecs = self.vectors
+        det, inv = triangular_3x3_det_and_inverse(vecs)
+        return MaterializedFrame(vectors=vecs, inverse_vectors=inv, volume=jnp.abs(det))
+
+    @override
+    def parameter_gradient(self, vectors_grad: Array) -> Self:
+        (grad,) = jax.vjp(lambda f: f.vectors, self)[1](vectors_grad)
+        return grad
+
+    @override
+    def vectors_gradient(self, parameter_grad: Frame) -> Array:
+        def single(frame: Frame, grad: Frame) -> Array:
+            theta, unravel = ravel_pytree(frame)
+            g_theta, _ = ravel_pytree(grad)
+            jac = jax.jacfwd(lambda p: unravel(p).vectors)(theta)  # (3, 3, n)
+            # vec(∂E/∂h) = (Jᵀ)⁺·∂E/∂θ; lstsq on the wide ``Jᵀ`` gives the
+            # min-norm solution, i.e. the pseudo-inverse.
+            vec_grad = jnp.linalg.lstsq(jac.reshape(9, theta.shape[0]).T, g_theta)[0]
+            return vec_grad.reshape(3, 3)
+
+        fn = single
+        for _ in range(self.vectors.ndim - 2):
+            fn = jax.vmap(fn)
+        return fn(self, parameter_grad)
+
+
+class LinearFrame(BaseFrame, abc.ABC):
+    """Abstract base for frames whose ``vectors`` map is linear with orthonormal
+    Jacobian (e.g. ``OrthogonalFrame``, ``TriclinicFrame``).
+
+    For these frames, the parameter-space gradient to cartesian gradient map
+    reduces to reconstructing the matrix from the parameter leaves, so we
+    can skip the general pseudo-inverse path in
+    [BaseFrame.vectors_gradient][kups.core.cell.BaseFrame.vectors_gradient] and
+    just return the reconstructed matrix directly.
+    """
+
+    @override
+    def vectors_gradient(self, parameter_grad: Frame) -> Array:
+        return self.from_matrix(parameter_grad.vectors).vectors
+
+    @override
+    def parameter_gradient(self, vectors_grad: Array) -> Self:
+        return self.from_matrix(vectors_grad)
+
 
 def _build_vectors(lengths: Array, angles: Array) -> Array:
     """Construct a lower-triangular 3x3 matrix from crystallographic parameters.
@@ -283,7 +442,7 @@ def _build_vectors(lengths: Array, angles: Array) -> Array:
 
 
 @dataclass
-class TriclinicFrame(Sliceable):
+class TriclinicFrame(LinearFrame, Sliceable):
     """General triclinic [Frame][kups.core.cell.Frame] with 6 degrees of freedom.
 
     Stores the 6 independent elements of the lower-triangular basis matrix.
@@ -293,6 +452,11 @@ class TriclinicFrame(Sliceable):
     Use this when the simulation domain has non-orthogonal axes
     (monoclinic / triclinic crystals, sheared MD boxes). For axis-aligned
     domains, [OrthogonalFrame][kups.core.cell.OrthogonalFrame] is cheaper.
+
+    Inherits the basis inverse, perpendicular lengths, coordinate transforms,
+    and ``materialize`` from [BaseFrame][kups.core.cell.BaseFrame]; supplies
+    the ``vectors`` map, a cheap diagonal-product ``volume``, and the
+    crystallographic readouts.
 
     Attributes:
         tril: Lower-triangular elements ``[L00, L10, L11, L20, L21, L22]``,
@@ -306,8 +470,15 @@ class TriclinicFrame(Sliceable):
     tril: Array
 
     @classmethod
+    @override
     def from_matrix(cls, vecs: Array) -> TriclinicFrame:
-        """Construct from a lower-triangular basis matrix, shape ``(..., 3, 3)``."""
+        """Construct from a lower-triangular basis matrix, shape ``(..., 3, 3)``.
+
+        Projects the input onto the 6-parameter lower-triangular space by
+        keeping its lower triangle. Distinct from
+        [`parameter_gradient`][kups.core.cell.Frame.parameter_gradient], which
+        pulls a gradient cotangent back rather than a primal matrix.
+        """
         vecs = jnp.asarray(vecs)
         return cls(vecs[..., *np.tril_indices(3)])
 
@@ -323,6 +494,7 @@ class TriclinicFrame(Sliceable):
         return cls.from_matrix(_build_vectors(lengths, angles))
 
     @property
+    @override
     def vectors(self) -> Array:
         zero = jnp.zeros_like(self.tril[..., :1])
         return jnp.stack(
@@ -335,10 +507,7 @@ class TriclinicFrame(Sliceable):
         )
 
     @property
-    def inverse_vectors(self) -> Array:
-        return triangular_3x3_det_and_inverse(self.vectors)[1]
-
-    @property
+    @override
     def volume(self) -> Array:
         return jnp.abs(self.tril[..., 0] * self.tril[..., 2] * self.tril[..., 5])
 
@@ -365,44 +534,26 @@ class TriclinicFrame(Sliceable):
             )
         )
 
-    @property
-    def perpendicular_lengths(self) -> Array:
-        v = self.vectors
-        a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
-        Lx = self.volume / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
-        Ly = self.volume / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
-        Lz = self.volume / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
-        return jnp.stack([Lx, Ly, Lz], axis=-1)
-
-    def to_fractional(self, r: Array) -> Array:
-        return triangular_3x3_matmul(self.inverse_vectors, r)
-
-    def to_real(self, r_frac: Array) -> Array:
-        return triangular_3x3_matmul(self.vectors, r_frac)
-
+    @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         m = jnp.asarray(multiplicities)
         scale = jnp.array([m[0], m[1], m[1], m[2], m[2], m[2]])
         return type(self)(self.tril * scale)
 
+    @override
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.tril * jnp.asarray(other)[..., None])
 
-    def materialize(self) -> MaterializedFrame:
-        vecs = self.vectors
-        det, inv = triangular_3x3_det_and_inverse(vecs)
-        return MaterializedFrame(vectors=vecs, inverse_vectors=inv, volume=jnp.abs(det))
-
 
 @dataclass
-class OrthogonalFrame(Sliceable):
+class OrthogonalFrame(LinearFrame, Sliceable):
     """Axis-aligned [Frame][kups.core.cell.Frame] with 3 degrees of freedom.
 
-    Parameterized by the three side lengths. Exploits the diagonal
-    structure for cheaper volume, inverse, and coordinate-transform
-    operations than the general triclinic path. Use this when the
-    simulation domain has perpendicular axes (cubic, tetragonal, or
-    orthorhombic crystals; standard rectangular MD boxes).
+    Parameterized by the three side lengths. Overrides every
+    [BaseFrame][kups.core.cell.BaseFrame] operation with a cheaper diagonal
+    form (volume, inverse, coordinate transforms) than the general triclinic
+    path. Use this when the simulation domain has perpendicular axes (cubic,
+    tetragonal, or orthorhombic crystals; standard rectangular MD boxes).
 
     Attributes:
         lengths: Box side lengths ``[Lx, Ly, Lz]`` in Angstroms,
@@ -412,6 +563,7 @@ class OrthogonalFrame(Sliceable):
     lengths: Array
 
     @classmethod
+    @override
     def from_matrix(cls, vecs: Array) -> Self:
         """Construct from a diagonal basis matrix, shape ``(..., 3, 3)``.
 
@@ -423,39 +575,40 @@ class OrthogonalFrame(Sliceable):
         return cls(jnp.diagonal(vecs, axis1=-2, axis2=-1))
 
     @property
+    @override
     def vectors(self) -> Array:
         return self.lengths[..., :, None] * jnp.eye(3)
 
     @property
+    @override
     def inverse_vectors(self) -> Array:
         return (1.0 / self.lengths)[..., :, None] * jnp.eye(3)
 
     @property
+    @override
     def volume(self) -> Array:
         return jnp.prod(self.lengths, axis=-1)
 
     @property
+    @override
     def perpendicular_lengths(self) -> Array:
         return self.lengths
 
+    @override
     def to_fractional(self, r: Array) -> Array:
         return r / self.lengths
 
+    @override
     def to_real(self, r_frac: Array) -> Array:
         return r_frac * self.lengths
 
+    @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         return type(self)(self.lengths * jnp.asarray(multiplicities))
 
+    @override
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self)(self.lengths * jnp.asarray(other)[..., None])
-
-    def materialize(self) -> MaterializedFrame:
-        return MaterializedFrame(
-            vectors=self.vectors,
-            inverse_vectors=self.inverse_vectors,
-            volume=self.volume,
-        )
 
 
 @dataclass
@@ -528,6 +681,14 @@ class MaterializedFrame(Sliceable):
 
     def materialize(self) -> Self:
         return self
+
+    def parameter_gradient(self, vectors_grad: Array) -> Self:
+        (grad,) = jax.vjp(lambda f: f.vectors, self)[1](vectors_grad)
+        return grad
+
+    def vectors_gradient(self, parameter_grad: Frame) -> Array:
+        # Stored ``vectors`` is the parameterisation (identity Jacobian).
+        return parameter_grad.vectors
 
 
 def _wrap(

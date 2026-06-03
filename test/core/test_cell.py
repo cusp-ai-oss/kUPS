@@ -3,14 +3,18 @@
 
 """Tests for Frame and Cell types."""
 
+from typing import Callable, override
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
 from kups.core.cell import (
+    BaseFrame,
     Cell,
     CoordinateSpace,
+    Frame,
     MaterializedFrame,
     OrthogonalFrame,
     PeriodicCell,
@@ -22,7 +26,9 @@ from kups.core.cell import (
     min_multiplicity,
     to_lower_triangular,
 )
+from kups.core.data import Sliceable
 from kups.core.lens import lens
+from kups.core.utils.jax import dataclass
 
 
 class TestTriclinicFrame:
@@ -145,66 +151,6 @@ class TestTriclinicFrame:
         grad = jax.grad(lambda r: jnp.sum(cell.wrap(r)))(r)
         npt.assert_allclose(grad, jnp.array([1.0, 1.0, 1.0]), atol=1e-6)
 
-    def test_orthogonality_and_volume(self):
-        lattices = [
-            (jnp.eye(3), 1.0),
-            (jnp.diag(jnp.array([2.0, 3.0, 4.0])), 24.0),
-            (jnp.array([[1.0, 0.0, 0.0], [0.5, 1.0, 0.0], [0.2, 0.3, 1.0]]), None),
-            (jnp.diag(jnp.array([1.0, 2.0, 3.0])), 6.0),
-        ]
-        for vecs, expected_vol in lattices:
-            frame = TriclinicFrame.from_matrix(vecs)
-            npt.assert_allclose(
-                frame.vectors @ frame.inverse_vectors,
-                jnp.eye(3),
-                atol=1e-10,
-            )
-            if expected_vol is not None:
-                npt.assert_allclose(frame.volume, expected_vol, rtol=1e-10)
-
-    def test_perpendicular_lengths(self):
-        frame = TriclinicFrame.from_matrix(jnp.eye(3) * 5.0)
-        npt.assert_allclose(
-            frame.perpendicular_lengths, jnp.array([5.0, 5.0, 5.0]), rtol=1e-10
-        )
-
-        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array([2.0, 3.0, 4.0])))
-        npt.assert_allclose(
-            frame.perpendicular_lengths, jnp.array([2.0, 3.0, 4.0]), rtol=1e-10
-        )
-
-        vecs = jnp.array([[1.0, 0.0, 0.0], [0.5, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        frame = TriclinicFrame.from_matrix(vecs)
-        a, b, c = vecs
-        V = frame.volume
-        expected = jnp.array(
-            [
-                V / jnp.linalg.norm(jnp.cross(b, c)),
-                V / jnp.linalg.norm(jnp.cross(a, c)),
-                V / jnp.linalg.norm(jnp.cross(a, b)),
-            ]
-        )
-        npt.assert_allclose(frame.perpendicular_lengths, expected, rtol=1e-10)
-
-        frame = TriclinicFrame.from_matrix(jnp.eye(3))
-        assert frame.perpendicular_lengths.shape == (3,)
-
-        vecs = jnp.array([[1.0, 0.0, 0.0], [0.5, 1.0, 0.0], [0.2, 0.3, 1.0]])
-        frame = TriclinicFrame.from_matrix(vecs)
-        assert jnp.all(frame.perpendicular_lengths > 0)
-
-        vecs = jnp.stack(
-            [
-                jnp.diag(jnp.array([2.0, 3.0, 4.0])),
-                jnp.eye(3) * 5.0,
-            ]
-        )
-        frame = TriclinicFrame.from_matrix(vecs)
-        lengths = frame.perpendicular_lengths
-        assert lengths.shape == (2, 3)
-        npt.assert_allclose(lengths[0], [2.0, 3.0, 4.0], rtol=1e-10)
-        npt.assert_allclose(lengths[1], [5.0, 5.0, 5.0], rtol=1e-10)
-
     def test_min_multiplicity(self):
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * 10.0))
         npt.assert_array_equal(min_multiplicity(cell, 4.0), [1, 1, 1])
@@ -242,23 +188,6 @@ class TestOrthogonalFrame:
         frame = OrthogonalFrame.from_matrix(vecs)
         assert frame.lengths.shape == (2, 3)
         npt.assert_allclose(frame.lengths[0], jnp.array([2.0, 3.0, 4.0]))
-
-    def test_inverse_vectors(self):
-        frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
-        npt.assert_allclose(
-            frame.vectors @ frame.inverse_vectors,
-            jnp.eye(3),
-            atol=1e-10,
-        )
-
-    def test_volume(self):
-        frame = OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]))
-        npt.assert_allclose(frame.volume, 24.0)
-
-    def test_perpendicular_lengths_equal_lengths(self):
-        lengths = jnp.array([2.0, 3.0, 4.0])
-        frame = OrthogonalFrame(lengths)
-        npt.assert_allclose(frame.perpendicular_lengths, lengths)
 
     def test_wrap_real_to_real(self):
         cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
@@ -431,19 +360,6 @@ class TestCellSlicing:
         assert frame.lengths.shape == (1, 3)
 
 
-class TestFrameTile:
-    def test_triclinic_tile_expands_per_axis(self):
-        """The triclinic [m0, m1, m1, m2, m2, m2] tril expansion is non-obvious;
-        verify a non-cubic, non-uniform multiplicity gives the right scaled
-        basis matrix."""
-        frame = TriclinicFrame.from_matrix(
-            jnp.array([[1.0, 0.0, 0.0], [0.5, 2.0, 0.0], [0.3, 0.4, 3.0]])
-        )
-        tiled = frame.tile((2, 3, 4))
-        expected = jnp.array([[2.0, 0.0, 0.0], [1.5, 6.0, 0.0], [1.2, 1.6, 12.0]])
-        npt.assert_allclose(tiled.vectors, expected, atol=1e-6)
-
-
 class TestMaterializedFrame:
     """All inputs carry a leading batch dim so that vectors ``(B, 3, 3)``,
     inverse ``(B, 3, 3)`` and volume ``(B,)`` share the same leading axis
@@ -457,51 +373,6 @@ class TestMaterializedFrame:
                 jnp.array([[2.0, 0.0, 0.0], [0.1, 1.5, 0.0], [0.2, 0.3, 4.0]]),
             ]
         )
-
-    def test_materialize_triclinic_matches_source(self, vecs):
-        src = TriclinicFrame.from_matrix(vecs)
-        mat = src.materialize()
-        assert isinstance(mat, MaterializedFrame)
-        assert mat.vectors.shape == (2, 3, 3)
-        assert mat.inverse_vectors.shape == (2, 3, 3)
-        assert mat.volume.shape == (2,)
-        npt.assert_allclose(mat.vectors, src.vectors, atol=1e-6)
-        npt.assert_allclose(mat.inverse_vectors, src.inverse_vectors, atol=1e-6)
-        npt.assert_allclose(mat.volume, src.volume, atol=1e-6)
-        npt.assert_allclose(
-            mat.perpendicular_lengths, src.perpendicular_lengths, atol=1e-6
-        )
-
-    def test_materialize_orthogonal_matches_source(self):
-        src = OrthogonalFrame(jnp.array([[2.0, 3.0, 4.0], [1.0, 1.0, 1.0]]))
-        mat = src.materialize()
-        npt.assert_allclose(mat.vectors, src.vectors, atol=1e-6)
-        npt.assert_allclose(mat.inverse_vectors, src.inverse_vectors, atol=1e-6)
-        npt.assert_allclose(mat.volume, src.volume, atol=1e-6)
-
-    def test_coordinate_transforms_match_triclinic(self, vecs):
-        src = TriclinicFrame.from_matrix(vecs)
-        mat = src.materialize()
-        r = jnp.array([[0.1, 0.2, 0.3], [-0.4, 0.7, 1.1]])
-        npt.assert_allclose(mat.to_fractional(r), src.to_fractional(r), atol=1e-6)
-        npt.assert_allclose(mat.to_real(r), src.to_real(r), atol=1e-6)
-
-    def test_scalar_multiply(self, vecs):
-        mat = TriclinicFrame.from_matrix(vecs).materialize()
-        scaled = mat * 2.0
-        npt.assert_allclose(scaled.vectors, mat.vectors * 2.0, atol=1e-6)
-        npt.assert_allclose(
-            scaled.inverse_vectors, mat.inverse_vectors / 2.0, atol=1e-6
-        )
-        npt.assert_allclose(scaled.volume, mat.volume * 8.0, atol=1e-6)
-
-    def test_tile(self, vecs):
-        mat = TriclinicFrame.from_matrix(vecs).materialize()
-        tiled = mat.tile((2, 3, 4))
-        expected = TriclinicFrame.from_matrix(vecs).tile((2, 3, 4)).materialize()
-        npt.assert_allclose(tiled.vectors, expected.vectors, atol=1e-6)
-        npt.assert_allclose(tiled.inverse_vectors, expected.inverse_vectors, atol=1e-6)
-        npt.assert_allclose(tiled.volume, expected.volume, atol=1e-6)
 
     def test_from_matrix_roundtrip(self, vecs):
         mat = MaterializedFrame.from_matrix(vecs)
@@ -787,3 +658,214 @@ class TestFromLengthsAndAngles:
         frame = TriclinicFrame.from_lengths_and_angles(lengths, angles)
         npt.assert_allclose(frame.lengths, lengths, atol=1e-6)
         npt.assert_allclose(frame.angles, angles, atol=1e-6)
+
+
+@dataclass
+class _ExpFrame(BaseFrame, Sliceable):
+    """Toy nonlinear frame for tests: ``vectors = diag(exp(log_lengths))``.
+
+    The exponential makes ``vectors`` a nonlinear function of the parameters,
+    so its Jacobian is not orthonormal — exercising the general inverse-Jacobian
+    path in [BaseFrame.vectors_gradient][kups.core.cell.BaseFrame.vectors_gradient]
+    that the linear frames override.
+    """
+
+    log_lengths: jax.Array
+
+    @classmethod
+    @override
+    def from_matrix(cls, vecs: jax.Array) -> "_ExpFrame":
+        return cls(jnp.log(jnp.diagonal(jnp.asarray(vecs), axis1=-2, axis2=-1)))
+
+    @property
+    @override
+    def vectors(self) -> jax.Array:
+        return jnp.exp(self.log_lengths)[..., :, None] * jnp.eye(3)
+
+    @override
+    def tile(self, multiplicities: tuple[int, int, int]) -> "_ExpFrame":
+        return type(self)(self.log_lengths + jnp.log(jnp.asarray(multiplicities)))
+
+    @override
+    def __mul__(self, other: jax.Array | float | int) -> "_ExpFrame":
+        return type(self)(self.log_lengths + jnp.log(jnp.asarray(other)))
+
+
+# A general lower-triangular matrix; each frame keeps the part it can represent.
+_GRAD_PRIMAL = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
+_CELL_GRAD = jnp.arange(9.0).reshape(3, 3)
+
+# (frame class, projection of a cartesian grad onto the frame's representable DOF)
+# for the linear parameterisations whose Jacobian is orthonormal.
+_FrameClass = type[BaseFrame]
+_Projector = Callable[[jax.Array], jax.Array]
+_LINEAR_FRAMES = [
+    pytest.param(TriclinicFrame, lambda m: jnp.tril(m), id="triclinic"),
+    pytest.param(OrthogonalFrame, lambda m: m * jnp.eye(3), id="orthogonal"),
+]
+_LINEAR_FRAME_CLASSES = [
+    pytest.param(TriclinicFrame, id="triclinic"),
+    pytest.param(OrthogonalFrame, id="orthogonal"),
+]
+
+# Frame classes whose ``from_matrix`` accepts an unbatched matrix, including the
+# nonlinear toy frame that exercises the general inverse-Jacobian path.
+_GRAD_FRAME_CLASSES = [
+    *_LINEAR_FRAME_CLASSES,
+    pytest.param(_ExpFrame, id="exp_nonlinear"),
+]
+
+
+class TestFrameGradients:
+    """``∂E/∂h`` ↔ ``∂E/∂θ`` maps on the Frame protocol."""
+
+    def test_baseframe_not_instantiable(self):
+        with pytest.raises(TypeError, match="abstract"):
+            BaseFrame()  # type: ignore[abstract]
+
+    @pytest.mark.parametrize("frame_cls, project", _LINEAR_FRAMES)
+    def test_linear_roundtrip_projects_onto_dofs(
+        self, frame_cls: _FrameClass, project: _Projector
+    ):
+        """``parameter_gradient`` keeps the frame type; ``vectors_gradient``
+        recovers the cartesian grad projected onto the representable DOF."""
+        frame = frame_cls.from_matrix(_GRAD_PRIMAL)
+        param_grad = frame.parameter_gradient(_CELL_GRAD)
+        assert isinstance(param_grad, frame_cls)
+        npt.assert_allclose(
+            frame.vectors_gradient(param_grad), project(_CELL_GRAD), atol=1e-6
+        )
+
+    @pytest.mark.parametrize("frame_cls", _LINEAR_FRAME_CLASSES)
+    def test_general_path_matches_linear_override(self, frame_cls: _FrameClass):
+        """``BaseFrame``'s general (Jᵀ)⁺ path agrees with the cheap override."""
+        frame = frame_cls.from_matrix(_GRAD_PRIMAL)
+        param_grad = frame.parameter_gradient(_CELL_GRAD)
+        npt.assert_allclose(
+            BaseFrame.vectors_gradient(frame, param_grad),
+            frame.vectors_gradient(param_grad),
+            atol=1e-6,
+        )
+
+    @pytest.mark.parametrize("frame_cls, project", _LINEAR_FRAMES)
+    def test_vectors_gradient_batched(
+        self, frame_cls: _FrameClass, project: _Projector
+    ):
+        frames = frame_cls.from_matrix(jnp.stack([_GRAD_PRIMAL, _GRAD_PRIMAL * 1.5]))
+        cell_grad = jnp.broadcast_to(_CELL_GRAD, (2, 3, 3))
+        param_grad = frames.parameter_gradient(cell_grad)
+        out = frames.vectors_gradient(param_grad)
+        assert out.shape == (2, 3, 3)
+        npt.assert_allclose(out, project(cell_grad), atol=1e-6)
+
+    @pytest.mark.parametrize("frame_cls", _GRAD_FRAME_CLASSES)
+    def test_roundtrip_identity_on_parameters(self, frame_cls: _FrameClass):
+        """``parameter_gradient ∘ vectors_gradient`` is the identity on parameter
+        space (holds for the nonlinear frame too)."""
+        frame = frame_cls.from_matrix(_GRAD_PRIMAL)
+        param_grad = frame.parameter_gradient(_CELL_GRAD)
+        recovered = frame.parameter_gradient(frame.vectors_gradient(param_grad))
+        for got, want in zip(jax.tree.leaves(recovered), jax.tree.leaves(param_grad)):
+            npt.assert_allclose(got, want, atol=1e-6)
+
+    def test_nonlinear_inverse_jacobian_closed_form(self):
+        """For ``vectors = diag(exp(θ))``: ``∂E/∂h_ii = ∂E/∂θ_i / exp(θ_i)``."""
+        theta = jnp.log(jnp.array([2.0, 3.0, 4.0]))
+        g_h = _ExpFrame(theta).vectors_gradient(_ExpFrame(jnp.array([1.0, 2.0, 5.0])))
+        npt.assert_allclose(
+            jnp.diag(g_h), jnp.array([1.0, 2.0, 5.0]) / jnp.exp(theta), atol=1e-6
+        )
+        npt.assert_allclose(g_h - jnp.diag(jnp.diag(g_h)), 0.0, atol=1e-6)
+
+    def test_materialized_frame_gradient_identity(self):
+        frame = MaterializedFrame.from_matrix(_GRAD_PRIMAL[None])
+        cell_grad = jnp.tril(_CELL_GRAD)[None]
+        param_grad = frame.parameter_gradient(cell_grad)
+        npt.assert_allclose(frame.vectors_gradient(param_grad), cell_grad, atol=1e-6)
+
+
+# One frame per implementation, all batched so ``vectors`` is ``(B, 3, 3)``; each
+# describes its own lower-triangular parallelepiped. The triclinic case carries a
+# second batch entry to exercise batched geometry.
+_M_ORTHO = jnp.diag(jnp.array([2.0, 3.0, 4.0]))
+_M_TRICLINIC = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
+_GEOMETRY_FRAMES = [
+    pytest.param(
+        TriclinicFrame.from_matrix(jnp.stack([_M_TRICLINIC, _M_ORTHO])), id="triclinic"
+    ),
+    pytest.param(OrthogonalFrame.from_matrix(_M_ORTHO[None]), id="orthogonal"),
+    pytest.param(MaterializedFrame.from_matrix(_M_TRICLINIC[None]), id="materialized"),
+]
+_frame_case = pytest.mark.parametrize("frame", _GEOMETRY_FRAMES)
+
+
+class TestFrameGeometry:
+    """``vectors``-derived geometry, checked uniformly across implementations.
+
+    Consolidates the inverse, volume, perpendicular-length, coordinate-transform,
+    materialize, scaling and tile invariants that each frame type shares, and
+    locks every implementation (the two ``BaseFrame`` subclasses and the
+    structural ``MaterializedFrame``) to the linalg ground truth.
+    """
+
+    @_frame_case
+    def test_inverse_vectors_inverts(self, frame: Frame):
+        eye = jnp.broadcast_to(jnp.eye(3), frame.vectors.shape)
+        npt.assert_allclose(frame.vectors @ frame.inverse_vectors, eye, atol=1e-6)
+
+    @_frame_case
+    def test_volume_matches_determinant(self, frame: Frame):
+        npt.assert_allclose(
+            frame.volume, jnp.abs(jnp.linalg.det(frame.vectors)), atol=1e-6
+        )
+
+    @_frame_case
+    def test_perpendicular_lengths(self, frame: Frame):
+        v = frame.vectors
+        a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
+        reference = frame.volume[..., None] / jnp.stack(
+            [
+                jnp.linalg.norm(jnp.cross(b, c), axis=-1),
+                jnp.linalg.norm(jnp.cross(a, c), axis=-1),
+                jnp.linalg.norm(jnp.cross(a, b), axis=-1),
+            ],
+            axis=-1,
+        )
+        pl = frame.perpendicular_lengths
+        assert pl.shape == frame.vectors.shape[:-1]
+        npt.assert_allclose(pl, reference, atol=1e-6)
+        assert bool(jnp.all(pl > 0))
+
+    @_frame_case
+    def test_coordinate_roundtrip(self, frame: Frame):
+        r = jnp.broadcast_to(jnp.array([0.1, 0.2, 0.3]), (*frame.vectors.shape[:-2], 3))
+        npt.assert_allclose(frame.to_real(frame.to_fractional(r)), r, atol=1e-6)
+
+    @_frame_case
+    def test_materialize_preserves_geometry(self, frame: Frame):
+        mat = frame.materialize()
+        assert isinstance(mat, MaterializedFrame)
+        npt.assert_allclose(mat.vectors, frame.vectors, atol=1e-6)
+        npt.assert_allclose(mat.inverse_vectors, frame.inverse_vectors, atol=1e-6)
+        npt.assert_allclose(mat.volume, frame.volume, atol=1e-6)
+        npt.assert_allclose(
+            mat.perpendicular_lengths, frame.perpendicular_lengths, atol=1e-6
+        )
+
+    @_frame_case
+    def test_scaling(self, frame: Frame):
+        scaled = frame * 2.0
+        npt.assert_allclose(scaled.vectors, frame.vectors * 2.0, atol=1e-6)
+        npt.assert_allclose(
+            scaled.inverse_vectors, frame.inverse_vectors / 2.0, atol=1e-6
+        )
+        npt.assert_allclose(scaled.volume, frame.volume * 8.0, atol=1e-6)
+
+    @_frame_case
+    def test_tile_scales_basis_rows(self, frame: Frame):
+        multiples = jnp.array([2, 3, 4])
+        npt.assert_allclose(
+            frame.tile((2, 3, 4)).vectors,
+            frame.vectors * multiples[:, None],
+            atol=1e-6,
+        )
