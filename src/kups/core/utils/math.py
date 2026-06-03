@@ -274,6 +274,41 @@ def solve_affine_ode(A: Array, b: Array, x0: Array, dt: Array | float) -> Array:
     return jnp.einsum("...ij,...j->...i", E[..., :n, :n], x0) + E[..., :n, n]
 
 
+@jit(static_argnames=("hermitian",))
+def logm(A: Array, *, hermitian: bool = False) -> Array:
+    r"""Compute the principal matrix logarithm via eigendecomposition.
+
+    Inverse of `jax.scipy.linalg.expm`: returns `L` with `expm(L) == A` for
+    diagonalizable `A`. Diagonalizing $A = V\,\mathrm{diag}(\lambda)\,V^{-1}$
+    gives $\log A = V\,\mathrm{diag}(\log\lambda)\,V^{-1}$.
+
+    Args:
+        A: Array of shape `(..., n, n)`. Must be diagonalizable; the result is
+            inaccurate for defective matrices (e.g. non-trivial Jordan blocks).
+        hermitian: If True, treat `A` as Hermitian/symmetric and use `eigh`.
+            This gives a real result for positive-definite `A` and is
+            differentiable. If False (default), `eig` handles general matrices
+            but the result is complex and is not differentiable with respect to
+            `A`, since JAX does not implement derivatives of non-symmetric
+            eigenvectors.
+
+    Returns:
+        Array of shape `(..., n, n)` holding the principal logarithm. Real when
+        `hermitian` and `A` is positive-definite, complex otherwise.
+
+    Example:
+        ```python
+        A = jax.scipy.linalg.expm(B)
+        B_recovered = logm(A)  # ≈ B
+        ```
+    """
+    if hermitian:
+        w, V = jnp.linalg.eigh(A)
+        return (V * jnp.log(w)[..., None, :]) @ jnp.conjugate(jnp.swapaxes(V, -1, -2))
+    w, V = jnp.linalg.eig(A)
+    return (V * jnp.log(w)[..., None, :]) @ jnp.linalg.inv(V)
+
+
 def next_higher_power(value: Array, base: Array | float = 2.0) -> Array:
     """Compute the next higher power of a given base for each element.
 
