@@ -34,11 +34,12 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, TypedDict, overload
 
+import jax
 import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 from jax import Array
 
-from kups.core.cell import AnyPeriodicity
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
@@ -281,6 +282,19 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
     )
 
 
+def _project_grad_onto_frame[C: Cell[Any]](cell: C, cell_grad: Array) -> C:
+    """Express a raw ``∂E/∂h`` matrix in ``cell``'s frame parameter space.
+
+    The vjp of the frame's ``vectors`` map pulls the matrix gradient back onto
+    the frame's own degrees of freedom (``tril`` for triclinic, ``lengths`` for
+    orthogonal), preserving the input frame type without recomputing any
+    inverse/volume that an instance constructor would. Returns a copy of
+    ``cell`` carrying the projected gradient as its frame.
+    """
+    (frame_grad,) = jax.vjp(lambda f: f.vectors, cell.frame)[1](cell_grad)
+    return bind(cell, lambda c: c.frame).set(frame_grad)
+
+
 @overload
 def torch_mliap_model_fn[
     P: IsTorchMliapParticles,
@@ -346,12 +360,9 @@ def torch_mliap_model_fn[
 
     if compute_cell_gradients:
         cell_grad = result["cell_gradients"].astype(out_dtype)
-        # Preserve the input cell/frame type: project the raw ∂E/∂h onto
-        # the frame's parameter space via its ``from_matrix`` classmethod,
-        # then swap in the new frame on a copy of the input cell.
-        input_cell = inp.graph.systems.data.cell
-        new_frame = input_cell.frame.from_matrix(cell_grad)
-        new_cell = bind(input_cell, lambda c: c.frame).set(new_frame)
+        # Project the raw ∂E/∂h onto the input frame's parameter space,
+        # preserving its type for downstream stress/relaxation consumers.
+        new_cell = _project_grad_onto_frame(inp.graph.systems.data.cell, cell_grad)
         gradients = PositionAndCell(
             positions=Table(inp.graph.particles.keys, pos_grad),
             cell=Table(inp.graph.systems.keys, new_cell),
