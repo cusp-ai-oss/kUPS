@@ -30,18 +30,21 @@ def _run_grad(
     x: Array,
     state: ScaleByAseLbfgsState,
     steps: int,
+    *,
+    hess: Array | float = 1.0,
 ) -> tuple[Array, ScaleByAseLbfgsState]:
-    """Run ``steps`` of ``opt`` on a quadratic (gradient ``∇L = x``) via one scan.
+    """Run ``steps`` of ``opt`` on a quadratic (gradient ``∇L = hess * x``).
 
     Folding the loop into a single ``lax.scan`` compiles the step once instead
     of re-tracing every Python iteration; the trajectory is bit-identical.
+    ``hess`` is a per-element diagonal Hessian (default identity).
     """
 
     def body(
         carry: tuple[Any, ScaleByAseLbfgsState], _: None
     ) -> tuple[tuple[Any, ScaleByAseLbfgsState], None]:
         x, state = carry
-        upd, state = opt.update(x, state, x)
+        upd, state = opt.update(hess * x, state, x)
         x = optax.apply_updates(x, jax.tree.map(lambda u: -u, upd))
         return (x, state), None
 
@@ -164,3 +167,81 @@ class TestScaleByASELBFGSPerSystem:
         rho_a = float(state.weights_memory.data[0, 0])
         rho_b = float(state.weights_memory.data[1, 0])
         assert rho_a != rho_b
+
+
+class TestScaleByASELBFGSAdaptiveScale:
+    """``adaptive_scale`` scales the initial inverse Hessian per system."""
+
+    def test_first_step_falls_back_to_inv_alpha(self):
+        """No curvature pair exists yet, so the first step still uses 1/alpha."""
+        alpha = 70.0
+        opt = ScaleByAseLbfgs(memory_size=10, alpha=alpha, adaptive_scale=True)
+        params = jnp.array([1.0, 2.0, 3.0])
+        gradient = jnp.array([7.0, 14.0, 21.0])
+        updates, _ = opt.update(gradient, opt.init(params), params)
+        npt.assert_allclose(updates, gradient / alpha, rtol=1e-5)
+
+    def test_adaptive_gamma_equals_curvature_ratio(self):
+        """Second step scales by γ = (s·y)/(y·y) from the fresh pair.
+
+        Inputs are chosen so the second gradient is orthogonal to both ``s``
+        and ``y``; the two-loop recursion then collapses to
+        ``precond = γ * updates``, exposing γ directly.
+        """
+        opt = ScaleByAseLbfgs(memory_size=5, alpha=70.0, adaptive_scale=True)
+        params0 = jnp.array([0.0, 0.0, 0.0])
+        updates0 = jnp.array([-2.0, 1.0, 0.0])
+        _, state = opt.update(updates0, opt.init(params0), params0)
+        # s = [1,0,0], y = [2,0,0]  →  γ = (s·y)/(y·y) = 2/4 = 0.5.
+        params1 = jnp.array([1.0, 0.0, 0.0])
+        updates1 = jnp.array([0.0, 1.0, 0.0])
+        precond, _ = opt.update(updates1, state, params1)
+        npt.assert_allclose(precond, 0.5 * updates1, rtol=1e-6)
+
+    def test_non_positive_curvature_falls_back_to_inv_alpha(self):
+        """A non-positive (s·y) curvature pair reverts γ to 1/alpha."""
+        alpha = 4.0
+        params0 = jnp.array([0.0, 0.0, 0.0])
+        updates0 = jnp.array([2.0, 1.0, 0.0])
+        params1 = jnp.array([1.0, 0.0, 0.0])
+        updates1 = jnp.array([0.0, 1.0, 0.0])
+        # s = [1,0,0], y = [-2,0,0]  →  s·y = -2 ≤ 0, so γ = 1/alpha.
+
+        def run(adaptive: bool) -> Array:
+            opt = ScaleByAseLbfgs(memory_size=5, alpha=alpha, adaptive_scale=adaptive)
+            _, state = opt.update(updates0, opt.init(params0), params0)
+            precond, _ = opt.update(updates1, state, params1)
+            return precond
+
+        npt.assert_allclose(run(True), updates1 / alpha, rtol=1e-6)
+        npt.assert_allclose(run(True), run(False), rtol=1e-6)
+
+    def test_batched_matches_separate_with_per_system_curvature(self):
+        """Per-system γ keeps batched runs bit-identical to separate ones.
+
+        Each system has a different diagonal Hessian, so their adaptive γ
+        differ; a per-system γ is required for the block-diagonal guarantee.
+        """
+
+        def run_alone(x0: Array, hess: Array) -> Array:
+            opt = ScaleByAseLbfgs(memory_size=5, alpha=10.0, adaptive_scale=True)
+            x, _ = _run_grad(opt, x0, opt.init(x0), 6, hess=hess)
+            return x
+
+        x_a, hess_a = jnp.array([1.0, -2.0]), jnp.array([1.0, 4.0])
+        x_b, hess_b = jnp.array([0.5, 3.0]), jnp.array([10.0, 0.5])
+        sep = jnp.concatenate([run_alone(x_a, hess_a), run_alone(x_b, hess_b)])
+
+        opt = ScaleByAseLbfgs(memory_size=5, alpha=10.0, adaptive_scale=True)
+        x0 = jnp.concatenate([x_a, x_b])
+        hess = jnp.concatenate([hess_a, hess_b])
+        idx = _system_index([0, 0, 1, 1], 2)
+        x, _ = _run_grad(opt, x0, opt.init(x0, index_prefix=idx), 6, hess=hess)
+        npt.assert_allclose(x, sep, atol=1e-6)
+
+    def test_convergence_on_quadratic(self):
+        """Adaptive scaling still drives a quadratic to its minimum."""
+        opt = ScaleByAseLbfgs(memory_size=10, alpha=70.0, adaptive_scale=True)
+        x = jnp.array([5.0, -3.0, 2.0])
+        x, _ = _run_grad(opt, x, opt.init(x), 15)
+        npt.assert_allclose(x, jnp.zeros(3), atol=1e-4)
