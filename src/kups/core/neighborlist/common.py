@@ -11,6 +11,9 @@ Contains:
   selector algorithms while raw ``(lhs, rhs)`` index arrays are being built.
   Not the pipeline carrier (see
   [`CandidateBatch`][kups.core.neighborlist.types.CandidateBatch]).
+- ``candidate_image_counts`` — per-axis periodic-image multiplicity a cutoff
+  reaches (the replication factor); used by ``_get_candidate_images`` and by
+  ``parameters.estimate``.
 - ``_generate_image_offsets``, ``_get_candidate_images`` — image-expansion
   primitives.
 - ``replicate_for_images`` — adapts raw ``Candidates`` into a
@@ -157,7 +160,7 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     return coords - half
 
 
-def _candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array:
+def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array:
     """Return per-system, per-axis image counts for candidate replication.
 
     Periodic axes covered by the minimum-image convention use one image. Wider
@@ -182,7 +185,7 @@ def _get_candidate_images(
     out_size: Capacity[int],
 ) -> tuple[Array, Array, Array]:
     cells = systems.data.cell
-    images = _candidate_image_counts(cells, cutoffs)
+    images = candidate_image_counts(cells, cutoffs)
     images_per_sys = jnp.prod(images, axis=-1).astype(int)
 
     cand_sys_ids = lh.data.system.indices[candidates.lhs.indices]

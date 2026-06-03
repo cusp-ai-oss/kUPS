@@ -178,7 +178,7 @@ def _build_bulk_al() -> ase.Atoms:
 # size. Cost is dominated by the periodic-image replication depth,
 # ceil(cutoff / perpendicular_length): each axis emits (2*ceil+1) images, so a
 # 3-shell cutoff replicates a (multi-atom) candidate set ~343x. Because the
-# replication / stencil code (``_candidate_image_counts``,
+# replication / stencil code (``candidate_image_counts``,
 # ``_generate_image_offsets``) is geometry-agnostic, the deepest (3-shell)
 # regime only needs covering once — and the cheapest place is the 1-atom,
 # non-orthogonal ``triclinic`` cell (also the hardest geometry). The multi-atom
