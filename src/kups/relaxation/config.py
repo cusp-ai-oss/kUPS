@@ -19,6 +19,10 @@ from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
 from kups.relaxation.transforms.fire import ScaleByFire
 from kups.relaxation.transforms.fire2 import ScaleByFire2
 from kups.relaxation.transforms.lbfgs import ScaleByAseLbfgs
+from kups.relaxation.transforms.linesearch import (
+    ScaleByBacktrackingLinesearch,
+    ScaleByZoomLinesearch,
+)
 from kups.relaxation.transforms.max_step_size import MaxStepSize
 
 Transform = str | dict[str, bool | int | float | str | list[Any] | None]
@@ -33,6 +37,8 @@ _CUSTOM_TRANSFORMS: dict[str, Any] = {
     "max_step_size": MaxStepSize,
     "scale_by_ase_lbfgs": ScaleByAseLbfgs,
     "clip_by_global_norm": ClipByGlobalNorm,
+    "scale_by_backtracking_linesearch": ScaleByBacktrackingLinesearch,
+    "scale_by_zoom_linesearch": ScaleByZoomLinesearch,
 }
 
 

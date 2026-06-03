@@ -17,7 +17,9 @@ from kups.relaxation.transforms import (
     ClipByGlobalNorm,
     MaxStepSize,
     ScaleByAseLbfgs,
+    ScaleByBacktrackingLinesearch,
     ScaleByFire,
+    ScaleByZoomLinesearch,
 )
 
 
@@ -46,6 +48,16 @@ class TestGetTransform:
         """The kups per-system clip overrides optax's tree-global one."""
         t = get_transform({"transform": "clip_by_global_norm", "max_norm": 1.0})
         assert isinstance(t, ClipByGlobalNorm)
+
+    def test_linesearch_transforms_resolve_to_kups(self):
+        """The kups per-system line searches override optax's global ones."""
+        assert isinstance(
+            get_transform("scale_by_backtracking_linesearch"),
+            ScaleByBacktrackingLinesearch,
+        )
+        assert isinstance(
+            get_transform("scale_by_zoom_linesearch"), ScaleByZoomLinesearch
+        )
 
     def test_unknown_transform_raises(self):
         with pytest.raises(ValueError, match="Unknown transformation"):
