@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, NamedTuple, override
+from typing import Any, Callable, NamedTuple, override
 
 import ase
 import ase.data
@@ -22,10 +22,13 @@ from kups.core.cell import AnyPeriodicity, Cell, is_3d_periodic, make_supercell
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
 from kups.core.data import Index, Table
 from kups.core.data.buffered import Buffered
+from kups.core.data.index import SupportsSorting
 from kups.core.lens import bind, lens
 from kups.core.typing import (
     ExclusionId,
     GroupId,
+    HasAtomicNumbers,
+    HasCell,
     InclusionId,
     Label,
     MotifId,
@@ -457,3 +460,55 @@ def mcmc_state_from_config(
         particles, lambda x: (x.data.motif.keys, x.data.group.max_count)
     ).set((motifs.keys, motifs.data.motif.max_count))
     return particles, groups, system, motifs
+
+
+def estimate_max_adsorbates(
+    particles: Table[Any, MCMCParticles],
+    motifs: Table[Any, MotifParticles],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
+) -> Table[SystemId, Array]:
+    """Estimate the maximum number of motifs that could fit in each system.
+
+    The free volume per system (cell volume minus the volume occupied by
+    ``particles``) is divided by the smallest motif's occupied volume, giving
+    an upper bound on how many molecules could be inserted.
+
+    Args:
+        particles: Existing particles with atomic numbers and system membership.
+        motifs: Motif templates, with each motif's atoms grouped by its system index.
+        systems: Per-system table providing the simulation cell.
+
+    Returns:
+        Table mapping each ``SystemId`` to the maximum motif count (clamped at zero).
+    """
+    total_volume = systems.map_data(lambda s: s.cell.volume)
+    taken_volume = estimate_occupied_volume(particles, lambda s: s.system)
+    remaining_volume = total_volume - taken_volume
+    min_motif_volume = estimate_occupied_volume(motifs, lambda s: s.motif).data.min()
+    return remaining_volume.map_data(
+        lambda v: jnp.floor(jnp.maximum(v, 0.0) / min_motif_volume).astype(int)
+    )
+
+
+def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
+    particles: Table[Any, T],
+    group_index: Callable[[T], Index[K]],
+) -> Table[K, Array]:
+    """Estimate the volume occupied by particles, grouped by a chosen index.
+
+    Each particle is treated as a sphere of its van der Waals radius
+    (``ase.data.vdw_radii``) and the volumes are summed within each group
+    selected by ``group_index``. Elements without a tabulated vdW radius
+    contribute zero.
+
+    Args:
+        particles: Particle table carrying atomic numbers.
+        group_index: Selects the grouping index from the particle data, e.g.
+            ``lambda p: p.system`` to aggregate per system.
+
+    Returns:
+        Table mapping each group key to its occupied volume (Ang^3).
+    """
+    radii = jnp.asarray(ase.data.vdw_radii)[particles.data.atomic_numbers]
+    volumes = jnp.nan_to_num(4.0 / 3.0 * jnp.pi * radii**3)
+    return group_index(particles.data).sum_over(volumes)

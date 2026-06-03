@@ -24,4 +24,3 @@ run:
   translation_prob: 0
   rotation_prob: 0
   reinsertion_prob: 0
-max_num_adsorbates: 5000

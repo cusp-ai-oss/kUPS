@@ -13,10 +13,10 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.neighborlist.common import (
     Candidates,
-    _candidate_image_counts,
     _generate_image_offsets,
     _get_candidate_images,
     _minimum_image_shifts,
+    candidate_image_counts,
     candidates_to_batch,
     edge_rhs_table,
     lift_query_candidates,
@@ -78,14 +78,14 @@ class TestCandidateImageCounts:
         # ratio <= 0.5 -> one image per axis.
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         systems, _ = make_systems(cell, jnp.array([2.0]))
-        images = _candidate_image_counts(systems.data.cell, jnp.array([2.0]))
+        images = candidate_image_counts(systems.data.cell, jnp.array([2.0]))
         npt.assert_array_equal(np.asarray(images), np.array([[1, 1, 1]]))
 
     def test_wide_cutoff_uses_symmetric_stencil(self):
         # ratio = 0.8 -> 2*ceil(0.8)+1 = 3 images per axis.
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 1.0))
         systems, _ = make_systems(cell, jnp.array([0.8]))
-        images = _candidate_image_counts(systems.data.cell, jnp.array([0.8]))
+        images = candidate_image_counts(systems.data.cell, jnp.array([0.8]))
         npt.assert_array_equal(np.asarray(images), np.array([[3, 3, 3]]))
 
     def test_handles_nonfinite_ratios(self):
@@ -93,7 +93,7 @@ class TestCandidateImageCounts:
             perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]])
             periodic = (True, True, True)
 
-        images = _candidate_image_counts(Cells(), jnp.array([6.0]))
+        images = candidate_image_counts(Cells(), jnp.array([6.0]))
         npt.assert_array_equal(np.asarray(images), np.array([[1, 5, 1]]))
 
 

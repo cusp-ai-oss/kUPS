@@ -30,6 +30,7 @@ from kups.application.mcmc.data import (
     HostConfig,
     MotifParticles,
     StressResult,
+    estimate_max_adsorbates,
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import make_mcmc_logged_data
@@ -141,7 +142,6 @@ class Config(BaseModel):
     run: RunConfig
     lj: LJConfig
     ewald: EwaldConfig
-    max_num_adsorbates: int
     compute_stress: bool = False
 
 
@@ -371,6 +371,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
         f"Initialized state with {len(particles)} particles, "
         f"{len(groups)} molecules, across {len(system)} systems."
     )
+    max_adsorbates = estimate_max_adsorbates(particles, motifs, system)
     n_sys = len(system)
     lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
         cutoff=config.lj.cutoff,
@@ -386,10 +387,10 @@ def init_state(key: Array, config: Config) -> MCMCState:
     particles, groups, motifs, system = unify_keys_by_cls(
         (particles, groups, motifs, system)
     )
-    num_buffer_particles = config.max_num_adsorbates * max_motif_size
+    num_buffer_particles = max_adsorbates * max_motif_size
     particles, groups = add_buffers(
-        (particles, num_buffer_particles),
-        (groups, config.max_num_adsorbates),
+        (particles, int(num_buffer_particles.data.sum())),
+        (groups, int(max_adsorbates.data.sum())),
     )
 
     ewald_params = EwaldParameters.make(
@@ -401,7 +402,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
     n_kvecs = ewald_params.reciprocal_lattice_shifts.data.shape[1]
 
     neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts + num_buffer_particles / n_sys,
+        particles.data.system.counts + num_buffer_particles,
         system,
         tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
