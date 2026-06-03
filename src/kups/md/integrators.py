@@ -14,7 +14,6 @@ from kups.core.cell import (
     AnyPeriodicity,
     Cell,
     Periodic3D,
-    TriclinicFrame,
     require_periodic_3d_triclinic,
 )
 from kups.core.constants import BOLTZMANN_CONSTANT
@@ -1085,8 +1084,8 @@ class CellPositionStep[State](Propagator[State]):
         # V_old, V_dot both lower-tri ⇒ V_new lower-tri.
         V_new = V_old + (params.time_step[..., None, None] / 2) * V_dot
         # Reconstruct TriclinicFrame so cached volume refreshes.
-        return self.systems.focus(lambda x: x.data.cell.frame).set(
-            state, TriclinicFrame.from_matrix(V_new)
+        return self.systems.focus(lambda x: x.data.cell.frame).apply(
+            state, lambda frame: frame.from_matrix(V_new)
         )
 
 

@@ -269,6 +269,39 @@ class TestLatticeGradientFromVirial:
         assert torch.allclose(cell_grad, g_h, atol=1e-10)
 
 
+class TestProjectGradOntoFrame:
+    """``∂E/∂h`` matrix → frame-parameter-space projection used for cell gradients."""
+
+    def test_preserves_triclinic_frame_and_projects_lower_triangle(self):
+        from kups.core.cell import PeriodicCell, TriclinicFrame
+        from kups.potential.mliap.torch.interface import _project_grad_onto_frame
+
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(
+                jnp.array([[2.0, 0, 0], [0.5, 3.0, 0], [0.1, 0.2, 4.0]])
+            )
+        )
+        cell_grad = jnp.arange(9.0).reshape(3, 3)
+        out = _project_grad_onto_frame(cell, cell_grad)
+
+        # Frame type (not a vjp cotangent tuple) must survive for downstream
+        # ``gradients.cell.data.vectors`` consumers.
+        assert isinstance(out, PeriodicCell)
+        assert isinstance(out.frame, TriclinicFrame)
+        assert jnp.allclose(out.frame.tril, jnp.array([0.0, 3.0, 4.0, 6.0, 7.0, 8.0]))
+
+    def test_preserves_orthogonal_frame_and_projects_diagonal(self):
+        from kups.core.cell import OrthogonalFrame, PeriodicCell
+        from kups.potential.mliap.torch.interface import _project_grad_onto_frame
+
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([2.0, 3.0, 4.0])))
+        cell_grad = jnp.arange(9.0).reshape(3, 3)
+        out = _project_grad_onto_frame(cell, cell_grad)
+
+        assert isinstance(out.frame, OrthogonalFrame)
+        assert jnp.allclose(out.frame.lengths, jnp.array([0.0, 4.0, 8.0]))
+
+
 class TestUniversalInterfaceAPI:
     """Smoke checks for the universal interface surface."""
 
