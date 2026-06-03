@@ -24,13 +24,16 @@ from kups.relaxation.optimizer import Optimizer, apply_updates
 
 @dataclass
 class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
-    """Unified propagator for gradient-based optimization using Optax.
+    """Unified propagator for gradient-based optimization.
 
-    Uses a Potential to compute energy and gradients. Supports both standard
-    optimizers (Adam, SGD) and line-search optimizers (L-BFGS, backtracking).
+    Uses a Potential to compute energy and gradients. Supports standard optax
+    optimizers (Adam, SGD) and the per-system line searches in
+    :mod:`kups.relaxation.transforms` (backtracking, More-Thuente).
 
-    For line-search optimizers, the potential is evaluated at trial points during
-    the line search. For standard optimizers, it's evaluated once per step.
+    Each step it passes the optimizer the gradient, the current per-system
+    energies, and a ``value_and_grad_fn`` for evaluating trial points; the line
+    searches use these to evaluate the objective along the search direction,
+    standard transforms ignore them.
 
     After computing energy and gradients, the potential's patch is applied to the
     state. This allows potentials to update internal state (e.g., neighbor lists)
@@ -43,14 +46,15 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
     Attributes:
         potential: Potential that computes energy and gradients of type PyTree
         property: Lens to get/set the property being optimized
-        opt_state: Lens to get/set the Optax optimizer state
-        optimizer: Optax gradient transformation
+        opt_state: Lens to get/set the optimizer state
+        optimizer: Gradient transformation
 
     Example:
         ```python
         import optax
+        from kups.relaxation.optimizer import chain
         from kups.relaxation.propagator import RelaxationPropagator
-        from kups.core.potential import MappedPotential
+        from kups.relaxation.transforms import ScaleByAseLbfgs, ScaleByMoreThuenteLinesearch
 
         # Standard optimizer (Adam)
         propagator = RelaxationPropagator(
@@ -60,25 +64,16 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
             optimizer=optax.adam(0.01),
         )
 
-        # Line-search optimizer (L-BFGS)
+        # L-BFGS with a per-system strong-Wolfe line search
         propagator = RelaxationPropagator(
             potential=my_potential,
             property=positions_lens,
             opt_state=lens(lambda s: s.opt_state),
-            optimizer=optax.lbfgs(),
-        )
-
-        # With gradient projection
-        mapped_potential = MappedPotential(
-            full_potential,
-            gradient_map=lambda g: g.positions,
-            hessian_map=lambda h: h,
-        )
-        propagator = RelaxationPropagator(
-            potential=mapped_potential,
-            property=positions_lens,
-            opt_state=lens(lambda s: s.opt_state),
-            optimizer=optax.lbfgs(),
+            optimizer=chain(
+                ScaleByAseLbfgs(memory_size=10),
+                optax.scale(-1.0),
+                ScaleByMoreThuenteLinesearch(),
+            ),
         )
 
         state = propagator(key, state)  # One optimization step
@@ -94,13 +89,11 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         del key
         params = self.property.get(state)
 
-        def value_fn(p: PyTree) -> Array:
-            updated_state = self.property.set(state, p)
-            result = self.potential(updated_state)
-            return result.data.total_energies.data.sum()
+        def value_and_grad_fn(p: PyTree) -> tuple[Any, PyTree]:
+            out = self.potential(self.property.set(state, p)).data
+            return out.total_energies, out.gradients
 
         potential_out = self.potential(state)
-        value = potential_out.data.total_energies.data.sum()
         grad = potential_out.data.gradients
         # Apply the patch
         energies = potential_out.data.total_energies
@@ -110,13 +103,16 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
 
         opt_state_current = self.opt_state.get(state)
 
+        # grad, energies (the current per-system energies) and value_and_grad_fn
+        # are the per-system objective the line-search transforms read; standard
+        # transforms ignore them.
         updates, new_opt_state = self.optimizer.update(
             grad,
             opt_state_current,
             params,
-            value=value,
             grad=grad,
-            value_fn=value_fn,  # necessary for line-search optimizers
+            energies=energies,
+            value_and_grad_fn=value_and_grad_fn,
         )
 
         new_params = apply_updates(params, updates)

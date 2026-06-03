@@ -20,6 +20,11 @@ from kups.relaxation.transforms.lbfgs import (
     ScaleByAseLbfgs,
     ScaleByAseLbfgsState,
 )
+from kups.relaxation.transforms.linesearch import (
+    LineSearchState,
+    ScaleByBacktrackingLinesearch,
+    ScaleByMoreThuenteLinesearch,
+)
 from kups.relaxation.transforms.max_step_size import (
     MaxStepSize,
     MaxStepSizeState,
@@ -28,12 +33,15 @@ from kups.relaxation.transforms.max_step_size import (
 __all__ = [
     "ClipByGlobalNorm",
     "ClipByGlobalNormState",
+    "LineSearchState",
     "MaxStepSize",
     "MaxStepSizeState",
     "ScaleByAseLbfgs",
     "ScaleByAseLbfgsState",
+    "ScaleByBacktrackingLinesearch",
     "ScaleByFire",
     "ScaleByFire2",
     "ScaleByFire2State",
     "ScaleByFireState",
+    "ScaleByMoreThuenteLinesearch",
 ]

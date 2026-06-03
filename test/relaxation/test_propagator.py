@@ -3,6 +3,8 @@
 
 """Tests for relaxation propagators."""
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -14,7 +16,13 @@ from kups.core.patch import ExplicitPatch, IdPatch, WithPatch
 from kups.core.potential import PotentialOut
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass
+from kups.relaxation.optimizer import Optimizer, chain
 from kups.relaxation.propagator import RelaxationPropagator
+from kups.relaxation.transforms import (
+    ScaleByAseLbfgs,
+    ScaleByBacktrackingLinesearch,
+    ScaleByMoreThuenteLinesearch,
+)
 
 
 @dataclass
@@ -104,64 +112,6 @@ class TestRelaxationPropagator:
         expected = initial_pos - 0.1 * initial_pos
         npt.assert_allclose(new_state.positions, expected)
 
-    def test_lbfgs_converges(self):
-        """L-BFGS with linesearch should converge."""
-        optimizer = optax.lbfgs()
-        potential = QuadraticPotential()
-
-        initial_pos = jnp.array([5.0, -3.0])
-        state = PotentialState(
-            positions=initial_pos,
-            opt_state=optimizer.init(initial_pos),
-        )
-
-        propagator = RelaxationPropagator(
-            potential=potential,
-            property=lens(lambda s: s.positions, cls=PotentialState),
-            opt_state=lens(lambda s: s.opt_state),
-            optimizer=optimizer,
-        )
-        propagator = jax.jit(propagator)
-
-        key = jax.random.key(0)
-
-        for _ in range(10):
-            state = propagator(key, state)
-
-        npt.assert_allclose(state.positions, jnp.zeros(2), atol=1e-6)
-
-    def test_backtracking_linesearch(self):
-        """Backtracking line search works."""
-        optimizer = optax.chain(
-            optax.sgd(learning_rate=1.0),
-            optax.scale_by_backtracking_linesearch(
-                max_backtracking_steps=15,
-                store_grad=True,
-            ),
-        )
-        potential = QuadraticPotential()
-
-        initial_pos = jnp.array([3.0, 4.0])
-        state = PotentialState(
-            positions=initial_pos,
-            opt_state=optimizer.init(initial_pos),
-        )
-
-        propagator = RelaxationPropagator(
-            potential=potential,
-            property=lens(lambda s: s.positions, cls=PotentialState),
-            opt_state=lens(lambda s: s.opt_state),
-            optimizer=optimizer,
-        )
-
-        key = jax.random.key(42)
-        propagator = jax.jit(propagator)
-
-        for _ in range(10):
-            state = propagator(key, state)
-
-        npt.assert_allclose(state.positions, jnp.zeros(2), atol=1e-6)
-
     def test_applies_patch_each_step(self):
         """Potential's patch should be applied after each relaxation step."""
         optimizer = optax.sgd(learning_rate=0.1)
@@ -186,3 +136,49 @@ class TestRelaxationPropagator:
         state = propagator(key, state)
 
         assert state.patch_count == 1
+
+    def test_kups_more_thuente_linesearch_converges(self):
+        """The per-system More-Thuente search drives the quadratic to its minimum."""
+        optimizer: Optimizer[Any, Any] = chain(
+            optax.scale(-1.0), ScaleByMoreThuenteLinesearch()
+        )
+        state = PotentialState(
+            positions=jnp.array([5.0, -3.0]),
+            opt_state=optimizer.init(jnp.array([5.0, -3.0])),
+        )
+        propagator = jax.jit(
+            RelaxationPropagator(
+                potential=QuadraticPotential(),
+                property=lens(lambda s: s.positions, cls=PotentialState),
+                opt_state=lens(lambda s: s.opt_state),
+                optimizer=optimizer,
+            )
+        )
+        key = jax.random.key(0)
+        for _ in range(5):
+            state = propagator(key, state)
+        npt.assert_allclose(state.positions, jnp.zeros(2), atol=1e-6)
+
+    def test_kups_lbfgs_with_backtracking_converges(self):
+        """L-BFGS direction + per-system backtracking (the documented chain)."""
+        optimizer: Optimizer[Any, Any] = chain(
+            ScaleByAseLbfgs(memory_size=10, alpha=1.0),
+            optax.scale(-1.0),
+            ScaleByBacktrackingLinesearch(),
+        )
+        state = PotentialState(
+            positions=jnp.array([5.0, -3.0]),
+            opt_state=optimizer.init(jnp.array([5.0, -3.0])),
+        )
+        propagator = jax.jit(
+            RelaxationPropagator(
+                potential=QuadraticPotential(),
+                property=lens(lambda s: s.positions, cls=PotentialState),
+                opt_state=lens(lambda s: s.opt_state),
+                optimizer=optimizer,
+            )
+        )
+        key = jax.random.key(0)
+        for _ in range(8):
+            state = propagator(key, state)
+        npt.assert_allclose(state.positions, jnp.zeros(2), atol=1e-6)

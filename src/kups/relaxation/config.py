@@ -19,6 +19,10 @@ from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
 from kups.relaxation.transforms.fire import ScaleByFire
 from kups.relaxation.transforms.fire2 import ScaleByFire2
 from kups.relaxation.transforms.lbfgs import ScaleByAseLbfgs
+from kups.relaxation.transforms.linesearch import (
+    ScaleByBacktrackingLinesearch,
+    ScaleByMoreThuenteLinesearch,
+)
 from kups.relaxation.transforms.max_step_size import MaxStepSize
 
 Transform = str | dict[str, bool | int | float | str | list[Any] | None]
@@ -33,7 +37,16 @@ _CUSTOM_TRANSFORMS: dict[str, Any] = {
     "max_step_size": MaxStepSize,
     "scale_by_ase_lbfgs": ScaleByAseLbfgs,
     "clip_by_global_norm": ClipByGlobalNorm,
+    "scale_by_backtracking_linesearch": ScaleByBacktrackingLinesearch,
+    "scale_by_more_thuente_linesearch": ScaleByMoreThuenteLinesearch,
 }
+
+_UNSUPPORTED_OPTAX = {
+    "lbfgs": "scale_by_ase_lbfgs + scale_by_more_thuente_linesearch",
+    "scale_by_zoom_linesearch": "scale_by_more_thuente_linesearch",
+}
+"""optax value-based ops (their ``update`` needs ``value``/``value_fn``, which the
+per-system propagator does not supply) mapped to the kups transform(s) to use."""
 
 
 def get_transform(
@@ -49,7 +62,9 @@ def get_transform(
         The constructed GradientTransformation.
 
     Raises:
-        ValueError: If the transform name is not found in custom transforms or optax.
+        ValueError: If the transform name is unknown, or resolves to an optax
+            value-based line search whose ``update`` needs ``value``/``value_fn``
+            (which ``RelaxationPropagator`` does not supply per system).
     """
     if isinstance(transform, str):
         name = transform
@@ -60,13 +75,15 @@ def get_transform(
         kwargs = transform
 
     if name in _CUSTOM_TRANSFORMS:
-        constructor = _CUSTOM_TRANSFORMS[name]
-    elif hasattr(optax, name):
-        constructor = getattr(optax, name)
-    else:
+        return _CUSTOM_TRANSFORMS[name](**kwargs)
+    if name in _UNSUPPORTED_OPTAX:
+        raise ValueError(
+            f"Unsupported optax transform '{name}'; use "
+            f"{_UNSUPPORTED_OPTAX[name]} instead."
+        )
+    if not hasattr(optax, name):
         raise ValueError(f"Unknown transformation: {name}")
-
-    return constructor(**kwargs)
+    return getattr(optax, name)(**kwargs)
 
 
 def get_transformations(

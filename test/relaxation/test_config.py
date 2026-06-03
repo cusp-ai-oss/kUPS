@@ -17,7 +17,9 @@ from kups.relaxation.transforms import (
     ClipByGlobalNorm,
     MaxStepSize,
     ScaleByAseLbfgs,
+    ScaleByBacktrackingLinesearch,
     ScaleByFire,
+    ScaleByMoreThuenteLinesearch,
 )
 
 
@@ -47,9 +49,32 @@ class TestGetTransform:
         t = get_transform({"transform": "clip_by_global_norm", "max_norm": 1.0})
         assert isinstance(t, ClipByGlobalNorm)
 
+    def test_linesearch_transforms_resolve_to_kups(self):
+        """The kups per-system line searches override optax's global ones."""
+        assert isinstance(
+            get_transform("scale_by_backtracking_linesearch"),
+            ScaleByBacktrackingLinesearch,
+        )
+        assert isinstance(
+            get_transform("scale_by_more_thuente_linesearch"),
+            ScaleByMoreThuenteLinesearch,
+        )
+
     def test_unknown_transform_raises(self):
         with pytest.raises(ValueError, match="Unknown transformation"):
             get_transform("this_does_not_exist")
+
+    def test_optax_value_based_linesearch_rejected(self):
+        """optax line searches needing value/value_fn are rejected with a clear error.
+
+        These reach the optax fallback (not shadowed by the custom registry) and
+        would otherwise crash at runtime inside the per-system propagator, which
+        supplies `energies`/`value_and_grad_fn` rather than optax's `value`/`value_fn`.
+        """
+        with pytest.raises(ValueError, match="Unsupported optax transform"):
+            get_transform("lbfgs")
+        with pytest.raises(ValueError, match="scale_by_more_thuente_linesearch"):
+            get_transform("scale_by_zoom_linesearch")
 
     def test_dict_does_not_mutate_input(self):
         config = {"transform": "sgd", "learning_rate": 0.01}
