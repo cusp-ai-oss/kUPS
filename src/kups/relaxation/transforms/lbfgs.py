@@ -72,11 +72,18 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
 
     Attributes:
         memory_size: Number of past difference pairs to store. ``>= 1``.
-        alpha: Initial inverse Hessian is ``(1/alpha) * I``.
+        alpha: Fixed initial inverse Hessian is ``(1/alpha) * I``. Used as the
+            initial scale and as the fallback when ``adaptive_scale`` cannot use
+            the curvature pair.
+        adaptive_scale: If ``True``, scale the initial inverse Hessian per system
+            by ``γ = (s·y)/(y·y)`` (Nocedal & Wright eq. 7.20) from the freshest
+            difference pair, falling back to ``1/alpha`` on the first step or when
+            the curvature pair is non-positive.
     """
 
     memory_size: int = field(static=True, default=100)
     alpha: float = field(static=True, default=70.0)
+    adaptive_scale: bool = field(static=True, default=False)
 
     def __post_init__(self) -> None:
         if self.memory_size < 1:
@@ -121,17 +128,31 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
         if params is None:
             raise ValueError("ScaleByASELBFGS.update requires params")
         idx = state.index_prefix
+        keys = state.weights_memory.keys
         memory_idx = state.count % self.memory_size
         prev_memory_idx = (state.count - 1) % self.memory_size
+        inv_alpha = 1.0 / self.alpha
 
         # Compute fresh (s, y) differences and corresponding ρ = 1/(y·s).
         diff_params = jax.tree.map(jnp.subtract, params, state.params)
         diff_updates = jax.tree.map(jnp.subtract, updates, state.updates)
-        vdot_data = tree_vdot(diff_updates, diff_params, idx).data
-        weight = jnp.where(vdot_data == 0.0, 0.0, 1.0 / vdot_data)
+        sy = tree_vdot(diff_updates, diff_params, idx).data  # (s·y) per system
+        weight = jnp.where(sy == 0.0, 0.0, 1.0 / sy)
+
+        is_first = state.count == 0
+
+        # Per-system initial inverse-Hessian scale γ.
+        if self.adaptive_scale:
+            yy = tree_vdot(diff_updates, diff_updates, idx).data  # (y·y) per system
+            valid = jnp.logical_and(jnp.logical_not(is_first), (yy > 0) & (sy > 0))
+            gamma_data = jnp.where(valid, sy / jnp.where(yy > 0, yy, 1.0), inv_alpha)
+        else:
+            gamma_data = jnp.broadcast_to(
+                jnp.asarray(inv_alpha, dtype=sy.dtype), sy.shape
+            )
+        gamma = Table(keys, gamma_data)
 
         # Differences are undefined at the very first iteration; stay zero.
-        is_first = state.count == 0
         diff_params = jax.tree.map(
             lambda x: jnp.where(is_first, jnp.zeros_like(x), x), diff_params
         )
@@ -157,10 +178,10 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
             diff_params_memory,
             diff_updates_memory,
             weights_data,
-            identity_scale=1.0 / self.alpha,
+            gamma=gamma,
             memory_idx=memory_idx,
             index_prefix=idx,
-            keys=state.weights_memory.keys,
+            keys=keys,
         )
         return precond, ScaleByAseLbfgsState(
             count=state.count + 1,
@@ -178,7 +199,7 @@ def _precondition_by_lbfgs_segmented[P](
     diff_params_memory: PyTree,
     diff_updates_memory: PyTree,
     weights_data: Array,
-    identity_scale: Array | float,
+    gamma: Table[SupportsSorting, Array],
     memory_idx: Array,
     index_prefix: PyTree,
     keys: tuple[SupportsSorting, ...],
@@ -187,10 +208,10 @@ def _precondition_by_lbfgs_segmented[P](
 
     Runs Nocedal's two-loop recursion (Algorithm 7.4) with all inner
     products replaced by their per-system equivalents — ``α_i`` and ``β_i``
-    are arrays of shape ``(n_systems,)``, while the initial inverse-Hessian
-    ``γ I`` is applied uniformly to every leaf. The block-diagonal
-    structure of the resulting approximation across systems is what makes
-    the batched run bit-identical to running each system alone.
+    are arrays of shape ``(n_systems,)``, and the initial inverse-Hessian
+    ``γ_i I`` is applied per system via its own ``gamma`` entry. The
+    block-diagonal structure of the resulting approximation across systems
+    is what makes the batched run bit-identical to running each system alone.
     """
     memory_size = weights_data.shape[1]
     indices = (memory_idx + jnp.arange(memory_size)) % memory_size
@@ -206,7 +227,7 @@ def _precondition_by_lbfgs_segmented[P](
         return new_q, alpha
 
     q, alphas = jax.lax.scan(right_product, updates, indices, reverse=True)
-    q = jax.tree.map(lambda x: identity_scale * x, q)
+    q = tree_scale_per_row(q, gamma, index_prefix)
 
     def left_product(q: P, args: tuple[Array, Array]) -> tuple[P, Array]:
         mem_idx, alpha = args
