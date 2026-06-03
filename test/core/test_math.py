@@ -3,6 +3,7 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -14,6 +15,8 @@ from kups.core.utils.math import (
     logm,
     next_higher_power,
     triangular_3x3_det_and_inverse,
+    triangular_3x3_from_tril,
+    triangular_3x3_logm,
     triangular_3x3_matmul,
 )
 
@@ -294,6 +297,62 @@ class TestLogm:
         spd = M @ M.T + 0.5 * jnp.eye(4)
         grad = jax.grad(lambda A: jnp.trace(logm(A, hermitian=True)))(spd)
         npt.assert_allclose(grad, jnp.linalg.inv(spd), rtol=1e-6, atol=1e-8)
+
+
+class TestTriangular3x3FromTril:
+    def test_assembles_lower_triangular(self):
+        tril = jnp.arange(12.0).reshape(2, 6)
+        m = triangular_3x3_from_tril(tril)
+        assert m.shape == (2, 3, 3)
+        npt.assert_array_equal(m[0], jnp.array([[0.0, 0, 0], [1, 2, 0], [3, 4, 5]]))
+        # Inverse of the ``np.tril_indices`` extraction used to read the elements.
+        npt.assert_array_equal(m[..., *np.tril_indices(3)], tril)
+
+
+class TestTriangular3x3Logm:
+    @pytest.mark.parametrize(
+        "diagonal",
+        [
+            pytest.param(jnp.array([0.7, 1.1, 1.4]), id="distinct"),
+            pytest.param(jnp.array([0.9, 0.9, 1.4]), id="two-equal"),
+            pytest.param(jnp.array([0.8, 0.8, 0.8]), id="cubic-repeated"),
+        ],
+    )
+    def test_inverse_of_expm(self, diagonal: jax.Array):
+        """``expm(triangular_3x3_logm(L)) == L``, including the defective
+        repeated-diagonal matrices the eig-based ``logm`` cannot handle. The
+        result stays lower-triangular."""
+        b = jnp.array(
+            [[diagonal[0], 0, 0], [0.5, diagonal[1], 0], [0.3, 0.2, diagonal[2]]]
+        )
+        lattice = jax.scipy.linalg.expm(b)
+        recovered = triangular_3x3_logm(lattice)
+        npt.assert_allclose(recovered, b, atol=1e-5)
+        npt.assert_allclose(jax.scipy.linalg.expm(recovered), lattice, atol=1e-5)
+        npt.assert_allclose(jnp.triu(recovered, 1), 0.0, atol=1e-10)
+
+    def test_upper_and_batched(self):
+        b = jnp.array([[0.7, 0, 0], [0.5, 1.1, 0], [0.3, 0.2, 1.4]])
+        lattice = jax.scipy.linalg.expm(b)
+        # Upper-triangular convention is the transpose of the lower one.
+        npt.assert_allclose(
+            triangular_3x3_logm(lattice.T, lower=False),
+            triangular_3x3_logm(lattice).T,
+            atol=1e-6,
+        )
+        batched = triangular_3x3_logm(
+            jnp.stack([lattice, jax.scipy.linalg.expm(2 * b)])
+        )
+        assert batched.shape == (2, 3, 3)
+        npt.assert_allclose(batched[0], b, atol=1e-5)
+
+    def test_gradient_safe_at_repeated_diagonal(self):
+        """No NaN gradients when diagonal entries coincide (cubic cell)."""
+        lattice = jax.scipy.linalg.expm(
+            jnp.array([[0.8, 0, 0], [0.5, 0.8, 0], [0.3, 0.2, 0.8]])
+        )
+        grad = jax.grad(lambda m: jnp.sum(triangular_3x3_logm(m)))(lattice)
+        assert bool(jnp.all(jnp.isfinite(grad)))
 
 
 class TestNextHigherPower:

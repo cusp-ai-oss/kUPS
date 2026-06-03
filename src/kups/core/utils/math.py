@@ -167,6 +167,98 @@ def triangular_3x3_det_and_inverse(
     return inner(A)
 
 
+def triangular_3x3_from_tril(tril: Array) -> Array:
+    """Assemble a lower-triangular 3×3 matrix from its 6 elements.
+
+    Args:
+        tril: Array of shape `(..., 6)` holding ``[m00, m10, m11, m20, m21, m22]``.
+
+    Returns:
+        Array of shape `(..., 3, 3)`::
+
+            [[m00,   0,   0],
+             [m10, m11,   0],
+             [m20, m21, m22]]
+    """
+    zero = jnp.zeros_like(tril[..., :1])
+    return jnp.stack(
+        [
+            jnp.concatenate([tril[..., 0:1], zero, zero], axis=-1),
+            jnp.concatenate([tril[..., 1:3], zero], axis=-1),
+            tril[..., 3:6],
+        ],
+        axis=-2,
+    )
+
+
+def _ddlog(x: Array, y: Array) -> Array:
+    """First divided difference of ``log``: ``(log x - log y) / (x - y)``,
+    with the confluent limit ``1/x`` as ``y -> x``. Gradient-safe at ``x == y``."""
+    diff = x - y
+    safe = jnp.where(diff == 0.0, 1.0, diff)
+    return jnp.where(diff == 0.0, 1.0 / x, (jnp.log(x) - jnp.log(y)) / safe)
+
+
+def _ddlog2(x: Array, y: Array, z: Array) -> Array:
+    """Second divided difference of ``log`` (symmetric in its arguments), with
+    confluent limits when the outer pair or all three coincide."""
+    diff = x - z
+    safe = jnp.where(diff == 0.0, 1.0, diff)
+    generic = (_ddlog(x, y) - _ddlog(y, z)) / safe
+    # x == z: by symmetry log[x, y, x] = log[x, x, y] = (1/x - log[x, y]) / (x - y),
+    # whose own y -> x limit is f''(x) / 2 = -1 / (2 x^2).
+    diff_xy = x - y
+    safe_xy = jnp.where(diff_xy == 0.0, 1.0, diff_xy)
+    confluent = jnp.where(
+        diff_xy == 0.0, -0.5 / x**2, (1.0 / x - _ddlog(x, y)) / safe_xy
+    )
+    return jnp.where(diff == 0.0, confluent, generic)
+
+
+def triangular_3x3_logm(A: Array, *, lower: bool = True) -> Array:
+    r"""Principal matrix logarithm of triangular 3×3 matrices with positive diagonal.
+
+    Closed form from the fact that ``L`` and ``B = logm(L)`` commute (``BL = LB``):
+    the diagonal of ``B`` is ``log`` of ``L``'s diagonal, and the off-diagonal
+    couplings are divided differences of ``log`` over the diagonal entries. Using
+    divided differences keeps repeated diagonal entries (e.g. cubic / tetragonal
+    cells) well-conditioned.
+
+    Real and gradient-safe, unlike the eigendecomposition-based
+    [logm][kups.core.utils.math.logm] which is complex and inaccurate for these
+    (defective) matrices. Inverse of ``jax.scipy.linalg.expm`` on triangular
+    matrices.
+
+    Args:
+        A: Array of shape `(..., 3, 3)` containing triangular matrices with
+            strictly positive diagonal.
+        lower: Whether matrices are lower (True) or upper (False) triangular.
+
+    Returns:
+        Array of shape `(..., 3, 3)` containing the triangular logarithms.
+    """
+    M = A if lower else jnp.swapaxes(A, -1, -2)
+    l0, l1, l2 = M[..., 0, 0], M[..., 1, 1], M[..., 2, 2]
+    a, b, c = M[..., 1, 0], M[..., 2, 0], M[..., 2, 1]
+    zero = jnp.zeros_like(l0)
+    out = jnp.stack(
+        [
+            jnp.stack([jnp.log(l0), zero, zero], axis=-1),
+            jnp.stack([a * _ddlog(l0, l1), jnp.log(l1), zero], axis=-1),
+            jnp.stack(
+                [
+                    b * _ddlog(l0, l2) + a * c * _ddlog2(l0, l1, l2),
+                    c * _ddlog(l1, l2),
+                    jnp.log(l2),
+                ],
+                axis=-1,
+            ),
+        ],
+        axis=-2,
+    )
+    return out if lower else jnp.swapaxes(out, -1, -2)
+
+
 class MatmulSide(StrEnum):
     """Enumeration for matrix multiplication side."""
 

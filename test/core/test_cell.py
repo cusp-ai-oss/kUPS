@@ -9,12 +9,15 @@ import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
+from jax.scipy.linalg import expm
 
 from kups.core.cell import (
     BaseFrame,
     Cell,
     CoordinateSpace,
     Frame,
+    LinearFrame,
+    LogTriclinicFrame,
     MaterializedFrame,
     OrthogonalFrame,
     PeriodicCell,
@@ -712,6 +715,7 @@ _LINEAR_FRAME_CLASSES = [
 # nonlinear toy frame that exercises the general inverse-Jacobian path.
 _GRAD_FRAME_CLASSES = [
     *_LINEAR_FRAME_CLASSES,
+    pytest.param(LogTriclinicFrame, id="log_triclinic"),
     pytest.param(_ExpFrame, id="exp_nonlinear"),
 ]
 
@@ -795,6 +799,7 @@ _GEOMETRY_FRAMES = [
     ),
     pytest.param(OrthogonalFrame.from_matrix(_M_ORTHO[None]), id="orthogonal"),
     pytest.param(MaterializedFrame.from_matrix(_M_TRICLINIC[None]), id="materialized"),
+    pytest.param(LogTriclinicFrame.from_matrix(_M_TRICLINIC[None]), id="log_triclinic"),
 ]
 _frame_case = pytest.mark.parametrize("frame", _GEOMETRY_FRAMES)
 
@@ -869,3 +874,38 @@ class TestFrameGeometry:
             frame.vectors * multiples[:, None],
             atol=1e-6,
         )
+
+
+class TestLogTriclinicFrame:
+    """Matrix-log parameterisation: ``vectors == expm(A)`` for lower-triangular ``A``."""
+
+    def test_vectors_is_expm_of_lower_triangular(self):
+        a = jnp.array([[0.7, 0.0, 0.0], [0.5, 1.1, 0.0], [0.1, 0.2, 1.4]])
+        tril = jnp.array([0.7, 0.5, 1.1, 0.1, 0.2, 1.4])
+        frame = LogTriclinicFrame(tril)
+        npt.assert_allclose(frame.vectors, expm(a), atol=1e-6)
+        # expm of a lower-triangular matrix stays lower-triangular.
+        npt.assert_allclose(jnp.triu(frame.vectors, 1), 0.0, atol=1e-6)
+
+    def test_volume_is_exp_trace(self):
+        tril = jnp.array([0.7, 0.5, 1.1, 0.1, 0.2, 1.4])
+        frame = LogTriclinicFrame(tril)
+        trace = tril[0] + tril[2] + tril[5]
+        npt.assert_allclose(frame.volume, jnp.exp(trace), atol=1e-6)
+        # The exponential map always yields a positive-volume cell.
+        assert float(frame.volume) > 0.0
+
+    def test_from_matrix_roundtrips_through_expm(self):
+        """``from_matrix`` (triangular logm) then ``vectors`` (expm) recovers the
+        input lattice. Degenerate-diagonal robustness is covered by
+        ``test_math.TestTriangular3x3Logm``."""
+        lattice = expm(jnp.array([[0.7, 0, 0], [0.5, 1.1, 0], [0.3, 0.2, 1.4]]))
+        frame = LogTriclinicFrame.from_matrix(lattice)
+        npt.assert_allclose(frame.vectors, lattice, atol=1e-5)
+
+    def test_uses_general_nonlinear_gradient_path(self):
+        """``vectors`` is nonlinear in the parameters, so the frame is a plain
+        ``BaseFrame`` (general inverse-Jacobian), not a ``LinearFrame``."""
+        frame = LogTriclinicFrame.from_matrix(jnp.eye(3) * 2.0)
+        assert isinstance(frame, BaseFrame)
+        assert not isinstance(frame, LinearFrame)
