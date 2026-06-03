@@ -34,7 +34,6 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, TypedDict, overload
 
-import jax
 import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 from jax import Array
@@ -285,14 +284,13 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
 def _project_grad_onto_frame[C: Cell[Any]](cell: C, cell_grad: Array) -> C:
     """Express a raw ``∂E/∂h`` matrix in ``cell``'s frame parameter space.
 
-    The vjp of the frame's ``vectors`` map pulls the matrix gradient back onto
-    the frame's own degrees of freedom (``tril`` for triclinic, ``lengths`` for
-    orthogonal), preserving the input frame type without recomputing any
-    inverse/volume that an instance constructor would. Returns a copy of
-    ``cell`` carrying the projected gradient as its frame.
+    Delegates to [`Frame.parameter_gradient`][kups.core.cell.Frame.parameter_gradient],
+    which pulls the matrix gradient back onto the frame's own degrees of freedom
+    (``tril`` for triclinic, ``lengths`` for orthogonal) via the ``vectors`` vjp,
+    preserving the input frame type. Returns a copy of ``cell`` carrying the
+    projected gradient as its frame.
     """
-    (frame_grad,) = jax.vjp(lambda f: f.vectors, cell.frame)[1](cell_grad)
-    return bind(cell, lambda c: c.frame).set(frame_grad)
+    return bind(cell, lambda c: c.frame).set(cell.frame.parameter_gradient(cell_grad))
 
 
 @overload
