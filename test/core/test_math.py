@@ -11,6 +11,7 @@ from kups.core.utils.math import (
     cubic_roots,
     det_and_inverse_3x3,
     log_factorial_ratio,
+    logm,
     next_higher_power,
     triangular_3x3_det_and_inverse,
     triangular_3x3_matmul,
@@ -266,6 +267,33 @@ class TestTriangular3x3Matmul:
         x = jax.random.normal(jax.random.PRNGKey(1), (3,))
         with pytest.raises(ValueError, match="is not a valid MatmulSide"):
             triangular_3x3_matmul(jnp.tril(A), x, lower=True, side="invalid")
+
+
+class TestLogm:
+    def test_logm(self):
+        """Merged: general round-trip, hermitian real output, batching."""
+        # general (eig path): logm(expm(B)) == B
+        B = 0.3 * jax.random.normal(jax.random.PRNGKey(0), (5, 5))
+        npt.assert_allclose(logm(jax.scipy.linalg.expm(B)).real, B, atol=1e-10)
+
+        # hermitian (SPD): real output and expm round-trip
+        M = jax.random.normal(jax.random.PRNGKey(1), (5, 5))
+        spd = M @ M.T + 0.5 * jnp.eye(5)
+        L = logm(spd, hermitian=True)
+        assert L.dtype == spd.dtype
+        npt.assert_allclose(jax.scipy.linalg.expm(L), spd, rtol=1e-6, atol=1e-8)
+
+        # batching preserves shape and matches per-matrix results
+        Lb = logm(jnp.stack([spd, 2 * spd]), hermitian=True)
+        assert Lb.shape == (2, 5, 5)
+        npt.assert_allclose(Lb[0], L, rtol=1e-10)
+
+    def test_logm_hermitian_differentiable(self):
+        """d/dA tr(log A) == A^-1 for symmetric positive-definite A."""
+        M = jax.random.normal(jax.random.PRNGKey(2), (4, 4))
+        spd = M @ M.T + 0.5 * jnp.eye(4)
+        grad = jax.grad(lambda A: jnp.trace(logm(A, hermitian=True)))(spd)
+        npt.assert_allclose(grad, jnp.linalg.inv(spd), rtol=1e-6, atol=1e-8)
 
 
 class TestNextHigherPower:
