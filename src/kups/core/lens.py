@@ -116,8 +116,14 @@ class Update[S, R](Protocol):
     def __call__[S2](self: Update[S2, R], state: S2, /, value: R) -> S2: ...
 
 
-type Modifier[R] = Callable[[R], R]
-"""Type alias for a function that transforms a value."""
+type Endo[X] = View[X, X]
+"""An endomorphism: a function from a type back into itself.
+
+Used as the focused-value transform in [`apply`][kups.core.lens.Lens.apply] and
+as the post-set state transform in [`then`][kups.core.lens.Lens.then].
+Endomorphisms form a monoid under composition, so several can be combined into
+one before being passed in.
+"""
 
 
 class _NOT_SET_TYPE(enum.Enum):
@@ -209,7 +215,7 @@ class Lens(Protocol[S, R]):
         """
         ...
 
-    def apply[S2, R2](self: Lens[S2, R2], state: S2, /, modifier: Modifier[R2]) -> S2:
+    def apply[S2, R2](self: Lens[S2, R2], state: S2, /, modifier: Endo[R2]) -> S2:
         """Apply a modifier function to the focused value.
 
         Args:
@@ -270,6 +276,26 @@ class Lens(Protocol[S, R]):
 
         Returns:
             A new lens that composes this lens with the provided lens/view
+        """
+        ...
+
+    def then[S2](self: Lens[S2, R], after: Endo[S2]) -> Lens[S2, R]:
+        """Re-establish a whole-state invariant after every write.
+
+        Returns a lens with the same getter whose setter post-composes the
+        write with ``after``: ``set(s, r) == after(set(s, r))``. Reads are
+        unaffected — the rewrite is one-directional. ``apply``/``at``/``merge``
+        inherit it because they route through ``set``.
+
+        ``after`` only sees the post-set state, so it must depend on that state
+        alone, be idempotent, and write only fields disjoint from this lens's
+        focus (so reads still round-trip).
+
+        Args:
+            after: State endomorphism applied after each write.
+
+        Returns:
+            A lens whose writes restore the invariant.
         """
         ...
 
@@ -345,7 +371,7 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def apply[R2](self: BoundLens[S, R2], modifier: Modifier[R2]) -> S:
+    def apply[R2](self: BoundLens[S, R2], modifier: Endo[R2]) -> S:
         """Apply a modifier function to the focused value in the bound data structure.
 
         Args:
@@ -400,6 +426,20 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
+    def then[S2](self: BoundLens[S2, R], after: Endo[S2]) -> BoundLens[S2, R]:
+        """Re-establish a whole-state invariant after every write.
+
+        Bound counterpart of [`Lens.then`][kups.core.lens.Lens.then]: the
+        getter is unchanged and every write is post-composed with ``after``.
+
+        Args:
+            after: State endomorphism applied after each write.
+
+        Returns:
+            A bound lens whose writes restore the invariant.
+        """
+        ...
+
 
 class BaseLens(Lens[S, R], abc.ABC):
     """Base class for lens implementations."""
@@ -410,7 +450,7 @@ class BaseLens(Lens[S, R], abc.ABC):
         return NestedLens(self, SimpleLens(view(where)))
 
     @override
-    def apply[S2](self: BaseLens[S2, R], state: S2, modifier: Modifier[R]) -> S2:
+    def apply[S2, R2](self: BaseLens[S2, R2], state: S2, modifier: Endo[R2]) -> S2:
         """Apply a modifier function to the focused value."""
         return self.set(state, modifier(self.get(state)))
 
@@ -435,6 +475,10 @@ class BaseLens(Lens[S, R], abc.ABC):
     def nest[U, R2](self: Lens[S, R2], other: Lens[R2, U]) -> Lens[S, U]:
         view_func = other.get if isinstance(other, Lens) else other
         return self.focus(view_func)
+
+    @override
+    def then[S2](self: BaseLens[S2, R], after: Endo[S2]) -> Lens[S2, R]:
+        return ThenLens(self, after)
 
     @overload
     def __call__[S2, R2](self: Lens[S2, R2], state: S2, /, value: R2) -> S2: ...
@@ -556,6 +600,29 @@ class NestedLens(BaseLens[S, R2], Generic[S, R, R2]):
 
 
 @dataclass
+class ThenLens(BaseLens[S, R]):
+    """A lens whose setter re-establishes a whole-state invariant.
+
+    Wraps ``inner`` and post-composes every write with ``after`` (an
+    [Endo][kups.core.lens.Endo] on the state): ``set(s, r) ==
+    after(inner.set(s, r))``. The getter is unchanged, so the rewrite is
+    one-directional (write side only). Constructed via
+    [`then`][kups.core.lens.Lens.then].
+    """
+
+    inner: Lens[S, R] = field(static=True)
+    after: Endo[S] = field(static=True)
+
+    @override
+    def get[S2](self: ThenLens[S2, R], state: S2) -> R:
+        return self.inner.get(state)
+
+    @override
+    def set[S2, R2](self: ThenLens[S2, R2], state: S2, value: R2) -> S2:
+        return self.after(self.inner.set(state, value))
+
+
+@dataclass
 class SimpleBoundLens(BoundLens[S, R]):
     """A lens that has been bound to a specific data structure instance.
 
@@ -582,7 +649,7 @@ class SimpleBoundLens(BoundLens[S, R]):
         return self.lens.set(self.target, value)
 
     @override
-    def apply(self, modifier: Modifier[R]) -> S:
+    def apply[R2](self: SimpleBoundLens[S, R2], modifier: Endo[R2]) -> S:
         """Apply a modifier to the focused value in the bound target."""
         return self.lens.set(self.target, modifier(self.lens.get(self.target)))
 
@@ -604,6 +671,11 @@ class SimpleBoundLens(BoundLens[S, R]):
     ) -> BoundLens[S, U]:
         """Nest another lens or view within this bound lens."""
         return self.lens.nest(other).bind(self.target)
+
+    @override
+    def then[S2](self: SimpleBoundLens[S2, R], after: Endo[S2]) -> BoundLens[S2, R]:
+        """Re-establish a whole-state invariant after every write."""
+        return self.lens.then(after).bind(self.target)
 
     @overload
     def __call__[R2](self: SimpleBoundLens[S, R2], value: R2) -> S: ...

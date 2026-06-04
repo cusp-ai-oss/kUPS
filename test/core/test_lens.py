@@ -13,13 +13,13 @@ from jax import Array
 
 from kups.core.data import Table
 from kups.core.lens import (
+    Endo,
     HasLensFields,
     IndexLens,
     LambdaLens,
     Lens,
     LensField,
     MergedLens,
-    Modifier,
     SimpleBoundLens,
     SimpleLens,
     TreePathView,
@@ -59,6 +59,27 @@ class Company:
     name: str
     employees: jax.Array  # Array of employee IDs
     scores: jax.Array  # Array of performance scores
+
+
+@dataclass
+class Coupled:
+    """State with derived fields, for ``then`` tests.
+
+    Invariants: ``cartesian == fractional * scale`` and ``total == sum(cartesian)``.
+    """
+
+    fractional: jax.Array
+    scale: jax.Array
+    cartesian: jax.Array
+    total: jax.Array
+
+
+def _recompute_cartesian(s: Coupled) -> Coupled:
+    return bind(s, lambda x: x.cartesian).set(s.fractional * s.scale)
+
+
+def _recompute_total(s: Coupled) -> Coupled:
+    return bind(s, lambda x: x.total).set(s.cartesian.sum())
 
 
 @pytest.fixture
@@ -291,6 +312,71 @@ class TestNestedLens:
         assert first_char_lens.get(person) == "1"
 
 
+class TestThenLens:
+    """Tests for the ``then`` combinator (write-side state invariants)."""
+
+    @pytest.fixture
+    def state(self) -> Coupled:
+        # consistent: cartesian == fractional * scale, total == sum(cartesian)
+        return Coupled(
+            fractional=jnp.array([0.5, 0.25]),
+            scale=jnp.array(4.0),
+            cartesian=jnp.array([2.0, 1.0]),
+            total=jnp.array(3.0),
+        )
+
+    def test_set_restores_invariant(self, state: Coupled):
+        scale_lens = lens(lambda s: s.scale, cls=Coupled).then(_recompute_cartesian)
+        out = scale_lens.set(state, jnp.array(8.0))
+        npt.assert_array_equal(out.scale, jnp.array(8.0))
+        npt.assert_array_equal(out.cartesian, jnp.array([4.0, 2.0]))
+
+    def test_get_is_one_directional(self):
+        # An inconsistent cartesian is ignored by get — only the focus is read.
+        s = Coupled(
+            jnp.array([0.5]), jnp.array(4.0), jnp.array([999.0]), jnp.array(0.0)
+        )
+        scale_lens = lens(lambda s: s.scale, cls=Coupled).then(_recompute_cartesian)
+        assert scale_lens.get(s) == 4.0
+        # ...and a set still returns what was put (PutGet holds, disjoint focus).
+        assert scale_lens.get(scale_lens.set(s, jnp.array(2.0))) == 2.0
+
+    def test_apply_is_normalized(self, state: Coupled):
+        scale_lens = lens(lambda s: s.scale, cls=Coupled).then(_recompute_cartesian)
+        out = scale_lens.apply(state, lambda v: v * 2)  # 4 -> 8
+        npt.assert_array_equal(out.cartesian, jnp.array([4.0, 2.0]))
+
+    def test_chained_then_runs_in_order(self, state: Coupled):
+        # total depends on cartesian, so a stale total proves wrong ordering.
+        scale_lens = (
+            lens(lambda s: s.scale, cls=Coupled)
+            .then(_recompute_cartesian)
+            .then(_recompute_total)
+        )
+        out = scale_lens.set(state, jnp.array(8.0))
+        npt.assert_array_equal(out.cartesian, jnp.array([4.0, 2.0]))
+        npt.assert_array_equal(out.total, jnp.array(6.0))
+
+    def test_bound_then(self, state: Coupled):
+        out = (
+            bind(state)
+            .focus(lambda s: s.scale)
+            .then(_recompute_cartesian)
+            .set(jnp.array(8.0))
+        )
+        npt.assert_array_equal(out.cartesian, jnp.array([4.0, 2.0]))
+
+    def test_works_in_jit(self, state: Coupled):
+        scale_lens = lens(lambda s: s.scale, cls=Coupled).then(_recompute_cartesian)
+
+        @jax.jit
+        def f(s: Coupled, v: Array) -> Coupled:
+            return scale_lens.set(s, v)
+
+        out = f(state, jnp.array(8.0))
+        npt.assert_array_equal(out.cartesian, jnp.array([4.0, 2.0]))
+
+
 class TestBoundLens:
     """Tests for bound lens functionality."""
 
@@ -509,13 +595,13 @@ class TestTypeCompatibility:
         new_company = employees_lens.set(company, new_employees)
         npt.assert_array_equal(new_company.employees, new_employees)
 
-    def test_modifier_type_alias(self):
-        """Test that Modifier type alias works correctly."""
+    def test_endo_type_alias(self):
+        """Test that Endo type alias works correctly."""
 
-        def apply_modifier(value: int, mod: Modifier[int]) -> int:
-            return mod(value)
+        def apply_endo(value: int, f: Endo[int]) -> int:
+            return f(value)
 
-        result = apply_modifier(5, lambda x: x * 2)
+        result = apply_endo(5, lambda x: x * 2)
         assert result == 10
 
     def test_lens_with_complex_data_structures(self):
