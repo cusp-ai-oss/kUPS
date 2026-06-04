@@ -90,7 +90,7 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     for _ in range(2):
         nl = nl_cls.from_state(state, cutoff_table)
         result = jax.jit(as_result_function(nl))(
-            lh=state.particles,
+            keys=state.particles,
             systems=state.systems,
         )
         if not result.failed_assertions:

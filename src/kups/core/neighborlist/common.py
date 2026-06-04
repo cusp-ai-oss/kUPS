@@ -8,8 +8,8 @@ Contains:
 - ``num_cells`` — per-axis spatial bin counts (used by the cell-list
   selector and by ``parameters.estimate``).
 - ``Candidates`` — private intermediate struct used inside individual
-  selector algorithms while raw ``(lhs, rhs)`` index arrays are being built.
-  Not the pipeline carrier (see
+  selector algorithms while raw ``(key_idx, query_idx)`` index arrays are being
+  built. Not the pipeline carrier (see
   [`CandidateBatch`][kups.core.neighborlist.types.CandidateBatch]).
 - ``candidate_image_counts`` — per-axis periodic-image multiplicity a cutoff
   reaches (the replication factor); used by ``_get_candidate_images`` and by
@@ -69,36 +69,21 @@ class Candidates:
     ``make_batch_with_mic``) before returning.
     """
 
-    lhs: Index[ParticleId]
-    rhs: Index[ParticleId]
-
-
-def edge_rhs_table(ctx: PipelineContext) -> Table[ParticleId, NeighborListPoints]:
-    """Return the table addressed by the second edge column."""
-    return ctx.rh if ctx.rh is not None else ctx.lh
-
-
-def query_table(ctx: PipelineContext) -> Table[ParticleId, NeighborListPoints]:
-    """Return the table used to enumerate rhs/query candidates.
-
-    ``rh`` is reserved for true bipartite calls. ``for_indices`` selects a
-    self-graph update subset from ``lh`` and is lifted back to ``lh`` index
-    space before masks and compaction see the batch.
-    """
-    if ctx.rh is not None:
-        return ctx.rh
-    if ctx.for_indices is None:
-        return ctx.lh
-    return ctx.lh.subset(Index(ctx.lh.keys, ctx.for_indices))
+    key_idx: Index[ParticleId]
+    query_idx: Index[ParticleId]
 
 
 def lift_query_candidates(candidates: Candidates, ctx: PipelineContext) -> Candidates:
-    """Convert query-local self-update candidates to ``ctx.lh`` positions."""
-    if ctx.for_indices is None:
+    """Convert query-local self-update candidates to ``ctx.keys`` positions."""
+    if ctx.queried_keys is None:
         return candidates
-    oob = ctx.lh.size
-    rhs = ctx.for_indices.at[candidates.rhs.indices].get(mode="fill", fill_value=oob)
-    return Candidates(lhs=candidates.lhs, rhs=Index(ctx.lh.keys, rhs))
+    oob = ctx.keys.size
+    query_idx = ctx.queried_keys.at[candidates.query_idx.indices].get(
+        mode="fill", fill_value=oob
+    )
+    return Candidates(
+        key_idx=candidates.key_idx, query_idx=Index(ctx.keys.keys, query_idx)
+    )
 
 
 def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.Array:
@@ -179,7 +164,7 @@ def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array
 
 def _get_candidate_images(
     candidates: Candidates,
-    lh: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Array,
     out_size: Capacity[int],
@@ -188,13 +173,13 @@ def _get_candidate_images(
     images = candidate_image_counts(cells, cutoffs)
     images_per_sys = jnp.prod(images, axis=-1).astype(int)
 
-    cand_sys_ids = lh.data.system.indices[candidates.lhs.indices]
+    cand_sys_ids = keys.data.system.indices[candidates.key_idx.indices]
     cand_per_sys = jnp.bincount(cand_sys_ids, length=systems.size)
     total_cand = jnp.vdot(cand_per_sys, images_per_sys)
     out_size = out_size.generate_assertion(total_cand)
-    num_cands = candidates.lhs.size
+    num_cands = candidates.key_idx.size
     if out_size.size <= num_cands:
-        offset = jnp.zeros((num_cands, 3), dtype=lh.data.positions.dtype)
+        offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         idx = jnp.arange(num_cands)
         return idx, offset, jnp.zeros((num_cands,), dtype=bool)
 
@@ -212,30 +197,30 @@ def _get_candidate_images(
 
 def _minimum_image_shifts(
     candidates: Candidates,
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
 ) -> Array:
     """Compute minimum-image fractional shifts for each candidate pair."""
     deltas = (
-        lh.data.positions[candidates.lhs.indices]
-        - rh.data.positions[candidates.rhs.indices]
+        keys.data.positions[candidates.key_idx.indices]
+        - queries.data.positions[candidates.query_idx.indices]
     )
     return systems.data.cell.minimum_image_shifts(deltas)
 
 
 def make_batch_with_mic(
     candidates: Candidates,
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
 ) -> CandidateBatch[Literal[2]]:
     """Pack raw candidates with minimum-image shifts; ``is_minimum_image=all-True``."""
-    min_shifts = _minimum_image_shifts(candidates, lh, rh, systems)
+    min_shifts = _minimum_image_shifts(candidates, keys, queries, systems)
     return candidates_to_batch(
         candidates,
         min_shifts,
-        jnp.ones((candidates.lhs.size,), dtype=bool),
+        jnp.ones((candidates.key_idx.size,), dtype=bool),
     )
 
 
@@ -245,22 +230,24 @@ def candidates_to_batch(
     is_minimum_image: Array,
 ) -> CandidateBatch[Literal[2]]:
     """Pack ``(candidates, flat shifts, is_min)`` into a ``CandidateBatch[2]``."""
-    indices_2d = jnp.stack([candidates.lhs.indices, candidates.rhs.indices], axis=-1)
+    indices_2d = jnp.stack(
+        [candidates.key_idx.indices, candidates.query_idx.indices], axis=-1
+    )
     edges: Edges[Literal[2]] = Edges(
-        Index(candidates.lhs.keys, indices_2d),
+        Index(candidates.key_idx.keys, indices_2d),
         jnp.expand_dims(shifts, axis=-2),
     )
     return CandidateBatch(
         edges=edges,
         is_minimum_image=is_minimum_image,
-        rhs_keys=candidates.rhs.keys,
+        query_keys=candidates.query_idx.keys,
     )
 
 
 def replicate_for_images(
     candidates: Candidates,
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Table[SystemId, Array],
     max_image_candidates: Capacity[int] | None,
@@ -275,10 +262,10 @@ def replicate_for_images(
 
     Args:
         candidates: Raw candidate pair indices.
-        lh, rh, systems: Pipeline tables (fractional coords).
+        keys, queries, systems: Pipeline tables (fractional coords).
         cutoffs: Per-system cutoff.
         max_image_candidates: Capacity for replicated-candidates buffer.
-            When ``None``, falls back to ``FixedCapacity(candidates.lhs.size)``
+            When ``None``, falls back to ``FixedCapacity(candidates.key_idx.size)``
             with an error message — pass an editable capacity if image
             replication is expected.
 
@@ -288,21 +275,21 @@ def replicate_for_images(
     cutoffs_t = Table.broadcast_to(cutoffs, systems)
     if max_image_candidates is None:
         max_image_candidates = FixedCapacity(
-            candidates.lhs.size,
+            candidates.key_idx.size,
             "Cutoff is larger than half the cell length, "
             "we need to generate additional images. "
             "Please provide a editable max_candidates.",
         )
 
     idx, image_shifts, has_been_replicated = _get_candidate_images(
-        candidates, lh, systems, cutoffs_t.data, max_image_candidates
+        candidates, keys, systems, cutoffs_t.data, max_image_candidates
     )
-    min_shifts = _minimum_image_shifts(candidates, lh, rh, systems)
+    min_shifts = _minimum_image_shifts(candidates, keys, queries, systems)
 
-    if idx.size == candidates.lhs.size:
+    if idx.size == candidates.key_idx.size:
         # No replication needed — MIC shifts cover everything.
         return candidates_to_batch(
-            candidates, min_shifts, jnp.ones((candidates.lhs.size,), dtype=bool)
+            candidates, min_shifts, jnp.ones((candidates.key_idx.size,), dtype=bool)
         )
 
     replicated = bind(candidates).at(idx).get()
@@ -314,22 +301,22 @@ def replicate_for_images(
 
 
 def real_distance_sq(
-    lhs_positions: Array,
-    rhs_positions: Array,
+    key_positions: Array,
+    query_positions: Array,
     frames: MaterializedFrame,
     shifts: Array,
 ) -> Array:
     """Squared real-space distance between already-broadcast candidate pairs.
 
     Args:
-        lhs_positions: Fractional left endpoint positions, shape ``(n, 3)``.
-        rhs_positions: Fractional right endpoint positions, shape ``(n, 3)``.
-        frames: Materialized cell frames broadcast to the candidate lhs system.
+        key_positions: Fractional left endpoint positions, shape ``(n, 3)``.
+        query_positions: Fractional right endpoint positions, shape ``(n, 3)``.
+        frames: Materialized cell frames broadcast to the candidate key system.
         shifts: ``(n, 3)`` fractional shifts.
 
     Returns:
         ``(n,)`` array of squared distances in real coordinates.
     """
-    deltas = lhs_positions - rhs_positions - shifts
+    deltas = key_positions - query_positions - shifts
     real_deltas = frames.to_real(deltas)
     return jnp.einsum("...d,...d->...", real_deltas, real_deltas)

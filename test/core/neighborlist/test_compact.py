@@ -34,7 +34,7 @@ class TestReduceCompactor:
     def test_compacts_rows_without_mirroring(self):
         """ReduceCompactor only compacts; graph symmetry is postprocessing."""
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([1, 3]))
         keep = jnp.array([True])
         shifts = jnp.array([[[0.5, 0.0, 0.0]]])
         batch = make_batch(lh.keys, jnp.array([0]), jnp.array([1]), shifts=shifts)
@@ -60,7 +60,7 @@ class TestReduceCompactor:
 class TestMaskOnlyCompactor:
     def test_stamps_oob_on_dropped_entries(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([1, 3]))
         keep = jnp.array([True, False, True])
         batch = make_batch(lh.keys, jnp.array([0, 1, 2]), jnp.array([1, 3, 3]))
         edges = MaskOnlyCompactor()(keep, batch, ctx)

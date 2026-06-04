@@ -57,19 +57,19 @@ class TestNeighborlistChanges:
         # --- reference: two separate calls ---
         full_new_pos = positions.at[changed_idx].set(new_positions)
         lh_after = make_lh(full_new_pos, batch)
-        for_indices_after = Index(lh_after.keys, changed_idx)
-        ref_after = call_with_retry(nl, lh_after, systems, for_indices_after)
+        queried_keys_after = Index(lh_after.keys, changed_idx)
+        ref_after = call_with_retry(nl, lh_after, systems, queried_keys_after)
 
         lh_before = make_lh(positions, batch)
-        for_indices_before = Index(lh_before.keys, changed_idx)
-        ref_removed = call_with_retry(nl, lh_before, systems, for_indices_before)
+        queried_keys_before = Index(lh_before.keys, changed_idx)
+        ref_removed = call_with_retry(nl, lh_before, systems, queried_keys_before)
 
         # --- combined call ---
         lh = make_lh(positions, batch)
-        rh_table, for_indices = make_rh(
+        rh_table, queried_keys = make_rh(
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
-        rh_with_indices = WithIndices(for_indices, rh_table)
+        rh_with_indices = WithIndices(queried_keys, rh_table)
         result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         added_set = valid_edge_set(result.added, N)
@@ -104,10 +104,10 @@ class TestNeighborlistChanges:
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
-        rh_table, for_indices = make_rh(
+        rh_table, queried_keys = make_rh(
             lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
         )
-        rh_with_indices = WithIndices(for_indices, rh_table)
+        rh_with_indices = WithIndices(queried_keys, rh_table)
         result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         removed = valid_edge_set(result.removed, 3)
@@ -143,10 +143,10 @@ class TestNeighborlistChanges:
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
-        rh_table, for_indices = make_rh(
+        rh_table, queried_keys = make_rh(
             lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
         )
-        rh_with_indices = WithIndices(for_indices, rh_table)
+        rh_with_indices = WithIndices(queried_keys, rh_table)
         result = neighborlist_changes(nl, lh, rh_with_indices, systems)
 
         added = valid_edge_set(result.added, 4)
@@ -168,10 +168,10 @@ class TestNeighborlistChanges:
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
-        rh_table, for_indices = make_rh(
+        rh_table, queried_keys = make_rh(
             lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
         )
-        rh_with_indices = WithIndices(for_indices, rh_table)
+        rh_with_indices = WithIndices(queried_keys, rh_table)
         result = neighborlist_changes(
             nl, lh, rh_with_indices, systems, compaction=compaction
         )
@@ -198,18 +198,18 @@ class TestNeighborlistChanges:
 
         full_new_pos = positions.at[changed_idx].set(new_positions)
         lh_after = make_lh(full_new_pos, batch)
-        for_indices_after = Index(lh_after.keys, changed_idx)
-        ref_after = call_with_retry(nl, lh_after, systems, for_indices_after)
+        queried_keys_after = Index(lh_after.keys, changed_idx)
+        ref_after = call_with_retry(nl, lh_after, systems, queried_keys_after)
         lh_before = make_lh(positions, batch)
-        for_indices_before = Index(lh_before.keys, changed_idx)
-        ref_removed = call_with_retry(nl, lh_before, systems, for_indices_before)
+        queried_keys_before = Index(lh_before.keys, changed_idx)
+        ref_removed = call_with_retry(nl, lh_before, systems, queried_keys_before)
 
         lh = make_lh(positions, batch)
-        rh_table, for_indices = make_rh(
+        rh_table, queried_keys = make_rh(
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
         result = neighborlist_changes(
-            nl, lh, WithIndices(for_indices, rh_table), systems
+            nl, lh, WithIndices(queried_keys, rh_table), systems
         )
 
         assert valid_edge_set(result.added, N) == valid_edge_set(ref_after, N)

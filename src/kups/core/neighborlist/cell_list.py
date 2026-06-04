@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Literal, Protocol
+from typing import Literal, Protocol, overload
 
 import jax
 import jax.numpy as jnp
@@ -17,10 +17,8 @@ from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.common import (
     Candidates,
-    edge_rhs_table,
     lift_query_candidates,
     num_cells,
-    query_table,
     replicate_for_images,
 )
 from kups.core.neighborlist.compact import ReduceCompactor
@@ -28,9 +26,9 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
     ExclusionMask,
-    ForIndicesDedupMask,
     InBoundsMask,
     InclusionMatchMask,
+    QueriedKeysDedupMask,
 )
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.postprocess import MirrorPairEdges
@@ -77,16 +75,16 @@ def _cell_stencil(dim: int) -> Array:
 
 
 def _cell_list_subselect(
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Array,
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
 ) -> Candidates:
     cell = systems.data.cell
-    key_positions, _ = cell.fold(lh.data.positions)
-    query_positions, _ = cell.fold(rh.data.positions)
+    key_positions, _ = cell.fold(keys.data.positions)
+    query_positions, _ = cell.fold(queries.data.positions)
 
     bins = systems.map_data(partial(num_cells, cutoff=cutoffs))
     max_num_cells = max_num_cells.generate_assertion(
@@ -102,26 +100,28 @@ def _cell_list_subselect(
     )
 
     # Raw system IDs for hash offset computation
-    lh_system_ids = lh.data.system.indices
-    rh_system_ids = rh.data.system.indices
+    key_system_ids = keys.data.system.indices
+    query_system_ids = queries.data.system.indices
 
     key_hashes = (
-        _cell_hash(key_positions, bins[lh.data.system])
-        + lh_system_ids * max_num_cells.size
+        _cell_hash(key_positions, bins[keys.data.system])
+        + key_system_ids * max_num_cells.size
     )
 
     # Expand neighborhood around query points: for each query, tile across stencil
     stencil = _cell_stencil(dim)
-    raw_shifted = jax.vmap(lambda s: query_positions + s[None] / bins[rh.data.system])(
-        stencil
-    ).reshape(-1, dim)
-    query_original = Index(rh.keys, jnp.tile(jnp.arange(len(rh)), len(stencil)))
-    query_system = rh.data.system[query_original.indices]
+    raw_shifted = jax.vmap(
+        lambda s: query_positions + s[None] / bins[queries.data.system]
+    )(stencil).reshape(-1, dim)
+    query_original = Index(
+        queries.keys, jnp.tile(jnp.arange(len(queries)), len(stencil))
+    )
+    query_system = queries.data.system[query_original.indices]
 
     shifted, in_cell = cell.fold(raw_shifted)
     hashes = (
         _cell_hash(shifted, bins[query_system])
-        + rh_system_ids[query_original.indices] * max_num_cells.size
+        + query_system_ids[query_original.indices] * max_num_cells.size
     )
     # Stencil offsets that left the box on a non-periodic axis route to
     # cell_oob so they produce no key matches (cross-boundary candidates
@@ -133,10 +133,10 @@ def _cell_list_subselect(
         jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
         axis=0,
         size=len(query_original),
-        fill_value=jnp.array([cell_oob, len(rh)]),
+        fill_value=jnp.array([cell_oob, len(queries)]),
     )
     query_neighborhood_hashes = unique_queries[:, 0]
-    query_original = Index(rh.keys, unique_queries[:, 1])
+    query_original = Index(queries.keys, unique_queries[:, 1])
 
     selection_result = subselect(
         key_hashes,
@@ -145,14 +145,14 @@ def _cell_list_subselect(
         num_segments=cell_oob,
         is_sorted=True,  # unique sorts the neighborhood hashes
     )
-    lhs = Index(lh.keys, selection_result.scatter_idxs)
-    rhs = Index(
+    key_idx = Index(keys.keys, selection_result.scatter_idxs)
+    query_idx = Index(
         query_original.keys,
         query_original.indices.at[selection_result.gather_idxs].get(
             **query_original.scatter_args
         ),
     )
-    return Candidates(lhs=lhs, rhs=rhs)
+    return Candidates(key_idx=key_idx, query_idx=query_idx)
 
 
 @dataclass
@@ -169,9 +169,9 @@ class CellListSelector:
     max_image_candidates: Capacity[int]
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
-        query = query_table(ctx)
+        query = ctx.query_table
         candidates = _cell_list_subselect(
-            ctx.lh,
+            ctx.keys,
             query,
             ctx.systems,
             cutoffs=self.cutoffs.data,
@@ -181,8 +181,8 @@ class CellListSelector:
         candidates = lift_query_candidates(candidates, ctx)
         return replicate_for_images(
             candidates,
-            ctx.lh,
-            edge_rhs_table(ctx),
+            ctx.keys,
+            ctx.edge_query_table,
             ctx.systems,
             self.cutoffs,
             self.max_image_candidates,
@@ -273,19 +273,35 @@ class CellListNeighborList:
     ) -> CellListNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
     @jit
     def __call__(
         self,
-        lh: Table[ParticleId, NeighborListPoints],
+        keys: Table[ParticleId, NeighborListPoints],
         systems: Table[SystemId, NeighborListSystems],
         *,
-        rh: Table[ParticleId, NeighborListPoints] | None = None,
-        for_indices: Index[ParticleId] | None = None,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
         query_size = (
-            for_indices.size
-            if for_indices is not None
-            else (rh.size if rh is not None else lh.size)
+            queried_keys.size
+            if queried_keys is not None
+            else (queries.size if queries is not None else keys.size)
         )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
@@ -298,11 +314,13 @@ class CellListNeighborList:
             masks=(
                 InBoundsMask(),
                 InclusionMatchMask(),
-                ForIndicesDedupMask(),
+                QueriedKeysDedupMask(),
                 DistanceCutoffMask(cutoffs=cutoffs),
                 ExclusionMask(),
             ),
             compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
             postprocessors=(MirrorPairEdges(),),
         )
-        return pipeline(lh, systems, rh=rh, for_indices=for_indices)
+        if queries is not None:
+            return pipeline(keys, systems, queries=queries)
+        return pipeline(keys, systems, queried_keys=queried_keys)

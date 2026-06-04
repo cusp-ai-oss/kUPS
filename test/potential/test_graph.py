@@ -593,21 +593,21 @@ class _RecordingNeighborList:
         self.shifts = shifts
         self.calls = []
 
-    def __call__(self, lh, systems, *, rh=None, for_indices=None):
+    def __call__(self, keys, systems, *, queries=None, queried_keys=None):
         del systems
-        self.calls.append((rh, for_indices))
+        self.calls.append((queries, queried_keys))
         return Edges(
-            indices=Index(lh.keys, self.edge_indices),
+            indices=Index(keys.keys, self.edge_indices),
             shifts=self.shifts,
         )
 
-    def assert_incremental_call(self, expected_for_indices):
+    def assert_incremental_call(self, expected_queried_keys):
         assert len(self.calls) == 1
-        rh, for_indices = self.calls[0]
-        assert rh is None
-        assert for_indices is not None
-        assert for_indices.keys == expected_for_indices.keys
-        npt.assert_array_equal(for_indices.indices, expected_for_indices.indices)
+        queries, queried_keys = self.calls[0]
+        assert queries is None
+        assert queried_keys is not None
+        assert queried_keys.keys == expected_queried_keys.keys
+        npt.assert_array_equal(queried_keys.indices, expected_queried_keys.indices)
 
 
 class TestGraphConstructorEmptyWithPatch:

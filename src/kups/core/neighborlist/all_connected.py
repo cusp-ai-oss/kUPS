@@ -11,7 +11,7 @@ real-space exclusion list.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 import jax.numpy as jnp
 
@@ -20,17 +20,16 @@ from kups.core.data import Index, Table, subselect
 from kups.core.neighborlist.common import (
     Candidates,
     candidates_to_batch,
-    edge_rhs_table,
     lift_query_candidates,
-    query_table,
 )
 from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.masks import ExclusionMask, ForIndicesDedupMask
+from kups.core.neighborlist.masks import ExclusionMask, QueriedKeysDedupMask
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.types import (
     CandidateBatch,
+    NeighborList,
     NeighborListPoints,
     NeighborListSystems,
     PipelineContext,
@@ -51,38 +50,56 @@ class InclusionGroupSelector:
     capacity: Capacity[int]
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
-        query = query_table(ctx)
-        ngraphs = ctx.lh.data.inclusion.num_labels
+        query = ctx.query_table
+        ngraphs = ctx.keys.data.inclusion.num_labels
         selection_result = subselect(
-            ctx.lh.data.inclusion.indices,
+            ctx.keys.data.inclusion.indices,
             query.data.inclusion.indices,
             output_buffer_size=self.capacity,
             num_segments=ngraphs,
         )
         candidates = Candidates(
-            lhs=Index(ctx.lh.keys, selection_result.scatter_idxs),
-            rhs=Index(query.keys, selection_result.gather_idxs),
+            key_idx=Index(ctx.keys.keys, selection_result.scatter_idxs),
+            query_idx=Index(query.keys, selection_result.gather_idxs),
         )
         candidates = lift_query_candidates(candidates, ctx)
-        rhs = edge_rhs_table(ctx)
+        query_tbl = ctx.edge_query_table
         deltas = (
-            ctx.lh.data.positions[candidates.lhs.indices]
-            - rhs.data.positions[candidates.rhs.indices]
+            ctx.keys.data.positions[candidates.key_idx.indices]
+            - query_tbl.data.positions[candidates.query_idx.indices]
         )
         shifts = jnp.round(deltas).astype(int)
         return candidates_to_batch(
             candidates,
             shifts,
-            jnp.ones((candidates.lhs.size,), dtype=bool),
+            jnp.ones((candidates.key_idx.size,), dtype=bool),
         )
 
 
-def all_connected_neighborlist(
-    lh: Table[ParticleId, NeighborListPoints],
+@overload
+def all_connected_neighborlist[P: NeighborListPoints](
+    keys: Table[ParticleId, P],
     systems: Table[SystemId, NeighborListSystems],
     *,
-    rh: Table[ParticleId, NeighborListPoints] | None = None,
-    for_indices: Index[ParticleId] | None = None,
+    queries: Table[ParticleId, P],
+) -> Edges[Literal[2]]: ...
+
+
+@overload
+def all_connected_neighborlist[P: NeighborListPoints](
+    keys: Table[ParticleId, P],
+    systems: Table[SystemId, NeighborListSystems],
+    *,
+    queried_keys: Index[ParticleId] | None = None,
+) -> Edges[Literal[2]]: ...
+
+
+def all_connected_neighborlist[P: NeighborListPoints](
+    keys: Table[ParticleId, P],
+    systems: Table[SystemId, NeighborListSystems],
+    *,
+    queries: Table[ParticleId, P] | None = None,
+    queried_keys: Index[ParticleId] | None = None,
 ) -> Edges[Literal[2]]:
     """Neighbor list connecting all pairs sharing the same inclusion segment, ignoring distance.
 
@@ -92,19 +109,25 @@ def all_connected_neighborlist(
 
     Requires ``max_count`` to be set on the inclusion ``Index``.
     """
-    max_count = lh.data.inclusion.max_count
+    max_count = keys.data.inclusion.max_count
     assert max_count is not None, "inclusion.max_count must be set"
     query_size = (
-        for_indices.size
-        if for_indices is not None
-        else (rh.size if rh is not None else lh.size)
+        queried_keys.size
+        if queried_keys is not None
+        else (queries.size if queries is not None else keys.size)
     )
-    capacity = FixedCapacity(max_count).multiply(min(lh.size, query_size))
+    capacity = FixedCapacity(max_count).multiply(min(keys.size, query_size))
 
     pipeline = Pipeline[Literal[2]](
         selector=InclusionGroupSelector(capacity=capacity),
-        masks=(ExclusionMask(), ForIndicesDedupMask()),
+        masks=(ExclusionMask(), QueriedKeysDedupMask()),
         compactor=ReduceCompactor(avg_edges=capacity),
         postprocessors=(MirrorPairEdges(),),
     )
-    return pipeline(lh, systems, rh=rh, for_indices=for_indices)
+    if queries is not None:
+        return pipeline(keys, systems, queries=queries)
+    return pipeline(keys, systems, queried_keys=queried_keys)
+
+
+if TYPE_CHECKING:
+    x: NeighborList[Literal[2]] = all_connected_neighborlist

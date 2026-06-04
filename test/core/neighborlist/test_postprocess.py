@@ -15,9 +15,9 @@ from ._builders import make_batch, make_edges, make_lh, make_pipeline_ctx
 
 
 class TestMirrorPairEdges:
-    def test_mirrors_each_edge_with_reverse_when_for_indices_set(self):
+    def test_mirrors_each_edge_with_reverse_when_queried_keys_set(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([1, 3]))
         keep = jnp.array([True])
         shifts = jnp.array([[[0.5, 0.0, 0.0]]])
         batch = make_batch(lh.keys, jnp.array([0]), jnp.array([1]), shifts=shifts)
@@ -31,7 +31,7 @@ class TestMirrorPairEdges:
             np.array([[[0.5, 0.0, 0.0]], [[-0.5, -0.0, -0.0]]]),
         )
 
-    def test_noop_without_for_indices_by_default(self):
+    def test_noop_without_queried_keys_by_default(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         ctx = make_pipeline_ctx(lh)
         edges = make_edges(
@@ -44,7 +44,7 @@ class TestMirrorPairEdges:
         npt.assert_array_equal(np.asarray(out.indices.indices), np.array([[0, 1]]))
         npt.assert_allclose(np.asarray(out.shifts), np.array([[[0.25, 0.0, 0.0]]]))
 
-    def test_only_when_for_indices_false_mirrors_unconditionally(self):
+    def test_only_when_queried_keys_false_mirrors_unconditionally(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         ctx = make_pipeline_ctx(lh)
         edges = make_edges(
@@ -53,7 +53,7 @@ class TestMirrorPairEdges:
             n_particles=2,
             shifts=jnp.array([[0.25, 0.0, 0.0]]),
         )
-        out = MirrorPairEdges(only_when_for_indices=False)(edges, ctx)
+        out = MirrorPairEdges(only_when_queried_keys=False)(edges, ctx)
         npt.assert_array_equal(
             np.asarray(out.indices.indices), np.array([[0, 1], [1, 0]])
         )

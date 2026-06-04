@@ -6,7 +6,7 @@
 ``RefineCutoffNeighborList`` re-checks distances against new cutoffs;
 ``RefineMaskNeighborList`` re-applies inclusion/exclusion masks without
 recomputing distances. Both run full pipelines over precomputed edges in
-lh-space, supporting self-graph ``for_indices`` updates and bipartite ``rh``.
+lh-space, supporting self-graph ``queried_keys`` updates and bipartite ``rh``.
 """
 
 import jax
@@ -63,7 +63,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(lh=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys)
 
         assert len(edges) > 0
         assert edges.degree == 2
@@ -107,17 +107,17 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = make_systems(cell, cutoffs)
-        edges = refinement_nl(lh=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys)
         assert len(edges) >= 0
         assert edges.degree == 2
 
-    def test_with_for_indices(self):
+    def test_with_queried_keys(self):
         """Test refinement with affected lh indices."""
         lh_positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
         update_positions = jnp.array([[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]])
         lh = self._create_test_pointset(lh_positions)
 
-        for_indices = jnp.array([1, 2])
+        queried_keys = jnp.array([1, 2])
 
         lh_indices = jnp.array([0, 1])
         rh_indices = jnp.array([0, 1])
@@ -131,20 +131,20 @@ class TestRefineCutoffNeighborList:
             cutoffs=cutoff_table(cutoffs),
         )
 
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh,
             update_positions,
             jnp.zeros(len(update_positions), dtype=int),
-            for_indices,
+            queried_keys,
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(lh=lh, systems=_sys, for_indices=for_indices)
+        edges = refinement_nl(keys=lh, systems=_sys, queried_keys=queried_keys)
 
         assert edges.degree == 2
 
-    def test_for_indices_uses_updated_lh_positions_for_cutoff(self):
-        """Precomputed edges are in public lh-space, so for_indices updates must
+    def test_queried_keys_uses_updated_lh_positions_for_cutoff(self):
+        """Precomputed edges are in public lh-space, so queried_keys updates must
         evaluate distances after the updated data has been written to lh."""
         lh_positions = jnp.array(
             [
@@ -154,14 +154,14 @@ class TestRefineCutoffNeighborList:
             ]
         )
         lh = self._create_test_pointset(lh_positions)
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh,
             jnp.array([[100.4, 0.0, 0.0]]),
             jnp.zeros(1, dtype=int),
             jnp.array([2]),
             exclusion_ids=jnp.array([20]),
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         candidates = self._create_candidate_edges(
             jnp.array([1]), jnp.array([2]), n_particles=3
         )
@@ -172,7 +172,7 @@ class TestRefineCutoffNeighborList:
         )
 
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
-        edges = refinement_nl(lh=lh, systems=systems, for_indices=for_indices)
+        edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
         npt.assert_array_equal(
             np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
@@ -180,7 +180,7 @@ class TestRefineCutoffNeighborList:
         )
 
     def test_disjoint_rh_uses_rh_positions_for_cutoff(self):
-        """Without for_indices, the precomputed candidate right column is in
+        """Without queried_keys, the precomputed candidate right column is in
         rh-space and distance checks must use the separate rh table."""
         lh_positions = jnp.array(
             [
@@ -206,14 +206,14 @@ class TestRefineCutoffNeighborList:
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
 
-        edges = refinement_nl(lh=lh, systems=systems, rh=rh)
+        edges = refinement_nl(keys=lh, systems=systems, queries=rh)
 
         npt.assert_array_equal(
             np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
             np.array([[1, 0]]),
         )
 
-    def test_for_indices_uses_updated_lh_exclusion_for_cutoff_refinement(self):
+    def test_queried_keys_uses_updated_lh_exclusion_for_cutoff_refinement(self):
         """The cutoff refiner applies exclusion masks after distance filtering,
         so updated lh metadata must be used there too."""
         lh_positions = jnp.array(
@@ -223,14 +223,14 @@ class TestRefineCutoffNeighborList:
             ]
         )
         lh = self._create_test_pointset(lh_positions, exclusion_offset=0)
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh,
             jnp.array([[1.0, 0.0, 0.0]]),
             jnp.zeros(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([0]),
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         candidates = self._create_candidate_edges(
             jnp.array([0]), jnp.array([1]), n_particles=2
         )
@@ -241,7 +241,7 @@ class TestRefineCutoffNeighborList:
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
 
-        edges = refinement_nl(lh=lh, systems=systems, for_indices=for_indices)
+        edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
         assert not np.any(np.asarray(edges.indices.indices[:, 0] < lh.size))
 
@@ -263,7 +263,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(lh=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys)
 
         assert edges.degree == 2
 
@@ -299,7 +299,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(lh=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys)
 
         assert edges.degree == 2
 
@@ -322,7 +322,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(lh=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys)
 
         valid_edges = edges.indices.indices[
             edges.indices.indices[:, 0] < len(lh_positions)
@@ -344,7 +344,7 @@ class TestRefineCutoffNeighborList:
                 cutoffs=cutoff_table(jnp.array([2.0])),
             )
             _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
-            edges = refinement_nl(lh=lh, systems=_sys)
+            edges = refinement_nl(keys=lh, systems=_sys)
 
             if len(edges) > 0:
                 diff_vectors = edges.difference_vectors(lh, _sys)
@@ -374,7 +374,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
-        edges = refinement_nl(lh=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys)
 
         if len(edges) > 0:
             diff_vectors = edges.difference_vectors(lh, _sys)
@@ -399,8 +399,8 @@ class TestRefineMaskNeighborList:
 
     RefineMask is the post-filter used by MCMC. Its precomputed edges carry
     indices in lh-space. For self-graph updates the changed particle data has
-    already been written into lh and for_indices selects affected rows. True
-    bipartite calls pass rh with no for_indices.
+    already been written into lh and queried_keys selects affected rows. True
+    bipartite calls pass rh with no queried_keys.
     """
 
     def test_mcmc_patch_pattern_with_partial_overlap(self):
@@ -410,17 +410,17 @@ class TestRefineMaskNeighborList:
             jnp.zeros(5, dtype=int),
             exclusion_ids=jnp.array([0, 1, 2, 3, 4]),
         )
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh, jnp.zeros((2, 3)), jnp.zeros(2, dtype=int), jnp.array([1, 3])
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         candidates = make_edges(
             jnp.array([0, 2, 1]), jnp.array([1, 3, 4]), n_particles=5
         )
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         sys, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(lh=lh, systems=sys, for_indices=for_indices)
+        edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys)
 
         raw = edges.indices.indices
         oob = lh.size
@@ -441,18 +441,18 @@ class TestRefineMaskNeighborList:
             ]
         )
         lh = make_lh(lh_positions, jnp.zeros(4, dtype=int), jnp.arange(4))
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh,
             lh_positions[jnp.array([1, 3])],
             jnp.zeros(2, dtype=int),
             jnp.array([1, 3]),
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         candidates = make_edges(jnp.array([0, 2]), jnp.array([1, 3]), n_particles=4)
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         sys, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(lh=lh, systems=sys, for_indices=for_indices)
+        edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys)
 
         raw = edges.indices.indices
         oob = lh.size
@@ -483,54 +483,54 @@ class TestRefineMaskNeighborList:
             jnp.array([10.0, 10.0]),
         )
 
-        edges = refine_nl(lh=lh, systems=systems, rh=rh)
+        edges = refine_nl(keys=lh, systems=systems, queries=rh)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
 
-    def test_for_indices_uses_updated_lh_inclusion(self):
+    def test_queried_keys_uses_updated_lh_inclusion(self):
         """Updated lh rows can move inclusion segments before refinement."""
         lh = make_lh(
             jnp.zeros((2, 3)),
             jnp.zeros(2, dtype=int),
             exclusion_ids=jnp.array([0, 1]),
         )
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh,
             jnp.zeros((1, 3)),
             jnp.ones(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([1]),
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         candidates = make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         systems, _ = systems_from_lvecs(
             jnp.eye(3)[None] * 100.0, jnp.array([10.0, 10.0])
         )
 
-        edges = refine_nl(lh=lh, systems=systems, for_indices=for_indices)
+        edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
 
-    def test_for_indices_uses_updated_lh_exclusion(self):
+    def test_queried_keys_uses_updated_lh_exclusion(self):
         """Updated lh rows can introduce an exclusion before refinement."""
         lh = make_lh(
             jnp.zeros((2, 3)),
             jnp.zeros(2, dtype=int),
             exclusion_ids=jnp.array([0, 1]),
         )
-        rh_update, for_indices = make_rh(
+        rh_update, queried_keys = make_rh(
             lh,
             jnp.zeros((1, 3)),
             jnp.zeros(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([0]),
         )
-        lh = lh.update(for_indices, rh_update.data)
+        lh = lh.update(queried_keys, rh_update.data)
         candidates = make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
 
-        edges = refine_nl(lh=lh, systems=systems, for_indices=for_indices)
+        edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
         npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))

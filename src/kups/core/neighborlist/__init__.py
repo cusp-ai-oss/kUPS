@@ -9,12 +9,12 @@ accuracy trade-offs.
 
 ## Call Contract
 
-Neighbor lists are called as ``neighborlist(lh, systems, *, rh=None,
-for_indices=None)``. ``lh`` is the self-graph/output table. Use keyword-only
-``rh`` only for true bipartite queries. Use keyword-only ``for_indices`` only
-for self-graph updates; it is mutually exclusive with ``rh`` and names affected
-``lh`` ids after the caller has already written updated particle data into
-``lh``.
+Neighbor lists are called as ``neighborlist(keys, systems, *, queries=None,
+queried_keys=None)``. ``keys`` is the self-graph/output table. Use keyword-only
+``queries`` only for true bipartite queries. Use keyword-only ``queried_keys``
+only for self-graph updates; it is mutually exclusive with ``queries`` and names
+affected ``keys`` ids after the caller has already written updated particle data
+into ``keys``.
 
 ## Core Components
 
@@ -58,7 +58,7 @@ These cover non-cutoff cases under the same `NeighborList[D]` protocol.
 7. **[FixedEdgesNeighborList][kups.core.neighborlist.FixedEdgesNeighborList]**:
    stores fixed edge topology for bonded edge sets supplied by the state and
    computes current periodic shifts during calls. Affected self-graph calls use
-   ``for_indices`` and return only rows touched by those affected ``lh`` ids.
+   ``queried_keys`` and return only rows touched by those affected ``keys`` ids.
 
 ## Pipeline Primitives
 
@@ -108,10 +108,10 @@ from kups.core.neighborlist.fixed import (
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
     ExclusionMask,
-    ForIndicesDedupMask,
     InBoundsMask,
     InclusionMatchMask,
-    TouchesForIndicesMask,
+    QueriedKeysDedupMask,
+    TouchesQueriedKeysMask,
 )
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.neighborlist.pipeline import Pipeline
@@ -152,7 +152,7 @@ __all__ = [
     "Edges",
     "EmptyNeighborList",
     "ExclusionMask",
-    "TouchesForIndicesMask",
+    "TouchesQueriedKeysMask",
     "FixedEdgesNeighborList",
     "InBoundsMask",
     "InclusionGroupSelector",
@@ -178,7 +178,7 @@ __all__ = [
     "ReduceCompactor",
     "RefineCutoffNeighborList",
     "RefineMaskNeighborList",
-    "ForIndicesDedupMask",
+    "QueriedKeysDedupMask",
     "UniversalNeighborlistParameters",
     "adaptive_cutoff_neighborlist_from_state",
     "all_connected_neighborlist",

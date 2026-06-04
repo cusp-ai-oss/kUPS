@@ -52,24 +52,29 @@ class TestEmptyNeighborList:
         assert edges.indices.indices.shape == (0, 3)
         assert edges.shifts.shape == (0, 2, 3)
 
-    def test_rh_or_for_indices_arguments_are_ignored(self):
+    def test_rh_or_queried_keys_arguments_are_ignored(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _simple_lh(4)
         systems = _simple_systems()
         rh = _simple_lh(2)
-        for_indices = Index(lh.keys, jnp.array([0, 2]))
-        assert nl(lh, systems, rh=rh).indices.indices.shape == (0, 2)
-        assert nl(lh, systems, for_indices=for_indices).indices.indices.shape == (0, 2)
+        queried_keys = Index(lh.keys, jnp.array([0, 2]))
+        assert nl(lh, systems, queries=rh).indices.indices.shape == (0, 2)
+        assert nl(lh, systems, queried_keys=queried_keys).indices.indices.shape == (
+            0,
+            2,
+        )
 
-    def test_rh_and_for_indices_are_mutually_exclusive(self):
+    def test_rh_and_queried_keys_are_mutually_exclusive(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _simple_lh(4)
-        with pytest.raises(AssertionError, match="cannot combine rh with for_indices"):
+        with pytest.raises(
+            AssertionError, match="cannot combine queries with queried_keys"
+        ):
             nl(
                 lh,
                 _simple_systems(),
-                rh=_simple_lh(2),
-                for_indices=Index(lh.keys, jnp.array([0, 2])),
+                queries=_simple_lh(2),
+                queried_keys=Index(lh.keys, jnp.array([0, 2])),
             )
 
     def test_keys_come_from_lh(self):
@@ -112,24 +117,24 @@ class TestFixedEdgesNeighborList:
             out.difference_vectors(lh, systems), jnp.array([[[2.0, 0.0, 0.0]]])
         )
 
-    def test_for_indices_filters_without_rh(self):
+    def test_queried_keys_filters_without_rh(self):
         stored = self._edges()
         nl = FixedEdgesNeighborList[Literal[2]](
             indices=stored.indices, avg_edges=FixedCapacity(2)
         )
         lh = _simple_lh(4)
-        for_indices = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, _simple_systems(), for_indices=for_indices)
+        queried_keys = Index(lh.keys, jnp.array([2]))
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
         npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3]]))
 
-    def test_for_indices_returns_touched_edges(self):
+    def test_queried_keys_returns_touched_edges(self):
         stored = self._edges()
         nl = FixedEdgesNeighborList[Literal[2]](
             indices=stored.indices, avg_edges=FixedCapacity(2)
         )
         lh = _simple_lh(4)
-        for_indices = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, _simple_systems(), for_indices=for_indices)
+        queried_keys = Index(lh.keys, jnp.array([2]))
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
         npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3]]))
         npt.assert_array_equal(out.shifts, jnp.zeros((2, 1, 3), dtype=int))
 
@@ -139,19 +144,19 @@ class TestFixedEdgesNeighborList:
             indices=stored.indices, avg_edges=FixedCapacity(3)
         )
         lh = _simple_lh(4)
-        for_indices = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, _simple_systems(), for_indices=for_indices)
+        queried_keys = Index(lh.keys, jnp.array([2]))
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
         npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3], [4, 4]]))
         npt.assert_array_equal(out.shifts[-1], jnp.zeros((1, 3), dtype=int))
 
-    def test_for_indices_multiplies_avg_edges_by_affected_count(self):
+    def test_queried_keys_multiplies_avg_edges_by_affected_count(self):
         stored = self._edges()
         nl = FixedEdgesNeighborList[Literal[2]](
             indices=stored.indices, avg_edges=FixedCapacity(2)
         )
         lh = _simple_lh(4)
-        for_indices = Index(lh.keys, jnp.array([0, 3]))
-        out = nl(lh, _simple_systems(), for_indices=for_indices)
+        queried_keys = Index(lh.keys, jnp.array([0, 3]))
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
         npt.assert_array_equal(
             out.indices.indices, jnp.array([[0, 1], [2, 3], [4, 4], [4, 4]])
         )
@@ -160,7 +165,7 @@ class TestFixedEdgesNeighborList:
         stored = self._edges()
         nl = FixedEdgesNeighborList[Literal[2]](indices=stored.indices)
         with pytest.raises(AssertionError, match="only supports self-graph"):
-            nl(_simple_lh(4), _simple_systems(), rh=_simple_lh(1))
+            nl(_simple_lh(4), _simple_systems(), queries=_simple_lh(1))
 
     def test_patch_call_capacity_assertion(self):
         stored = self._edges()
@@ -168,9 +173,9 @@ class TestFixedEdgesNeighborList:
             indices=stored.indices, avg_edges=FixedCapacity(1)
         )
         lh = _simple_lh(4)
-        for_indices = Index(lh.keys, jnp.array([2]))
+        queried_keys = Index(lh.keys, jnp.array([2]))
         result = as_result_function(nl)(
-            lh=lh, systems=_simple_systems(), for_indices=for_indices
+            keys=lh, systems=_simple_systems(), queried_keys=queried_keys
         )
         with pytest.raises(CapacityError):
             result.raise_assertion()
@@ -183,8 +188,8 @@ class TestFixedEdgesNeighborList:
             indices=edges.indices, avg_edges=FixedCapacity(3)
         )
         lh = _simple_lh(5)
-        for_indices = Index(lh.keys, jnp.array([0]))
-        out = nl(lh, _simple_systems(), for_indices=for_indices)
+        queried_keys = Index(lh.keys, jnp.array([0]))
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
         npt.assert_array_equal(
             out.indices.indices, jnp.array([[0, 1, 2], [0, 4, 3], [5, 5, 5]])
         )

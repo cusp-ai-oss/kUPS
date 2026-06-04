@@ -29,24 +29,26 @@ class TestPrepare:
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 10.0, jnp.array([1.0]))
         ctx = _prepare(lh, None, systems, None)
         npt.assert_allclose(
-            np.asarray(ctx.lh.data.positions), np.array([[0.5, 0.0, 0.0]]), atol=1e-6
+            np.asarray(ctx.keys.data.positions), np.array([[0.5, 0.0, 0.0]]), atol=1e-6
         )
 
-    def test_resolves_for_indices_to_raw_array(self):
+    def test_resolves_queried_keys_to_raw_array(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
             PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
         )
         ctx = _prepare(lh, None, systems, Index(lh.keys, jnp.array([1, 3])))
-        npt.assert_array_equal(np.asarray(ctx.for_indices), np.array([1, 3]))
+        npt.assert_array_equal(np.asarray(ctx.queried_keys), np.array([1, 3]))
 
-    def test_rejects_rh_and_for_indices_together(self):
+    def test_rejects_rh_and_queried_keys_together(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
             PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
         )
-        with pytest.raises(AssertionError, match="cannot combine rh with for_indices"):
+        with pytest.raises(
+            AssertionError, match="cannot combine queries with queried_keys"
+        ):
             _prepare(lh, rh, systems, Index(lh.keys, jnp.array([0, 1])))
 
 
@@ -84,8 +86,8 @@ class TestPipelineComposition:
             masks=(),
             compactor=ReduceCompactor(avg_edges=FixedCapacity(1)),
             postprocessors=(
-                MirrorPairEdges(only_when_for_indices=False),
-                MirrorPairEdges(only_when_for_indices=False),
+                MirrorPairEdges(only_when_queried_keys=False),
+                MirrorPairEdges(only_when_queried_keys=False),
             ),
         )
         edges = pipeline(lh, systems)

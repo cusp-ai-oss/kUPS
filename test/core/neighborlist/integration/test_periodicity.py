@@ -33,7 +33,7 @@ def _run_cell_list(positions, cell, cutoff):
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
         cutoffs=cutoffs,
     )
-    result = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
+    result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
     result.raise_assertion()
     return result.value
 
@@ -49,7 +49,7 @@ def _run_dense(positions, cell, cutoff):
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
         cutoffs=cutoffs,
     )
-    result = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
+    result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
     result.raise_assertion()
     return result.value
 

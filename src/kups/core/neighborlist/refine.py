@@ -12,7 +12,7 @@ or tighter cutoffs
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -21,7 +21,6 @@ from kups.core.capacity import Capacity
 from kups.core.data import Index, Table
 from kups.core.neighborlist.common import (
     Candidates,
-    edge_rhs_table,
     make_batch_with_mic,
 )
 from kups.core.neighborlist.compact import MaskOnlyCompactor, ReduceCompactor
@@ -31,7 +30,7 @@ from kups.core.neighborlist.masks import (
     ExclusionMask,
     InBoundsMask,
     InclusionMatchMask,
-    TouchesForIndicesMask,
+    TouchesQueriedKeysMask,
 )
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.types import (
@@ -48,12 +47,12 @@ from kups.core.utils.jax import dataclass, field, jit
 class PrecomputedEdgesSelector:
     """Selector that wraps precomputed ``Edges`` for both refine variants.
 
-    Precomputed self-graph edges are already in ``lh`` space. A disjoint
-    bipartite ``rh`` call may still use rhs positions for the second column,
-    matching the edge convention of the original candidate set.
+    Precomputed self-graph edges are already in ``keys`` space. A disjoint
+    bipartite ``queries`` call may still use query positions for the second
+    column, matching the edge convention of the original candidate set.
 
     Attributes:
-        candidates: Precomputed edges (indices in lh-space).
+        candidates: Precomputed edges (indices in keys-space).
         recompute_mic_shifts: When ``True``, drop the precomputed shifts and
             recompute minimum-image shifts on the current positions
             (``RefineCutoffNeighborList`` — the precomputed shifts may be
@@ -68,34 +67,34 @@ class PrecomputedEdgesSelector:
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         if self.recompute_mic_shifts:
             indices = self.candidates.indices.indices
-            rhs = edge_rhs_table(ctx)
+            query = ctx.edge_query_table
             raw_candidates = Candidates(
-                lhs=Index(ctx.lh.keys, indices[:, 0]),
-                rhs=Index(rhs.keys, indices[:, 1]),
+                key_idx=Index(ctx.keys.keys, indices[:, 0]),
+                query_idx=Index(query.keys, indices[:, 1]),
             )
-            return make_batch_with_mic(raw_candidates, ctx.lh, rhs, ctx.systems)
+            return make_batch_with_mic(raw_candidates, ctx.keys, query, ctx.systems)
         indices = self.candidates.indices.indices
-        edges = Edges(Index(ctx.lh.keys, indices), self.candidates.shifts)
+        edges = Edges(Index(ctx.keys.keys, indices), self.candidates.shifts)
         return CandidateBatch(
             edges=edges,
             is_minimum_image=jnp.ones((len(self.candidates),), dtype=bool),
-            rhs_keys=edge_rhs_table(ctx).keys,
+            query_keys=ctx.edge_query_table.keys,
         )
 
 
 def _resolve_precomputed_inputs(
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints] | None,
-    for_indices: Index[ParticleId] | None,
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints] | None,
+    queried_keys: Index[ParticleId] | None,
 ) -> tuple[
     Table[ParticleId, NeighborListPoints],
     Table[ParticleId, NeighborListPoints] | None,
 ]:
     """Return the tables that precomputed refine candidates address."""
-    assert rh is None or for_indices is None, (
-        "Refine neighbor lists cannot combine rh with for_indices."
+    assert queries is None or queried_keys is None, (
+        "Refine neighbor lists cannot combine queries with queried_keys."
     )
-    return lh, rh
+    return keys, queries
 
 
 @dataclass
@@ -136,27 +135,49 @@ class RefineMaskNeighborList:
 
     candidates: Edges[Literal[2]]
 
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
+
     @jit
     def __call__(
         self,
-        lh: Table[ParticleId, NeighborListPoints],
+        keys: Table[ParticleId, NeighborListPoints],
         systems: Table[SystemId, NeighborListSystems],
         *,
-        rh: Table[ParticleId, NeighborListPoints] | None = None,
-        for_indices: Index[ParticleId] | None = None,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, for_indices)
+        resolved_keys, resolved_queries = _resolve_precomputed_inputs(
+            keys, queries, queried_keys
+        )
         pipeline = Pipeline[Literal[2]](
             selector=PrecomputedEdgesSelector(self.candidates),
             masks=(
                 InBoundsMask(),
                 InclusionMatchMask(),
-                TouchesForIndicesMask(),
+                TouchesQueriedKeysMask(),
                 ExclusionMask(),
             ),
             compactor=MaskOnlyCompactor(),
         )
-        return pipeline(resolved_lh, systems, rh=resolved_rh, for_indices=for_indices)
+        if resolved_queries is not None:
+            return pipeline(resolved_keys, systems, queries=resolved_queries)
+        return pipeline(resolved_keys, systems, queried_keys=queried_keys)
 
 
 @dataclass
@@ -206,20 +227,40 @@ class RefineCutoffNeighborList:
     avg_edges: Capacity[int]
     cutoffs: Table[SystemId, Array]
 
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
+
     @jit
     def __call__(
         self,
-        lh: Table[ParticleId, NeighborListPoints],
+        keys: Table[ParticleId, NeighborListPoints],
         systems: Table[SystemId, NeighborListSystems],
         *,
-        rh: Table[ParticleId, NeighborListPoints] | None = None,
-        for_indices: Index[ParticleId] | None = None,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        resolved_lh, resolved_rh = _resolve_precomputed_inputs(lh, rh, for_indices)
+        resolved_keys, resolved_queries = _resolve_precomputed_inputs(
+            keys, queries, queried_keys
+        )
         query_size = (
-            for_indices.size
-            if for_indices is not None
-            else (rh.size if rh is not None else lh.size)
+            queried_keys.size
+            if queried_keys is not None
+            else (queries.size if queries is not None else keys.size)
         )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
@@ -230,9 +271,11 @@ class RefineCutoffNeighborList:
                 InBoundsMask(),
                 InclusionMatchMask(),
                 DistanceCutoffMask(cutoffs=cutoffs),
-                TouchesForIndicesMask(),
+                TouchesQueriedKeysMask(),
                 ExclusionMask(),
             ),
             compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
         )
-        return pipeline(resolved_lh, systems, rh=resolved_rh, for_indices=for_indices)
+        if resolved_queries is not None:
+            return pipeline(resolved_keys, systems, queries=resolved_queries)
+        return pipeline(resolved_keys, systems, queried_keys=queried_keys)

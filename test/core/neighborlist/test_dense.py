@@ -25,7 +25,7 @@ class TestDenseSubselect:
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(16))
         sys_ids = lh.data.system.indices
         for a, b in zip(
-            candidates.lhs.indices.tolist(), candidates.rhs.indices.tolist()
+            candidates.key_idx.indices.tolist(), candidates.query_idx.indices.tolist()
         ):
             if a < 4 and b < 4:
                 assert sys_ids[a] == sys_ids[b]
@@ -38,7 +38,10 @@ class TestDenseSubselect:
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(8))
         pairs = set(
-            zip(candidates.lhs.indices.tolist(), candidates.rhs.indices.tolist())
+            zip(
+                candidates.key_idx.indices.tolist(),
+                candidates.query_idx.indices.tolist(),
+            )
         )
         # Single system of 2 particles -> all 4 ordered pairs including self.
         assert {(0, 0), (0, 1), (1, 0), (1, 1)} <= pairs

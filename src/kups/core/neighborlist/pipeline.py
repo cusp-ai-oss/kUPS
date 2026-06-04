@@ -11,6 +11,8 @@ a ``Pipeline`` internally inside their ``__call__``.
 
 from __future__ import annotations
 
+from typing import overload
+
 import jax.numpy as jnp
 from jax import Array
 
@@ -47,15 +49,31 @@ class Pipeline[D: int]:
     compactor: Compactor[D]
     postprocessors: tuple[Postprocessor[D], ...] = field(default=(), static=True)
 
+    @overload
     def __call__(
         self,
-        lh: Table[ParticleId, NeighborListPoints],
+        keys: Table[ParticleId, NeighborListPoints],
         systems: Table[SystemId, NeighborListSystems],
         *,
-        rh: Table[ParticleId, NeighborListPoints] | None = None,
-        for_indices: Index[ParticleId] | None = None,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[D]: ...
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[D]: ...
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[D]:
-        ctx = _prepare(lh, rh, systems, for_indices)
+        ctx = _prepare(keys, queries, systems, queried_keys)
         batch = self.selector(ctx)
         keep = jnp.ones((len(batch.edges),), dtype=bool)
         for mask in self.masks:
@@ -67,30 +85,32 @@ class Pipeline[D: int]:
 
 
 def _prepare(
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints] | None,
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints] | None,
     systems: Table[SystemId, NeighborListSystems],
-    for_indices: Index[ParticleId] | None,
+    queried_keys: Index[ParticleId] | None,
 ) -> PipelineContext:
-    """Transform positions to fractional coords and resolve ``for_indices``."""
-    assert rh is None or for_indices is None, (
-        "Neighbor-list calls cannot combine rh with for_indices. "
-        "Use for_indices for self-graph updates, or rh for bipartite queries."
+    """Transform positions to fractional coords and resolve ``queried_keys``."""
+    assert queries is None or queried_keys is None, (
+        "Neighbor-list calls cannot combine queries with queried_keys. "
+        "Use queried_keys for self-graph updates, or queries for bipartite queries."
     )
     frames = systems.map_data(lambda s: s.cell.frame.materialize())
-    lh_frame = frames[lh.data.system]
-    lh = bind(lh, lambda x: x.data.positions).apply(lh_frame.to_fractional)
-    if rh is not None:
-        rh_frame = frames[rh.data.system]
-        rh = bind(rh, lambda x: x.data.positions).apply(rh_frame.to_fractional)
+    keys_frame = frames[keys.data.system]
+    keys = bind(keys, lambda x: x.data.positions).apply(keys_frame.to_fractional)
+    if queries is not None:
+        queries_frame = frames[queries.data.system]
+        queries = bind(queries, lambda x: x.data.positions).apply(
+            queries_frame.to_fractional
+        )
 
-    for_indices_raw: Array | None = (
-        for_indices.indices_in(lh.keys) if for_indices is not None else None
+    queried_keys_raw: Array | None = (
+        queried_keys.indices_in(keys.keys) if queried_keys is not None else None
     )
 
     return PipelineContext(
-        lh=lh,
-        rh=rh,
+        keys=keys,
+        queries=queries,
         systems=systems,
-        for_indices=for_indices_raw,
+        queried_keys=queried_keys_raw,
     )

@@ -5,7 +5,7 @@
 
 Each mask is a pure ``(batch, ctx) -> bool array`` function. Tests drive masks
 with directly-constructed contexts and candidate batches, covering both the
-self-graph (``rh=None``) and bipartite (``rh`` set) branches.
+self-graph (``queries=None``) and bipartite (``queries`` set) branches.
 """
 
 import jax.numpy as jnp
@@ -15,10 +15,10 @@ from kups.core.data.table import Table
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
     ExclusionMask,
-    ForIndicesDedupMask,
     InBoundsMask,
     InclusionMatchMask,
-    TouchesForIndicesMask,
+    QueriedKeysDedupMask,
+    TouchesQueriedKeysMask,
 )
 
 from ._builders import make_batch, make_lh, make_pipeline_ctx
@@ -54,36 +54,36 @@ class TestInclusionMatchMask:
         assert result.tolist() == [True, False, False, True]
 
 
-class TestForIndicesDedupMask:
-    def test_no_for_indices_returns_all_true(self):
+class TestQueriedKeysDedupMask:
+    def test_no_queried_keys_returns_all_true(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         ctx = make_pipeline_ctx(lh)
         batch = make_batch(lh.keys, jnp.array([0, 1, 2]), jnp.array([1, 2, 3]))
-        result = ForIndicesDedupMask()(batch, ctx)
+        result = QueriedKeysDedupMask()(batch, ctx)
         assert result.tolist() == [True, True, True]
 
-    def test_drops_self_pair_with_for_indices(self):
+    def test_drops_self_pair_with_queried_keys(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([1, 3]))
         batch = make_batch(lh.keys, jnp.array([0, 1, 3]), jnp.array([1, 3, 1]))
-        result = ForIndicesDedupMask()(batch, ctx)
+        result = QueriedKeysDedupMask()(batch, ctx)
         assert result.tolist() == [True, False, True]
 
 
-class TestTouchesForIndicesMask:
-    def test_no_for_indices_keeps_every_row(self):
+class TestTouchesQueriedKeysMask:
+    def test_no_queried_keys_keeps_every_row(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         ctx = make_pipeline_ctx(lh)
         batch = make_batch(lh.keys, jnp.array([0, 1, 2]), jnp.array([1, 2, 3]))
-        result = TouchesForIndicesMask()(batch, ctx)
+        result = TouchesQueriedKeysMask()(batch, ctx)
         assert result.tolist() == [True, True, True]
 
     def test_keeps_rows_touching_affected_ids(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = make_pipeline_ctx(lh, for_indices=jnp.array([2]))
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([2]))
         # Affected id is 2: keep rows whose either endpoint is 2.
         batch = make_batch(lh.keys, jnp.array([0, 1, 2]), jnp.array([1, 2, 3]))
-        result = TouchesForIndicesMask()(batch, ctx)
+        result = TouchesQueriedKeysMask()(batch, ctx)
         assert result.tolist() == [False, True, True]
 
 

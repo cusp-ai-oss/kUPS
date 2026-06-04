@@ -50,7 +50,7 @@ class TestAdaptiveCutoffFactoryEndToEnd:
         nl = adaptive_cutoff_neighborlist_from_state(state, cutoffs)
         assert isinstance(nl, DenseNearestNeighborList)
 
-        adaptive = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
+        adaptive = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
         adaptive.raise_assertion()
 
         ref_nl = DenseNearestNeighborList(
@@ -59,7 +59,7 @@ class TestAdaptiveCutoffFactoryEndToEnd:
             avg_image_candidates=FixedCapacity(900),
             cutoffs=cutoffs,
         )
-        ref = jax.jit(as_result_function(ref_nl))(lh=lh, systems=systems)
+        ref = jax.jit(as_result_function(ref_nl))(keys=lh, systems=systems)
         ref.raise_assertion()
 
         assert valid_edge_set(adaptive.value, 30) == valid_edge_set(ref.value, 30)
@@ -79,6 +79,6 @@ class TestAdaptiveCutoffFactoryEndToEnd:
             jnp.array([2.0]),
         )
 
-        result = jax.jit(as_result_function(nl))(lh=lh, systems=systems)
+        result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
         result.raise_assertion()
         assert result.value.indices.shape[-1] == 2

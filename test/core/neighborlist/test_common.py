@@ -18,11 +18,9 @@ from kups.core.neighborlist.common import (
     _minimum_image_shifts,
     candidate_image_counts,
     candidates_to_batch,
-    edge_rhs_table,
     lift_query_candidates,
     make_batch_with_mic,
     num_cells,
-    query_table,
     real_distance_sq,
     replicate_for_images,
 )
@@ -104,8 +102,8 @@ class TestGetCandidateImagesIsFinite:
         lh = make_lh(jnp.zeros((1, 3)), jnp.array([0]))
         systems, _ = make_systems(cell, jnp.array([6.0]))
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0])),
-            rhs=Index(lh.keys, jnp.array([0])),
+            key_idx=Index(lh.keys, jnp.array([0])),
+            query_idx=Index(lh.keys, jnp.array([0])),
         )
         return lh, systems, candidates
 
@@ -140,7 +138,8 @@ class TestReplicateForImages:
         lh = make_lh(jnp.array([p0, p1]), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(cell, jnp.array([cutoff]))
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0])), rhs=Index(lh.keys, jnp.array([1]))
+            key_idx=Index(lh.keys, jnp.array([0])),
+            query_idx=Index(lh.keys, jnp.array([1])),
         )
         return candidates, lh, systems
 
@@ -172,9 +171,11 @@ class TestReplicateForImages:
         )
         assert len(batch.edges) == 27
         npt.assert_array_equal(
-            np.asarray(batch.lh_idx.indices), np.zeros(27, dtype=int)
+            np.asarray(batch.key_idx.indices), np.zeros(27, dtype=int)
         )
-        npt.assert_array_equal(np.asarray(batch.rh_idx.indices), np.ones(27, dtype=int))
+        npt.assert_array_equal(
+            np.asarray(batch.query_idx.indices), np.ones(27, dtype=int)
+        )
 
     def test_replication_spans_full_integer_stencil(self):
         candidates, lh, systems = self._one_candidate(
@@ -229,8 +230,8 @@ class TestReplicateForImages:
             jnp.array([0, 0, 1, 1]),
         )
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0, 2])),
-            rhs=Index(lh.keys, jnp.array([1, 3])),
+            key_idx=Index(lh.keys, jnp.array([0, 2])),
+            query_idx=Index(lh.keys, jnp.array([1, 3])),
         )
         batch = replicate_for_images(
             candidates,
@@ -242,9 +243,12 @@ class TestReplicateForImages:
         )
         assert len(batch.edges) == 28
         # First row is the lone system-0 copy; the rest expand the system-1 pair.
-        assert (int(batch.lh_idx.indices[0]), int(batch.rh_idx.indices[0])) == (0, 1)
-        npt.assert_array_equal(np.asarray(batch.lh_idx.indices[1:]), np.full(27, 2))
-        npt.assert_array_equal(np.asarray(batch.rh_idx.indices[1:]), np.full(27, 3))
+        assert (int(batch.key_idx.indices[0]), int(batch.query_idx.indices[0])) == (
+            0,
+            1,
+        )
+        npt.assert_array_equal(np.asarray(batch.key_idx.indices[1:]), np.full(27, 2))
+        npt.assert_array_equal(np.asarray(batch.query_idx.indices[1:]), np.full(27, 3))
         # One minimum image per candidate: the system-0 copy plus system-1's.
         assert int(batch.is_minimum_image.sum()) == 2
         assert bool(batch.is_minimum_image[0])
@@ -258,13 +262,14 @@ class TestReplicateForImages:
         rh = make_lh(jnp.array([[0.9, 0.0, 0.0]]), jnp.zeros(1, dtype=int))
         systems, _ = make_systems(cell, jnp.array([2.0]))
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0])), rhs=Index(rh.keys, jnp.array([0]))
+            key_idx=Index(lh.keys, jnp.array([0])),
+            query_idx=Index(rh.keys, jnp.array([0])),
         )
         batch = replicate_for_images(
             candidates, lh, rh, systems, cutoff_table(jnp.array([2.0])), None
         )
         npt.assert_array_equal(np.asarray(batch.edges.shifts), [[[-1.0, 0.0, 0.0]]])
-        assert batch.rhs_keys == rh.keys
+        assert batch.query_keys == rh.keys
 
     def test_missing_capacity_with_replication_needed_asserts(self):
         # max_image_candidates=None falls back to a non-growable capacity sized
@@ -288,8 +293,8 @@ class TestMakeBatchWithMic:
         lh = make_lh(positions, jnp.zeros(2, dtype=int))
         systems, _ = make_systems(cell, jnp.array([1.0]))
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0])),
-            rhs=Index(lh.keys, jnp.array([1])),
+            key_idx=Index(lh.keys, jnp.array([0])),
+            query_idx=Index(lh.keys, jnp.array([1])),
         )
         batch = make_batch_with_mic(candidates, lh, lh, systems)
         # delta = 0.1 - 0.9 = -0.8; round(-0.8) = -1.0 on the periodic axis.
@@ -300,11 +305,11 @@ class TestMakeBatchWithMic:
 
 
 class TestCandidatesToBatch:
-    def test_packs_indices_shifts_and_rhs_keys(self):
+    def test_packs_indices_shifts_and_query_keys(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0, 1])),
-            rhs=Index(lh.keys, jnp.array([1, 2])),
+            key_idx=Index(lh.keys, jnp.array([0, 1])),
+            query_idx=Index(lh.keys, jnp.array([1, 2])),
         )
         shifts = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         batch = candidates_to_batch(candidates, shifts, jnp.array([True, False]))
@@ -312,7 +317,7 @@ class TestCandidatesToBatch:
             np.asarray(batch.edges.indices.indices), np.array([[0, 1], [1, 2]])
         )
         npt.assert_array_equal(np.asarray(batch.edges.shifts[:, 0]), np.asarray(shifts))
-        assert batch.rhs_keys == lh.keys
+        assert batch.query_keys == lh.keys
 
 
 class TestMinimumImageShifts:
@@ -323,7 +328,8 @@ class TestMinimumImageShifts:
         )
         systems, _ = make_systems(cell, jnp.array([1.0]))
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0])), rhs=Index(lh.keys, jnp.array([1]))
+            key_idx=Index(lh.keys, jnp.array([0])),
+            query_idx=Index(lh.keys, jnp.array([1])),
         )
         shifts = _minimum_image_shifts(candidates, lh, lh, systems)
         # delta = -0.2, nearest image is the in-cell one (shift 0).
@@ -347,37 +353,38 @@ class TestRealDistanceSq:
 
 
 class TestContextTableHelpers:
-    def test_edge_rhs_table_prefers_rh(self):
+    def test_edge_query_table_prefers_queries(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
-        assert edge_rhs_table(make_pipeline_ctx(lh)) is lh
-        assert edge_rhs_table(make_pipeline_ctx(lh, rh)) is rh
+        assert make_pipeline_ctx(lh).edge_query_table is lh
+        assert make_pipeline_ctx(lh, rh).edge_query_table is rh
 
     def test_query_table_self_full_vs_subset_vs_bipartite(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
-        assert query_table(make_pipeline_ctx(lh)).size == 4
+        assert make_pipeline_ctx(lh).query_table.size == 4
         assert (
-            query_table(make_pipeline_ctx(lh, for_indices=jnp.array([1, 3]))).size == 2
+            make_pipeline_ctx(lh, queried_keys=jnp.array([1, 3])).query_table.size == 2
         )
-        assert query_table(make_pipeline_ctx(lh, rh)) is rh
+        assert make_pipeline_ctx(lh, rh).query_table is rh
 
     def test_lift_query_candidates_remaps_rhs_to_lh_ids(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        ctx = make_pipeline_ctx(lh, for_indices=jnp.array([2, 0]))
-        # query-local rhs ids [0, 1] map through for_indices -> lh ids [2, 0].
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([2, 0]))
+        # query-local rhs ids [0, 1] map through queried_keys -> lh ids [2, 0].
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([1, 3])),
-            rhs=Index(lh.keys, jnp.array([0, 1])),
+            key_idx=Index(lh.keys, jnp.array([1, 3])),
+            query_idx=Index(lh.keys, jnp.array([0, 1])),
         )
         lifted = lift_query_candidates(candidates, ctx)
-        npt.assert_array_equal(np.asarray(lifted.lhs.indices), np.array([1, 3]))
-        npt.assert_array_equal(np.asarray(lifted.rhs.indices), np.array([2, 0]))
+        npt.assert_array_equal(np.asarray(lifted.key_idx.indices), np.array([1, 3]))
+        npt.assert_array_equal(np.asarray(lifted.query_idx.indices), np.array([2, 0]))
 
-    def test_lift_query_candidates_noop_without_for_indices(self):
+    def test_lift_query_candidates_noop_without_queried_keys(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         ctx = make_pipeline_ctx(lh)
         candidates = Candidates(
-            lhs=Index(lh.keys, jnp.array([0])), rhs=Index(lh.keys, jnp.array([1]))
+            key_idx=Index(lh.keys, jnp.array([0])),
+            query_idx=Index(lh.keys, jnp.array([1])),
         )
         assert lift_query_candidates(candidates, ctx) is candidates

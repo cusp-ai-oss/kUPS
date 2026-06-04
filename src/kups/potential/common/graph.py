@@ -244,7 +244,7 @@ class GraphConstructor[
     def __call__(
         self, state: State, patch: Ptch | None, old_graph: bool = False
     ) -> HyperGraph[P, S, Degree]:
-        lh = self.particles(state)
+        keys = self.particles(state)
         systems = self.systems(state)
 
         if patch is not None and self.probe is None:
@@ -257,19 +257,19 @@ class GraphConstructor[
 
         if patch is None:
             nnlist = self.neighborlist(state)
-            edges = nnlist(lh, systems)
+            edges = nnlist(keys, systems)
         else:
             assert self.probe is not None, "Expected probe to be set."
             probe = self.probe(state, patch)
             update = probe.particles
             indices = update.indices
             if not old_graph:
-                lh = lh.update(indices, update.data)
+                keys = keys.update(indices, update.data)
                 nnlist = probe.neighborlist_after
             else:
                 nnlist = probe.neighborlist_before
-            edges = nnlist(lh, systems, for_indices=indices)
-        return HyperGraph(lh, systems, edges)
+            edges = nnlist(keys, systems, queried_keys=indices)
+        return HyperGraph(keys, systems, edges)
 
 
 class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
