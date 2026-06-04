@@ -28,50 +28,52 @@ from kups.core.utils.jax import dataclass, isin
 
 @dataclass
 class InBoundsMask:
-    """Drops candidates whose lh/rh indices fall outside the valid inclusion-segment range.
+    """Drops candidates whose key/query indices fall outside the valid inclusion-segment range.
 
     Implements the per-side ``inclusion.indices < num_labels`` check used to
     guard scatter/gather lookups when the candidate buffer is padded.
     """
 
     def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
-        ngraphs = ctx.lh.data.inclusion.num_labels
-        lh_inclusions = ctx.lh.map_data(lambda d: d.inclusion.indices < ngraphs)
-        if ctx.rh is None:
-            idx = batch.edges.indices.indices_in(lh_inclusions.keys)
-            edge_in = lh_inclusions.data.at[idx].get(mode="fill", fill_value=False)
+        ngraphs = ctx.keys.data.inclusion.num_labels
+        key_inclusions = ctx.keys.map_data(lambda d: d.inclusion.indices < ngraphs)
+        if ctx.queries is None:
+            idx = batch.edges.indices.indices_in(key_inclusions.keys)
+            edge_in = key_inclusions.data.at[idx].get(mode="fill", fill_value=False)
             return edge_in.all(axis=-1)
 
-        rh_inclusions = ctx.rh.map_data(lambda d: d.inclusion.indices < ngraphs)
-        lh_idx = batch.lh_idx.indices_in(lh_inclusions.keys)
-        rh_idx = batch.rh_idx.indices_in(rh_inclusions.keys)
-        lh_in = lh_inclusions.data.at[lh_idx].get(mode="fill", fill_value=False)
-        rh_in = rh_inclusions.data.at[rh_idx].get(mode="fill", fill_value=False)
-        return lh_in & rh_in
+        query_inclusions = ctx.queries.map_data(lambda d: d.inclusion.indices < ngraphs)
+        key_idx = batch.key_idx.indices_in(key_inclusions.keys)
+        query_idx = batch.query_idx.indices_in(query_inclusions.keys)
+        key_in = key_inclusions.data.at[key_idx].get(mode="fill", fill_value=False)
+        query_in = query_inclusions.data.at[query_idx].get(
+            mode="fill", fill_value=False
+        )
+        return key_in & query_in
 
 
 @dataclass
 class InclusionMatchMask:
-    """Drops candidates whose lh/rh inclusion segments differ."""
+    """Drops candidates whose key/query inclusion segments differ."""
 
     def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
-        if ctx.rh is None:
-            edge_incl = ctx.lh[batch.edges.indices].inclusion.indices
+        if ctx.queries is None:
+            edge_incl = ctx.keys[batch.edges.indices].inclusion.indices
             return (edge_incl == edge_incl[:, :1]).all(axis=-1)
 
-        lh_incl, rh_incl = Index.match(
-            ctx.lh[batch.lh_idx].inclusion, ctx.rh[batch.rh_idx].inclusion
+        key_incl, query_incl = Index.match(
+            ctx.keys[batch.key_idx].inclusion, ctx.queries[batch.query_idx].inclusion
         )
-        return lh_incl == rh_incl
+        return key_incl == query_incl
 
 
 @dataclass
-class ForIndicesDedupMask:
+class QueriedKeysDedupMask:
     """Deduplicate self-graph update candidates.
 
-    Pair selectors emit candidates in ``lh`` space. When ``ctx.for_indices``
-    is set, the rhs query side was restricted to those affected ``lh`` rows.
-    We keep edges whose lhs endpoint is unaffected, plus one orientation for
+    Pair selectors emit candidates in ``keys`` space. When ``ctx.queried_keys``
+    is set, the query side was restricted to those affected ``keys`` rows.
+    We keep edges whose key endpoint is unaffected, plus one orientation for
     edges where both endpoints are affected. ``MirrorPairEdges`` restores the
     reverse orientation after compaction.
 
@@ -81,25 +83,27 @@ class ForIndicesDedupMask:
     def __call__(
         self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
     ) -> Array:
-        if ctx.for_indices is None:
-            return jnp.ones((batch.lh_idx.size,), dtype=bool)
-        return ~isin(batch.lh_idx.indices, ctx.for_indices, ctx.lh.size) | (
-            batch.lh_idx.indices >= batch.rh_idx.indices
+        if ctx.queried_keys is None:
+            return jnp.ones((batch.key_idx.size,), dtype=bool)
+        return ~isin(batch.key_idx.indices, ctx.queried_keys, ctx.keys.size) | (
+            batch.key_idx.indices >= batch.query_idx.indices
         )
 
 
 @dataclass
-class TouchesForIndicesMask[D: int]:
-    """Keep fixed-topology rows touched by ``ctx.for_indices``.
+class TouchesQueriedKeysMask[D: int]:
+    """Keep fixed-topology rows touched by ``ctx.queried_keys``.
 
     When no affected-index subset is active, every row is kept. This lets fixed
     topology use the same pipeline for full and patch-shaped calls.
     """
 
     def __call__(self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
-        if ctx.for_indices is None:
+        if ctx.queried_keys is None:
             return jnp.ones((len(batch.edges),), dtype=bool)
-        return isin(batch.edges.indices.indices, ctx.for_indices, ctx.lh.size).any(-1)
+        return isin(batch.edges.indices.indices, ctx.queried_keys, ctx.keys.size).any(
+            -1
+        )
 
 
 @dataclass
@@ -116,17 +120,17 @@ class DistanceCutoffMask:
         frame_table: Table[SystemId, MaterializedFrame] = ctx.systems.map_data(
             lambda s: s.cell.frame.materialize()
         )
-        lh_system = ctx.lh[batch.lh_idx].system
-        frames: MaterializedFrame = frame_table[lh_system]
-        if ctx.rh is None:
-            pair_positions = ctx.lh[batch.edges.indices].positions
-            lhs_positions = pair_positions[:, 0]
-            rhs_positions = pair_positions[:, 1]
+        key_system = ctx.keys[batch.key_idx].system
+        frames: MaterializedFrame = frame_table[key_system]
+        if ctx.queries is None:
+            pair_positions = ctx.keys[batch.edges.indices].positions
+            key_positions = pair_positions[:, 0]
+            query_positions = pair_positions[:, 1]
         else:
-            lhs_positions = ctx.lh[batch.lh_idx].positions
-            rhs_positions = ctx.rh[batch.rh_idx].positions
-        dist_sq = real_distance_sq(lhs_positions, rhs_positions, frames, shifts)
-        return dist_sq < cutoffs[lh_system] ** 2
+            key_positions = ctx.keys[batch.key_idx].positions
+            query_positions = ctx.queries[batch.query_idx].positions
+        dist_sq = real_distance_sq(key_positions, query_positions, frames, shifts)
+        return dist_sq < cutoffs[key_system] ** 2
 
 
 @dataclass
@@ -140,11 +144,11 @@ class ExclusionMask:
     def __call__(
         self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
     ) -> Array:
-        if ctx.rh is None:
-            edge_excl = ctx.lh[batch.edges.indices].exclusion.indices
+        if ctx.queries is None:
+            edge_excl = ctx.keys[batch.edges.indices].exclusion.indices
             return (edge_excl[:, 0] != edge_excl[:, 1]) | ~batch.is_minimum_image
 
-        lh_excl, rh_excl = Index.match(
-            ctx.lh[batch.lh_idx].exclusion, ctx.rh[batch.rh_idx].exclusion
+        key_excl, query_excl = Index.match(
+            ctx.keys[batch.key_idx].exclusion, ctx.queries[batch.query_idx].exclusion
         )
-        return (lh_excl != rh_excl) | ~batch.is_minimum_image
+        return (key_excl != query_excl) | ~batch.is_minimum_image

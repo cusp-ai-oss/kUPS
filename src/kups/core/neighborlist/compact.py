@@ -13,7 +13,7 @@ Compactor variants:
   and zero shifts. Used by ``RefineMaskNeighborList``.
 
 Graph-level output shaping, such as restoring undirected symmetry after
-``for_indices`` deduplication, lives in pipeline postprocessors.
+``queried_keys`` deduplication, lives in pipeline postprocessors.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.data import Index
-from kups.core.neighborlist.common import edge_rhs_table
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import CandidateBatch, Compactor, PipelineContext
 from kups.core.utils.jax import dataclass
@@ -46,7 +45,7 @@ class ReduceCompactor[D: int](Compactor[D]):
         batch: CandidateBatch[D],
         ctx: PipelineContext,
     ) -> Edges[D]:
-        oob = max(ctx.lh.size, edge_rhs_table(ctx).size)
+        oob = max(ctx.keys.size, ctx.edge_query_table.size)
         max_edges = self.avg_edges.generate_assertion(keep.sum())
         sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
         shifts = batch.edges.shifts.at[sort_idxs].get(
@@ -73,8 +72,8 @@ class MaskOnlyCompactor[D: int](Compactor[D]):
         batch: CandidateBatch[D],
         ctx: PipelineContext,
     ) -> Edges[D]:
-        oob = max(ctx.lh.size, edge_rhs_table(ctx).size)
-        indices_in = jnp.stack([batch.lh_idx.indices, batch.rh_idx.indices], axis=-1)
+        oob = max(ctx.keys.size, ctx.edge_query_table.size)
+        indices_in = batch.edges.indices.indices
         indices = where_broadcast_last(keep, indices_in, oob)
         shifts = where_broadcast_last(keep, batch.edges.shifts, 0)
         return Edges(Index(batch.edges.indices.keys, indices), shifts)

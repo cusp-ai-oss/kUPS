@@ -36,7 +36,7 @@ class TestInclusionGroupSelector:
         pairs = {
             (a, b)
             for a, b in zip(
-                batch.lh_idx.indices.tolist(), batch.rh_idx.indices.tolist()
+                batch.key_idx.indices.tolist(), batch.query_idx.indices.tolist()
             )
             if a < 3 and b < 3
         }
@@ -90,7 +90,7 @@ class TestAllConnectedNeighborlist:
         with pytest.raises(AssertionError, match="max_count must be set"):
             all_connected_neighborlist(lh, _systems())
 
-    def test_for_indices_returns_only_touched_pairs(self):
+    def test_queried_keys_returns_only_touched_pairs(self):
         lh = make_lh(
             jnp.zeros((3, 3)),
             jnp.zeros(3, dtype=int),
@@ -98,7 +98,7 @@ class TestAllConnectedNeighborlist:
             inclusion_max_count=3,
         )
         edges = all_connected_neighborlist(
-            lh, _systems(), for_indices=Index(lh.keys, jnp.array([0]))
+            lh, _systems(), queried_keys=Index(lh.keys, jnp.array([0]))
         )
         # Every surviving edge must touch particle 0.
         valid = valid_edge_set(edges, 3)

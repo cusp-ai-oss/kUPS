@@ -85,7 +85,8 @@ class TestCellListSubselect:
         pairs = {
             (a, b)
             for a, b in zip(
-                candidates.lhs.indices.tolist(), candidates.rhs.indices.tolist()
+                candidates.key_idx.indices.tolist(),
+                candidates.query_idx.indices.tolist(),
             )
             if a < 3 and b < 3
         }

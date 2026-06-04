@@ -7,7 +7,7 @@ The same body runs for ``DenseNearestNeighborList``, ``CellListNeighborList``,
 and ``AllDenseNearestNeighborList`` via the ``neighbor_list_impl`` fixture, so
 every implementation is held to one behavioural contract: basic search,
 capacity management, exact-cutoff handling, periodic images, multi-system
-isolation, ``for_indices`` self-graph updates, and agreement with a brute-force
+isolation, ``queried_keys`` self-graph updates, and agreement with a brute-force
 reference.
 """
 
@@ -107,17 +107,17 @@ class TestNearestNeighborListImplementations:
             jnp.arange(len(params["batch_mask"])),
         )
 
-        for_indices = None
+        queried_keys = None
         if (update_positions := params.get("update_positions", None)) is not None:
-            for_indices_raw = params.get("for_indices", None)
-            assert for_indices_raw is not None, (
-                "update_positions requires for_indices in the new API"
+            queried_keys_raw = params.get("queried_keys", None)
+            assert queried_keys_raw is not None, (
+                "update_positions requires queried_keys in the new API"
             )
             update_batch_mask = params.get("update_batch_mask", params["batch_mask"])
-            update, for_indices = make_rh(
-                lh, update_positions, update_batch_mask, for_indices_raw
+            update, queried_keys = make_rh(
+                lh, update_positions, update_batch_mask, queried_keys_raw
             )
-            lh = lh.update(for_indices, update.data)
+            lh = lh.update(queried_keys, update.data)
 
         if isinstance(params["cells"], Cell):
             systems, cutoffs = make_systems(params["cells"], params["cutoffs"])
@@ -125,9 +125,9 @@ class TestNearestNeighborListImplementations:
             systems, cutoffs = systems_from_lvecs(params["cells"], params["cutoffs"])
         neighbor_list_instance = instance_factory(cutoffs=cutoffs, **params["extras"])
         result = jax.jit(as_result_function(neighbor_list_instance))(
-            lh=lh,
+            keys=lh,
             systems=systems,
-            for_indices=for_indices,
+            queried_keys=queried_keys,
         )
 
         return result
@@ -229,11 +229,11 @@ class TestNearestNeighborListImplementations:
             if lh_idx < 4 and rh_idx < 4:
                 assert batch_mask[lh_idx] == batch_mask[rh_idx]
 
-    def test_for_indices_update_positions_basic(self, neighbor_list_impl):
-        """Test basic functionality for updated lh positions selected by for_indices."""
+    def test_queried_keys_update_positions_basic(self, neighbor_list_impl):
+        """Test basic functionality for updated lh positions selected by queried_keys."""
         lh_positions = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
         update_positions = jnp.array([[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
-        for_indices = jnp.array([2, 0])
+        queried_keys = jnp.array([2, 0])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
@@ -241,7 +241,7 @@ class TestNearestNeighborListImplementations:
             update_positions=update_positions,
             batch_mask=jnp.array([0, 0, 0]),
             update_batch_mask=jnp.array([0, 0]),
-            for_indices=for_indices,
+            queried_keys=queried_keys,
             cutoffs=jnp.array([1.5]),
             capacity=20,
         )
@@ -259,7 +259,7 @@ class TestNearestNeighborListImplementations:
         assert (1, 0) in edge_set, f"Expected edge (1, 0) not found in {edge_set}"
         assert (0, 1) in edge_set, f"Expected edge (0, 1) not found in {edge_set}"
 
-    def test_for_indices_update_batch_boundaries(self, neighbor_list_impl):
+    def test_queried_keys_update_batch_boundaries(self, neighbor_list_impl):
         """Test update batch masks: edges found within systems, blocked across systems."""
         lh_positions = jnp.array(
             [
@@ -280,7 +280,7 @@ class TestNearestNeighborListImplementations:
             update_positions=jnp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
             batch_mask=lh_batch,
             update_batch_mask=jnp.array([0, 1]),
-            for_indices=jnp.array([1, 3]),
+            queried_keys=jnp.array([1, 3]),
             cells=lvecs,
             cutoffs=cutoffs,
             capacity=20,
@@ -305,7 +305,7 @@ class TestNearestNeighborListImplementations:
             update_positions=jnp.array([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]]),
             batch_mask=lh_batch,
             update_batch_mask=jnp.array([1, 0]),  # swapped
-            for_indices=jnp.array([3, 1]),
+            queried_keys=jnp.array([3, 1]),
             cells=lvecs,
             cutoffs=cutoffs,
             capacity=20,
@@ -323,7 +323,7 @@ class TestNearestNeighborListImplementations:
                     f"lhs_batch={lh_batch[lh_idx]}, rhs_batch={lh_batch[rh_idx]}"
                 )
 
-    def test_for_indices_update_positions_asymmetric_search(self, neighbor_list_impl):
+    def test_queried_keys_update_positions_asymmetric_search(self, neighbor_list_impl):
         """Test affected-index search with a subset of updated lh particles."""
         lh_positions = jnp.array(
             [
@@ -339,7 +339,7 @@ class TestNearestNeighborListImplementations:
             ]
         )
         # update[0] -> lh[0], update[1] -> lh[2]: non-adjacent affected ids
-        for_indices = jnp.array([0, 2])
+        queried_keys = jnp.array([0, 2])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
@@ -347,7 +347,7 @@ class TestNearestNeighborListImplementations:
             update_positions=update_positions,
             batch_mask=jnp.array([0, 0, 0]),
             update_batch_mask=jnp.array([0, 0]),
-            for_indices=for_indices,
+            queried_keys=queried_keys,
             cutoffs=jnp.array([1.5]),
             capacity=20,
         )
@@ -363,18 +363,18 @@ class TestNearestNeighborListImplementations:
         assert (1, 2) in edge_set, f"Expected edge (1, 2) not found in {edge_set}"
         assert (2, 1) in edge_set, f"Expected edge (2, 1) not found in {edge_set}"
 
-    def test_for_indices_update_for_subsets(self, neighbor_list_impl):
+    def test_queried_keys_update_for_subsets(self, neighbor_list_impl):
         positions = jnp.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
         )
-        for_indices = jnp.array([0, 2, 1])
+        queried_keys = jnp.array([0, 2, 1])
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=positions,
             update_positions=positions[:3],
             batch_mask=jnp.array([0, 0, 0, 0]),
             update_batch_mask=jnp.array([0, 0, 0]),
-            for_indices=for_indices,
+            queried_keys=queried_keys,
             cutoffs=jnp.array([2.5]),
             extras={"candidates": 20, "edges": 12, "cells": 256},
         )
@@ -409,10 +409,10 @@ class TestNearestNeighborListImplementations:
             )
         )
 
-    def test_for_indices_prevents_self_interaction(self, neighbor_list_impl):
+    def test_queried_keys_prevents_self_interaction(self, neighbor_list_impl):
         """Test that self-graph updates still prevent self-interactions."""
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-        for_indices = jnp.array([0, 1])
+        queried_keys = jnp.array([0, 1])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
@@ -420,7 +420,7 @@ class TestNearestNeighborListImplementations:
             update_positions=positions,
             batch_mask=jnp.array([0, 0]),
             update_batch_mask=jnp.array([0, 0]),
-            for_indices=for_indices,
+            queried_keys=queried_keys,
             cutoffs=jnp.array([1.5]),
             capacity=20,
         )
@@ -430,13 +430,13 @@ class TestNearestNeighborListImplementations:
         valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 2]
         valid_edges = valid_edges[valid_edges[:, 1] < 2]
 
-        assert len(valid_edges) > 0, "Should find edges with for_indices"
+        assert len(valid_edges) > 0, "Should find edges with queried_keys"
 
         for i in range(valid_edges.shape[0]):
             lh_idx, rh_idx = valid_edges[i]
             assert lh_idx != rh_idx, f"Found self-interaction: ({lh_idx}, {rh_idx})"
 
-    def test_for_indices_update_arguments_combined(self, neighbor_list_impl):
+    def test_queried_keys_update_arguments_combined(self, neighbor_list_impl):
         """Test updated positions, systems, and affected ids together."""
         lh_positions = jnp.array(
             [
@@ -454,7 +454,7 @@ class TestNearestNeighborListImplementations:
         )
 
         # Affected ids: update[0]->lh[2], update[1]->lh[1], update[2]->lh[0]
-        for_indices = jnp.array([2, 1, 0])
+        queried_keys = jnp.array([2, 1, 0])
 
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
@@ -462,7 +462,7 @@ class TestNearestNeighborListImplementations:
             update_positions=update_positions,
             batch_mask=jnp.array([0, 1, 0]),
             update_batch_mask=jnp.array([0, 1, 0]),
-            for_indices=for_indices,
+            queried_keys=queried_keys,
             cells=jnp.eye(3)[None].repeat(2, axis=0) * 10.0,
             cutoffs=jnp.array([1.5, 1.5]),
             capacity=20,
@@ -537,7 +537,7 @@ class TestNearestNeighborListImplementations:
         )
         positions = positions.at[rh_indices].set(new_positions)
         lh = make_lh(positions, jnp.array([0] * N), jnp.arange(N))
-        for_indices = Index(lh.keys, rh_indices)
+        queried_keys = Index(lh.keys, rh_indices)
 
         _sys, _cut = make_systems(cell, jnp.array([cutoff]))
         neighbor_list_instance = instance_factory(
@@ -545,9 +545,9 @@ class TestNearestNeighborListImplementations:
         )
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
-                lh=lh,
+                keys=lh,
                 systems=_sys,
-                for_indices=for_indices,
+                queried_keys=queried_keys,
             )
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
@@ -610,7 +610,7 @@ class TestNearestNeighborListImplementations:
         nl_1 = instance_factory(
             candidates=10, edges=10, cells=256, image_candidates=200, cutoffs=_cut_1
         )
-        result_1 = jax.jit(as_result_function(nl_1))(lh=lh_1, systems=_sys_1)
+        result_1 = jax.jit(as_result_function(nl_1))(keys=lh_1, systems=_sys_1)
         result_1.raise_assertion()
         valid_1 = {
             (int(e[0]), int(e[1]))
@@ -630,7 +630,7 @@ class TestNearestNeighborListImplementations:
         nl_2 = instance_factory(
             candidates=4, edges=53, cells=8, image_candidates=600, cutoffs=_cut_2
         )
-        result_2 = jax.jit(as_result_function(nl_2))(lh=lh_2, systems=_sys_2)
+        result_2 = jax.jit(as_result_function(nl_2))(keys=lh_2, systems=_sys_2)
         result_2.raise_assertion()
         valid_2 = {
             (int(e[0]), int(e[1]))
@@ -661,7 +661,7 @@ class TestNearestNeighborListImplementations:
         )
         while (
             result := jax.jit(as_result_function(neighbor_list_instance))(
-                lh=lh,
+                keys=lh,
                 systems=_sys,
             )
         ).failed_assertions:
@@ -706,7 +706,7 @@ class TestNearestNeighborListImplementations:
             candidates=30, edges=20, cells=256, image_candidates=300, cutoffs=_cut
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
-            lh=lh,
+            keys=lh,
             systems=_sys,
         )
         result.raise_assertion()
@@ -801,7 +801,7 @@ class TestNearestNeighborListImplementations:
             candidates=4, edges=30, cells=12, image_candidates=200, cutoffs=_cut
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
-            lh=lh,
+            keys=lh,
             systems=_sys,
         )
         result.raise_assertion()
@@ -837,7 +837,7 @@ class TestNearestNeighborListImplementations:
             candidates=1, edges=16, cells=8, image_candidates=125, cutoffs=_cut
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
-            lh=lh,
+            keys=lh,
             systems=_sys,
         )
         result.raise_assertion()
@@ -884,7 +884,7 @@ class TestNearestNeighborListImplementations:
             candidates=4, edges=4, cells=8, image_candidates=4, cutoffs=_cut
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
-            lh=lh,
+            keys=lh,
             systems=_sys,
         )
         result.raise_assertion()
@@ -932,7 +932,7 @@ class TestNearestNeighborListImplementations:
             candidates=4, edges=30, cells=8, image_candidates=200, cutoffs=_cut
         )
         result = jax.jit(as_result_function(neighbor_list_instance))(
-            lh=lh,
+            keys=lh,
             systems=_sys,
         )
         result.raise_assertion()

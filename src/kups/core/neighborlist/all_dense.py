@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal, Protocol
+from typing import Literal, Protocol, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -16,9 +16,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.common import (
     Candidates,
-    edge_rhs_table,
     lift_query_candidates,
-    query_table,
     replicate_for_images,
 )
 from kups.core.neighborlist.compact import ReduceCompactor
@@ -26,9 +24,9 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.masks import (
     DistanceCutoffMask,
     ExclusionMask,
-    ForIndicesDedupMask,
     InBoundsMask,
     InclusionMatchMask,
+    QueriedKeysDedupMask,
 )
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.postprocess import MirrorPairEdges
@@ -53,12 +51,15 @@ class IsAllDenseNeighborListParams(Protocol):
 
 
 def _all_subselect(
-    lh: Table[ParticleId, NeighborListPoints],
-    rh: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
 ) -> Candidates:
-    lh_indices, rh_indices = jnp.indices((len(lh), len(rh))).reshape(2, -1)
-    return Candidates(lhs=Index(lh.keys, lh_indices), rhs=Index(rh.keys, rh_indices))
+    key_indices, queried_keys = jnp.indices((len(keys), len(queries))).reshape(2, -1)
+    return Candidates(
+        key_idx=Index(keys.keys, key_indices),
+        query_idx=Index(queries.keys, queried_keys),
+    )
 
 
 @dataclass
@@ -69,13 +70,13 @@ class AllDenseSelector:
     max_image_candidates: Capacity[int]
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
-        query = query_table(ctx)
-        candidates = _all_subselect(ctx.lh, query, ctx.systems)
+        query = ctx.query_table
+        candidates = _all_subselect(ctx.keys, query, ctx.systems)
         candidates = lift_query_candidates(candidates, ctx)
         return replicate_for_images(
             candidates,
-            ctx.lh,
-            edge_rhs_table(ctx),
+            ctx.keys,
+            ctx.edge_query_table,
             ctx.systems,
             self.cutoffs,
             self.max_image_candidates,
@@ -142,25 +143,41 @@ class AllDenseNearestNeighborList:
     ) -> AllDenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
     @jit
     def __call__(
         self,
-        lh: Table[ParticleId, NeighborListPoints],
+        keys: Table[ParticleId, NeighborListPoints],
         systems: Table[SystemId, NeighborListSystems],
         *,
-        rh: Table[ParticleId, NeighborListPoints] | None = None,
-        for_indices: Index[ParticleId] | None = None,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        if lh.data.inclusion.num_labels >= 2:
+        if keys.data.inclusion.num_labels >= 2:
             logging.warning(
                 "AllDenseNearestNeighborList is intended for single-system simulations. "
                 "Performance may be degraded when using multiple systems. "
                 "Consider using DenseNearestNeighborList or CellListNeighborList instead."
             )
         query_size = (
-            for_indices.size
-            if for_indices is not None
-            else (rh.size if rh is not None else lh.size)
+            queried_keys.size
+            if queried_keys is not None
+            else (queries.size if queries is not None else keys.size)
         )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
@@ -171,11 +188,13 @@ class AllDenseNearestNeighborList:
             masks=(
                 InBoundsMask(),
                 InclusionMatchMask(),
-                ForIndicesDedupMask(),
+                QueriedKeysDedupMask(),
                 DistanceCutoffMask(cutoffs=cutoffs),
                 ExclusionMask(),
             ),
             compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
             postprocessors=(MirrorPairEdges(),),
         )
-        return pipeline(lh, systems, rh=rh, for_indices=for_indices)
+        if queries is not None:
+            return pipeline(keys, systems, queries=queries)
+        return pipeline(keys, systems, queried_keys=queried_keys)

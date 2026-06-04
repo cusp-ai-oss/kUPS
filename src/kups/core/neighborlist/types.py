@@ -21,7 +21,7 @@ protocol used by the ``from_state`` constructors.
 
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Literal, Protocol, overload
 
 from jax import Array
 
@@ -60,28 +60,48 @@ class NeighborList[D: int](Protocol):
     parameter tracks the arity of the emitted edge tuples.
     """
 
+    @overload
     def __call__[P: NeighborListPoints](
         self,
-        lh: Table[ParticleId, P],
+        keys: Table[ParticleId, P],
         systems: Table[SystemId, NeighborListSystems],
         *,
-        rh: Table[ParticleId, P] | None = None,
-        for_indices: Index[ParticleId] | None = None,
+        queries: Table[ParticleId, P],
+    ) -> Edges[D]: ...
+    @overload
+    def __call__[P: NeighborListPoints](
+        self,
+        keys: Table[ParticleId, P],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[D]: ...
+    def __call__[P: NeighborListPoints](
+        self,
+        keys: Table[ParticleId, P],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, P] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[D]:
         """Find particle groups for a self-graph or bipartite query.
 
+        ``queries`` and ``queried_keys`` are mutually exclusive; the overloads
+        above reject calls that pass both.
+
         Args:
-            lh: Particle table that returned ``Edges`` index into.
-            rh: Optional bipartite query table. Mutually exclusive with
-                ``for_indices``. When omitted, the neighbor list builds a
-                self-graph over ``lh``.
+            keys: Particle table that the returned ``Edges`` index into. With
+                neither ``queries`` nor ``queried_keys``, the neighbor list
+                builds a self-graph over ``keys``.
             systems: Indexed system data with cell information.
-            for_indices: Optional subset of ``lh`` particle ids whose incident
-                self-graph edges should be returned. The caller must already
-                have written any updated particle data into ``lh``.
+            queries: Optional bipartite query table. Each edge then connects a
+                ``keys`` particle to a ``queries`` particle.
+            queried_keys: Optional subset of ``keys`` particle ids whose
+                incident self-graph edges should be returned. The caller must
+                already have written any updated particle data into ``keys``.
 
         Returns:
-            Edges whose columns index ``lh`` for self-graph calls.
+            Edges whose columns index ``keys`` for self-graph calls.
         """
         ...
 
@@ -103,24 +123,24 @@ class CandidateBatch[D: int]:
         is_minimum_image: ``(n,)`` bool — True where the candidate's shift
             equals the minimum-image shift; False for non-MIC replicated
             copies emitted by selectors that handle PBC image expansion.
-        rhs_keys: Pair-specific key vocabulary for the second edge column.
+        query_keys: Pair-specific key vocabulary for the second edge column.
             ``None`` means it uses ``edges.indices.keys``.
     """
 
     edges: Edges[D]
     is_minimum_image: Array
-    rhs_keys: tuple[ParticleId, ...] | None = field(default=None, static=True)
+    query_keys: tuple[ParticleId, ...] | None = field(default=None, static=True)
 
     @property
-    def lh_idx(self) -> Index[ParticleId]:
-        """Pair-specific: lh-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
+    def key_idx(self) -> Index[ParticleId]:
+        """Pair-specific: key-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
         return self.edges.indices[:, 0]
 
     @property
-    def rh_idx(self) -> Index[ParticleId]:
-        """Pair-specific: rh-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
+    def query_idx(self) -> Index[ParticleId]:
+        """Pair-specific: query-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
         return Index(
-            self.rhs_keys or self.edges.indices.keys,
+            self.query_keys or self.edges.indices.keys,
             self.edges.indices.indices[:, 1],
         )
 
@@ -129,30 +149,51 @@ class CandidateBatch[D: int]:
 class PipelineContext:
     """Read-only inputs shared by every mask and the compactor.
 
-    Positions in ``lh`` and optional ``rh`` are in **fractional** coordinates
-    (transformed by [`_prepare`][kups.core.neighborlist.pipeline._prepare]).
-    There is no ``out_of_bounds`` field — masks/compactors that need an
-    OOB sentinel resolve the rhs table first.
+    Positions in ``keys`` and optional ``queries`` are in **fractional**
+    coordinates (transformed by
+    [`_prepare`][kups.core.neighborlist.pipeline._prepare]). There is no
+    ``out_of_bounds`` field — masks/compactors that need an OOB sentinel resolve
+    the query table first.
 
     Attributes:
-        lh: Left-hand particle table in fractional coords.
-        rh: Right-hand particle table in fractional coords for true bipartite
-            queries. ``None`` for full self-graphs and ``for_indices`` updates.
+        keys: Key particle table in fractional coords (the table the returned
+            ``Edges`` index into).
+        queries: Query particle table in fractional coords for true bipartite
+            queries. ``None`` for full self-graphs and ``queried_keys`` updates.
         systems: Indexed system data with cell information.
-        for_indices: Raw ``lh`` positions to update/query, or ``None`` for a
+        queried_keys: Raw ``keys`` positions to update/query, or ``None`` for a
             full self-graph or bipartite query.
     """
 
-    lh: Table[ParticleId, NeighborListPoints]
-    rh: Table[ParticleId, NeighborListPoints] | None
+    keys: Table[ParticleId, NeighborListPoints]
+    queries: Table[ParticleId, NeighborListPoints] | None
     systems: Table[SystemId, NeighborListSystems]
-    for_indices: Array | None
+    queried_keys: Array | None
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
-        assert self.rh is None or self.for_indices is None, (
-            "PipelineContext cannot combine rh with for_indices."
+        assert self.queries is None or self.queried_keys is None, (
+            "PipelineContext cannot combine queries with queried_keys."
         )
+
+    @property
+    def edge_query_table(self) -> Table[ParticleId, NeighborListPoints]:
+        """Table addressed by the second edge column."""
+        return self.queries if self.queries is not None else self.keys
+
+    @property
+    def query_table(self) -> Table[ParticleId, NeighborListPoints]:
+        """Table used to enumerate query candidates.
+
+        ``queries`` is reserved for true bipartite calls. ``queried_keys``
+        selects a self-graph update subset from ``keys`` and is lifted back to
+        ``keys`` index space before masks and compaction see the batch.
+        """
+        if self.queries is not None:
+            return self.queries
+        if self.queried_keys is None:
+            return self.keys
+        return self.keys.subset(Index(self.keys.keys, self.queried_keys))
 
 
 class CandidateSelector[D: int](Protocol):

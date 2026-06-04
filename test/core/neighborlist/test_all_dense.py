@@ -31,10 +31,10 @@ class TestAllSubselect:
         )
         candidates = _all_subselect(lh, rh, systems)
         nptest.assert_array_equal(
-            np.asarray(candidates.lhs.indices), np.array([0, 0, 1, 1, 2, 2])
+            np.asarray(candidates.key_idx.indices), np.array([0, 0, 1, 1, 2, 2])
         )
         nptest.assert_array_equal(
-            np.asarray(candidates.rhs.indices), np.array([0, 1, 0, 1, 0, 1])
+            np.asarray(candidates.query_idx.indices), np.array([0, 1, 0, 1, 0, 1])
         )
 
 
@@ -53,7 +53,7 @@ class TestMultiSystemWarning:
             cutoffs=cutoff_table(jnp.array([1.0, 1.0])),
         )
         with caplog.at_level(logging.WARNING):
-            result = as_result_function(nl)(lh=lh, systems=systems)
+            result = as_result_function(nl)(keys=lh, systems=systems)
             result.raise_assertion()
         assert "single-system" in caplog.text
 

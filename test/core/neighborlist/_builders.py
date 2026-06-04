@@ -116,7 +116,7 @@ def make_rh(
     lh: Table[ParticleId, SamplePoints],
     update_positions: Array,
     update_batch_mask: Array,
-    for_indices: Array,
+    queried_keys: Array,
     exclusion_ids: Array | None = None,
 ) -> tuple[Table[ParticleId, SamplePoints], Index[ParticleId]]:
     """Create proposed particle data and the affected ``lh`` ids for testing."""
@@ -125,7 +125,7 @@ def make_rh(
     sys_keys = tuple(range(n_sys))
     rh_pi_keys = tuple(ParticleId(i) for i in range(n_rh))
     if exclusion_ids is None:
-        exclusion_ids = for_indices
+        exclusion_ids = queried_keys
     rh_points = SamplePoints(
         positions=update_positions,
         system=Index(sys_keys, update_batch_mask.astype(int)),
@@ -133,8 +133,8 @@ def make_rh(
         exclusion=Index.integer(exclusion_ids.astype(int)),
     )
     rh_indexed = Table(rh_pi_keys, rh_points)
-    for_indices_idx = Index(lh.keys, for_indices.astype(int))
-    return rh_indexed, for_indices_idx
+    queried_keys_idx = Index(lh.keys, queried_keys.astype(int))
+    return rh_indexed, queried_keys_idx
 
 
 def make_edges(
@@ -158,7 +158,7 @@ def make_pipeline_ctx(
     lh: Table[ParticleId, SamplePoints],
     rh: Table[ParticleId, SamplePoints] | None = None,
     cell: Cell | None = None,
-    for_indices: Array | Index[ParticleId] | None = None,
+    queried_keys: Array | Index[ParticleId] | None = None,
 ) -> PipelineContext:
     """Build a ``PipelineContext`` directly for unit-level mask/compactor tests.
 
@@ -166,16 +166,18 @@ def make_pipeline_ctx(
     convention. Using a unit cell (``eye(3)``) keeps real == fractional so
     ``DistanceCutoffMask`` produces the same numbers either way.
     """
-    if for_indices is not None and not isinstance(for_indices, Index):
-        for_indices = Index(lh.keys, for_indices)
-    assert rh is None or for_indices is None
+    if queried_keys is not None and not isinstance(queried_keys, Index):
+        queried_keys = Index(lh.keys, queried_keys)
+    assert rh is None or queried_keys is None
     if cell is None:
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
     systems, _ = make_systems(cell, jnp.array([1.0]))
-    for_indices_raw = (
-        for_indices.indices_in(lh.keys) if for_indices is not None else None
+    queried_keys_raw = (
+        queried_keys.indices_in(lh.keys) if queried_keys is not None else None
     )
-    return PipelineContext(lh=lh, rh=rh, systems=systems, for_indices=for_indices_raw)
+    return PipelineContext(
+        keys=lh, queries=rh, systems=systems, queried_keys=queried_keys_raw
+    )
 
 
 def make_batch(
@@ -236,13 +238,13 @@ def make_adaptive_state(n_particles: int, n_systems: int) -> EvalState:
     return EvalState(particles=lh, systems=systems, neighborlist_params=params)
 
 
-def call_with_retry(nl, lh, systems, for_indices=None):
+def call_with_retry(nl, lh, systems, queried_keys=None):
     """Run a neighbor list, growing its capacities until no assertion fails."""
     from kups.core.result import as_result_function
 
     while (
         result := jax.jit(as_result_function(nl))(
-            lh=lh, systems=systems, for_indices=for_indices
+            keys=lh, systems=systems, queried_keys=queried_keys
         )
     ).failed_assertions:
         nl = result.fix_or_raise(nl)
