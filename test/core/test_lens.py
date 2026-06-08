@@ -3,6 +3,7 @@
 
 """Tests for lens functionality."""
 
+from dataclasses import replace
 from typing import Any
 
 import jax
@@ -289,6 +290,64 @@ class TestNestedLens:
         first_char_lens = street_lens.focus(get_first_char)
 
         assert first_char_lens.get(person) == "1"
+
+    def test_nest_preserves_custom_setter(self, person):
+        """nest must thread the inner lens's setter, not re-infer one from the path.
+
+        The inner setter has a side effect (clearing ``city``) that a path-traced
+        setter cannot reproduce. Dropping the setter would leave ``city`` untouched.
+        """
+
+        def get_address(p: Person) -> Address:
+            return p.address
+
+        def get_street(a: Address) -> str:
+            return a.street
+
+        def set_street_and_clear_city(a: Address, value: str) -> Address:
+            return replace(a, street=value, city="")
+
+        outer = lens(get_address)
+        inner = LambdaLens(view(get_street), set_street_and_clear_city)
+
+        result = outer.nest(inner).set(person, "456 Oak Ave")
+
+        assert result.address.street == "456 Oak Ave"
+        assert result.address.city == ""  # side effect from the inner setter
+        assert person.address.city == "Anytown"  # original untouched
+
+    def test_nest_index_lens(self, company):
+        """nesting an IndexLens (computed getter) must use its scatter setter.
+
+        Path-tracing rejects the IndexLens getter, so the old focus-based nest
+        raised on set; threading the IndexLens directly scatters correctly.
+        """
+
+        def get_scores(c: Company) -> Array:
+            return c.scores
+
+        def identity(a: Array) -> Array:
+            return a
+
+        outer = lens(get_scores)
+        inner = lens(identity).at(jnp.array([0, 2]))
+        nested = outer.nest(inner)
+
+        npt.assert_array_equal(nested.get(company), jnp.array([85.5, 78.5]))
+
+        updated = nested.set(company, jnp.array([1.0, 2.0]))
+        npt.assert_array_equal(updated.scores, jnp.array([1.0, 92.0, 2.0, 88.0]))
+
+    def test_nest_rejects_bare_view(self, person):
+        """nest requires a Lens; a bare view must raise instead of silently routing."""
+
+        def get_address(p: Person) -> Address:
+            return p.address
+
+        outer = lens(get_address)
+
+        with pytest.raises(TypeError, match="nest requires a Lens"):
+            outer.nest(view(lambda a: a))  # type: ignore[arg-type]
 
 
 class TestBoundLens:

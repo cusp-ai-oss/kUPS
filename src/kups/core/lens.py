@@ -257,17 +257,17 @@ class Lens(Protocol[S, R]):
         ...
 
     def nest[U, S2, R2](self: Lens[S2, R2], other: Lens[R2, U]) -> Lens[S2, U]:
-        """Nest another lens or view within this lens.
+        """Compose this lens with an inner lens, preserving the inner lens's setter.
 
-        This provides an alternative to focus() that works with both lenses and views.
-        When given a lens, it extracts the view from it; when given a view directly,
-        it uses it as-is.
+        Unlike focus(), which infers a setter by tracing the path of a getter, nest
+        threads the inner lens's own get and set. For a bare getter (no setter),
+        use focus() instead.
 
         Args:
-            other: Either a lens or view to nest within this lens
+            other: The inner lens to compose within this lens
 
         Returns:
-            A new lens that composes this lens with the provided lens/view
+            A new lens that composes this lens with the inner lens
         """
         ...
 
@@ -384,17 +384,17 @@ class BoundLens(Protocol[S, R]):
         ...
 
     def nest[U, R2](self: BoundLens[S, R2], other: Lens[R2, U]) -> BoundLens[S, U]:
-        """Nest another lens or view within this bound lens.
+        """Compose this bound lens with an inner lens, preserving its setter.
 
-        This provides an alternative to focus() that works with both lenses and views.
-        When given a lens, it extracts the view from it; when given a view directly,
-        it uses it as-is.
+        Unlike focus(), which infers a setter by tracing the path of a getter, nest
+        threads the inner lens's own get and set. For a bare getter (no setter),
+        use focus() instead.
 
         Args:
-            other: Either a lens or view to nest within this lens
+            other: The inner lens to compose within this bound lens
 
         Returns:
-            A new bound lens that composes this lens with the provided lens/view
+            A new bound lens that composes this lens with the inner lens
         """
         ...
 
@@ -423,8 +423,12 @@ class BaseLens(Lens[S, R], abc.ABC):
         return MergedLens(self, other)
 
     def nest[U, R2](self: Lens[S, R2], other: Lens[R2, U]) -> Lens[S, U]:
-        view_func = other.get if isinstance(other, Lens) else other
-        return self.focus(view_func)
+        if not isinstance(other, Lens):
+            raise TypeError(
+                f"nest requires a Lens, got {type(other).__name__}. "
+                "Use .focus(view) to compose a bare getter."
+            )
+        return NestedLens(self, other)
 
     @overload
     def __call__[S2, R2](self: Lens[S2, R2], state: S2, /, value: R2) -> S2: ...
@@ -577,7 +581,7 @@ class SimpleBoundLens(BoundLens[S, R]):
     def nest[U, R2](
         self: SimpleBoundLens[S, R2], other: Lens[R2, U]
     ) -> BoundLens[S, U]:
-        """Nest another lens or view within this bound lens."""
+        """Compose this bound lens with an inner lens, preserving its setter."""
         return self.lens.nest(other).bind(self.target)
 
     @overload
