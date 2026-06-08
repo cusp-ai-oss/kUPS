@@ -28,9 +28,11 @@ from kups.potential.classical.ewald import (
     EwaldParameters,
     estimate_ewald_parameters,
     ewald_long_range_energy,
+    ewald_net_charge_energy,
     ewald_self_interaction_energy,
     ewald_short_range_energy,
     kvecs_from_kmax,
+    prefactor,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 
@@ -338,6 +340,88 @@ class TestEwald:
             total_energy[0] / TO_STANDARD_UNITS,
             rtol=eps,
         )
+
+    def test_net_charge_energy_closed_form(self):
+        """E_net matches -(pi / (2 V alpha^2)) * Q^2 in standard units."""
+        L = 10.0
+        positions = jnp.array([[0.0, 0.0, 0.0], [3.0, 3.0, 3.0], [6.0, 6.0, 6.0]])
+        charges = jnp.array([1.0, 1.0, 0.5])  # Q = 2.5
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * L))
+        alpha = 0.4
+        params = EwaldParameters(
+            alpha=Table((SystemId(0),), jnp.array([alpha])),
+            cutoff=Table((SystemId(0),), jnp.array([5.0])),
+            # net-charge term ignores k-vectors; a dummy shift suffices.
+            reciprocal_lattice_shifts=Table(
+                (SystemId(0),), jnp.zeros((1, 1, 3), dtype=int)
+            ),
+        )
+        pdata = _make_particle_data(positions, charges, n_systems=1)
+        particles = Table.arange(pdata, label=ParticleId)
+        systems = _make_systems(cell[None], jnp.array([5.0]))
+        inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+
+        e_net = ewald_net_charge_energy(inp).data[0]
+        Q, V = 2.5, L**3
+        expected = -jnp.pi / (2 * V * alpha**2) * Q**2 * TO_STANDARD_UNITS
+        npt.assert_allclose(e_net, expected, rtol=1e-6)
+
+    def test_zero_kvector_excluded(self):
+        """The k=0 reciprocal mode is excluded (prefactor 0); net charge replaces it."""
+        L = 10.0
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * L))
+        shifts = jnp.array([[[0, 0, 0], [1, 0, 0], [1, 1, 0]]])  # (0,0,0) first
+        params = EwaldParameters(
+            alpha=Table((SystemId(0),), jnp.array([0.4])),
+            cutoff=Table((SystemId(0),), jnp.array([5.0])),
+            reciprocal_lattice_shifts=Table((SystemId(0),), shifts),
+        )
+        pdata = _make_particle_data(jnp.zeros((1, 3)), jnp.array([1.0]), n_systems=1)
+        particles = Table.arange(pdata, label=ParticleId)
+        systems = _make_systems(cell[None], jnp.array([5.0]))
+        inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+
+        pref = prefactor(inp)
+        npt.assert_array_equal(pref[0, 0], jnp.asarray(0.0))
+        assert bool(jnp.all(pref[0, 1:] > 0))
+
+    def test_net_charge_total_energy_alpha_stable(self):
+        """For Q != 0 the total energy is finite and ~independent of alpha.
+
+        The neutralizing-background correction restores alpha-independence of the
+        total Ewald energy; doubling alpha leaves the (converged) total unchanged.
+        """
+        L = 12.0
+        positions = jnp.array([[0.0, 0.0, 0.0], [6.0, 6.0, 6.0]])
+        charges = jnp.array([1.0, 1.0])  # Q = 2, non-neutral
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * L))
+
+        rc = 5.0
+        kvecs = kvecs_from_kmax(cell, 6.0)  # large enough for alpha up to 1.0
+        pdata = _make_particle_data(positions, charges, n_systems=1)
+        particles = Table.arange(pdata, label=ParticleId)
+        systems = _make_systems(cell[None], jnp.array([rc]))
+        edges = _build_neighborlist(particles, systems, len(charges))
+        graph = HyperGraph(particles=particles, systems=systems, edges=edges)
+
+        def total_energy(alpha: float) -> Array:
+            params = EwaldParameters(
+                alpha=Table((SystemId(0),), jnp.array([alpha])),
+                cutoff=Table((SystemId(0),), jnp.array([rc])),
+                reciprocal_lattice_shifts=Table((SystemId(0),), kvecs[None]),
+            )
+            sr_inp = GraphPotentialInput(params, graph)
+            lr_inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+            return (
+                ewald_short_range_energy(sr_inp).data.data[0]
+                + ewald_long_range_energy(lr_inp).data.data[0]
+                + ewald_self_interaction_energy(sr_inp).data.data[0]
+            )
+
+        e_lo = total_energy(0.5)
+        e_hi = total_energy(1.0)  # alpha doubled
+        assert bool(jnp.isfinite(e_lo)) and bool(jnp.isfinite(e_hi))
+        npt.assert_allclose(e_lo, e_hi, atol=5e-3, rtol=1e-3)
 
 
 class TestEwaldParametersMake:

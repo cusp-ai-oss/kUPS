@@ -11,6 +11,7 @@ updates via cached structure factors for efficient Monte Carlo.
 from __future__ import annotations
 
 import functools
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -588,15 +589,40 @@ def structure_factor[State](
     return sk, patch
 
 
+def ewald_net_charge_energy(inp: EwaldLongRangeInput[Any]) -> Table[SystemId, Energy]:
+    """Neutralizing-background correction for systems with nonzero net charge.
+
+    Math: ``E_net = -(pi / (2 * V * alpha^2)) * Q^2 * TO_STANDARD_UNITS`` where
+    ``Q = sum_i q_i`` is the per-system net charge and ``V`` the cell volume.
+
+    Replaces the omitted (divergent) ``k = 0`` term of the reciprocal sum with a
+    uniform neutralizing background, restoring independence of the total energy
+    from ``alpha``. Vanishes for charge-neutral systems. Position-independent (no
+    forces) but volume-dependent, so it contributes to the virial/pressure.
+    """
+    particles = inp.point_cloud.particles.data
+    sys_idx = inp.point_cloud.systems.index
+    net_charge = jax.ops.segment_sum(
+        particles.charges,
+        particles.system.indices,
+        inp.point_cloud.batch_size,
+        mode="drop",
+    )
+    alpha = inp.parameters.alpha[sys_idx]
+    energies = -jnp.pi / (2 * inp.volume * alpha**2) * net_charge**2 * TO_STANDARD_UNITS
+    return Table.arange(energies, label=SystemId)
+
+
 def ewald_long_range_energy[State](
     inp: EwaldLongRangeInput[State],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
     """Reciprocal-space (long-range) Ewald energy.
 
-    Math: ``E_lr = TO_STANDARD_UNITS * sum_k P(k) * |S(k)|^2``.
+    Math: ``E_lr = TO_STANDARD_UNITS * sum_k P(k) * |S(k)|^2 + E_net``.
 
-    Wraps ``structure_factor`` + ``long_range`` and returns a cache patch
-    for structure factor updates on MC accept/reject.
+    Wraps ``structure_factor`` + ``long_range``, adds the neutralizing-background
+    correction (``ewald_net_charge_energy``) for nonzero net charge, and returns a
+    cache patch for structure factor updates on MC accept/reject.
     """
     structure_out, patch = structure_factor(inp)
     energy = long_range(inp, structure_out)
@@ -604,7 +630,8 @@ def ewald_long_range_energy[State](
         f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     )
     energy = energy * TO_STANDARD_UNITS
-    return WithPatch(Table.arange(energy, label=SystemId), patch)
+    total = ewald_net_charge_energy(inp).map_data(lambda e_net: e_net + energy)
+    return WithPatch(total, patch)
 
 
 @dataclass
@@ -1222,6 +1249,13 @@ def estimate_ewald_parameters(
     # Note: only runs on a single system, not a batch of systems.
     # Input validation
     charges_np = np.asarray(charges)
+    net_charge = float(charges_np.astype(np.float64).sum())
+    if abs(net_charge) > 1e-6:
+        warnings.warn(
+            f"System is not charge neutral (net charge {net_charge:.4g} e); "
+            "the neutralizing-background correction will be applied.",
+            stacklevel=2,
+        )
     volume = np.asarray(cell.volume)
     Q2 = np.vdot(charges_np, charges_np)
     N = charges.size
