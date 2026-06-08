@@ -76,11 +76,6 @@ class RelaxRunConfig(BaseModel):
     """Random seed. None for time-based."""
     force_tolerance: float
     """Convergence threshold for max atomic force (eV/Å)."""
-
-
-class RelaxParameters(BaseModel):
-    """Optimiser configuration for relaxation."""
-
     optimizer: TransformationConfig
     """List of Optax transform specifications passed to `make_optimizer`."""
     optimize_cell: bool

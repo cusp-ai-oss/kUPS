@@ -195,9 +195,10 @@ def run_relax[State: IsRelaxState](
         cell = s.systems.data.cell
         cell_grad = cell.frame.vectors_gradient(s.systems.data.cell_gradients.frame)
         max_cell_grad = jnp.max(jnp.abs(cell_grad))
-        return (max_force < config.force_tolerance) & (
-            max_cell_grad < config.force_tolerance
-        )
+        result = max_force < config.force_tolerance
+        if config.optimize_cell:
+            result = result & (max_cell_grad < config.force_tolerance)
+        return result
 
     def converged(s: State) -> bool:
         return bool(converged_value(s))

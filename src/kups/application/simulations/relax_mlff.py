@@ -20,7 +20,6 @@ from pydantic import BaseModel
 
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
-    RelaxParameters,
     RelaxParticles,
     RelaxRunConfig,
     RelaxSystems,
@@ -53,7 +52,6 @@ logging.basicConfig(
 
 class Config(BaseModel):
     run: RelaxRunConfig
-    relax: RelaxParameters
     inp_files: tuple[str | Path, ...]
     model_path: str | Path
 
@@ -110,12 +108,12 @@ def run(config: Config) -> None:
     """
     key = jax.random.key(config.run.seed or time.time_ns())
     state_lens = identity_lens(RelaxMlffState)
-    optimizer = make_optimizer(config.relax.optimizer)
+    optimizer = make_optimizer(config.run.optimizer)
     potential = make_tojaxed_from_state(
         state_lens, compute_position_and_cell_gradients=True
     )
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, config.relax.optimize_cell
+        state_lens, potential, optimizer, config.run.optimize_cell
     )
     state = init_state(config, opt_init)
     logging.info("Starting relaxation")

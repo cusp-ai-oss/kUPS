@@ -12,7 +12,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.application.relaxation.analysis import analyze_relax_file
-from kups.application.relaxation.data import RelaxParameters, RelaxRunConfig
+from kups.application.relaxation.data import RelaxRunConfig
 from kups.application.relaxation.simulation import make_relax_propagator
 from kups.application.simulations.relax_lj import (
     Config,
@@ -70,9 +70,10 @@ def _tmp_h5() -> str:
 def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Config:
     return Config(
         run=RelaxRunConfig(
-            out_file=out_file, max_steps=5, seed=42, force_tolerance=0.5
-        ),
-        relax=RelaxParameters(
+            out_file=out_file,
+            max_steps=5,
+            seed=42,
+            force_tolerance=0.5,
             optimizer=[
                 {"transform": "scale_by_ase_lbfgs", "memory_size": 10, "alpha": 70},
                 {"transform": "max_step_size", "max_step_size": 0.2},
@@ -112,7 +113,7 @@ def _build_propagator(optimize_cell: bool):
     """Build an LJ relaxation propagator and its initial state."""
     config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
     state_lens = identity_lens(RelaxLjState)
-    optimizer = make_optimizer(config.relax.optimizer)
+    optimizer = make_optimizer(config.run.optimizer)
     potential = make_lennard_jones_from_state(
         state_lens, compute_position_and_cell_gradients=True
     )
