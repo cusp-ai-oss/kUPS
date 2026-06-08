@@ -215,6 +215,73 @@ def _ddlog2(x: Array, y: Array, z: Array) -> Array:
     return jnp.where(diff == 0.0, confluent, generic)
 
 
+def _ddexp(x: Array, y: Array) -> Array:
+    """First divided difference of ``exp``: ``(exp x - exp y) / (x - y)``,
+    with the confluent limit ``exp x`` as ``y -> x``. Gradient-safe at ``x == y``."""
+    diff = x - y
+    safe = jnp.where(diff == 0.0, 1.0, diff)
+    return jnp.where(diff == 0.0, jnp.exp(x), (jnp.exp(x) - jnp.exp(y)) / safe)
+
+
+def _ddexp2(x: Array, y: Array, z: Array) -> Array:
+    """Second divided difference of ``exp`` (symmetric in its arguments), with
+    confluent limits when the outer pair or all three coincide."""
+    diff = x - z
+    safe = jnp.where(diff == 0.0, 1.0, diff)
+    generic = (_ddexp(x, y) - _ddexp(y, z)) / safe
+    # x == z: by symmetry exp[x, y, x] = exp[x, x, y] = (exp x - exp[x, y]) / (x - y),
+    # whose own y -> x limit is f''(x) / 2 = exp(x) / 2.
+    diff_xy = x - y
+    safe_xy = jnp.where(diff_xy == 0.0, 1.0, diff_xy)
+    confluent = jnp.where(
+        diff_xy == 0.0, 0.5 * jnp.exp(x), (jnp.exp(x) - _ddexp(x, y)) / safe_xy
+    )
+    return jnp.where(diff == 0.0, confluent, generic)
+
+
+def triangular_3x3_expm(A: Array, *, lower: bool = True) -> Array:
+    r"""Matrix exponential of triangular 3×3 matrices.
+
+    Closed form from the fact that ``B`` and ``A = expm(B)`` commute: the diagonal
+    of ``A`` is ``exp`` of ``B``'s diagonal, and the off-diagonal couplings are
+    divided differences of ``exp`` over the diagonal entries. Using divided
+    differences keeps repeated diagonal entries (e.g. cubic / tetragonal cells)
+    well-conditioned.
+
+    Real and gradient-safe inverse of
+    [triangular_3x3_logm][kups.core.utils.math.triangular_3x3_logm]; agrees with
+    ``jax.scipy.linalg.expm`` on triangular matrices but avoids its Padé
+    scaling-and-squaring iteration.
+
+    Args:
+        A: Array of shape `(..., 3, 3)` containing triangular matrices.
+        lower: Whether matrices are lower (True) or upper (False) triangular.
+
+    Returns:
+        Array of shape `(..., 3, 3)` containing the triangular exponentials.
+    """
+    M = A if lower else jnp.swapaxes(A, -1, -2)
+    d0, d1, d2 = M[..., 0, 0], M[..., 1, 1], M[..., 2, 2]
+    a, b, c = M[..., 1, 0], M[..., 2, 0], M[..., 2, 1]
+    zero = jnp.zeros_like(d0)
+    out = jnp.stack(
+        [
+            jnp.stack([jnp.exp(d0), zero, zero], axis=-1),
+            jnp.stack([a * _ddexp(d0, d1), jnp.exp(d1), zero], axis=-1),
+            jnp.stack(
+                [
+                    b * _ddexp(d0, d2) + a * c * _ddexp2(d0, d1, d2),
+                    c * _ddexp(d1, d2),
+                    jnp.exp(d2),
+                ],
+                axis=-1,
+            ),
+        ],
+        axis=-2,
+    )
+    return out if lower else jnp.swapaxes(out, -1, -2)
+
+
 def triangular_3x3_logm(A: Array, *, lower: bool = True) -> Array:
     r"""Principal matrix logarithm of triangular 3×3 matrices with positive diagonal.
 

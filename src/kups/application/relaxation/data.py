@@ -17,9 +17,10 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import AnyPeriodicity, Cell
+from kups.core.cell import AnyPeriodicity, Cell, FrechetFrame
 from kups.core.data import Table
 from kups.core.data.index import Index
+from kups.core.lens import bind
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.relaxation.config import TransformationConfig
@@ -105,6 +106,12 @@ def relax_state_from_ase(
             system=p.data.system,
             position_gradients=jnp.zeros_like(p.data.positions),
         ),
+    )
+    # cell_factor = atom count (ASE's exp_cell_factor) balances the extensive
+    # cell-virial gradient against the per-atom forces in the joint optimiser.
+    n_atoms = float(p.data.positions.shape[0])
+    cell = bind(cell, lambda x: x.frame).apply(
+        lambda f: FrechetFrame.from_frame(f, cell_factor=n_atoms)
     )
     cell = cell[None]
     systems = Table.arange(

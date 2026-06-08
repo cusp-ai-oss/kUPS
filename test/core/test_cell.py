@@ -16,6 +16,7 @@ from kups.core.cell import (
     Cell,
     CoordinateSpace,
     Frame,
+    FrechetFrame,
     LinearFrame,
     LogTriclinicFrame,
     MaterializedFrame,
@@ -716,6 +717,7 @@ _LINEAR_FRAME_CLASSES = [
 _GRAD_FRAME_CLASSES = [
     *_LINEAR_FRAME_CLASSES,
     pytest.param(LogTriclinicFrame, id="log_triclinic"),
+    pytest.param(FrechetFrame, id="frechet"),
     pytest.param(_ExpFrame, id="exp_nonlinear"),
 ]
 
@@ -800,6 +802,7 @@ _GEOMETRY_FRAMES = [
     pytest.param(OrthogonalFrame.from_matrix(_M_ORTHO[None]), id="orthogonal"),
     pytest.param(MaterializedFrame.from_matrix(_M_TRICLINIC[None]), id="materialized"),
     pytest.param(LogTriclinicFrame.from_matrix(_M_TRICLINIC[None]), id="log_triclinic"),
+    pytest.param(FrechetFrame.from_matrix(_M_TRICLINIC[None]), id="frechet"),
 ]
 _frame_case = pytest.mark.parametrize("frame", _GEOMETRY_FRAMES)
 
@@ -909,3 +912,55 @@ class TestLogTriclinicFrame:
         frame = LogTriclinicFrame.from_matrix(jnp.eye(3) * 2.0)
         assert isinstance(frame, BaseFrame)
         assert not isinstance(frame, LinearFrame)
+
+
+class TestFrechetFrame:
+    """Deformation parameterisation: ``vectors == base @ expm(A / cell_factor)``
+    anchored at a fixed reference ``base`` (held stop-gradient, so only ``A`` is
+    optimised)."""
+
+    def test_vectors_is_base_times_expm(self):
+        a = jnp.array([[0.7, 0.0, 0.0], [0.5, 1.1, 0.0], [0.1, 0.2, 1.4]])
+        tril = jnp.array([0.7, 0.5, 1.1, 0.1, 0.2, 1.4])
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        frame = FrechetFrame(tril, base)
+        # Right-multiplication (Cartesian deformation), matching ASE's
+        # FrechetCellFilter; left-multiplication would recombine lattice vectors.
+        npt.assert_allclose(frame.vectors, base.vectors @ expm(a), atol=1e-6)
+        # base @ expm(A) of two lower-triangular factors stays lower-triangular.
+        npt.assert_allclose(jnp.triu(frame.vectors, 1), 0.0, atol=1e-6)
+
+    def test_from_frame_anchors_at_base(self):
+        """``A = 0`` reproduces the reference frame exactly."""
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        frame = FrechetFrame.from_frame(base)
+        npt.assert_allclose(frame.tril, 0.0)
+        npt.assert_allclose(frame.vectors, base.vectors, atol=1e-6)
+
+    def test_base_held_fixed_under_gradient(self):
+        """The cartesian→parameter pullback flows entirely into ``A``; the
+        stop-gradient base receives no gradient."""
+        frame = FrechetFrame.from_matrix(_M_TRICLINIC)
+        grad = frame.parameter_gradient(_CELL_GRAD)
+        assert isinstance(grad, FrechetFrame)
+        assert isinstance(grad.base, TriclinicFrame)
+        npt.assert_allclose(grad.base.tril, 0.0, atol=1e-6)
+        assert bool(jnp.any(grad.tril != 0.0))
+
+    def test_cell_factor_stiffens_deformation_and_gradient(self):
+        """``cell_factor`` (ASE's exp_cell_factor) scales the deformation to
+        ``expm(A / cell_factor)`` and divides the parameter gradient by it."""
+        a = jnp.array([[0.3, 0, 0], [0.2, 0.1, 0], [0.05, 0.1, 0.2]])
+        tril = jnp.array([0.3, 0.2, 0.1, 0.05, 0.1, 0.2])
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        npt.assert_allclose(
+            FrechetFrame(tril, base, cell_factor=4.0).vectors,
+            base.vectors @ expm(a / 4.0),
+            atol=1e-6,
+        )
+        # At A = 0 the deformation Jacobian is the base Jacobian times
+        # 1 / cell_factor, so the parameter gradient scales exactly by it.
+        z = jnp.zeros(6)
+        g1 = FrechetFrame(z, base, cell_factor=1.0).parameter_gradient(_CELL_GRAD).tril
+        g4 = FrechetFrame(z, base, cell_factor=4.0).parameter_gradient(_CELL_GRAD).tril
+        npt.assert_allclose(g4, g1 / 4.0, atol=1e-6)

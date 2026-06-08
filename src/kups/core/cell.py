@@ -119,13 +119,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jax.flatten_util import ravel_pytree
-from jax.scipy.linalg import expm
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.math import (
     triangular_3x3_det_and_inverse,
+    triangular_3x3_expm,
     triangular_3x3_from_tril,
     triangular_3x3_logm,
     triangular_3x3_matmul,
@@ -568,6 +568,10 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
     tril: Array
 
     @classmethod
+    def from_frame(cls, frame: Frame) -> Self:
+        return cls.from_matrix(frame.vectors)
+
+    @classmethod
     @override
     def from_matrix(cls, vecs: Array) -> Self:
         """Construct from a lower-triangular basis matrix ``L`` (positive
@@ -578,7 +582,7 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
     @property
     @override
     def vectors(self) -> Array:
-        return expm(triangular_3x3_from_tril(self.tril))
+        return triangular_3x3_expm(triangular_3x3_from_tril(self.tril))
 
     @property
     @override
@@ -601,6 +605,76 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
         log_scale = jnp.log(jnp.asarray(other))[..., None]
         diagonal = jnp.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
         return type(self)(self.tril + log_scale * diagonal)
+
+
+@dataclass
+class FrechetFrame(BaseFrame, Sliceable):
+    """Triclinic [Frame][kups.core.cell.Frame] parameterised as a
+    matrix-exponential deformation of a fixed reference frame, after ASE's
+    ``FrechetCellFilter``.
+
+    ``vectors`` is the reference ``base`` right-multiplied by
+    ``expm(A / cell_factor)`` for a lower-triangular ``A`` (its 6 stored
+    elements). Right-multiplication deforms Cartesian space, so ``vectors`` stays
+    lower-triangular and atoms ride the cell at fixed fractional coordinates. The
+    map is unconstrained -- any ``A`` gives a positive-volume basis -- so cell
+    relaxation in ``A`` cannot collapse or invert the cell. ``vectors`` is
+    nonlinear in the parameters, so like
+    [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] the gradient maps use
+    the general inverse-Jacobian path on [BaseFrame][kups.core.cell.BaseFrame].
+
+    Attributes:
+        tril: Lower-triangular elements ``[A00, A10, A11, A20, A21, A22]`` of
+            ``A``, shape ``(..., 6)``.
+        base: Reference frame; ``A = 0`` reproduces it. Held fixed
+            (stop-gradient) so only ``A`` is optimised.
+        cell_factor: Static stiffening factor (ASE's ``exp_cell_factor``,
+            typically the atom count) scaling the cell gradient by
+            ``1 / cell_factor`` to balance it against the per-atom forces.
+    """
+
+    tril: Array
+    base: Frame
+    cell_factor: float = field(default=1.0, static=True)
+
+    @classmethod
+    def from_frame(cls, frame: Frame, *, cell_factor: float = 1.0) -> Self:
+        return cls(
+            jnp.zeros(frame.vectors.shape[:-2] + (6,), frame.vectors.dtype),
+            frame,
+            cell_factor,
+        )
+
+    @classmethod
+    @override
+    def from_matrix(cls, vecs: Array) -> Self:
+        base = TriclinicFrame.from_matrix(vecs)
+        return cls(jnp.zeros(base.tril.shape, base.tril.dtype), base)
+
+    @property
+    def _base_vectors(self) -> Array:
+        return jax.lax.stop_gradient(self.base.vectors)
+
+    @property
+    @override
+    def vectors(self) -> Array:
+        A = triangular_3x3_from_tril(self.tril)
+        exp_A = triangular_3x3_expm(A / self.cell_factor)
+        # Right-multiply: deform Cartesian space (v -> v @ expm(A/cell_factor)), so
+        # atoms at fixed fractional coordinates ride the cell by the same factor.
+        return self._base_vectors @ exp_A
+
+    @override
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
+        # Per-axis row scaling acts on the left of ``vectors`` and has no closed
+        # form in ``A`` (the right factor), so apply it to the reference base.
+        return type(self)(self.tril, self.base.tile(multiplicities), self.cell_factor)
+
+    @override
+    def __mul__(self, other: Array | float | int) -> Self:
+        # Uniform scaling commutes with the right factor: ``s * (base @ expm) ==
+        # (s * base) @ expm``, so scale the base and leave ``A`` untouched.
+        return type(self)(self.tril, self.base * other, self.cell_factor)
 
 
 @dataclass
