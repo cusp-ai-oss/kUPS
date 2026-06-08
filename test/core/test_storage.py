@@ -5,6 +5,7 @@
 
 import tempfile
 
+import h5py
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -12,6 +13,7 @@ import pytest
 
 from kups.core.lens import view
 from kups.core.storage import (
+    Compression,
     EveryNStep,
     GroupReader,
     HDF5StorageReader,
@@ -171,8 +173,6 @@ class TestHDF5StorageWriter:
             for i in range(5):
                 writer.log(simple_state, i)
 
-        import h5py
-
         with h5py.File(temp_file, "r") as f:
             assert f.attrs["actual_steps"] == 5
 
@@ -310,3 +310,152 @@ class TestIntegration:
 
             if os.path.exists(nested_path):
                 os.unlink(nested_path)
+
+
+def _array_dataset(group: h5py.Group) -> h5py.Dataset:
+    name = next(k for k in group.keys() if k.startswith("array"))
+    return group[name]  # type: ignore[return-value]
+
+
+class TestCompression:
+    def test_dataset_kwargs_sizing(self):
+        """Per-leaf chunk sizing: time-axis target, scalars uncompressed."""
+        c = Compression(target_chunk_bytes=1 << 20)
+        # Large per-frame array: chunk holds target_bytes // frame_bytes frames.
+        kw = c.dataset_kwargs((1000,), (1326, 3), itemsize=8)
+        assert kw["chunks"] == ((1 << 20) // (1326 * 3 * 8), 1326, 3)
+        assert kw == {
+            **kw,
+            "compression": "gzip",
+            "compression_opts": 4,
+            "shuffle": True,
+        }
+        # Scalar-per-step: single chunk spanning the whole time axis.
+        assert c.dataset_kwargs((1000,), (), itemsize=8)["chunks"] == (1000,)
+        # Logged once (no time axis): one chunk spanning the whole array.
+        assert c.dataset_kwargs((), (4, 3), itemsize=8)["chunks"] == (4, 3)
+        # Rank-0 scalar: cannot chunk, so uncompressed.
+        assert c.dataset_kwargs((), (), itemsize=8) == {}
+
+    def test_lzf_has_no_level(self):
+        kw = Compression(codec="lzf").dataset_kwargs((10,), (5,), itemsize=8)
+        assert kw["compression"] == "lzf"
+        assert "compression_opts" not in kw
+
+    def test_roundtrip_and_filters_applied(self, temp_file: str):
+        """Default compression round-trips and lands gzip+shuffle+chunks on datasets."""
+        state = SimpleState(
+            position=jnp.zeros((64, 3)), velocity=jnp.zeros((64, 3)), energy=1.0
+        )
+        config = WriterGroupConfig(
+            view=view(lambda s: {"pos": s.position}),
+            logging_frequency=EveryNStep(1),
+        )  # default compression == Compression() (gzip + shuffle)
+        writer = HDF5StorageWriter(temp_file, config, state, total_steps=20)
+        with writer:
+            for i in range(20):
+                writer.log(SimpleState(state.position + i, state.velocity, 1.0), i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            pos = reader.focus_group("group")[:]["pos"]
+            assert pos.shape == (20, 64, 3)
+            npt.assert_array_equal(pos[7], state.position + 7)
+
+        with h5py.File(temp_file, "r") as f:
+            ds = _array_dataset(f["group"])  # type: ignore[arg-type]
+            assert ds.compression == "gzip"
+            assert ds.shuffle is True
+            assert ds.chunks is not None and ds.chunks[0] >= 1
+
+    def test_compression_none_is_contiguous(
+        self, simple_state: SimpleState, temp_file: str
+    ):
+        config = WriterGroupConfig(
+            view=view(lambda s: {"pos": s.position}),
+            logging_frequency=EveryNStep(1),
+            compression=None,
+        )
+        writer = HDF5StorageWriter(temp_file, config, simple_state, total_steps=5)
+        with writer:
+            for i in range(5):
+                writer.log(simple_state, i)
+
+        with h5py.File(temp_file, "r") as f:
+            ds = _array_dataset(f["group"])  # type: ignore[arg-type]
+            assert ds.compression is None
+            assert ds.chunks is None
+
+
+class TestAutoBatching:
+    def test_auto_batch_size_property(self, temp_file: str):
+        """GroupWriters.batch_size derives from datasets + compression."""
+        from kups.core.storage import _MAX_AUTO_BATCH
+
+        state = SimpleState(
+            position=jnp.zeros((3000,)), velocity=jnp.zeros((1,)), energy=0.0
+        )
+        expected = (1 << 20) // (state.position.dtype.itemsize * 3000)
+        assert 1 < expected < _MAX_AUTO_BATCH
+
+        # Large per-frame leaf: the chunk-fitting formula binds.
+        cfg = WriterGroupConfig(view(lambda s: {"p": s.position}), EveryNStep(1))
+        with HDF5StorageWriter(temp_file, cfg, state, total_steps=2000) as w:
+            assert w._group_writers[0].batch_size == expected
+
+        # Tiny per-frame leaf: the cap binds.
+        cfg = WriterGroupConfig(view(lambda s: {"e": s.velocity}), EveryNStep(1))
+        with HDF5StorageWriter(temp_file, cfg, state, total_steps=2000) as w:
+            assert w._group_writers[0].batch_size == _MAX_AUTO_BATCH
+
+        # Logged once (no time axis): no batching.
+        cfg = WriterGroupConfig(view(lambda s: {"p": s.position}), Once())
+        with HDF5StorageWriter(temp_file, cfg, state, total_steps=2000) as w:
+            assert w._group_writers[0].batch_size == 1
+
+    def test_auto_batched_roundtrip_multiblock(self, temp_file: str):
+        """Large frames force a small auto batch -> multiple blocks + a partial tail."""
+        n = 60_000  # frame is a big fraction of the 1 MiB target -> batch < num_steps
+        state = SimpleState(
+            position=jnp.zeros((n,)), velocity=jnp.zeros((1,)), energy=0.0
+        )
+        config = WriterGroupConfig(
+            view=view(lambda s: {"pos": s.position}),
+            logging_frequency=EveryNStep(1),
+        )
+        writer = HDF5StorageWriter(temp_file, config, state, total_steps=10)
+        with writer:
+            for i in range(10):
+                writer.log(SimpleState(state.position + i, state.velocity, 0.0), i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            pos = reader.focus_group("group")[:]["pos"]
+            assert pos.shape == (10, n)
+            for i in (0, 4, 9):
+                npt.assert_array_equal(pos[i], state.position + i)
+
+    def test_auto_handles_mixed_once_and_every_n(self, temp_file: str):
+        """Auto batching coexists with a Once group (single Ellipsis-indexed write)."""
+        state = SimpleState(
+            position=jnp.zeros((3,)), velocity=jnp.zeros((3,)), energy=0.0
+        )
+        config = {
+            "traj": WriterGroupConfig(
+                view=view(lambda s: {"pos": s.position}),
+                logging_frequency=EveryNStep(1),
+            ),
+            "init": WriterGroupConfig(
+                view=view(lambda s: {"pos": s.position}),
+                logging_frequency=Once(),
+            ),
+        }
+        writer = HDF5StorageWriter(temp_file, config, state, total_steps=7)
+        with writer:
+            for i in range(7):
+                writer.log(SimpleState(state.position + i, state.velocity, 0.0), i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            traj = reader.focus_group("group['traj']")[:]["pos"]
+            assert traj.shape == (7, 3)
+            npt.assert_array_equal(traj[6], state.position + 6)
+            init = reader.focus_group("group['init']")[...]["pos"]
+            npt.assert_array_equal(init, state.position)
