@@ -26,6 +26,7 @@ from kups.core.potential import (
     CachedPotential,
     EmptyType,
     MappedPotential,
+    MappedPotentialInput,
     Potential,
     PotentialAsPropagator,
     PotentialOut,
@@ -38,7 +39,6 @@ from kups.core.propagator import (
 )
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import IsState, ParticleId, SystemId
-from kups.core.utils.functools import identity
 from kups.core.utils.jax import key_chain
 from kups.md.integrators import Integrator, make_md_step_from_state
 
@@ -70,6 +70,20 @@ class IsMdState(IsState[MDParticles, MDSystems], Protocol):
     def step(self) -> Array: ...
 
 
+def potential_map(
+    input: MappedPotentialInput[IsMdState, IsMdGradients, Any],
+) -> PotentialOut[tuple[Array, Cell[AnyPeriodicity]], EmptyType]:
+    """Map the full potential output to the specific gradients needed for MD."""
+    return PotentialOut(
+        input.potential_out.total_energies,
+        (
+            input.potential_out.gradients.positions.data,
+            input.potential_out.gradients.cell.data,
+        ),
+        EMPTY,
+    )
+
+
 def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     state_lens: Lens[State, State],
     integrator: Integrator,
@@ -85,9 +99,7 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     Returns:
         Propagator that advances the state by one MD step.
     """
-    mapped_potential = MappedPotential(
-        potential, lambda x: (x.positions.data, x.cell.data), identity
-    )
+    mapped_potential = MappedPotential(potential, potential_map)
     derivative_computation = PotentialAsPropagator(
         CachedPotential(
             mapped_potential,

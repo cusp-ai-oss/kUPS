@@ -6,12 +6,24 @@
 import tempfile
 
 import ase.build
+import jax
 import jax.numpy as jnp
+import numpy.testing as npt
 import pytest
 
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import RelaxParameters, RelaxRunConfig
-from kups.application.simulations.relax_lj import Config, LjConfig, run
+from kups.application.relaxation.simulation import make_relax_propagator
+from kups.application.simulations.relax_lj import (
+    Config,
+    LjConfig,
+    RelaxLjState,
+    init_state,
+    run,
+)
+from kups.core.lens import identity_lens
+from kups.potential.classical.lennard_jones import make_lennard_jones_from_state
+from kups.relaxation.config import make_optimizer
 
 
 def _ar_cif(rattle: float) -> str:
@@ -55,7 +67,7 @@ def _tmp_h5() -> str:
     return f.name
 
 
-def _config(out_file: str, inp_file: str) -> Config:
+def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Config:
     return Config(
         run=RelaxRunConfig(
             out_file=out_file, max_steps=5, seed=42, force_tolerance=0.5
@@ -66,7 +78,7 @@ def _config(out_file: str, inp_file: str) -> Config:
                 {"transform": "max_step_size", "max_step_size": 0.2},
                 {"transform": "scale", "step_size": -1},
             ],
-            optimize_cell=False,
+            optimize_cell=optimize_cell,
         ),
         lj=LjConfig(
             tail_correction=False,
@@ -94,3 +106,40 @@ class TestRun:
         assert jnp.isfinite(jnp.asarray(result.final_energy)).item()
         assert jnp.isfinite(jnp.asarray(result.final_max_force)).item()
         assert result.n_steps >= 1
+
+
+def _build_propagator(optimize_cell: bool):
+    """Build an LJ relaxation propagator and its initial state."""
+    config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
+    state_lens = identity_lens(RelaxLjState)
+    optimizer = make_optimizer(config.relax.optimizer)
+    potential = make_lennard_jones_from_state(
+        state_lens, compute_position_and_cell_gradients=True
+    )
+    propagator, opt_init = make_relax_propagator(
+        state_lens, potential, optimizer, optimize_cell
+    )
+    return propagator, init_state(config, opt_init)
+
+
+class TestCellRelaxation:
+    """``optimize_cell`` drives the lattice vectors via the total cell gradient."""
+
+    def test_cell_moves_only_when_optimizing_cell(self):
+        # optimize_cell=True: the cell relaxes (total lattice gradient is non-zero
+        # for the off-equilibrium fcc-Ar cell).
+        prop, state = _build_propagator(optimize_cell=True)
+        stepped = prop(jax.random.key(0), state)
+        assert not jnp.allclose(
+            stepped.systems.data.cell.vectors, state.systems.data.cell.vectors
+        )
+
+        # optimize_cell=False: positions move but the cell is held fixed.
+        prop0, state0 = _build_propagator(optimize_cell=False)
+        stepped0 = prop0(jax.random.key(0), state0)
+        npt.assert_array_equal(
+            stepped0.systems.data.cell.vectors, state0.systems.data.cell.vectors
+        )
+        assert not jnp.allclose(
+            stepped0.particles.data.positions, state0.particles.data.positions
+        )

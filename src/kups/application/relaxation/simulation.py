@@ -25,6 +25,7 @@ from kups.core.potential import (
     CachedPotential,
     EmptyType,
     MappedPotential,
+    MappedPotentialInput,
     Potential,
     PotentialOut,
 )
@@ -37,6 +38,8 @@ from kups.core.propagator import (
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import IsState, ParticleId, SystemId
 from kups.core.utils.functools import identity
+from kups.core.utils.jax import jit
+from kups.observables.stress import total_lattice_gradient
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.propagator import RelaxationPropagator
 
@@ -69,6 +72,26 @@ class OptInit(Protocol):
     ) -> optax.OptState: ...
 
 
+def potential_out_map(
+    input: MappedPotentialInput[IsRelaxState, IsRelaxGradients, Any],
+) -> PotentialOut[tuple[Array, Cell[AnyPeriodicity]], Any]:
+    """Compute the total lattice gradient from the potential output."""
+    position_gradients, cell_gradients = (
+        input.potential_out.gradients.positions,
+        input.potential_out.gradients.cell,
+    )
+    total = total_lattice_gradient(
+        input.state.particles.data.positions,
+        position_gradients.data,
+        input.state.systems.map_data(lambda s: s.cell),
+        cell_gradients,
+        input.state.particles.data.system,
+    )
+    return PotentialOut(
+        input.potential_out.total_energies, (position_gradients.data, total.data), EMPTY
+    )
+
+
 def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
     state_lens: Lens[State, State],
     potential: Potential[State, Gradients, EmptyType, Any],
@@ -89,9 +112,7 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
         optimisation step and *opt_init* initialises the optimizer state.
     """
     # Cache the gradient and forces within the state
-    pot = MappedPotential(
-        potential, lambda x: (x.positions.data, x.cell.data), identity
-    )
+    pot = MappedPotential(potential, potential_out_map)
     pot = CachedPotential(
         pot,
         lens(
@@ -124,8 +145,19 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
             indices = (particles.data.system, systems.index)
             return optimizer.init(prop_view(params), prop_view(indices))  # type: ignore
 
+        def potential_map(
+            input: MappedPotentialInput[
+                State, tuple[Array, Cell[AnyPeriodicity]], EmptyType
+            ],
+        ) -> PotentialOut[T, EmptyType]:
+            return PotentialOut(
+                input.potential_out.total_energies,
+                prop_view(input.potential_out.gradients),
+                EMPTY,
+            )
+
         return RelaxationPropagator(
-            potential=MappedPotential(pot, prop_view, identity),
+            potential=MappedPotential(pot, potential_map),
             property=prop_lens,
             opt_state=state_lens.focus(lambda x: x.opt_state),
             optimizer=optimizer,
@@ -145,7 +177,7 @@ def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
 def run_relax[State: IsRelaxState](
     key: Array, propagator: Propagator[State], state: State, config: RelaxRunConfig
 ) -> State:
-    """Run structure relaxation with early stopping on force convergence.
+    """Run structure relaxation with early stopping on convergence.
 
     Args:
         key: JAX PRNG key.
@@ -157,10 +189,18 @@ def run_relax[State: IsRelaxState](
         Final relaxation state after convergence or ``max_steps``.
     """
 
+    @jit
+    def converged_value(s: State) -> Array:
+        max_force = jnp.max(jnp.linalg.norm(s.particles.data.forces, axis=-1))
+        cell = s.systems.data.cell
+        cell_grad = cell.frame.vectors_gradient(s.systems.data.cell_gradients.frame)
+        max_cell_grad = jnp.max(jnp.abs(cell_grad))
+        return (max_force < config.force_tolerance) & (
+            max_cell_grad < config.force_tolerance
+        )
+
     def converged(s: State) -> bool:
-        forces = s.particles.data.forces
-        max_force = jnp.max(jnp.linalg.norm(forces, axis=-1))
-        return bool(max_force < config.force_tolerance)
+        return bool(converged_value(s))
 
     def _postfix(s: State) -> dict[str, Any]:
         e = jnp.asarray(s.systems.data.potential_energy).sum()

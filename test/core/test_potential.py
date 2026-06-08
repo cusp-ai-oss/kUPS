@@ -591,9 +591,12 @@ class TestMappedPotential:
         potential = MockPotential()
 
         mapped = MappedPotential(
-            potential=potential,
-            gradient_map=lambda g: g["pos"][0],
-            hessian_map=lambda h: h,
+            potential,
+            lambda inp: PotentialOut(
+                inp.potential_out.total_energies,
+                inp.potential_out.gradients["pos"][0],
+                inp.potential_out.hessians,
+            ),
         )
 
         result = mapped({"positions": jnp.zeros((2, 2))})
@@ -609,9 +612,12 @@ class TestMappedPotential:
         potential = MockPotential()
 
         mapped = MappedPotential(
-            potential=potential,
-            gradient_map=lambda g: g,
-            hessian_map=lambda h: h["pos"][0, 0],
+            potential,
+            lambda inp: PotentialOut(
+                inp.potential_out.total_energies,
+                inp.potential_out.gradients,
+                inp.potential_out.hessians["pos"][0, 0],
+            ),
         )
 
         result = mapped({"positions": jnp.zeros((2, 2))})
@@ -623,9 +629,12 @@ class TestMappedPotential:
         potential = MockPotential()
 
         mapped = MappedPotential(
-            potential=potential,
-            gradient_map=lambda g: g["pos"].sum(),
-            hessian_map=lambda h: h["pos"].sum(),
+            potential,
+            lambda inp: PotentialOut(
+                inp.potential_out.total_energies,
+                inp.potential_out.gradients["pos"].sum(),
+                inp.potential_out.hessians["pos"].sum(),
+            ),
         )
 
         result = mapped({"positions": jnp.zeros((2, 2))})
@@ -638,9 +647,10 @@ class TestMappedPotential:
         potential = MockPotential(energy_multiplier=5.0)
 
         mapped = MappedPotential(
-            potential=potential,
-            gradient_map=lambda g: jnp.array(0.0),
-            hessian_map=lambda h: jnp.array(0.0),
+            potential,
+            lambda inp: PotentialOut(
+                inp.potential_out.total_energies, jnp.array(0.0), jnp.array(0.0)
+            ),
         )
 
         result = mapped({"positions": jnp.zeros((2, 2))})
@@ -653,11 +663,7 @@ class TestMappedPotential:
         """Test that patch is passed through unchanged."""
         potential = MockPotential()
 
-        mapped = MappedPotential(
-            potential=potential,
-            gradient_map=lambda g: g,
-            hessian_map=lambda h: h,
-        )
+        mapped = MappedPotential(potential, lambda inp: inp.potential_out)
 
         result = mapped({"positions": jnp.zeros((2, 2))})
 
@@ -668,9 +674,12 @@ class TestMappedPotential:
         potential = MockPotential()
 
         mapped = MappedPotential(
-            potential=potential,
-            gradient_map=lambda g: g["pos"][0],
-            hessian_map=lambda h: h["pos"][0],
+            potential,
+            lambda inp: PotentialOut(
+                inp.potential_out.total_energies,
+                inp.potential_out.gradients["pos"][0],
+                inp.potential_out.hessians["pos"][0],
+            ),
         )
 
         jitted = jax.jit(mapped)
@@ -685,9 +694,12 @@ class TestMappedPotential:
 
         summed = sum_potentials(p1, p2)
         mapped = MappedPotential(
-            potential=summed,
-            gradient_map=lambda g: g["pos"][0],
-            hessian_map=lambda h: h,
+            summed,
+            lambda inp: PotentialOut(
+                inp.potential_out.total_energies,
+                inp.potential_out.gradients["pos"][0],
+                inp.potential_out.hessians,
+            ),
         )
 
         result = mapped({"positions": jnp.zeros((2, 2))})

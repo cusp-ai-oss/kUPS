@@ -35,7 +35,6 @@ from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY,
-    EMPTY_LENS,
     CachedPotential,
     EmptyType,
     MappedPotential,
@@ -323,7 +322,12 @@ def make_boltzmann_probability_ratio[State, Move: Patch[Any]](
         ready to be called with ``(state, patch)``.
     """
     potential = CachedPotential(
-        MappedPotential(potential, EMPTY_LENS, EMPTY_LENS),
+        MappedPotential(
+            potential,
+            lambda input: PotentialOut(
+                input.potential_out.total_energies, EMPTY, EMPTY
+            ),
+        ),
         state.focus(
             lambda x: PotentialOut(
                 x.systems.map_data(lambda x: x.potential_energy), EMPTY, EMPTY

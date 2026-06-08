@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import ase
 import jax.numpy as jnp
@@ -18,7 +17,7 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import Cell
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.typing import ExclusionId, ParticleId, SystemId
@@ -54,9 +53,9 @@ class RelaxParticles(Particles):
 class RelaxSystems:
     """System-level data for structure relaxation."""
 
-    cell: Cell[Any]
+    cell: Cell[AnyPeriodicity]
     """Cell geometry, batched with shape (1,)."""
-    cell_gradients: Cell[Any]
+    cell_gradients: Cell[AnyPeriodicity]
     """Energy gradient w.r.t. the cell, stored on the same
     :class:`~kups.core.cell.Frame` as :attr:`cell` (i.e. the 6 lower-triangular
     entries of ``∂U/∂h`` for a :class:`~kups.core.cell.TriclinicFrame`). Stress

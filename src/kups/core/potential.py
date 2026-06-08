@@ -20,7 +20,7 @@ enabling modular force field composition (e.g., bonded + non-bonded + Coulomb).
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -411,6 +411,11 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
         return self.cache.get(state)
 
 
+class MappedPotentialInput[State, InGrad, InHess](NamedTuple):
+    state: State
+    potential_out: PotentialOut[InGrad, InHess]
+
+
 @dataclass
 class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch[Any]](
     Potential[State, OutGrad, OutHess, StatePatch]
@@ -441,18 +446,16 @@ class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch
     """
 
     potential: Potential[State, InGrad, InHess, StatePatch] = field(static=True)
-    gradient_map: View[InGrad, OutGrad] = field(static=True)
-    hessian_map: View[InHess, OutHess] = field(static=True)
+    mapping: View[
+        MappedPotentialInput[State, InGrad, InHess], PotentialOut[OutGrad, OutHess]
+    ] = field(static=True)
 
     def __call__(
         self, state: State, patch: StatePatch | None = None
     ) -> WithPatch[PotentialOut[OutGrad, OutHess], Patch[State]]:
         result = self.potential(state, patch)
-        mapped_out = PotentialOut(
-            total_energies=result.data.total_energies,
-            gradients=self.gradient_map(result.data.gradients),
-            hessians=self.hessian_map(result.data.hessians),
-        )
+        input = MappedPotentialInput(state, result.data)
+        mapped_out = self.mapping(input)
         return WithPatch(mapped_out, result.patch)
 
 
