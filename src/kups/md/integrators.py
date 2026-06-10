@@ -595,11 +595,7 @@ class CSVRStep[State](Propagator[State]):
             particles.data.momenta, particles.data.masses
         )
         # K: total kinetic energy per system [energy]
-        kinetic_energy_current = jax.ops.segment_sum(
-            per_particle_ke,
-            particles.data.system.indices,
-            particles.data.system.num_labels,
-        )
+        kinetic_energy_current = particles.data.system.sum_over(per_particle_ke).data
         # K_target = N_dof·kT/2 [energy]
         kinetic_energy_target = degrees_of_freedom * target_thermal_energy / 2
 
@@ -1210,8 +1206,10 @@ class WrapStep[State](Propagator[State]):
         del key
         par_lens = self.particles.bind(state)
         par = par_lens.get()
-        cells = self.systems(state)[par.data.system]
-        new_positions = cells.cell.wrap(par.data.positions)
+        cells = self.systems(state).map_data(lambda x: x.cell.materialize())[
+            par.data.system
+        ]
+        new_positions = cells.wrap(par.data.positions)
         return par_lens.focus(lambda p: p.data.positions).set(new_positions)
 
 
@@ -1397,7 +1395,11 @@ def make_md_step_from_state[State](
         ValueError: If ``integrator`` is not one of the supported keys.
     """
     flow = WrapFlow(
-        state.focus(lambda x: x.systems[x.particles.data.system].cell),
+        state.focus(
+            lambda x: x.systems.map_data(lambda x: x.cell.materialize())[
+                x.particles.data.system
+            ]
+        ),
         euclidean_flow,
     )
     particles_lens = state.focus(lambda x: x.particles)

@@ -916,6 +916,9 @@ class Cell(Sliceable, Generic[_P]):
     def __mul__(self, other: Array | float | int) -> Self:
         return bind(self, lambda c: c.frame).set(self.frame * other)
 
+    def materialize(self) -> Self:
+        return bind(self, lambda c: c.frame).set(self.frame.materialize())
+
     @overload
     @staticmethod
     def from_pbc(frame: Frame, pbc: Periodic3D) -> PeriodicCell: ...
