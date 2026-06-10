@@ -340,7 +340,15 @@ def torch_mliap_model_fn[
     graph, sort_order = inp.graph.sorted_by_system(
         sort_edges=True, return_sort_order=True
     )
-    unsort_order = jnp.argsort(sort_order)
+    # Invert the permutation via scatter rather than a second argsort: XLA's
+    # permutation_sort_simplifier miscompiles argsort-of-a-permutation with
+    # int64 indices (x64 mode) on GPU.
+    n = sort_order.shape[0]
+    unsort_order = (
+        jnp.zeros(n, dtype=sort_order.dtype)
+        .at[sort_order]
+        .set(jnp.arange(n, dtype=sort_order.dtype))
+    )
 
     input_dict = _prepare_torch_inputs(graph)
     result = inp.parameters.call(input_dict)
