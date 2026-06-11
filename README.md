@@ -49,7 +49,7 @@ pip install kups[cuda]
 
 ```bash
 git clone https://github.com/cusp-ai-oss/kups.git
-cd kups
+cd kUPS
 uv sync
 ```
 
