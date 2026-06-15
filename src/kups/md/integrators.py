@@ -52,7 +52,9 @@ type Temperature = Array
 type Pressure = Array
 type Stress = Array
 
-type Integrator = Literal["verlet", "baoab_langevin", "csvr", "csvr_npt"]
+type Integrator = Literal[
+    "verlet", "baoab_langevin", "csvr", "csvr_npt", "csvr_npt_1eval"
+]
 
 
 @runtime_checkable
@@ -871,6 +873,7 @@ def make_csvr_npt_step[State](
     systems: Lens[State, Table[SystemId, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
+    refresh_after_barostat: bool = True,
 ) -> SequentialPropagator[State]:
     r"""Create NPT integrator for isothermal-isobaric (NPT) ensemble sampling.
 
@@ -917,17 +920,23 @@ def make_csvr_npt_step[State](
     params_half: View[State, Table[SystemId, IsCSVRNPTParams]] = pipe(
         systems.get, _half_time_params
     )
-    return SequentialPropagator(
-        (
-            CSVRStep(particles, params),
-            MomentumStep(particles, params_half),
-            PositionStep(particles, params, flow),
-            derivative_computation,
-            MomentumStep(particles, params_half),
-            StochasticCellRescalingStep(particles, systems),
-            derivative_computation,
-        )
-    )
+    # The post-barostat derivative_computation only re-seeds the next step's first
+    # half-kick. With refresh_after_barostat=False we drop it; the next half-kick then uses
+    # forces stale by the barostat's isotropic rescale (mu ~ 1), which leaves the NPT
+    # volume distribution unchanged in practice. The barostat itself always uses the fresh
+    # pre-rescale stress, so pressure control is unaffected. Keep the full recompute for
+    # fast barostats or anisotropic cells.
+    steps: list[Propagator[State]] = [
+        CSVRStep(particles, params),
+        MomentumStep(particles, params_half),
+        PositionStep(particles, params, flow),
+        derivative_computation,
+        MomentumStep(particles, params_half),
+        StochasticCellRescalingStep(particles, systems),
+    ]
+    if refresh_after_barostat:
+        steps.append(derivative_computation)
+    return SequentialPropagator(tuple(steps))
 
 
 @overload
@@ -952,7 +961,7 @@ def make_md_step_from_state[State](
 def make_md_step_from_state[State](
     state: Lens[State, IsState[_MDParticleData, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
-    integrator: Literal["csvr_npt"],
+    integrator: Literal["csvr_npt", "csvr_npt_1eval"],
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
@@ -1025,6 +1034,15 @@ def make_md_step_from_state[State](
         case "csvr_npt":
             return make_csvr_npt_step(
                 particles_lens, systems_lens, derivative_computation, flow
+            )
+        case "csvr_npt_1eval":
+            # drop the post-barostat eval; see make_csvr_npt_step's refresh_after_barostat.
+            return make_csvr_npt_step(
+                particles_lens,
+                systems_lens,
+                derivative_computation,
+                flow,
+                refresh_after_barostat=False,
             )
         case _:
             raise ValueError(f"Unknown integrator: {integrator}")

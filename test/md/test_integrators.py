@@ -718,6 +718,56 @@ class TestCSVRNPTPhysics:
             initial_grads, final_state.particles.data.position_gradients, rtol=1e-6
         )
 
+    @classmethod
+    def _get_integrator_1eval(cls):
+        deriv = create_npt_derivative_computation()
+        return make_csvr_npt_step(
+            particles=NPTState.particles,
+            systems=NPTState.systems,
+            derivative_computation=deriv,
+            flow=euclidean_flow,
+            refresh_after_barostat=False,
+        )
+
+    def test_one_eval_has_one_fewer_propagator(self):
+        """refresh_after_barostat=False drops exactly the post-barostat eval (7 -> 6)."""
+        two = self._get_integrator()
+        one = self._get_integrator_1eval()
+        assert len(one.propagators) == len(two.propagators) - 1
+
+    def test_one_eval_temperature_control(self):
+        """The thermostat still pins T with the post-barostat eval dropped."""
+        n_particles, kT_target = 5, 1.2
+        state = create_npt_system(
+            n_particles=n_particles, box_size=5.0, kT=kT_target, tau_t=0.1, tau_p=2.0
+        )
+        _, temps = run_simulation(
+            self._get_integrator_1eval(),
+            state,
+            jax.random.key(789),
+            n_equil=150,
+            n_sample=150,
+            extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
+        )
+        assert_temperature(jnp.mean(temps), kT_target, 0.15, "NPT-1eval ")
+
+    def test_one_eval_volume_fluctuations(self):
+        """The barostat still samples a sane volume distribution (responds, bounded)."""
+        state = create_npt_system(
+            n_particles=5, box_size=5.0, kT=1.0, tau_t=0.1, tau_p=1.0
+        )
+        _, volumes = run_simulation(
+            self._get_integrator_1eval(),
+            state,
+            jax.random.key(123),
+            n_equil=50,
+            n_sample=50,
+            extract_fn=lambda s: s.systems.data.cell.volume,
+        )
+        mean_vol, std_vol = jnp.mean(volumes), jnp.std(volumes)
+        assert std_vol > 0.01 * mean_vol, "Volume fluctuations too small"
+        assert std_vol / mean_vol < 1.0, "Volume fluctuations too large"
+
 
 # ============================================================================
 # Tests: Utilities

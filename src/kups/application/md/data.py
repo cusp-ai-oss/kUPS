@@ -188,7 +188,10 @@ class MdParameters(BaseModel):
     minimum_scale_factor: float
     """Minimum allowed box scaling factor per barostat step (dimensionless)."""
     integrator: Integrator
-    """Integration algorithm to use."""
+    """Integration algorithm: ``"verlet"`` (NVE), ``"baoab_langevin"`` / ``"csvr"`` (NVT),
+    ``"csvr_npt"`` (NPT), or ``"csvr_npt_1eval"`` (NPT, dropping the redundant
+    post-barostat force/stress eval; prefer plain ``"csvr_npt"`` for fast barostats or
+    anisotropic cells)."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
 
@@ -276,7 +279,7 @@ def _build_integrator_params(config: MdParameters) -> IntegratorParams:
                     [config.thermostat_time_constant * FEMTO_SECOND]
                 ),
             )
-        case "csvr_npt":
+        case "csvr_npt" | "csvr_npt_1eval":  # same control parameters
             return CSVRNPTParams(
                 time_step=time_step,
                 temperature=temperature,
