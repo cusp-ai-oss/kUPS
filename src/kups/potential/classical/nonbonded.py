@@ -196,6 +196,7 @@ def make_nonbonded_from_state(
     *,
     compute_position_and_cell_gradients: bool = False,
     fused_edge: bool = False,
+    forces_only: bool = False,
 ) -> Potential[Any, PositionAndCell, Any, Patch]:
     """Fused LJ + real-space-Ewald potential from a typed state (full-recompute only).
 
@@ -208,6 +209,9 @@ def make_nonbonded_from_state(
             ``lj_parameters`` and ``ewald_parameters``.
         compute_position_and_cell_gradients: forces (dE/dr) + NPT stress (dE/dcell) via autodiff.
         fused_edge: use the single-pass edge body; else the maximal-reuse body.
+        forces_only: differentiate w.r.t. positions only (forces, no cell-virial), for
+            NVE/NVT where stress is unused. The gradient is a ``Table[ParticleId, Array]``
+            (not ``PositionAndCell``); sum only with other forces-only potentials.
     """
     lj_view: Any = state.focus(lambda s: s.lj_parameters)
     ew_view: Any = state.focus(lambda s: s.ewald_parameters)
@@ -226,7 +230,11 @@ def make_nonbonded_from_state(
 
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
+    if forces_only:
+        gradient_lens = SimpleLens[GraphPotentialInput, Any](
+            lambda x: x.graph.particles.map_data(lambda p: p.positions)
+        )
+    elif compute_position_and_cell_gradients:
         gradient_lens = SimpleLens[GraphPotentialInput, PositionAndCell](
             lambda x: PositionAndCell(
                 x.graph.particles.map_data(lambda p: p.positions),

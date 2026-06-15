@@ -1073,6 +1073,7 @@ def make_ewald_from_state[State](
     pme_mesh: tuple[int, int, int] | None = None,
     pme_order: int = 6,
     pme_fp32: bool = False,
+    forces_only: bool = False,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch]: ...
 
 
@@ -1087,6 +1088,7 @@ def make_ewald_from_state[State](
     pme_mesh: tuple[int, int, int] | None = None,
     pme_order: int = 6,
     pme_fp32: bool = False,
+    forces_only: bool = False,
 ) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
@@ -1103,6 +1105,7 @@ def make_ewald_from_state[State, P: Patch](
     pme_mesh: tuple[int, int, int] | None = None,
     pme_order: int = 6,
     pme_fp32: bool = False,
+    forces_only: bool = False,
 ) -> EwaldPotential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -1120,6 +1123,7 @@ def make_ewald_from_state[State, P: Patch](
     pme_mesh: tuple[int, int, int] | None = None,
     pme_order: int = 6,
     pme_fp32: bool = False,
+    forces_only: bool = False,
 ) -> EwaldPotential[State, PositionAndCell, EmptyType, P]: ...
 
 
@@ -1133,6 +1137,7 @@ def make_ewald_from_state(
     pme_mesh: tuple[int, int, int] | None = None,
     pme_order: int = 6,
     pme_fp32: bool = False,
+    forces_only: bool = False,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
 
@@ -1161,7 +1166,14 @@ def make_ewald_from_state(
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view = empty_patch_idx_view
-    if compute_position_and_cell_gradients:
+    if forces_only:
+        # forces (dE/dr) only, no cell-virial: positions-only gradient_lens flows to every
+        # sub-potential. The gradient is a positions Table, so sum only with other
+        # forces-only potentials.
+        gradient_lens = SimpleLens[PointCloud, Any](
+            lambda pc: pc.particles.map_data(lambda p: p.positions)
+        )
+    elif compute_position_and_cell_gradients:
         gradient_lens = SimpleLens[PointCloud, PositionAndCell](
             lambda pc: PositionAndCell(
                 pc.particles.map_data(lambda p: p.positions),

@@ -80,6 +80,7 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     state_lens: Lens[State, State],
     integrator: Integrator,
     potential: Potential[State, Grad, EmptyType, Any],
+    forces_only: bool = False,
 ) -> Propagator[State]:
     """Build a single MD propagator step with error recovery and step counting.
 
@@ -87,33 +88,65 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         state_lens: Lens focusing on the MD sub-state within the full state.
         integrator: Integration algorithm for equations of motion.
         potential: Potential energy function providing forces and gradients.
-
-    Returns:
-        Propagator that advances the state by one MD step.
+        forces_only: NVE/NVT optimization. When True, the step neither maps nor caches the
+            cell-virial (``dE/dcell``); pair with a ``forces_only=True`` potential to skip
+            computing it. Invalid for the NPT integrators (the barostat needs stress).
+            ``cell_gradients`` is then not refreshed, so logged stress/pressure is
+            unavailable — keep the default when you need the stress observable.
     """
-    mapped_potential = MappedPotential(
-        potential, lambda x: (x.positions.data, x.cell.data), identity
-    )
-    derivative_computation = PotentialAsPropagator(
-        CachedPotential(
-            mapped_potential,
-            lens(
-                lambda x: PotentialOut(
-                    x.systems.map_data(lambda x: x.potential_energy),
-                    (
-                        x.particles.data.position_gradients,
-                        x.systems.data.cell_gradients,
-                    ),
-                    EMPTY,
-                )
-            ),
-            lambda x: PotentialOut(
-                x.systems.index,  # type: ignore
-                (x.particles.data.system, x.systems.index),
-                EMPTY,
-            ),  # type: ignore
+    if forces_only and integrator in ("csvr_npt", "csvr_npt_1eval"):
+        raise ValueError(
+            f"forces_only=True is invalid for NPT integrator {integrator!r}: "
+            "the barostat needs the cell-virial (stress)."
         )
-    )
+    if forces_only:
+        # Map positions from either a forces_only potential (gradient is a positions Table,
+        # has .data) or a both-gradients potential (PositionAndCell, has .positions); cache
+        # only position_gradients (cell_gradients is left untouched).
+        derivative_computation = PotentialAsPropagator(
+            CachedPotential(
+                MappedPotential(
+                    potential,
+                    lambda x: x.positions.data if hasattr(x, "positions") else x.data,  # type: ignore
+                    identity,
+                ),
+                lens(
+                    lambda x: PotentialOut(
+                        x.systems.map_data(lambda x: x.potential_energy),
+                        x.particles.data.position_gradients,
+                        EMPTY,
+                    )
+                ),
+                lambda x: PotentialOut(
+                    x.systems.index,  # type: ignore
+                    x.particles.data.system,
+                    EMPTY,
+                ),  # type: ignore
+            )
+        )
+    else:
+        derivative_computation = PotentialAsPropagator(
+            CachedPotential(
+                MappedPotential(
+                    potential, lambda x: (x.positions.data, x.cell.data), identity
+                ),
+                lens(
+                    lambda x: PotentialOut(
+                        x.systems.map_data(lambda x: x.potential_energy),
+                        (
+                            x.particles.data.position_gradients,
+                            x.systems.data.cell_gradients,
+                        ),
+                        EMPTY,
+                    )
+                ),
+                lambda x: PotentialOut(
+                    x.systems.index,  # type: ignore
+                    (x.particles.data.system, x.systems.index),
+                    EMPTY,
+                ),  # type: ignore
+            )
+        )
     md_propagator = make_md_step_from_state(
         state_lens, derivative_computation, integrator
     )
@@ -160,8 +193,11 @@ def make_verlet_md_propagators[State: IsMdState, Grad: IsMdGradients](
     cutoff: float,
     skin: float,
     skin_nl: NearestNeighborList,
+    forces_only: bool = False,
 ) -> tuple[Propagator[State], Propagator[State]]:
     """Build the (reuse, rebuild) propagator pair for a Verlet-skin MD run.
+
+    ``forces_only`` (NVE/NVT only) skips the cell-virial; see :func:`make_md_propagator`.
 
     Both share the same MD step (which reads ``state.neighborlist`` — a
     ``RefineCutoffNeighborList`` over the stored skin list); ``rebuild`` first refreshes
@@ -169,7 +205,7 @@ def make_verlet_md_propagators[State: IsMdState, Grad: IsMdGradients](
     cell-list for large boxes — see ``neighborlist.verlet.dense_skin_nl`` / ``cell_skin_nl``).
     Each appends a ``TriggerStep`` that sets ``state.should_rebuild`` for the next dispatch.
     """
-    md_propagator = make_md_propagator(state_lens, integrator, potential)
+    md_propagator = make_md_propagator(state_lens, integrator, potential, forces_only)
     trigger = TriggerStep(cutoff, skin)
     rebuild = RebuildSkinStep(cutoff, skin, skin_nl)
 
