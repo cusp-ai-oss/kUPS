@@ -194,6 +194,12 @@ class MdParameters(BaseModel):
     anisotropic cells)."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
+    verlet_skin: float = 0.0
+    """Verlet neighbor-list skin width (Å). 0 (default) rebuilds the neighbor list every
+    step. If > 0, build it once at ``cutoff + verlet_skin`` and reuse it across steps,
+    rebuilding only when atoms move or the box strains enough that a new neighbor could
+    intrude. Reuse is results-identical (the rebuild trigger guarantees completeness); a
+    value around the inter-particle spacing (e.g. 1.0 Å) is a reasonable starting point."""
 
 
 def md_state_from_ase(

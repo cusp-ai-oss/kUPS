@@ -12,11 +12,17 @@ from kups.application.md.data import (
     MDSystems,
 )
 from kups.application.md.logging import MDLoggedData
-from kups.application.utils.propagate import run_simulation_cycles, run_warmup_cycles
+from kups.application.utils.propagate import (
+    run_simulation_cycles,
+    run_verlet_cycles,
+    run_warmup_cycles,
+)
 from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
+from kups.core.neighborlist import NearestNeighborList
+from kups.core.neighborlist.verlet import RebuildSkinStep, TriggerStep
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
@@ -143,5 +149,70 @@ def run_md[State: IsMdState](
     )
     state = run_simulation_cycles(
         next(chain), propagator, state, config.num_steps, logger
+    )
+    return state
+
+
+def make_verlet_md_propagators[State: IsMdState, Grad: IsMdGradients](
+    state_lens: Lens[State, State],
+    integrator: Integrator,
+    potential: Potential[State, Grad, EmptyType, Any],
+    cutoff: float,
+    skin: float,
+    skin_nl: NearestNeighborList,
+) -> tuple[Propagator[State], Propagator[State]]:
+    """Build the (reuse, rebuild) propagator pair for a Verlet-skin MD run.
+
+    Both share the same MD step (which reads ``state.neighborlist`` — a
+    ``RefineCutoffNeighborList`` over the stored skin list); ``rebuild`` first refreshes
+    the skin list + references via the injected ``skin_nl`` builder (dense for box ~ cutoff,
+    cell-list for large boxes — see ``neighborlist.verlet.dense_skin_nl`` / ``cell_skin_nl``).
+    Each appends a ``TriggerStep`` that sets ``state.should_rebuild`` for the next dispatch.
+    """
+    md_propagator = make_md_propagator(state_lens, integrator, potential)
+    trigger = TriggerStep(cutoff, skin)
+    rebuild = RebuildSkinStep(cutoff, skin, skin_nl)
+
+    # Closures (not a SequentialPropagator) so the MD step receives `key` directly in both
+    # variants: the rebuild/trigger steps don't consume the PRNG chain, so the dynamics are
+    # independent of the rebuild schedule (bit-identical to the every-step path).
+    def reuse_prop(key: Array, state: State) -> State:
+        return trigger(key, md_propagator(key, state))
+
+    def rebuild_prop(key: Array, state: State) -> State:
+        return trigger(key, md_propagator(key, rebuild(key, state)))
+
+    return reuse_prop, rebuild_prop
+
+
+def run_md_verlet[State: IsMdState](
+    key: Array,
+    reuse_propagator: Propagator[State],
+    rebuild_propagator: Propagator[State],
+    state: State,
+    config: MdRunConfig,
+) -> State:
+    """Run a full MD simulation (warmup + production) with a Verlet-skin neighbor list."""
+    chain = key_chain(key)
+    logging.info("Warmup (Verlet skin)")
+    state = run_verlet_cycles(
+        next(chain),
+        reuse_propagator,
+        rebuild_propagator,
+        state,
+        config.num_warmup_steps,
+    )
+    logging.info("Starting MD simulation (Verlet skin)")
+    logger = CompositeLogger(
+        TqdmLogger(config.num_steps),
+        HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps),
+    )
+    state = run_verlet_cycles(
+        next(chain),
+        reuse_propagator,
+        rebuild_propagator,
+        state,
+        config.num_steps,
+        logger,
     )
     return state

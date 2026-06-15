@@ -21,13 +21,24 @@ from kups.application.md.data import (
     MDSystems,
     md_state_from_ase,
 )
-from kups.application.md.simulation import make_md_propagator, run_md
+from kups.application.md.simulation import (
+    make_md_propagator,
+    make_verlet_md_propagators,
+    run_md,
+    run_md_verlet,
+)
+from kups.core.cell import Cell
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
+    Edges,
     NearestNeighborList,
     UniversalNeighborlistParameters,
+    build_skin_edges,
+    dense_skin_nl,
+    estimate_skin_params,
+    skin_neighborlist,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
@@ -62,9 +73,19 @@ class LjMdState:
     neighborlist_params: UniversalNeighborlistParameters
     step: Array
     lj_parameters: LennardJonesParameters
+    # Verlet-skin fields (None unless config.md.verlet_skin > 0):
+    stored_skin_edges: Edges | None = None
+    reference_positions: Array | None = None
+    reference_cell: Cell | None = None
+    should_rebuild: Array | None = None
 
     @property
     def neighborlist(self) -> NearestNeighborList:
+        if self.stored_skin_edges is not None:
+            # Verlet: reuse the stored skin list, refined to the true cutoff each step.
+            return skin_neighborlist(
+                self.stored_skin_edges, self.neighborlist_params.avg_edges
+            )
         return DenseNearestNeighborList.from_state(self)
 
 
@@ -79,13 +100,35 @@ def init_state(key: Array, config: Config) -> LjMdState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj_params.cutoff
     )
-    return LjMdState(
+    state = LjMdState(
         particles=particles,
         systems=systems,
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
         lj_parameters=lj_params,
     )
+    skin = config.md.verlet_skin
+    if skin > 0:
+        # Seed the Verlet skin list (one dense build at cutoff + skin).
+        skin_params = estimate_skin_params(
+            particles.data.system.counts, systems, lj_params.cutoff, skin
+        )
+        # dense skin builder (box ~ cutoff); swap to cell_skin_nl for large boxes.
+        edges = build_skin_edges(
+            particles, systems, lj_params.cutoff, skin, dense_skin_nl(skin_params)
+        )
+        state = LjMdState(
+            particles=particles,
+            systems=systems,
+            neighborlist_params=neighborlist_params,
+            step=jnp.array([0]),
+            lj_parameters=lj_params,
+            stored_skin_edges=edges,
+            reference_positions=particles.data.positions + 0.0,
+            reference_cell=jax.tree.map(lambda x: x + 0.0, systems.data.cell),
+            should_rebuild=jnp.array(True),  # force initial rebuild
+        )
+    return state
 
 
 def run(config: Config) -> None:
@@ -96,8 +139,25 @@ def run(config: Config) -> None:
     potential = make_lennard_jones_from_state(
         state_lens, compute_position_and_cell_gradients=True
     )
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
-    state = run_md(next(chain), propagator, state, config.run)
+    if config.md.verlet_skin > 0:
+        skin_params = estimate_skin_params(
+            state.particles.data.system.counts,
+            state.systems,
+            state.lj_parameters.cutoff,
+            config.md.verlet_skin,
+        )
+        reuse_prop, rebuild_prop = make_verlet_md_propagators(
+            state_lens,
+            config.md.integrator,
+            potential,
+            config.lj.cutoff,
+            config.md.verlet_skin,
+            dense_skin_nl(skin_params),
+        )
+        state = run_md_verlet(next(chain), reuse_prop, rebuild_prop, state, config.run)
+    else:
+        propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+        state = run_md(next(chain), propagator, state, config.run)
 
 
 def main() -> None:

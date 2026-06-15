@@ -7,6 +7,7 @@ Provides warmup, sampling, and data-parallelism helpers used across
 MD, MCMC, and relaxation application modules.
 """
 
+import contextlib
 import logging
 from copy import deepcopy
 from typing import Any, Callable, Generator
@@ -84,6 +85,50 @@ def run_simulation_cycles[State](
         for i in range(num_cycles):
             state = propagate_and_fix(prop_with_assertions, next(chain), state)
             logger.log(state, i)
+            if convergence_fn is not None and convergence_fn(state):
+                logging.info("Converged at step %d", i + 1)
+                break
+    return state
+
+
+def run_verlet_cycles[State](
+    key: Array,
+    reuse_propagator: Propagator[State],
+    rebuild_propagator: Propagator[State],
+    state: State,
+    num_cycles: int,
+    logger: Logger[State] | None = None,
+    *,
+    convergence_fn: Callable[[State], bool] | None = None,
+) -> State:
+    """Run MD with a Verlet skin: each step reuses the stored neighbor list, rebuilding
+    only when ``state.should_rebuild`` (a PBC-aware trigger set by the step) fires.
+
+    Two internally-consistent jitted steps (reuse / rebuild) are dispatched host-side on
+    the flag — this avoids ``lax.cond`` over branches with mismatched capacity assertions.
+    The per-step flag read is one cheap device→host sync (the loop already syncs on
+    ``failed_assertions``). The first step always rebuilds, to establish a fresh reference.
+
+    Args:
+        key: JAX PRNG key.
+        reuse_propagator: step that reuses the stored skin list (cheap).
+        rebuild_propagator: step that rebuilds the skin list first (expensive), then steps.
+        state: initial state (must carry the verlet fields; see ``neighborlist.verlet``).
+        num_cycles: number of steps.
+        logger: optional per-step logger.
+        convergence_fn: optional early-stop predicate.
+    """
+    chain = key_chain(key)
+    reuse = jit(as_result_function(reuse_propagator), donate_argnums=(1,))
+    rebuild = jit(as_result_function(rebuild_propagator), donate_argnums=(1,))
+    ctx: Any = logger if logger is not None else contextlib.nullcontext()
+    with ctx:
+        for i in tqdm.trange(num_cycles):
+            do_rebuild = (i == 0) or bool(jax.device_get(state.should_rebuild))  # type: ignore
+            step = rebuild if do_rebuild else reuse
+            state = propagate_and_fix(step, next(chain), state)
+            if logger is not None:
+                logger.log(state, i)
             if convergence_fn is not None and convergence_fn(state):
                 logging.info("Converged at step %d", i + 1)
                 break
