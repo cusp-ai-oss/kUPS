@@ -821,6 +821,10 @@ def make_ewald_potential[
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     include_exclusion_mask: bool = False,
+    reciprocal: Literal["ewald", "pme"] = "ewald",
+    pme_mesh: tuple[int, int, int] | None = None,
+    pme_order: int = 6,
+    pme_fp32: bool = False,
 ) -> EwaldPotential[State, Gradients, Hessians, Ptch]:
     """Create the complete Ewald potential combining all component terms.
 
@@ -962,17 +966,42 @@ def make_ewald_potential[
         patch_idx_view=patch_idx_view,
         cache_lens=cache_lens.focus(lambda x: x.short_range) if cache_lens else None,
     )
-    lr_potential = make_ewald_long_range_potential(
-        particles_view=atomic_view,
-        systems_view=systems_view,
-        parameter_lens=parameter_lens,
-        cache_lens=cache_lens,
-        probe=atomic_particles_probe,
-        gradient_lens=gradient_lens,
-        hessian_lens=hessian_lens,
-        hessian_idx_view=hessian_idx_view,
-        patch_idx_view=patch_idx_view,
-    )
+    if reciprocal == "ewald":
+        lr_potential = make_ewald_long_range_potential(
+            particles_view=atomic_view,
+            systems_view=systems_view,
+            parameter_lens=parameter_lens,
+            cache_lens=cache_lens,
+            probe=atomic_particles_probe,
+            gradient_lens=gradient_lens,
+            hessian_lens=hessian_lens,
+            hessian_idx_view=hessian_idx_view,
+            patch_idx_view=patch_idx_view,
+        )
+    else:
+        # FFT-based PME reciprocal (O(N log N); scales to >=100k ions where the dense
+        # direct-Ewald structure-factor tensor OOMs). Imported here, not at module scope,
+        # to avoid a circular import (pme imports from this module).
+        assert pme_mesh is not None, (
+            f"reciprocal={reciprocal!r} requires pme_mesh=(Mx,My,Mz) "
+            "(static FFT grid; use pme_mesh_for_cell(cell_vectors, spacing))."
+        )
+        from kups.potential.classical.pme import make_pme_long_range_potential
+
+        lr_potential = make_pme_long_range_potential(
+            particles_view=atomic_view,
+            systems_view=systems_view,
+            parameter_lens=parameter_lens,
+            cache_lens=cache_lens,
+            probe=atomic_particles_probe,
+            gradient_lens=gradient_lens,
+            hessian_lens=hessian_lens,
+            hessian_idx_view=hessian_idx_view,
+            patch_idx_view=patch_idx_view,
+            mesh=pme_mesh,
+            order=pme_order,
+            fp32_reciprocal=pme_fp32,
+        )
     self_potential = make_ewald_self_interaction_potential(
         particles_view=atomic_view,
         systems_view=systems_view,
@@ -1040,6 +1069,10 @@ def make_ewald_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
+    reciprocal: Literal["ewald", "pme"] = "ewald",
+    pme_mesh: tuple[int, int, int] | None = None,
+    pme_order: int = 6,
+    pme_fp32: bool = False,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch]: ...
 
 
@@ -1050,6 +1083,10 @@ def make_ewald_from_state[State](
     *,
     compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,
+    reciprocal: Literal["ewald", "pme"] = "ewald",
+    pme_mesh: tuple[int, int, int] | None = None,
+    pme_order: int = 6,
+    pme_fp32: bool = False,
 ) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch]: ...
 
 
@@ -1062,6 +1099,10 @@ def make_ewald_from_state[State, P: Patch](
     *,
     compute_position_and_cell_gradients: Literal[False] = ...,
     include_exclusion_mask: bool = False,
+    reciprocal: Literal["ewald", "pme"] = "ewald",
+    pme_mesh: tuple[int, int, int] | None = None,
+    pme_order: int = 6,
+    pme_fp32: bool = False,
 ) -> EwaldPotential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -1075,6 +1116,10 @@ def make_ewald_from_state[State, P: Patch](
     *,
     compute_position_and_cell_gradients: Literal[True],
     include_exclusion_mask: bool = False,
+    reciprocal: Literal["ewald", "pme"] = "ewald",
+    pme_mesh: tuple[int, int, int] | None = None,
+    pme_order: int = 6,
+    pme_fp32: bool = False,
 ) -> EwaldPotential[State, PositionAndCell, EmptyType, P]: ...
 
 
@@ -1084,6 +1129,10 @@ def make_ewald_from_state(
     *,
     compute_position_and_cell_gradients: bool = False,
     include_exclusion_mask: bool = False,
+    reciprocal: Literal["ewald", "pme"] = "ewald",
+    pme_mesh: tuple[int, int, int] | None = None,
+    pme_order: int = 6,
+    pme_fp32: bool = False,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
 
@@ -1143,6 +1192,10 @@ def make_ewald_from_state(
         EMPTY_LENS,
         patch_idx_view=patch_idx_view,
         include_exclusion_mask=include_exclusion_mask,
+        reciprocal=reciprocal,
+        pme_mesh=pme_mesh,
+        pme_order=pme_order,
+        pme_fp32=pme_fp32,
     )
 
 
