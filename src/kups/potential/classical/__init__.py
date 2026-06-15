@@ -50,6 +50,12 @@ from .lennard_jones import (
     make_pair_tail_corrected_lennard_jones_potential,
 )
 from .morse import MorseBondParameters, make_morse_bond_potential
+from .nonbonded import (
+    NonbondedParameters,
+    fused_nonbonded_edge_energy,
+    make_nonbonded_from_state,
+    nonbonded_energy,
+)
 
 __all__ = [
     "make_cosine_angle_potential",
@@ -62,6 +68,10 @@ __all__ = [
     "make_lennard_jones_potential",
     "make_global_lennard_jones_tail_correction_potential",
     "make_pair_tail_corrected_lennard_jones_potential",
+    "make_nonbonded_from_state",
+    "nonbonded_energy",
+    "fused_nonbonded_edge_energy",
+    "NonbondedParameters",
     "CosineAngleParameters",
     "cosine_angle_energy",
     "DihedralParameters",
