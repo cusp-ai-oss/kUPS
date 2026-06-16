@@ -41,10 +41,11 @@ from kups.potential.mliap.torch.interface import (
     lattice_gradient_from_virial,
 )
 
-__all__ = ["UMAModule", "load_uma"]
+__all__ = ["UMAInferenceSettings", "UMAModule", "UMATaskName", "load_uma"]
 
 
 type UMATaskName = Literal["omat", "omol", "oc20", "odac", "omc"]
+type UMAInferenceSettings = Literal["default", "turbo", "turbo_f64"]
 
 
 class UMAModule(torch.nn.Module):
@@ -260,7 +261,7 @@ def load_uma(
     task_name: UMATaskName | str = "omat",
     compute_cell_gradients: bool = False,
     cutoff: float = 6.0,
-    inference_settings: str = "default",
+    inference_settings: UMAInferenceSettings = "default",
 ) -> TorchMliap:
     """Load a Meta FAIR Chemistry UMA checkpoint into a ``TorchMliap``.
 
@@ -273,9 +274,9 @@ def load_uma(
         compute_cell_gradients: Whether to also return cell gradients
             (stress). See ``UMAModule`` for convention caveats.
         cutoff: Cutoff radius [Å]. UMA-s-1.2 defaults to 6.0.
-        inference_settings: Forwarded to
-            ``fairchem.core.units.mlip_unit.load_predict_unit`` —
-            ``"default"`` or ``"turbo"``.
+        inference_settings: ``"default"`` or ``"turbo"`` (resolved by
+            fairchem's ``guess_inference_settings``), or ``"turbo_f64"`` for
+            a compiled, MOLE-merged float64 preset.
 
     Returns:
         ``TorchMliap`` ready to be wired into the kUPS interface.
@@ -300,6 +301,7 @@ def load_uma(
             load_predict_unit,
         )
         from fairchem.core.units.mlip_unit.api.inference import (  # pyright: ignore[reportMissingImports]
+            InferenceSettings,
             guess_inference_settings,
         )
     except ImportError as exc:
@@ -314,7 +316,22 @@ def load_uma(
     # reason to recompute it inside the model. UMA's internal
     # ``radius_graph_pbc_v2`` also has compile/SymInt issues that go away
     # entirely when ``otf_graph=False``.
-    settings = guess_inference_settings(inference_settings)
+    # Custom presets beyond fairchem's named "default"/"turbo"; extend to add more.
+    custom_settings = {
+        "turbo_f64": InferenceSettings(
+            base_precision_dtype=torch.float64,
+            tf32=False,
+            activation_checkpointing=False,
+            merge_mole=True,
+            compile=True,
+            external_graph_gen=False,
+            internal_graph_gen_version=2,
+            execution_mode="general",
+        ),
+    }
+    settings = custom_settings.get(inference_settings) or guess_inference_settings(
+        inference_settings
+    )
     settings = replace(settings, external_graph_gen=True)
 
     predict_unit = load_predict_unit(
