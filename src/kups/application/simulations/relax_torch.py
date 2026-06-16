@@ -39,6 +39,8 @@ from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.potential.mliap.torch import (
     TorchMliap,
+    UMAInferenceSettings,
+    UMATaskName,
     load_mace,
     load_uma,
     make_torch_mliap_from_state,
@@ -71,8 +73,8 @@ class UMAModelConfig(BaseModel):
     backend: Literal["uma"] = "uma"
     model_path: str | Path
     device: Literal["cpu", "cuda"] = "cuda"
-    task_name: Literal["omat", "omol", "oc20", "odac", "omc"] = "omat"
-    inference_settings: Literal["default", "turbo"] = "default"
+    task_name: UMATaskName = "omat"
+    inference_settings: UMAInferenceSettings = "default"
 
 
 type ModelConfig = Annotated[

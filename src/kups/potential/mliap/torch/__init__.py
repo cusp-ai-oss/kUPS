@@ -34,7 +34,12 @@ from kups.potential.mliap.torch.interface import (
     torch_mliap_model_fn,
 )
 from kups.potential.mliap.torch.mace import MACEModule, load_mace
-from kups.potential.mliap.torch.uma import UMAModule, load_uma
+from kups.potential.mliap.torch.uma import (
+    UMAInferenceSettings,
+    UMAModule,
+    UMATaskName,
+    load_uma,
+)
 
 __all__ = [
     "AtomGraphInput",
@@ -43,7 +48,9 @@ __all__ = [
     "MACEModule",
     "TorchMliap",
     "TorchMliapForward",
+    "UMAInferenceSettings",
     "UMAModule",
+    "UMATaskName",
     "lattice_gradient_from_virial",
     "load_mace",
     "load_uma",
