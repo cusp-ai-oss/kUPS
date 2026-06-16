@@ -242,6 +242,7 @@ def _ddexp2(x: Array, y: Array, z: Array) -> Array:
     return jnp.where(diff == 0.0, confluent, generic)
 
 
+@jit(static_argnames=("lower",))
 def triangular_3x3_expm(A: Array, *, lower: bool = True) -> Array:
     r"""Matrix exponential of triangular 3×3 matrices.
 
@@ -285,6 +286,7 @@ def triangular_3x3_expm(A: Array, *, lower: bool = True) -> Array:
     return out if lower else jnp.swapaxes(out, -1, -2)
 
 
+@jit(static_argnames=("lower",))
 def triangular_3x3_logm(A: Array, *, lower: bool = True) -> Array:
     r"""Principal matrix logarithm of triangular 3×3 matrices with positive diagonal.
 

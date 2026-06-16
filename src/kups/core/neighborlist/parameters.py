@@ -20,7 +20,7 @@ from kups.core.data import Table
 from kups.core.neighborlist.common import candidate_image_counts, num_cells
 from kups.core.neighborlist.types import NeighborListSystems
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, field, no_jax_tracing
+from kups.core.utils.jax import dataclass, field, no_jax_tracing, no_post_init
 from kups.core.utils.math import next_higher_power
 
 
@@ -110,20 +110,21 @@ class UniversalNeighborlistParameters:
 
         sys = Table.join(systems, particles_per_system, cutoffs)
         total_candidates = total_image_candidates = total_edges = max_cells = 0
-        for _, (s, n_p, c) in sys:
-            n_bins = num_cells(s, c).prod()
-            candidates = min(n_p / n_bins * (3**3), n_p)
-            # A cutoff reaching past perp/2 replicates each candidate once per
-            # periodic image (product of per-axis image counts). Summing per
-            # system keeps the estimate tight for heterogeneous cutoffs instead
-            # of assuming every system replicates at the maximum rate.
-            images = candidate_image_counts(s.cell, c).prod()
-            total_candidates += candidates
-            total_image_candidates += _next_power(candidates) * images
-            total_edges += _estimate_avg_num_edges(
-                n_p, s.cell.volume, c, base, multiplier
-            )
-            max_cells = max(n_bins, max_cells)
+        with no_post_init():
+            for _, (s, n_p, c) in sys:
+                n_bins = num_cells(s, c).prod()
+                candidates = min(n_p / n_bins * (3**3), n_p)
+                # A cutoff reaching past perp/2 replicates each candidate once per
+                # periodic image (product of per-axis image counts). Summing per
+                # system keeps the estimate tight for heterogeneous cutoffs instead
+                # of assuming every system replicates at the maximum rate.
+                images = candidate_image_counts(s.cell, c).prod()
+                total_candidates += candidates
+                total_image_candidates += _next_power(candidates) * images
+                total_edges += _estimate_avg_num_edges(
+                    n_p, s.cell.volume, c, base, multiplier
+                )
+                max_cells = max(n_bins, max_cells)
 
         return UniversalNeighborlistParameters(
             avg_edges=int(total_edges // sys.size),

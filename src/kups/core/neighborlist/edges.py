@@ -25,7 +25,6 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass
-from kups.core.utils.math import triangular_3x3_matmul
 
 
 @dataclass
@@ -115,9 +114,9 @@ class Edges[Degree: int](Sliceable):
         Returns:
             Array of shape `(n_edges, Degree-1, 3)` containing absolute shift vectors.
         """
-        lattice = systems.map_data(lambda x: x.cell.vectors)
-        vecs = lattice[particles[self.indices[:, 0]].system]
-        return triangular_3x3_matmul(vecs[:, None], self.shifts)
+        lattice = systems.map_data(lambda x: x.cell.materialize())
+        cells = lattice[particles[self.indices[:, 0]].system][:, None]
+        return cells.frame.to_real(self.shifts)
 
     @property
     def degree(self) -> int:

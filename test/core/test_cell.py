@@ -3,23 +3,26 @@
 
 """Tests for Frame and Cell types."""
 
-from typing import Callable, override
+from typing import Callable, cast, override
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
+from jax import Array
 from jax.scipy.linalg import expm
 
 from kups.core.cell import (
     BaseFrame,
     Cell,
     CoordinateSpace,
+    DeformedFrame,
     Frame,
-    FrechetFrame,
     LinearFrame,
     LogTriclinicFrame,
     MaterializedFrame,
+    MatrixLogFrame,
     OrthogonalFrame,
     PeriodicCell,
     TriclinicFrame,
@@ -33,6 +36,7 @@ from kups.core.cell import (
 from kups.core.data import Sliceable
 from kups.core.lens import lens
 from kups.core.utils.jax import dataclass
+from kups.core.utils.math import GeneralSquareMatrix, LowerTriangularSquareMatrix
 
 
 class TestTriclinicFrame:
@@ -695,9 +699,10 @@ class _ExpFrame(BaseFrame, Sliceable):
         return type(self)(self.log_lengths + jnp.log(jnp.asarray(other)))
 
 
-# A general lower-triangular matrix; each frame keeps the part it can represent.
-_GRAD_PRIMAL = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
-_CELL_GRAD = jnp.arange(9.0).reshape(3, 3)
+# A batched (1, 3, 3) general lower-triangular matrix; each frame keeps the part
+# it can represent.
+_GRAD_PRIMAL = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])[None]
+_CELL_GRAD = jnp.arange(9.0).reshape(1, 3, 3)
 
 # (frame class, projection of a cartesian grad onto the frame's representable DOF)
 # for the linear parameterisations whose Jacobian is orthonormal.
@@ -717,7 +722,7 @@ _LINEAR_FRAME_CLASSES = [
 _GRAD_FRAME_CLASSES = [
     *_LINEAR_FRAME_CLASSES,
     pytest.param(LogTriclinicFrame, id="log_triclinic"),
-    pytest.param(FrechetFrame, id="frechet"),
+    pytest.param(DeformedFrame, id="deformed"),
     pytest.param(_ExpFrame, id="exp_nonlinear"),
 ]
 
@@ -757,7 +762,9 @@ class TestFrameGradients:
     def test_vectors_gradient_batched(
         self, frame_cls: _FrameClass, project: _Projector
     ):
-        frames = frame_cls.from_matrix(jnp.stack([_GRAD_PRIMAL, _GRAD_PRIMAL * 1.5]))
+        frames = frame_cls.from_matrix(
+            jnp.concatenate([_GRAD_PRIMAL, _GRAD_PRIMAL * 1.5])
+        )
         cell_grad = jnp.broadcast_to(_CELL_GRAD, (2, 3, 3))
         param_grad = frames.parameter_gradient(cell_grad)
         out = frames.vectors_gradient(param_grad)
@@ -784,8 +791,8 @@ class TestFrameGradients:
         npt.assert_allclose(g_h - jnp.diag(jnp.diag(g_h)), 0.0, atol=1e-6)
 
     def test_materialized_frame_gradient_identity(self):
-        frame = MaterializedFrame.from_matrix(_GRAD_PRIMAL[None])
-        cell_grad = jnp.tril(_CELL_GRAD)[None]
+        frame = MaterializedFrame.from_matrix(_GRAD_PRIMAL)
+        cell_grad = jnp.tril(_CELL_GRAD)
         param_grad = frame.parameter_gradient(cell_grad)
         npt.assert_allclose(frame.vectors_gradient(param_grad), cell_grad, atol=1e-6)
 
@@ -793,16 +800,17 @@ class TestFrameGradients:
 # One frame per implementation, all batched so ``vectors`` is ``(B, 3, 3)``; each
 # describes its own lower-triangular parallelepiped. The triclinic case carries a
 # second batch entry to exercise batched geometry.
-_M_ORTHO = jnp.diag(jnp.array([2.0, 3.0, 4.0]))
-_M_TRICLINIC = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])
+_M_ORTHO = jnp.diag(jnp.array([2.0, 3.0, 4.0]))[None]
+_M_TRICLINIC = jnp.array([[2.0, 0.0, 0.0], [0.5, 3.0, 0.0], [0.1, 0.2, 4.0]])[None]
 _GEOMETRY_FRAMES = [
     pytest.param(
-        TriclinicFrame.from_matrix(jnp.stack([_M_TRICLINIC, _M_ORTHO])), id="triclinic"
+        TriclinicFrame.from_matrix(jnp.concatenate([_M_TRICLINIC, _M_ORTHO])),
+        id="triclinic",
     ),
-    pytest.param(OrthogonalFrame.from_matrix(_M_ORTHO[None]), id="orthogonal"),
-    pytest.param(MaterializedFrame.from_matrix(_M_TRICLINIC[None]), id="materialized"),
-    pytest.param(LogTriclinicFrame.from_matrix(_M_TRICLINIC[None]), id="log_triclinic"),
-    pytest.param(FrechetFrame.from_matrix(_M_TRICLINIC[None]), id="frechet"),
+    pytest.param(OrthogonalFrame.from_matrix(_M_ORTHO), id="orthogonal"),
+    pytest.param(MaterializedFrame.from_matrix(_M_TRICLINIC), id="materialized"),
+    pytest.param(LogTriclinicFrame.from_matrix(_M_TRICLINIC), id="log_triclinic"),
+    pytest.param(DeformedFrame.from_matrix(_M_TRICLINIC), id="deformed"),
 ]
 _frame_case = pytest.mark.parametrize("frame", _GEOMETRY_FRAMES)
 
@@ -884,83 +892,260 @@ class TestLogTriclinicFrame:
 
     def test_vectors_is_expm_of_lower_triangular(self):
         a = jnp.array([[0.7, 0.0, 0.0], [0.5, 1.1, 0.0], [0.1, 0.2, 1.4]])
-        tril = jnp.array([0.7, 0.5, 1.1, 0.1, 0.2, 1.4])
-        frame = LogTriclinicFrame(tril)
-        npt.assert_allclose(frame.vectors, expm(a), atol=1e-6)
+        tril = jnp.array([[0.7, 0.5, 1.1, 0.1, 0.2, 1.4]])
+        frame = LogTriclinicFrame(tril, jnp.ones(1))
+        npt.assert_allclose(frame.vectors, expm(a)[None], atol=1e-6)
         # expm of a lower-triangular matrix stays lower-triangular.
         npt.assert_allclose(jnp.triu(frame.vectors, 1), 0.0, atol=1e-6)
 
     def test_volume_is_exp_trace(self):
-        tril = jnp.array([0.7, 0.5, 1.1, 0.1, 0.2, 1.4])
-        frame = LogTriclinicFrame(tril)
-        trace = tril[0] + tril[2] + tril[5]
+        tril = jnp.array([[0.7, 0.5, 1.1, 0.1, 0.2, 1.4]])
+        frame = LogTriclinicFrame(tril, cell_factor=jnp.ones(1))
+        trace = tril[0, 0] + tril[0, 2] + tril[0, 5]
         npt.assert_allclose(frame.volume, jnp.exp(trace), atol=1e-6)
         # The exponential map always yields a positive-volume cell.
-        assert float(frame.volume) > 0.0
+        assert float(frame.volume[0]) > 0.0
 
     def test_from_matrix_roundtrips_through_expm(self):
         """``from_matrix`` (triangular logm) then ``vectors`` (expm) recovers the
         input lattice. Degenerate-diagonal robustness is covered by
         ``test_math.TestTriangular3x3Logm``."""
         lattice = expm(jnp.array([[0.7, 0, 0], [0.5, 1.1, 0], [0.3, 0.2, 1.4]]))
-        frame = LogTriclinicFrame.from_matrix(lattice)
-        npt.assert_allclose(frame.vectors, lattice, atol=1e-5)
+        frame = LogTriclinicFrame.from_matrix(lattice[None])
+        npt.assert_allclose(frame.vectors, lattice[None], atol=1e-5)
 
     def test_uses_general_nonlinear_gradient_path(self):
         """``vectors`` is nonlinear in the parameters, so the frame is a plain
         ``BaseFrame`` (general inverse-Jacobian), not a ``LinearFrame``."""
-        frame = LogTriclinicFrame.from_matrix(jnp.eye(3) * 2.0)
+        frame = LogTriclinicFrame.from_matrix(jnp.eye(3)[None] * 2.0)
         assert isinstance(frame, BaseFrame)
         assert not isinstance(frame, LinearFrame)
 
-
-class TestFrechetFrame:
-    """Deformation parameterisation: ``vectors == base @ expm(A / cell_factor)``
-    anchored at a fixed reference ``base`` (held stop-gradient, so only ``A`` is
-    optimised)."""
-
-    def test_vectors_is_base_times_expm(self):
+    def test_cell_factor_scales_exponential_map(self):
+        """``cell_factor`` divides ``A`` inside the exponential map."""
         a = jnp.array([[0.7, 0.0, 0.0], [0.5, 1.1, 0.0], [0.1, 0.2, 1.4]])
-        tril = jnp.array([0.7, 0.5, 1.1, 0.1, 0.2, 1.4])
+        tril = jnp.array([[0.7, 0.5, 1.1, 0.1, 0.2, 1.4]])
+        frame = LogTriclinicFrame(tril, jnp.array([4.0]))
+        npt.assert_allclose(frame.vectors, expm(a / 4.0)[None], atol=1e-6)
+
+    def test_from_matrix_cell_factor_roundtrips(self):
+        """``from_matrix(L, cell_factor=k).vectors == L`` regardless of ``k``."""
+        lattice = expm(jnp.array([[0.7, 0, 0], [0.5, 1.1, 0], [0.3, 0.2, 1.4]]))
+        frame = LogTriclinicFrame.from_matrix(lattice[None], cell_factor=4.0)
+        npt.assert_allclose(frame.vectors, lattice[None], atol=1e-5)
+
+
+class TestDeformedFrame:
+    """Deformation parameterisation: ``vectors == base @ deformation`` with the
+    fixed reference ``base`` held stop-gradient, so only the deformation is
+    optimised. With a ``LogTriclinicFrame`` deformation this is ASE's
+    ``FrechetCellFilter``: ``vectors == base @ expm(A / cell_factor)``."""
+
+    def test_vectors_is_base_times_deformation(self):
+        a = jnp.array([[0.7, 0.0, 0.0], [0.5, 1.1, 0.0], [0.1, 0.2, 1.4]])
+        tril = jnp.array([[0.7, 0.5, 1.1, 0.1, 0.2, 1.4]])
         base = TriclinicFrame.from_matrix(_M_TRICLINIC)
-        frame = FrechetFrame(tril, base)
+        frame = DeformedFrame(base, LogTriclinicFrame(tril, jnp.ones(1)))
         # Right-multiplication (Cartesian deformation), matching ASE's
         # FrechetCellFilter; left-multiplication would recombine lattice vectors.
         npt.assert_allclose(frame.vectors, base.vectors @ expm(a), atol=1e-6)
+        npt.assert_allclose(
+            frame.vectors, base.vectors @ frame.deformation.vectors, atol=1e-6
+        )
         # base @ expm(A) of two lower-triangular factors stays lower-triangular.
         npt.assert_allclose(jnp.triu(frame.vectors, 1), 0.0, atol=1e-6)
 
     def test_from_frame_anchors_at_base(self):
-        """``A = 0`` reproduces the reference frame exactly."""
+        """The identity deformation (``A = 0``) reproduces the reference frame."""
         base = TriclinicFrame.from_matrix(_M_TRICLINIC)
-        frame = FrechetFrame.from_frame(base)
-        npt.assert_allclose(frame.tril, 0.0)
+        frame = DeformedFrame.from_frame(base)
+        deformation = cast(LogTriclinicFrame, frame.deformation)
+        npt.assert_allclose(deformation.tril, 0.0, atol=1e-6)
         npt.assert_allclose(frame.vectors, base.vectors, atol=1e-6)
+        npt.assert_allclose(frame.reference_vectors, base.vectors, atol=1e-6)
 
     def test_base_held_fixed_under_gradient(self):
-        """The cartesian→parameter pullback flows entirely into ``A``; the
-        stop-gradient base receives no gradient."""
-        frame = FrechetFrame.from_matrix(_M_TRICLINIC)
+        """The cartesian→parameter pullback flows entirely into the deformation;
+        the stop-gradient base receives no gradient."""
+        frame = DeformedFrame.from_matrix(_M_TRICLINIC)
         grad = frame.parameter_gradient(_CELL_GRAD)
-        assert isinstance(grad, FrechetFrame)
-        assert isinstance(grad.base, TriclinicFrame)
-        npt.assert_allclose(grad.base.tril, 0.0, atol=1e-6)
-        assert bool(jnp.any(grad.tril != 0.0))
+        assert isinstance(grad, DeformedFrame)
+        npt.assert_allclose(grad.base.vectors, 0.0, atol=1e-6)
+        assert bool(jnp.any(cast(LogTriclinicFrame, grad.deformation).tril != 0.0))
 
     def test_cell_factor_stiffens_deformation_and_gradient(self):
         """``cell_factor`` (ASE's exp_cell_factor) scales the deformation to
         ``expm(A / cell_factor)`` and divides the parameter gradient by it."""
         a = jnp.array([[0.3, 0, 0], [0.2, 0.1, 0], [0.05, 0.1, 0.2]])
-        tril = jnp.array([0.3, 0.2, 0.1, 0.05, 0.1, 0.2])
+        tril = jnp.array([[0.3, 0.2, 0.1, 0.05, 0.1, 0.2]])
         base = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        defm4 = cast(
+            LogTriclinicFrame,
+            DeformedFrame.from_frame(base, cell_factor=4.0).deformation,
+        )
+        cf4 = defm4.cell_factor
         npt.assert_allclose(
-            FrechetFrame(tril, base, cell_factor=4.0).vectors,
+            DeformedFrame(base, LogTriclinicFrame(tril, cf4)).vectors,
             base.vectors @ expm(a / 4.0),
             atol=1e-6,
         )
         # At A = 0 the deformation Jacobian is the base Jacobian times
         # 1 / cell_factor, so the parameter gradient scales exactly by it.
-        z = jnp.zeros(6)
-        g1 = FrechetFrame(z, base, cell_factor=1.0).parameter_gradient(_CELL_GRAD).tril
-        g4 = FrechetFrame(z, base, cell_factor=4.0).parameter_gradient(_CELL_GRAD).tril
+        z = jnp.zeros((1, 6))
+        cf1 = cast(
+            LogTriclinicFrame,
+            DeformedFrame.from_frame(base, cell_factor=1.0).deformation,
+        ).cell_factor
+        g1 = cast(
+            LogTriclinicFrame,
+            DeformedFrame(base, LogTriclinicFrame(z, cf1))
+            .parameter_gradient(_CELL_GRAD)
+            .deformation,
+        ).tril
+        g4 = cast(
+            LogTriclinicFrame,
+            DeformedFrame(base, LogTriclinicFrame(z, cf4))
+            .parameter_gradient(_CELL_GRAD)
+            .deformation,
+        ).tril
         npt.assert_allclose(g4, g1 / 4.0, atol=1e-6)
+
+    def test_per_system_cell_factor(self):
+        """A per-system ``cell_factor`` array threads through ``from_frame`` and
+        ``vectors``, deforming each system by its own factor."""
+        a = jnp.array([[0.3, 0, 0], [0.2, 0.1, 0], [0.05, 0.1, 0.2]])
+        tril = jnp.array([0.3, 0.2, 0.1, 0.05, 0.1, 0.2])
+        base = TriclinicFrame.from_matrix(jnp.broadcast_to(_M_TRICLINIC, (3, 3, 3)))
+        cell_factor = jnp.array([1.0, 2.0, 4.0])
+        frame = DeformedFrame.from_frame(base, cell_factor=cell_factor)
+        deformation = cast(LogTriclinicFrame, frame.deformation)
+        # Stored per parameter slot (shares ``tril``'s leading dim); ``factor``
+        # exposes the per-system value.
+        assert deformation.cell_factor.shape == (3, 1)
+        npt.assert_allclose(deformation.tril, 0.0)
+        batched = DeformedFrame(
+            base,
+            LogTriclinicFrame(jnp.broadcast_to(tril, (3, 6)), deformation.cell_factor),
+        )
+        for i, cf in enumerate([1.0, 2.0, 4.0]):
+            npt.assert_allclose(
+                batched.vectors[i], _M_TRICLINIC[0] @ expm(a / cf), atol=1e-6
+            )
+
+    def test_per_system_cell_factor_zero_gradient(self):
+        """``from_frame`` stop-gradients ``cell_factor`` even as a per-system
+        array, so it receives no gradient."""
+        base = TriclinicFrame.from_matrix(jnp.broadcast_to(_M_TRICLINIC, (3, 3, 3)))
+        cell_factor = jnp.array([1.0, 2.0, 4.0])
+
+        def loss(cf: Array) -> Array:
+            built = cast(
+                LogTriclinicFrame,
+                DeformedFrame.from_frame(base, cell_factor=cf).deformation,
+            )
+            frame = DeformedFrame(
+                base, LogTriclinicFrame(jnp.ones((3, 6)) * 0.1, built.cell_factor)
+            )
+            return jnp.sum(frame.vectors)
+
+        grad = jax.grad(loss)(cell_factor)
+        npt.assert_allclose(grad, 0.0)
+
+
+_M_ROTATED = jnp.array([[2.0, 0.3, -0.1], [0.4, 3.0, 0.2], [-0.2, 0.5, 4.0]])[
+    None
+]  # batched (1, 3, 3) full (non-triangular) basis
+
+
+def _frechet(base: Array, deformation: MatrixLogFrame) -> DeformedFrame:
+    """Full-3×3 Frechet basis: ``DeformedFrame(MatrixLog base, MatrixLog deformation)``."""
+    return DeformedFrame(MatrixLogFrame.from_lower_triangular(base), deformation)
+
+
+class TestMatrixLogFrame:
+    """Full-3×3 matrix-log frame and its ``DeformedFrame(MatrixLog, MatrixLog)`` use."""
+
+    @pytest.fixture(autouse=True)
+    def _x64(self):
+        prev = jax.config.read("jax_enable_x64")
+        jax.config.update("jax_enable_x64", True)
+        yield
+        jax.config.update("jax_enable_x64", prev)
+
+    def test_structure_is_general(self):
+        matrix = MatrixLogFrame.from_matrix(_M_ROTATED).matrix
+        assert type(matrix) is GeneralSquareMatrix
+
+    def test_deformed_matrix_log_structure_is_general(self):
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        frame = DeformedFrame.from_frame(base, deformation=MatrixLogFrame)
+        assert type(frame.matrix) is GeneralSquareMatrix
+
+    def test_deformed_log_triclinic_structure_unchanged(self):
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        frame = DeformedFrame.from_frame(base)  # default LogTriclinicFrame
+        assert type(frame.matrix) is LowerTriangularSquareMatrix
+
+    def test_vectors_is_expm_of_log(self):
+        from scipy.linalg import expm as scipy_expm
+
+        A = jnp.asarray([[0.05, 0.10, -0.03], [0.02, 0.07, 0.04], [-0.06, 0.01, 0.08]])
+        cf = 2.0
+        frame = MatrixLogFrame(A[None], jnp.asarray([cf]))
+        ref = jnp.asarray(scipy_expm(np.asarray(A) / cf))
+        npt.assert_allclose(frame.vectors, ref[None], atol=1e-10)
+
+    def test_parameter_gradient_matches_expm_frechet_adjoint(self):
+        """The deformation's ``log_matrix`` gradient is the ``expm_frechet`` adjoint."""
+        from itertools import product
+
+        from scipy.linalg import expm_frechet
+
+        A = np.array([[0.05, 0.10, -0.03], [0.02, 0.07, 0.04], [-0.06, 0.01, 0.08]])
+        cell_grad = np.array(
+            [[0.20, -0.07, 0.11], [-0.07, 0.05, 0.15], [0.11, 0.15, -0.20]]
+        )
+        frame = MatrixLogFrame(jnp.asarray(A)[None], jnp.ones(1))
+        grad = frame.parameter_gradient(jnp.asarray(cell_grad)[None])
+        ours = np.asarray(grad.log_matrix[0])
+
+        expected = np.zeros((3, 3))
+        for mu, nu in product(range(3), repeat=2):
+            d = np.zeros((3, 3))
+            d[mu, nu] = 1.0
+            expected[mu, nu] = np.sum(
+                expm_frechet(A, d, compute_expm=False) * cell_grad
+            )
+        npt.assert_allclose(ours, expected, atol=1e-9)
+
+    def test_base_roundtrip_exactness(self):
+        """``DeformedFrame.from_frame(.., MatrixLogFrame)`` at identity deformation
+        reproduces the triclinic reference (exact triangular log of the base)."""
+        ref = TriclinicFrame.from_matrix(_M_TRICLINIC)
+        frame = DeformedFrame.from_frame(
+            ref, cell_factor=8.0, deformation=MatrixLogFrame
+        )
+        npt.assert_allclose(frame.vectors, ref.vectors, atol=1e-12)
+        npt.assert_allclose(frame.reference_vectors, ref.vectors, atol=1e-12)
+
+    def test_batched_safety_table_slice(self):
+        defm = MatrixLogFrame(jnp.zeros((2, 3, 3)), jnp.ones(2))
+        frame = _frechet(jnp.broadcast_to(_M_TRICLINIC, (2, 3, 3)), defm)
+        sliced = frame[0:1]
+        npt.assert_allclose(sliced.vectors, _M_TRICLINIC, atol=1e-10)
+
+    def test_rotated_cell_is_not_lower_triangular(self):
+        A = jnp.asarray([[0.1, 0.2, 0.0], [0.0, 0.1, 0.0], [0.3, 0.0, 0.1]])
+        frame = _frechet(jnp.eye(3)[None], MatrixLogFrame(A[None], jnp.ones(1)))
+        vecs = frame.vectors[0]
+        upper = vecs[0, 1] ** 2 + vecs[0, 2] ** 2 + vecs[1, 2] ** 2
+        assert upper > 1e-6  # genuinely non-triangular
+
+    def test_rotated_cell_inverse_volume_roundtrip(self):
+        A = jnp.asarray([[0.1, 0.2, 0.0], [0.0, 0.1, 0.0], [0.3, 0.0, 0.1]])
+        frame = _frechet(_M_TRICLINIC, MatrixLogFrame(A[None], jnp.ones(1)))
+        vecs = frame.vectors
+        npt.assert_allclose(frame.inverse_vectors @ vecs, jnp.eye(3)[None], atol=1e-10)
+        npt.assert_allclose(frame.volume, jnp.abs(jnp.linalg.det(vecs)), atol=1e-10)
+        r = jnp.array([[0.7, -0.3, 0.4]])
+        npt.assert_allclose(frame.to_real(frame.to_fractional(r)), r, atol=1e-10)
