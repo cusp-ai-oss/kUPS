@@ -8,13 +8,16 @@ factorial ratios, polynomial root finding, and optimized matrix operations for
 3×3 matrices.
 """
 
+from __future__ import annotations
+
 from enum import StrEnum
+from typing import TYPE_CHECKING, Protocol, overload, override, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.utils.jax import jit, vectorize
+from kups.core.utils.jax import dataclass, jit, vectorize
 
 
 @jit
@@ -398,6 +401,175 @@ def triangular_3x3_matmul(
     return inner(L, x)
 
 
+@runtime_checkable
+class SquareMatrix(Protocol):
+    @property
+    def array(self) -> Array:
+        """Underlying array of shape `(..., 3, 3)` representing the matrix."""
+        ...
+
+    @overload
+    def matmul(self, x: Array, *, side: MatmulSide | str = ...) -> Array: ...
+    @overload
+    def matmul(
+        self, x: SquareMatrix, *, side: MatmulSide | str = ...
+    ) -> SquareMatrix: ...
+    def matmul(
+        self, x: Array | SquareMatrix, *, side: MatmulSide | str = MatmulSide.RIGHT
+    ) -> Array | SquareMatrix:
+        """Matrix-vector or matrix-matrix multiplication.
+
+        Args:
+            x: Vector or matrix to multiply.
+            side: Multiplication side:
+                - `"right"`: Computes `x @ self`
+                - `"left"`: Computes `self @ x`
+
+        Returns:
+            Result of the multiplication.
+        """
+        ...
+
+    def det(self) -> Array:
+        """Compute the determinant of the matrix.
+
+        Returns:
+            Determinant as a scalar array.
+        """
+        ...
+
+    def inverse(self) -> SquareMatrix:
+        """Compute the inverse of the matrix.
+
+        Returns:
+            Inverse of the matrix.
+        """
+        ...
+
+    def scale(self, factor: Array) -> SquareMatrix:
+        """Scale the matrix by a given factor.
+
+        Args:
+            factor: Scalar factor to scale the matrix.
+
+        Returns:
+            Scaled matrix.
+        """
+        ...
+
+
+@dataclass
+class GeneralSquareMatrix:
+    array: Array
+
+    @overload
+    def matmul(self, x: Array, *, side: MatmulSide | str = ...) -> Array: ...
+    @overload
+    def matmul(
+        self, x: SquareMatrix, *, side: MatmulSide | str = ...
+    ) -> SquareMatrix: ...
+
+    def matmul(
+        self, x: Array | SquareMatrix, *, side: MatmulSide | str = MatmulSide.RIGHT
+    ) -> Array | SquareMatrix:
+        if isinstance(x, SquareMatrix):
+            # Matrix-matrix: RIGHT composes as ``self @ x`` so a DeformedFrame's
+            # ``base.matmul(deformation)`` evaluates to ``base @ deformation``.
+            product = (
+                x.array @ self.array
+                if side == MatmulSide.LEFT
+                else self.array @ x.array
+            )
+            return GeneralSquareMatrix(product)
+        return (
+            jnp.einsum("...ij,...j->...i", self.array, x)
+            if side == MatmulSide.LEFT
+            else jnp.einsum("...ji,...j->...i", self.array, x)
+        )
+
+    def det(self) -> Array:
+        return jnp.linalg.det(self.array)
+
+    def inverse(self) -> SquareMatrix:
+        return GeneralSquareMatrix(jnp.linalg.inv(self.array))
+
+    def scale(self, factor: Array) -> SquareMatrix:
+        return GeneralSquareMatrix(self.array * factor)
+
+
+@dataclass
+class LowerTriangularSquareMatrix(GeneralSquareMatrix):
+    array: Array
+
+    @overload
+    def matmul(self, x: Array, *, side: MatmulSide | str = ...) -> Array: ...
+    @overload
+    def matmul(
+        self, x: SquareMatrix, *, side: MatmulSide | str = ...
+    ) -> SquareMatrix: ...
+
+    @override
+    def matmul(
+        self, x: Array | SquareMatrix, *, side: MatmulSide | str = MatmulSide.RIGHT
+    ) -> Array | SquareMatrix:
+        if isinstance(x, SquareMatrix):
+            product = (
+                x.array @ self.array
+                if side == MatmulSide.LEFT
+                else self.array @ x.array
+            )
+            if isinstance(x, LowerTriangularSquareMatrix):
+                return LowerTriangularSquareMatrix(product)
+            return GeneralSquareMatrix(product)
+        return triangular_3x3_matmul(self.array, x, lower=True, side=side)
+
+    @override
+    def det(self) -> Array:
+        return jnp.prod(jnp.diagonal(self.array, axis1=-2, axis2=-1), axis=-1)
+
+    @override
+    def inverse(self) -> SquareMatrix:
+        _, inv = triangular_3x3_det_and_inverse(self.array, lower=True)
+        return LowerTriangularSquareMatrix(inv)
+
+
+@dataclass
+class DiagonalSquareMatrix(LowerTriangularSquareMatrix):
+    array: Array
+
+    @overload
+    def matmul(self, x: Array, *, side: MatmulSide | str = ...) -> Array: ...
+    @overload
+    def matmul(
+        self, x: SquareMatrix, *, side: MatmulSide | str = ...
+    ) -> SquareMatrix: ...
+
+    @override
+    def matmul(
+        self, x: Array | SquareMatrix, *, side: MatmulSide | str = MatmulSide.RIGHT
+    ) -> Array | SquareMatrix:
+        if isinstance(x, SquareMatrix):
+            product = (
+                x.array @ self.array
+                if side == MatmulSide.LEFT
+                else self.array @ x.array
+            )
+            if isinstance(x, DiagonalSquareMatrix):
+                return DiagonalSquareMatrix(product)
+            if isinstance(x, LowerTriangularSquareMatrix):
+                return LowerTriangularSquareMatrix(product)
+            return GeneralSquareMatrix(product)
+        # The diagonal matrix-vector product is side-invariant.
+        diag = jnp.diagonal(self.array, axis1=-2, axis2=-1)
+        return diag * x
+
+    @override
+    def inverse(self) -> SquareMatrix:
+        diag_inv = 1.0 / jnp.diagonal(self.array, axis1=-2, axis2=-1)
+        eye = jnp.eye(diag_inv.shape[-1], dtype=self.array.dtype)
+        return DiagonalSquareMatrix(diag_inv[..., None] * eye)
+
+
 @jit
 def solve_affine_ode(A: Array, b: Array, x0: Array, dt: Array | float) -> Array:
     r"""Solve the affine ODE $\dot{x} = A\,x + b$ exactly over $[0, \Delta t]$.
@@ -494,3 +666,9 @@ def next_higher_power(value: Array, base: Array | float = 2.0) -> Array:
     result = jnp.power(base, exponents)
     # Linear growth for base <= 1
     return jnp.where(base <= 1, value, result).astype(int)
+
+
+if TYPE_CHECKING:
+
+    def _(m: GeneralSquareMatrix) -> None:
+        __: SquareMatrix = m
