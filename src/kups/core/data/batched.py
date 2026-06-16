@@ -7,11 +7,13 @@ import jax
 import numpy as np
 
 from kups.core.lens import BoundLens, bind
+from kups.core.utils.jax import skip_post_init_if_disabled
 
 
 class Batched:
     """Mixin that validates consistent leading batch dimension across pytree leaves."""
 
+    @skip_post_init_if_disabled
     def __post_init__(self) -> None:
         """Validate that all array leaves share the same leading dimension.
 
