@@ -104,6 +104,7 @@ from enum import Enum
 from functools import partial
 from typing import (
     Any,
+    Callable,
     Generic,
     Literal,
     Protocol,
@@ -122,9 +123,13 @@ from jax.flatten_util import ravel_pytree
 
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, jit, no_post_init
 from kups.core.utils.math import (
-    triangular_3x3_det_and_inverse,
+    DiagonalSquareMatrix,
+    GeneralSquareMatrix,
+    LowerTriangularSquareMatrix,
+    SquareMatrix,
+    logm,
     triangular_3x3_expm,
     triangular_3x3_from_tril,
     triangular_3x3_logm,
@@ -212,6 +217,23 @@ class Frame(Protocol):
         """Matrix inverse of [`vectors`][kups.core.cell.Frame.vectors],
         used to convert real-space coordinates to fractional, shape
         ``(..., 3, 3)``."""
+        ...
+
+    @property
+    def matrix(self) -> SquareMatrix:
+        """Static structure of [`vectors`][kups.core.cell.Frame.vectors] used to
+        dispatch the geometric primitives (inverse, volume, transforms) onto the
+        matching fast path. ``LOWER_TRIANGULAR`` / ``DIAGONAL`` keep the triangular
+        and diagonal forms; ``GENERAL`` falls back to dense ``3x3`` algebra."""
+        ...
+
+    @property
+    def reference_vectors(self) -> Array:
+        """Fixed reference basis for deformation-relative atom coordinates,
+        shape ``(..., 3, 3)``. The identity for directly-parameterised frames
+        (so atom DOFs are fractional); a frame that parameterises a deformation
+        of a stored reference (e.g. [DeformedFrame][kups.core.cell.DeformedFrame])
+        returns that reference, conditioning the DOFs against it."""
         ...
 
     @property
@@ -338,17 +360,32 @@ class BaseFrame(Frame, abc.ABC):
 
     @property
     @override
+    def matrix(self) -> SquareMatrix:
+        # Conservative default: any frame without an explicit structure is
+        # correct (just not fast) under the general dense paths.
+        return GeneralSquareMatrix(self.vectors)
+
+    @property
+    @override
     def inverse_vectors(self) -> Array:
-        return triangular_3x3_det_and_inverse(self.vectors)[1]
+        return self.matrix.inverse().array
+
+    @property
+    @override
+    def reference_vectors(self) -> Array:
+        # No stored reference: atom DOFs are fractional. DeformedFrame overrides.
+        return jnp.broadcast_to(
+            jnp.eye(3, dtype=self.vectors.dtype), self.vectors.shape
+        )
 
     @property
     @override
     def volume(self) -> Array:
-        diagonal = jnp.diagonal(self.vectors, axis1=-2, axis2=-1)
-        return jnp.abs(diagonal.prod(axis=-1))
+        return jnp.abs(self.matrix.det())
 
     @property
     @override
+    @jit
     def perpendicular_lengths(self) -> Array:
         v = self.vectors
         a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
@@ -360,24 +397,27 @@ class BaseFrame(Frame, abc.ABC):
 
     @override
     def to_fractional(self, r: Array) -> Array:
-        return triangular_3x3_matmul(self.inverse_vectors, r)
+        return self.matrix.inverse().matmul(r)
 
     @override
     def to_real(self, r_frac: Array) -> Array:
-        return triangular_3x3_matmul(self.vectors, r_frac)
+        return self.matrix.matmul(r_frac)
 
     @override
+    @jit
     def materialize(self) -> MaterializedFrame:
-        vecs = self.vectors
-        det, inv = triangular_3x3_det_and_inverse(vecs)
-        return MaterializedFrame(vectors=vecs, inverse_vectors=inv, volume=jnp.abs(det))
+        matrix = self.matrix
+        det, inv = matrix.det(), matrix.inverse()
+        return MaterializedFrame(self.matrix, inv, jnp.abs(det))
 
     @override
+    @jit
     def parameter_gradient(self, vectors_grad: Array) -> Self:
         (grad,) = jax.vjp(lambda f: f.vectors, self)[1](vectors_grad)
         return grad
 
     @override
+    @jit
     def vectors_gradient(self, parameter_grad: Frame) -> Array:
         def single(frame: Frame, grad: Frame) -> Array:
             theta, unravel = ravel_pytree(frame)
@@ -391,7 +431,8 @@ class BaseFrame(Frame, abc.ABC):
         fn = single
         for _ in range(self.vectors.ndim - 2):
             fn = jax.vmap(fn)
-        return fn(self, parameter_grad)
+        with no_post_init():
+            return fn(self, parameter_grad)
 
 
 class LinearFrame(BaseFrame, abc.ABC):
@@ -501,6 +542,11 @@ class TriclinicFrame(LinearFrame, Sliceable):
 
     @property
     @override
+    def matrix(self) -> SquareMatrix:
+        return LowerTriangularSquareMatrix(self.vectors)
+
+    @property
+    @override
     def vectors(self) -> Array:
         return triangular_3x3_from_tril(self.tril)
 
@@ -543,6 +589,21 @@ class TriclinicFrame(LinearFrame, Sliceable):
         return type(self)(self.tril * jnp.asarray(other)[..., None])
 
 
+def _broadcast_cell_factor(cell_factor: float | Array, like: Array) -> Array:
+    """Align a scalar / per-system ``cell_factor`` with ``like``'s axes.
+
+    Appends trailing singleton axes so a per-system ``(B,)`` value lines up with
+    ``like``'s leading axis (not its last) and broadcasts against the trailing axes
+    in arithmetic. The result is left at this minimal shape rather than materialised
+    to ``like.shape``, so ``cell_factor`` stays a small leaf instead of inflating
+    into ``like``'s trailing dimensions.
+    """
+    cf = jnp.asarray(cell_factor, like.dtype)
+    cf = cf.reshape(cf.shape + (1,) * (like.ndim - cf.ndim))
+    cf = jnp.broadcast_to(cf, (like.shape[0], *cf.shape[1:]))
+    return cf
+
+
 @dataclass
 class LogTriclinicFrame(BaseFrame, Sliceable):
     """Triclinic [Frame][kups.core.cell.Frame] parameterised in the matrix log.
@@ -563,93 +624,221 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
     Attributes:
         tril: Lower-triangular elements ``[A00, A10, A11, A20, A21, A22]`` of
             ``A``, shape ``(..., 6)``.
+        cell_factor: Stiffening factor (ASE's ``exp_cell_factor``) so that
+            ``vectors = expm(A / cell_factor)`` and the gradient w.r.t. ``A``
+            carries a ``1 / cell_factor`` factor. A stop-gradient leaf broadcast
+            to ``tril``'s shape (equal per slot) so every leaf shares ``tril``'s
+            leading dimension inside batched containers; read the per-system value
+            through ``factor``.
     """
 
     tril: Array
+    cell_factor: Array
 
     @classmethod
-    def from_frame(cls, frame: Frame) -> Self:
-        return cls.from_matrix(frame.vectors)
+    def from_frame(cls, frame: Frame, *, cell_factor: float | Array = 1.0) -> Self:
+        return cls.from_matrix(frame.vectors, cell_factor=cell_factor)
 
     @classmethod
     @override
-    def from_matrix(cls, vecs: Array) -> Self:
+    def from_matrix(cls, vecs: Array, *, cell_factor: float | Array = 1.0) -> Self:
         """Construct from a lower-triangular basis matrix ``L`` (positive
-        diagonal), shape ``(..., 3, 3)``, storing ``logm(L)`` so that
-        ``vectors == L``."""
-        return cls(triangular_3x3_logm(jnp.asarray(vecs))[..., *np.tril_indices(3)])
+        diagonal), shape ``(..., 3, 3)``, storing ``A = cell_factor * logm(L)`` so
+        that ``vectors == expm(A / cell_factor) == L``."""
+        vecs = jnp.asarray(vecs)
+        tril = triangular_3x3_logm(vecs)[..., *np.tril_indices(3)]
+        cf = _broadcast_cell_factor(cell_factor, tril)
+        return cls(tril * cf, cf)
+
+    @property
+    @override
+    def matrix(self) -> SquareMatrix:
+        # expm of a lower-triangular A is lower-triangular.
+        return LowerTriangularSquareMatrix(self.vectors)
 
     @property
     @override
     def vectors(self) -> Array:
-        return triangular_3x3_expm(triangular_3x3_from_tril(self.tril))
+        # fixed preconditioner, never optimised.
+        cf = jax.lax.stop_gradient(self.cell_factor)
+        A = triangular_3x3_from_tril(self.tril / cf)
+        return triangular_3x3_expm(A=A)
 
     @property
     @override
     def volume(self) -> Array:
-        # det(expm(A)) = exp(tr A); the diagonal of A is tril[0], tril[2], tril[5].
-        return jnp.exp(self.tril[..., 0] + self.tril[..., 2] + self.tril[..., 5])
+        # det(expm(A / cf)) = exp(tr(A / cf)); A's diagonal is tril[0], tril[2], tril[5].
+        return jnp.exp(
+            (self.tril[..., 0] + self.tril[..., 2] + self.tril[..., 5])
+            / self.cell_factor[..., 0]
+        )
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         # Per-axis row scaling has no closed form in A (diag(m) does not commute
         # with A), so scale the basis matrix and re-take the log.
         m = jnp.asarray(multiplicities)
-        log_matrix = triangular_3x3_logm(self.vectors * m[:, None])
-        return type(self)(log_matrix[..., *np.tril_indices(3)])
+        return type(self).from_matrix(
+            self.vectors * m[:, None], cell_factor=self.cell_factor
+        )
 
     @override
     def __mul__(self, other: Array | float | int) -> Self:
-        # Uniform scaling commutes: expm(A + log(s) I) = s * expm(A), so add
-        # log(s) to the diagonal elements A00, A11, A22 (tril indices 0, 2, 5).
-        log_scale = jnp.log(jnp.asarray(other))[..., None]
+        # Uniform scaling commutes: expm(B + log(s) I) = s * expm(B) for B = A / cf,
+        # so add cf * log(s) to A's diagonal elements (tril indices 0, 2, 5).
+        log_scale = self.cell_factor * jnp.log(jnp.asarray(other))
         diagonal = jnp.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
-        return type(self)(self.tril + log_scale * diagonal)
+        return type(self)(self.tril + log_scale * diagonal, self.cell_factor)
 
 
 @dataclass
-class FrechetFrame(BaseFrame, Sliceable):
-    """Triclinic [Frame][kups.core.cell.Frame] parameterised as a
-    matrix-exponential deformation of a fixed reference frame, after ASE's
-    ``FrechetCellFilter``.
+class MatrixLogFrame(BaseFrame, Sliceable):
+    """Full-3×3 matrix-log [Frame][kups.core.cell.Frame]: ``vectors = expm(A / cf)``.
 
-    ``vectors`` is the reference ``base`` right-multiplied by
-    ``expm(A / cell_factor)`` for a lower-triangular ``A`` (its 6 stored
-    elements). Right-multiplication deforms Cartesian space, so ``vectors`` stays
-    lower-triangular and atoms ride the cell at fixed fractional coordinates. The
-    map is unconstrained -- any ``A`` gives a positive-volume basis -- so cell
-    relaxation in ``A`` cannot collapse or invert the cell. ``vectors`` is
-    nonlinear in the parameters, so like
-    [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] the gradient maps use
-    the general inverse-Jacobian path on [BaseFrame][kups.core.cell.BaseFrame].
+    The ``GENERAL`` sibling of [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame]:
+    stores a full ``(..., 3, 3)`` generator ``A`` and exponentiates the *whole*
+    matrix (not just a lower-triangular block), so ``vectors`` can be a rotated /
+    sheared cell. The matrix exponential is the principal one; its vjp is the
+    ``expm_frechet`` adjoint, so the inherited
+    [`parameter_gradient`][kups.core.cell.Frame.parameter_gradient] /
+    [`vectors_gradient`][kups.core.cell.Frame.vectors_gradient] are exact with no
+    custom rule.
+
+    Used as both the base and the deformation of a
+    [DeformedFrame][kups.core.cell.DeformedFrame] (build with
+    [from_frame][kups.core.cell.DeformedFrame.from_frame] passing
+    ``deformation=MatrixLogFrame``) to express the full-``3x3`` Frechet basis: every
+    leaf is ``(..., 3, 3)``, so a per-system
+    [Batched][kups.core.data.batched.Batched] slice yields all-``(3, 3)`` leaves
+    that share a leading axis (a ``(6,)`` tril base would fail).
 
     Attributes:
-        tril: Lower-triangular elements ``[A00, A10, A11, A20, A21, A22]`` of
-            ``A``, shape ``(..., 6)``.
-        base: Reference frame; ``A = 0`` reproduces it. Held fixed
-            (stop-gradient) so only ``A`` is optimised.
-        cell_factor: Static stiffening factor (ASE's ``exp_cell_factor``,
-            typically the atom count) scaling the cell gradient by
-            ``1 / cell_factor`` to balance it against the per-atom forces.
+        log_matrix: Generator ``A``, shape ``(..., 3, 3)``.
+        cell_factor: Stiffening factor (ASE's ``exp_cell_factor``) so that
+            ``vectors = expm(A / cell_factor)``. A stop-gradient leaf broadcast to
+            ``log_matrix``'s shape (equal per slot) so it shares the leading axis;
+            read the per-system value through
+            [`factor`][kups.core.cell.MatrixLogFrame.factor].
     """
 
-    tril: Array
-    base: Frame
-    cell_factor: float = field(default=1.0, static=True)
+    log_matrix: Array
+    cell_factor: Array
 
     @classmethod
-    def from_frame(cls, frame: Frame, *, cell_factor: float = 1.0) -> Self:
-        return cls(
-            jnp.zeros(frame.vectors.shape[:-2] + (6,), frame.vectors.dtype),
-            frame,
-            cell_factor,
+    @override
+    def from_matrix(cls, vecs: Array, *, cell_factor: float | Array = 1.0) -> Self:
+        """Construct from an arbitrary basis matrix via the general (eig-based)
+        [logm][kups.core.utils.math.logm], shape ``(..., 3, 3)``.
+
+        For an *arbitrary* matrix; inaccurate for repeated eigenvalues (defective
+        matrices). Use [from_lower_triangular][kups.core.cell.MatrixLogFrame.from_lower_triangular]
+        for the reference cell, whose diagonal can repeat.
+        """
+        vecs = jnp.asarray(vecs)
+        log_matrix = logm(vecs).real
+        cf = _broadcast_cell_factor(cell_factor, log_matrix)
+        return cls(log_matrix * cf, cf)
+
+    @classmethod
+    def from_lower_triangular(
+        cls, vecs: Array, *, cell_factor: float | Array = 1.0
+    ) -> Self:
+        """Construct from a lower-triangular basis matrix (positive diagonal) via the
+        exact [triangular_3x3_logm][kups.core.utils.math.triangular_3x3_logm].
+
+        The closed-form triangular log is exact even for repeated diagonal entries
+        (cubic / tetragonal cells), unlike the eig-based
+        [from_matrix][kups.core.cell.MatrixLogFrame.from_matrix].
+        """
+        vecs = jnp.asarray(vecs)
+        log_matrix = triangular_3x3_logm(vecs)
+        cf = _broadcast_cell_factor(cell_factor, log_matrix)
+        return cls(log_matrix * cf, cf)
+
+    @property
+    @override
+    def vectors(self) -> Array:
+        # fixed preconditioner, never optimised
+        cf = jax.lax.stop_gradient(self.cell_factor)
+        fn = jax.scipy.linalg.expm
+        for _ in range(self.log_matrix.ndim - 2):
+            fn = jax.vmap(fn)
+        return fn(self.log_matrix / cf)
+
+    @override
+    def tile(self, multiplicities: tuple[int, int, int]) -> Self:
+        m = jnp.asarray(multiplicities)
+        return type(self).from_matrix(
+            self.vectors * m[:, None], cell_factor=self.cell_factor
         )
+
+    @override
+    def __mul__(self, other: Array | float | int) -> Self:
+        return type(self).from_matrix(
+            self.vectors * jnp.asarray(other), cell_factor=self.cell_factor
+        )
+
+
+@dataclass
+class DeformedFrame(BaseFrame, Sliceable):
+    """[Frame][kups.core.cell.Frame] parameterised as a differentiable deformation
+    of a fixed reference frame: ``vectors = base @ deformation``.
+
+    ``base`` is held fixed (stop-gradient); only ``deformation``'s parameters are
+    optimised. Right-multiplication deforms Cartesian space, so ``vectors`` stays
+    lower-triangular and atoms at fixed fractional coordinates ride the cell. The
+    deformation frame chooses the parameterisation: a
+    [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] gives the unconstrained
+    matrix-exponential map of ASE's ``FrechetCellFilter`` (build with
+    [from_frame][kups.core.cell.DeformedFrame.from_frame]); a
+    [TriclinicFrame][kups.core.cell.TriclinicFrame] gives the linear deformation
+    gradient of ASE's ``UnitCellFilter``. ``vectors`` is generally nonlinear in the
+    parameters, so the gradient maps use the general inverse-Jacobian path on
+    [BaseFrame][kups.core.cell.BaseFrame].
+
+    Attributes:
+        base: Reference frame, held fixed (stop-gradient); the identity
+            deformation reproduces it.
+        deformation: Differentiable deformation gradient (the optimised frame).
+    """
+
+    base: Frame
+    deformation: Frame
+
+    @classmethod
+    def from_frame(
+        cls,
+        frame: Frame,
+        *,
+        cell_factor: float | Array = 1.0,
+        deformation: type[LogTriclinicFrame | MatrixLogFrame] = LogTriclinicFrame,
+    ) -> Self:
+        """ASE ``FrechetCellFilter``-style: an exponential-map deformation anchored
+        at ``frame`` (identity deformation, so ``vectors == frame.vectors``).
+
+        ``deformation`` selects the deformation parameterisation:
+        [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] (default) keeps
+        ``base = frame`` with a lower-triangular ``(6,)`` matrix-log deformation;
+        [MatrixLogFrame][kups.core.cell.MatrixLogFrame] gives a full-``3x3``
+        deformation, re-anchoring ``base`` as a ``MatrixLogFrame`` built from
+        ``frame.vectors`` (via the exact triangular log) so every leaf is
+        ``(..., 3, 3)`` and the resulting frame represents rotated / sheared cells.
+        """
+        eye = jnp.broadcast_to(
+            jnp.eye(3, dtype=frame.vectors.dtype), frame.vectors.shape
+        )
+        deform = deformation.from_matrix(eye, cell_factor=cell_factor)
+        return cls(frame, deform)
 
     @classmethod
     @override
     def from_matrix(cls, vecs: Array) -> Self:
-        base = TriclinicFrame.from_matrix(vecs)
-        return cls(jnp.zeros(base.tril.shape, base.tril.dtype), base)
+        return cls.from_frame(TriclinicFrame.from_matrix(vecs))
+
+    @property
+    @override
+    def matrix(self) -> SquareMatrix:
+        return self.base.matrix.matmul(self.deformation.matrix)
 
     @property
     def _base_vectors(self) -> Array:
@@ -657,24 +846,26 @@ class FrechetFrame(BaseFrame, Sliceable):
 
     @property
     @override
+    def reference_vectors(self) -> Array:
+        return self._base_vectors
+
+    @property
+    @override
     def vectors(self) -> Array:
-        A = triangular_3x3_from_tril(self.tril)
-        exp_A = triangular_3x3_expm(A / self.cell_factor)
-        # Right-multiply: deform Cartesian space (v -> v @ expm(A/cell_factor)), so
-        # atoms at fixed fractional coordinates ride the cell by the same factor.
-        return self._base_vectors @ exp_A
+        # Right-multiply: deform Cartesian space (v -> v @ deformation), so atoms at
+        # fixed fractional coordinates ride the cell.
+        return self._base_vectors @ self.deformation.vectors
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
-        # Per-axis row scaling acts on the left of ``vectors`` and has no closed
-        # form in ``A`` (the right factor), so apply it to the reference base.
-        return type(self)(self.tril, self.base.tile(multiplicities), self.cell_factor)
+        # Per-axis row scaling acts on the left of ``vectors`` with no closed form
+        # in the right deformation factor, so apply it to the reference base.
+        return type(self)(self.base.tile(multiplicities), self.deformation)
 
     @override
     def __mul__(self, other: Array | float | int) -> Self:
-        # Uniform scaling commutes with the right factor: ``s * (base @ expm) ==
-        # (s * base) @ expm``, so scale the base and leave ``A`` untouched.
-        return type(self)(self.tril, self.base * other, self.cell_factor)
+        # Uniform scaling commutes with the right factor: scale the base.
+        return type(self)(self.base * other, self.deformation)
 
 
 @dataclass
@@ -705,6 +896,11 @@ class OrthogonalFrame(LinearFrame, Sliceable):
         """
         vecs = jnp.asarray(vecs)
         return cls(jnp.diagonal(vecs, axis1=-2, axis2=-1))
+
+    @property
+    @override
+    def matrix(self) -> SquareMatrix:
+        return DiagonalSquareMatrix(self.vectors)
 
     @property
     @override
@@ -753,13 +949,13 @@ class MaterializedFrame(Sliceable):
     of the inverse or determinant) or when the arrays need to cross a
     JIT boundary independently of the frame's original parametrisation.
 
-    The stored matrices are assumed to follow the lower-triangular
-    convention shared by every other Frame implementation; coordinate
-    transforms use [triangular_3x3_matmul][kups.core.utils.math.triangular_3x3_matmul]
-    accordingly. Manually constructing this frame with non-triangular
-    vectors violates the convention.
+    Coordinate transforms dispatch on the stored
+    [`structure`][kups.core.cell.MaterializedFrame.structure] (default
+    ``GENERAL``, so manually-constructed frames with arbitrary vectors are
+    correct); [`materialize`][kups.core.cell.Frame.materialize] propagates the
+    source frame's structure so triangular / diagonal sources keep the fast path.
 
-    All three fields are pytree leaves and must share a leading batch
+    The three array fields are pytree leaves and must share a leading batch
     dim ``B`` to satisfy the [Sliceable][kups.core.data.Sliceable]
     contract — unbatched single-frame inputs must be wrapped with an
     explicit ``[None]`` axis before being passed in.
@@ -768,17 +964,37 @@ class MaterializedFrame(Sliceable):
         vectors: Basis matrix, shape ``(B, 3, 3)``.
         inverse_vectors: Matrix inverse of ``vectors``, shape ``(B, 3, 3)``.
         volume: Absolute determinant of ``vectors``, shape ``(B,)``.
+        structure: Static structure flag dispatching the coordinate transforms.
     """
 
-    vectors: Array
-    inverse_vectors: Array
+    matrix: SquareMatrix
+    inverse_matrix: SquareMatrix
     volume: Array
 
+    @property
+    def vectors(self) -> Array:
+        return self.matrix.array
+
+    @property
+    def inverse_vectors(self) -> Array:
+        return self.inverse_matrix.array
+
     @classmethod
-    def from_matrix(cls, vecs: Array) -> Self:
-        vecs = jnp.asarray(vecs)
-        det, inv = triangular_3x3_det_and_inverse(vecs)
-        return cls(vectors=vecs, inverse_vectors=inv, volume=jnp.abs(det))
+    def from_matrix(
+        cls,
+        vecs: Array,
+        *,
+        structure: Callable[[Array], SquareMatrix] = GeneralSquareMatrix,
+    ) -> Self:
+        matrix = structure(jnp.asarray(vecs))
+        det, inv = matrix.det(), matrix.inverse()
+        return cls(matrix, inv, jnp.abs(det))
+
+    @property
+    def reference_vectors(self) -> Array:
+        return jnp.broadcast_to(
+            jnp.eye(3, dtype=self.vectors.dtype), self.vectors.shape
+        )
 
     @property
     def perpendicular_lengths(self) -> Array:
@@ -790,24 +1006,25 @@ class MaterializedFrame(Sliceable):
         return jnp.stack([Lx, Ly, Lz], axis=-1)
 
     def to_fractional(self, r: Array) -> Array:
-        return triangular_3x3_matmul(self.inverse_vectors, r)
+        return self.inverse_matrix.matmul(r)
 
     def to_real(self, r_frac: Array) -> Array:
-        return triangular_3x3_matmul(self.vectors, r_frac)
+        return self.matrix.matmul(r_frac)
 
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         m = jnp.asarray(multiplicities)
         return type(self)(
-            vectors=self.vectors * m[:, None],
-            inverse_vectors=self.inverse_vectors / m[None, :],
+            matrix=self.matrix.scale(m[:, None]),
+            inverse_matrix=self.inverse_matrix.scale(1 / m[None, :]),
             volume=self.volume * jnp.prod(m),
         )
 
     def __mul__(self, other: Array | float | int) -> Self:
         scale = jnp.asarray(other)
+        factor = scale[..., None, None]
         return type(self)(
-            vectors=self.vectors * scale[..., None, None],
-            inverse_vectors=self.inverse_vectors / scale[..., None, None],
+            matrix=self.matrix.scale(factor),
+            inverse_matrix=self.inverse_matrix.scale(1 / factor),
             volume=self.volume * scale**3,
         )
 

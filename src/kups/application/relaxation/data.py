@@ -17,7 +17,7 @@ from kups.application.utils.particles import (
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import AnyPeriodicity, Cell, FrechetFrame
+from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
@@ -34,7 +34,10 @@ class RelaxParticles(Particles):
     (forces, inclusion/exclusion indices) needed by relaxation propagators.
 
     Attributes:
-        position_gradients: Energy gradient w.r.t. positions, shape ``(n_atoms, 3)``.
+        position_gradients: Optimizer position-DOF gradient ``∂E/∂u_pos`` (the
+            relaxation filter's output), shape ``(n_atoms, 3)``: ``∂E/∂q`` under
+            ``cell_filter`` (reference-cartesian) or ``∂E/∂r`` under
+            ``positions_only``. The force source and ASE-fmax convergence quantity.
     """
 
     position_gradients: Array
@@ -57,11 +60,10 @@ class RelaxSystems:
     cell: Cell[AnyPeriodicity]
     """Cell geometry, batched with shape (1,)."""
     cell_gradients: Cell[AnyPeriodicity]
-    """Energy gradient w.r.t. the cell, stored on the same
-    :class:`~kups.core.cell.Frame` as :attr:`cell` (i.e. the 6 lower-triangular
-    entries of ``∂U/∂h`` for a :class:`~kups.core.cell.TriclinicFrame`). Stress
-    is computed from particles + systems via
-    :func:`~kups.observables.stress.stress_via_virial_theorem`."""
+    """Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the relaxation filter's output),
+    stored on :attr:`cell`'s frame (the lower-triangular log-deformation entries
+    under ``cell_filter``). The ASE-fmax convergence quantity for the cell; the
+    atoms-ride-the-cell coupling is already folded in by the filter pullback."""
     potential_energy: Array
     """Potential energy per system, shape (1,)."""
 
@@ -107,18 +109,23 @@ def relax_state_from_ase(
             position_gradients=jnp.zeros_like(p.data.positions),
         ),
     )
-    # cell_factor = atom count (ASE's exp_cell_factor) balances the extensive
-    # cell-virial gradient against the per-atom forces in the joint optimiser.
-    n_atoms = float(p.data.positions.shape[0])
-    cell = bind(cell, lambda x: x.frame).apply(
-        lambda f: FrechetFrame.from_frame(f, cell_factor=n_atoms)
+    # cell_factor = per-system atom count (ASE's exp_cell_factor) balances the
+    # extensive cell-virial gradient against the per-atom forces in the joint
+    # optimiser. bincount over the system index gives one count per system.
+    n_systems = p.data.system.num_labels
+    cell_factor = jnp.bincount(p.data.system.indices, length=n_systems).astype(
+        p.data.positions.dtype
     )
-    cell = cell[None]
+    cell = bind(cell[None], lambda x: x.frame).apply(
+        lambda f: DeformedFrame.from_frame(
+            f, cell_factor=cell_factor, deformation=MatrixLogFrame
+        )
+    )
     systems = Table.arange(
         RelaxSystems(
             cell=cell,
             cell_gradients=tree_zeros_like(cell),
-            potential_energy=jnp.array([0.0]),
+            potential_energy=jnp.zeros(n_systems),
         ),
         label=SystemId,
     )
