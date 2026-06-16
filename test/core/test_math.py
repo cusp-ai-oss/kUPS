@@ -8,6 +8,9 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.utils.math import (
+    DiagonalSquareMatrix,
+    GeneralSquareMatrix,
+    LowerTriangularSquareMatrix,
     MatmulSide,
     cubic_roots,
     det_and_inverse_3x3,
@@ -20,6 +23,18 @@ from kups.core.utils.math import (
     triangular_3x3_logm,
     triangular_3x3_matmul,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_x64():
+    """Enable float64 for this module's tests without leaking the global flag
+    into other test modules."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
 
 
 class TestLogFactorialRatio:
@@ -414,6 +429,105 @@ class TestNextHigherPower:
             next_higher_power(jnp.array([4, 10, 28]), base=3),
             jnp.array([9, 27, 81]),
         )
+
+
+_STRUCTURED = [GeneralSquareMatrix, LowerTriangularSquareMatrix, DiagonalSquareMatrix]
+
+
+def _structured(cls: type[GeneralSquareMatrix], A: jax.Array) -> jax.Array:
+    """Project ``A`` onto the structure ``cls`` represents."""
+    if cls is DiagonalSquareMatrix:
+        return jnp.diag(jnp.diagonal(A, axis1=-2, axis2=-1))
+    if cls is LowerTriangularSquareMatrix:
+        return jnp.tril(A)
+    return A
+
+
+class TestSquareMatrixMatmul:
+    @pytest.fixture(params=[MatmulSide.LEFT, MatmulSide.RIGHT])
+    def side(self, request: pytest.FixtureRequest) -> MatmulSide:
+        return request.param
+
+    @pytest.mark.parametrize("cls", _STRUCTURED, ids=lambda c: c.__name__)
+    def test_matches_dense_reference(
+        self, cls: type[GeneralSquareMatrix], side: MatmulSide
+    ):
+        M = _structured(cls, jax.random.normal(jax.random.PRNGKey(0), (3, 3)))
+        x = jax.random.normal(jax.random.PRNGKey(1), (10, 3))
+        result = cls(M).matmul(x, side=side)
+        # RIGHT = x @ M, LEFT = M @ x.
+        expected = (
+            jnp.einsum("ij,bj->bi", M, x)
+            if side is MatmulSide.LEFT
+            else jnp.einsum("bi,ij->bj", x, M)
+        )
+        npt.assert_allclose(result, expected, rtol=1e-12)
+
+    @pytest.mark.parametrize(
+        "cls",
+        [LowerTriangularSquareMatrix, DiagonalSquareMatrix],
+        ids=lambda c: c.__name__,
+    )
+    def test_fast_path_matches_general(
+        self, cls: type[GeneralSquareMatrix], side: MatmulSide
+    ):
+        M = _structured(cls, jax.random.normal(jax.random.PRNGKey(2), (3, 3)))
+        x = jax.random.normal(jax.random.PRNGKey(3), (5, 3))
+        npt.assert_allclose(
+            cls(M).matmul(x, side=side),
+            GeneralSquareMatrix(M).matmul(x, side=side),
+            rtol=1e-12,
+        )
+
+    def test_diagonal_side_invariance(self):
+        D = jnp.diag(jax.random.normal(jax.random.PRNGKey(6), (3,)))
+        x = jax.random.normal(jax.random.PRNGKey(7), (5, 3))
+        left = DiagonalSquareMatrix(D).matmul(x, side=MatmulSide.LEFT)
+        right = DiagonalSquareMatrix(D).matmul(x, side=MatmulSide.RIGHT)
+        npt.assert_allclose(left, right, rtol=1e-12)
+
+    def test_batched_matrices(self, side: MatmulSide):
+        M = jnp.tril(jax.random.normal(jax.random.PRNGKey(8), (4, 3, 3)))
+        x = jax.random.normal(jax.random.PRNGKey(9), (4, 3))
+        result = LowerTriangularSquareMatrix(M).matmul(x, side=side)
+        expected = (
+            jnp.einsum("bij,bj->bi", M, x)
+            if side is MatmulSide.LEFT
+            else jnp.einsum("bi,bij->bj", x, M)
+        )
+        npt.assert_allclose(result, expected, rtol=1e-12)
+
+
+class TestSquareMatrixDetAndInverse:
+    @pytest.mark.parametrize("cls", _STRUCTURED, ids=lambda c: c.__name__)
+    def test_matches_dense_reference(self, cls: type[GeneralSquareMatrix]):
+        M = _structured(
+            cls, jax.random.normal(jax.random.PRNGKey(0), (3, 3)) + 2 * jnp.eye(3)
+        )
+        m = cls(M)
+        npt.assert_allclose(m.det(), jnp.linalg.det(M), rtol=1e-12)
+        npt.assert_allclose(m.inverse().array, jnp.linalg.inv(M), atol=1e-12)
+
+    def test_batched_matrices(self):
+        M = jnp.tril(jax.random.normal(jax.random.PRNGKey(2), (4, 3, 3))) + 2 * jnp.eye(
+            3
+        )
+        m = LowerTriangularSquareMatrix(M)
+        npt.assert_allclose(m.det(), jnp.linalg.det(M), rtol=1e-12)
+        npt.assert_allclose(m.inverse().array, jnp.linalg.inv(M), atol=1e-12)
+
+
+class TestSquareMatrixPromotion:
+    def test_product_rule(self):
+        """Matrix-matrix products promote to the least-specific structure."""
+        key = jax.random.PRNGKey(0)
+        L = LowerTriangularSquareMatrix(jnp.tril(jax.random.normal(key, (3, 3))))
+        D = DiagonalSquareMatrix(jnp.diag(jax.random.normal(key, (3,))))
+        G = GeneralSquareMatrix(jax.random.normal(key, (3, 3)))
+        assert type(L.matmul(G)) is GeneralSquareMatrix
+        assert type(L.matmul(L)) is LowerTriangularSquareMatrix
+        assert type(D.matmul(L)) is LowerTriangularSquareMatrix
+        assert type(D.matmul(D)) is DiagonalSquareMatrix
 
 
 if __name__ == "__main__":
