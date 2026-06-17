@@ -2118,7 +2118,7 @@ wheels = [
 
 [[package]]
 name = "kups"
-version = "1.0.1"
+version = "1.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "ase" },
@@ -2128,6 +2128,7 @@ dependencies = [
     { name = "h5py" },
     { name = "jax" },
     { name = "jsonargparse" },
+    { name = "matplotlib" },
     { name = "msgpack" },
     { name = "nanoargs" },
     { name = "optax" },
@@ -2180,7 +2181,6 @@ notebook = [
     { name = "ipykernel" },
     { name = "ipympl" },
     { name = "ipywidgets" },
-    { name = "matplotlib" },
     { name = "nglview" },
 ]
 
@@ -2197,6 +2197,7 @@ requires-dist = [
     { name = "jax", extras = ["cuda"], marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.7.2" },
     { name = "jsonargparse", specifier = ">=4.41.0" },
     { name = "mace-torch", marker = "extra == 'mace'", specifier = ">=0.3.16" },
+    { name = "matplotlib", specifier = ">=3.10.5" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nanoargs", specifier = ">=0.1.1" },
     { name = "optax", specifier = ">=0.2.6" },
@@ -2234,7 +2235,6 @@ notebook = [
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "ipympl", specifier = ">=0.9.7" },
     { name = "ipywidgets", specifier = ">=8.1.7" },
-    { name = "matplotlib", specifier = ">=3.10.1" },
     { name = "nglview", specifier = ">=3.1.4" },
 ]
 

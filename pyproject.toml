@@ -57,6 +57,7 @@ dependencies = [
     "msgpack>=1.1.2",
     "nanoargs>=0.1.1",
     "slub>=0.1.1",
+    "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
 ]
 
 [project.optional-dependencies]
@@ -93,7 +94,6 @@ include = ["/src", "/LICENSE", "/README.md", "/pyproject.toml"]
 [dependency-groups]
 cuda = ["jax[cuda]>=0.7.2; sys_platform == 'linux'"]
 notebook = [
-    "matplotlib>=3.10.1",
     "ipywidgets>=8.1.7",
     "ipykernel>=6.29.5",
     "ipympl>=0.9.7",
