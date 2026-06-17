@@ -34,8 +34,8 @@ jobs:
         # Random ``ScaleShiftMACE`` checkpoint built at test time, so no
         # external download is needed. The test file self-skips via
         # ``pytest.importorskip`` when the ``mace`` extra isn't installed.
-        run: uv run --no-default-groups --group dev --group cuda --extra mace pytest test/potential/test_torch_mace_e2e.py
+        run: uv run --no-default-groups --group dev --group cuda --extra mace pytest test/application/potential/test_torch_mace_e2e.py
       - name: UMA torch-bridge e2e
         # ``uma`` and ``mace`` extras conflict (see pyproject.toml), so this
         # runs in a separate ``uv run`` invocation with a fresh resolution.
-        run: uv run --no-default-groups --group dev --group cuda --extra uma pytest test/potential/test_torch_uma_e2e.py
+        run: uv run --no-default-groups --group dev --group cuda --extra uma pytest test/application/potential/test_torch_uma_e2e.py

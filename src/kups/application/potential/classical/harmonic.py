@@ -22,7 +22,7 @@ from typing import Any, Literal, Protocol, overload
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index
-from kups.core.lens import Lens, SimpleLens, const_lens
+from kups.core.lens import Lens, const_lens
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
     EMPTY_LENS,
@@ -33,16 +33,18 @@ from kups.core.potential import (
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, ParticleId
 from kups.potential.classical.harmonic import (
-    HarmonicAngleInput,
     HarmonicAngleParameters,
-    HarmonicBondInput,
     HarmonicBondParameters,
     IsBondedParticles,
     make_harmonic_angle_potential,
     make_harmonic_bond_potential,
 )
-from kups.potential.common.energy import PositionAndCell, position_and_cell_idx_view
-from kups.potential.common.graph import IsGraphProbe
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
+from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 
 
 class HasBondedParticlesAndSystems(
@@ -80,7 +82,7 @@ def make_harmonic_bond_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -93,8 +95,8 @@ def make_harmonic_bond_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -108,7 +110,7 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -117,14 +119,14 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicBondState[
-            HasCache[HarmonicBondParameters, PotentialOut[PositionAndCell, EmptyType]]
+            HasCache[HarmonicBondParameters, PotentialOut[PositionsAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 @overload
@@ -133,7 +135,7 @@ def make_harmonic_bond_from_state[State](
     probe: None = None,
     *,
     parameters: HarmonicBondParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -143,8 +145,8 @@ def make_harmonic_bond_from_state[State](
     probe: None = None,
     *,
     parameters: HarmonicBondParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -153,20 +155,20 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: HarmonicBondParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
 @overload
 def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedHarmonicBondState[PotentialOut[PositionAndCell, EmptyType]]
+        State, IsCachedHarmonicBondState[PotentialOut[PositionsAndCell, EmptyType]]
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: HarmonicBondParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 def make_harmonic_bond_from_state(
@@ -174,7 +176,7 @@ def make_harmonic_bond_from_state(
     probe: Any = None,
     *,
     parameters: HarmonicBondParameters | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
 ) -> Any:
     """Create a harmonic bond potential, optionally with incremental updates.
 
@@ -196,22 +198,17 @@ def make_harmonic_bond_from_state(
             with a constant lens and the state need not carry
             ``harmonic_bond_parameters``; with a ``probe``, the cache is read
             from ``state.harmonic_bond_cache``.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors (for forces / stress).
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured harmonic bond [Potential][kups.core.potential.Potential].
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[HarmonicBondInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if parameters is not None:
         param_view = const_lens(parameters)
@@ -275,7 +272,7 @@ def make_harmonic_angle_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -288,8 +285,8 @@ def make_harmonic_angle_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -303,7 +300,7 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -312,14 +309,14 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicAngleState[
-            HasCache[HarmonicAngleParameters, PotentialOut[PositionAndCell, EmptyType]]
+            HasCache[HarmonicAngleParameters, PotentialOut[PositionsAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 @overload
@@ -328,7 +325,7 @@ def make_harmonic_angle_from_state[State](
     probe: None = None,
     *,
     parameters: HarmonicAngleParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -338,8 +335,8 @@ def make_harmonic_angle_from_state[State](
     probe: None = None,
     *,
     parameters: HarmonicAngleParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -348,20 +345,20 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     parameters: HarmonicAngleParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
 @overload
 def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedHarmonicAngleState[PotentialOut[PositionAndCell, EmptyType]]
+        State, IsCachedHarmonicAngleState[PotentialOut[PositionsAndCell, EmptyType]]
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     parameters: HarmonicAngleParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 def make_harmonic_angle_from_state(
@@ -369,7 +366,7 @@ def make_harmonic_angle_from_state(
     probe: Any = None,
     *,
     parameters: HarmonicAngleParameters | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
 ) -> Any:
     """Create a harmonic angle potential, optionally with incremental updates.
 
@@ -391,22 +388,17 @@ def make_harmonic_angle_from_state(
             bound with a constant lens and the state need not carry
             ``harmonic_angle_parameters``; with a ``probe``, the cache is read
             from ``state.harmonic_angle_cache``.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors (for forces / stress).
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured harmonic angle [Potential][kups.core.potential.Potential].
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[HarmonicAngleInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if parameters is not None:
         param_view = const_lens(parameters)

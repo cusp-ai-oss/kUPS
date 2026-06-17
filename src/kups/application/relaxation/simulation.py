@@ -3,8 +3,9 @@
 
 """Relaxation propagator construction and simulation runner."""
 
-from typing import Any, Protocol
+from typing import Any, Protocol, no_type_check
 
+import jax
 import jax.numpy as jnp
 import optax
 from jax import Array
@@ -16,16 +17,13 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
-from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
-from kups.core.lens import Lens, View, lens
+from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
     EmptyType,
-    MappedPotential,
-    MappedPotentialInput,
     Potential,
     PotentialOut,
 )
@@ -37,9 +35,12 @@ from kups.core.propagator import (
 )
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import IsState, ParticleId, SystemId
-from kups.core.utils.functools import identity
 from kups.core.utils.jax import jit
-from kups.observables.stress import total_lattice_gradient
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndCell,
+    PositionsAndSystemIndex,
+)
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.propagator import RelaxationPropagator
 
@@ -53,15 +54,6 @@ class IsRelaxState(IsState[RelaxParticles, RelaxSystems], Protocol):
     def step(self) -> Array: ...
 
 
-class IsRelaxGradients(Protocol):
-    """Protocol for gradient containers returned by relaxation potentials."""
-
-    @property
-    def positions(self) -> Table[ParticleId, Array]: ...
-    @property
-    def cell(self) -> Table[SystemId, Cell[AnyPeriodicity]]: ...
-
-
 class OptInit(Protocol):
     """Protocol for initialising an Optax optimizer state from gradients."""
 
@@ -72,106 +64,78 @@ class OptInit(Protocol):
     ) -> optax.OptState: ...
 
 
-def potential_out_map(
-    input: MappedPotentialInput[IsRelaxState, IsRelaxGradients, Any],
-) -> PotentialOut[tuple[Array, Cell[AnyPeriodicity]], Any]:
-    """Compute the total lattice gradient from the potential output."""
-    position_gradients, cell_gradients = (
-        input.potential_out.gradients.positions,
-        input.potential_out.gradients.cell,
-    )
-    total = total_lattice_gradient(
-        input.state.particles.data.positions,
-        position_gradients.data,
-        input.state.systems.map_data(lambda s: s.cell),
-        cell_gradients,
-        input.state.particles.data.system,
-    )
-    return PotentialOut(
-        input.potential_out.total_energies, (position_gradients.data, total.data), EMPTY
-    )
-
-
-def make_relax_propagator[State: IsRelaxState, Gradients: IsRelaxGradients](
+def make_relax_propagator[State: IsRelaxState](
     state_lens: Lens[State, State],
-    potential: Potential[State, Gradients, EmptyType, Any],
-    optimizer: Optimizer[Any, Any],
-    optimize_cell: bool = False,
+    potential: Potential[State, Any, EmptyType, Any],
+    optimizer: Optimizer[PositionsAndCell, Any],
+    gradient: Lens[Geometry, PositionsAndCell],
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
 
     Args:
         state_lens: Lens focusing on the relaxation sub-state.
-        potential: Potential whose gradients drive the optimisation.
+        potential: Potential reporting the DOF gradient ``∂E/∂u`` (built with the
+            same ``gradient`` filter).
         optimizer: Optimizer (e.g. FIRE, Adam, L-BFGS).
-        optimize_cell: If True, optimise both positions and lattice vectors;
-            otherwise optimise positions only.
+        gradient: Relaxation filter selecting the optimizer DOFs ``u`` — must be
+            the one ``potential`` was built with. The propagator optimises *these*
+            DOFs (not raw ``(positions, cell)``) so the filter's atoms-ride-the-cell
+            coupling is applied on every ``set``; using the raw property would drop
+            that coupling and diverge from ASE's cell filters.
 
     Returns:
         Tuple of ``(propagator, opt_init)`` where *propagator* performs one
         optimisation step and *opt_init* initialises the optimizer state.
     """
-    # Cache the gradient and forces within the state
-    pot = MappedPotential(potential, potential_out_map)
-    pot = CachedPotential(
-        pot,
-        lens(
-            lambda x: PotentialOut(
-                x.systems.map_data(lambda x: x.potential_energy),
-                (x.particles.data.position_gradients, x.systems.data.cell_gradients),
-                EMPTY,
-            )
-        ),
-        # pyrefly: ignore [bad-argument-type]
-        lambda x: PotentialOut(
-            x.systems.index,  # type: ignore
-            (x.particles.data.system, x.systems.index),
-            EMPTY,
-        ),
-    )
 
-    def relax_prop_and_opt_init[T](
-        prop_view: View[tuple[Array, Cell[AnyPeriodicity]], T],
-    ):
-        prop_lens = state_lens.focus(
-            lambda x: prop_view((x.particles.data.positions, x.systems.data.cell))
+    def to_geometry(x: State) -> Geometry:
+        return Geometry(
+            x.particles.map_data(
+                lambda p: PositionsAndSystemIndex(p.positions, p.system)
+            ),
+            x.systems.map_data(lambda s: s.cell),
         )
 
-        def opt_init(
-            particles: Table[ParticleId, RelaxParticles],
-            systems: Table[SystemId, RelaxSystems],
-        ) -> optax.OptState:
-            params = (particles.data.positions, systems.data.cell)
-            indices = (particles.data.system, systems.index)
-            return optimizer.init(prop_view(params), prop_view(indices))  # type: ignore
+    def cached_out(x: State) -> PotentialOut[PositionsAndCell, EmptyType]:
+        return PotentialOut(
+            x.systems.map_data(lambda s: s.potential_energy),
+            PositionsAndCell(
+                x.particles.map_data(lambda x: x.position_gradients),
+                x.systems.map_data(lambda x: x.cell_gradients),
+            ),
+            EMPTY,
+        )
 
-        def potential_map(
-            input: MappedPotentialInput[
-                State, tuple[Array, Cell[AnyPeriodicity]], EmptyType
-            ],
-        ) -> PotentialOut[T, EmptyType]:
-            return PotentialOut(
-                input.potential_out.total_energies,
-                prop_view(input.potential_out.gradients),
-                EMPTY,
-            )
+    @no_type_check
+    def cached_index(x: State) -> PotentialOut[PositionsAndCell, EmptyType]:
+        return PotentialOut(
+            x.systems.index,
+            PositionsAndCell(x.particles.data.system, x.systems.index),
+            EMPTY,
+        )
 
-        return RelaxationPropagator(
-            potential=MappedPotential(pot, potential_map),
-            property=prop_lens,
-            opt_state=state_lens.focus(lambda x: x.opt_state),
-            optimizer=optimizer,
-        ), opt_init
+    def opt_init(
+        particles: Table[ParticleId, RelaxParticles],
+        systems: Table[SystemId, RelaxSystems],
+    ) -> optax.OptState:
+        params = PositionsAndCell(
+            particles.map_data(lambda p: p.positions),
+            systems.map_data(lambda s: s.cell),
+        )
+        # pyrefly: ignore [bad-argument-type]
+        prefix = PositionsAndCell(particles.data.system, systems.index)
+        return optimizer.init(params, prefix)
 
-    relax_prop, opt_init = (
-        relax_prop_and_opt_init(lens(identity))
-        if optimize_cell
-        else relax_prop_and_opt_init(lens(lambda x: x[0]))
+    pot = CachedPotential(potential, lens(cached_out), cached_index)
+    relax_prop = RelaxationPropagator(
+        potential=pot,
+        property=lens(to_geometry).nest(gradient),
+        opt_state=state_lens.focus(lambda x: x.opt_state),
+        optimizer=optimizer,
     )
     step_prop = step_counter_propagator(state_lens.focus(lambda x: x.step))
-    return ResetOnErrorPropagator(
-        SequentialPropagator((relax_prop, step_prop))
-    ), opt_init
+    prop = ResetOnErrorPropagator(SequentialPropagator((relax_prop, step_prop)))
+    return prop, opt_init
 
 
 def run_relax[State: IsRelaxState](
@@ -191,22 +155,25 @@ def run_relax[State: IsRelaxState](
 
     @jit
     def converged_value(s: State) -> Array:
-        max_force = jnp.max(jnp.linalg.norm(s.particles.data.forces, axis=-1))
-        cell = s.systems.data.cell
-        cell_grad = cell.frame.vectors_gradient(s.systems.data.cell_gradients.frame)
-        max_cell_grad = jnp.max(jnp.abs(cell_grad))
-        result = max_force < config.force_tolerance
+        max_dof = jnp.max(jnp.linalg.norm(s.particles.data.position_gradients, axis=-1))
         if config.optimize_cell:
-            result = result & (max_cell_grad < config.force_tolerance)
-        return result
+            leaves = jax.tree.leaves(s.systems.data.cell_gradients)
+            cell_dof = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in leaves]))
+            max_dof = jnp.maximum(max_dof, cell_dof)
+        return max_dof < config.force_tolerance
 
     def converged(s: State) -> bool:
         return bool(converged_value(s))
 
-    def _postfix(s: State) -> dict[str, Any]:
+    @jit
+    def _postfix_jit(s: State) -> dict[str, Array]:
         e = jnp.asarray(s.systems.data.potential_energy).sum()
         fmax = jnp.max(jnp.linalg.norm(s.particles.data.forces, axis=-1))
-        return {"E[eV]": f"{float(e): .6f}", "fmax[eV/Å]": f"{float(fmax): .4e}"}
+        return {"E[eV]": e, "fmax[eV/Å]": fmax}
+
+    def _postfix(s: State) -> dict[str, Any]:
+        data = _postfix_jit(s)
+        return jax.tree.map(lambda x: f"{float(x):.4e}", data)
 
     logger = CompositeLogger(
         TqdmLogger(config.max_steps, postfix=_postfix),

@@ -46,6 +46,7 @@ from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
     make_lennard_jones_tail_correction_from_state,
 )
+from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
@@ -108,10 +109,7 @@ from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
     MixingRule,
 )
-from kups.potential.common.energy import (
-    PositionAndCell,
-    position_and_cell_idx_view,
-)
+from kups.potential.common.geometry import PositionsAndCell
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -456,19 +454,17 @@ def make_guest_stress(
 ) -> StateProperty[MCMCState, Table[SystemId, StressResult]]:
     """Build guest-only stress tensor function from MCMCState."""
     state_lens = identity_lens(MCMCState)
-    potentials: list[Potential[MCMCState, PositionAndCell, EmptyType, Any]] = [
-        make_lennard_jones_from_state(
-            state_lens, compute_position_and_cell_gradients=True
-        ),
+    potentials: list[Potential[MCMCState, PositionsAndCell, EmptyType, Any]] = [
+        make_lennard_jones_from_state(state_lens, gradient=POSITIONS_AND_CELL),
         make_lennard_jones_tail_correction_from_state(
-            state_lens, compute_position_and_cell_gradients=True
+            state_lens, gradient=POSITIONS_AND_CELL
         ),
     ]
     if state.is_charged:
         potentials.append(
             make_ewald_from_state(
                 state_lens,
-                compute_position_and_cell_gradients=True,
+                gradient=POSITIONS_AND_CELL,
                 include_exclusion_mask=True,
             )
         )
@@ -478,14 +474,18 @@ def make_guest_stress(
         lens(
             lambda x: PotentialOut(
                 x.systems.map_data(lambda s: s.potential_energy),
-                PositionAndCell(
-                    x.particles.map_data(lambda p: p.position_gradients),
-                    x.systems.map_data(lambda s: s.cell_gradients),
+                PositionsAndCell(
+                    x.particles.set_data(x.particles.data.position_gradients),
+                    x.systems.set_data(x.systems.data.cell_gradients),
                 ),
                 EMPTY,
             )
         ),
-        position_and_cell_idx_view,
+        lambda x: PotentialOut(
+            x.systems.index,  # type: ignore
+            PositionsAndCell(x.particles.data.system, x.systems.index),  # type: ignore[arg-type]
+            EMPTY,
+        ),
     )
     propagator = PotentialAsPropagator(potential)
 

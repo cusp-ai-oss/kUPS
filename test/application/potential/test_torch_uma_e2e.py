@@ -16,7 +16,7 @@ sets agree, so the comparison is meaningful.
 The module is skipped at collection time when ``fairchem-core`` isn't
 installed (default kUPS dev environment), so dedicated CI is required:
 install the ``uma`` extra and run the file directly, e.g.
-``uv run --extra uma pytest test/potential/test_torch_uma_e2e.py``.
+``uv run --extra uma pytest test/application/potential/test_torch_uma_e2e.py``.
 Also skipped when JAX is on a CPU backend — kUPS's torch wrapper uses
 ``torch.cuda.ExternalStream`` and only runs on GPU.
 
@@ -48,6 +48,25 @@ import jax  # noqa: E402
 # JAX is on a CUDA backend. CPU pytest runs will skip this module.
 _REQUIRES_GPU = jax.default_backend() != "gpu"
 
+from kups.application.relaxation.data import (  # noqa: E402
+    RelaxParticles,
+    RelaxSystems,
+    relax_state_from_ase,
+)
+from kups.core.data import Table  # noqa: E402
+from kups.core.neighborlist import UniversalNeighborlistParameters  # noqa: E402
+from kups.core.typing import ParticleId, SystemId  # noqa: E402
+from kups.core.utils.jax import dataclass  # noqa: E402
+
+
+@dataclass
+class _TorchMliapGraphState:
+    """Minimal graph state read by the torch MLFF potential's forward pass."""
+
+    particles: Table[ParticleId, RelaxParticles]
+    systems: Table[SystemId, RelaxSystems]
+    neighborlist_params: UniversalNeighborlistParameters
+
 
 def _resolve_uma_model_path() -> Path | None:
     """Look up a local UMA .pt checkpoint via env var or known examples path."""
@@ -55,7 +74,7 @@ def _resolve_uma_model_path() -> Path | None:
     if env:
         p = Path(env)
         return p if p.exists() else None
-    candidate = Path(__file__).resolve().parents[2] / "examples" / "uma-s-1p2.pt"
+    candidate = Path(__file__).resolve().parents[3] / "examples" / "uma-s-1p2.pt"
     return candidate if candidate.exists() else None
 
 
@@ -189,6 +208,7 @@ def _resolve_or_create_uma_checkpoint(tmp_path: Path, task_name: str) -> Path:
     )
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(
     _REQUIRES_GPU,
     reason="kUPS torch wrapper requires JAX on CUDA",
@@ -206,12 +226,10 @@ def test_kups_pipeline_matches_fairchem_uma(tmp_path):
     from fairchem.core import FAIRChemCalculator
     from fairchem.core.units.mlip_unit import load_predict_unit
 
+    from kups.application.potential.filter import POSITIONS_AND_CELL
     from kups.application.potential.mliap.torch import make_torch_mliap_from_state
-    from kups.application.relaxation.data import relax_state_from_ase
-    from kups.application.simulations.relax_torch import RelaxTorchState
     from kups.core.cell import to_lower_triangular
     from kups.core.lens import identity_lens
-    from kups.core.neighborlist import UniversalNeighborlistParameters
     from kups.core.result import as_result_function
     from kups.observables.stress import _stress_via_virial_theorem
     from kups.potential.mliap.torch import load_uma
@@ -256,16 +274,13 @@ def test_kups_pipeline_matches_fairchem_uma(tmp_path):
     nl_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, mliap.cutoff
     )
-    state = RelaxTorchState(
-        particles=particles,
-        systems=systems,
-        neighborlist_params=nl_params,
-        opt_state=jnp.array(0),  # unused by the potential's forward pass
-        step=jnp.array([0]),
-        torch_mliap_model=mliap,
+    state = _TorchMliapGraphState(
+        particles=particles, systems=systems, neighborlist_params=nl_params
     )
     potential = make_torch_mliap_from_state(
-        identity_lens(RelaxTorchState), compute_position_and_cell_gradients=True
+        identity_lens(_TorchMliapGraphState),
+        parameters=mliap,
+        gradient=POSITIONS_AND_CELL,
     )
     potential_fn = as_result_function(potential)
     state = potential_fn(state, None).fix_or_raise(state)
@@ -299,9 +314,11 @@ def test_kups_pipeline_matches_fairchem_uma(tmp_path):
     kups_stress_triclinic = np.asarray(
         _stress_via_virial_theorem(
             position_gradients=pot_out.gradients.positions.data,
-            vector_gradients=pot_out.gradients.cell.data.vectors,
+            vector_gradients=state.systems.data.cell.frame.vectors_gradient(
+                pot_out.gradients.cell.data.frame
+            ),
             positions=state.particles.data.positions,
-            vectors=state.systems.data.cell.vectors,
+            cell=state.systems.data.cell,
             system=state.particles.data.system,
         )[0]
     )

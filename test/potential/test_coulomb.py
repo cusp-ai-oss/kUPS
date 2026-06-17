@@ -1,5 +1,6 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -11,9 +12,7 @@ from kups.core.neighborlist import Edges
 from kups.core.patch import WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-from kups.potential.classical.coulomb import (
-    coulomb_vacuum_energy,
-)
+from kups.potential.classical.coulomb import coulomb_vacuum_energy
 from kups.potential.classical.ewald import TO_STANDARD_UNITS
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
 
@@ -29,7 +28,7 @@ class PointCloudParticles:
 
 @dataclass
 class _SystemData:
-    cell: Cell
+    cell: Cell[Any]
     cutoff: jax.Array
 
 
@@ -59,7 +58,7 @@ def _make_graph(
     lattice_vectors: jax.Array,
     edge_indices: jax.Array,
     edge_shifts: jax.Array,
-) -> HyperGraph:
+) -> HyperGraph[Any, Any, Literal[2]]:
     particles = _make_particles(positions, charges, system_ids)
     systems = _make_systems(lattice_vectors)
     edges = Edges(
@@ -274,7 +273,7 @@ class TestCoulombVacuumEnergy:
         """Merged gradient tests: charge gradients + position gradients."""
 
         # Charge gradients
-        def energy_fn_charges(charges):
+        def energy_fn_charges(charges: jax.Array) -> jax.Array:
             graph = _make_graph(
                 self.positions,
                 charges,
@@ -293,7 +292,7 @@ class TestCoulombVacuumEnergy:
         assert jnp.isclose(gradients_q[0] / gradients_q[1], -1.0, rtol=1e-10)
 
         # Position gradients
-        def energy_fn_pos(positions):
+        def energy_fn_pos(positions: jax.Array) -> jax.Array:
             graph = _make_graph(
                 positions,
                 self.charges,
