@@ -25,42 +25,59 @@ from jax import Array
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.typing import PyTree
-from kups.core.utils.jax import dataclass, field, tree_copy
+from kups.core.utils.jax import (
+    PyTreeDef,
+    dataclass,
+    field,
+    tree_copy,
+    tree_structure,
+)
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.transforms._segmented_tree import (
+    _layout_and_leaves,
     tree_scale_per_row,
     tree_vdot,
 )
 
 
 @dataclass
-class ScaleByAseLbfgsState:
+class ScaleByAseLbfgsState[Params]:
     """State for the per-system ASE-flavor L-BFGS preconditioner.
+
+    All parameter-shaped fields are stored as flat lists of raw array leaves
+    (aligned with ``index_leaves``), never as ``Table``-bearing pytrees, so the
+    stacked ``memory_size`` leading axis on the history buffers never re-runs
+    ``Table`` validation. ``treedef`` reconstructs the parameter pytree on exit.
 
     Attributes:
         count: Total update steps taken so far (scalar int32).
-        params: Last seen parameters, pytree matching ``parameters``.
-        updates: Last seen gradients/updates.
-        diff_params_memory: Stacked past parameter differences, shape
-            ``(memory_size, *leaf_shape)`` per leaf.
-        diff_updates_memory: Stacked past update differences, same shape.
+        params: Last seen parameter leaves (flat list of arrays).
+        updates: Last seen gradient/update leaves (flat list of arrays).
+        diff_params_memory: Per leaf, stacked past parameter differences of
+            shape ``(memory_size, *leaf_shape)``.
+        diff_updates_memory: Per leaf, stacked past update differences.
         weights_memory: Per-system per-slot ``ρᵢ = 1/(yᵢ · sᵢ)`` weights as
             ``Table[K, Array]`` with data shape ``(n_systems, memory_size)``.
         index_prefix: Tree prefix of the parameter pytree whose leaves are
-            ``Index[K]`` objects, captured at init time.
+            ``Index[K]`` objects, captured at init. Stored as the prefix (each
+            ``Index`` once) rather than the per-leaf expansion so a shared
+            ``Index`` buffer is not donated multiple times across a jitted step.
+        treedef: Static pytree structure of the parameters, used to unflatten
+            the preconditioned update back into the parameter pytree.
     """
 
     count: Array
-    params: PyTree
-    updates: PyTree
-    diff_params_memory: PyTree
-    diff_updates_memory: PyTree
+    params: list[Array]
+    updates: list[Array]
+    diff_params_memory: list[Array]
+    diff_updates_memory: list[Array]
     weights_memory: Table[SupportsSorting, Array]
     index_prefix: PyTree
+    treedef: PyTreeDef[Params] = field(static=True)
 
 
 @dataclass
-class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
+class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
     """L-BFGS preconditioner with per-system block-diagonal Hessian.
 
     With a trivial ``index_prefix`` (one system) this reduces to the same
@@ -92,50 +109,56 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
     @override
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
-    ) -> ScaleByAseLbfgsState:
+    ) -> ScaleByAseLbfgsState[Params]:
         if index_prefix is None:
             index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
-        idx_leaves = jax.tree.leaves(
-            index_prefix, is_leaf=lambda x: isinstance(x, Index)
-        )
-        first = next(x for x in idx_leaves if isinstance(x, Index))
-        keys = first.keys
+        # Flatten params to raw leaves with an Index aligned to each (DFS order),
+        # matching ``jax.tree.leaves`` so ``update`` can flatten the same way.
+        index_leaves, (param_leaves,) = _layout_and_leaves(index_prefix, parameters)
+        keys = index_leaves[0].keys
         n_systems = len(keys)
 
-        stacked_zero = jax.tree.map(
-            lambda leaf: jnp.zeros((self.memory_size,) + leaf.shape, dtype=leaf.dtype),
-            parameters,
-        )
+        zeros = [jnp.zeros_like(x) for x in param_leaves]
+        stacked = [
+            jnp.zeros((self.memory_size,) + x.shape, dtype=x.dtype)
+            for x in param_leaves
+        ]
         return ScaleByAseLbfgsState(
             count=jnp.asarray(0, dtype=jnp.int32),
-            params=jax.tree.map(jnp.zeros_like, parameters),
-            updates=jax.tree.map(jnp.zeros_like, parameters),
-            diff_params_memory=stacked_zero,
-            diff_updates_memory=jax.tree.map(jnp.zeros_like, stacked_zero),
+            params=zeros,
+            updates=[jnp.zeros_like(x) for x in param_leaves],
+            diff_params_memory=stacked,
+            diff_updates_memory=[jnp.zeros_like(x) for x in stacked],
             weights_memory=Table(keys, jnp.zeros((n_systems, self.memory_size))),
             index_prefix=tree_copy(index_prefix),
+            treedef=tree_structure(parameters),
         )
 
     @override
     def update(
         self,
         updates: Params,
-        state: ScaleByAseLbfgsState,
+        state: ScaleByAseLbfgsState[Params],
         params: Params | None = None,
         **kwargs: Any,
-    ) -> tuple[Params, ScaleByAseLbfgsState]:
+    ) -> tuple[Params, ScaleByAseLbfgsState[Params]]:
         del kwargs
         if params is None:
             raise ValueError("ScaleByASELBFGS.update requires params")
-        idx = state.index_prefix
         keys = state.weights_memory.keys
         memory_idx = state.count % self.memory_size
         prev_memory_idx = (state.count - 1) % self.memory_size
         inv_alpha = 1.0 / self.alpha
 
+        # Flatten on entry; raw leaves carry no ``Table`` validation. Expanding the
+        # stored prefix yields one Index per leaf, aligned with the flattened params.
+        idx, (param_leaves, update_leaves) = _layout_and_leaves(
+            state.index_prefix, params, updates
+        )
+
         # Compute fresh (s, y) differences and corresponding ρ = 1/(y·s).
-        diff_params = jax.tree.map(jnp.subtract, params, state.params)
-        diff_updates = jax.tree.map(jnp.subtract, updates, state.updates)
+        diff_params = jax.tree.map(jnp.subtract, param_leaves, state.params)
+        diff_updates = jax.tree.map(jnp.subtract, update_leaves, state.updates)
         sy = tree_vdot(diff_updates, diff_params, idx).data  # (s·y) per system
         weight = jnp.where(sy == 0.0, 0.0, 1.0 / sy)
 
@@ -153,91 +176,90 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState]):
         gamma = Table(keys, gamma_data)
 
         # Differences are undefined at the very first iteration; stay zero.
-        diff_params = jax.tree.map(
-            lambda x: jnp.where(is_first, jnp.zeros_like(x), x), diff_params
-        )
-        diff_updates = jax.tree.map(
-            lambda x: jnp.where(is_first, jnp.zeros_like(x), x), diff_updates
-        )
+        diff_params = [jnp.where(is_first, jnp.zeros_like(x), x) for x in diff_params]
+        diff_updates = [jnp.where(is_first, jnp.zeros_like(x), x) for x in diff_updates]
         weight = jnp.where(is_first, jnp.zeros_like(weight), weight)
 
-        diff_params_memory = jax.tree.map(
-            lambda mem, x: mem.at[prev_memory_idx].set(x),
-            state.diff_params_memory,
-            diff_params,
-        )
-        diff_updates_memory = jax.tree.map(
-            lambda mem, x: mem.at[prev_memory_idx].set(x),
-            state.diff_updates_memory,
-            diff_updates,
-        )
+        diff_params_memory = [
+            mem.at[prev_memory_idx].set(x)
+            for mem, x in zip(state.diff_params_memory, diff_params, strict=True)
+        ]
+        diff_updates_memory = [
+            mem.at[prev_memory_idx].set(x)
+            for mem, x in zip(state.diff_updates_memory, diff_updates, strict=True)
+        ]
         weights_data = state.weights_memory.data.at[:, prev_memory_idx].set(weight)
 
-        precond = _precondition_by_lbfgs_segmented(
-            updates,
+        precond_leaves = _precondition_by_lbfgs_segmented(
+            update_leaves,
             diff_params_memory,
             diff_updates_memory,
             weights_data,
             gamma=gamma,
             memory_idx=memory_idx,
-            index_prefix=idx,
+            index_leaves=idx,
             keys=keys,
         )
+        # Unflatten on exit, back into the parameter pytree.
+        precond = state.treedef.unflatten(precond_leaves)
         return precond, ScaleByAseLbfgsState(
             count=state.count + 1,
-            params=params,
-            updates=updates,
+            params=param_leaves,
+            updates=update_leaves,
             diff_params_memory=diff_params_memory,
             diff_updates_memory=diff_updates_memory,
             weights_memory=state.weights_memory.set_data(weights_data),
-            index_prefix=idx,
+            index_prefix=state.index_prefix,
+            treedef=state.treedef,
         )
 
 
-def _precondition_by_lbfgs_segmented[P](
-    updates: P,
-    diff_params_memory: PyTree,
-    diff_updates_memory: PyTree,
+def _precondition_by_lbfgs_segmented(
+    update_leaves: list[Array],
+    diff_params_memory: list[Array],
+    diff_updates_memory: list[Array],
     weights_data: Array,
     gamma: Table[SupportsSorting, Array],
     memory_idx: Array,
-    index_prefix: PyTree,
+    index_leaves: list[Index[SupportsSorting]],
     keys: tuple[SupportsSorting, ...],
-) -> P:
+) -> list[Array]:
     """Per-system version of ``optax._src.transform._precondition_by_lbfgs``.
 
-    Runs Nocedal's two-loop recursion (Algorithm 7.4) with all inner
-    products replaced by their per-system equivalents — ``α_i`` and ``β_i``
-    are arrays of shape ``(n_systems,)``, and the initial inverse-Hessian
-    ``γ_i I`` is applied per system via its own ``gamma`` entry. The
-    block-diagonal structure of the resulting approximation across systems
-    is what makes the batched run bit-identical to running each system alone.
+    Operates on flat lists of raw array leaves (aligned with ``index_leaves``).
+    Runs Nocedal's two-loop recursion (Algorithm 7.4) with all inner products
+    replaced by their per-system equivalents — ``α_i`` and ``β_i`` are arrays of
+    shape ``(n_systems,)``, and the initial inverse-Hessian ``γ_i I`` is applied
+    per system via its own ``gamma`` entry. The block-diagonal structure across
+    systems is what makes the batched run bit-identical to running each alone.
     """
     memory_size = weights_data.shape[1]
     indices = (memory_idx + jnp.arange(memory_size)) % memory_size
 
-    def right_product(q: P, mem_idx: Array) -> tuple[P, Array]:
-        s_i = jax.tree.map(lambda x: x[mem_idx], diff_params_memory)
-        y_i = jax.tree.map(lambda x: x[mem_idx], diff_updates_memory)
+    def right_product(q: list[Array], mem_idx: Array) -> tuple[list[Array], Array]:
+        s_i = [x[mem_idx] for x in diff_params_memory]
+        y_i = [x[mem_idx] for x in diff_updates_memory]
         rho_i = weights_data[:, mem_idx]
-        sq = tree_vdot(s_i, q, index_prefix).data
+        sq = tree_vdot(s_i, q, index_leaves).data
         alpha = rho_i * sq
-        scaled_y = tree_scale_per_row(y_i, Table(keys, alpha), index_prefix)
+        scaled_y = tree_scale_per_row(y_i, Table(keys, alpha), index_leaves)
         new_q = jax.tree.map(jnp.subtract, q, scaled_y)
         return new_q, alpha
 
-    q, alphas = jax.lax.scan(right_product, updates, indices, reverse=True)
-    q = tree_scale_per_row(q, gamma, index_prefix)
+    q, alphas = jax.lax.scan(right_product, update_leaves, indices, reverse=True)
+    q = tree_scale_per_row(q, gamma, index_leaves)
 
-    def left_product(q: P, args: tuple[Array, Array]) -> tuple[P, Array]:
+    def left_product(
+        q: list[Array], args: tuple[Array, Array]
+    ) -> tuple[list[Array], Array]:
         mem_idx, alpha = args
-        s_i = jax.tree.map(lambda x: x[mem_idx], diff_params_memory)
-        y_i = jax.tree.map(lambda x: x[mem_idx], diff_updates_memory)
+        s_i = [x[mem_idx] for x in diff_params_memory]
+        y_i = [x[mem_idx] for x in diff_updates_memory]
         rho_i = weights_data[:, mem_idx]
-        yq = tree_vdot(y_i, q, index_prefix).data
+        yq = tree_vdot(y_i, q, index_leaves).data
         beta = rho_i * yq
         coeff = alpha - beta
-        scaled_s = tree_scale_per_row(s_i, Table(keys, coeff), index_prefix)
+        scaled_s = tree_scale_per_row(s_i, Table(keys, coeff), index_leaves)
         new_q = jax.tree.map(jnp.add, q, scaled_s)
         return new_q, beta
 

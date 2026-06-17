@@ -61,8 +61,9 @@ class TestScaleByASELBFGSGlobalFallback:
         state = opt.init(params)
         assert isinstance(state, ScaleByAseLbfgsState)
         assert int(state.count) == 0
-        assert state.diff_params_memory.shape == (10, 3)
-        assert state.diff_updates_memory.shape == (10, 3)
+        # State stores flattened leaves: one (memory_size, *leaf_shape) array per leaf.
+        assert state.diff_params_memory[0].shape == (10, 3)
+        assert state.diff_updates_memory[0].shape == (10, 3)
         # Per-system weights: (n_systems=1, memory_size=10).
         assert state.weights_memory.data.shape == (1, 10)
 
@@ -70,8 +71,9 @@ class TestScaleByASELBFGSGlobalFallback:
         opt = ScaleByAseLbfgs(memory_size=5)
         params = {"a": jnp.zeros((10, 3)), "b": jnp.zeros((1, 3, 3))}
         state = opt.init(params)
-        assert state.diff_params_memory["a"].shape == (5, 10, 3)
-        assert state.diff_params_memory["b"].shape == (5, 1, 3, 3)
+        # Leaves in jax.tree DFS order: ["a", "b"], each with a stacked memory axis.
+        assert state.diff_params_memory[0].shape == (5, 10, 3)
+        assert state.diff_params_memory[1].shape == (5, 1, 3, 3)
 
     def test_invalid_memory_size_raises(self):
         with pytest.raises(ValueError, match="memory_size must be >= 1"):

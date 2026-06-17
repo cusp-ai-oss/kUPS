@@ -26,6 +26,7 @@ from kups.application.md.data import (
     md_state_from_ase,
 )
 from kups.application.md.simulation import make_md_propagator, run_md
+from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.potential.mliap.tojax import make_tojaxed_from_state
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
@@ -108,9 +109,7 @@ def run(config: Config) -> None:
     chain = key_chain(jax.random.key(seed))
     state = init_state(next(chain), config)
     state_lens = identity_lens(MlffMdState)
-    potential = make_tojaxed_from_state(
-        state_lens, compute_position_and_cell_gradients=True
-    )
+    potential = make_tojaxed_from_state(state_lens, gradient=POSITIONS_AND_CELL)
     propagator = make_md_propagator(state_lens, config.md.integrator, potential)
     state = run_md(next(chain), propagator, state, config.run)
 

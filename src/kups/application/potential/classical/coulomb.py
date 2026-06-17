@@ -20,7 +20,7 @@ from jax import Array
 
 from kups.core.cell import Vacuum
 from kups.core.data import Table
-from kups.core.lens import Lens, SimpleLens, const_lens
+from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     IsAdaptiveCutoffNeighborListState,
     IsUniversalNeighborlistParams,
@@ -37,12 +37,15 @@ from kups.core.potential import (
 )
 from kups.core.typing import HasCell, IsState, SystemId
 from kups.potential.classical.coulomb import (
-    CoulombVacuumInput,
     IsCoulombGraphParticles,
     make_coulomb_vacuum_potential,
 )
-from kups.potential.common.energy import PositionAndCell, position_and_cell_idx_view
-from kups.potential.common.graph import IsGraphProbe
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
+from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 
 
 class IsCoulombVacuumGraphState(
@@ -66,7 +69,7 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
@@ -77,9 +80,9 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -88,7 +91,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
@@ -99,9 +102,9 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 @overload
@@ -110,7 +113,7 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     parameters: Table[SystemId, Array],
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
@@ -121,9 +124,9 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     parameters: Table[SystemId, Array],
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -132,7 +135,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     parameters: Table[SystemId, Array],
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
@@ -143,9 +146,9 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     parameters: Table[SystemId, Array],
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 def make_coulomb_vacuum_from_state(
@@ -153,7 +156,7 @@ def make_coulomb_vacuum_from_state(
     probe: Any = None,
     *,
     parameters: Table[SystemId, Array] | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
     neighborlist_factory: NeighborListFactory[
         Any
     ] = adaptive_cutoff_neighborlist_from_state,
@@ -173,21 +176,17 @@ def make_coulomb_vacuum_from_state(
             Pass ``None`` (default) for a non-incremental potential.
         parameters: Constant per-system cutoff. When given it is bound with a
             constant lens and the state need not carry ``coulomb_cutoff``.
-        compute_position_and_cell_gradients: When ``True``, compute gradients
-            w.r.t. particle positions and lattice vectors.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured Coulomb vacuum [Potential][kups.core.potential.Potential].
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[CoulombVacuumInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if probe is not None:
         patch_idx_view = patch_idx_view or empty_patch_idx_view

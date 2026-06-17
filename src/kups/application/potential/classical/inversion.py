@@ -21,7 +21,7 @@ from typing import Any, Literal, Protocol, overload
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index
-from kups.core.lens import Lens, SimpleLens, const_lens
+from kups.core.lens import Lens, const_lens
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
     EMPTY_LENS,
@@ -32,13 +32,16 @@ from kups.core.potential import (
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, ParticleId
 from kups.potential.classical.inversion import (
-    InversionInput,
     InversionParameters,
     IsBondedParticles,
     make_inversion_potential,
 )
-from kups.potential.common.energy import PositionAndCell, position_and_cell_idx_view
-from kups.potential.common.graph import IsGraphProbe
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
+from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 
 
 class IsInversionGraphState(
@@ -73,7 +76,7 @@ def make_inversion_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -86,8 +89,8 @@ def make_inversion_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -101,7 +104,7 @@ def make_inversion_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -110,14 +113,14 @@ def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsInversionState[
-            HasCache[InversionParameters, PotentialOut[PositionAndCell, EmptyType]]
+            HasCache[InversionParameters, PotentialOut[PositionsAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 @overload
@@ -126,7 +129,7 @@ def make_inversion_from_state[State](
     probe: None = None,
     *,
     parameters: InversionParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -136,8 +139,8 @@ def make_inversion_from_state[State](
     probe: None = None,
     *,
     parameters: InversionParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -146,20 +149,20 @@ def make_inversion_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     parameters: InversionParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
 @overload
 def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedInversionGraphState[PotentialOut[PositionAndCell, EmptyType]]
+        State, IsCachedInversionGraphState[PotentialOut[PositionsAndCell, EmptyType]]
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     parameters: InversionParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 def make_inversion_from_state(
@@ -167,7 +170,7 @@ def make_inversion_from_state(
     probe: Any = None,
     *,
     parameters: InversionParameters | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
 ) -> Any:
     """Create an inversion potential, optionally with incremental updates.
 
@@ -182,21 +185,17 @@ def make_inversion_from_state(
             with a constant lens and the state need not carry
             ``inversion_parameters``; with a ``probe``, the cache is read from
             ``state.inversion_cache``.
-        compute_position_and_cell_gradients: When True, computes gradients
-            w.r.t. particle positions and lattice vectors.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured inversion [Potential][kups.core.potential.Potential].
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[InversionInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if parameters is not None:
         param_view = const_lens(parameters)

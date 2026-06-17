@@ -17,8 +17,6 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
-from jax import Array
-
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
@@ -31,7 +29,7 @@ from kups.core.neighborlist import (
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import HasCell, IsState
-from kups.potential.common.energy import PositionAndCell
+from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.torch.interface import (
     IsTorchMliapParticles,
     TorchMliap,
@@ -59,9 +57,9 @@ def make_torch_mliap_from_state[State](
     state: Lens[State, IsTorchMliapState],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
-) -> Potential[State, Array, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -69,9 +67,9 @@ def make_torch_mliap_from_state[State](
     state: Lens[State, IsTorchMliapState],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -79,9 +77,9 @@ def make_torch_mliap_from_state[State](
     state: Lens[State, IsTorchMliapGraphState],
     *,
     parameters: TorchMliap,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsTorchMliapGraphState] = ...,
-) -> Potential[State, Array, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -89,16 +87,16 @@ def make_torch_mliap_from_state[State](
     state: Lens[State, IsTorchMliapGraphState],
     *,
     parameters: TorchMliap,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsTorchMliapGraphState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 def make_torch_mliap_from_state(
     state: Any,
     *,
     parameters: TorchMliap | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
     neighborlist_factory: NeighborListFactory[
         Any
     ] = adaptive_cutoff_neighborlist_from_state,
@@ -110,9 +108,11 @@ def make_torch_mliap_from_state(
             list (plus ``torch_mliap_model`` when ``parameters`` is not given).
         parameters: Constant torch MLFF model. When given it is bound with a
             constant lens and the state need not carry ``torch_mliap_model``.
-        compute_position_and_cell_gradients: When ``True``, exposes both
-            position and cell gradients. Requires the underlying
-            ``TorchMliap.compute_cell_gradients`` to be ``True``.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs; the torch gradients are pulled back through ``gradient.set``
+            into ``∂E/∂u``. When ``None`` (default), returns the raw
+            ``PositionsAndCell`` (force + stress) gradients.
+        neighborlist_factory: Neighbor list factory.
 
     Returns:
         Configured torch MLFF ``Potential``.
@@ -125,10 +125,19 @@ def make_torch_mliap_from_state(
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_view(s).cutoff)
 
+    particles_view = state.focus(lambda x: x.particles)
+    systems_view = state.focus(lambda x: x.systems)
+    if gradient is not None:
+        return make_torch_mliap_potential(
+            particles_view,
+            systems_view,
+            neighborlist_view,
+            model_view,
+            gradient=gradient,
+        )
     return make_torch_mliap_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
+        particles_view,
+        systems_view,
         neighborlist_view,
         model_view,
-        compute_cell_gradients=compute_position_and_cell_gradients,
     )

@@ -32,7 +32,7 @@ from scipy.special import erfc
 from kups.core.cell import AnyPeriodicity, Cell, Periodic3D
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
-from kups.core.lens import Lens, NestedLens, SimpleLens, View, bind
+from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist import (
     EmptyNeighborList,
     NeighborList,
@@ -67,6 +67,10 @@ from kups.potential.common.energy import (
     SumComposer,
     Summand,
 )
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndSystemIndex,
+)
 from kups.potential.common.graph import (
     GraphConstructor,
     GraphPotentialInput,
@@ -79,6 +83,14 @@ from kups.potential.common.graph import (
 
 TO_STANDARD_UNITS = HARTREE * BOHR
 """Conversion factor from atomic units to standard energy units."""
+
+pointcloud_geometry: Lens[Any, Geometry] = lens(
+    lambda pc: Geometry(
+        pc.particles.map_data(lambda p: PositionsAndSystemIndex(p.positions, p.system)),
+        pc.systems.map_data(lambda s: s.cell),
+    )
+)
+"""Adapter bridging the Ewald ``PointCloud`` sub-input to ``Geometry``."""
 
 
 @dataclass
@@ -735,12 +747,7 @@ def make_ewald_short_range_potential[
             ),
             parameter_view=parameter_view,
         ),
-        gradient_lens=NestedLens(
-            SimpleLens[
-                EwaldShortRangeInput, PointCloud[IsEwaldPointData, HasCell[Periodic3D]]
-            ](lambda state: state.graph),
-            gradient_lens,
-        ),
+        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens,
         hessian_idx_view=hessian_idx_view,
@@ -776,13 +783,7 @@ def make_ewald_long_range_potential[
             parameters=parameter_lens,
             cache=cache_lens,
         ),
-        gradient_lens=NestedLens(
-            SimpleLens[
-                EwaldLongRangeInput[State],
-                PointCloud[IsEwaldPointData, HasCell[Periodic3D]],
-            ](lambda state: state.point_cloud),
-            gradient_lens,
-        ),
+        gradient_lens=lens(lambda x: x.point_cloud).nest(gradient_lens),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens.focus(lambda x: x.long_range) if cache_lens else None,
         hessian_idx_view=hessian_idx_view,
@@ -820,12 +821,7 @@ def make_ewald_self_interaction_potential[
             ),
             parameter_view=parameter_view,
         ),
-        gradient_lens=NestedLens(
-            SimpleLens[
-                EwaldSelfInput, PointCloud[IsEwaldPointData, HasCell[Periodic3D]]
-            ](lambda state: state.graph),
-            gradient_lens,
-        ),
+        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens,
         hessian_idx_view=hessian_idx_view,
@@ -1032,15 +1028,7 @@ def make_ewald_potential[
     exclusion_correction = PotentialFromEnergy(
         energy_fn=exclusion_correction_energy,
         composer=LocalGraphSumComposer(excl_rg, parameter_lens),
-        gradient_lens=NestedLens(
-            SimpleLens[
-                GraphPotentialInput[
-                    EwaldParameters, _ParticleData, HasCell[Periodic3D], Literal[2]
-                ],
-                PointCloud[_ParticleData, HasCell[Periodic3D]],
-            ](lambda state: state.graph),
-            gradient_lens,
-        ),
+        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens.focus(lambda x: x.exclusion) if cache_lens else None,
         hessian_idx_view=hessian_idx_view,

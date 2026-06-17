@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
 import jax
 import jax.numpy as jnp
 import optax
@@ -19,6 +18,7 @@ from jax import Array
 from nanoargs import NanoArgs
 from pydantic import BaseModel, Field
 
+from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
 from kups.application.potential.mliap.torch import make_torch_mliap_from_state
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
@@ -136,7 +136,7 @@ def init_state(config: Config, opt_init: OptInit) -> RelaxTorchState:
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
     neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, torch_mliap_model.cutoff
+        particles.data.system.counts, systems, torch_mliap_model.cutoff, multiplier=2.0
     )
     opt_state = opt_init(particles, systems)
     return RelaxTorchState(
@@ -154,11 +154,10 @@ def run(config: Config) -> None:
     key = jax.random.key(config.run.seed or time.time_ns())
     state_lens = identity_lens(RelaxTorchState)
     optimizer = make_optimizer(config.run.optimizer)
-    potential = make_torch_mliap_from_state(
-        state_lens, compute_position_and_cell_gradients=True
-    )
+    gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
+    potential = make_torch_mliap_from_state(state_lens, gradient=gradient)
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, config.run.optimize_cell
+        state_lens, potential, optimizer, gradient
     )
     state = init_state(config, opt_init)
     logging.info("Starting relaxation")

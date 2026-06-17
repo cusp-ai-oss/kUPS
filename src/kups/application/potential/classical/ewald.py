@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any, Literal, Protocol, overload
 
 from kups.core.cell import Periodic3D
-from kups.core.lens import Lens, SimpleLens, const_lens
+from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     IsAdaptiveCutoffNeighborListState,
     IsUniversalNeighborlistParams,
@@ -40,9 +40,14 @@ from kups.potential.classical.ewald import (
     EwaldPotential,
     IsEwaldPointData,
     make_ewald_potential,
+    pointcloud_geometry,
 )
-from kups.potential.common.energy import PositionAndCell, position_and_cell_idx_view
-from kups.potential.common.graph import IsGraphProbe, PointCloud
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
+from kups.potential.common.graph import IsGraphProbe
 
 
 class IsEwaldGraphState(
@@ -73,7 +78,7 @@ def make_ewald_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
@@ -87,12 +92,12 @@ def make_ewald_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
-) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -103,7 +108,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
@@ -115,17 +120,19 @@ def make_ewald_from_state[State, P: Patch[Any]](
 def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
-        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]],
+        IsEwaldState[
+            HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
-        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionAndCell, EmptyType]]]
+        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]]
     ] = ...,
-) -> EwaldPotential[State, PositionAndCell, EmptyType, P]: ...
+) -> EwaldPotential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 @overload
@@ -134,7 +141,7 @@ def make_ewald_from_state[State](
     probe: None = None,
     *,
     parameters: EwaldParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
@@ -146,10 +153,10 @@ def make_ewald_from_state[State](
     probe: None = None,
     *,
     parameters: EwaldParameters,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
-) -> EwaldPotential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -158,7 +165,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
     *,
     parameters: EwaldParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
         IsCachedEwaldGraphState[EwaldCache[EmptyType, EmptyType]]
@@ -168,16 +175,18 @@ def make_ewald_from_state[State, P: Patch[Any]](
 
 @overload
 def make_ewald_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedEwaldGraphState[EwaldCache[PositionAndCell, EmptyType]]],
+    state: Lens[
+        State, IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
+    ],
     probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
     *,
     parameters: EwaldParameters,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
-        IsCachedEwaldGraphState[EwaldCache[PositionAndCell, EmptyType]]
+        IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
     ] = ...,
-) -> EwaldPotential[State, PositionAndCell, EmptyType, P]: ...
+) -> EwaldPotential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 def make_ewald_from_state(
@@ -185,7 +194,7 @@ def make_ewald_from_state(
     probe: Any = None,
     *,
     parameters: EwaldParameters | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, Any] | None = None,
     include_exclusion_mask: bool = False,
     neighborlist_factory: NeighborListFactory[
         Any
@@ -207,30 +216,21 @@ def make_ewald_from_state(
         parameters: Constant Ewald parameters. When given they are bound with a
             constant lens and the state need not carry ``ewald_parameters``;
             with a ``probe``, the cache is read from ``state.ewald_cache``.
-        compute_position_and_cell_gradients: When ``True``, the
-            returned potential computes gradients w.r.t. particle
-            positions and lattice vectors (for forces / stress).
-            Gradient type becomes ``PositionAndCell``.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting
+            the optimizer DOFs to differentiate. Composed with the
+            ``PointCloud``-to-``Geometry`` adapter; ``None`` computes no
+            gradients.
         include_exclusion_mask: Whether to include the exclusion
             correction term in the returned potential.
 
     Returns:
         An ``EwaldPotential`` combining short-range, long-range,
         self-energy, and (optionally) exclusion-correction terms.
-        Gradient type is ``PositionAndCell`` when gradients are
-        requested, ``EmptyType`` otherwise.
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view = empty_patch_idx_view
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[
-            PointCloud[IsEwaldPointData, HasCell[Periodic3D]], PositionAndCell
-        ](
-            lambda pc: PositionAndCell(
-                pc.particles.map_data(lambda p: p.positions),
-                pc.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = pointcloud_geometry.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if parameters is not None:
         param_view = const_lens(parameters)

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
+from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxParticles,
@@ -116,11 +117,10 @@ def run(config: Config) -> None:
     key = jax.random.key(config.run.seed or time.time_ns())
     state_lens = identity_lens(RelaxLjState)
     optimizer = make_optimizer(config.run.optimizer)
-    potential = make_lennard_jones_from_state(
-        state_lens, compute_position_and_cell_gradients=True
-    )
+    gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
+    potential = make_lennard_jones_from_state(state_lens, gradient=gradient)
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, config.run.optimize_cell
+        state_lens, potential, optimizer, gradient=gradient
     )
     state = init_state(config, opt_init)
     logging.info("Starting relaxation")

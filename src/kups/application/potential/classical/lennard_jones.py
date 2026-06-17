@@ -22,7 +22,7 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
-from kups.core.lens import Lens, SimpleLens, const_lens, identity_lens
+from kups.core.lens import Lens, const_lens, identity_lens
 from kups.core.neighborlist import (
     IsAdaptiveCutoffNeighborListState,
     IsUniversalNeighborlistParams,
@@ -40,17 +40,19 @@ from kups.core.potential import (
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, SystemId
 from kups.potential.classical.lennard_jones import (
-    GCLJInp,
     GlobalTailCorrectedLennardJonesParameters,
     IsLJGraphParticles,
     LennardJonesParameters,
-    LJRadiusInp,
     make_global_lennard_jones_tail_correction_potential,
     make_global_lennard_jones_tail_correction_pressure,
     make_lennard_jones_potential,
 )
-from kups.potential.common.energy import PositionAndCell, position_and_cell_idx_view
-from kups.potential.common.graph import IsGraphProbe
+from kups.potential.common.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
+from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 
 
 class HasLJParticlesAndSystems(
@@ -86,10 +88,8 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[MaybeCached[LennardJonesParameters, Any]]
-    ] = ...,
+    gradient: None = None,
+    neighborlist_factory: NeighborListFactory[Any] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -99,11 +99,9 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[MaybeCached[LennardJonesParameters, Any]]
-    ] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+    neighborlist_factory: NeighborListFactory[Any] = ...,
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -115,10 +113,8 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]]
-    ] = ...,
+    gradient: None = None,
+    neighborlist_factory: NeighborListFactory[Any] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -127,19 +123,15 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsLJState[
-            HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
+            HasCache[LennardJonesParameters, PotentialOut[PositionsAndCell, EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[
-            HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
-        ]
-    ] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+    neighborlist_factory: NeighborListFactory[Any] = ...,
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 @overload
@@ -148,8 +140,8 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     parameters: LennardJonesParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[IsLJGraphState] = ...,
+    gradient: None = None,
+    neighborlist_factory: NeighborListFactory[Any] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -159,9 +151,9 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     parameters: LennardJonesParameters,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[IsLJGraphState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+    neighborlist_factory: NeighborListFactory[Any] = ...,
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -170,24 +162,20 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     parameters: LennardJonesParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[
-        IsCachedLJGraphState[PotentialOut[EmptyType, EmptyType]]
-    ] = ...,
+    gradient: None = None,
+    neighborlist_factory: NeighborListFactory[Any] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
 @overload
 def make_lennard_jones_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedLJGraphState[PotentialOut[PositionAndCell, EmptyType]]],
+    state: Lens[State, IsCachedLJGraphState[PotentialOut[PositionsAndCell, EmptyType]]],
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     parameters: LennardJonesParameters,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[
-        IsCachedLJGraphState[PotentialOut[PositionAndCell, EmptyType]]
-    ] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+    neighborlist_factory: NeighborListFactory[Any] = ...,
+) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
 def make_lennard_jones_from_state(
@@ -195,7 +183,7 @@ def make_lennard_jones_from_state(
     probe: Any = None,
     *,
     parameters: LennardJonesParameters | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
     neighborlist_factory: NeighborListFactory[
         Any
     ] = adaptive_cutoff_neighborlist_from_state,
@@ -210,22 +198,17 @@ def make_lennard_jones_from_state(
         parameters: Constant LJ parameters. When given they are bound with a
             constant lens and the state need not carry ``lj_parameters``; with a
             ``probe``, the cache is read from ``state.lj_cache``.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors. Gradient type becomes ``PositionAndCell``.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured Lennard-Jones potential.
     """
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[LJRadiusInp, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if parameters is not None:
         param_view = const_lens(parameters)
@@ -279,7 +262,7 @@ def make_lennard_jones_tail_correction_from_state[
     state: Lens[InState, State],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[InState, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -291,8 +274,8 @@ def make_lennard_jones_tail_correction_from_state[
     state: Lens[InState, State],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[InState, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[InState, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -300,7 +283,7 @@ def make_lennard_jones_tail_correction_from_state[State](
     state: Lens[State, IsLJGraphState],
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -309,15 +292,15 @@ def make_lennard_jones_tail_correction_from_state[State](
     state: Lens[State, IsLJGraphState],
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell],
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 def make_lennard_jones_tail_correction_from_state(
     state: Any,
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
 ) -> Any:
     """Create a global tail-corrected LJ potential from a typed state.
 
@@ -326,21 +309,16 @@ def make_lennard_jones_tail_correction_from_state(
             ``lj_parameters`` when ``parameters`` is not given).
         parameters: Constant tail-correction parameters, bound with a constant
             lens when given (state need not carry ``lj_parameters``).
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors. Gradient type becomes ``PositionAndCell``.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured tail-corrected Lennard-Jones potential.
     """
     gradient_lens: Any = EMPTY_LENS
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[GCLJInp, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    if gradient is not None:
+        gradient_lens = GRAPH_GEOMETRY.nest(gradient)
     if parameters is not None:
         param_view: Any = const_lens(parameters)
     else:
