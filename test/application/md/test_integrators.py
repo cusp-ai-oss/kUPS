@@ -853,13 +853,14 @@ def test_stress_matches_ase():
     from kups.application.potential.classical.lennard_jones import (
         make_lennard_jones_from_state,
     )
+    from kups.application.potential.filter import POSITIONS_AND_CELL
     from kups.core.lens import identity_lens
     from kups.core.neighborlist import UniversalNeighborlistParameters
     from kups.observables.stress import stress_via_virial_theorem
     from kups.potential.classical.lennard_jones import LennardJonesParameters
 
     cif = (
-        Path(__file__).parent.parent.parent
+        Path(__file__).parent.parent.parent.parent
         / "ci"
         / "statistical"
         / "inputs"
@@ -908,7 +909,7 @@ def test_stress_matches_ase():
         lj_parameters=lj,
     )
     sl = identity_lens(S)
-    pot = make_lennard_jones_from_state(sl, compute_position_and_cell_gradients=True)
+    pot = make_lennard_jones_from_state(sl, gradient=POSITIONS_AND_CELL)
 
     # Evaluate potential and write gradients back into state
     result = pot(state)

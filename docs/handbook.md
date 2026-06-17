@@ -84,9 +84,7 @@ neighborlist_params = UniversalNeighborlistParameters.estimate(
 
 ```python
 state_lens = identity_lens(LjMdState)
-potential = make_lennard_jones_from_state(
-    state_lens, compute_position_and_cell_gradients=True
-)
+potential = make_lennard_jones_from_state(state_lens, gradient=POSITIONS_AND_CELL)
 propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 ```
 

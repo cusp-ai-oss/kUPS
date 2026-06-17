@@ -14,10 +14,10 @@ and the state need not carry a model field.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core.cell import AnyPeriodicity
-from kups.core.lens import Lens, SimpleLens, const_lens
+from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     IsAdaptiveCutoffNeighborListState,
     IsUniversalNeighborlistParams,
@@ -28,10 +28,10 @@ from kups.core.neighborlist import (
 from kups.core.patch import Patch
 from kups.core.potential import EMPTY_LENS, EmptyType, Potential
 from kups.core.typing import HasCell, IsState
-from kups.potential.common.energy import PositionAndCell
+from kups.potential.common.geometry import Geometry, PositionsAndCell
+from kups.potential.common.graph import GRAPH_GEOMETRY
 from kups.potential.mliap.tojax import (
     IsTojaxedParticles,
-    JaxifiedInput,
     TojaxedMliap,
     make_tojaxed_potential,
 )
@@ -57,7 +57,7 @@ def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedState],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
@@ -67,9 +67,9 @@ def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedState],
     *,
     parameters: None = None,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -77,7 +77,7 @@ def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedGraphState],
     *,
     parameters: TojaxedMliap,
-    compute_position_and_cell_gradients: Literal[False] = ...,
+    gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsTojaxedGraphState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
@@ -87,16 +87,16 @@ def make_tojaxed_from_state[State](
     state: Lens[State, IsTojaxedGraphState],
     *,
     parameters: TojaxedMliap,
-    compute_position_and_cell_gradients: Literal[True],
+    gradient: Lens[Geometry, PositionsAndCell],
     neighborlist_factory: NeighborListFactory[IsTojaxedGraphState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 def make_tojaxed_from_state(
     state: Any,
     *,
     parameters: TojaxedMliap | None = None,
-    compute_position_and_cell_gradients: bool = False,
+    gradient: Lens[Geometry, PositionsAndCell] | None = None,
     neighborlist_factory: NeighborListFactory[
         Any
     ] = adaptive_cutoff_neighborlist_from_state,
@@ -108,21 +108,17 @@ def make_tojaxed_from_state(
             list (plus ``jaxified_model`` when ``parameters`` is not given).
         parameters: Constant jaxified model. When given it is bound with a
             constant lens and the state need not carry ``jaxified_model``.
-        compute_position_and_cell_gradients: When ``True``, compute
-            gradients w.r.t. particle positions and cell
-            (for forces / stress).
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. ``None`` computes no gradients (the default). Composed with
+            ``GRAPH_GEOMETRY`` into the potential's gradient lens.
 
     Returns:
         Configured jaxified [Potential][kups.core.potential.Potential].
     """
-    gradient_lens: Any = EMPTY_LENS
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[JaxifiedInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
+    gradient_lens = cast(
+        "Lens[Any, PositionsAndCell | EmptyType]",
+        EMPTY_LENS if gradient is None else GRAPH_GEOMETRY.nest(gradient),
+    )
     if parameters is not None:
         model_view = const_lens(parameters)
     else:

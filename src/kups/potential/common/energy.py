@@ -18,25 +18,21 @@ differences rather than full recomputation (e.g., subtract old particle contribu
 add new particle contribution, reuse rest).
 """
 
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, Sequence, no_type_check
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, Sequence
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.potential import (
-    EMPTY,
-    EmptyType,
     Energy,
     Potential,
     PotentialOut,
-    empty_patch_idx_view,
 )
-from kups.core.typing import HasPositionsAndSystemIndex, IsState, ParticleId, SystemId
+from kups.core.typing import SystemId
 from kups.core.utils.jax import (
     dataclass,
     field,
@@ -45,26 +41,6 @@ from kups.core.utils.jax import (
     linearize,
     tree_structure,
 )
-
-type IsStateWithParticlesAndCell = IsState[
-    HasPositionsAndSystemIndex, Cell[AnyPeriodicity]
-]
-
-
-class PositionAndCell(NamedTuple):
-    positions: Table[ParticleId, Array]
-    cell: Table[SystemId, Cell[AnyPeriodicity]]
-
-
-@no_type_check
-def position_and_cell_idx_view(
-    state: IsStateWithParticlesAndCell,
-) -> PotentialOut[PositionAndCell, EmptyType]:
-    return PotentialOut(
-        empty_patch_idx_view(state).total_energies,
-        PositionAndCell(state.particles.data.system, state.systems.index),
-        EMPTY,
-    )
 
 
 class Summand[Input](NamedTuple):

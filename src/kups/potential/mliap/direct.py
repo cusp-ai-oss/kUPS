@@ -30,6 +30,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol
 
+import jax
+from jax import Array
+
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, View
@@ -43,12 +46,50 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.potential.common.direct import DirectPotential
+from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.common.graph import (
     FullGraphSumComposer,
     GraphConstructor,
     GraphPotentialInput,
     IsRadiusGraphPoints,
 )
+
+
+def filter_pullback[U](
+    geometry: Geometry, cotangents: PositionsAndCell, gradient: Lens[Geometry, U]
+) -> U:
+    """Map direct ``(∂E/∂r, ∂E/∂h|_r)`` outputs to the DOF gradient ``∂E/∂u``.
+
+    Carrier- and codomain-agnostic: the ``gradient`` lens's ``set`` is the map
+    ``u → pose``, and pulling the physical cotangent back through it with one
+    ``jax.vjp`` yields ``∂E/∂u`` for any codomain ``U``, with the cell-factor and
+    ``expm`` chain rule (and the atoms-ride-the-cell coupling) falling out of the
+    vjp. Targeting ``(positions, cell.vectors)`` makes the cotangent the raw
+    ``(n, 3)`` position gradient plus the raw ``(n_systems, 3, 3)`` ``∂E/∂h``.
+
+    Args:
+        geometry: The carrier's geometric view (e.g. ``GRAPH_GEOMETRY.get(inp)``).
+        cotangents: Direct outputs — ``positions`` is the ``∂E/∂r`` block; ``cell``
+            carries the partial ``∂E/∂h|_r`` in its frame parameters.
+        gradient: Relaxation filter ``Lens[Geometry, U]`` selecting the DOFs ``u``.
+
+    Returns:
+        ``∂E/∂u`` in the gradient lens's DOF pytree.
+    """
+    u0 = gradient.get(geometry)
+    g_r = cotangents.positions.data
+    # Recover the raw cartesian ∂E/∂h: map the partial gradient's frame
+    # parameters back through the real cell's frame Jacobian.
+    dE_dh = geometry.systems.data.frame.vectors_gradient(cotangents.cell.data.frame)
+
+    def to_targets(u: U) -> tuple[Array, Array]:
+        pose = gradient.set(geometry, u)
+        return pose.particles.data.positions, pose.systems.data.vectors
+
+    _, pull_back = jax.vjp(to_targets, u0)
+    (g_u,) = pull_back((g_r, dE_dh))
+    return g_u
+
 
 type DirectMliapInput[
     Model,
@@ -71,7 +112,7 @@ class DirectMliapFn[
     hessians for one graph input. Conventional ``Gradients`` payloads:
 
     - ``Array``: position gradients only (``∂E/∂r``).
-    - ``PositionAndCell``: position + cell gradients (forces + stress).
+    - ``PositionsAndCell``: position + cell gradients (forces + stress).
     - ``EmptyType``: no gradients — but in that case the autodiff path
       ([PotentialFromEnergy][kups.potential.common.energy.PotentialFromEnergy])
       is more natural; this module is for the gradient-producing case.

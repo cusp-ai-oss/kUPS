@@ -14,15 +14,14 @@ MOFs/direct-air-capture, ``"omc"`` for molecular crystals).
 
 Example:
     ```python
+    from kups.application.potential.filter import POSITIONS_AND_CELL
     from kups.application.potential.mliap.torch import make_torch_mliap_from_state
     from kups.potential.mliap.torch import load_uma
 
     model = load_uma(
         "uma-s-1.2.pt", task_name="omat", compute_cell_gradients=True,
     )
-    potential = make_torch_mliap_from_state(
-        state_lens, compute_position_and_cell_gradients=True,
-    )
+    potential = make_torch_mliap_from_state(state_lens, gradient=POSITIONS_AND_CELL)
     ```
 
 Requires the ``uma`` extras group: ``uv sync --extra uma``.
@@ -69,12 +68,9 @@ class UMAModule(torch.nn.Module):
         UMA's ``stress`` is the symmetrized strain virial ``V_ij /
         volume`` from a joint symmetric strain on positions and cell
         (cf. ``fairchem.core.models.uma.outputs.compute_forces_and_stress``).
-        We invert the position contribution and the ``cell^T`` factor to
-        recover the raw lattice gradient ``∂E/∂h`` — see
-        ``lattice_gradient_from_virial``. The antisymmetric part of
-        ``cell^T @ ∂E/∂h`` is unrecoverable from a symmetric-strain virial
-        alone; for physical models with rotational invariance it is zero,
-        so the recovered ``∂E/∂h`` is exact.
+        We subtract the (fully known) position virial and apply the ``h^-T``
+        factor to recover the raw lattice gradient ``∂E/∂h`` see
+        ``lattice_gradient_from_virial``.
     """
 
     def __init__(

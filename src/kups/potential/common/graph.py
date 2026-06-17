@@ -36,7 +36,7 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
-from kups.core.lens import View, bind
+from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist import Edges, EmptyNeighborList, NeighborList
 from kups.core.patch import Patch, Probe
 from kups.core.typing import (
@@ -51,6 +51,7 @@ from kups.core.typing import (
 )
 from kups.core.utils.jax import dataclass, field, jit
 from kups.potential.common.energy import Sum, SumComposer, Summand
+from kups.potential.common.geometry import Geometry, PositionsAndSystemIndex
 
 Params = TypeVar("Params", covariant=True)
 Part = TypeVar("Part", covariant=True, bound=HasPositionsAndSystemIndex)
@@ -277,6 +278,28 @@ class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
 
     parameters: Params
     graph: HyperGraph[Part, Sys, Degree]
+
+
+class IsGraphInput(Protocol):
+    """A potential input exposing a ``graph`` of particles and systems."""
+
+    @property
+    def graph(
+        self,
+    ) -> PointCloud[HasPositionsAndSystemIndex, HasCell[AnyPeriodicity]]: ...
+
+
+def _graph_geometry(inp: IsGraphInput) -> Geometry:
+    return Geometry(
+        inp.graph.particles.map_data(
+            lambda p: PositionsAndSystemIndex(p.positions, p.system)
+        ),
+        inp.graph.systems.map_data(lambda s: s.cell),
+    )
+
+
+GRAPH_GEOMETRY: Lens[IsGraphInput, Geometry] = lens(_graph_geometry)
+"""Adapter from a graph-bearing potential input to ``Geometry``."""
 
 
 @dataclass

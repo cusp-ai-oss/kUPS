@@ -11,13 +11,12 @@ loader returning a [TorchMliap][kups.potential.mliap.torch.interface.TorchMliap]
 
 Example:
     ```python
+    from kups.application.potential.filter import POSITIONS_AND_CELL
     from kups.application.potential.mliap.torch import make_torch_mliap_from_state
     from kups.potential.mliap.torch import load_mace
 
     model = load_mace("mace.model", compute_cell_gradients=True)
-    potential = make_torch_mliap_from_state(
-        state_lens, compute_position_and_cell_gradients=True,
-    )
+    potential = make_torch_mliap_from_state(state_lens, gradient=POSITIONS_AND_CELL)
     ```
 
 Requires the ``torch`` dependency group: ``uv sync --group torch``.
