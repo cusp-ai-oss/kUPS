@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
+import pytest
 from jax import Array
 
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
@@ -181,3 +182,65 @@ class TestStressViaVirialTheorem:
         systems = _make_systems(lv, lattice_grad)
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
         npt.assert_allclose(result.data[0], result.data[0].T, atol=1e-10)
+
+
+class TestBatchedStress:
+    """Regression: batched (``n_sys > 1``) stress must equal the per-system
+    single-system result for every system.
+
+    Guards the virial-stress batching bug present in 1.0.1, fixed incidentally
+    by the #132 stress refactor (no batched test was added then): the cell term
+    ``h^T·∂U/∂h`` was computed with a matrix-VECTOR
+    helper (``triangular_3x3_matmul``, signature ``(3,3),(3)->(3)``) fed two
+    ``(n_sys, 3, 3)`` arrays. ``vectorize`` read the gradient's middle axis as a
+    batch dim, so the system axis ``(n_sys,)`` had to broadcast against
+    ``(n_sys, 3)`` -- which only holds for ``n_sys in {1, 3}``. The barostat
+    (``stress_via_virial_theorem`` every NPT step) therefore raised for
+    ``n_sys in {2, 4, ...}`` and *silently* mis-contracted for ``n_sys == 3``
+    (each system's cell against another's gradient rows). The divisor
+    ``/ |det(h)|`` had the same defect.
+    """
+
+    @staticmethod
+    def _system(rng, scale):
+        """One system: distinct invertible lower-triangular cell + gradient and
+        two particles with random positions/gradients."""
+        h = np.tril(rng.standard_normal((3, 3))) + np.diag([4.0, 4.0, 4.0]) * scale
+        g = np.tril(rng.standard_normal((3, 3)))
+        pos = rng.standard_normal((2, 3))
+        pg = rng.standard_normal((2, 3))
+        return h, g, pos, pg
+
+    def _stress_single(self, h, g, pos, pg):
+        """Ground truth: stress for one system computed on its own (n_sys=1)."""
+        systems = _make_systems(jnp.asarray(h)[None], jnp.asarray(g)[None])
+        particles = _make_particles(
+            jnp.asarray(pos), position_gradients=jnp.asarray(pg)
+        )
+        return jax.jit(stress_via_virial_theorem)(particles, systems).data[0]
+
+    @pytest.mark.parametrize("n_sys", [1, 2, 3, 4, 5])
+    def test_batched_matches_per_system(self, n_sys):
+        rng = np.random.default_rng(0)
+        systems_data = [self._system(rng, 1.0 + 0.3 * s) for s in range(n_sys)]
+        expected = jnp.stack([self._stress_single(*d) for d in systems_data])
+
+        # Pack the same systems into one batched state (distinct cell per system,
+        # two particles each, mapped to their system via the particle index).
+        lv = jnp.stack([jnp.asarray(d[0]) for d in systems_data])
+        lattice_grad = jnp.stack([jnp.asarray(d[1]) for d in systems_data])
+        positions = jnp.concatenate([jnp.asarray(d[2]) for d in systems_data])
+        position_gradients = jnp.concatenate([jnp.asarray(d[3]) for d in systems_data])
+        system_ids = jnp.repeat(jnp.arange(n_sys), 2)
+
+        systems = _make_systems(lv, lattice_grad)
+        particles = _make_particles(
+            positions,
+            position_gradients=position_gradients,
+            system_ids=system_ids,
+            n_systems=n_sys,
+        )
+        result = jax.jit(stress_via_virial_theorem)(particles, systems)
+
+        assert result.data.shape == (n_sys, 3, 3)
+        npt.assert_allclose(result.data, expected, atol=1e-10)
