@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from kups.core.data import Table
 from kups.core.lens import view
 from kups.core.storage import (
     Compression,
@@ -21,6 +22,7 @@ from kups.core.storage import (
     Once,
     WriterGroupConfig,
 )
+from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass
 
 
@@ -231,6 +233,35 @@ class TestGroupReader:
             npt.assert_array_equal(group_reader[2]["pos"], simple_state.position + 2)
             npt.assert_array_equal(group_reader[-1]["pos"], simple_state.position + 9)
             assert group_reader[::2]["pos"].shape == (5, 3)
+
+    def test_read_chunked(self, simple_state: SimpleState, temp_file: str):
+        """read_chunked tiles the trajectory into fixed-size chunks with a partial tail."""
+        writer = HDF5StorageWriter(
+            temp_file,
+            WriterGroupConfig(
+                view=view(lambda s: {"pos": s.position}),
+                logging_frequency=EveryNStep(1),
+            ),
+            simple_state,
+            total_steps=10,
+        )
+        with writer:
+            for i in range(10):
+                state = SimpleState(
+                    position=simple_state.position + i,
+                    velocity=simple_state.velocity,
+                    energy=simple_state.energy,
+                )
+                writer.log(state, i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            group_reader = reader.focus_group("group")
+            chunks = list(group_reader.read_chunked(4))
+            assert [c["pos"].shape[0] for c in chunks] == [4, 4, 2]
+            joined = jnp.concatenate([c["pos"] for c in chunks])
+            npt.assert_array_equal(joined, group_reader[:]["pos"])
+            with pytest.raises(AssertionError):
+                list(group_reader.read_chunked(0))
 
 
 class TestIntegration:
@@ -459,3 +490,86 @@ class TestAutoBatching:
             npt.assert_array_equal(traj[6], state.position + 6)
             init = reader.focus_group("group['init']")[...]["pos"]
             npt.assert_array_equal(init, state.position)
+
+
+@dataclass
+class _Row:
+    energy: jax.Array
+    force: jax.Array
+
+
+@dataclass
+class _StepStore:
+    systems: Table[SystemId, _Row]
+    volume: jax.Array
+
+
+@dataclass
+class _SelState:
+    step: _StepStore
+
+
+def _make_sel_state(n_systems: int, i: int) -> _SelState:
+    keys = tuple(SystemId(s) for s in range(n_systems))
+    base = jnp.arange(n_systems, dtype=jnp.float64)
+    systems = Table(keys, _Row(energy=base + i, force=base * 0.1 + i))
+    return _SelState(step=_StepStore(systems=systems, volume=base + 10.0 + i))
+
+
+class TestFieldSelection:
+    """Selective (`select=`) reads of single fields and sub-trees."""
+
+    def test_select_field_and_subtree(self, temp_file: str):
+        """A lens reads only its field; matches the corresponding whole-group read."""
+        n_systems, n_steps = 3, 10
+        config = WriterGroupConfig(
+            view=view(lambda s: s.step), logging_frequency=EveryNStep(1)
+        )
+        writer = HDF5StorageWriter(
+            temp_file, config, _make_sel_state(n_systems, 0), total_steps=n_steps
+        )
+        with writer:
+            for i in range(n_steps):
+                writer.log(_make_sel_state(n_systems, i), i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            g = reader.focus_group("group")
+            full = g[:]
+
+            # Single leaf: returns just that array.
+            energy = g.read(select=lambda d: d.systems.data.energy)
+            assert energy.shape == (n_steps, n_systems)
+            npt.assert_array_equal(energy, full.systems.data.energy)
+
+            # Sub-tree: returns the row struct with only its leaves.
+            row = g.read(select=lambda d: d.systems.data)
+            npt.assert_array_equal(row.force, full.systems.data.force)
+
+            # Selecting a Table preserves its static keys.
+            systems = g.read(select=lambda d: d.systems)
+            assert systems.keys == tuple(SystemId(s) for s in range(n_systems))
+            npt.assert_array_equal(systems.data.energy, full.systems.data.energy)
+
+            # Final-frame field read (relaxation-style access).
+            last = g.read(n_steps - 1, select=lambda d: d.systems.data.energy)
+            npt.assert_array_equal(last, full.systems.data.energy[n_steps - 1])
+
+    def test_select_chunked(self, temp_file: str):
+        """Chunked field reads tile back into the full single-field series."""
+        n_systems, n_steps = 2, 10
+        config = WriterGroupConfig(
+            view=view(lambda s: s.step), logging_frequency=EveryNStep(1)
+        )
+        writer = HDF5StorageWriter(
+            temp_file, config, _make_sel_state(n_systems, 0), total_steps=n_steps
+        )
+        with writer:
+            for i in range(n_steps):
+                writer.log(_make_sel_state(n_systems, i), i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            g = reader.focus_group("group")
+            full_energy = g[:].systems.data.energy
+            chunks = list(g.read_chunked(4, select=lambda d: d.systems.data.energy))
+            assert [c.shape[0] for c in chunks] == [4, 4, 2]
+            npt.assert_array_equal(jnp.concatenate(chunks), full_energy)

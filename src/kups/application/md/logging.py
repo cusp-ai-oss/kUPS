@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import jax
 from jax import Array
 
 from kups.application.md.data import MDParticles, MDSystems
@@ -15,6 +14,7 @@ from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.md.observables import system_kinetic_energy
 from kups.observables.stress import stress_via_virial_theorem
 
 
@@ -49,7 +49,9 @@ class MDStepData:
     Attributes:
         atoms: Indexed particle data.
         potential_energy: Potential energy per system.
-        kinetic_energy: Kinetic energy per system.
+        kinetic_energy: Total kinetic energy per system.
+        internal_kinetic_energy: Kinetic energy per system with center-of-mass
+            motion removed (used for temperature).
         stress_tensor: Virial stress tensor per system.
         volume: Cell volume per system (A^3).
     """
@@ -57,23 +59,23 @@ class MDStepData:
     atoms: Table[ParticleId, MDParticles]
     potential_energy: Array
     kinetic_energy: Array
+    internal_kinetic_energy: Array
     stress_tensor: Array
     volume: Array
 
     @staticmethod
     def from_state(state: HasMDData) -> MDStepData:
-        ke = jax.ops.segment_sum(
-            state.particles.data.kinetic_energy,
-            state.particles.data.system.indices,
-            state.particles.data.system.num_labels,
-        )
+        particles = state.particles
+        system = particles.data.system
+        momenta, masses = particles.data.momenta, particles.data.masses
         return MDStepData(
-            atoms=state.particles,
+            atoms=particles,
             potential_energy=state.systems.data.potential_energy,
-            kinetic_energy=ke,
-            stress_tensor=stress_via_virial_theorem(
-                state.particles, state.systems
-            ).data,
+            kinetic_energy=system_kinetic_energy(momenta, masses, system),
+            internal_kinetic_energy=system_kinetic_energy(
+                momenta, masses, system, remove_com=True
+            ),
+            stress_tensor=stress_via_virial_theorem(particles, state.systems).data,
             volume=state.systems.data.cell.volume,
         )
 

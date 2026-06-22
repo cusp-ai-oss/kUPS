@@ -9,7 +9,6 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -18,49 +17,34 @@ from kups.application.md.logging import MDLoggedData
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.storage import HDF5StorageReader
-from kups.core.typing import (
-    HasMasses,
-    HasMomenta,
-    HasPositions,
-    HasPotentialEnergy,
-    HasStressTensor,
-    ParticleId,
-    SystemId,
-)
+from kups.core.typing import HasPotentialEnergy, HasStressTensor, ParticleId, SystemId
 from kups.core.utils.block_average import (
     BlockAverageResult,
     block_average,
     optimal_block_average,
 )
-from kups.md.observables import (
-    particle_kinetic_energy,
-    remove_center_of_mass_momentum,
-)
 
 
-class _IsMDAtoms(HasPositions, Protocol):
+class _IsMDInitAtoms(Protocol):
     @property
     def system(self) -> Index[SystemId]: ...
-
-
-class _IsMDStepAtoms(HasMomenta, HasMasses, Protocol): ...
 
 
 class IsMDInitData(Protocol):
     """Contract for the init reader group."""
 
     @property
-    def atoms(self) -> Table[ParticleId, _IsMDAtoms]: ...
+    def atoms(self) -> Table[ParticleId, _IsMDInitAtoms]: ...
 
 
 class IsMDStepData(HasPotentialEnergy, HasStressTensor, Protocol):
     """Contract for the step reader group."""
 
     @property
-    def atoms(self) -> Table[ParticleId, _IsMDStepAtoms]: ...
+    def kinetic_energy(self) -> Array: ...
 
     @property
-    def kinetic_energy(self) -> Array: ...
+    def internal_kinetic_energy(self) -> Array: ...
 
     @property
     def volume(self) -> Array: ...
@@ -98,80 +82,91 @@ class MDAnalysisResult:
 def _analyze_single_system(
     potential_energy: Array,
     kinetic_energy: Array,
+    internal_kinetic_energy: Array,
     stress_tensor: Array,
     volume: Array,
     n_atoms: int,
     n_blocks: int | None,
-    internal_kinetic_energy: Array,
 ) -> MDAnalysisResult:
-    """Run block-averaging analysis for one system.
+    """Block-average one system's time series into thermodynamic averages.
 
     Args:
-        potential_energy: Potential energy time series, shape ``(n_steps,)``.
-        kinetic_energy: Kinetic energy time series, shape ``(n_steps,)``.
-        stress_tensor: Stress tensor time series, shape ``(n_steps, 3, 3)``.
-        volume: Cell volume time series, shape ``(n_steps,)``.
-        n_atoms: Number of atoms in this system.
-        n_blocks: Number of blocks, or ``None`` for automatic selection.
-        internal_kinetic_energy: Center-of-mass-projected kinetic energy time
-            series to use when computing internal temperature. The logged
-            ``kinetic_energy`` and ``total_energy`` are left unchanged.
-    """
-    degrees_of_freedom = 3 * n_atoms - 3
-    total_energy = potential_energy + kinetic_energy
-    n_steps = len(total_energy)
+        potential_energy: Potential energy, shape ``(n_steps,)``.
+        kinetic_energy: Total kinetic energy, shape ``(n_steps,)``.
+        internal_kinetic_energy: Center-of-mass-projected kinetic energy used for
+            the temperature, shape ``(n_steps,)``.
+        stress_tensor: Stress tensor, shape ``(n_steps, 3, 3)``.
+        volume: Cell volume, shape ``(n_steps,)``.
+        n_atoms: Number of atoms in the system.
+        n_blocks: Number of blocks, or ``None`` to auto-select from the pressure.
 
-    temperature = (
-        2 * internal_kinetic_energy / (BOLTZMANN_CONSTANT * degrees_of_freedom)
-    )
+    Returns:
+        Block-averaged thermodynamic results for the system.
+    """
+    total_energy = potential_energy + kinetic_energy
+    dof = 3 * n_atoms - 3
+    temperature = 2 * internal_kinetic_energy / (BOLTZMANN_CONSTANT * dof)
     pressure = jnp.trace(stress_tensor, axis1=-2, axis2=-1) / 3
 
     if n_blocks is None:
         pressure_result = optimal_block_average(pressure)
-        n_blocks_used = int(pressure_result.n_blocks)
+        n_blocks = int(pressure_result.n_blocks)
     else:
         pressure_result = block_average(pressure, n_blocks=n_blocks)
-        n_blocks_used = n_blocks
 
-    pe_result = block_average(potential_energy, n_blocks=n_blocks_used)
-    ke_result = block_average(kinetic_energy, n_blocks=n_blocks_used)
-    te_result = block_average(total_energy, n_blocks=n_blocks_used)
-    temp_result = block_average(temperature, n_blocks=n_blocks_used)
-    volume_result = block_average(volume, n_blocks=n_blocks_used)
-
-    steps = np.arange(n_steps)
-    slope, _ = np.polyfit(steps, np.asarray(total_energy), 1)
+    slope, _ = np.polyfit(np.arange(len(total_energy)), np.asarray(total_energy), 1)
 
     return MDAnalysisResult(
-        potential_energy=pe_result,
-        kinetic_energy=ke_result,
-        total_energy=te_result,
-        temperature=temp_result,
+        potential_energy=block_average(potential_energy, n_blocks=n_blocks),
+        kinetic_energy=block_average(kinetic_energy, n_blocks=n_blocks),
+        total_energy=block_average(total_energy, n_blocks=n_blocks),
+        temperature=block_average(temperature, n_blocks=n_blocks),
         energy_drift=float(slope),
         energy_drift_per_atom=float(slope) / n_atoms,
         pressure=pressure_result,
-        volume=volume_result,
+        volume=block_average(volume, n_blocks=n_blocks),
         n_atoms=n_atoms,
-        n_steps=n_steps,
+        n_steps=len(total_energy),
     )
 
 
-def _internal_kinetic_energy(
-    atoms: Table[ParticleId, _IsMDStepAtoms],
+def _analyze_md_systems(
     system: Index[SystemId],
-    system_number: int,
-) -> Array:
-    """Compute per-step internal kinetic energy for one system."""
-    mask = system.indices == system_number
-    momenta = atoms.data.momenta[:, mask, :]
-    masses = atoms.data.masses[:, mask]
-    local_system = Index.zeros(momenta.shape[1], label=SystemId)
-    projected_momenta = jax.vmap(
-        remove_center_of_mass_momentum,
-        in_axes=(0, 0, None),
-    )(momenta, masses, local_system)
+    potential_energy: Array,
+    kinetic_energy: Array,
+    internal_kinetic_energy: Array,
+    stress_tensor: Array,
+    volume: Array,
+    n_blocks: int | None,
+) -> dict[SystemId, MDAnalysisResult]:
+    """Block-average each system independently.
 
-    return jnp.sum(particle_kinetic_energy(projected_momenta, masses), axis=-1)
+    Args:
+        system: Per-atom system index supplying keys and atom counts.
+        potential_energy: Potential energy, shape ``(n_steps, n_systems)``.
+        kinetic_energy: Total kinetic energy, shape ``(n_steps, n_systems)``.
+        internal_kinetic_energy: Center-of-mass-projected kinetic energy, shape
+            ``(n_steps, n_systems)``.
+        stress_tensor: Stress tensor, shape ``(n_steps, n_systems, 3, 3)``.
+        volume: Cell volume, shape ``(n_steps, n_systems)``.
+        n_blocks: Number of blocks, or ``None`` for automatic selection.
+
+    Returns:
+        Per-system analysis results keyed by ``SystemId``.
+    """
+    n_atoms_per_system = system.counts.data
+    return {
+        sys_id: _analyze_single_system(
+            potential_energy[:, i],
+            kinetic_energy[:, i],
+            internal_kinetic_energy[:, i],
+            stress_tensor[:, i],
+            volume[:, i],
+            int(n_atoms_per_system[i]),
+            n_blocks,
+        )
+        for i, sys_id in enumerate(system.keys)
+    }
 
 
 def analyze_md(
@@ -185,54 +180,64 @@ def analyze_md(
     independently for each system.
 
     Args:
-        init_data: Initial simulation state with atom positions and system index.
+        init_data: Initial simulation state providing the per-atom system index.
         step_data: Per-step thermodynamic data with shape ``(n_steps, n_systems)``.
-        n_blocks: Number of blocks for error estimation. If None, uses
-            optimal_block_average to auto-select.
+        n_blocks: Number of blocks for error estimation. ``None`` auto-selects via
+            ``optimal_block_average``.
 
     Returns:
         Per-system analysis results keyed by ``SystemId``.
     """
-    system_index = init_data.atoms.data.system
-    n_atoms_per_system = system_index.counts.data
-
-    results: dict[SystemId, MDAnalysisResult] = {}
-    for i, sys_id in enumerate(system_index.keys):
-        kinetic_energy = step_data.kinetic_energy[:, i]
-        internal_ke = kinetic_energy
-        internal_ke = _internal_kinetic_energy(step_data.atoms, system_index, i)
-        results[sys_id] = _analyze_single_system(
-            potential_energy=step_data.potential_energy[:, i],
-            kinetic_energy=kinetic_energy,
-            stress_tensor=step_data.stress_tensor[:, i],
-            volume=step_data.volume[:, i],
-            n_atoms=int(n_atoms_per_system[i]),
-            n_blocks=n_blocks,
-            internal_kinetic_energy=internal_ke,
-        )
-
-    return results
+    return _analyze_md_systems(
+        init_data.atoms.data.system,
+        step_data.potential_energy,
+        step_data.kinetic_energy,
+        step_data.internal_kinetic_energy,
+        step_data.stress_tensor,
+        step_data.volume,
+        n_blocks,
+    )
 
 
 def analyze_md_file(
     hdf5_path: str | Path,
     n_blocks: int | None = None,
 ) -> dict[SystemId, MDAnalysisResult]:
-    """Analyze MD simulation results from HDF5 file.
+    """Analyze MD simulation results from an HDF5 file.
 
-    Convenience wrapper that reads HDF5 and delegates to ``analyze_md``.
+    Reads only the per-step thermodynamic scalars (energies, stress, volume) and
+    the initial system index, leaving the per-atom trajectory on disk. Internal
+    kinetic energy is logged per step, so no momenta are read here.
 
     Args:
         hdf5_path: Path to HDF5 file from MD simulation.
-        n_blocks: Number of blocks for error estimation. If None, uses
-            optimal_block_average to auto-select.
+        n_blocks: Number of blocks for error estimation. ``None`` auto-selects via
+            ``optimal_block_average``.
 
     Returns:
         Per-system analysis results keyed by ``SystemId``.
     """
-
     with HDF5StorageReader[MDLoggedData](hdf5_path) as reader:
-        init_data = reader.focus_group(lambda state: state.init)[...]
-        step_data = reader.focus_group(lambda state: state.step)[...]
-
-    return analyze_md(init_data, step_data, n_blocks=n_blocks)
+        system = reader.focus_group(lambda s: s.init).read(
+            select=lambda d: d.atoms.data.system
+        )
+        potential_energy, kinetic_energy, internal_kinetic_energy, stress, volume = (
+            reader.focus_group(lambda s: s.step).read(
+                select=lambda d: (
+                    d.potential_energy,
+                    d.kinetic_energy,
+                    d.internal_kinetic_energy,
+                    d.stress_tensor,
+                    d.volume,
+                )
+            )
+        )
+    return _analyze_md_systems(
+        system,
+        potential_energy,
+        kinetic_energy,
+        internal_kinetic_energy,
+        stress,
+        volume,
+        n_blocks,
+    )

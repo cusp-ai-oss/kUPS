@@ -3,11 +3,16 @@
 
 """HDF5-backed storage for simulation trajectories.
 
-Provides async-writing :class:`HDF5StorageWriter` (Logger protocol) and
-:class:`HDF5StorageReader` for reading back logged data.  Logging frequency
-is controlled via :class:`LoggingFrequency` implementations (:class:`Once`,
-:class:`EveryNStep`); per-group chunking and compression are controlled via
-:class:`Compression`.
+Writing: :class:`HDF5StorageWriter` (a Logger) extracts per-group :class:`View`
+data from simulation state and writes it asynchronously on a background thread,
+buffering steps into contiguous block writes. Logging frequency is controlled
+via :class:`LoggingFrequency` implementations (:class:`Once`, :class:`EveryNStep`);
+per-group chunking and compression are controlled via :class:`Compression`.
+
+Reading: :class:`HDF5StorageReader` opens a logged file and exposes each group
+through a :class:`GroupReader`, which reconstructs the stored pytree and offers
+array-like indexing (``reader[idx]``) as well as :meth:`GroupReader.read_chunked`
+for streaming a trajectory in fixed-size chunks along the leading (time) axis.
 """
 
 from __future__ import annotations
@@ -19,11 +24,12 @@ import pickle
 import queue
 import threading
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from types import EllipsisType
-from typing import Any, Literal, Protocol, Self, cast, override
+from typing import Any, Literal, Protocol, Self, cast, overload, override
 
 import h5py
 import jax
@@ -42,9 +48,38 @@ class LoggingFrequency(Protocol):
     and map simulation steps to dataset indices.
     """
 
-    def should_log(self, step: int) -> bool: ...
-    def leading_shape(self, total_steps: int) -> tuple[int, ...]: ...
-    def dataset_index(self, step: int) -> Index: ...
+    def should_log(self, step: int) -> bool:
+        """Whether to log at this simulation step.
+
+        Args:
+            step: The current simulation step.
+
+        Returns:
+            ``True`` if data should be logged at ``step``.
+        """
+        ...
+
+    def leading_shape(self, total_steps: int) -> tuple[int, ...]:
+        """Leading (time) dimensions of this group's datasets.
+
+        Args:
+            total_steps: Total number of steps in the run.
+
+        Returns:
+            Dimensions prepended to each leaf's shape; empty for once-logged data.
+        """
+        ...
+
+    def dataset_index(self, step: int) -> Index:
+        """Index at which ``step``'s data is stored.
+
+        Args:
+            step: The current simulation step.
+
+        Returns:
+            The leading-axis index, or ``...`` for once-logged data.
+        """
+        ...
 
 
 class Once(LoggingFrequency):
@@ -123,6 +158,10 @@ class Compression:
             leading_dims: Leading (time) dimensions prepended to ``shape``.
             shape: Shape of a single logged value.
             itemsize: Bytes per element.
+
+        Returns:
+            Keyword arguments for ``create_dataset`` (chunks, compression,
+            shuffle); empty for scalar datasets, which are stored uncompressed.
         """
         if not leading_dims + shape:  # scalar: cannot chunk or compress
             return {}
@@ -138,6 +177,17 @@ class Compression:
     def _chunk_shape(
         self, leading_dims: tuple[int, ...], shape: tuple[int, ...], itemsize: int
     ) -> tuple[int, ...]:
+        """Chunk shape for one leaf, sized to roughly ``target_chunk_bytes``.
+
+        Args:
+            leading_dims: Leading (time) dimensions prepended to ``shape``.
+            shape: Shape of a single logged value.
+            itemsize: Bytes per element.
+
+        Returns:
+            ``(frames, *shape)`` along the time axis, or ``shape`` for once-logged
+            data.
+        """
         if not leading_dims:  # logged once: one chunk spanning the whole array
             return shape
         frame_bytes = max(itemsize * math.prod(shape), 1)
@@ -231,6 +281,11 @@ class HDF5StorageWriter[State, WriterConfig]:
     _actual_steps: int = field(init=False, default=0, repr=False)
 
     def __enter__(self) -> Self:
+        """Open the file, create datasets, and start the background writer thread.
+
+        Returns:
+            The writer, for use within the ``with`` block.
+        """
         self._file = h5py.File(self.out_path, "w")
         self._group_writers = _init_group_writers(
             self._file, self.config, self.initial_state, self.total_steps
@@ -244,6 +299,11 @@ class HDF5StorageWriter[State, WriterConfig]:
         return self
 
     def __exit__(self, *exc: object) -> None:
+        """Stop the writer thread, record ``actual_steps``, and close the file.
+
+        Args:
+            *exc: Context-manager exception info; unused.
+        """
         if self._bg_writer is not None:
             self._bg_writer.stop()
         if self._bg_thread is not None:
@@ -256,13 +316,26 @@ class HDF5StorageWriter[State, WriterConfig]:
             self._file = None
 
     def log(self, state: State, step: int) -> None:
-        """Queue state for async background writing."""
+        """Queue state for async background writing.
+
+        Args:
+            state: Full simulation state to extract and log.
+            step: The current simulation step.
+        """
         self._actual_steps = step + 1
         assert self._bg_writer is not None, "Must be used inside a with-block"
         self._bg_writer.write(state, step)
 
     def _prepare_write(self, state: State, step: int) -> list[tuple[int, Index, Any]]:
-        """Extract loggable data on the main thread (before JAX donation)."""
+        """Extract loggable data on the main thread (before JAX donation).
+
+        Args:
+            state: Full simulation state to extract from.
+            step: The current simulation step.
+
+        Returns:
+            ``(group_index, dataset_index, data)`` tuples for groups due to log.
+        """
         to_log: list[tuple[int, Index, Any]] = []
         for i, group in enumerate(self._group_writers):
             if group.logging_frequency.should_log(step):
@@ -271,6 +344,11 @@ class HDF5StorageWriter[State, WriterConfig]:
         return to_log
 
     def _write(self, to_write: list[tuple[int, Index, Any]]) -> None:
+        """Write extracted ``(group, index, data)`` tuples to their datasets.
+
+        Args:
+            to_write: ``(group_index, dataset_index, data)`` tuples to write.
+        """
         for i, idx, data in to_write:
             self._group_writers[i].writer.write(data, idx)
 
@@ -281,7 +359,17 @@ def _init_group_writers[S, WC](
     state: S,
     total_steps: int,
 ) -> list[GroupWriters[S, Any]]:
-    """Shared init logic: create HDF5 groups and datasets from config."""
+    """Create one HDF5 group and its datasets per ``WriterGroupConfig`` leaf.
+
+    Args:
+        hdf5_file: Open file to populate with groups and metadata.
+        config: Pytree of ``WriterGroupConfig`` leaves describing each group.
+        state: Initial state, used to size each group's datasets.
+        total_steps: Total steps in the run, used for the leading dimensions.
+
+    Returns:
+        One ``GroupWriters`` per config leaf, in leaf order.
+    """
     confs_and_paths, conf_structure = jax.tree.flatten_with_path(
         config, is_leaf=lambda x: isinstance(x, WriterGroupConfig)
     )
@@ -329,6 +417,17 @@ class Hdf5ObjWriter[Storage]:
         leading_dims: tuple[int, ...],
         compression: Compression | None = None,
     ) -> Hdf5ObjWriter[S]:
+        """Create one dataset per array leaf of ``state`` and persist its pytree structure.
+
+        Args:
+            hdf5_group: Group to populate with datasets and metadata.
+            state: Sample value whose leaves define dataset shapes and dtypes.
+            leading_dims: Leading (time) dimensions prepended to each leaf shape.
+            compression: Compression/chunking policy, or ``None`` for contiguous datasets.
+
+        Returns:
+            A writer bound to the created datasets.
+        """
         datasets: list[h5py.Dataset] = []
         paths: list[str] = []
         for path, tensor in jax.tree.leaves_with_path(state):
@@ -356,6 +455,12 @@ class Hdf5ObjWriter[Storage]:
         return Hdf5ObjWriter(datasets)
 
     def write(self, state: Storage, index: Index) -> None:
+        """Write a single value's leaves to ``index`` of their datasets.
+
+        Args:
+            state: Value whose leaves are written.
+            index: Dataset index to write each leaf to.
+        """
         for dataset, value in zip(self.datasets, jax.tree.leaves(state)):
             dataset[index] = np.asarray(value)
 
@@ -364,6 +469,10 @@ class Hdf5ObjWriter[Storage]:
 
         Stacks each leaf across ``states`` and writes one slice per dataset,
         amortising the per-call overhead of single-step writes.
+
+        Args:
+            states: Per-step values to stack and write, in order.
+            start: Leading-axis index of the first state.
         """
         leaves = [jax.tree.leaves(s) for s in states]
         stop = start + len(states)
@@ -388,26 +497,41 @@ class HDF5StorageReader[Config]:
     _file: h5py.File | None = field(init=False, default=None, repr=False)
 
     def __enter__(self) -> Self:
+        """Open the HDF5 file for reading.
+
+        Returns:
+            The reader, for use within the ``with`` block.
+        """
         self._file = h5py.File(self.path, "r")
         return self
 
     def __exit__(self, *exc: object) -> None:
+        """Close the file.
+
+        Args:
+            *exc: Context-manager exception info; unused.
+        """
         if self._file is not None:
             self._file.close()
             self._file = None
 
     @property
     def file(self) -> h5py.File:
+        """The open HDF5 file; requires use as a context manager."""
         assert self._file is not None, "File not open; use as context manager"
         return self._file
 
     def focus_group[Storage](
         self, view_or_name: View[Config, WriterGroupConfig[Any, Storage]] | str
     ) -> GroupReader[Storage]:
-        """Returns a reader for a specific logging group.
+        """Return a reader for a specific logging group.
 
         Args:
-            view_or_name: Either a string group name or a View lens.
+            view_or_name: Either a string group name or a ``View`` lens that
+                selects the group from the config pytree.
+
+        Returns:
+            A reader for the focused group.
         """
         if isinstance(view_or_name, str):
             return GroupReader[Storage](self.file[view_or_name])  # type: ignore - h5py is not very good with types
@@ -430,6 +554,11 @@ class HDF5StorageReader[Config]:
         return GroupReader[Storage](group)
 
     def list_groups(self) -> list[str]:
+        """List the names of all logging groups in the file.
+
+        Returns:
+            Group names, in config-pytree leaf order.
+        """
         try:
             group_names = json.loads(self.file.attrs["group_names"])  # type: ignore - h5py is not very good with types
             return group_names
@@ -445,10 +574,12 @@ class GroupReader[Storage]:
 
     @cached_property
     def paths(self) -> list[str]:
+        """Dataset names for this group's array leaves, in pytree-leaf order."""
         return json.loads(self.group.attrs["paths"])  # type: ignore - h5py is not very good with types
 
     @cached_property
     def tree_def(self) -> PyTreeDef[Storage]:
+        """Pytree structure of the stored value, for reassembling reads into Storage."""
         if "tree_def" in self.group:
             raw = bytes(self.group["tree_def"][()])  # type: ignore - h5py typing
         else:
@@ -456,20 +587,96 @@ class GroupReader[Storage]:
         tree_def = pickle.loads(raw)
         return tree_def
 
-    def read(self, index: Index) -> Storage:
-        if index is None:
-            index = slice(None)
+    @cached_property
+    def _names_tree(self) -> Storage:
+        """Group pytree with each array leaf replaced by its dataset name.
 
+        A :class:`~kups.core.lens.View` applied to this tree navigates purely
+        structurally — container keys are static metadata carried by the tree
+        structure — and yields the dataset name(s) for the focused field, so a
+        field read touches only those datasets.
+        """
+        with no_post_init():
+            return self.tree_def.unflatten(self.paths)  # type: ignore - string leaves stand in for arrays
+
+    def _read_leaves(
+        self, leaves: list[str], treedef: PyTreeDef[Any], index: Index
+    ) -> Any:
         def read_dataset(
-            path: str,
+            name: str,
         ) -> np.ndarray[tuple[int, ...], np.dtype[np.generic]]:
-            dataset = self.group["".join(map(str, path))]
-            return dataset[index]  # type: ignore - pylance doesn't understand h5py correctly.
+            return self.group["".join(map(str, name))][index]  # type: ignore - pylance doesn't understand h5py correctly.
 
         with no_post_init():
-            return self.tree_def.unflatten(jax.tree.map(read_dataset, self.paths))
+            return treedef.unflatten(jax.tree.map(read_dataset, leaves))
+
+    @overload
+    def read(self, index: Index = ..., *, select: None = ...) -> Storage: ...
+    @overload
+    def read[Field](
+        self, index: Index = ..., *, select: View[Storage, Field]
+    ) -> Field: ...
+    def read[Field](
+        self, index: Index = slice(None), *, select: View[Storage, Field] | None = None
+    ) -> Storage | Field:
+        """Read ``index`` from each leaf dataset and reassemble the stored pytree.
+
+        Args:
+            index: Index applied to each leaf dataset (int, slice, ellipsis, or
+                tuple thereof). Defaults to the whole leading axis.
+            select: Optional lens focusing a field (or sub-pytree) of the stored
+                value. When given, only the datasets backing that field are read
+                and the focused value is returned; when ``None`` the whole group
+                is read.
+
+        Returns:
+            The stored value (``select=None``) or the focused field, with each
+            leaf sliced by ``index``.
+        """
+        if index is None:
+            index = slice(None)
+        if select is None:
+            return self._read_leaves(self.paths, self.tree_def, index)
+        leaves, treedef = jax.tree.flatten(select(self._names_tree))
+        return self._read_leaves(leaves, treedef, index)
+
+    @overload
+    def read_chunked(
+        self, chunk_size: int, *, select: None = ...
+    ) -> Iterator[Storage]: ...
+    @overload
+    def read_chunked[Field](
+        self, chunk_size: int, *, select: View[Storage, Field]
+    ) -> Iterator[Field]: ...
+    def read_chunked[Field](
+        self, chunk_size: int, *, select: View[Storage, Field] | None = None
+    ) -> Iterator[Storage] | Iterator[Field]:
+        """Yield successive chunks along the leading (time) axis.
+
+        Args:
+            chunk_size: Number of leading-axis frames per chunk; must be positive.
+            select: Optional lens focusing a field of the stored value; when
+                given each chunk reads only that field's datasets (see
+                :meth:`read`).
+
+        Yields:
+            Each chunk as a read of at most ``chunk_size`` frames (the whole
+            value or the focused field); the final chunk may be shorter.
+        """
+        assert chunk_size > 0, "chunk_size must be positive"
+        length = self.group["".join(map(str, self.paths[0]))].shape[0]  # type: ignore - h5py typing
+        for start in range(0, length, chunk_size):
+            yield self.read(slice(start, start + chunk_size), select=select)
 
     def __getitem__(self, index: Index) -> Storage:
+        """Array-like access; equivalent to :meth:`read`.
+
+        Args:
+            index: Index applied to each leaf dataset.
+
+        Returns:
+            The stored value with each leaf sliced by ``index``.
+        """
         return self.read(index)
 
 
@@ -508,10 +715,20 @@ class BackgroundWriter[State, WriterConfig]:
         logging.info("Writer thread stopped")
 
     def write(self, state: State, step: int) -> None:
-        """Queue state data for asynchronous writing to HDF5."""
+        """Queue state data for asynchronous writing to HDF5.
+
+        Args:
+            state: Full simulation state to extract and queue.
+            step: The current simulation step.
+        """
         self.data_queue.put(self.storage_writer._prepare_write(state, step))
 
     def _buffer(self, to_log: list[tuple[int, Index, Any]]) -> None:
+        """Append each group's data to its buffer, flushing when the batch is full.
+
+        Args:
+            to_log: ``(group_index, dataset_index, data)`` tuples to buffer.
+        """
         group_writers = self.storage_writer._group_writers
         for i, index, data in to_log:
             buffer = self._buffers[i]
@@ -520,6 +737,11 @@ class BackgroundWriter[State, WriterConfig]:
                 self._flush_group(i)
 
     def _flush_group(self, i: int) -> None:
+        """Write group ``i``'s buffer as one block if contiguous, else step by step.
+
+        Args:
+            i: Index of the group whose buffer to flush.
+        """
         buffer = self._buffers.get(i)
         if not buffer:
             return
@@ -538,6 +760,7 @@ class BackgroundWriter[State, WriterConfig]:
         buffer.clear()
 
     def _flush_all(self) -> None:
+        """Flush every group's pending buffer."""
         for i in list(self._buffers):
             self._flush_group(i)
 
