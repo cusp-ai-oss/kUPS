@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, overload, runtime_checkable
+from typing import Any, Literal, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -14,7 +14,6 @@ from kups.core.cell import (
     AnyPeriodicity,
     Cell,
     Periodic3D,
-    require_periodic_3d_triclinic,
 )
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
@@ -39,7 +38,6 @@ from kups.core.typing import (
     HasTemperature,
     HasThermostatTimeConstant,
     HasTimeStep,
-    IsState,
     ParticleId,
     SystemId,
 )
@@ -711,11 +709,16 @@ class IsMDSystem[P](HasCell[Periodic3D], HasIntegratorParams[P], Protocol):
 
 
 @runtime_checkable
-class IsMDSystemNPT(IsMDSystem[IsCSVRNPTParams], Protocol):
-    r"""NPT MD system row: adds the cell-gradient leaf needed for the barostat."""
+class IsMDSystemNPTBase(HasCell[Periodic3D], Protocol):
+    r"""Params-free NPT MD system row: a periodic cell plus the barostat cell-gradient leaf."""
 
     @property
     def cell_gradients(self) -> Cell[Periodic3D]: ...
+
+
+@runtime_checkable
+class IsMDSystemNPT(IsMDSystemNPTBase, HasIntegratorParams[IsCSVRNPTParams], Protocol):
+    r"""NPT MD system row: :class:`IsMDSystemNPTBase` plus bundled integrator parameters."""
 
 
 @runtime_checkable
@@ -964,17 +967,21 @@ class IsBAOABNPTLangevinParams(
 
 
 @runtime_checkable
-class IsBAOABNPTLangevinSystem(
-    HasCell[Periodic3D],
-    HasCellMomentum,
-    HasIntegratorParams[IsBAOABNPTLangevinParams],
-    Protocol,
-):
-    r"""NPT Langevin MD system row: periodic cell, cell-momentum tensor, integrator
-    params, and a cell-gradient leaf for the virial."""
+class IsBAOABNPTLangevinSystemBase(HasCell[Periodic3D], HasCellMomentum, Protocol):
+    r"""Params-free NPT Langevin MD system row: periodic cell, cell-momentum tensor,
+    and a cell-gradient leaf for the virial."""
 
     @property
     def cell_gradients(self) -> Cell[Periodic3D]: ...
+
+
+@runtime_checkable
+class IsBAOABNPTLangevinSystem(
+    IsBAOABNPTLangevinSystemBase,
+    HasIntegratorParams[IsBAOABNPTLangevinParams],
+    Protocol,
+):
+    r"""NPT Langevin MD system row: :class:`IsBAOABNPTLangevinSystemBase` plus integrator params."""
 
 
 def _cell_velocity(cell_momentum: Array, barostat_mass: Array) -> Array:
@@ -1295,135 +1302,3 @@ def make_baoab_npt_langevin_step[State](
             CellMomentumKick(particles, systems),  # B^h  Δt/2
         )
     )
-
-
-def require_baoab_npt_langevin_state(
-    systems: Table[SystemId, IsBAOABNPTLangevinSystem],
-) -> None:
-    """Runtime check that the system table satisfies the BAOAB NPT Langevin shape.
-
-    Call this once on the initial state (outside of jit) before constructing
-    the integrator. Verifies that the cell is a 3D-periodic
-    :class:`TriclinicFrame` and that the integrator-params is a
-    :class:`BAOABNPTLangevinParams`-shaped bundle.
-    """
-    require_periodic_3d_triclinic(systems.data.cell)
-
-
-@overload
-def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsVerletParams]]],
-    derivative_computation: Propagator[State],
-    integrator: Literal["verlet"],
-) -> Propagator[State]: ...
-@overload
-def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsBAOABLangevinParams]]],
-    derivative_computation: Propagator[State],
-    integrator: Literal["baoab_langevin"],
-) -> Propagator[State]: ...
-@overload
-def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsCSVRParams]]],
-    derivative_computation: Propagator[State],
-    integrator: Literal["csvr"],
-) -> Propagator[State]: ...
-@overload
-def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystemNPT]],
-    derivative_computation: Propagator[State],
-    integrator: Literal["csvr_npt"],
-) -> Propagator[State]: ...
-@overload
-def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsBAOABNPTLangevinSystem]],
-    derivative_computation: Propagator[State],
-    integrator: Literal["baoab_npt_langevin"],
-) -> Propagator[State]: ...
-@overload
-def make_md_step_from_state[State](
-    state: Lens[State, Any],
-    derivative_computation: Propagator[State],
-    integrator: Integrator,
-) -> Propagator[State]: ...
-
-
-def make_md_step_from_state[State](
-    state: Lens[State, Any],
-    derivative_computation: Propagator[State],
-    integrator: Integrator,
-) -> Propagator[State]:
-    """Build a single MD integration step from a typed state.
-
-    Constructs the appropriate integrator propagator by extracting views for
-    particles and systems from ``state`` and wrapping them with a
-    [WrapFlow][kups.md.integrators.WrapFlow]
-    for periodic-boundary-condition-aware distance computations.
-
-    Supported integrators:
-
-    - ``"verlet"`` — [Velocity Verlet][kups.md.integrators.make_velocity_verlet_step]
-      (NVE ensemble, no thermostat). Requires ``integrator_params: IsVerletParams``.
-    - ``"baoab_langevin"`` — [BAOAB Langevin][kups.md.integrators.make_baoab_langevin_step]
-      (NVT via Langevin friction/noise). Requires
-      ``integrator_params: IsBAOABLangevinParams``.
-    - ``"csvr"`` — [CSVR][kups.md.integrators.make_csvr_step]
-      (NVT via canonical-sampling velocity rescaling, constant volume). Requires
-      ``integrator_params: IsCSVRParams``.
-    - ``"csvr_npt"`` — [CSVR-NPT][kups.md.integrators.make_csvr_npt_step]
-      (NPT via CSVR thermostat with barostat). Requires
-      ``integrator_params: IsCSVRNPTParams`` and a ``cell_gradients`` leaf on each system.
-    - ``"baoab_npt_langevin"`` — [BAOAB NPT Langevin][kups.md.integrators.make_baoab_npt_langevin_step]
-      (Gao–Fang–Wang JCP 2016 fully-flexible-cell NPT). Requires
-      ``integrator_params: IsBAOABNPTLangevinParams`` plus ``cell_momentum``
-      and ``cell_gradients`` leaves on each system, and a
-      :class:`~kups.core.cell.TriclinicFrame` cell.
-
-    The overloads narrow the required state protocol per ``integrator`` literal.
-
-    Args:
-        state: Lens into the sub-state with ``particles`` and ``systems``.
-        derivative_computation: Propagator that computes forces/gradients and
-            updates the state (e.g. a wrapped potential).
-        integrator: String key selecting the integration algorithm.
-
-    Returns:
-        [Propagator][kups.core.propagator.Propagator] that advances the
-        simulation by one time step.
-
-    Raises:
-        ValueError: If ``integrator`` is not one of the supported keys.
-    """
-    flow = WrapFlow(
-        state.focus(
-            lambda x: x.systems.map_data(lambda x: x.cell.materialize())[
-                x.particles.data.system
-            ]
-        ),
-        euclidean_flow,
-    )
-    particles_lens = state.focus(lambda x: x.particles)
-    systems_lens = state.focus(lambda x: x.systems)
-    match integrator:
-        case "verlet":
-            return make_velocity_verlet_step(
-                particles_lens, systems_lens, derivative_computation, flow
-            )
-        case "baoab_langevin":
-            return make_baoab_langevin_step(
-                particles_lens, systems_lens, derivative_computation, flow
-            )
-        case "csvr":
-            return make_csvr_step(
-                particles_lens, systems_lens, derivative_computation, flow
-            )
-        case "csvr_npt":
-            return make_csvr_npt_step(
-                particles_lens, systems_lens, derivative_computation, flow
-            )
-        case "baoab_npt_langevin":
-            return make_baoab_npt_langevin_step(
-                particles_lens, systems_lens, derivative_computation, flow
-            )
-        case _:
-            raise ValueError(f"Unknown integrator: {integrator}")

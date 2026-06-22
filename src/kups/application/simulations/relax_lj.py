@@ -17,6 +17,9 @@ from jax import Array
 from nanoargs import NanoArgs
 from pydantic import BaseModel
 
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+)
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxParticles,
@@ -37,7 +40,6 @@ from kups.core.utils.jax import dataclass
 from kups.potential.classical.lennard_jones import (
     LennardJonesParameters,
     MixingRule,
-    make_lennard_jones_from_state,
 )
 from kups.relaxation.config import make_optimizer
 

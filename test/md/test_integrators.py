@@ -850,13 +850,13 @@ def test_stress_matches_ase():
     from ase.calculators.lj import LennardJones as ASELJ
 
     from kups.application.md.data import MdParameters, md_state_from_ase
+    from kups.application.potential.classical.lennard_jones import (
+        make_lennard_jones_from_state,
+    )
     from kups.core.lens import identity_lens
     from kups.core.neighborlist import UniversalNeighborlistParameters
     from kups.observables.stress import stress_via_virial_theorem
-    from kups.potential.classical.lennard_jones import (
-        LennardJonesParameters,
-        make_lennard_jones_from_state,
-    )
+    from kups.potential.classical.lennard_jones import LennardJonesParameters
 
     cif = (
         Path(__file__).parent.parent.parent
@@ -935,6 +935,87 @@ def test_stress_matches_ase():
     # NOTE: The NPT density comparison test (test_npt_density_matches_ase) lives
     # in the physical_validation PR where it uses propagate_and_fix. Keeping it
     # here would fail on CI JAX versions with the ShapedArray.vma issue.
+
+
+# ============================================================================
+# Tests: make_md_step_from_state parameters overlay
+# ============================================================================
+
+
+@dataclass
+class VerletSystemData:
+    cell: Cell
+    integrator_params: Any
+
+
+@dataclass
+class VerletState(HasLensFields):
+    particles: LensField[Table[ParticleId, ParticleData]]
+    systems: LensField[Table[SystemId, VerletSystemData]]
+
+
+def create_verlet_md_state(n_particles=5, k=1.0, dt=0.01, box_size=100.0):
+    """Verlet MD state with a periodic cell and VerletParams on each system."""
+    from kups.application.md.data import VerletParams
+
+    key1, key2 = jax.random.split(jax.random.key(42))
+    positions = jax.random.normal(key1, (n_particles, 3)) * 0.1
+    momenta = jax.random.normal(key2, (n_particles, 3))
+    forces = -k * positions
+    masses = jnp.ones(n_particles)
+    particles = Table.arange(
+        ParticleData(
+            positions=positions,
+            momenta=momenta,
+            forces=forces,
+            masses=masses,
+            system=Index.new([SystemId(0)] * n_particles),
+            position_gradients=-forces,
+        ),
+        label=ParticleId,
+    )
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size))
+    systems = Table.arange(
+        VerletSystemData(cell=cell, integrator_params=VerletParams(jnp.array([dt]))),
+        label=SystemId,
+    )
+    state = VerletState(particles=particles, systems=systems)
+
+    def derivative_step(key, s):
+        forces = -k * s.particles.data.positions
+        return VerletState.particles.focus(lambda p: p.data.forces).set(s, forces)
+
+    @dataclass
+    class DerivativeComputation(Propagator[VerletState]):
+        def __call__(self, key, s):
+            return derivative_step(key, s)
+
+    return state, DerivativeComputation()
+
+
+def test_make_md_step_from_state_parameters_overlay_matches_state_params():
+    """``parameters=`` overlay reproduces the path read from the state's params."""
+    from kups.application.md.integrators import make_md_step_from_state
+    from kups.core.lens import identity_lens
+
+    state, deriv = create_verlet_md_state()
+    state_lens = identity_lens(VerletState)
+    verlet_params = state.systems.data.integrator_params
+
+    from_state = make_md_step_from_state(state_lens, deriv, "verlet")
+    from_params = make_md_step_from_state(
+        state_lens, deriv, "verlet", parameters=verlet_params
+    )
+
+    def advance(step):
+        s = state
+        for i in range(3):
+            s = step(jax.random.key(i), s)
+        return s
+
+    a, b = advance(from_state), advance(from_params)
+    assert jnp.allclose(a.particles.data.positions, b.particles.data.positions)
+    assert jnp.allclose(a.particles.data.momenta, b.particles.data.momenta)
 
 
 # ============================================================================

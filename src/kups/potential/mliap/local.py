@@ -42,7 +42,7 @@ import json
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -53,21 +53,14 @@ from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
     Edges,
-    IsAdaptiveCutoffNeighborListState,
-    IsUniversalNeighborlistParams,
     NeighborList,
-    NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Accept, Patch, Probe, WithPatch
-from kups.core.potential import EMPTY_LENS, Energy, Potential, PotentialOut
+from kups.core.potential import Energy, Potential, PotentialOut
 from kups.core.typing import (
-    HasCache,
     HasCell,
     HasPositionsAndAtomicNumbers,
     HasSystemIndex,
-    IsState,
-    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -595,139 +588,3 @@ def make_local_mliap_potential[
         patch_idx_view=patch_idx_view,
     )
     return potential
-
-
-class IsLocalMLIAPState[Model](
-    IsState[IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    Protocol,
-):
-    """Protocol for states providing all inputs for the local MLIAP potential."""
-
-    @property
-    def local_mliap_model(self) -> Model: ...
-
-
-@overload
-def make_local_mliap_from_state[State, Gradient, Hessian](
-    state: Lens[State, IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]],
-    probe: None = None,
-    gradient_lens: Lens[
-        LocalMLIAPInput[State, IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
-        Gradient,
-    ] = ...,
-    hessian_lens: Lens[Gradient, Hessian] = ...,
-    hessian_idx_view: Lens[State, Hessian] = ...,
-    out_idx_view: None = None,
-    *,
-    neighborlist_factory: NeighborListFactory[
-        IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]
-    ] = ...,
-) -> Potential[State, Gradient, Hessian, Patch[Any]]: ...
-
-
-@overload
-def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
-    state: Lens[
-        State,
-        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut[Gradient, Hessian]]],
-    ],
-    probe: Probe[State, Ptch, IsGraphProbe[IsLocalMLIAPGraphParticles, Literal[2]]],
-    gradient_lens: Lens[
-        LocalMLIAPInput[State, IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
-        Gradient,
-    ] = ...,
-    hessian_lens: Lens[Gradient, Hessian] = ...,
-    hessian_idx_view: Lens[State, Hessian] = ...,
-    out_idx_view: Lens[State, PotentialOut[Gradient, Hessian]] | None = None,
-    *,
-    neighborlist_factory: NeighborListFactory[
-        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut[Gradient, Hessian]]]
-    ] = ...,
-) -> Potential[State, Gradient, Hessian, Ptch]: ...
-
-
-def make_local_mliap_from_state(
-    state: Any,
-    probe: Any = None,
-    gradient_lens: Any = EMPTY_LENS,
-    hessian_lens: Any = EMPTY_LENS,
-    hessian_idx_view: Any = EMPTY_LENS,
-    out_idx_view: Any = None,
-    *,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
-) -> Any:
-    """Create a local MLIAP potential from a typed state, optionally with incremental updates.
-
-    Convenience wrapper around
-    [make_local_mliap_potential][kups.potential.mliap.local.make_local_mliap_potential].
-    When ``probe`` is ``None``, extracts views from a state satisfying
-    [IsLocalMLIAPState][kups.potential.mliap.local.IsLocalMLIAPState].
-    When ``probe`` is provided, additionally wires the ``PotentialOut`` cache for
-    efficient incremental caching across Monte Carlo steps.
-
-    Args:
-        state: Lens into the sub-state providing particles, cell, neighbor list,
-            and local MLIAP model.
-        probe: Detects which particles and neighbor-list edges changed since the last
-            step. ``None`` for full-only computation.
-        gradient_lens: Specifies which gradients to compute (e.g., forces).
-        hessian_lens: Specifies which Hessians to compute.
-        hessian_idx_view: Index structure for Hessian updates.
-        out_idx_view: Index into the cached output for partial updates. Only used when
-            ``probe`` is not ``None``. Defaults to full re-indexing of
-            ``local_mliap_out_cache.total_energies``.
-
-    Returns:
-        Configured local MLIAP [Potential][kups.core.potential.Potential].
-    """
-
-    def _model(x: Any) -> LocalMLIAPData:
-        m = x.local_mliap_model
-        return m.data if isinstance(m, HasCache) else m
-
-    if probe is None:
-        model_lens = state.focus(_model)
-
-        def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-            return neighborlist_factory(state(s), model_lens(s).cutoff)
-
-        return make_local_mliap_potential(
-            state.focus(lambda x: x.particles),
-            state.focus(lambda x: x.systems),
-            neighborlist_view,
-            model_lens,
-            None,
-            gradient_lens,
-            hessian_lens,
-            hessian_idx_view,
-            None,
-            None,
-        )
-
-    if out_idx_view is None:
-        out_idx_view = state.focus(
-            lambda x: bind(
-                x.local_mliap_model.cache, lambda x: x.total_energies.data
-            ).apply(lambda x: jnp.arange(x.size, dtype=int))
-        )
-
-    model_lens = state.focus(lambda x: x.local_mliap_model.data)
-
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_lens(s).cutoff)
-
-    return make_local_mliap_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        neighborlist_view,
-        model_lens,
-        probe,
-        gradient_lens,
-        hessian_lens,
-        hessian_idx_view,
-        out_idx_view,
-        state.focus(lambda x: x.local_mliap_model.cache),
-    )

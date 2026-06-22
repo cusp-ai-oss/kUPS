@@ -35,7 +35,6 @@ from kups.core.typing import (
     HasGroupIndex,
     HasPositions,
     HasSystemIndex,
-    IsState,
     ParticleId,
     SystemId,
 )
@@ -65,15 +64,6 @@ class IsMolecularVirialParticles(HasPositions, HasGroupIndex, HasSystemIndex, Pr
 
     @property
     def position_gradients(self) -> Array: ...
-
-
-class IsMolecularVirialState(
-    IsState[IsMolecularVirialParticles, IsVirialSystems], Protocol
-):
-    """State with groups for molecular virial stress."""
-
-    @property
-    def groups(self) -> Table[GroupId, HasSystemIndex]: ...
 
 
 def _symmetrize_from_lower(lower: Array) -> Array:
@@ -259,21 +249,3 @@ def molecular_stress_via_virial_theorem(
         cell,
     )
     return Table(systems.keys, stress)
-
-
-def virial_stress_from_state(
-    key: Array, state: IsState[IsVirialParticles, IsVirialSystems]
-) -> Table[SystemId, Array]:
-    """Compute atomic virial stress from a state."""
-    del key
-    return stress_via_virial_theorem(state.particles, state.systems)
-
-
-def molecular_virial_stress_from_state(
-    key: Array, state: IsMolecularVirialState
-) -> Table[SystemId, Array]:
-    """Compute molecular virial stress from a state."""
-    del key
-    return molecular_stress_via_virial_theorem(
-        state.particles, state.groups, state.systems
-    )

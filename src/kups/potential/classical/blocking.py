@@ -20,7 +20,6 @@ from typing import (
     Literal,
     Protocol,
     Sequence,
-    overload,
 )
 
 import jax
@@ -32,20 +31,12 @@ from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     Edges,
-    IsAdaptiveCutoffNeighborListState,
-    IsUniversalNeighborlistParams,
     NeighborList,
-    NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    EMPTY_LENS,
-    EmptyType,
     Energy,
-    Potential,
     PotentialOut,
-    empty_patch_idx_view,
 )
 from kups.core.typing import (
     ExclusionId,
@@ -55,7 +46,6 @@ from kups.core.typing import (
     HasMotifIndex,
     HasPositionsAndSystemIndex,
     InclusionId,
-    IsState,
     MotifId,
     ParticleId,
     SystemId,
@@ -357,80 +347,6 @@ def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch[Any]
         gradient_lens=gradient_lens,
         patch_idx_view=patch_idx_view,
         cache_lens=None,
-    )
-
-
-class IsBlockingSpheresState(
-    IsState[_BlockingParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    Protocol,
-):
-    """Protocol for states providing all inputs for the blocking spheres potential."""
-
-    @property
-    def groups(self) -> Table[GroupId, HasMotifIndex]: ...
-    @property
-    def blocking_spheres_parameters(self) -> BlockingSpheresParameters: ...
-
-
-@overload
-def make_blocking_spheres_from_state[State](
-    state: Lens[State, IsBlockingSpheresState],
-    probe: None = None,
-    *,
-    neighborlist_factory: NeighborListFactory[IsBlockingSpheresState] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_blocking_spheres_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsBlockingSpheresState],
-    probe: Probe[State, P, IsBlockingSpheresProbe],
-    *,
-    neighborlist_factory: NeighborListFactory[IsBlockingSpheresState] = ...,
-) -> Potential[State, EmptyType, EmptyType, P]: ...
-
-
-def make_blocking_spheres_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
-) -> Any:
-    """Create a blocking spheres potential, optionally with incremental updates.
-
-    Args:
-        state: Lens into the sub-state providing particles, groups, systems,
-            blocking sphere parameters, and neighbor list.
-        probe: Probe returning a IsBlockingSpheresProbe; ``None`` for full
-            recomputation.
-        neighborlist_factory: Builds a ``NeighborList[Literal[2]]`` from the
-            sub-state and per-system cutoffs.
-
-    Returns:
-        Configured blocking spheres Potential.
-    """
-    gradient_lens: Any = EMPTY_LENS
-    patch_idx_view: Any = None
-    if probe is not None:
-        patch_idx_view = patch_idx_view or empty_patch_idx_view
-
-    def neighborlist_view(s: Any) -> BlockingSpheresNeighborListFactory:
-        return lambda cutoffs: neighborlist_factory(state(s), cutoffs)
-
-    return make_blocking_spheres_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.groups),
-        state.focus(lambda x: x.systems),
-        state.focus(lambda x: x.blocking_spheres_parameters),
-        neighborlist_view,
-        probe,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-        patch_idx_view,
     )
 
 

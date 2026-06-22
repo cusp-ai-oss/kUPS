@@ -10,43 +10,32 @@ electrostatics, use [Ewald summation][kups.potential.classical.ewald] instead.
 Potential: $U = \\frac{1}{4\\pi\\epsilon_0} \\sum_{i<j} \\frac{q_i q_j}{r_{ij}}$
 """
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol
 
 import jax.numpy as jnp
-from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Vacuum
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
-from kups.core.lens import Lens, SimpleLens, View
+from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
-    IsUniversalNeighborlistParams,
     NeighborList,
-    NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    EMPTY_LENS,
-    EmptyType,
     Energy,
     Potential,
     PotentialOut,
-    empty_patch_idx_view,
 )
 from kups.core.typing import (
     HasCell,
     HasCharges,
     HasPositionsAndSystemIndex,
-    IsState,
     ParticleId,
     SystemId,
 )
 from kups.potential.common.energy import (
-    PositionAndCell,
     PotentialFromEnergy,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     GraphConstructor,
@@ -161,110 +150,3 @@ def make_coulomb_vacuum_potential[
         patch_idx_view=patch_idx_view,
     )
     return potential
-
-
-class IsCoulombVacuumState(
-    IsState[IsCoulombGraphParticles, HasCell[Vacuum]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    Protocol,
-):
-    """Protocol for states providing all inputs for the Coulomb vacuum potential."""
-
-    @property
-    def coulomb_cutoff(self) -> Table[SystemId, Array]: ...
-
-
-@overload
-def make_coulomb_vacuum_from_state[State](
-    state: Lens[State, IsCoulombVacuumState],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_coulomb_vacuum_from_state[State](
-    state: Lens[State, IsCoulombVacuumState],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCoulombVacuumState],
-    probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, EmptyType, EmptyType, P]: ...
-
-
-@overload
-def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCoulombVacuumState],
-    probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
-
-
-def make_coulomb_vacuum_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
-) -> Any:
-    """Create a Coulomb vacuum potential from a typed state, optionally with incremental updates.
-
-    Convenience wrapper around
-    [make_coulomb_vacuum_potential][kups.potential.classical.coulomb.make_coulomb_vacuum_potential].
-    When ``probe`` is ``None``, creates a plain potential for states satisfying
-    [IsCoulombVacuumState][kups.potential.classical.coulomb.IsCoulombVacuumState].
-    When a ``probe`` is provided, wires incremental patch-based updates for the same state type.
-
-    Args:
-        state: Lens into the sub-state providing particles, systems, and neighbor list.
-        probe: Detects which particles and neighbor-list edges changed since the last step.
-            Pass ``None`` (default) for a non-incremental potential.
-        compute_position_and_cell_gradients: When ``True``, compute gradients
-            w.r.t. particle positions and lattice vectors.
-
-    Returns:
-        Configured Coulomb vacuum [Potential][kups.core.potential.Potential].
-    """
-    gradient_lens: Any = EMPTY_LENS
-    patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[CoulombVacuumInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-        patch_idx_view = position_and_cell_idx_view
-    if probe is not None:
-        patch_idx_view = patch_idx_view or empty_patch_idx_view
-    cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
-
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), cutoff_view(s))
-
-    return make_coulomb_vacuum_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        neighborlist_view,
-        probe,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-        patch_idx_view,
-    )

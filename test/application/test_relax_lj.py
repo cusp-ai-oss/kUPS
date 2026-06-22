@@ -11,6 +11,9 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+)
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import RelaxRunConfig
 from kups.application.relaxation.simulation import make_relax_propagator
@@ -22,7 +25,6 @@ from kups.application.simulations.relax_lj import (
     run,
 )
 from kups.core.lens import identity_lens
-from kups.potential.classical.lennard_jones import make_lennard_jones_from_state
 from kups.relaxation.config import make_optimizer
 
 

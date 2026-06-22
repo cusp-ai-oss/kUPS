@@ -26,13 +26,14 @@ from kups.application.md.data import (
     md_state_from_ase,
 )
 from kups.application.md.simulation import make_md_propagator, run_md
+from kups.application.potential.mliap.tojax import make_tojaxed_from_state
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
-from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_from_state
+from kups.potential.mliap.tojax import TojaxedMliap
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)

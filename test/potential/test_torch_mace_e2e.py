@@ -143,6 +143,7 @@ def test_kups_pipeline_matches_mace_calculator(tmp_path):
     import jax.numpy as jnp
     from mace.calculators import MACECalculator
 
+    from kups.application.potential.mliap.torch import make_torch_mliap_from_state
     from kups.application.relaxation.data import relax_state_from_ase
     from kups.application.simulations.relax_torch import RelaxTorchState
     from kups.core.cell import to_lower_triangular
@@ -150,7 +151,7 @@ def test_kups_pipeline_matches_mace_calculator(tmp_path):
     from kups.core.neighborlist import UniversalNeighborlistParameters
     from kups.core.result import as_result_function
     from kups.observables.stress import _stress_via_virial_theorem
-    from kups.potential.mliap.torch import load_mace, make_torch_mliap_from_state
+    from kups.potential.mliap.torch import load_mace
 
     model_path, _ = _resolve_or_create_mace_checkpoint(tmp_path)
 
