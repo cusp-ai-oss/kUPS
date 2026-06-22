@@ -11,8 +11,9 @@ from kups.application.md.data import (
     MdRunConfig,
     MDSystems,
 )
-from kups.application.md.logging import MDLoggedData
+from kups.application.md.logging import MDLoggedData, MDStepData
 from kups.application.utils.propagate import (
+    make_block_function,
     make_cycle_function,
     run_simulation_cycles,
     run_warmup_cycles,
@@ -139,11 +140,18 @@ def run_md[State: IsMdState](
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
-    logger = CompositeLogger(
-        TqdmLogger(config.num_steps),
-        HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps),
+    writer = HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps)
+    logger = CompositeLogger(TqdmLogger(config.num_steps), writer)
+    if config.block_size > 1:
+        # Fuse block_size steps into one dispatch, capturing every step's frame.
+        cycle_fn = make_block_function(
+            propagator, config.block_size, MDStepData.from_state
+        )
+    return run_simulation_cycles(
+        next(chain),
+        cycle_fn,
+        state,
+        config.num_steps,
+        logger,
+        block_size=config.block_size,
     )
-    state = run_simulation_cycles(
-        next(chain), cycle_fn, state, config.num_steps, logger
-    )
-    return state

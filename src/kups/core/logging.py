@@ -10,9 +10,15 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 
 import jax.profiler
+import jax.tree
 import tqdm.auto as tqdm
 
 from kups.core.lens import View
+
+
+def _block_len(frames: Any) -> int:
+    """Number of steps stacked along axis 0 of a captured block."""
+    return int(jax.tree.leaves(frames)[0].shape[0])
 
 
 class Logger[State](Protocol):
@@ -21,11 +27,15 @@ class Logger[State](Protocol):
     Implementations control their own filtering (step-based, time-based, etc.).
     State extraction must happen synchronously inside `log()` because JAX
     may donate the state buffer immediately after the call returns.
+
+    ``log_block`` is the batched counterpart: ``frames`` stacks a per-step capture on a
+    new leading axis, for steps ``[start, start + block size)``.
     """
 
     def __enter__(self) -> Self: ...
     def __exit__(self, *exc: object) -> None: ...
     def log(self, state: State, step: int) -> None: ...
+    def log_block(self, frames: Any, start: int) -> None: ...
 
 
 class CompositeLogger[State]:
@@ -51,6 +61,10 @@ class CompositeLogger[State]:
         for logger in self._loggers:
             logger.log(state, step)
 
+    def log_block(self, frames: Any, start: int) -> None:
+        for logger in self._loggers:
+            logger.log_block(frames, start)
+
 
 class NullLogger[State]:
     """No-op logger. Useful for warmup or when logging is disabled."""
@@ -62,6 +76,9 @@ class NullLogger[State]:
         pass
 
     def log(self, state: State, step: int) -> None:
+        pass
+
+    def log_block(self, frames: Any, start: int) -> None:
         pass
 
 
@@ -97,6 +114,11 @@ class TqdmLogger[State]:
             self._pbar.update(1)
             if self._postfix is not None:
                 self._pbar.set_postfix(self._postfix(state))
+
+    def log_block(self, frames: Any, start: int) -> None:
+        # Advance by the whole block; the postfix view needs full state, unavailable here.
+        if self._pbar is not None:
+            self._pbar.update(_block_len(frames))
 
 
 class ProfileLogger[State]:
@@ -139,6 +161,10 @@ class ProfileLogger[State]:
             self._start_trace()
         elif step == self._end_step - 1:
             self._stop_trace()
+
+    def log_block(self, frames: Any, start: int) -> None:
+        # Profiling is a per-step tool; no-op under blocking.
+        pass
 
     def _start_trace(self) -> None:
         if self._trace is not None:

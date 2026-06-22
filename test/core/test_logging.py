@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import tempfile
-from typing import Self
+from typing import Any, Self
 from unittest.mock import MagicMock, patch
+
+import jax.numpy as jnp
 
 from kups.core.lens import view
 from kups.core.logging import CompositeLogger, NullLogger, ProfileLogger, TqdmLogger
@@ -20,6 +22,7 @@ class CounterLogger:
         self.entered = False
         self.exited = False
         self.logs: list[tuple[str, int]] = []
+        self.blocks: list[tuple[Any, int]] = []
 
     def __enter__(self) -> Self:
         self.entered = True
@@ -31,6 +34,9 @@ class CounterLogger:
     def log(self, state: str, step: int) -> None:
         self.logs.append((state, step))
 
+    def log_block(self, frames: Any, start: int) -> None:
+        self.blocks.append((frames, start))
+
 
 class TestNullLogger:
     def test_context_manager(self) -> None:
@@ -38,6 +44,9 @@ class TestNullLogger:
         with logger as l:
             assert l is logger
             l.log("state", 0)
+
+    def test_log_block_is_noop(self) -> None:
+        NullLogger().log_block(jnp.zeros((2, 3)), 0)  # must not raise
 
 
 class TestCompositeLogger:
@@ -79,6 +88,13 @@ class TestCompositeLogger:
         assert counter.entered and counter.exited
         assert counter.logs == [("s", 5)]
 
+    def test_fans_out_log_block_calls(self) -> None:
+        a, b = CounterLogger(), CounterLogger()
+        frames = jnp.arange(3.0)
+        CompositeLogger(a, b).log_block(frames, 7)
+        assert a.blocks == [(frames, 7)]
+        assert b.blocks == [(frames, 7)]
+
 
 class TestTqdmLogger:
     def test_progress_bar_updates(self) -> None:
@@ -102,6 +118,15 @@ class TestTqdmLogger:
     def test_log_without_enter_is_noop(self) -> None:
         logger: TqdmLogger[str] = TqdmLogger(num_steps=5)
         logger.log("state", 0)
+
+    def test_log_block_advances_by_block_length(self) -> None:
+        logger: TqdmLogger[str] = TqdmLogger(num_steps=10)
+        with logger:
+            assert logger._pbar is not None
+            logger.log_block(jnp.zeros((4, 2)), 0)
+            assert logger._pbar.n == 4
+            logger.log_block(jnp.zeros((3, 2)), 4)
+            assert logger._pbar.n == 7
 
 
 class TestProfileLogger:
