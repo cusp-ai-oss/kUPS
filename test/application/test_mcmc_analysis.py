@@ -4,7 +4,10 @@
 """Tests for kups.application.mcmc.analysis."""
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
@@ -14,10 +17,13 @@ from kups.application.mcmc.analysis import (
     _analyze_single_system,
     _analyze_single_widom_system,
     analyze_mcmc,
+    analyze_mcmc_file,
 )
 from kups.application.mcmc.data import StressResult
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
+from kups.core.lens import view
+from kups.core.storage import EveryNStep, HDF5StorageWriter, Once, WriterGroupConfig
 from kups.core.typing import MotifId, SystemId
 from kups.core.utils.jax import dataclass as jax_dataclass
 from kups.core.utils.jax import no_post_init
@@ -196,3 +202,118 @@ class TestAnalyzeSingleWidomSystem:
         npt.assert_allclose(float(result.excess_chemical_potential.sem), 0.0, atol=1e-9)
         npt.assert_allclose(float(result.henry_coefficient.sem), 0.0, atol=1e-9)
         npt.assert_allclose(float(result.heat_of_adsorption.sem), 0.0, atol=1e-9)
+
+
+jax.tree_util.register_dataclass(_FixedData)
+jax.tree_util.register_dataclass(_SystemStepData)
+jax.tree_util.register_dataclass(_StepData)
+
+
+@jax_dataclass
+class _MCMCFileConfig:
+    """Two-group writer config mirroring the MCMC logging schema shape."""
+
+    fixed: WriterGroupConfig[Any, Any]
+    per_step: WriterGroupConfig[Any, Any]
+
+
+@jax_dataclass
+class _MCMCFileState:
+    """Per-step state the writer extracts ``fixed``/``per_step`` groups from."""
+
+    fixed: _FixedData
+    per_step: _StepData
+
+
+def test_analyze_mcmc_file_matches_in_memory(tmp_path: Path):
+    """analyze_mcmc_file (selective reads) matches analyze_mcmc on identical data."""
+    n_steps, sys0, sys1 = 60, SystemId(0), SystemId(1)
+    count_keys = ((sys0, MotifId(0)), (sys1, MotifId(0)))
+    base = jnp.array([1.0, 2.0])
+
+    def step(t: int) -> _StepData:
+        energy = base + 0.05 * jnp.sin(jnp.array([t, t + 1.0]))
+        counts = jnp.array([4.0, 6.0]) + 0.1 * jnp.cos(jnp.array([t, t + 2.0]))
+        stress = jnp.stack([jnp.eye(3) * (0.3 + 0.01 * t), jnp.eye(3) * 0.5])
+        zero = jnp.zeros_like(stress)
+        with no_post_init():
+            return _StepData(
+                particle_count=Table(count_keys, counts),
+                systems=Table(
+                    (sys0, sys1),
+                    _SystemStepData(
+                        potential_energy=energy,
+                        guest_stress=StressResult(stress, zero, zero),
+                    ),
+                ),
+            )
+
+    with no_post_init():
+        fixed = _FixedData(
+            systems=Table((sys0, sys1), _Temps(temperature=jnp.array([300.0, 400.0])))
+        )
+    # Build the in-memory comparison object from the stacked per-step trajectory.
+    steps = [step(t) for t in range(n_steps)]
+    with no_post_init():
+        per_step_full = _StepData(
+            particle_count=Table(
+                count_keys, jnp.stack([s.particle_count.data for s in steps], axis=0)
+            ),
+            systems=Table(
+                (sys0, sys1),
+                _SystemStepData(
+                    potential_energy=jnp.stack(
+                        [s.systems.data.potential_energy for s in steps], axis=0
+                    ),
+                    guest_stress=StressResult(
+                        jnp.stack(
+                            [s.systems.data.guest_stress.potential for s in steps],
+                            axis=0,
+                        ),
+                        jnp.stack(
+                            [
+                                s.systems.data.guest_stress.tail_correction
+                                for s in steps
+                            ],
+                            axis=0,
+                        ),
+                        jnp.stack(
+                            [s.systems.data.guest_stress.ideal_gas for s in steps],
+                            axis=0,
+                        ),
+                    ),
+                ),
+            ),
+        )
+    expected = analyze_mcmc(fixed, per_step_full, n_blocks=5)
+
+    config = _MCMCFileConfig(
+        fixed=WriterGroupConfig(view=view(lambda s: s.fixed), logging_frequency=Once()),
+        per_step=WriterGroupConfig(
+            view=view(lambda s: s.per_step), logging_frequency=EveryNStep(1)
+        ),
+    )
+    path = tmp_path / "mcmc.h5"
+    writer = HDF5StorageWriter(
+        path, config, _MCMCFileState(fixed, steps[0]), total_steps=n_steps
+    )
+    with writer:
+        for t in range(n_steps):
+            writer.log(_MCMCFileState(fixed, steps[t]), t)
+
+    result = analyze_mcmc_file(path, n_blocks=5)
+
+    assert result.keys() == expected.keys()
+    for sys_id in expected:
+        e, r = expected[sys_id], result[sys_id]
+        npt.assert_allclose(r.energy.mean, e.energy.mean, rtol=1e-6)
+        npt.assert_allclose(r.loading.mean, e.loading.mean, rtol=1e-6)
+        npt.assert_allclose(
+            r.heat_of_adsorption.mean, e.heat_of_adsorption.mean, rtol=1e-6
+        )
+        assert (r.stress is None) == (e.stress is None)
+        if e.stress is not None:
+            assert r.stress is not None
+            assert r.pressure is not None and e.pressure is not None
+            npt.assert_allclose(r.stress.mean, e.stress.mean, rtol=1e-6)
+            npt.assert_allclose(r.pressure.mean, e.pressure.mean, rtol=1e-6)

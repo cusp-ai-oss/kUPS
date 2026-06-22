@@ -63,6 +63,27 @@ def remove_center_of_mass_momentum(
     return momenta - masses[..., None] * com_velocity[system.indices]
 
 
+def system_kinetic_energy(
+    momenta: Array, masses: Array, system: Index[SystemId], *, remove_com: bool = False
+) -> Array:
+    """Total kinetic energy per system.
+
+    Args:
+        momenta: Particle momenta, shape ``(n_atoms, 3)``.
+        masses: Particle masses, shape ``(n_atoms,)``.
+        system: Per-atom system index.
+        remove_com: If ``True``, subtract each system's center-of-mass motion
+            first, yielding the internal (thermal) kinetic energy used for
+            temperature.
+
+    Returns:
+        Kinetic energy per system, shape ``(n_systems,)``.
+    """
+    if remove_com:
+        momenta = remove_center_of_mass_momentum(momenta, masses, system)
+    return system.sum_over(particle_kinetic_energy(momenta, masses)).data
+
+
 @vectorize(signature="(),(3,3),()->()")
 def instantaneous_pressure(
     kinetic_energy: Array,
