@@ -31,6 +31,16 @@ from kups.application.mcmc.data import (
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import IsWidomState, make_widom_logged_data
+from kups.application.potential.classical.blocking import (
+    make_blocking_spheres_from_state,
+)
+from kups.application.potential.classical.ewald import (
+    make_ewald_from_state,
+)
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+    make_lennard_jones_tail_correction_from_state,
+)
 from kups.application.simulations.mcmc_rigid import (
     EwaldConfig,
     LJConfig,
@@ -81,17 +91,13 @@ from kups.mcmc.probability import make_muvt_probability_ratio
 from kups.mcmc.widom import GhostProbe, WidomStatistics
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
-    make_blocking_spheres_from_state,
 )
 from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldParameters,
-    make_ewald_from_state,
 )
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
-    make_lennard_jones_from_state,
-    make_lennard_jones_tail_correction_from_state,
 )
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")

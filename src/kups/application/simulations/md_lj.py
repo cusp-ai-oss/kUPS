@@ -22,6 +22,9 @@ from kups.application.md.data import (
     md_state_from_ase,
 )
 from kups.application.md.simulation import make_md_propagator, run_md
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+)
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
@@ -30,7 +33,6 @@ from kups.core.utils.jax import dataclass, key_chain
 from kups.potential.classical.lennard_jones import (
     LennardJonesParameters,
     MixingRule,
-    make_lennard_jones_from_state,
 )
 
 jax.config.update("jax_enable_x64", True)

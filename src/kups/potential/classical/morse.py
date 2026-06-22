@@ -17,31 +17,25 @@ dissociation behavior. Near equilibrium, Morse approximates harmonic
 with force constant $k = 2 D \\alpha^2$.
 """
 
-from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, SimpleLens, View
+from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    EMPTY_LENS,
-    EmptyType,
     Energy,
     Potential,
     PotentialOut,
-    empty_patch_idx_view,
 )
 from kups.core.typing import (
-    HasCache,
     HasCell,
     HasPositionsAndLabels,
-    IsState,
     Label,
-    MaybeCached,
     ParticleId,
     SystemId,
 )
@@ -49,9 +43,7 @@ from kups.core.utils.jax import dataclass, field
 from kups.potential.classical.uff_utils import compute_uff_bond_length
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndCell,
     PotentialFromEnergy,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     GraphConstructor,
@@ -226,120 +218,6 @@ def make_morse_bond_potential[
         patch_idx_view=patch_idx_view,
     )
     return potential
-
-
-class IsMorseBondState[Params](
-    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
-):
-    """Protocol for states providing full-evaluation Morse bond inputs."""
-
-    @property
-    def bond_edge_indices(self) -> Index[ParticleId]: ...
-    @property
-    def morse_bond_parameters(self) -> Params: ...
-
-
-@overload
-def make_morse_bond_from_state[State](
-    state: Lens[State, IsMorseBondState[MaybeCached[MorseBondParameters, Any]]],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_morse_bond_from_state[State](
-    state: Lens[State, IsMorseBondState[MaybeCached[MorseBondParameters, Any]]],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_morse_bond_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsMorseBondState[
-            HasCache[MorseBondParameters, PotentialOut[EmptyType, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, P]: ...
-
-
-@overload
-def make_morse_bond_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsMorseBondState[
-            HasCache[MorseBondParameters, PotentialOut[PositionAndCell, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
-
-
-def make_morse_bond_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-) -> Any:
-    """Create a Morse bond potential from a typed state, optionally with incremental updates.
-
-    Args:
-        state: Lens into the sub-state providing particles, cell, bond indices,
-            and Morse bond parameters.
-        probe: If provided, detects particle changes and supplies the
-            before/after fixed-edge neighbor lists for incremental updates.
-            Those neighbor lists carry any required update capacity.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors (for forces / stress).
-
-    Returns:
-        Configured Morse bond [Potential][kups.core.potential.Potential].
-    """
-    gradient_lens: Any = EMPTY_LENS
-    patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[MorseBondInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-        patch_idx_view = position_and_cell_idx_view
-    param_view = state.focus(
-        lambda x: (
-            x.morse_bond_parameters.data
-            if isinstance(x.morse_bond_parameters, HasCache)
-            else x.morse_bond_parameters
-        )
-    )
-    cache_view = None
-    if probe is not None:
-        param_view = state.focus(lambda x: x.morse_bond_parameters.data)
-        cache_view = state.focus(lambda x: x.morse_bond_parameters.cache)
-        patch_idx_view = patch_idx_view or empty_patch_idx_view
-    return make_morse_bond_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.bond_edge_indices),
-        state.focus(lambda x: x.systems),
-        param_view,
-        probe,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-        patch_idx_view=patch_idx_view,
-        out_cache_lens=cache_view,
-    )
 
 
 if TYPE_CHECKING:

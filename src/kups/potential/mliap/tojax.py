@@ -11,7 +11,7 @@ systems with graph-based atomic representations.
 import json
 import zipfile
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypedDict, overload
+from typing import Any, Literal, Protocol, TypedDict
 
 import jax
 import jax.numpy as jnp
@@ -19,20 +19,16 @@ from jax import Array, export
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
-from kups.core.lens import Lens, SimpleLens, View
+from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
-    IsUniversalNeighborlistParams,
     NeighborList,
-    NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import IdPatch, Patch, WithPatch
-from kups.core.potential import EMPTY_LENS, EmptyType, Energy, Potential, PotentialOut
-from kups.core.typing import HasAtomicNumbers, HasCell, IsState, ParticleId, SystemId
+from kups.core.potential import Energy, PotentialOut
+from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp
 from kups.core.utils.msgpack import deserialize as msgpack_deserialize
-from kups.potential.common.energy import PositionAndCell, PotentialFromEnergy
+from kups.potential.common.energy import PotentialFromEnergy
 from kups.potential.common.graph import (
     FullGraphSumComposer,
     GraphConstructor,
@@ -220,77 +216,4 @@ def make_tojaxed_potential[State, Gradients, Hessians](
         hessian_idx_view=hessian_idx_view,
         cache_lens=out_cache_lens,
         patch_idx_view=patch_idx_view,
-    )
-
-
-class IsTojaxedState(
-    IsState[IsTojaxedParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    Protocol,
-):
-    """Protocol for states providing all inputs for the jaxified potential."""
-
-    @property
-    def jaxified_model(self) -> TojaxedMliap: ...
-
-
-@overload
-def make_tojaxed_from_state[State](
-    state: Lens[State, IsTojaxedState],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_tojaxed_from_state[State](
-    state: Lens[State, IsTojaxedState],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-def make_tojaxed_from_state(
-    state: Any,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
-) -> Any:
-    """Create a jaxified potential from a typed state.
-
-    Args:
-        state: Lens into the sub-state providing particles, cell,
-            neighbor list, and jaxified model.
-        compute_position_and_cell_gradients: When ``True``, compute
-            gradients w.r.t. particle positions and cell
-            (for forces / stress).
-
-    Returns:
-        Configured jaxified [Potential][kups.core.potential.Potential].
-    """
-    gradient_lens: Any = EMPTY_LENS
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[JaxifiedInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-    model_view = state.focus(lambda x: x.jaxified_model)
-
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_view(s).cutoff)
-
-    return make_tojaxed_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        neighborlist_view,
-        model_view,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
     )

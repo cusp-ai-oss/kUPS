@@ -18,6 +18,7 @@ from jax import Array
 from nanoargs import NanoArgs
 from pydantic import BaseModel
 
+from kups.application.potential.mliap.tojax import make_tojaxed_from_state
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxParticles,
@@ -36,7 +37,7 @@ from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_from_state
+from kups.potential.mliap.tojax import TojaxedMliap
 from kups.relaxation.config import make_optimizer
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")

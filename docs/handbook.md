@@ -90,7 +90,7 @@ potential = make_lennard_jones_from_state(
 propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 ```
 
-[make_lennard_jones_from_state][kups.potential.classical.lennard_jones.make_lennard_jones_from_state] reads particles, systems, and LJ parameters through the state lens. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
+[make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state] reads particles, systems, and LJ parameters through the state lens. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
 
 **Running.** The loop lives on the host side.
 

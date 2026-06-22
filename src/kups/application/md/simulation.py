@@ -11,6 +11,7 @@ from kups.application.md.data import (
     MdRunConfig,
     MDSystems,
 )
+from kups.application.md.integrators import make_md_step_from_state
 from kups.application.md.logging import MDLoggedData
 from kups.application.utils.propagate import (
     make_cycle_function,
@@ -40,7 +41,7 @@ from kups.core.propagator import (
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import IsState, ParticleId, SystemId
 from kups.core.utils.jax import key_chain
-from kups.md.integrators import Integrator, make_md_step_from_state
+from kups.md.integrators import Integrator
 
 
 class IsMdGradients(Protocol):

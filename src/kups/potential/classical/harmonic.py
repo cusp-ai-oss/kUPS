@@ -11,40 +11,32 @@ Bond potential: $U(r) = k(r - r_0)^2$
 Angle potential: $U(\\theta) = k(\\theta - \\theta_0)^2$
 """
 
-from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, SimpleLens, View
+from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    EMPTY_LENS,
-    EmptyType,
     Energy,
     Potential,
     PotentialOut,
-    empty_patch_idx_view,
 )
 from kups.core.typing import (
-    HasCache,
     HasCell,
     HasPositionsAndLabels,
-    IsState,
     Label,
-    MaybeCached,
     ParticleId,
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndCell,
     PotentialFromEnergy,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     GraphConstructor,
@@ -285,261 +277,6 @@ def make_harmonic_angle_potential[
         patch_idx_view=patch_idx_view,
     )
     return potential
-
-
-class HasBondedParticlesAndSystems(
-    IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
-): ...
-
-
-class IsHarmonicBondState[Params](HasBondedParticlesAndSystems, Protocol):
-    """Protocol for states providing full-evaluation harmonic bond inputs."""
-
-    @property
-    def harmonic_bond_indices(self) -> Index[ParticleId]: ...
-    @property
-    def harmonic_bond_parameters(self) -> Params: ...
-
-
-@overload
-def make_harmonic_bond_from_state[State](
-    state: Lens[
-        State,
-        IsHarmonicBondState[MaybeCached[HarmonicBondParameters, Any]],
-    ],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_harmonic_bond_from_state[State](
-    state: Lens[
-        State,
-        IsHarmonicBondState[MaybeCached[HarmonicBondParameters, Any]],
-    ],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_harmonic_bond_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsHarmonicBondState[
-            HasCache[HarmonicBondParameters, PotentialOut[EmptyType, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, P]: ...
-
-
-@overload
-def make_harmonic_bond_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsHarmonicBondState[
-            HasCache[HarmonicBondParameters, PotentialOut[PositionAndCell, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
-
-
-def make_harmonic_bond_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-) -> Any:
-    """Create a harmonic bond potential, optionally with incremental updates.
-
-    Convenience wrapper around
-    [make_harmonic_bond_potential][kups.potential.classical.harmonic.make_harmonic_bond_potential].
-    When `probe` is `None`, builds a plain potential from
-    [IsHarmonicBondState][kups.potential.classical.harmonic.IsHarmonicBondState].
-    When a `probe` is provided, builds an incrementally-updated potential from
-    a state with `HasCache`-wrapped parameters.
-
-    Args:
-        state: Lens into the sub-state providing particles, cell, bond indices,
-            and harmonic bond parameters.
-        probe: If provided, detects particle changes and supplies the
-            before/after fixed-edge neighbor lists for incremental updates.
-            Those neighbor lists carry any required update capacity.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors (for forces / stress).
-
-    Returns:
-        Configured harmonic bond [Potential][kups.core.potential.Potential].
-    """
-    gradient_lens: Any = EMPTY_LENS
-    patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[HarmonicBondInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-        patch_idx_view = position_and_cell_idx_view
-    param_view = state.focus(
-        lambda x: (
-            x.harmonic_bond_parameters.data
-            if isinstance(x.harmonic_bond_parameters, HasCache)
-            else x.harmonic_bond_parameters
-        )
-    )
-    cache_view = None
-    if probe is not None:
-        param_view = state.focus(lambda x: x.harmonic_bond_parameters.data)
-        cache_view = state.focus(lambda x: x.harmonic_bond_parameters.cache)
-        patch_idx_view = patch_idx_view or empty_patch_idx_view
-    return make_harmonic_bond_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.bond_edge_indices),
-        state.focus(lambda x: x.systems),
-        param_view,
-        probe,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-        patch_idx_view=patch_idx_view,
-        out_cache_lens=cache_view,
-    )
-
-
-class IsHarmonicAngleState[Params](HasBondedParticlesAndSystems, Protocol):
-    """Protocol for states providing full-evaluation harmonic angle inputs."""
-
-    @property
-    def harmonic_angle_indices(self) -> Index[ParticleId]: ...
-    @property
-    def harmonic_angle_parameters(self) -> Params: ...
-
-
-@overload
-def make_harmonic_angle_from_state[State](
-    state: Lens[
-        State,
-        IsHarmonicAngleState[MaybeCached[HarmonicAngleParameters, Any]],
-    ],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_harmonic_angle_from_state[State](
-    state: Lens[
-        State,
-        IsHarmonicAngleState[MaybeCached[HarmonicAngleParameters, Any]],
-    ],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_harmonic_angle_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsHarmonicAngleState[
-            HasCache[HarmonicAngleParameters, PotentialOut[EmptyType, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[State, EmptyType, EmptyType, P]: ...
-
-
-@overload
-def make_harmonic_angle_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsHarmonicAngleState[
-            HasCache[HarmonicAngleParameters, PotentialOut[PositionAndCell, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
-
-
-def make_harmonic_angle_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-) -> Any:
-    """Create a harmonic angle potential, optionally with incremental updates.
-
-    Convenience wrapper around
-    [make_harmonic_angle_potential][kups.potential.classical.harmonic.make_harmonic_angle_potential].
-    When `probe` is `None`, builds a plain potential from
-    [IsHarmonicAngleState][kups.potential.classical.harmonic.IsHarmonicAngleState].
-    When a `probe` is provided, builds an incrementally-updated potential from
-    a state with `HasCache`-wrapped parameters.
-
-    Args:
-        state: Lens into the sub-state providing particles, cell, angle indices,
-            and harmonic angle parameters.
-        probe: If provided, detects particle changes and supplies the
-            before/after fixed-edge neighbor lists for incremental updates.
-            Those neighbor lists carry any required update capacity.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors (for forces / stress).
-
-    Returns:
-        Configured harmonic angle [Potential][kups.core.potential.Potential].
-    """
-    gradient_lens: Any = EMPTY_LENS
-    patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[HarmonicAngleInput, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-        patch_idx_view = position_and_cell_idx_view
-    param_view = state.focus(
-        lambda x: (
-            x.harmonic_angle_parameters.data
-            if isinstance(x.harmonic_angle_parameters, HasCache)
-            else x.harmonic_angle_parameters
-        )
-    )
-    cache_view = None
-    if probe is not None:
-        param_view = state.focus(lambda x: x.harmonic_angle_parameters.data)
-        cache_view = state.focus(lambda x: x.harmonic_angle_parameters.cache)
-        patch_idx_view = patch_idx_view or empty_patch_idx_view
-    return make_harmonic_angle_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.angle_edge_indices),
-        state.focus(lambda x: x.systems),
-        param_view,
-        probe,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-        patch_idx_view=patch_idx_view,
-        out_cache_lens=cache_view,
-    )
 
 
 if TYPE_CHECKING:

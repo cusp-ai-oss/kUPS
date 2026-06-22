@@ -42,18 +42,13 @@ from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
-    IsUniversalNeighborlistParams,
     NeighborList,
-    NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
     HasAtomicNumbers,
     HasCell,
-    IsState,
     ParticleId,
     SystemId,
 )
@@ -70,11 +65,9 @@ from kups.potential.mliap.direct import make_direct_mliap_potential
 __all__ = [
     "AtomGraphInput",
     "IsTorchMliapParticles",
-    "IsTorchMliapState",
     "TorchMliap",
     "TorchMliapForward",
     "lattice_gradient_from_virial",
-    "make_torch_mliap_from_state",
     "make_torch_mliap_potential",
     "torch_mliap_model_fn",
 ]
@@ -465,67 +458,4 @@ def make_torch_mliap_potential(
         model_view=model_view,
         patch_idx_view=patch_idx_view,
         out_cache_lens=out_cache_lens,
-    )
-
-
-class IsTorchMliapState(
-    IsState[IsTorchMliapParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    Protocol,
-):
-    """Protocol for states providing all inputs for a torch MLFF potential."""
-
-    @property
-    def torch_mliap_model(self) -> TorchMliap: ...
-
-
-@overload
-def make_torch_mliap_from_state[State](
-    state: Lens[State, IsTorchMliapState],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
-) -> Potential[State, Array, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_torch_mliap_from_state[State](
-    state: Lens[State, IsTorchMliapState],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[IsTorchMliapState] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-def make_torch_mliap_from_state(
-    state: Any,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
-) -> Any:
-    """Create a torch MLFF potential from a typed state.
-
-    Args:
-        state: Lens into a sub-state providing particles, systems, neighbor
-            list, and torch MLFF model.
-        compute_position_and_cell_gradients: When ``True``, exposes both
-            position and cell gradients. Requires the underlying
-            ``TorchMliap.compute_cell_gradients`` to be ``True``.
-
-    Returns:
-        Configured torch MLFF ``Potential``.
-    """
-    model_view = state.focus(lambda x: x.torch_mliap_model)
-
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_view(s).cutoff)
-
-    return make_torch_mliap_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        neighborlist_view,
-        model_view,
-        compute_cell_gradients=compute_position_and_cell_gradients,
     )
