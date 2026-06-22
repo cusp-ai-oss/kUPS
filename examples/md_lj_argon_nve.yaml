@@ -16,11 +16,12 @@ md:
   integrator: "verlet"
   initialize_momenta: false
 
-lj:
-  tail_correction: true
+potential:
+  backend: lj
   cutoff: 10.0
   parameters:
     Ar: [3.405, 0.01032356174398622]  # (sigma [A], epsilon [eV])
   mixing_rule: "lorentz_berthelot"
 
-inp_file: host/argon_fcc.cif
+inp_files:
+  - host/argon_fcc.cif

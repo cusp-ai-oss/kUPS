@@ -17,17 +17,18 @@ from kups.application.potential.classical.lennard_jones import (
 )
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
 from kups.application.relaxation.analysis import analyze_relax_file
-from kups.application.relaxation.data import RelaxRunConfig
-from kups.application.relaxation.simulation import make_relax_propagator
-from kups.application.simulations.relax_lj import (
-    Config,
-    LjConfig,
-    RelaxLjState,
-    init_state,
-    run,
+from kups.application.relaxation.data import (
+    RelaxRunConfig,
+    RelaxState,
+    relax_state_from_ase,
 )
+from kups.application.relaxation.simulation import make_relax_propagator
+from kups.application.simulations.potentials import LjPotentialConfig
+from kups.application.simulations.relax import Config, run
 from kups.core.lens import identity_lens
+from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
+from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 
 
@@ -86,13 +87,12 @@ def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Con
             ],
             optimize_cell=optimize_cell,
         ),
-        lj=LjConfig(
-            tail_correction=False,
+        potential=LjPotentialConfig(
             cutoff=5.0,
             parameters={"Ar": (3.405, 0.010326)},  # (sigma [Å], epsilon [eV])
             mixing_rule="lorentz_berthelot",
         ),
-        inp_file=inp_file,
+        inp_files=(inp_file,),
     )
 
 
@@ -117,14 +117,28 @@ class TestRun:
 def _build_propagator(optimize_cell: bool):
     """Build an LJ relaxation propagator and its initial state."""
     config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
-    state_lens = identity_lens(RelaxLjState)
+    assert isinstance(config.potential, LjPotentialConfig)
+    lj = LennardJonesParameters.from_dict(
+        cutoff=config.potential.cutoff,
+        parameters=config.potential.parameters,
+        mixing_rule=config.potential.mixing_rule,
+    )
+    state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if optimize_cell else POSITIONS_ONLY
-    potential = make_lennard_jones_from_state(state_lens, gradient=gradient)
+    potential = make_lennard_jones_from_state(
+        state_lens, parameters=lj, gradient=gradient
+    )
     propagator, opt_init = make_relax_propagator(
         state_lens, potential, optimizer, gradient
     )
-    return propagator, init_state(config, opt_init)
+    particles, systems = relax_state_from_ase(config.inp_files[0])
+    nlp = UniversalNeighborlistParameters.estimate(
+        particles.data.system.counts, systems, lj.cutoff
+    )
+    opt_state = opt_init(particles, systems)
+    state = RelaxState(particles, systems, nlp, opt_state, jnp.array([0]))
+    return propagator, state
 
 
 class TestCellRelaxation:

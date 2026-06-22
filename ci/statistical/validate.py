@@ -34,7 +34,7 @@ DEFAULT_TOLERANCE_SIGMAS = 10.0
 N_BLOCKS = 5
 
 CLI_COMMANDS: dict[str, str] = {
-    "md": "kups_md_lj",
+    "md": "kups_md",
     "nvt": "kups_mcmc_rigid",
     "gcmc": "kups_mcmc_rigid",
 }

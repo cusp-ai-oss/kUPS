@@ -9,6 +9,7 @@ from pathlib import Path
 
 import ase
 import jax.numpy as jnp
+import optax
 from jax import Array
 from pydantic import BaseModel
 
@@ -21,6 +22,7 @@ from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
+from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.relaxation.config import TransformationConfig
@@ -66,6 +68,21 @@ class RelaxSystems:
     atoms-ride-the-cell coupling is already folded in by the filter pullback."""
     potential_energy: Array
     """Potential energy per system, shape (1,)."""
+
+
+@dataclass
+class RelaxState:
+    """Force-field-agnostic relaxation state.
+
+    The potential is built with its parameters at construction time (via the
+    adapters' ``parameters=``), so no force-field field lives on the state.
+    """
+
+    particles: Table[ParticleId, RelaxParticles]
+    systems: Table[SystemId, RelaxSystems]
+    neighborlist_params: UniversalNeighborlistParameters
+    opt_state: optax.OptState
+    step: Array
 
 
 class RelaxRunConfig(BaseModel):

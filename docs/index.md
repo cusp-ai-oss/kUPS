@@ -29,7 +29,7 @@ kups_mcmc_rigid mcmc_rigid.yaml
 
 ```sh
 cd examples
-kups_md_lj md_lj_argon_nvt.yaml
+kups_md md_lj_argon_nvt.yaml
 ```
 
 See the [examples/](https://github.com/cusp-ai-oss/kups/tree/main/examples) directory for more configurations.

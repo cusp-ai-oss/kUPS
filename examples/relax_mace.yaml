@@ -1,6 +1,8 @@
 inp_files:
   - host/RUBTAK.cif
-model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
+potential:
+  backend: tojax
+  model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
 run:
   out_file: relax_mace.h5
   max_steps: 1000
