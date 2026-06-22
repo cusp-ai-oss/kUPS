@@ -1,6 +1,6 @@
 inp_files:
   - host/RUBTAK.cif
-model:
+potential:
   backend: mace
   model_path: ./mace-mpa-0-medium.model
   device: cuda

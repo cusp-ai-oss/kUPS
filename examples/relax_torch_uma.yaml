@@ -1,6 +1,6 @@
 inp_files:
   - host/RUBTAK.cif
-model:
+potential:
   backend: uma
   model_path: ./uma-s-1p2.pt
   device: cuda

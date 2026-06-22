@@ -77,7 +77,7 @@ kups_mcmc_rigid mcmc_rigid.yaml
 
 ```bash
 cd examples
-kups_md_lj md_lj_argon_nvt.yaml
+kups_md md_lj_argon_nvt.yaml
 ```
 
 </details>

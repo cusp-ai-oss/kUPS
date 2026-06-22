@@ -1,6 +1,8 @@
 inp_files:
   - host/RUBTAK.cif
-model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
+potential:
+  backend: tojax
+  model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
 run:
   out_file: relax_orb.h5
   max_steps: 1000

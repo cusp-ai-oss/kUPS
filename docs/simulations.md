@@ -4,19 +4,20 @@
 
 ## Molecular Dynamics
 
-Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble.
+Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble with `kups_md`. The force field is selected by the `potential.backend` field:
 
-| Command | Force Field | Description |
-|---------|-------------|-------------|
-| `kups_md_lj` | Lennard-Jones | Classical pair potential with optional tail corrections and mixing rules |
-| `kups_md_mlff` | MACE, UMA, ORB | Machine-learned interatomic potentials loaded via [Tojax](https://github.com/cusp-ai-oss/tojax) |
+| `potential.backend` | Force Field | Description |
+|---------------------|-------------|-------------|
+| `lj` | Lennard-Jones | Classical pair potential with configurable mixing rules |
+| `tojax` | MACE, UMA, ORB | Machine-learned interatomic potentials loaded via [Tojax](https://github.com/cusp-ai-oss/tojax) |
+| `mace`, `uma` | MACE, UMA | Native PyTorch MLFFs bridged into JAX (see [Direct PyTorch Bridge](#direct-pytorch-bridge)) |
 
 ```sh
 cd examples
-kups_md_lj md_lj_argon_nvt.yaml
-kups_md_lj md_lj_argon_nve.yaml
-kups_md_mlff md_mace.yaml
-kups_md_mlff md_orb.yaml
+kups_md md_lj_argon_nvt.yaml
+kups_md md_lj_argon_nve.yaml
+kups_md md_mace.yaml
+kups_md md_orb.yaml
 ```
 
 **Ensembles and integrators:**
@@ -29,20 +30,20 @@ All integrators are built from the same composable propagator primitives describ
 
 ## Geometry Optimization
 
-Relax atomic positions (and optionally lattice vectors) to a local energy minimum.
+Relax atomic positions (and optionally lattice vectors) to a local energy minimum with `kups_relax`. The force field is selected by the `potential.backend` field:
 
-| Command | Force Field | Description |
-|---------|-------------|-------------|
-| `kups_relax_lj` | Lennard-Jones | Classical relaxation |
-| `kups_relax_mlff` | MACE, UMA, ORB | Machine-learned force field relaxation via JAX-exported models ([Tojax](https://github.com/cusp-ai-oss/tojax)) |
-| `kups_relax_torch` | MACE, UMA | Native PyTorch MLFFs (MACE checkpoints, Meta's UMA via [fairchem-core](https://github.com/facebookresearch/fairchem)) bridged into JAX |
+| `potential.backend` | Force Field | Description |
+|---------------------|-------------|-------------|
+| `lj` | Lennard-Jones | Classical relaxation |
+| `tojax` | MACE, UMA, ORB | Machine-learned force field relaxation via JAX-exported models ([Tojax](https://github.com/cusp-ai-oss/tojax)) |
+| `mace`, `uma` | MACE, UMA | Native PyTorch MLFFs (MACE checkpoints, Meta's UMA via [fairchem-core](https://github.com/facebookresearch/fairchem)) bridged into JAX |
 
 ```sh
 cd examples
-kups_relax_mlff relax_mace.yaml
-kups_relax_mlff relax_orb.yaml
-kups_relax_torch relax_torch_mace.yaml   # native MACE .model checkpoint
-kups_relax_torch relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
+kups_relax relax_mace.yaml
+kups_relax relax_orb.yaml
+kups_relax relax_torch_mace.yaml   # native MACE .model checkpoint
+kups_relax relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 ```
 
 **Optimizers:**
@@ -102,25 +103,24 @@ CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one rep
 
 These are re-exports (via [Tojax](https://github.com/cusp-ai-oss/tojax)), not retrainings — weights and architectures are unchanged from upstream.
 
-> Meta's [UMA](https://huggingface.co/facebook/UMA) model is not redistributed by CuspAI. Two routes to run it with <em>k</em>UPS: (1) download the PyTorch checkpoint from Hugging Face and run it natively via [`kups_relax_torch`](#direct-pytorch-bridge) (`backend: uma`); or (2) port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.md#tojax-machine-learned-force-fields) and run via `kups_relax_mlff`.
+> Meta's [UMA](https://huggingface.co/facebook/UMA) model is not redistributed by CuspAI. Two routes to run it with <em>k</em>UPS: (1) download the PyTorch checkpoint from Hugging Face and run it natively via [`kups_relax`](#direct-pytorch-bridge) (`potential.backend: uma`); or (2) port it to JAX using [Tojax](https://github.com/cusp-ai-oss/tojax) following the instructions [here](notebooks/potentials.md#tojax-machine-learned-force-fields) and run via `kups_relax` (`potential.backend: tojax`).
 
-Any `model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (fetched via `huggingface_hub.hf_hub_download` and cached on first use) or a local filesystem path to a Tojax-exported `.zip`:
+Any `potential.model_path:` field accepts either an `hf://<owner>/<repo>/<filename>` URI (fetched via `huggingface_hub.hf_hub_download` and cached on first use) or a local filesystem path to a Tojax-exported `.zip`:
 
 ```yaml
-# Remote (HF Hub, requires pip install kups[hf])
-model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
-model_path: hf://CuspAI/kUPS-orb-jax/orb_v3_conservative_inf_omat.zip
-
-# Local (anything readable by TojaxedMliap.from_zip_file)
-model_path: ./my_model.zip
-model_path: /absolute/path/to/my_model.zip
+potential:
+  backend: tojax
+  # Remote (HF Hub, requires pip install kups[hf])
+  model_path: hf://CuspAI/kUPS-mace-jax/mace-mpa-0-medium_32.zip
+  # ...or local (anything readable by TojaxedMliap.from_zip_file)
+  # model_path: ./my_model.zip
 ```
 
 The `hf://` scheme requires the optional `huggingface_hub` dependency: `pip install kups[hf]`. Local paths work without it.
 
 ## Direct PyTorch Bridge
 
-`kups_relax_torch` loads native PyTorch MLFF checkpoints (no Tojax conversion) and runs them from JAX via a [DLPack-based bridge](https://pytorch.org/docs/stable/dlpack.html). Functionality across the two paths is identical (forces, stress, optimisation, HDF5 trajectory output) — the differences are about *how* the model is plumbed in.
+The `mace` and `uma` backends (for both `kups_relax` and `kups_md`) load native PyTorch MLFF checkpoints (no Tojax conversion) and run them from JAX via a [DLPack-based bridge](https://pytorch.org/docs/stable/dlpack.html). Functionality across the two paths is identical (forces, stress, optimisation, HDF5 trajectory output) — the differences are about *how* the model is plumbed in.
 
 **Pros**
 
@@ -137,11 +137,11 @@ The `hf://` scheme requires the optional `huggingface_hub` dependency: `pip inst
 - **Extra runtime dependency** — you install the model's own PyTorch package (`mace-torch`, `fairchem-core`, …) alongside kUPS.
 - **Python-version constraints** from upstream propagate (e.g. `fairchem-core>=2.0` caps at Python ≤3.13).
 
-**Backends** are selected via a discriminated union under `model:` in the YAML config:
+**Backends** are selected via the discriminated `potential:` union in the YAML config:
 
 ```yaml
 # MACE — native .model checkpoint
-model:
+potential:
   backend: mace
   model_path: ./mace-mpa-0-medium.model
   device: cuda
@@ -150,7 +150,7 @@ model:
 
 ```yaml
 # UMA — native .pt checkpoint via fairchem-core
-model:
+potential:
   backend: uma
   model_path: ./uma-s-1p2.pt
   device: cuda

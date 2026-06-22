@@ -1,4 +1,5 @@
-inp_file: ../host/argon_fcc.cif
+inp_files:
+  - ../host/argon_fcc.cif
 
 run:
   out_file: ../../md_npt_lj_argon_ref.h5
@@ -20,8 +21,8 @@ md:
   integrator: csvr_npt
   initialize_momenta: true
 
-lj:
-  tail_correction: false
+potential:
+  backend: lj
   cutoff: 10.0
   mixing_rule: lorentz_berthelot
   parameters:

@@ -1,19 +1,26 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""MLFF molecular dynamics simulation entry point."""
+"""Unified molecular-dynamics entry point.
+
+The force field is selected by the ``potential`` config (LJ / tojax-MLFF /
+torch-MLFF). The potential is built directly with its parameters, so a single
+force-field-agnostic ``MdState`` and driver serve every backend.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
+
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")  # for torch backends
 
 import jax
 import jax.numpy as jnp
 import rich
 import rich.logging
-from jax import Array
 from nanoargs import NanoArgs
 from pydantic import BaseModel
 
@@ -22,19 +29,23 @@ from kups.application.md.data import (
     MdParameters,
     MDParticles,
     MdRunConfig,
+    MdState,
     MDSystems,
     md_state_from_ase,
 )
 from kups.application.md.simulation import make_md_propagator, run_md
 from kups.application.potential.filter import POSITIONS_AND_CELL
-from kups.application.potential.mliap.tojax import make_tojaxed_from_state
-from kups.application.utils.path import get_model_path
+from kups.application.simulations.potentials import (
+    MaceConfig,
+    PotentialConfig,
+    TojaxPotentialConfig,
+    UmaConfig,
+)
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import dataclass, key_chain
-from kups.potential.mliap.tojax import TojaxedMliap
+from kups.core.utils.jax import key_chain
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -48,74 +59,48 @@ logging.basicConfig(
 
 
 class Config(BaseModel):
-    """Top-level configuration for MLFF MD simulations."""
+    """Top-level configuration for a molecular-dynamics run."""
 
     run: MdRunConfig
     md: MdParameters
+    potential: PotentialConfig
     inp_files: tuple[str | Path, ...]
-    model_path: str | Path
 
 
-@dataclass
-class MlffMdState:
-    """Simulation state for MLFF MD."""
+def run(config: Config) -> None:
+    """Run a molecular-dynamics simulation for the configured force field."""
+    seed = config.run.seed or time.time_ns()
+    chain = key_chain(jax.random.key(seed))
+    state_lens = identity_lens(MdState)
+    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
+    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
-    particles: Table[ParticleId, MDParticles]
-    systems: Table[SystemId, MDSystems]
-    neighborlist_params: UniversalNeighborlistParameters
-    step: Array
-    jaxified_model: TojaxedMliap
-
-
-def init_state(key: Array, config: Config) -> MlffMdState:
-    """Initialise an MLFF MD state from configuration.
-
-    Args:
-        key: JAX PRNG key for momenta initialisation.
-        config: Simulation configuration.
-
-    Returns:
-        Fully constructed MLFF MD state.
-    """
-    model_path = get_model_path(config.model_path)
-    jaxified_model = TojaxedMliap.from_zip_file(model_path)
-    mb_key = key if config.md.initialize_momenta else None
+    mb_key = next(chain) if config.md.initialize_momenta else None
     all_particles: list[Table[ParticleId, MDParticles]] = []
     all_systems: list[Table[SystemId, MDSystems]] = []
     for inp_file in config.inp_files:
+        logging.info(f"Loading structure from {inp_file}")
         particles_i, systems_i = md_state_from_ase(inp_file, config.md, key=mb_key)
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
+
+    base = 1 if isinstance(config.potential, TojaxPotentialConfig) else 2
+    multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
     neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, jaxified_model.cutoff, base=1
+        particles.data.system.counts, systems, cutoff, base=base, multiplier=multiplier
     )
-    return MlffMdState(
+    state = MdState(
         particles=particles,
         systems=systems,
         neighborlist_params=neighborlist_params,
-        jaxified_model=jaxified_model,
         step=jnp.array([0]),
     )
-
-
-def run(config: Config) -> None:
-    """Run an MLFF MD simulation from the given configuration.
-
-    Args:
-        config: Simulation configuration.
-    """
-    seed = config.run.seed or time.time_ns()
-    chain = key_chain(jax.random.key(seed))
-    state = init_state(next(chain), config)
-    state_lens = identity_lens(MlffMdState)
-    potential = make_tojaxed_from_state(state_lens, gradient=POSITIONS_AND_CELL)
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
-    state = run_md(next(chain), propagator, state, config.run)
+    run_md(next(chain), propagator, state, config.run)
 
 
 def main() -> None:
-    """CLI entry point for MLFF MD simulations."""
+    """CLI entry point for molecular-dynamics simulations."""
     cli = NanoArgs(Config)
     config = cli.parse()
     rich.print(config)

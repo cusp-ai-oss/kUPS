@@ -51,44 +51,43 @@ The chapters are organized in five pairs. Tables and Lenses are prerequisite voc
 
 MD, MC, relaxation, GCMC, and ML-potential dynamics are all assembled from these ten pieces. A GCMC step, for example, runs translation, rotation, and exchange as propagators (ch. 4) that construct patches (ch. 6) scored by a cached potential (ch. 8) over a fixed-capacity buffered table (ch. 1), with per-system acceptance and step-width tuning handled by the Monte Carlo machinery (ch. 9). Same primitives, different composition.
 
-## A worked example: `md_lj`
+## A worked example: `md`
 
-[kups.application.simulations.md_lj][kups.application.simulations.md_lj] (CLI: `kups_md_lj`) is the shortest complete simulation in the repo: about a hundred lines, with a ten-line `run`.
+[kups.application.simulations.md][kups.application.simulations.md] (CLI: `kups_md`) is the shortest complete simulation in the repo: about a hundred lines, with a ten-line `run`. A discriminated `potential` config selects the force field, so one state and one driver serve Lennard-Jones and every MLFF backend.
 
 **State definition.** The user picks the fields; nothing inherits from a framework base.
 
 ```python
 @dataclass
-class LjMdState:
+class MdState:
     particles: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
     step: Array
-    lj_parameters: LennardJonesParameters
 ```
 
-The state structurally satisfies `IsMdState`. Both tables carry relational data via typed foreign-key indices. `neighborlist_params` is resized by the retry loop on overflow.
+The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `neighborlist_params` is resized by the retry loop on overflow.
+
+**Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens and the gradient filter; factories fan the lens out to the fields they need.
+
+```python
+state_lens = identity_lens(MdState)
+potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
+propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+```
+
+For the LJ backend, `build` delegates to [make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state], wiring particles, systems, and the LJ parameters through the state lens and returning the cutoff used to size the neighbor list. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
 
 **State construction.** Read a standard file, build the two tables, pick initial capacities.
 
 ```python
-particles, systems = md_state_from_ase(config.inp_file, config.md, key=mb_key)
+particles, systems = md_state_from_ase(config.inp_files[0], config.md, key=mb_key)
 neighborlist_params = UniversalNeighborlistParameters.estimate(
-    particles.data.system.counts, systems, lj_params.cutoff
+    particles.data.system.counts, systems, cutoff
 )
 ```
 
 `md_state_from_ase` accepts xyz, cif, or lammps input. [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] guesses initial capacities from geometry; it does not have to be exact, because warmup grows what is too small.
-
-**Wiring potential and propagator.** Factories take a single state lens and fan it out to the fields they need.
-
-```python
-state_lens = identity_lens(LjMdState)
-potential = make_lennard_jones_from_state(state_lens, gradient=POSITIONS_AND_CELL)
-propagator = make_md_propagator(state_lens, config.md.integrator, potential)
-```
-
-[make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state] reads particles, systems, and LJ parameters through the state lens. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
 
 **Running.** The loop lives on the host side.
 

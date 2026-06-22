@@ -22,6 +22,7 @@ from kups.application.utils.particles import (
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
+from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
@@ -208,6 +209,20 @@ class MDSystems:
     cell_gradients: Cell[Any]
     cell_momentum: Array
     potential_energy: Array
+
+
+@dataclass
+class MdState:
+    """Force-field-agnostic molecular-dynamics state.
+
+    The potential is built with its parameters at construction time (via the
+    adapters' ``parameters=``), so no force-field field lives on the state.
+    """
+
+    particles: Table[ParticleId, MDParticles]
+    systems: Table[SystemId, MDSystems]
+    neighborlist_params: UniversalNeighborlistParameters
+    step: Array
 
 
 class MdRunConfig(BaseModel):
