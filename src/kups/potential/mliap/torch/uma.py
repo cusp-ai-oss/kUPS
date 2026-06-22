@@ -14,7 +14,8 @@ MOFs/direct-air-capture, ``"omc"`` for molecular crystals).
 
 Example:
     ```python
-    from kups.potential.mliap.torch import load_uma, make_torch_mliap_from_state
+    from kups.application.potential.mliap.torch import make_torch_mliap_from_state
+    from kups.potential.mliap.torch import load_uma
 
     model = load_uma(
         "uma-s-1.2.pt", task_name="omat", compute_cell_gradients=True,

@@ -306,11 +306,11 @@ class TestUniversalInterfaceAPI:
     """Smoke checks for the universal interface surface."""
 
     def test_imports(self):
+        from kups.application.potential.mliap.torch import make_torch_mliap_from_state
         from kups.potential.mliap.torch import (
             AtomGraphInput,
             TorchMliap,
             lattice_gradient_from_virial,
-            make_torch_mliap_from_state,
             make_torch_mliap_potential,
             torch_mliap_model_fn,
         )

@@ -19,6 +19,7 @@ from jax import Array
 from nanoargs import NanoArgs
 from pydantic import BaseModel, Field
 
+from kups.application.potential.mliap.torch import make_torch_mliap_from_state
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxParticles,
@@ -43,7 +44,6 @@ from kups.potential.mliap.torch import (
     UMATaskName,
     load_mace,
     load_uma,
-    make_torch_mliap_from_state,
 )
 from kups.relaxation.config import make_optimizer
 

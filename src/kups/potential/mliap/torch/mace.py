@@ -11,7 +11,8 @@ loader returning a [TorchMliap][kups.potential.mliap.torch.interface.TorchMliap]
 
 Example:
     ```python
-    from kups.potential.mliap.torch import load_mace, make_torch_mliap_from_state
+    from kups.application.potential.mliap.torch import make_torch_mliap_from_state
+    from kups.potential.mliap.torch import load_mace
 
     model = load_mace("mace.model", compute_cell_gradients=True)
     potential = make_torch_mliap_from_state(

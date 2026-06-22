@@ -22,7 +22,6 @@ from typing import (
     Protocol,
     assert_never,
     cast,
-    overload,
     override,
     runtime_checkable,
 )
@@ -32,45 +31,33 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
-from kups.core.lens import Lens, SimpleLens, View, identity_lens
+from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     EmptyNeighborList,
-    IsAdaptiveCutoffNeighborListState,
-    IsUniversalNeighborlistParams,
     NeighborList,
-    NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    EMPTY_LENS,
-    EmptyType,
     Energy,
     Potential,
     PotentialOut,
-    empty_patch_idx_view,
 )
 from kups.core.propagator import StateProperty
 from kups.core.typing import (
-    HasCache,
     HasCell,
     HasExclusionIndex,
     HasInclusionIndex,
     HasLabels,
     HasPositions,
     HasSystemIndex,
-    IsState,
     Label,
-    MaybeCached,
     ParticleId,
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, jit
 from kups.potential.common.energy import (
     EnergyFunction,
-    PositionAndCell,
     PotentialFromEnergy,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import (
     FullGraphSumComposer,
@@ -400,143 +387,6 @@ def make_lennard_jones_potential[
     )
 
 
-class HasLJParticlesAndSystems(
-    IsState[IsLJGraphParticles, HasCell[AnyPeriodicity]], Protocol
-): ...
-
-
-class IsLJState[Params](
-    HasLJParticlesAndSystems,
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    Protocol,
-):
-    """State with particles, systems, neighbor list, and LJ parameters."""
-
-    @property
-    def lj_parameters(self) -> Params: ...
-
-
-@overload
-def make_lennard_jones_from_state[State](
-    state: Lens[State, IsLJState[MaybeCached[LennardJonesParameters, Any]]],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[MaybeCached[LennardJonesParameters, Any]]
-    ] = ...,
-) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_lennard_jones_from_state[State](
-    state: Lens[State, IsLJState[MaybeCached[LennardJonesParameters, Any]]],
-    probe: None = None,
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[MaybeCached[LennardJonesParameters, Any]]
-    ] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_lennard_jones_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]]
-    ] = ...,
-) -> Potential[State, EmptyType, EmptyType, P]: ...
-
-
-@overload
-def make_lennard_jones_from_state[State, P: Patch[Any]](
-    state: Lens[
-        State,
-        IsLJState[
-            HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
-        ],
-    ],
-    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-    neighborlist_factory: NeighborListFactory[
-        IsLJState[
-            HasCache[LennardJonesParameters, PotentialOut[PositionAndCell, EmptyType]]
-        ]
-    ] = ...,
-) -> Potential[State, PositionAndCell, EmptyType, P]: ...
-
-
-def make_lennard_jones_from_state(
-    state: Any,
-    probe: Any = None,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
-) -> Any:
-    """Create a LJ potential from a typed state, optionally with incremental updates.
-
-    Args:
-        state: Lens into the sub-state providing particles, systems, neighbor list,
-            and LJ parameters.
-        probe: Detects which particles changed since the last step.
-            ``None`` for full recomputation.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors. Gradient type becomes ``PositionAndCell``.
-
-    Returns:
-        Configured Lennard-Jones potential.
-    """
-    gradient_lens: Any = EMPTY_LENS
-    patch_idx_view: Any = None
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[LJRadiusInp, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-        patch_idx_view = position_and_cell_idx_view
-    param_view = state.focus(
-        lambda x: (
-            x.lj_parameters.data
-            if isinstance(x.lj_parameters, HasCache)
-            else x.lj_parameters
-        )
-    )
-    cache_view = None
-    if probe is not None:
-        param_view = state.focus(lambda x: x.lj_parameters.data)
-        cache_view = state.focus(lambda x: x.lj_parameters.cache)
-        patch_idx_view = patch_idx_view or empty_patch_idx_view
-
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), param_view(s).cutoff)
-
-    return make_lennard_jones_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        neighborlist_view,
-        param_view,
-        probe,
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-        patch_idx_view,
-        cache_view,
-    )
-
-
 type PCLJInp = GraphPotentialInput[
     PairTailCorrectedLennardJonesParameters,
     IsLJGraphParticles,
@@ -622,80 +472,6 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
     )
 
 
-type IsGlobalTailCorrectedIsLJState = IsLJState[
-    MaybeCached[
-        GlobalTailCorrectedLennardJonesParameters,
-        PotentialOut[Any, Any],
-    ]
-]
-
-
-@overload
-def make_lennard_jones_tail_correction_from_state[
-    InState,
-    State: IsGlobalTailCorrectedIsLJState,
-](
-    state: Lens[InState, State],
-    *,
-    compute_position_and_cell_gradients: Literal[False] = ...,
-) -> Potential[InState, EmptyType, EmptyType, Patch[Any]]: ...
-
-
-@overload
-def make_lennard_jones_tail_correction_from_state[
-    InState,
-    State: IsGlobalTailCorrectedIsLJState,
-](
-    state: Lens[InState, State],
-    *,
-    compute_position_and_cell_gradients: Literal[True],
-) -> Potential[InState, PositionAndCell, EmptyType, Patch[Any]]: ...
-
-
-def make_lennard_jones_tail_correction_from_state(
-    state: Any,
-    *,
-    compute_position_and_cell_gradients: bool = False,
-) -> Any:
-    """Create a global tail-corrected LJ potential from a typed state.
-
-    Args:
-        state: Lens into the sub-state providing particles, systems, and
-            LJ tail correction parameters.
-        compute_position_and_cell_gradients: When ``True``, the returned
-            potential computes gradients w.r.t. particle positions and lattice
-            vectors. Gradient type becomes ``PositionAndCell``.
-
-    Returns:
-        Configured tail-corrected Lennard-Jones potential.
-    """
-    gradient_lens: Any = EMPTY_LENS
-    if compute_position_and_cell_gradients:
-        gradient_lens = SimpleLens[GCLJInp, PositionAndCell](
-            lambda x: PositionAndCell(
-                x.graph.particles.map_data(lambda p: p.positions),
-                x.graph.systems.map_data(lambda s: s.cell),
-            )
-        )
-    return make_global_lennard_jones_tail_correction_potential(
-        state.focus(lambda x: x.particles),
-        state.focus(lambda x: x.systems),
-        cast(
-            Any,
-            state.focus(
-                lambda x: (
-                    x.lj_parameters.data
-                    if isinstance(x.lj_parameters, HasCache)
-                    else x.lj_parameters
-                )
-            ),
-        ),
-        gradient_lens,
-        EMPTY_LENS,
-        EMPTY_LENS,
-    )
-
-
 def make_global_lennard_jones_tail_correction_pressure[State](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
@@ -718,27 +494,6 @@ def make_global_lennard_jones_tail_correction_pressure[State](
         ).data
 
     return pressure
-
-
-def global_lennard_jones_tail_correction_pressure_from_state(
-    key: Array, state: IsGlobalTailCorrectedIsLJState
-) -> Table[SystemId, Array]:
-    """Create long-range pressure correction from a typed state."""
-    state_lens = identity_lens(type(state))
-    return make_global_lennard_jones_tail_correction_pressure(
-        state_lens.focus(lambda x: x.particles),
-        state_lens.focus(lambda x: x.systems),
-        cast(
-            Any,
-            state_lens.focus(
-                lambda x: (
-                    x.lj_parameters.data
-                    if isinstance(x.lj_parameters, HasCache)
-                    else x.lj_parameters
-                )
-            ),
-        ),
-    )(key, state)
 
 
 if TYPE_CHECKING:

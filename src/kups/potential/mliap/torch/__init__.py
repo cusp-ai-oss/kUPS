@@ -11,7 +11,8 @@ extraction, padding, and kUPS ``Potential`` wiring is shared.
 
 Example:
     ```python
-    from kups.potential.mliap.torch import load_mace, make_torch_mliap_from_state
+    from kups.application.potential.mliap.torch import make_torch_mliap_from_state
+    from kups.potential.mliap.torch import load_mace
 
     model = load_mace("mace.model", compute_cell_gradients=True)
     potential = make_torch_mliap_from_state(
@@ -25,11 +26,9 @@ Requires the ``torch_dev`` dependency group: ``uv sync --group torch_dev``.
 from kups.potential.mliap.torch.interface import (
     AtomGraphInput,
     IsTorchMliapParticles,
-    IsTorchMliapState,
     TorchMliap,
     TorchMliapForward,
     lattice_gradient_from_virial,
-    make_torch_mliap_from_state,
     make_torch_mliap_potential,
     torch_mliap_model_fn,
 )
@@ -44,7 +43,6 @@ from kups.potential.mliap.torch.uma import (
 __all__ = [
     "AtomGraphInput",
     "IsTorchMliapParticles",
-    "IsTorchMliapState",
     "MACEModule",
     "TorchMliap",
     "TorchMliapForward",
@@ -54,7 +52,6 @@ __all__ = [
     "lattice_gradient_from_virial",
     "load_mace",
     "load_uma",
-    "make_torch_mliap_from_state",
     "make_torch_mliap_potential",
     "torch_mliap_model_fn",
 ]

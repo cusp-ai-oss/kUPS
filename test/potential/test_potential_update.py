@@ -16,6 +16,19 @@ import jax.numpy as jnp
 import pytest
 from jax import Array
 
+from kups.application.potential.classical.cosine_angle import (
+    make_cosine_angle_from_state,
+)
+from kups.application.potential.classical.dihedral import make_dihedral_from_state
+from kups.application.potential.classical.harmonic import (
+    make_harmonic_angle_from_state,
+    make_harmonic_bond_from_state,
+)
+from kups.application.potential.classical.inversion import make_inversion_from_state
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+)
+from kups.application.potential.classical.morse import make_morse_bond_from_state
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import WithCache, WithIndices
@@ -35,32 +48,15 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass
-from kups.potential.classical.cosine_angle import (
-    CosineAngleParameters,
-    make_cosine_angle_from_state,
-)
-from kups.potential.classical.dihedral import (
-    DihedralParameters,
-    make_dihedral_from_state,
-)
+from kups.potential.classical.cosine_angle import CosineAngleParameters
+from kups.potential.classical.dihedral import DihedralParameters
 from kups.potential.classical.harmonic import (
     HarmonicAngleParameters,
     HarmonicBondParameters,
-    make_harmonic_angle_from_state,
-    make_harmonic_bond_from_state,
 )
-from kups.potential.classical.inversion import (
-    InversionParameters,
-    make_inversion_from_state,
-)
-from kups.potential.classical.lennard_jones import (
-    LennardJonesParameters,
-    make_lennard_jones_from_state,
-)
-from kups.potential.classical.morse import (
-    MorseBondParameters,
-    make_morse_bond_from_state,
-)
+from kups.potential.classical.inversion import InversionParameters
+from kups.potential.classical.lennard_jones import LennardJonesParameters
+from kups.potential.classical.morse import MorseBondParameters
 
 # ---------------------------------------------------------------------------
 # Shared dataclasses
@@ -102,6 +98,7 @@ class State:
     particles: Table[ParticleId, ParticleData]
     systems: Table[SystemId, SystemData]
     lj_parameters: WithCache[LennardJonesParameters, EmptyCache]
+    lj_cache: EmptyCache
     bond_edge_indices: Index[ParticleId]
     harmonic_bond_parameters: WithCache[HarmonicBondParameters, EmptyCache]
     angle_edge_indices: Index[ParticleId]
@@ -268,6 +265,7 @@ def _make_state(positions: Array | None = None) -> State:
         particles=c.particles,
         systems=c.systems,
         lj_parameters=WithCache(c.lj, ec),
+        lj_cache=ec,
         bond_edge_indices=c.bond_edge_indices,
         harmonic_bond_parameters=WithCache(c.hb, ec),
         angle_edge_indices=c.angle_edge_indices,
@@ -661,4 +659,59 @@ class TestFromStateWithUpdates:
 
             assert jnp.allclose(e_incr, e_full, atol=1e-6), (
                 f"{pot.name}-{spec.name}: incremental {e_incr} != full {e_full}"
+            )
+
+
+class TestLJConstantParameters:
+    """LJ built with constant ``parameters=`` matches the state-based build."""
+
+    def test_full_matches_state_based(
+        self,
+        state: State,
+        state_lens: Lens[State, State],
+    ):
+        params = state.lj_parameters.data
+        state_pot = make_lennard_jones_from_state(
+            state_lens, neighborlist_factory=_test_nl_factory
+        )
+        const_pot = make_lennard_jones_from_state(
+            state_lens, parameters=params, neighborlist_factory=_test_nl_factory
+        )
+        e_state = state_pot(state).data.total_energies.data
+        e_const = const_pot(state).data.total_energies.data
+        assert jnp.allclose(e_state, e_const)
+
+    def test_incremental_matches_full(
+        self,
+        state: State,
+        state_lens: Lens[State, State],
+    ):
+        params = state.lj_parameters.data
+        basic_pot = make_lennard_jones_from_state(
+            state_lens, neighborlist_factory=_test_nl_factory
+        )
+        pot_cfg = PotentialConfig("lennard_jones", None, None, None)
+
+        for spec in (s for s in _PERTURBATIONS if s.edge_updates is None):
+            probe = _build_probe(pot_cfg, spec)
+            updates_pot = make_lennard_jones_from_state(
+                state_lens,
+                probe,
+                parameters=params,
+                neighborlist_factory=_test_nl_factory,
+            )
+
+            out_full = updates_pot(state, patch=None)
+            state_cached: State = out_full.patch(
+                state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
+            )
+
+            pos_patch = _make_patch(spec)
+            e_incr = updates_pot(state_cached, patch=pos_patch).data.total_energies.data
+
+            ref_state = _make_reference_state(state_cached, spec, pos_patch)
+            e_full = basic_pot(ref_state).data.total_energies.data
+
+            assert jnp.allclose(e_incr, e_full, atol=1e-6), (
+                f"lennard_jones-{spec.name}: incremental {e_incr} != full {e_full}"
             )
