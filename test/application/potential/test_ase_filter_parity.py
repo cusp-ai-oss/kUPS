@@ -32,8 +32,7 @@ from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_AND_CELL
-from kups.application.relaxation.data import relax_state_from_ase
-from kups.application.simulations.relax_lj import RelaxLjState
+from kups.application.relaxation.data import RelaxState, relax_state_from_ase
 from kups.core.cell import DeformedFrame, LogTriclinicFrame, TriclinicFrame
 from kups.core.lens import NestedLens, SimpleLens, identity_lens, lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
@@ -72,7 +71,7 @@ def _ase_system():
     return atoms
 
 
-def _kups_state(atoms: Atoms) -> RelaxLjState:
+def _kups_state(atoms: Atoms) -> tuple[RelaxState, LennardJonesParameters]:
     particles, systems = relax_state_from_ase(atoms)
     lj = LennardJonesParameters.from_dict(
         cutoff=RC, parameters={"Ar": (SIGMA, EPS)}, mixing_rule="lorentz_berthelot"
@@ -80,7 +79,7 @@ def _kups_state(atoms: Atoms) -> RelaxLjState:
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
     )
-    return RelaxLjState(particles, systems, nlp, jnp.zeros(()), jnp.array([0]), lj)
+    return RelaxState(particles, systems, nlp, jnp.zeros(()), jnp.array([0])), lj
 
 
 def test_atomic_forces_match_ase_cell_filters() -> None:
@@ -91,10 +90,11 @@ def test_atomic_forces_match_ase_cell_filters() -> None:
     ucf = UnitCellFilter(atoms).get_forces()[:n]
     # get_forces avoids ASE 3.28's get_positions typo (only reached by an optimiser).
     fcf = FrechetCellFilter(atoms).get_forces()[:n]
-    state_lens = identity_lens(RelaxLjState)
-    out = make_lennard_jones_from_state(state_lens, gradient=FRECHET_FILTER)(
-        _kups_state(atoms)
-    ).data
+    state, lj = _kups_state(atoms)
+    state_lens = identity_lens(RelaxState)
+    out = make_lennard_jones_from_state(
+        state_lens, parameters=lj, gradient=FRECHET_FILTER
+    )(state).data
     forces = -np.asarray(out.gradients.positions.data)
     assert np.allclose(ucf, forces, atol=1e-10)
     assert np.allclose(fcf, forces, atol=1e-10)
@@ -104,9 +104,9 @@ def test_stress_matches_ase():
     """The partial-gradient virial stress equals ASE's (kUPS uses the opposite
     sign convention, ``σ = -1/V·sym[...]``)."""
     atoms = _ase_system()
-    state = _kups_state(atoms)
+    state, lj = _kups_state(atoms)
     out = make_lennard_jones_from_state(
-        identity_lens(RelaxLjState), gradient=POSITIONS_AND_CELL
+        identity_lens(RelaxState), parameters=lj, gradient=POSITIONS_AND_CELL
     )(state).data
     particles = state.particles.map_data(
         lambda p: dataclasses.replace(
@@ -234,7 +234,10 @@ def _kups_relaxer(max_step: float | None):
     recompiling the (multi-second) traces on each call.
     """
     filter_lens = FRECHET_FILTER
-    geometry = SimpleLens[RelaxLjState, Geometry](
+    lj = LennardJonesParameters.from_dict(
+        cutoff=RC, parameters={"Ar": (SIGMA, EPS)}, mixing_rule="lorentz_berthelot"
+    )
+    geometry = SimpleLens[RelaxState, Geometry](
         lambda s: Geometry(
             s.particles.map_data(
                 lambda p: PositionsAndSystemIndex(p.positions, p.system)
@@ -244,7 +247,7 @@ def _kups_relaxer(max_step: float | None):
     )
     property_lens = NestedLens(geometry, filter_lens)
     potential = make_lennard_jones_from_state(
-        identity_lens(RelaxLjState), gradient=filter_lens
+        identity_lens(RelaxState), parameters=lj, gradient=filter_lens
     )
     lbfgs = ScaleByAseLbfgs(memory_size=100, alpha=ALPHA)
     if max_step is None:
@@ -261,7 +264,7 @@ def _kups_relaxer(max_step: float | None):
     step = jax.jit(lambda s: propagator(key, s))
 
     @jax.jit
-    def max_dof_gradient(s: RelaxLjState):  # ASE-fmax in the filter's DOFs
+    def max_dof_gradient(s: RelaxState):  # ASE-fmax in the filter's DOFs
         grad = potential(s).data.gradients
         force = jnp.max(jnp.linalg.norm(grad.positions.data, axis=-1))
         # Frame-agnostic max|∂E/∂u_cell|: the only non-zero cell-gradient leaves are
@@ -287,7 +290,7 @@ def _relax_kups(
     reference-cartesian / log-deformation DOFs. ``max_step`` adds the matching
     ``MaxStepSize`` clamp (as ASE's ``maxstep``) for stability on stiff systems.
     """
-    state = _kups_state(atoms)
+    state, _ = _kups_state(atoms)
     optimizer, property_lens, step, max_dof_gradient = _kups_relaxer(max_step)
     index_prefix = PositionsAndCell(state.particles.data.system, state.systems.index)  # type: ignore[arg-type]  # Index leaves; init only reads the per-system keys
     state = dataclasses.replace(

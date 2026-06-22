@@ -30,7 +30,7 @@ ci/statistical/
 
 1. **Create the simulation input config** in both `inputs/ci/<name>.yaml` (short) and `inputs/reference/<name>.yaml` (long).
 
-   For MD (Lennard-Jones), use the `kups_md_lj` config schema.
+   For MD, use the `kups_md` config schema (`potential.backend: lj` for Lennard-Jones).
    For MCMC (NVT/GCMC), use the `kups_mcmc_rigid` config schema.
 
    The `out_file` should point to `../../<name>.h5` so the HDF5 output lands in `ci/statistical/`.
@@ -47,7 +47,7 @@ ci/statistical/
 
    ```bash
    cd ci/statistical/inputs/reference
-   uv run kups_md_lj <name>.yaml       # for MD
+   uv run kups_md <name>.yaml          # for MD
    uv run kups_mcmc_rigid <name>.yaml   # for MCMC
    cd ../..
    uv run python generate_expected.py <name>_ref.h5 <sim_type>
