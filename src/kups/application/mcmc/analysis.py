@@ -108,17 +108,16 @@ def _analyze_single_system(
     """
     if n_blocks is None:
         energy_result = optimal_block_average(energy)
-        n_blocks_used = int(energy_result.n_blocks)
+        n_blocks = int(energy_result.n_blocks)
     else:
         energy_result = block_average(energy, n_blocks=n_blocks)
-        n_blocks_used = n_blocks
 
-    loading = block_average(counts, n_blocks=n_blocks_used, axis=0)
+    loading = block_average(counts, n_blocks=n_blocks, axis=0)
 
-    U_blocks = compute_block_means(energy, n_blocks_used)
-    N_blocks = compute_block_means(counts, n_blocks_used)
-    UN_blocks = compute_block_means(energy[:, None] * counts, n_blocks_used)
-    NN_blocks = compute_block_means(counts[..., None] * counts[:, None], n_blocks_used)
+    U_blocks = compute_block_means(energy, n_blocks)
+    N_blocks = compute_block_means(counts, n_blocks)
+    UN_blocks = compute_block_means(energy[:, None] * counts, n_blocks)
+    NN_blocks = compute_block_means(counts[..., None] * counts[:, None], n_blocks)
 
     cov = NN_blocks - N_blocks[..., None] * N_blocks[:, None, :]
     cov_inv = jnp.linalg.inv(cov)
@@ -137,8 +136,8 @@ def _analyze_single_system(
         if s is None:
             return None, None
         return (
-            block_average(s, n_blocks=n_blocks_used),
-            block_average(jnp.trace(s, axis1=-2, axis2=-1) / 3, n_blocks=n_blocks_used),
+            block_average(s, n_blocks=n_blocks),
+            block_average(jnp.trace(s, axis1=-2, axis2=-1) / 3, n_blocks=n_blocks),
         )
 
     stress_result, pressure_result = _stress_and_pressure(stress)
@@ -163,6 +162,55 @@ def _analyze_single_system(
 
 
 @no_jax_tracing
+def _analyze_mcmc(
+    system_keys: tuple[SystemId, ...],
+    temperatures: Array,
+    count_keys: tuple[tuple[SystemId, MotifId], ...],
+    count_data: Array,
+    all_energy: Array,
+    guest_stress: StressResult,
+    n_blocks: int | None,
+) -> dict[SystemId, MCMCAnalysisResult]:
+    """Run per-system block averaging from extracted per-step arrays.
+
+    Args:
+        system_keys: System identifiers, one per energy/stress column.
+        temperatures: Per-system temperature (K), shape ``(n_systems,)``.
+        count_keys: ``(system, motif)`` key per particle-count column.
+        count_data: Particle counts, shape ``(n_steps, n_columns)``.
+        all_energy: Potential energy, shape ``(n_steps, n_systems)``.
+        guest_stress: Per-step stress components, each shape
+            ``(n_steps, n_systems, 3, 3)``.
+        n_blocks: Number of blocks, or ``None`` for automatic selection.
+
+    Returns:
+        Per-system analysis results keyed by ``SystemId``.
+    """
+    stress_potential = guest_stress.potential
+    stress_tail = guest_stress.tail_correction
+    stress_ideal = guest_stress.ideal_gas
+    all_stress = stress_potential + stress_tail + stress_ideal
+
+    results: dict[SystemId, MCMCAnalysisResult] = {}
+    for i, sys_id in enumerate(system_keys):
+        motif_cols = [j for j, label in enumerate(count_keys) if label[0] == sys_id]
+        s = all_stress[:, i]
+        has_stress = bool(jnp.any(s != 0))
+        results[sys_id] = _analyze_single_system(
+            energy=all_energy[:, i].reshape(-1),
+            counts=count_data[:, motif_cols].reshape(-1, len(motif_cols)),
+            temperature=float(temperatures[i]),
+            n_blocks=n_blocks,
+            stress=s if has_stress else None,
+            stress_potential=stress_potential[:, i] if has_stress else None,
+            stress_tail_correction=stress_tail[:, i] if has_stress else None,
+            stress_ideal_gas=stress_ideal[:, i] if has_stress else None,
+        )
+
+    return results
+
+
+@no_jax_tracing
 def analyze_mcmc(
     fixed: IsMCMCFixedData,
     per_step: IsMCMCStepData,
@@ -183,43 +231,15 @@ def analyze_mcmc(
     Returns:
         Per-system analysis results keyed by ``SystemId``.
     """
-    system_keys = fixed.systems.keys
-    count_keys = per_step.particle_count.keys
-    count_data = per_step.particle_count.data
-    temperatures = fixed.systems.data.temperature
-    all_energy = per_step.systems.data.potential_energy
-    guest_stress = per_step.systems.data.guest_stress
-    stress_potential = guest_stress.potential
-    stress_tail = guest_stress.tail_correction
-    stress_ideal = guest_stress.ideal_gas
-    all_stress = stress_potential + stress_tail + stress_ideal
-
-    results: dict[SystemId, MCMCAnalysisResult] = {}
-    for i, sys_id in enumerate(system_keys):
-        motif_cols = [j for j, label in enumerate(count_keys) if label[0] == sys_id]
-        counts = count_data[:, motif_cols].reshape(-1, len(motif_cols))
-        energy = all_energy[:, i].reshape(-1)
-        s = all_stress[:, i]
-        has_stress = bool(jnp.any(s != 0))
-        temperature = float(temperatures[i])
-        results[sys_id] = _analyze_single_system(
-            energy,
-            counts,
-            temperature,
-            n_blocks,
-            stress=s if has_stress else None,
-            stress_potential=stress_potential[:, i]
-            if has_stress and stress_potential is not None
-            else None,
-            stress_tail_correction=stress_tail[:, i]
-            if has_stress and stress_tail is not None
-            else None,
-            stress_ideal_gas=stress_ideal[:, i]
-            if has_stress and stress_ideal is not None
-            else None,
-        )
-
-    return results
+    return _analyze_mcmc(
+        fixed.systems.keys,
+        fixed.systems.data.temperature,
+        per_step.particle_count.keys,
+        per_step.particle_count.data,
+        per_step.systems.data.potential_energy,
+        per_step.systems.data.guest_stress,
+        n_blocks,
+    )
 
 
 @plain_dataclass
@@ -275,13 +295,12 @@ def _analyze_single_widom_system(
     """
     if n_blocks is None:
         w_result = optimal_block_average(mean_w_per_cycle)
-        n_used = int(w_result.n_blocks)
+        n_blocks = int(w_result.n_blocks)
     else:
         w_result = block_average(mean_w_per_cycle, n_blocks=n_blocks)
-        n_used = n_blocks
 
-    block_w = compute_block_means(mean_w_per_cycle, n_used)
-    block_du_w = compute_block_means(mean_du_w_per_cycle, n_used)
+    block_w = compute_block_means(mean_w_per_cycle, n_blocks)
+    block_du_w = compute_block_means(mean_du_w_per_cycle, n_blocks)
 
     mean_w = jnp.mean(block_w)
     mean_du_w = jnp.mean(block_du_w)
@@ -289,7 +308,9 @@ def _analyze_single_widom_system(
     var_du_w = jnp.var(block_du_w, ddof=1)
     # Block-level covariance for the ratio's delta-method SE.
     cov_w_du_w = (
-        jnp.mean((block_w - mean_w) * (block_du_w - mean_du_w)) * n_used / (n_used - 1)
+        jnp.mean((block_w - mean_w) * (block_du_w - mean_du_w))
+        * n_blocks
+        / (n_blocks - 1)
     )
 
     kT = temperature * BOLTZMANN_CONSTANT
@@ -308,17 +329,50 @@ def _analyze_single_widom_system(
         inv_w**2 * var_du_w
         + ratio**2 * inv_w**2 * var_w
         - 2 * ratio * inv_w**2 * cov_w_du_w
-    ) / n_used
+    ) / n_blocks
     se_q_st = jnp.sqrt(jnp.maximum(var_q_st, 0.0))
 
     return WidomAnalysisResult(
-        excess_chemical_potential=BlockAverageResult(mu_ex, se_mu_ex, n_used),
-        henry_coefficient=BlockAverageResult(k_h, se_k_h, n_used),
-        heat_of_adsorption=BlockAverageResult(q_st, se_q_st, n_used),
+        excess_chemical_potential=BlockAverageResult(mu_ex, se_mu_ex, n_blocks),
+        henry_coefficient=BlockAverageResult(k_h, se_k_h, n_blocks),
+        heat_of_adsorption=BlockAverageResult(q_st, se_q_st, n_blocks),
     )
 
 
 @no_jax_tracing
+@no_jax_tracing
+def _analyze_widom(
+    per_step: Table[SystemId, WidomStatistics],
+    system_keys: tuple[SystemId, ...],
+    temperatures: Array,
+    volumes: Array,
+    n_blocks: int | None,
+) -> dict[SystemId, WidomAnalysisResult]:
+    """Block-average per-system Widom statistics into μ_ex / K_H / q_st.
+
+    Args:
+        per_step: Cumulative ``WidomStatistics`` time series.
+        system_keys: System identifiers, one per column.
+        temperatures: Per-system temperature (K), shape ``(n_systems,)``.
+        volumes: Per-system cell volume (Å³), shape ``(n_systems,)``.
+        n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
+
+    Returns:
+        Per-system Widom results keyed by ``SystemId``.
+    """
+    mean_w, mean_du_w = _per_cycle_widom_means(per_step)
+    results: dict[SystemId, WidomAnalysisResult] = {}
+    for i, sys_id in enumerate(system_keys):
+        results[sys_id] = _analyze_single_widom_system(
+            mean_w[:, i],
+            mean_du_w[:, i],
+            float(temperatures[i]),
+            float(volumes[i]),
+            n_blocks,
+        )
+    return results
+
+
 def analyze_widom(
     fixed: WidomFixedData,
     per_step: Table[SystemId, WidomStatistics],
@@ -330,21 +384,17 @@ def analyze_widom(
         fixed: Fixed-group data carrying per-system temperature and cell.
         per_step: Cumulative ``WidomStatistics`` time series.
         n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
-    """
-    mean_w, mean_du_w = _per_cycle_widom_means(per_step)
-    temperatures = fixed.systems.data.temperature
-    volumes = fixed.systems.data.cell.volume
 
-    results: dict[SystemId, WidomAnalysisResult] = {}
-    for i, sys_id in enumerate(fixed.systems.keys):
-        results[sys_id] = _analyze_single_widom_system(
-            mean_w[:, i],
-            mean_du_w[:, i],
-            float(temperatures[i]),
-            float(volumes[i]),
-            n_blocks,
-        )
-    return results
+    Returns:
+        Per-system Widom results keyed by ``SystemId``.
+    """
+    return _analyze_widom(
+        per_step,
+        fixed.systems.keys,
+        fixed.systems.data.temperature,
+        fixed.systems.data.cell.volume,
+        n_blocks,
+    )
 
 
 @no_jax_tracing
@@ -352,11 +402,18 @@ def analyze_widom_file(
     hdf5_path: str | Path,
     n_blocks: int | None = None,
 ) -> dict[SystemId, WidomAnalysisResult]:
-    """Analyze a ``kups_mcmc_widom`` HDF5 output."""
+    """Analyze a ``kups_mcmc_widom`` HDF5 output, reading only system metadata
+    and the per-cycle Widom statistics."""
     with HDF5StorageReader[WidomLoggedData[Any]](hdf5_path) as reader:
-        fixed = reader.focus_group(lambda s: s.fixed)[...]
+        systems = reader.focus_group(lambda s: s.fixed).read(select=lambda d: d.systems)
         per_step = reader.focus_group(lambda s: s.per_step)[...]
-    return analyze_widom(fixed, per_step, n_blocks)
+    return _analyze_widom(
+        per_step,
+        systems.keys,
+        systems.data.temperature,
+        systems.data.cell.volume,
+        n_blocks,
+    )
 
 
 @no_jax_tracing
@@ -366,8 +423,9 @@ def analyze_mcmc_file(
 ) -> dict[SystemId, MCMCAnalysisResult]:
     """Analyze MCMC simulation results from an HDF5 file.
 
-    Convenience wrapper that reads the HDF5 file and delegates to
-    :func:`analyze_mcmc`.
+    Reads only the fields the analysis needs — per-system metadata, particle
+    counts, potential energy, and guest stress — leaving the per-step particle
+    and group tables on disk.
 
     Args:
         hdf5_path: Path to HDF5 output file from
@@ -379,7 +437,22 @@ def analyze_mcmc_file(
         Per-system analysis results keyed by ``SystemId``.
     """
     with HDF5StorageReader[MCMCLoggedData[Any]](hdf5_path) as reader:
-        fixed = reader.focus_group(lambda s: s.fixed)[...]
-        per_step = reader.focus_group(lambda s: s.per_step)[...]
+        systems = reader.focus_group(lambda s: s.fixed).read(select=lambda d: d.systems)
+        per_step = reader.focus_group(lambda s: s.per_step)
+        particle_count = per_step.read(select=lambda d: d.particle_count)
+        all_energy, guest_stress = per_step.read(
+            select=lambda d: (
+                d.systems.data.potential_energy,
+                d.systems.data.guest_stress,
+            )
+        )
 
-    return analyze_mcmc(fixed, per_step, n_blocks)
+    return _analyze_mcmc(
+        systems.keys,
+        systems.data.temperature,
+        particle_count.keys,
+        particle_count.data,
+        all_energy,
+        guest_stress,
+        n_blocks,
+    )

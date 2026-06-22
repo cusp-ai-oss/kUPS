@@ -1,40 +1,35 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for kups.application.md.analysis.analyze_md."""
+"""Tests for kups.application.md.analysis."""
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import pytest
 from jax import Array
 
-from kups.application.md.analysis import analyze_md
+from kups.application.md.analysis import analyze_md, analyze_md_file
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
+from kups.core.lens import view
+from kups.core.storage import EveryNStep, HDF5StorageWriter, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import no_post_init
+from kups.core.utils.jax import dataclass as jax_dataclass
 
 
 @dataclass
 class MockAtomData:
-    """Mock satisfying _IsMDAtoms (HasPositions + system index)."""
+    """Mock init atoms providing the per-atom system index."""
 
     positions: Array
     system: Index[SystemId]
 
 
-@dataclass
-class MockStepAtomData:
-    """Mock satisfying per-step atom momenta and masses."""
-
-    momenta: Array
-    masses: Array
-
-
 jax.tree_util.register_dataclass(MockAtomData)
-jax.tree_util.register_dataclass(MockStepAtomData)
 
 
 @dataclass
@@ -46,13 +41,33 @@ class MockInitData:
 
 @dataclass
 class MockStepData:
-    """Mock satisfying IsMDStepData."""
+    """Mock satisfying IsMDStepData (per-step thermodynamic scalars)."""
 
     potential_energy: Array
     kinetic_energy: Array
     stress_tensor: Array
     volume: Array
-    atoms: Table[ParticleId, MockStepAtomData]
+    internal_kinetic_energy: Array
+
+
+jax.tree_util.register_dataclass(MockInitData)
+jax.tree_util.register_dataclass(MockStepData)
+
+
+@jax_dataclass
+class _MDFileConfig:
+    """Two-group writer config mirroring the MD logging schema shape."""
+
+    init: WriterGroupConfig[Any, Any]
+    step: WriterGroupConfig[Any, Any]
+
+
+@jax_dataclass
+class _MDFileState:
+    """Per-step state the writer extracts ``init``/``step`` groups from."""
+
+    init: MockInitData
+    step: MockStepData
 
 
 def _make_init(n_atoms: int = 10, n_systems: int = 1) -> MockInitData:
@@ -66,54 +81,20 @@ def _make_init(n_atoms: int = 10, n_systems: int = 1) -> MockInitData:
     return MockInitData(atoms=Table(keys=keys, data=data))
 
 
-def _make_step_atoms_from_kinetic_energy(
-    ke: Array,
-    n_atoms: int = 10,
-) -> Table[ParticleId, MockStepAtomData]:
-    """Create per-step atoms whose internal kinetic energy matches ``ke``."""
-    n_steps, n_systems = ke.shape
-    dtype = jnp.result_type(ke, jnp.float32)
-    momenta = jnp.zeros((n_steps, n_atoms, 3), dtype=dtype)
-    masses = jnp.ones((n_steps, n_atoms), dtype=dtype)
-
-    for system_number in range(n_systems):
-        atom_indices = [i for i in range(n_atoms) if i % n_systems == system_number]
-        if len(atom_indices) < 2:
-            raise ValueError(
-                "At least two atoms per system are needed for mock momenta"
-            )
-
-        amplitude = jnp.sqrt(ke[:, system_number].astype(dtype))
-        momenta = momenta.at[:, atom_indices[0], 0].set(amplitude)
-        momenta = momenta.at[:, atom_indices[1], 0].set(-amplitude)
-
-    with no_post_init():
-        return Table(
-            keys=tuple(ParticleId(i) for i in range(n_atoms)),
-            data=MockStepAtomData(momenta=momenta, masses=masses),
-        )
-
-
 def _make_step(
     pe: Array,
     ke: Array,
     stress: Array,
     volume: Array | None = None,
-    atoms: Table[ParticleId, MockStepAtomData] | None = None,
-    *,
-    n_atoms: int = 10,
+    internal_ke: Array | None = None,
 ) -> MockStepData:
-    """Create mock step data with per-step atoms."""
-    if volume is None:
-        volume = jnp.ones(pe.shape)
-    if atoms is None:
-        atoms = _make_step_atoms_from_kinetic_energy(ke, n_atoms=n_atoms)
+    """Create mock step data; internal KE defaults to the logged KE."""
     return MockStepData(
         potential_energy=pe,
         kinetic_energy=ke,
         stress_tensor=stress,
-        volume=volume,
-        atoms=atoms,
+        volume=jnp.ones(pe.shape) if volume is None else volume,
+        internal_kinetic_energy=ke if internal_ke is None else internal_ke,
     )
 
 
@@ -138,7 +119,7 @@ class TestAnalyzeMD:
         assert r.energy_drift == pytest.approx(0.0, abs=1e-12)
 
     def test_temperature(self):
-        """Temperature follows T = 2*KE / (k_B * DOF)."""
+        """Temperature follows T = 2*internal_KE / (k_B * DOF)."""
         n_atoms = 10
         n_steps = 100
         ke_val = 0.3
@@ -150,58 +131,33 @@ class TestAnalyzeMD:
         stress = jnp.zeros((n_steps, 1, 3, 3))
 
         results = analyze_md(
-            _make_init(n_atoms),
-            _make_step(pe, ke, stress, n_atoms=n_atoms),
-            n_blocks=10,
+            _make_init(n_atoms), _make_step(pe, ke, stress), n_blocks=10
         )
         r = results[SystemId(0)]
 
         assert r.temperature.mean == pytest.approx(expected_temp, rel=1e-6)
         assert r.n_atoms == n_atoms
 
-    def test_temperature_subtracts_center_of_mass_kinetic_energy(self):
-        """Internal temperature excludes COM drift when per-step momenta are logged."""
-        n_steps = 100
-        n_atoms = 2
+    def test_temperature_uses_internal_kinetic_energy(self):
+        """Temperature is driven by internal KE, independent of the logged KE."""
+        n_atoms, n_steps = 10, 100
         dof = 3 * n_atoms - 3
-        momenta = jnp.tile(
-            jnp.array([[[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]]),
-            (n_steps, 1, 1),
-        )
-        masses = jnp.ones((n_steps, n_atoms))
-        with no_post_init():
-            atoms = Table(
-                keys=tuple(ParticleId(i) for i in range(n_atoms)),
-                data=MockStepAtomData(momenta=momenta, masses=masses),
-            )
         pe = jnp.zeros((n_steps, 1))
-        ke = jnp.full((n_steps, 1), 1.0)
+        ke = jnp.full((n_steps, 1), 5.0)
+        internal_ke = jnp.full((n_steps, 1), 0.3)
         stress = jnp.zeros((n_steps, 1, 3, 3))
 
         results = analyze_md(
-            _make_init(n_atoms), _make_step(pe, ke, stress, atoms=atoms), n_blocks=10
-        )
-
-        expected_temp = 2.0 / (BOLTZMANN_CONSTANT * dof)
-        assert results[SystemId(0)].temperature.mean == pytest.approx(
-            expected_temp, rel=1e-6
-        )
-
-        com_momenta = jnp.tile(
-            jnp.array([[[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]),
-            (n_steps, 1, 1),
-        )
-        with no_post_init():
-            com_atoms = Table(
-                keys=tuple(ParticleId(i) for i in range(n_atoms)),
-                data=MockStepAtomData(momenta=com_momenta, masses=masses),
-            )
-        com_results = analyze_md(
             _make_init(n_atoms),
-            _make_step(pe, ke, stress, atoms=com_atoms),
+            _make_step(pe, ke, stress, internal_ke=internal_ke),
             n_blocks=10,
         )
-        assert com_results[SystemId(0)].temperature.mean == pytest.approx(0.0)
+        r = results[SystemId(0)]
+
+        assert r.kinetic_energy.mean == pytest.approx(5.0)
+        assert r.temperature.mean == pytest.approx(
+            2 * 0.3 / (BOLTZMANN_CONSTANT * dof), rel=1e-6
+        )
 
     def test_pressure(self):
         """Pressure equals trace of diagonal stress / 3."""
@@ -254,3 +210,75 @@ class TestAnalyzeMD:
         assert r1.kinetic_energy.mean == pytest.approx(1.0)
         assert r0.n_atoms == 5
         assert r1.n_atoms == 5
+
+
+def _trajectory(
+    n_steps: int, n_systems: int, n_atoms: int
+) -> tuple[MockInitData, list[MockStepData]]:
+    """Constant init data and a deterministic per-step trajectory."""
+    init = _make_init(n_atoms, n_systems)
+    base = jnp.arange(n_systems, dtype=jnp.float64)
+    steps = [
+        MockStepData(
+            potential_energy=base + 0.1 * t,
+            kinetic_energy=0.5 * base + 0.01 * t + 1.0,
+            stress_tensor=jnp.eye(3) * (0.2 * t + base[:, None, None]),
+            volume=base + 100.0 + t,
+            internal_kinetic_energy=0.4 * base + 0.01 * t + 0.9,
+        )
+        for t in range(n_steps)
+    ]
+    return init, steps
+
+
+def _stack_steps(steps: list[MockStepData]) -> MockStepData:
+    """Stack per-step states into one trajectory object (leading time axis)."""
+    return MockStepData(
+        potential_energy=jnp.stack([s.potential_energy for s in steps]),
+        kinetic_energy=jnp.stack([s.kinetic_energy for s in steps]),
+        stress_tensor=jnp.stack([s.stress_tensor for s in steps]),
+        volume=jnp.stack([s.volume for s in steps]),
+        internal_kinetic_energy=jnp.stack([s.internal_kinetic_energy for s in steps]),
+    )
+
+
+def test_analyze_md_file_matches_in_memory(tmp_path: Path):
+    """analyze_md_file (selective reads) matches analyze_md on identical data."""
+    n_steps, n_systems, n_atoms = 20, 2, 8
+    init, steps = _trajectory(n_steps, n_systems, n_atoms)
+    expected = analyze_md(init, _stack_steps(steps), n_blocks=5)
+
+    config = _MDFileConfig(
+        init=WriterGroupConfig(view=view(lambda s: s.init), logging_frequency=Once()),
+        step=WriterGroupConfig(
+            view=view(lambda s: s.step), logging_frequency=EveryNStep(1)
+        ),
+    )
+    path = tmp_path / "md.h5"
+    writer = HDF5StorageWriter(
+        path, config, _MDFileState(init, steps[0]), total_steps=n_steps
+    )
+    with writer:
+        for t in range(n_steps):
+            writer.log(_MDFileState(init, steps[t]), t)
+
+    result = analyze_md_file(path, n_blocks=5)
+
+    assert result.keys() == expected.keys()
+    fields = (
+        "potential_energy",
+        "kinetic_energy",
+        "total_energy",
+        "temperature",
+        "pressure",
+        "volume",
+    )
+    for sys_id in expected:
+        e, r = expected[sys_id], result[sys_id]
+        assert (r.n_atoms, r.n_steps) == (e.n_atoms, e.n_steps)
+        assert r.energy_drift == pytest.approx(e.energy_drift, rel=1e-6, abs=1e-9)
+        for f in fields:
+            assert getattr(r, f).mean == pytest.approx(getattr(e, f).mean, rel=1e-6)
+            assert getattr(r, f).sem == pytest.approx(
+                getattr(e, f).sem, rel=1e-6, abs=1e-9
+            )
