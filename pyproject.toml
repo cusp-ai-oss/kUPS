@@ -58,6 +58,7 @@ dependencies = [
     "nanoargs>=0.1.1",
     "slub>=0.1.1",
     "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
+    "hdf5plugin>=6.0.0",
 ]
 
 [project.optional-dependencies]
