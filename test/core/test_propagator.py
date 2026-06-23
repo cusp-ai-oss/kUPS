@@ -25,7 +25,6 @@ from kups.core.propagator import (
     LoopPropagator,
     MCMCPropagator,
     PalindromePropagator,
-    ResetOnErrorPropagator,
     ScheduledPropertyPropagator,
     SequentialPropagator,
     StatePropertySum,
@@ -41,7 +40,7 @@ from kups.core.schedule import (
     PropertyScheduler,
 )
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.jax import dataclass, field
 
 
 # Test fixtures and helpers
@@ -74,13 +73,6 @@ class ExampleState:
     )
     step: Array = field(default_factory=lambda: jnp.array(0))
     num_systems: int = field(default=2, static=True)
-
-
-@dataclass
-class _ScalarState:
-    """Minimal single-array state for ResetOnError / scan tests."""
-
-    value: Array = field(default_factory=lambda: jnp.array(1.0))
 
 
 @dataclass
@@ -739,55 +731,6 @@ class TestLoopPropagator:
         loop_large = LoopPropagator(propagator=small_increment_prop, repetitions=50)
         result = loop_large(rng_key, test_state)
         npt.assert_allclose(result.value, 6.0, rtol=1e-10)
-
-    def test_scan_with_captures_per_step_frames(self, test_state, rng_key):
-        """scan_with fuses repetitions into one dispatch but emits every step's frame."""
-
-        def increment_prop(key: Array, state: ExampleState) -> ExampleState:
-            return bind(state).focus(lambda s: s.value).set(state.value + 1.0)
-
-        run = LoopPropagator(propagator=increment_prop, repetitions=5).scan_with(
-            lambda s: s.value
-        )
-        state, frames = run(rng_key, test_state)
-        # scan_with returns the per-step view *leaves* stacked; this view has one leaf.
-        (captured,) = frames
-        npt.assert_allclose(captured, jnp.array([2.0, 3.0, 4.0, 5.0, 6.0]))  # 1 -> 6
-        npt.assert_allclose(state.value, 6.0)
-
-    def test_scan_with_matches_call_rng(self, test_state, rng_key):
-        """scan_with threads keys like __call__: identical final state, RNG included."""
-
-        def noisy(key: Array, state: ExampleState) -> ExampleState:
-            return (
-                bind(state)
-                .focus(lambda s: s.value)
-                .set(state.value + jax.random.normal(key))
-            )
-
-        loop = LoopPropagator(propagator=noisy, repetitions=6)
-        via_call = loop(rng_key, test_state)
-        final, frames = loop.scan_with(lambda s: s.value)(rng_key, test_state)
-        npt.assert_allclose(final.value, via_call.value, rtol=1e-6)
-        (captured,) = frames
-        assert captured.shape == (6,)
-
-    def test_scan_with_assertion_context(self, rng_key):
-        """as_result_function reaches inside the scan: a wrapped ResetOnErrorPropagator
-        reverts a step whose assertion fails."""
-
-        def capped(key: Array, state: _ScalarState) -> _ScalarState:
-            new_value = state.value + 1.0
-            runtime_assert(new_value < 2.5, message="cap")
-            return bind(state).focus(lambda s: s.value).set(new_value)
-
-        runner = LoopPropagator(ResetOnErrorPropagator(capped), 5).scan_with(
-            lambda s: s.value
-        )
-        # The context reaches inside the scan: 1->2 ok, then 2->3 fails (3<2.5) and
-        # reverts, capping at 2.0. Without the context it would never revert -> 6.0.
-        final, _ = jit(as_result_function(runner))(rng_key, _ScalarState()).value
-        npt.assert_allclose(final.value, 2.0)
 
     def test_loop_propagator_with_assertions(self, test_state, rng_key):
         """Test LoopPropagator handles assertions correctly."""

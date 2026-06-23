@@ -11,7 +11,7 @@ from kups.application.md.data import (
     MdRunConfig,
     MDSystems,
 )
-from kups.application.md.logging import MDLoggedData, MDStepData
+from kups.application.md.logging import MDLoggedData
 from kups.application.utils.propagate import (
     make_block_function,
     make_cycle_function,
@@ -140,18 +140,14 @@ def run_md[State: IsMdState](
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
-    writer = HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps)
-    logger = CompositeLogger(TqdmLogger(config.num_steps), writer)
+    # A block advances block_size steps per dispatch and saves only its final frame, so the
+    # trajectory keeps num_steps // block_size frames; block_size=1 is the per-step path.
     if config.block_size > 1:
-        # Fuse block_size steps into one dispatch, capturing every step's frame.
-        cycle_fn = make_block_function(
-            propagator, config.block_size, MDStepData.from_state
-        )
-    return run_simulation_cycles(
-        next(chain),
-        cycle_fn,
-        state,
-        config.num_steps,
-        logger,
-        block_size=config.block_size,
+        cycle_fn = make_block_function(propagator, config.block_size)
+    num_cycles = config.num_steps // config.block_size
+    logger = CompositeLogger(
+        TqdmLogger(num_cycles),
+        HDF5StorageWriter(config.out_file, MDLoggedData(), state, num_cycles),
     )
+    state = run_simulation_cycles(next(chain), cycle_fn, state, num_cycles, logger)
+    return state

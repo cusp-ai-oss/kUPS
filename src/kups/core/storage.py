@@ -151,17 +151,6 @@ class HDF5StorageWriter[State, WriterConfig]:
         self._bg_writer = BackgroundWriter(self, queue.Queue(), self._bg_running)
         self._bg_thread = threading.Thread(target=self._bg_writer.start, daemon=True)
         self._bg_thread.start()
-        # Write the once-only (init) groups now, from the true t=0 state: the blocked path
-        # donates the first step's input buffers, so initial_state can't be read later.
-        # _prepare_write skips these groups, so this is their sole write.
-        init_writes = [
-            (i, g.logging_frequency.dataset_index(0), g.view(self.initial_state))
-            for i, g in enumerate(self._group_writers)
-            if not isinstance(g.logging_frequency, EveryNStep)
-            and g.logging_frequency.should_log(0)
-        ]
-        if init_writes:
-            self._bg_writer.data_queue.put(init_writes)
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -183,32 +172,17 @@ class HDF5StorageWriter[State, WriterConfig]:
         self._bg_writer.write(state, step)
 
     def _prepare_write(self, state: State, step: int) -> list[tuple[int, Index, Any]]:
-        """Extract loggable data on the main thread (before JAX donation).
-
-        Once-only (init) groups are written up front in ``__enter__`` and skipped here.
-        """
+        """Extract loggable data on the main thread (before JAX donation)."""
         to_log: list[tuple[int, Index, Any]] = []
         for i, group in enumerate(self._group_writers):
-            freq = group.logging_frequency
-            if isinstance(freq, EveryNStep) and freq.should_log(step):
-                to_log.append((i, freq.dataset_index(step), group.view(state)))
+            if group.logging_frequency.should_log(step):
+                index = group.logging_frequency.dataset_index(step)
+                to_log.append((i, index, group.view(state)))
         return to_log
 
     def _write(self, to_write: list[tuple[int, Index, Any]]) -> None:
         for i, idx, data in to_write:
             self._group_writers[i].writer.write(data, idx)
-
-    def log_block(self, frames: Any, start: int) -> None:
-        """Async-write the stacked per-step frame buffer for steps ``[start, start+n)``."""
-        n = int(jax.tree.leaves(frames)[0].shape[0])
-        self._actual_steps = start + n
-        assert self._bg_writer is not None, "Must be used inside a with-block"
-        to_log: list[tuple[int, Index, Any]] = [
-            (i, slice(start, start + n), frames)
-            for i, g in enumerate(self._group_writers)
-            if isinstance(g.logging_frequency, EveryNStep)
-        ]
-        self._bg_writer.data_queue.put(to_log)
 
 
 def _init_group_writers[S, WC](

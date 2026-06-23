@@ -8,8 +8,7 @@ MD, MCMC, and relaxation application modules.
 """
 
 import logging
-from operator import itemgetter
-from typing import Any, Callable, Protocol
+from typing import Callable, Protocol
 
 import tqdm
 from jax import Array
@@ -36,12 +35,6 @@ class CycleFunction[State](Protocol):
     def __call__(self, key: Array, state: State, /) -> Result[State, State]: ...
 
 
-class BlockedCycleFunction[State](Protocol):
-    def __call__(
-        self, key: Array, state: State, /
-    ) -> Result[State, tuple[State, list[Array]]]: ...
-
-
 def make_cycle_function[State](propagator: Propagator[State]) -> CycleFunction[State]:
     """JIT a propagator into a reusable per-cycle function with state donation.
 
@@ -59,15 +52,17 @@ def make_cycle_function[State](propagator: Propagator[State]) -> CycleFunction[S
 
 
 def make_block_function[State](
-    propagator: Propagator[State],
-    block_size: int,
-    view: Callable[[Any], Any],
-) -> BlockedCycleFunction[State]:
-    """JIT ``block_size`` propagator steps fused into one dispatch, capturing each step's
-    ``view``. Pass to :func:`run_simulation_cycles` with ``block_size`` set.
+    propagator: Propagator[State], block_size: int
+) -> CycleFunction[State]:
+    """Compile ``block_size`` propagator steps into a single device dispatch.
+
+    The returned cycle function advances ``block_size`` steps per call -- amortizing the
+    per-step device->host assertion sync -- and returns only the block's final state, so
+    it is interchangeable with :func:`make_cycle_function`. A blocked run therefore saves
+    one frame per block (the last); pass ``num_cycles = total_steps // block_size`` to
+    :func:`run_simulation_cycles`.
     """
-    runner = LoopPropagator(propagator, block_size).scan_with(view)
-    return jit(as_result_function(runner), donate_argnums=(1,))
+    return make_cycle_function(LoopPropagator(propagator, block_size))
 
 
 def run_warmup_cycles[State](
@@ -92,56 +87,33 @@ def run_warmup_cycles[State](
 
 def run_simulation_cycles[State](
     key: Array,
-    cycle_fn: Callable[[Array, State], Result[State, Any]],
+    cycle_fn: CycleFunction[State],
     state: State,
     num_cycles: int,
     logger: Logger[State],
     *,
-    block_size: int = 1,
     convergence_fn: Callable[[State], bool] | None = None,
 ) -> State:
-    """Run ``num_cycles`` propagation steps with logging and optional early stopping.
-
-    ``block_size`` steps are fused per device dispatch (``1`` = per-step), but every step
-    is still logged, so the saved trajectory is identical and ``block_size`` is a pure
-    performance knob. ``num_cycles`` must be a multiple of ``block_size``.
+    """Run simulation steps with logging and optional early stopping.
 
     Args:
         key: JAX PRNG key for stochastic propagators (e.g. MD thermostats).
-        cycle_fn: Per-step (:func:`make_cycle_function`) or blocked
-            (:func:`make_block_function`) cycle function.
+        cycle_fn: Compiled per-cycle function from :func:`make_cycle_function`.
         state: Initial state.
-        num_cycles: Total number of steps (a multiple of ``block_size``).
-        logger: Receives each step via ``log``, or each fused block via ``log_block``.
-        block_size: Steps fused per dispatch; ``1`` selects the per-step path.
-        convergence_fn: If provided, checked after each step/block; stops early when True.
+        num_cycles: Maximum number of steps.
+        logger: Logger receiving state each step.
+        convergence_fn: If provided, called after each step; stops early when
+            it returns True.
 
     Returns:
         State after all steps or early convergence.
     """
-    if block_size < 1:
-        raise ValueError(
-            f"block_size ({block_size}) must be a strictly positive integer."
-        )
-    if num_cycles % block_size != 0:
-        raise ValueError(
-            f"num_cycles ({num_cycles}) must be a multiple of block_size ({block_size})"
-        )
     chain = key_chain(key)
-    # range step widens to block_size; a blocked cycle_fn returns (state, frames) and
-    # itemgetter(0) feeds the state back into the fix loop, a per-step one returns state.
-    blocked = block_size > 1
     with logger:
-        for start in range(0, num_cycles, block_size):
-            if blocked:
-                state, frames = propagate_and_fix(
-                    cycle_fn, next(chain), state, state_of=itemgetter(0)
-                )
-                logger.log_block(frames, start)
-            else:
-                state = propagate_and_fix(cycle_fn, next(chain), state)
-                logger.log(state, start)
+        for i in range(num_cycles):
+            state = propagate_and_fix(cycle_fn, next(chain), state)
+            logger.log(state, i)
             if convergence_fn is not None and convergence_fn(state):
-                logging.info("Converged at step %d", start + block_size)
+                logging.info("Converged at step %d", i + 1)
                 break
     return state

@@ -157,38 +157,6 @@ class TestHDF5StorageWriter:
             assert initial["pos"].shape == (3,)
             npt.assert_array_equal(initial["pos"], simple_state.position)
 
-    def test_log_block_roundtrip(self, simple_state, temp_file):
-        """log_block writes a stacked block contiguously per-timestep, plus init once."""
-        config = {
-            "step": WriterGroupConfig(
-                view=view(lambda s: {"x": s.position}),
-                logging_frequency=EveryNStep(1),
-            ),
-            "initial": WriterGroupConfig(
-                view=view(lambda s: {"v": s.velocity}),
-                logging_frequency=Once(),
-            ),
-        }
-        # 5 timesteps written as two blocks (3 + 2 remainder).
-        block1 = {"x": jnp.arange(9.0).reshape(3, 3)}
-        block2 = {"x": jnp.arange(9.0, 15.0).reshape(2, 3)}
-        writer = HDF5StorageWriter(temp_file, config, simple_state, total_steps=5)
-        with writer:
-            writer.log_block(block1, 0)  # init (Once) groups come from initial_state
-            writer.log_block(block2, 3)
-
-        with HDF5StorageReader(temp_file) as reader:
-            step = reader.focus_group("group['step']")[:]
-            assert step["x"].shape == (5, 3)  # per-timestep, not per-block
-            npt.assert_array_equal(step["x"], jnp.arange(15.0).reshape(5, 3))
-            initial = reader.focus_group("group['initial']")[...]
-            npt.assert_array_equal(initial["v"], simple_state.velocity)
-
-        import h5py
-
-        with h5py.File(temp_file, "r") as f:
-            assert f.attrs["actual_steps"] == 5
-
     def test_actual_steps_attr(self, simple_state, temp_file):
         writer = HDF5StorageWriter(
             temp_file,

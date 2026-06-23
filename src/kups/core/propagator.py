@@ -24,7 +24,7 @@ Propagators are composable and JIT-compilable, enabling efficient simulation loo
 """
 
 import logging
-from typing import Any, Callable, Protocol, Self, overload
+from typing import Any, Callable, Protocol, Self
 
 import jax
 import jax.core
@@ -39,7 +39,6 @@ from kups.core.patch import Addable, Patch, WithPatch
 from kups.core.result import Result, as_result_function
 from kups.core.schedule import IncrementSchedule, Schedule, Scheduler
 from kups.core.typing import SystemId
-from kups.core.utils.functools import identity
 from kups.core.utils.jax import (
     dataclass,
     field,
@@ -135,51 +134,26 @@ def propagator_with_assertions[State](
     return as_result_function(propagator)
 
 
-@overload
 def propagate_and_fix[State](
     fn: Callable[[Array, State], Result[State, State]],
     key: Array,
     state: State,
     *,
-    max_tries: int = ...,
-) -> State: ...
-
-
-@overload
-def propagate_and_fix[State, Value](
-    fn: Callable[[Array, State], Result[State, Value]],
-    key: Array,
-    state: State,
-    *,
-    state_of: Callable[[Value], State],
-    max_tries: int = ...,
-) -> Value: ...
-
-
-def propagate_and_fix(
-    fn: Callable[[Array, Any], Result[Any, Any]],
-    key: Array,
-    state: Any,
-    *,
-    state_of: Callable[[Any], Any] = identity,
     max_tries: int = 10,
-) -> Any:
+) -> State:
     """Execute a propagator repeatedly until all assertions pass or retries are exhausted.
 
     On each attempt, failed assertions are repaired via their fix functions.
-    Raises if a failed assertion has no fix function or retries run out. ``state_of``
-    locates the state to repair within ``fn``'s return value (identity by default), so a
-    blocked run returning ``(state, frames)`` discards its frames on retry.
+    Raises if a failed assertion has no fix function or retries run out.
 
     Args:
         fn: Assertion-aware propagator produced by :func:`propagator_with_assertions`.
         key: JAX PRNG key.
         state: Current simulation state.
-        state_of: Locates the state to repair within ``fn``'s return value (default identity).
         max_tries: Maximum number of repair attempts.
 
     Returns:
-        ``fn``'s return value once assertions pass (the state, or e.g. ``(state, frames)``).
+        Propagated state with all assertions satisfied.
 
     Raises:
         ValueError: If called inside a JAX transform.
@@ -191,9 +165,10 @@ def propagate_and_fix(
 
     for _ in range(max_tries):
         out = fn(key, state)
+        state = out.value
         if not out.failed_assertions:
-            return out.value
-        state = out.fix_or_raise(state_of(out.value))
+            return state
+        state = out.fix_or_raise(state)
     raise RuntimeError("Failed to resolve potential after multiple attempts")
 
 
@@ -554,36 +529,6 @@ class LoopPropagator[State](Propagator[State]):
         init = (jnp.zeros((), dtype=int), next(chain), state)
         _, _, state = jax.lax.while_loop(cond, body, init)
         return state
-
-    def scan_with(
-        self, view: Callable[[Any], Any]
-    ) -> Callable[[Array, State], tuple[State, list[Array]]]:
-        """Loop the propagator ``repetitions`` times via ``jax.lax.scan``, returning the
-        final state and each step's ``view`` leaves stacked on a new leading axis (raw
-        leaves matching ``jax.tree.leaves(view(state))``, not a reassembled pytree).
-
-        Raw: wrap with :func:`~kups.core.result.as_result_function` + ``jit`` to check
-        assertions inside the scan.
-        """
-        assert isinstance(self.repetitions, int), "scan_with requires int repetitions"
-        n = self.repetitions
-
-        def run(key: Array, state: State) -> tuple[State, list[Array]]:
-            def body(
-                carry: tuple[Array, State], _: None
-            ) -> tuple[tuple[Array, State], list[Array]]:
-                k, s = carry
-                k, subkey = jax.random.split(k)
-                s = self.propagator(subkey, s)
-                # Stack leaves, not the structured view (see docstring).
-                return (k, s), jax.tree.leaves(view(s))
-
-            (_, state), frames = jax.lax.scan(
-                body, (next(key_chain(key)), state), None, length=n
-            )
-            return state, frames
-
-        return run
 
 
 @dataclass

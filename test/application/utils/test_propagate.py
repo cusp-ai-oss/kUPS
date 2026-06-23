@@ -1,12 +1,11 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the blocked path of ``run_simulation_cycles`` (block_size > 1).
+"""Tests for blocked stepping via :func:`make_block_function`.
 
-Blocking is built by :func:`make_block_function` (the loop inserted before compilation)
-and driven by ``run_simulation_cycles`` with ``block_size`` set; the per-step frames are
-replayed through a minimal ``log_block`` stand-in. The HDF5 side is covered by
-test_storage.py.
+A block function fuses ``block_size`` steps into one device dispatch and returns only the
+block's final state, so it is interchangeable with :func:`make_cycle_function`. A blocked
+run therefore saves the last frame of each block; ``run_simulation_cycles`` is unchanged.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
-import pytest
 from jax import Array
 
 from kups.application.utils.propagate import (
@@ -22,10 +20,7 @@ from kups.application.utils.propagate import (
     make_cycle_function,
     run_simulation_cycles,
 )
-from kups.core.assertion import runtime_assert
 from kups.core.utils.jax import dataclass
-
-_VALUE = lambda s: s.value  # noqa: E731 -- single-leaf view used across the tests
 
 
 @dataclass
@@ -43,31 +38,13 @@ def _state() -> _State:
     return _State(step=jnp.array([0]), value=jnp.array(0.0))
 
 
-class _Recorder:
-    """Minimal blocked-logger stand-in: records each block's frames, no HDF5."""
-
-    def __init__(self) -> None:
-        self.frames: list[Array] = []
-
-    def __enter__(self) -> _Recorder:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        return None
-
-    def log_block(self, frames: list[Array], start: int) -> None:
-        # scan_with emits stacked view *leaves*; the views here have a single leaf.
-        (leaf,) = frames
-        self.frames.append(leaf)
-
-
-class _StepLog:
-    """Per-step Logger stand-in: records state.value each step."""
+class _Log:
+    """Logger stand-in: records ``state.value`` at each ``log`` call."""
 
     def __init__(self) -> None:
         self.values: list[float] = []
 
-    def __enter__(self) -> _StepLog:
+    def __enter__(self) -> _Log:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -77,79 +54,39 @@ class _StepLog:
         self.values.append(float(state.value))
 
 
-def test_logs_every_timestep_in_order():
-    """Blocking is transparent: every timestep's frame is captured, in order."""
-    rec = _Recorder()
-    cycle_fn = make_block_function(_stepper, 3, _VALUE)
+def test_block_advances_block_size_steps():
+    """One block call fuses block_size steps and returns the block's final state."""
+    out = make_block_function(_stepper, 5)(jax.random.key(0), _state())
+    npt.assert_array_equal(out.value.step, jnp.array([5]))
+    npt.assert_allclose(out.value.value, 5.0)
+
+
+def test_blocked_matches_per_step_final_state():
+    """Deterministic propagator: 2 blocks of 5 reaches the same state as 10 per-step."""
+    key = jax.random.key(0)
+    per = run_simulation_cycles(key, make_cycle_function(_stepper), _state(), 10, _Log())
+    blk = run_simulation_cycles(key, make_block_function(_stepper, 5), _state(), 2, _Log())
+    npt.assert_array_equal(per.step, blk.step)
+    npt.assert_allclose(per.value, blk.value)
+
+
+def test_saves_last_frame_of_each_block():
+    """A blocked run logs once per block -- the last frame of each."""
+    log = _Log()
     out = run_simulation_cycles(
-        jax.random.key(0), cycle_fn, _state(), 9, rec, block_size=3
+        jax.random.key(0), make_block_function(_stepper, 5), _state(), 4, log
     )
-    npt.assert_array_equal(out.step, jnp.array([9]))  # 3 + 3 + 3
-    npt.assert_array_equal(jnp.concatenate(rec.frames), jnp.arange(1.0, 10.0))
-
-
-def test_checks_assertions():
-    """A runtime assertion that fails inside a block surfaces at the block boundary."""
-
-    def asserting_step(key: Array, s: _State) -> _State:
-        del key
-        value = s.value + 1.0
-        runtime_assert(value < 5.0, message="value too large")
-        return _State(step=s.step + 1, value=value)
-
-    cycle_fn = make_block_function(asserting_step, 5, _VALUE)
-    with pytest.raises(AssertionError):
-        run_simulation_cycles(
-            jax.random.key(0), cycle_fn, _state(), 10, _Recorder(), block_size=5
-        )
+    npt.assert_array_equal(out.step, jnp.array([20]))  # 4 blocks x 5
+    npt.assert_allclose(log.values, [5.0, 10.0, 15.0, 20.0])  # block-final frames only
 
 
 def test_convergence_stops_early():
-    cycle_fn = make_block_function(_stepper, 10, _VALUE)
     out = run_simulation_cycles(
         jax.random.key(0),
-        cycle_fn,
+        make_block_function(_stepper, 5),
         _state(),
-        100,
-        _Recorder(),
-        block_size=10,
-        convergence_fn=lambda s: bool(s.value >= 20.0),
+        10,
+        _Log(),
+        convergence_fn=lambda s: bool(s.value >= 10.0),
     )
-    npt.assert_array_equal(out.step, jnp.array([20]))  # stops after the 2nd block
-
-
-def test_blocked_matches_per_step_deterministic():
-    """Deterministic propagator: the blocked path (block_size>1) produces the same final
-    state and the same per-timestep trajectory as the per-step path (block_size=1)."""
-    key = jax.random.key(0)
-    per_log = _StepLog()
-    per = run_simulation_cycles(
-        key, make_cycle_function(_stepper), _state(), 9, per_log
-    )
-    rec = _Recorder()
-    blk = run_simulation_cycles(
-        key, make_block_function(_stepper, 3, _VALUE), _state(), 9, rec, block_size=3
-    )
-    npt.assert_array_equal(per.value, blk.value)
-    npt.assert_array_equal(jnp.array(per_log.values), jnp.concatenate(rec.frames))
-
-
-def test_block_equals_num_steps():
-    """block_size == num_cycles: exactly one full block, no remainder."""
-    rec = _Recorder()
-    cycle_fn = make_block_function(_stepper, 5, _VALUE)
-    out = run_simulation_cycles(
-        jax.random.key(0), cycle_fn, _state(), 5, rec, block_size=5
-    )
-    npt.assert_array_equal(out.step, jnp.array([5]))
-    assert len(rec.frames) == 1
-    npt.assert_array_equal(jnp.concatenate(rec.frames), jnp.arange(1.0, 6.0))
-
-
-def test_requires_num_cycles_multiple_of_block_size():
-    """num_cycles not divisible by block_size is rejected (caller must align)."""
-    cycle_fn = make_block_function(_stepper, 4, _VALUE)
-    with pytest.raises(ValueError, match="multiple of block_size"):
-        run_simulation_cycles(
-            jax.random.key(0), cycle_fn, _state(), 10, _Recorder(), block_size=4
-        )
+    npt.assert_array_equal(out.step, jnp.array([10]))  # stops after the 2nd block
