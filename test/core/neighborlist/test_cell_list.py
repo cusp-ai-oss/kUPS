@@ -6,7 +6,7 @@
 import jax.numpy as jnp
 import numpy as np
 
-from kups.core.capacity import FixedCapacity, LensCapacity
+from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
@@ -92,6 +92,41 @@ class TestCellListSubselect:
         }
         assert (0, 1) in pairs or (1, 0) in pairs
         assert (0, 2) not in pairs and (2, 0) not in pairs
+
+    def test_single_cell_path_matches_multi_cell_path(self):
+        # Box 4 A, cutoff 3.0 -> 1 bin/axis (single cell). The single-cell path
+        # (cells capacity 1) must emit the same all-pairs candidate set as the
+        # general stencil path (larger capacity, same geometry).
+        lh = make_lh(
+            jnp.array([[0.0, 0.0, 0.0], [0.25, 0.1, 0.0], [0.5, 0.0, 0.3]]),
+            jnp.zeros(3, dtype=int),
+        )
+        systems, _ = make_systems(
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            jnp.array([3.0]),
+        )
+
+        def pairs(max_cells: Capacity[int]):
+            c = _cell_list_subselect(
+                lh,
+                lh,
+                systems,
+                cutoffs=jnp.array([3.0]),
+                max_num_cells=max_cells,
+                max_num_candidates=FixedCapacity(16),
+            )
+            return {
+                (a, b)
+                for a, b in zip(
+                    c.key_idx.indices.tolist(), c.query_idx.indices.tolist()
+                )
+                if a < 3 and b < 3
+            }
+
+        single = pairs(FixedCapacity(1))
+        multi = pairs(FixedCapacity(64))
+        assert single == multi
+        assert single == {(a, b) for a in range(3) for b in range(3)}
 
 
 class TestFromState:

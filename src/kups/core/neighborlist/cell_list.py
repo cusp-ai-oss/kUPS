@@ -108,14 +108,23 @@ def _cell_list_subselect(
         + key_system_ids * max_num_cells.size
     )
 
-    # Expand neighborhood around query points: for each query, tile across stencil
-    stencil = _cell_stencil(dim)
-    raw_shifted = jax.vmap(
-        lambda s: query_positions + s[None] / bins[queries.data.system]
-    )(stencil).reshape(-1, dim)
-    query_original = Index(
-        queries.keys, jnp.tile(jnp.arange(len(queries)), len(stencil))
-    )
+    # With a single cell per system the only reachable cell is "self", so a unit
+    # stencil suffices and every query maps to one cell -- the neighborhood dedup
+    # is a no-op and is skipped (subselect re-sorts via is_sorted=False).
+    is_single_cell = max_num_cells.size == 1
+
+    if is_single_cell:
+        raw_shifted = query_positions
+        query_original = Index(queries.keys, jnp.arange(len(queries)))
+    else:
+        # Expand neighborhood around query points: for each query, tile across stencil
+        stencil = _cell_stencil(dim)
+        raw_shifted = jax.vmap(
+            lambda s: query_positions + s[None] / bins[queries.data.system]
+        )(stencil).reshape(-1, dim)
+        query_original = Index(
+            queries.keys, jnp.tile(jnp.arange(len(queries)), len(stencil))
+        )
     query_system = queries.data.system[query_original.indices]
 
     shifted, in_cell = cell.fold(raw_shifted)
@@ -129,21 +138,22 @@ def _cell_list_subselect(
     # all-True, making the where a no-op.
     query_neighborhood_hashes = jnp.where(in_cell, hashes, cell_oob)
 
-    unique_queries = jnp.unique(
-        jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
-        axis=0,
-        size=len(query_original),
-        fill_value=jnp.array([cell_oob, len(queries)]),
-    )
-    query_neighborhood_hashes = unique_queries[:, 0]
-    query_original = Index(queries.keys, unique_queries[:, 1])
+    if not is_single_cell:
+        unique_queries = jnp.unique(
+            jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
+            axis=0,
+            size=len(query_original),
+            fill_value=jnp.array([cell_oob, len(queries)]),
+        )
+        query_neighborhood_hashes = unique_queries[:, 0]
+        query_original = Index(queries.keys, unique_queries[:, 1])
 
     selection_result = subselect(
         key_hashes,
         query_neighborhood_hashes,
         output_buffer_size=max_num_candidates,
         num_segments=cell_oob,
-        is_sorted=True,  # unique sorts the neighborhood hashes
+        is_sorted=not is_single_cell,  # unique sorts the multi-cell neighborhood hashes
     )
     key_idx = Index(keys.keys, selection_result.scatter_idxs)
     query_idx = Index(
