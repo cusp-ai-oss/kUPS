@@ -57,15 +57,15 @@ class TestUniversalNeighborlistParametersEstimate:
         assert params.avg_edges == 4
 
     def test_wide_cutoff_replicates_image_candidates(self):
-        # cutoff 6 in a 10 Å box: ratio 0.6 -> 2*ceil(0.6)+1 = 3 images/axis,
-        # i.e. 27x candidate replication.
+        # cutoff 6 in a 10 Å box: ratio 0.6 -> floor(1.2)+1 = 2 images/axis,
+        # i.e. 8x candidate replication.
         ppc, systems, cutoffs = self._single_system(n_particles=200, cutoff=6.0)
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
         # 1 bin/axis -> candidates capped at n_particles=200 -> 256.
         assert params.avg_candidates == 256
-        # the rounded candidate buffer is what gets replicated 27x:
-        # 256 * 27 = 6912 -> next power of two = 8192.
-        assert params.avg_image_candidates == 8192
+        # the rounded candidate buffer is what gets replicated 8x:
+        # 256 * 8 = 2048 -> next power of two = 2048.
+        assert params.avg_image_candidates == 2048
 
     def test_heterogeneous_cutoffs_sum_per_system(self):
         # Image candidates sum each system's own replication factor rather than
@@ -74,16 +74,16 @@ class TestUniversalNeighborlistParametersEstimate:
             TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, axis=0) * 10.0)
         )
         # System 0: cutoff 2 (1 image), 1000 particles -> 216 candidates -> 256.
-        # System 1: cutoff 6 (27 images), 10 particles -> 10 candidates -> 16.
+        # System 1: cutoff 6 (8 images), 10 particles -> 10 candidates -> 16.
         systems, cutoffs = make_systems(cell, jnp.array([2.0, 6.0]))
         ppc = Table((SystemId(0), SystemId(1)), jnp.array([1000, 10]))
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
         # mean candidates = (216 + 10) / 2 = 113 -> 128.
         assert params.avg_candidates == 128
         # each system's rounded candidate buffer replicates by its own image
-        # count: (256*1 + 16*27) / 2 = 344 -> 512, well below the pessimistic
-        # avg_candidates * max_images = 128 * 27 -> 4096.
-        assert params.avg_image_candidates == 512
+        # count: (256*1 + 16*8) / 2 = 192 -> 256, well below the pessimistic
+        # avg_candidates * max_images = 128 * 8 -> 1024.
+        assert params.avg_image_candidates == 256
 
     def test_all_fields_positive_powers_of_two(self):
         ppc, systems, cutoffs = self._single_system(n_particles=512)
