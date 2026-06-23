@@ -13,7 +13,6 @@ from kups.application.md.data import (
 )
 from kups.application.md.logging import MDLoggedData
 from kups.application.utils.propagate import (
-    make_block_function,
     make_cycle_function,
     run_simulation_cycles,
     run_warmup_cycles,
@@ -135,15 +134,15 @@ def run_md[State: IsMdState](
         Final simulation state after production run.
     """
     chain = key_chain(key)
-    cycle_fn = make_cycle_function(propagator)
+    # Check assertions after each step during warmup cycles
+    cycle_fn = make_cycle_function(propagator, 1)
     logging.info("Warmup")
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
-    # A block advances block_size steps per dispatch and saves only its final frame, so the
-    # trajectory keeps num_steps // block_size frames; block_size=1 is the per-step path.
-    if config.block_size > 1:
-        cycle_fn = make_block_function(propagator, config.block_size)
+    # Each cycle fuses block_size steps into one dispatch and saves its final frame, so the
+    # trajectory keeps num_steps // block_size frames (block_size=1 = one step per cycle).
+    cycle_fn = make_cycle_function(propagator, config.block_size)
     num_cycles = config.num_steps // config.block_size
     logger = CompositeLogger(
         TqdmLogger(num_cycles),
