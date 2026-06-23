@@ -51,7 +51,9 @@ def make_cycle_function[State](
     Returns:
         A jitted ``(key, state) -> Result`` cycle function.
     """
-    return jit(as_result_function(LoopPropagator(propagator, block_size)), donate_argnums=(1,))
+    return jit(
+        as_result_function(LoopPropagator(propagator, block_size)), donate_argnums=(1,)
+    )
 
 
 def run_warmup_cycles[State](
