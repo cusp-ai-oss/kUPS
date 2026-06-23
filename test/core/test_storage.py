@@ -6,6 +6,7 @@
 import tempfile
 
 import h5py
+import hdf5plugin
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -348,6 +349,12 @@ def _array_dataset(group: h5py.Group) -> h5py.Dataset:
     return group[name]  # type: ignore[return-value]
 
 
+def _filter_ids(ds: h5py.Dataset) -> list[int]:
+    """HDF5 filter ids applied to ``ds`` (e.g. ``1`` shuffle, ``32015`` zstd)."""
+    dcpl = ds.id.get_create_plist()
+    return [dcpl.get_filter(i)[0] for i in range(dcpl.get_nfilters())]
+
+
 class TestCompression:
     def test_dataset_kwargs_sizing(self):
         """Per-leaf chunk sizing: time-axis target, scalars uncompressed."""
@@ -355,12 +362,10 @@ class TestCompression:
         # Large per-frame array: chunk holds target_bytes // frame_bytes frames.
         kw = c.dataset_kwargs((1000,), (1326, 3), itemsize=8)
         assert kw["chunks"] == ((1 << 20) // (1326 * 3 * 8), 1326, 3)
-        assert kw == {
-            **kw,
-            "compression": "gzip",
-            "compression_opts": 4,
-            "shuffle": True,
-        }
+        # Default codec is zstd (via hdf5plugin) + byte-shuffle.
+        assert kw["shuffle"] is True
+        assert kw["compression"] == hdf5plugin.Zstd.filter_id
+        assert kw["compression_opts"] == (1,)
         # Scalar-per-step: single chunk spanning the whole time axis.
         assert c.dataset_kwargs((1000,), (), itemsize=8)["chunks"] == (1000,)
         # Logged once (no time axis): one chunk spanning the whole array.
@@ -368,20 +373,25 @@ class TestCompression:
         # Rank-0 scalar: cannot chunk, so uncompressed.
         assert c.dataset_kwargs((), (), itemsize=8) == {}
 
+    def test_gzip_has_level(self):
+        kw = Compression(codec="gzip", level=4).dataset_kwargs((10,), (5,), itemsize=8)
+        assert kw["compression"] == "gzip"
+        assert kw["compression_opts"] == 4
+
     def test_lzf_has_no_level(self):
         kw = Compression(codec="lzf").dataset_kwargs((10,), (5,), itemsize=8)
         assert kw["compression"] == "lzf"
         assert "compression_opts" not in kw
 
     def test_roundtrip_and_filters_applied(self, temp_file: str):
-        """Default compression round-trips and lands gzip+shuffle+chunks on datasets."""
+        """Default compression round-trips and lands zstd+shuffle+chunks on datasets."""
         state = SimpleState(
             position=jnp.zeros((64, 3)), velocity=jnp.zeros((64, 3)), energy=1.0
         )
         config = WriterGroupConfig(
             view=view(lambda s: {"pos": s.position}),
             logging_frequency=EveryNStep(1),
-        )  # default compression == Compression() (gzip + shuffle)
+        )  # default compression == Compression() (zstd + shuffle)
         writer = HDF5StorageWriter(temp_file, config, state, total_steps=20)
         with writer:
             for i in range(20):
@@ -394,7 +404,7 @@ class TestCompression:
 
         with h5py.File(temp_file, "r") as f:
             ds = _array_dataset(f["group"])  # type: ignore[arg-type]
-            assert ds.compression == "gzip"
+            assert hdf5plugin.Zstd.filter_id in _filter_ids(ds)
             assert ds.shuffle is True
             assert ds.chunks is not None and ds.chunks[0] >= 1
 
@@ -420,12 +430,14 @@ class TestCompression:
 class TestAutoBatching:
     def test_auto_batch_size_property(self, temp_file: str):
         """GroupWriters.batch_size derives from datasets + compression."""
-        from kups.core.storage import _MAX_AUTO_BATCH
+        from kups.core.storage import _DEFAULT_CHUNK_BYTES, _MAX_AUTO_BATCH
 
+        # Frame large enough that the chunk-fitting formula binds below the cap.
+        n = 20_000
         state = SimpleState(
-            position=jnp.zeros((3000,)), velocity=jnp.zeros((1,)), energy=0.0
+            position=jnp.zeros((n,)), velocity=jnp.zeros((1,)), energy=0.0
         )
-        expected = (1 << 20) // (state.position.dtype.itemsize * 3000)
+        expected = _DEFAULT_CHUNK_BYTES // (state.position.dtype.itemsize * n)
         assert 1 < expected < _MAX_AUTO_BATCH
 
         # Large per-frame leaf: the chunk-fitting formula binds.
