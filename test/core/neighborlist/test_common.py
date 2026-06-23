@@ -56,16 +56,16 @@ class TestGenerateImageOffsets:
         coords = _generate_image_offsets(images, FixedCapacity(10))
         expected = np.array(
             [
-                [0, 0, 0],  # center first
+                [1, 1, 0],  # center first
+                [2, 1, 0],
+                [0, 2, 0],
+                [1, 2, 0],
+                [2, 2, 0],
+                [0, 0, 0],
                 [1, 0, 0],
-                [-1, 1, 0],
+                [2, 0, 0],
                 [0, 1, 0],
-                [1, 1, 0],
-                [-1, -1, 0],
-                [0, -1, 0],
-                [1, -1, 0],
-                [-1, 0, 0],
-                [0, 0, 0],  # second 1x1x1 grid
+                [0, 0, 0],  # second 1x1x1 window
             ]
         )
         npt.assert_array_equal(np.asarray(coords), expected)
@@ -79,20 +79,40 @@ class TestCandidateImageCounts:
         images = candidate_image_counts(systems.data.cell, jnp.array([2.0]))
         npt.assert_array_equal(np.asarray(images), np.array([[1, 1, 1]]))
 
-    def test_wide_cutoff_uses_symmetric_stencil(self):
-        # ratio = 0.8 -> 2*ceil(0.8)+1 = 3 images per axis.
+    def test_half_perpendicular_cutoff_uses_single_image(self):
+        # ratio exactly 0.5 (cutoff = perp/2): under the strict ``< cutoff``
+        # mask only the minimum image is in range, so one image per axis.
+        # ``ceil(2 * 0.5) = 1``; the closed-interval ``floor(2 * 0.5) + 1`` would
+        # wrongly emit 2, over-replicating into 8 copies per pair.
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        systems, _ = make_systems(cell, jnp.array([5.0]))
+        images = candidate_image_counts(systems.data.cell, jnp.array([5.0]))
+        npt.assert_array_equal(np.asarray(images), np.array([[1, 1, 1]]))
+
+    def test_integer_ratio_boundary_uses_ceil(self):
+        # ratio exactly 1.0: open-interval count ``ceil(2 * 1.0) = 2``; the image
+        # at exactly the cutoff that ``floor(2 * 1.0) + 1 = 3`` would add is
+        # dropped by the strict mask.
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 1.0))
+        systems, _ = make_systems(cell, jnp.array([1.0]))
+        images = candidate_image_counts(systems.data.cell, jnp.array([1.0]))
+        npt.assert_array_equal(np.asarray(images), np.array([[2, 2, 2]]))
+
+    def test_wide_cutoff_uses_window_width(self):
+        # ratio = 0.8 -> ceil(2 * 0.8) = 2 images per axis.
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 1.0))
         systems, _ = make_systems(cell, jnp.array([0.8]))
         images = candidate_image_counts(systems.data.cell, jnp.array([0.8]))
-        npt.assert_array_equal(np.asarray(images), np.array([[3, 3, 3]]))
+        npt.assert_array_equal(np.asarray(images), np.array([[2, 2, 2]]))
 
     def test_handles_nonfinite_ratios(self):
         class Cells:
             perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]])
             periodic = (True, True, True)
 
+        # ratio = [inf, 1.5, nan] -> [1, ceil(3), 1] = [1, 3, 1].
         images = candidate_image_counts(Cells(), jnp.array([6.0]))
-        npt.assert_array_equal(np.asarray(images), np.array([[1, 5, 1]]))
+        npt.assert_array_equal(np.asarray(images), np.array([[1, 3, 1]]))
 
 
 class TestGetCandidateImagesIsFinite:
@@ -112,12 +132,11 @@ class TestGetCandidateImagesIsFinite:
         cell = PeriodicCell(TriclinicFrame(tril))
         assert float(cell.perpendicular_lengths[0, 0]) == 0.0
         lh, systems, candidates = self._minimal_inputs(cell)
-        idx, offsets, has_been_replicated = _get_candidate_images(
-            candidates, lh, systems, jnp.array([6.0]), FixedCapacity(8)
+        idx, offsets = _get_candidate_images(
+            candidates, lh, lh, systems, jnp.array([6.0]), FixedCapacity(8)
         )
         assert idx.shape[0] <= 8
         assert offsets.shape == (idx.shape[0], 3)
-        assert has_been_replicated.shape == (idx.shape[0],)
 
 
 def _shift_set(batch) -> set[tuple[int, int, int]]:
@@ -157,7 +176,7 @@ class TestReplicateForImages:
         npt.assert_array_equal(np.asarray(batch.edges.shifts), [[[-1.0, 0.0, 0.0]]])
 
     def test_replication_count_and_index_integrity(self):
-        # ratio 0.8 -> 3 images/axis -> 27 copies, every one of the same pair.
+        # ratio 0.8 -> floor(1.6)+1 = 2 images/axis -> 8 copies of the same pair.
         candidates, lh, systems = self._one_candidate(
             box=1.0, cutoff=0.8, p0=[0.0, 0.0, 0.0], p1=[0.3, 0.0, 0.0]
         )
@@ -167,17 +186,20 @@ class TestReplicateForImages:
             lh,
             systems,
             cutoff_table(jnp.array([0.8])),
-            FixedCapacity(27),
+            FixedCapacity(8),
         )
-        assert len(batch.edges) == 27
+        assert len(batch.edges) == 8
         npt.assert_array_equal(
-            np.asarray(batch.key_idx.indices), np.zeros(27, dtype=int)
+            np.asarray(batch.key_idx.indices), np.zeros(8, dtype=int)
         )
         npt.assert_array_equal(
-            np.asarray(batch.query_idx.indices), np.ones(27, dtype=int)
+            np.asarray(batch.query_idx.indices), np.ones(8, dtype=int)
         )
 
-    def test_replication_spans_full_integer_stencil(self):
+    def test_replication_spans_anchored_window(self):
+        # separation f = [-0.3,0,0], ratio 0.8 -> anchor ceil(f-ratio) = [-1,0,0],
+        # width 2/axis -> the 2x2x2 window {-1,0} x {0,1} x {0,1}. It is a superset
+        # of the true in-range images {(-1,0,0),(0,0,0)}; the rest are distance-masked.
         candidates, lh, systems = self._one_candidate(
             box=1.0, cutoff=0.8, p0=[0.0, 0.0, 0.0], p1=[0.3, 0.0, 0.0]
         )
@@ -187,12 +209,11 @@ class TestReplicateForImages:
             lh,
             systems,
             cutoff_table(jnp.array([0.8])),
-            FixedCapacity(27),
+            FixedCapacity(8),
         )
-        expected = {
-            (i, j, k) for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)
-        }
+        expected = {(i, j, k) for i in (-1, 0) for j in (0, 1) for k in (0, 1)}
         assert _shift_set(batch) == expected
+        assert {(-1, 0, 0), (0, 0, 0)} <= _shift_set(batch)
 
     def test_minimum_image_flag_tracks_mic_when_nonzero(self):
         # Pair whose minimum image is the [-1,0,0] copy (delta = -0.8 -> round -1),
@@ -214,7 +235,7 @@ class TestReplicateForImages:
 
     def test_multi_system_replicates_per_system(self):
         # System 0 (box 10, cutoff 2): ratio 0.2 -> 1 copy. System 1 (box 1,
-        # cutoff 0.8): ratio 0.8 -> 27 copies. One call, mixed per-system depth.
+        # cutoff 0.8): ratio 0.8 -> 8 copies. One call, mixed per-system depth.
         systems, _ = systems_from_lvecs(
             jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 1.0]), jnp.array([2.0, 0.8])
         )
@@ -239,16 +260,16 @@ class TestReplicateForImages:
             lh,
             systems,
             cutoff_table(jnp.array([2.0, 0.8])),
-            FixedCapacity(28),
+            FixedCapacity(9),
         )
-        assert len(batch.edges) == 28
+        assert len(batch.edges) == 9
         # First row is the lone system-0 copy; the rest expand the system-1 pair.
         assert (int(batch.key_idx.indices[0]), int(batch.query_idx.indices[0])) == (
             0,
             1,
         )
-        npt.assert_array_equal(np.asarray(batch.key_idx.indices[1:]), np.full(27, 2))
-        npt.assert_array_equal(np.asarray(batch.query_idx.indices[1:]), np.full(27, 3))
+        npt.assert_array_equal(np.asarray(batch.key_idx.indices[1:]), np.full(8, 2))
+        npt.assert_array_equal(np.asarray(batch.query_idx.indices[1:]), np.full(8, 3))
         # One minimum image per candidate: the system-0 copy plus system-1's.
         assert int(batch.is_minimum_image.sum()) == 2
         assert bool(batch.is_minimum_image[0])
