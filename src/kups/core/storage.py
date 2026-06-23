@@ -32,7 +32,9 @@ from types import EllipsisType
 from typing import Any, Literal, Protocol, Self, cast, overload, override
 
 import h5py
+import hdf5plugin  # registers the zstd (and other) HDF5 filters on import
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from kups.core.lens import View
@@ -122,7 +124,7 @@ class EveryNStep(LoggingFrequency):
         return step // self.n
 
 
-_DEFAULT_CHUNK_BYTES = 1 << 20  # ~1 MiB; chunk- and batch-sizing target
+_DEFAULT_CHUNK_BYTES = 1 << 22  # ~4 MiB; chunk- and batch-sizing target
 _MAX_AUTO_BATCH = 128  # cap so cheap (small-frame) groups still flush periodically
 
 
@@ -137,15 +139,19 @@ class Compression:
     bloat). Scalar datasets are stored uncompressed.
 
     Args:
-        codec: HDF5 compression filter, ``"gzip"`` or ``"lzf"``.
-        level: gzip level (0-9); ignored for lzf.
+        codec: HDF5 compression filter: ``"zstd"`` (via hdf5plugin), ``"gzip"``,
+            or ``"lzf"``. zstd is several times faster than gzip at a comparable
+            (often better) ratio on trajectory data, but its files require the
+            hdf5plugin filter to be importable to read.
+        level: Compression level, ``1``-``22`` for zstd and ``0``-``9`` for gzip;
+            ignored for lzf.
         shuffle: Enable the byte-shuffle filter. Helps float arrays; may slightly
             reduce the ratio on highly repetitive data.
         target_chunk_bytes: Approximate per-chunk size in bytes.
     """
 
-    codec: Literal["gzip", "lzf"] = "gzip"
-    level: int = 4
+    codec: Literal["zstd", "gzip", "lzf"] = "zstd"
+    level: int = 1
     shuffle: bool = True
     target_chunk_bytes: int = _DEFAULT_CHUNK_BYTES
 
@@ -168,10 +174,14 @@ class Compression:
         kwargs: dict[str, Any] = {
             "chunks": self._chunk_shape(leading_dims, shape, itemsize),
             "shuffle": self.shuffle,
-            "compression": self.codec,
         }
-        if self.codec == "gzip":
+        if self.codec == "zstd":
+            kwargs.update(hdf5plugin.Zstd(clevel=self.level))
+        elif self.codec == "gzip":
+            kwargs["compression"] = "gzip"
             kwargs["compression_opts"] = self.level
+        else:  # lzf
+            kwargs["compression"] = "lzf"
         return kwargs
 
     def _chunk_shape(
@@ -474,10 +484,16 @@ class Hdf5ObjWriter[Storage]:
             states: Per-step values to stack and write, in order.
             start: Leading-axis index of the first state.
         """
-        leaves = [jax.tree.leaves(s) for s in states]
         stop = start + len(states)
+        stacked = _stack_leaves(states)
         for j, dataset in enumerate(self.datasets):
-            dataset[start:stop] = np.stack([np.asarray(step[j]) for step in leaves])
+            dataset[start:stop] = np.asarray(stacked[j])
+
+
+@jit
+def _stack_leaves(states: list[Any]) -> list[jax.Array]:
+    leaves = [jax.tree.leaves(s) for s in states]
+    return [jnp.stack([step[j] for step in leaves]) for j in range(len(leaves[0]))]
 
 
 @dataclass
@@ -702,7 +718,7 @@ class BackgroundWriter[State, WriterConfig]:
         logging.info("Writer thread started")
         while self.running.is_set():
             try:
-                to_log = self.data_queue.get(timeout=1.0)
+                to_log = self.data_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             try:
