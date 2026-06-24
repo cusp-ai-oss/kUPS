@@ -140,7 +140,7 @@ def _build_state() -> MCMCState:
             labels=(Label("Ar"),),
             sigma=jnp.array([[3.4]]),
             epsilon=jnp.array([[1.0]]),
-            cutoff=Table((SystemId(0),), jnp.array([8.0])),
+            cutoff=8.0,
             tail_corrected=jnp.array([[True]]),
         ),
         KahanSummand.init(
@@ -150,7 +150,7 @@ def _build_state() -> MCMCState:
     ewald_params = WithCache(
         EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([0.0])),
-            cutoff=Table((SystemId(0),), jnp.array([0.0])),  # disabled
+            cutoff=0.0,  # disabled
             reciprocal_lattice_shifts=Table(
                 (SystemId(0),), jnp.zeros((1, 1, 3), dtype=int)
             ),
@@ -209,6 +209,7 @@ def _build_state() -> MCMCState:
             positions=jnp.zeros((0, 3)),
             system=Index.arange(0, label=SystemId),
             motif=Index.arange(0, label=MotifId),
+            cutoff=0.0,
         ),
         blocking_spheres_neighborlist_params=UniversalNeighborlistParameters(
             avg_edges=0,

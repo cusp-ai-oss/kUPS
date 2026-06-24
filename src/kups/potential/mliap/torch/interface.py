@@ -195,12 +195,12 @@ class TorchMliap:
     """Container for a torch MLFF wired into JAX.
 
     Attributes:
-        cutoff: Per-system cutoff radius [Å].
+        cutoff: Cutoff radius [Å].
         wrapper: ``TorchModuleWrapper`` over the MLFF module.
         compute_cell_gradients: Whether the module returns ``"cell_gradients"``.
     """
 
-    cutoff: Table[SystemId, Array]
+    cutoff: float = field(static=True)
     wrapper: TorchModuleWrapper = field(static=True)
     compute_cell_gradients: bool = field(static=True, default=False)
 
@@ -223,7 +223,7 @@ class TorchMliap:
         """
         wrapper = TorchModuleWrapper(module, requires_grad=True)
         return TorchMliap(
-            cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
+            cutoff=cutoff,
             wrapper=wrapper,
             compute_cell_gradients=compute_cell_gradients,
         )

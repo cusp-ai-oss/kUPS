@@ -178,13 +178,13 @@ class EwaldParameters:
 
     Attributes:
         alpha: Ewald screening parameter [1/Ang], shape `(n_graphs,)`.
-        cutoff: Real-space cutoff radius [Ang], shape `(n_graphs,)`.
+        cutoff: Real-space cutoff radius [Ang].
         reciprocal_lattice_shifts: Integer k-vector coefficients,
             shape `(n_graphs, n_kvecs, 3)`.
     """
 
     alpha: Table[SystemId, Array]  # (n_graphs,)
-    cutoff: Table[SystemId, Array]  # (n_graphs,)
+    cutoff: float = field(static=True)
     reciprocal_lattice_shifts: Table[
         SystemId, Array
     ]  # (n_graphs, n_rec_shifts, 3) integers
@@ -236,9 +236,8 @@ class EwaldParameters:
                 cell.keys,
                 jnp.asarray([est.alpha for est in estimates_list]),
             ),
-            cutoff=Table(
-                cell.keys,
-                jnp.asarray([est.real_cutoff for est in estimates_list]),
+            cutoff=float(
+                jnp.max(jnp.asarray([est.real_cutoff for est in estimates_list]))
             ),
             reciprocal_lattice_shifts=Table(cell.keys, padded_shifts),
         )
@@ -338,7 +337,7 @@ def ewald_short_range_energy(
     edge_systems = inp.graph.edge_batch_mask
     erfc = jax.scipy.special.erfc(inp.parameters.alpha[edge_systems] * dists)
     energies = qij * erfc / dists
-    mask = dists < inp.parameters.cutoff[edge_systems]
+    mask = dists < inp.parameters.cutoff
     energies *= mask
     total = inp.graph.edge_batch_mask.sum_over(energies) / 2 * TO_STANDARD_UNITS
     return WithPatch(total, IdPatch[Any]())

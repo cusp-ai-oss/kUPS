@@ -90,7 +90,6 @@ from kups.core.utils.jax import (
     dataclass,
     key_chain,
     no_jax_tracing,
-    tree_map,
 )
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
@@ -177,14 +176,11 @@ class MCMCState:
     exchange_params: Table[SystemId, ParameterSchedulerState]
 
     @property
-    def max_cutoff(self) -> Table[SystemId, Array]:
-        """Per-system maximum cutoff across LJ and Ewald potentials."""
-        return Table(
-            self.systems.keys,
-            jnp.maximum(
-                self.lj_parameters.data.cutoff.data,
-                self.ewald_parameters.data.cutoff.data,
-            ),
+    def max_cutoff(self) -> float:
+        """Maximum cutoff across LJ and Ewald potentials."""
+        return max(
+            self.lj_parameters.data.cutoff,
+            self.ewald_parameters.data.cutoff,
         )
 
     @property
@@ -198,11 +194,9 @@ class MCMCState:
     def guest_only(self) -> MCMCState:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
 
-    def blocking_spheres_neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> NeighborList[Literal[2]]:
+    def blocking_spheres_neighborlist(self, cutoff: float) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.new(
-            self, lens(lambda x: x.blocking_spheres_neighborlist_params), cutoffs
+            self, lens(lambda x: x.blocking_spheres_neighborlist_params), cutoff
         )
 
     @property
@@ -439,15 +433,14 @@ def init_state(key: Array, config: Config) -> MCMCState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts + num_buffer_particles,
         system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
+        max(lj_params.cutoff, ewald_params.cutoff),
     )
     if blocking_spheres.radii.shape[0] > 0:
         # Systems without spheres have no radius to size from, so use the batch-wide max.
-        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
         blocking_nlist = UniversalNeighborlistParameters.estimate(
             particles.data.system.counts + num_buffer_particles,
             system,
-            Table.broadcast_to(max_radius, system),
+            blocking_spheres.cutoff,
         )
     else:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)

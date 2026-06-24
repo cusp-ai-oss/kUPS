@@ -172,7 +172,7 @@ class TestRadialDistributionFunction:
             AllDenseNearestNeighborList(
                 avg_edges=FixedCapacity(4),
                 avg_image_candidates=FixedCapacity(4),
-                cutoffs=Table((SystemId(0),), jnp.array([8.0])),
+                cutoff=8.0,
             ),
         )
 
@@ -251,7 +251,7 @@ class TestRadialDistributionFunction:
         nnlist = AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(4),
             avg_image_candidates=FixedCapacity(4),
-            cutoffs=Table((SystemId(0),), jnp.array([rmax])),
+            cutoff=rmax,
         )
         result = radial_distribution_function(positions, systems, rmax, bins, nnlist)
 

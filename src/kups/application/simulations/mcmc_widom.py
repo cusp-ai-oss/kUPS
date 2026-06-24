@@ -79,7 +79,7 @@ from kups.core.propagator import (
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import GroupId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, key_chain, tree_map
+from kups.core.utils.jax import dataclass, key_chain
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
     ExchangeChanges,
@@ -199,15 +199,14 @@ def init_state(key: Array, config: Config) -> WidomState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts + num_buffer_particles / n_sys,
         system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
+        max(lj_params.cutoff, ewald_params.cutoff),
     )
     if blocking_spheres.radii.shape[0] > 0:
         # Systems without spheres have no radius to size from, so use the batch-wide max.
-        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
         blocking_nlist = UniversalNeighborlistParameters.estimate(
             particles.data.system.counts + num_buffer_particles / n_sys,
             system,
-            Table.broadcast_to(max_radius, system),
+            blocking_spheres.cutoff,
         )
     else:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
@@ -305,7 +304,7 @@ def make_propagator(
     ]
     if state.is_charged:
         potentials.append(
-            make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True)
+            make_ewald_from_state(state_lens, probe=_probe, include_exclusion_mask=True)
         )
     if state.has_blocking_spheres:
         potentials.append(make_blocking_spheres_from_state(state_lens))

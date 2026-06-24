@@ -60,7 +60,7 @@ class TestNearestNeighborListImplementations:
                             avg_image_candidates=FixedCapacity(
                                 image_candidates or candidates
                             ),
-                            cutoffs=cutoffs,
+                            cutoff=float(jnp.max(cutoffs.data)),
                         )
                     )
                 ),
@@ -76,7 +76,7 @@ class TestNearestNeighborListImplementations:
                             avg_image_candidates=FixedCapacity(
                                 image_candidates or candidates
                             ),
-                            cutoffs=cutoffs,
+                            cutoff=float(jnp.max(cutoffs.data)),
                         )
                     )
                 ),
@@ -90,7 +90,7 @@ class TestNearestNeighborListImplementations:
                             avg_image_candidates=FixedCapacity(
                                 image_candidates or edges
                             ),
-                            cutoffs=cutoffs,
+                            cutoff=float(jnp.max(cutoffs.data)),
                         )
                     )
                 ),

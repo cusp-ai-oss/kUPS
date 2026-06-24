@@ -18,7 +18,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from jax import Array
 from pydantic import BaseModel, Field
 
 from kups.application.potential.classical.lennard_jones import (
@@ -30,11 +29,9 @@ from kups.application.potential.mliap.tojax import (
     make_tojaxed_from_state,
 )
 from kups.application.utils.path import get_model_path
-from kups.core.data import Table
 from kups.core.lens import Lens
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
-from kups.core.typing import SystemId
 from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.tojax import TojaxedMliap
@@ -50,7 +47,7 @@ type UMATaskName = Literal["omat", "omol", "oc20", "odac", "omc"]
 type UMAInferenceSettings = Literal["default", "turbo", "turbo_f64"]
 
 type BuiltPotential[State] = tuple[
-    Potential[State, PositionsAndCell, EmptyType, Patch[Any]], Table[SystemId, Array]
+    Potential[State, PositionsAndCell, EmptyType, Patch[Any]], float
 ]
 """``(potential, cutoff)`` where ``cutoff`` sizes the neighbor list."""
 

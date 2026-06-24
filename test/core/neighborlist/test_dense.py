@@ -10,7 +10,7 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.neighborlist.dense import DenseNearestNeighborList, _dense_subselect
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems
+from ._builders import EvalState, make_lh, make_systems
 
 
 class TestDenseSubselect:
@@ -58,12 +58,11 @@ class TestFromState:
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        cutoffs = cutoff_table(jnp.array([2.5]))
 
-        nl = DenseNearestNeighborList.from_state(state, cutoffs)
+        nl = DenseNearestNeighborList.from_state(state, 2.5)
 
         assert isinstance(nl.avg_candidates, LensCapacity)
         assert isinstance(nl.avg_edges, LensCapacity)
         assert int(nl.avg_candidates.size) == 32
         assert int(nl.avg_edges.size) == 16
-        assert float(nl.cutoffs.data[0]) == 2.5
+        assert nl.cutoff == 2.5

@@ -114,13 +114,11 @@ class State:
     inversion_edge_indices: Index[ParticleId]
     inversion_parameters: WithCache[InversionParameters, EmptyCache]
 
-    def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
-    ) -> AllDenseNearestNeighborList:
+    def neighborlist(self, cutoff: float) -> AllDenseNearestNeighborList:
         return AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(N_PARTICLES**2),
             avg_image_candidates=FixedCapacity(N_PARTICLES**2),
-            cutoffs=cutoffs,
+            cutoff=cutoff,
         )
 
 
@@ -226,7 +224,7 @@ def _build_common(positions: Array | None = None) -> _CommonParts:
             labels=_LABELS,
             sigma=jnp.ones((ns, ns)),
             epsilon=jnp.ones((ns, ns)) * 0.5,
-            cutoff=Table((SystemId(0),), jnp.array([5.0])),
+            cutoff=5.0,
         ),
         hb=HarmonicBondParameters(
             labels=_LABELS, x0=jnp.ones((ns, ns)) * 1.5, k=jnp.ones((ns, ns)) * 100.0
@@ -318,13 +316,11 @@ class PotentialConfig(NamedTuple):
     edge_field: str | None
 
 
-def _test_nl_factory(
-    state: Any, cutoffs: Table[SystemId, Array]
-) -> AllDenseNearestNeighborList:
+def _test_nl_factory(state: Any, cutoff: float) -> AllDenseNearestNeighborList:
     return AllDenseNearestNeighborList(
         avg_edges=FixedCapacity(N_PARTICLES**2),
         avg_image_candidates=FixedCapacity(N_PARTICLES**2),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
 
 
@@ -504,12 +500,8 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
         def radius_probe(state: State, patch: Patch[State]) -> RadiusProbe:
             return RadiusProbe(
                 particles=_point_changes(state, patch),
-                neighborlist_after=state.neighborlist(
-                    state.systems.map_data(lambda d: d.cutoff)
-                ),
-                neighborlist_before=state.neighborlist(
-                    state.systems.map_data(lambda d: d.cutoff)
-                ),
+                neighborlist_after=state.neighborlist(5.0),
+                neighborlist_before=state.neighborlist(5.0),
             )
 
         return radius_probe

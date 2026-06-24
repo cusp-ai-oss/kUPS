@@ -89,6 +89,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0), SystemId(0)]),
             motif=Index.new([MotifId(0), MotifId(0)]),
+            cutoff=2.0,
         )
         cls.particle_positions = jnp.array(
             [
@@ -170,6 +171,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=1.0,
         )
         groups = _make_groups([0])
         cell = _make_cell(1)
@@ -204,6 +206,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=1.0,
         )
         # Particle at L - 0.4: real-space distance ~9.6, but PBC distance ~0.4 < 1.0.
         particles = _make_particles(jnp.array([[L - 0.4, 0.0, 0.0]]), [0], [0])
@@ -230,6 +233,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0), SystemId(0)]),
             motif=Index.new([MotifId(0), MotifId(1)]),
+            cutoff=1.0,
         )
         particles = _make_particles(jnp.array([[0.5, 0.0, 0.0]]), [0], [0])
         # The particle's group has motif 1 -> sphere 0 (motif 0) does NOT block,
@@ -273,6 +277,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=1.0,
         )
         # Particle is geometrically inside, but its group has motif 1
         # (not present in any sphere) -> must not block.
@@ -299,6 +304,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=1.0,
         )
         # Two groups so the OOB sentinel is a meaningful out-of-vocab index;
         # both groups carry motif 0 so a clamping bug would silently block.
@@ -333,6 +339,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=0.0,
         )
         particles_z = _make_particles(jnp.array([[0.0, 0.0, 0.0]]), [0], [0])
         groups_z = _make_groups([0])
@@ -353,6 +360,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=-1.0,
         )
         result_n = blocking_spheres_energy(
             BlockingSpheresPotentialInput(
@@ -371,6 +379,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
+            cutoff=1.0,
         )
         particles_f = _make_particles(jnp.array([[1e6, 0.0, 0.0]]), [0], [0])
         result_f = blocking_spheres_energy(
@@ -393,6 +402,7 @@ class TestBlockingSpheresEnergy:
                 positions=jnp.array([[0.0, 0.0, 0.0]]),
                 system=Index.new([SystemId(0)]),
                 motif=Index.new([MotifId(0)]),
+                cutoff=1.0,
             )
             particles = _make_particles(positions, [0], [0])
             inp = BlockingSpheresPotentialInput(
@@ -414,6 +424,7 @@ class TestBlockingSpheresEnergy:
             positions=jnp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
             system=Index.new([SystemId(0), SystemId(1)]),
             motif=Index.new([MotifId(0), MotifId(0)]),
+            cutoff=1.5,
         )
         particles = _make_particles(
             jnp.array([[0.5, 0.0, 0.0], [6.0, 0.0, 0.0]]),

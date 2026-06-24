@@ -22,7 +22,6 @@ from typing import (
     Sequence,
 )
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -78,12 +77,14 @@ class BlockingSpheresParameters:
         positions: Sphere centers, shape `(n_spheres, 3)`
         system: System assignment per sphere
         motif: Motif assignment per sphere
+        cutoff: Neighbor-list cutoff radius [Å] (the maximum sphere radius).
     """
 
     radii: Array
     positions: Array
     system: Index[SystemId]
     motif: Index[MotifId]
+    cutoff: float = field(static=True)
 
     def __post_init__(self) -> None:
         if not isinstance(self.radii, Array):
@@ -124,7 +125,8 @@ class BlockingSpheresParameters:
         positions = jnp.array(positions_list).reshape(-1, 3)
         system = Index.new(system_list, label=SystemId).populate_max_count()
         motif = Index.new(motif_list, label=MotifId).populate_max_count()
-        return BlockingSpheresParameters(radii, positions, system, motif)
+        cutoff = float(max(radii_list)) if radii_list else 0.0
+        return BlockingSpheresParameters(radii, positions, system, motif, cutoff)
 
 
 class _BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): ...
@@ -140,9 +142,7 @@ class _BlockingSpherePoints:
     exclusion: Index[ExclusionId]
 
 
-type BlockingSpheresNeighborListFactory = Callable[
-    [Table[SystemId, Array]], NeighborList[Literal[2]]
-]
+type BlockingSpheresNeighborListFactory = Callable[[float], NeighborList[Literal[2]]]
 
 
 class IsBlockingSpheresProbe(Protocol):
@@ -223,7 +223,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         groups_view: Extracts indexed group data (motif assignments) from state
         systems_view: Extracts indexed systems from state
         parameters_view: Extracts blocking sphere parameters from state
-        neighborlist_view: Extracts a factory that binds cutoffs to a neighbor list
+        neighborlist_view: Extracts a factory that builds the neighbor list
         probe: Probe providing a IsBlockingSpheresProbe
     """
 
@@ -258,11 +258,6 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
             probe_neighborlist = probe_result.neighborlist
             particles = self.particles_view(patched_state)
 
-        # Build cutoffs: remap sphere system indices into systems index space
-        seg_ids = parameters.system.indices_in(tuple(systems.keys))
-        max_radii = jax.ops.segment_max(parameters.radii, seg_ids, len(systems.keys))
-        cutoffs = Table(systems.keys, max_radii)
-
         # NNList particles
         nnlist_particles = particles.map_data(
             lambda p: _BlockingSpherePoints(
@@ -289,7 +284,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
             label=ParticleId,
         )
 
-        neighborlist = probe_neighborlist or neighborlist_factory(cutoffs)
+        neighborlist = probe_neighborlist or neighborlist_factory(parameters.cutoff)
         edges = neighborlist(nnlist_particles, systems, queries=spheres)
         cell = systems.map_data(lambda s: s.cell)
         groups = self.groups_view(state)
@@ -323,7 +318,7 @@ def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch[Any]
         groups_view: Extracts indexed group data (motif assignments) from state
         systems_view: Extracts indexed systems from state
         parameters_view: Extracts blocking sphere parameters (positions, radii)
-        neighborlist_view: Extracts a factory that binds cutoffs to a neighbor list
+        neighborlist_view: Extracts a factory that builds the neighbor list
         probe: Probe returning a IsBlockingSpheresProbe; ``None`` for full recomputation
         gradient_lens: Specifies gradients to compute
         hessian_lens: Specifies Hessians to compute

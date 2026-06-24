@@ -129,7 +129,7 @@ def simple_system():
         atoms=atoms,
         systems=systems,
         model_config=LocalMLIAPData(
-            cutoff=Table((SystemId(0),), jnp.array([2.5])),
+            cutoff=2.5,
             init_function=init_fn,
             edge_function=edge_fn,
             readout_function=readout_fn,
@@ -144,12 +144,12 @@ def simple_system():
         full_neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
-            cutoffs=systems.map_data(lambda d: d.cutoff),
+            cutoff=2.5,
         ),
         update_nnlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
-            cutoffs=systems.map_data(lambda d: d.cutoff),
+            cutoff=2.5,
         ),
     )
 

@@ -170,14 +170,14 @@ class LocalMLIAPData:
     for updating the cache in the state.
 
     Attributes:
-        cutoff: Interaction cutoff radius [Å], shape `(n_systems,)`
+        cutoff: Interaction cutoff radius [Å]
         init_function: Maps atomic numbers to node embeddings
         edge_function: Computes messages from node pairs and displacements
         readout_function: Computes per-atom energies from embeddings and messages
         cache: Cached values for incremental updates
     """
 
-    cutoff: Table[SystemId, Array]
+    cutoff: float = field(static=True)
     init_function: NodeInitFunction = field(static=True)
     edge_function: EdgeFunction = field(static=True)
     readout_function: ReadoutFunction = field(static=True)
@@ -230,7 +230,7 @@ class LocalMLIAPData:
         ).shape[-1]
 
         return LocalMLIAPData(
-            cutoff=Table((SystemId(0),), jnp.array([metadata["cutoff"]], float)),
+            cutoff=float(metadata["cutoff"]),
             init_function=init_fn,
             edge_function=edge_fn,
             readout_function=readout_fn,

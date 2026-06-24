@@ -18,7 +18,7 @@ from kups.core.neighborlist.all_dense import (
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.result import as_result_function
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems
+from ._builders import EvalState, make_lh, make_systems
 
 
 class TestAllSubselect:
@@ -50,7 +50,7 @@ class TestMultiSystemWarning:
         nl = AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(32),
             avg_image_candidates=FixedCapacity(32),
-            cutoffs=cutoff_table(jnp.array([1.0, 1.0])),
+            cutoff=1.0,
         )
         with caplog.at_level(logging.WARNING):
             result = as_result_function(nl)(keys=lh, systems=systems)
@@ -69,9 +69,7 @@ class TestFromState:
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        nl = AllDenseNearestNeighborList.from_state(
-            state, cutoff_table(jnp.array([2.0]))
-        )
+        nl = AllDenseNearestNeighborList.from_state(state, 2.0)
 
         assert isinstance(nl.avg_edges, LensCapacity)
         assert isinstance(nl.avg_image_candidates, LensCapacity)

@@ -71,7 +71,7 @@ class TojaxedMliap:
         model: Exported JAX model.
     """
 
-    cutoff: Table[SystemId, Array]
+    cutoff: float = field(static=True)
     params: list[Array]
     model: export.Exported = field(static=True)
 
@@ -96,7 +96,7 @@ class TojaxedMliap:
             with zf.open("params.msgpack") as f:
                 params = list(msgpack_deserialize(f.read()))
         return TojaxedMliap(
-            cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
+            cutoff=float(cutoff),
             params=params,
             model=model,
         )
