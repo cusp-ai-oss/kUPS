@@ -62,7 +62,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda = ["jax[cuda]>=0.7.2; sys_platform == 'linux'"]
+cuda = [
+    "jax[cuda]>=0.7.2; sys_platform == 'linux'",
+    "nvalchemi-toolkit-ops>=0.4.0; sys_platform == 'linux'",
+]
 hf = ["huggingface-hub>=1.11.0"]
 uma = ["fairchem-core>=2.20.0; python_version <= '3.14'"]
 mace = ["mace-torch>=0.3.16"]
@@ -90,7 +93,10 @@ packages = ["src/kups"]
 include = ["/src", "/LICENSE", "/README.md", "/pyproject.toml"]
 
 [dependency-groups]
-cuda = ["jax[cuda]>=0.7.2; sys_platform == 'linux'"]
+cuda = [
+    "jax[cuda]>=0.7.2; sys_platform == 'linux'",
+    "nvalchemi-toolkit-ops>=0.4.0; sys_platform == 'linux'",
+]
 notebook = [
     "ipywidgets>=8.1.7",
     "ipykernel>=6.29.5",
@@ -147,6 +153,8 @@ ignore-missing-imports = [
     "huggingface_hub",
     "fairchem",
     "fairchem.*",
+    "nvalchemiops",
+    "nvalchemiops.*",
 ]
 
 [tool.pyrefly.errors]
