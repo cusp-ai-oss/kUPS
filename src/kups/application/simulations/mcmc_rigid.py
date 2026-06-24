@@ -53,12 +53,12 @@ from kups.core.data.buffered import add_buffers, system_view
 from kups.core.data.index import unify_keys_by_cls
 from kups.core.lens import bind, identity_lens, lens
 from kups.core.neighborlist import (
+    AdaptiveNeighborList,
     DenseNearestNeighborList,
     Edges,
     NeighborList,
     RefineMaskNeighborList,
     UniversalNeighborlistParameters,
-    adaptive_cutoff_neighborlist_from_state,
     neighborlist_changes,
 )
 from kups.core.parameter_scheduler import ParameterSchedulerState
@@ -270,7 +270,7 @@ class MCMCStateUpdate:
         group_changes = WithIndices(proposal.groups.indices, new_groups)
 
         result = neighborlist_changes(
-            adaptive_cutoff_neighborlist_from_state(state, state.max_cutoff),
+            AdaptiveNeighborList.from_state(state, state.max_cutoff),
             state.particles,
             particle_changes,
             state.systems,

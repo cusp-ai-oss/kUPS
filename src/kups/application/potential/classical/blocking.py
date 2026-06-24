@@ -21,10 +21,10 @@ from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
@@ -45,7 +45,7 @@ from kups.potential.classical.blocking import (
 
 class IsBlockingSpheresGraphState(
     IsState[_BlockingParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, groups, systems, and neighbor list (no parameters)."""
@@ -106,9 +106,7 @@ def make_blocking_spheres_from_state(
     probe: Any = None,
     *,
     parameters: BlockingSpheresParameters | None = None,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a blocking spheres potential, optionally with incremental updates.
 

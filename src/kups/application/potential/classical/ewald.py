@@ -21,11 +21,11 @@ from typing import Any, Literal, Protocol, overload
 from kups.core.cell import Periodic3D
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
@@ -52,7 +52,7 @@ from kups.potential.common.graph import IsGraphProbe
 
 class IsEwaldGraphState(
     IsState[IsEwaldPointData, HasCell[Periodic3D]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, systems, and neighbor list for an Ewald graph (no parameters)."""
@@ -196,9 +196,7 @@ def make_ewald_from_state(
     parameters: EwaldParameters | None = None,
     gradient: Lens[Geometry, Any] | None = None,
     include_exclusion_mask: bool = False,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
 

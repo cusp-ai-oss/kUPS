@@ -71,10 +71,12 @@ wanting custom behavior can compose their own pipeline directly.
 """
 
 from kups.core.neighborlist.adaptive import (
-    CutoffNeighborListPolicy,
-    CutoffNeighborListStrategy,
-    IsAdaptiveCutoffNeighborListState,
-    adaptive_cutoff_neighborlist_from_state,
+    AdaptiveNeighborList,
+    NeighborListCandidate,
+    NeighborListCost,
+    all_dense_cost,
+    cell_list_cost,
+    dense_cost,
 )
 from kups.core.neighborlist.all_connected import (
     InclusionGroupSelector,
@@ -137,6 +139,7 @@ from kups.core.neighborlist.types import (
 )
 
 __all__ = [
+    "AdaptiveNeighborList",
     "AllDenseNearestNeighborList",
     "AllDenseSelector",
     "CandidateBatch",
@@ -144,8 +147,6 @@ __all__ = [
     "CellListNeighborList",
     "CellListSelector",
     "Compactor",
-    "CutoffNeighborListPolicy",
-    "CutoffNeighborListStrategy",
     "DenseNearestNeighborList",
     "DenseSelector",
     "DistanceCutoffMask",
@@ -157,7 +158,6 @@ __all__ = [
     "InBoundsMask",
     "InclusionGroupSelector",
     "InclusionMatchMask",
-    "IsAdaptiveCutoffNeighborListState",
     "IsAllDenseNeighborListParams",
     "IsCellListParams",
     "IsDenseNeighborlistParams",
@@ -167,7 +167,9 @@ __all__ = [
     "MaskOnlyCompactor",
     "MirrorPairEdges",
     "NeighborList",
+    "NeighborListCandidate",
     "NeighborListChangesResult",
+    "NeighborListCost",
     "NeighborListFactory",
     "NeighborListPoints",
     "NeighborListSystems",
@@ -180,7 +182,9 @@ __all__ = [
     "RefineMaskNeighborList",
     "QueriedKeysDedupMask",
     "UniversalNeighborlistParameters",
-    "adaptive_cutoff_neighborlist_from_state",
     "all_connected_neighborlist",
+    "all_dense_cost",
+    "cell_list_cost",
+    "dense_cost",
     "neighborlist_changes",
 ]

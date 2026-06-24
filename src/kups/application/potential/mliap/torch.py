@@ -20,11 +20,11 @@ from typing import Any, Literal, Protocol, overload
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
@@ -39,7 +39,7 @@ from kups.potential.mliap.torch.interface import (
 
 class IsTorchMliapGraphState(
     IsState[IsTorchMliapParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, systems, and neighbor list for a torch MLFF graph (no model)."""
@@ -97,9 +97,7 @@ def make_torch_mliap_from_state(
     *,
     parameters: TorchMliap | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a torch MLFF potential from a typed state.
 

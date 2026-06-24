@@ -19,11 +19,11 @@ from typing import Any, Literal, Protocol, cast, overload
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch
 from kups.core.potential import EMPTY_LENS, EmptyType, Potential
@@ -39,7 +39,7 @@ from kups.potential.mliap.tojax import (
 
 class IsTojaxedGraphState(
     IsState[IsTojaxedParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, systems, and neighbor list for a jaxified graph (no model)."""
@@ -97,9 +97,7 @@ def make_tojaxed_from_state(
     *,
     parameters: TojaxedMliap | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a jaxified potential from a typed state.
 

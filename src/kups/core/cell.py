@@ -836,25 +836,28 @@ class DeformedFrame(BaseFrame, Sliceable):
         return cls.from_frame(TriclinicFrame.from_matrix(vecs))
 
     @property
-    @override
-    def matrix(self) -> SquareMatrix:
-        return self.base.matrix.matmul(self.deformation.matrix)
+    def _base(self) -> Frame:
+        # Reference frame held fixed: stop-gradient the whole frame so every derived
+        # quantity (vectors, matrix, inverse, volume) blocks the base gradient and
+        # only ``deformation`` is optimised.
+        return jax.lax.stop_gradient(self.base)
 
     @property
-    def _base_vectors(self) -> Array:
-        return jax.lax.stop_gradient(self.base.vectors)
+    @override
+    def matrix(self) -> SquareMatrix:
+        return self._base.matrix.matmul(self.deformation.matrix)
 
     @property
     @override
     def reference_vectors(self) -> Array:
-        return self._base_vectors
+        return self._base.vectors
 
     @property
     @override
     def vectors(self) -> Array:
         # Right-multiply: deform Cartesian space (v -> v @ deformation), so atoms at
         # fixed fractional coordinates ride the cell.
-        return self._base_vectors @ self.deformation.vectors
+        return self._base.vectors @ self.deformation.vectors
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
