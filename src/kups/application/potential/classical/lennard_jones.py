@@ -24,11 +24,11 @@ from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, const_lens, identity_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
@@ -62,7 +62,7 @@ class HasLJParticlesAndSystems(
 
 class IsLJGraphState(
     HasLJParticlesAndSystems,
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, systems, and neighbor list for an LJ graph (no parameters)."""
@@ -184,9 +184,7 @@ def make_lennard_jones_from_state(
     *,
     parameters: LennardJonesParameters | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a LJ potential from a typed state, optionally with incremental updates.
 

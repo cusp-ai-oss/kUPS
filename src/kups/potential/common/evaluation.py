@@ -21,10 +21,10 @@ from kups.core.cell import AnyPeriodicity, Periodic3D
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View, lens
 from kups.core.neighborlist import (
+    AdaptiveNeighborList,
     Edges,
     NeighborListFactory,
     UniversalNeighborlistParameters,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch, WithPatch
 from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
@@ -186,7 +186,7 @@ def evaluate_radius_graph_potential[
     hessian_idx_view: View[Any, Hessians] = EMPTY_LENS,
     neighborlist_factory: NeighborListFactory[
         _RadiusGraphEvalState
-    ] = adaptive_cutoff_neighborlist_from_state,
+    ] = AdaptiveNeighborList.from_state,
 ) -> PotentialOut[Gradients, Hessians]:
     """Build a radius graph and evaluate an edge-based energy function on it.
 

@@ -22,11 +22,11 @@ from kups.core.cell import Vacuum
 from kups.core.data import Table
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
@@ -50,7 +50,7 @@ from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 
 class IsCoulombVacuumGraphState(
     IsState[IsCoulombGraphParticles, HasCell[Vacuum]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, systems, and neighbor list for a Coulomb vacuum graph (no cutoff)."""
@@ -157,9 +157,7 @@ def make_coulomb_vacuum_from_state(
     *,
     parameters: Table[SystemId, Array] | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a Coulomb vacuum potential from a typed state, optionally with incremental updates.
 
