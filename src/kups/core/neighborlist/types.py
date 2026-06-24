@@ -263,9 +263,9 @@ class NeighborListFactory[State](Protocol):
     Used by radius-based potential factories so the construction strategy
     can be swapped without coupling the potential to a concrete
     neighbor-list class. The library default is
-    :func:`kups.core.neighborlist.adaptive_cutoff_neighborlist_from_state`,
+    :meth:`kups.core.neighborlist.AdaptiveNeighborList.from_state`,
     which is contravariant-compatible with any state satisfying
-    :class:`IsAdaptiveCutoffNeighborListState`.
+    :class:`IsNeighborListState`.
 
     The ``State`` type parameter is contravariant (it appears only in
     input position in ``__call__``), so a factory written against a

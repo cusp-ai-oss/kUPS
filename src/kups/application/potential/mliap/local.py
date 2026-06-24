@@ -23,11 +23,11 @@ import jax.numpy as jnp
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, bind, const_lens
 from kups.core.neighborlist import (
-    IsAdaptiveCutoffNeighborListState,
+    AdaptiveNeighborList,
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
-    adaptive_cutoff_neighborlist_from_state,
 )
 from kups.core.patch import Patch, Probe
 from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
@@ -43,7 +43,7 @@ from kups.potential.mliap.local import (
 
 class IsLocalMLIAPGraphState(
     IsState[IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
-    IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
+    IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):
     """Particles, systems, and neighbor list for a local MLIAP graph (no model)."""
@@ -149,9 +149,7 @@ def make_local_mliap_from_state(
     out_idx_view: Any = None,
     *,
     parameters: LocalMLIAPData | None = None,
-    neighborlist_factory: NeighborListFactory[
-        Any
-    ] = adaptive_cutoff_neighborlist_from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a local MLIAP potential from a typed state, optionally with incremental updates.
 

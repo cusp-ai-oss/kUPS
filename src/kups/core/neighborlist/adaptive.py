@@ -1,140 +1,195 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Adaptive cutoff neighbor-list construction.
+"""Adaptive cutoff neighbor list with per-call, cost-based dispatch.
 
-The :func:`adaptive_cutoff_neighborlist_from_state` factory picks between
-:class:`DenseNearestNeighborList` and :class:`CellListNeighborList` at
-*construction time* using a static, count-based
-:class:`CutoffNeighborListPolicy`. The returned object is a normal
-``NeighborList[Literal[2]]`` — its ``__call__`` runs exactly one algorithm,
-with no runtime branching.
+:class:`AdaptiveNeighborList` is itself a ``NeighborList[Literal[2]]``. It holds
+a tuple of ``(implementation, cost)`` pairs where each ``cost`` is a
+:class:`NeighborListCost` -- a numerical estimate of that implementation's
+runtime for a given call. On every ``__call__`` it evaluates each cost from the
+call's particle and system counts and dispatches to the cheapest implementation,
+so a single object routes differently across calls.
 
-The policy intentionally avoids inspecting cutoff values, cell volumes, or
-perpendicular box lengths: those are unreliable construction-time signals
-in the current architecture (cells can resize, cutoffs can be bound late).
-Coarse counts (total particle capacity, number of systems, average
-occupancy) are stable enough to drive a deterministic choice.
+The :meth:`AdaptiveNeighborList.new` / :meth:`AdaptiveNeighborList.from_state`
+classmethods seed the tuple with the library implementations
+(:class:`DenseNearestNeighborList`, :class:`CellListNeighborList`,
+:class:`AllDenseNearestNeighborList`) and their default cost guesses. Augmenting
+the set is just appending another ``(implementation, cost)`` pair to
+``implementations``; all implementations are built from one lens, so they share
+the ``UniversalNeighborlistParameters`` capacities.
+
+Costs use coarse counts rather than cutoff or box geometry: counts are static at
+trace time, so the dispatch is a plain Python branch that compiles only the
+selected implementation.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Literal, Protocol
+import math
+from typing import Literal, Protocol, overload
 
 from jax import Array
 
-from kups.core.data import Table
+from kups.core.data import Index, Table
+from kups.core.lens import Lens, lens
+from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.dense import DenseNearestNeighborList
+from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import (
+    IsNeighborListState,
     IsUniversalNeighborlistParams,
     NeighborList,
+    NeighborListPoints,
+    NeighborListSystems,
 )
-from kups.core.typing import SystemId
+from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field
 
 
-class CutoffNeighborListStrategy(StrEnum):
-    """Concrete strategy for ``adaptive_cutoff_neighborlist_from_state``.
+class NeighborListCost(Protocol):
+    """Estimates the relative runtime cost of a neighbor list for one call.
 
-    ``AUTO`` defers to :class:`CutoffNeighborListPolicy`. The other two
-    bypass the policy and force the corresponding implementation — useful
-    for debugging, benchmarking, and reproducibility.
+    Lower is cheaper; :class:`AdaptiveNeighborList` dispatches to the minimum.
+    Return ``math.inf`` to mark an implementation invalid for the given shape.
     """
 
-    AUTO = "auto"
-    DENSE = "dense"
-    CELL_LIST = "cell_list"
-
-
-class _Sized(Protocol):
-    @property
-    def size(self) -> int: ...
-
-
-class IsAdaptiveCutoffNeighborListState[P](Protocol):
-    """State protocol consumed by ``adaptive_cutoff_neighborlist_from_state``.
-
-    Extends :class:`IsNeighborListState` with the static shape information
-    (particle and system counts) needed to evaluate the count-based policy
-    without inspecting cutoff or cell values.
-    """
-
-    @property
-    def neighborlist_params(self) -> P: ...
-    @property
-    def particles(self) -> _Sized: ...
-    @property
-    def systems(self) -> _Sized: ...
+    def __call__(self, num_particles: int, num_systems: int) -> float: ...
 
 
 @dataclass
-class CutoffNeighborListPolicy:
-    """Count-based policy for choosing between dense and cell-list.
-
-    Carries both the strategy gate and its tunable thresholds. With the
-    default ``strategy = AUTO``, :meth:`choose` returns cell-list once the
-    average particles-per-system reaches
-    ``min_avg_particles_per_system_for_cell_list`` and dense otherwise — the
-    rough break-even under ordinary molecular densities. ``DENSE`` and
-    ``CELL_LIST`` short-circuit the heuristic and force the corresponding
-    implementation; useful for debugging, benchmarking, and reproducibility.
+class NeighborListCandidate:
+    """A backing neighbor list paired with its cost estimator.
 
     Attributes:
-        strategy: ``AUTO`` consults the count threshold; ``DENSE`` and
-            ``CELL_LIST`` force the matching concrete implementation.
-        min_avg_particles_per_system_for_cell_list: Average particles per
-            system at or above which cell-list is chosen under ``AUTO``.
+        neighborlist: The candidate implementation.
+        cost: Estimates the implementation's cost for a call's counts.
     """
 
-    strategy: CutoffNeighborListStrategy = field(
-        static=True, default=CutoffNeighborListStrategy.AUTO
-    )
-    min_avg_particles_per_system_for_cell_list: int = field(static=True, default=10_000)
-
-    def choose(
-        self, num_particles: int, num_systems: int
-    ) -> CutoffNeighborListStrategy:
-        """Return the chosen concrete strategy (never ``AUTO``)."""
-        if self.strategy is not CutoffNeighborListStrategy.AUTO:
-            return self.strategy
-        if num_systems <= 0:
-            return CutoffNeighborListStrategy.DENSE
-        avg = num_particles / num_systems
-        if avg >= self.min_avg_particles_per_system_for_cell_list:
-            return CutoffNeighborListStrategy.CELL_LIST
-        return CutoffNeighborListStrategy.DENSE
+    neighborlist: NeighborList[Literal[2]]
+    cost: NeighborListCost = field(static=True)
 
 
-def adaptive_cutoff_neighborlist_from_state(
-    state: IsAdaptiveCutoffNeighborListState[IsUniversalNeighborlistParams],
-    cutoffs: Table[SystemId, Array],
-    *,
-    policy: CutoffNeighborListPolicy = CutoffNeighborListPolicy(),
-) -> NeighborList[Literal[2]]:
-    """Construct a cutoff-bound neighbor list using ``policy``.
+# Average particles per system at which O(N) cell-list overtakes O(N^2/K) dense.
+_CELL_LIST_CROSSOVER = 10_000
 
-    Returns a concrete :class:`DenseNearestNeighborList` or
-    :class:`CellListNeighborList`. The returned object runs exactly one
-    algorithm; tracing it does not compile both branches.
 
-    Args:
-        state: A state exposing ``neighborlist_params`` plus particle/system
-            counts via ``state.particles.size`` and ``state.systems.size``.
-        cutoffs: Per-system cutoff table bound onto the returned neighbor list.
-        policy: Gate + thresholds. Construct
-            ``CutoffNeighborListPolicy(strategy=DENSE)`` (or ``CELL_LIST``)
-            to force a specific implementation.
+def dense_cost(num_particles: int, num_systems: int) -> float:
+    """Default cost for :class:`DenseNearestNeighborList` (``O(N^2/K)``)."""
+    return num_particles**2 / max(num_systems, 1)
 
-    Returns:
-        A :class:`NeighborList[Literal[2]]` that runs the chosen algorithm.
+
+def cell_list_cost(num_particles: int, num_systems: int) -> float:
+    """Default cost for :class:`CellListNeighborList` (``O(N)`` with a large
+    constant, crossing dense at ``_CELL_LIST_CROSSOVER`` particles per system)."""
+    return _CELL_LIST_CROSSOVER * num_particles
+
+
+def all_dense_cost(num_particles: int, num_systems: int) -> float:
+    """Default cost for :class:`AllDenseNearestNeighborList`.
+
+    ``O(N^2)`` across all particles, so it ties dense for a single system and is
+    invalid (``inf``) for multiple systems, which it would incorrectly merge.
     """
-    strategy = policy.choose(state.particles.size, state.systems.size)
-    match strategy:
-        case CutoffNeighborListStrategy.DENSE:
-            return DenseNearestNeighborList.from_state(state, cutoffs)
-        case CutoffNeighborListStrategy.CELL_LIST:
-            return CellListNeighborList.from_state(state, cutoffs)
-        case _:
-            raise ValueError(f"unreachable strategy: {strategy}")
+    return num_particles**2 if num_systems <= 1 else math.inf
+
+
+@dataclass
+class AdaptiveNeighborList(NeighborList[Literal[2]]):
+    """Neighbor list that dispatches to the cheapest backing implementation.
+
+    Holds ``(implementation, cost)`` pairs and, on each call, picks the
+    implementation whose :class:`NeighborListCost` is smallest for that call's
+    counts. Augment by appending pairs to :attr:`implementations`; the seeded
+    implementations share the ``UniversalNeighborlistParameters`` capacities, so
+    growing one grows the shared state.
+
+    Attributes:
+        implementations: Candidate :class:`NeighborListCandidate` pairs. Ties
+            resolve to the earlier entry.
+
+    Example:
+        ```python
+        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        edges = nl(particles, systems)
+        ```
+    """
+
+    implementations: tuple[NeighborListCandidate, ...]
+
+    @classmethod
+    def new[S](
+        cls,
+        state: S,
+        lens: Lens[S, IsUniversalNeighborlistParams],
+        cutoffs: Table[SystemId, Array],
+    ) -> AdaptiveNeighborList:
+        """Seed the library implementations with their default cost guesses.
+
+        Args:
+            state: Object exposing ``UniversalNeighborlistParameters`` via ``lens``.
+            lens: Lens focusing the shared ``IsUniversalNeighborlistParams``.
+            cutoffs: Per-system cutoffs bound onto each implementation.
+
+        Returns:
+            An ``AdaptiveNeighborList`` over dense, cell-list, and all-dense.
+        """
+        return cls(
+            (
+                NeighborListCandidate(
+                    DenseNearestNeighborList.new(state, lens, cutoffs), dense_cost
+                ),
+                NeighborListCandidate(
+                    CellListNeighborList.new(state, lens, cutoffs), cell_list_cost
+                ),
+                NeighborListCandidate(
+                    AllDenseNearestNeighborList.new(state, lens, cutoffs),
+                    all_dense_cost,
+                ),
+            )
+        )
+
+    @classmethod
+    def from_state(
+        cls,
+        state: IsNeighborListState[IsUniversalNeighborlistParams],
+        cutoffs: Table[SystemId, Array],
+    ) -> AdaptiveNeighborList:
+        """Seed from a state exposing ``neighborlist_params``."""
+        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+
+    def _choose(self, num_particles: int, num_systems: int) -> NeighborList[Literal[2]]:
+        """Return the cheapest implementation for the given counts."""
+        return min(
+            self.implementations,
+            key=lambda candidate: candidate.cost(num_particles, num_systems),
+        ).neighborlist
+
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]:
+        nl = self._choose(keys.size, systems.size)
+        if queries is not None:
+            return nl(keys, systems, queries=queries)
+        return nl(keys, systems, queried_keys=queried_keys)

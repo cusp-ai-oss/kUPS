@@ -209,9 +209,8 @@ def valid_edge_set(edges: Edges, n_particles: int) -> set[tuple[int, int]]:
 
 @dataclass
 class EvalState:
-    """Minimal state satisfying ``IsNeighborListState`` /
-    ``IsAdaptiveCutoffNeighborListState``: exposes particles, systems, and
-    neighbor-list capacity hints so ``from_state`` and the adaptive factory work."""
+    """Minimal state satisfying ``IsNeighborListState``: exposes particles,
+    systems, and neighbor-list capacity hints so ``from_state`` works."""
 
     particles: Table
     systems: Table

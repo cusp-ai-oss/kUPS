@@ -1,111 +1,101 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the adaptive cutoff policy and construction-time factory."""
+"""Unit tests for the adaptive cost functions and per-call dispatch."""
+
+import math
 
 import jax.numpy as jnp
 import numpy.testing as npt
 
 from kups.core.neighborlist import (
+    AdaptiveNeighborList,
+    AllDenseNearestNeighborList,
     CellListNeighborList,
-    CutoffNeighborListPolicy,
-    CutoffNeighborListStrategy,
     DenseNearestNeighborList,
-    adaptive_cutoff_neighborlist_from_state,
+    NeighborListCandidate,
+    all_dense_cost,
+    cell_list_cost,
+    dense_cost,
 )
 
 from ._builders import cutoff_table, make_adaptive_state
 
 
-class TestCutoffNeighborListPolicy:
-    """Pure-Python policy over the avg-particles-per-system threshold."""
+def _always_cheapest(num_particles: int, num_systems: int) -> float:
+    return -1.0
 
-    def test_small_avg_picks_dense(self):
-        policy = CutoffNeighborListPolicy()
-        assert (
-            policy.choose(num_particles=100, num_systems=1)
-            is CutoffNeighborListStrategy.DENSE
+
+class TestDefaultCostFunctions:
+    """Default cost guesses reproduce the dense/cell-list crossover."""
+
+    def test_dense_cheaper_below_crossover(self):
+        assert dense_cost(9_999, 1) < cell_list_cost(9_999, 1)
+
+    def test_cell_list_cheaper_above_crossover(self):
+        assert cell_list_cost(20_000, 1) < dense_cost(20_000, 1)
+
+    def test_dense_divides_work_across_systems(self):
+        assert dense_cost(10_000, 100) < dense_cost(10_000, 1)
+
+    def test_all_dense_invalid_for_multiple_systems(self):
+        assert all_dense_cost(100, 2) == math.inf
+        assert math.isfinite(all_dense_cost(100, 1))
+
+    def test_all_dense_ties_dense_for_single_system(self):
+        # Tie -> the earlier (dense) entry wins in dispatch.
+        assert all_dense_cost(500, 1) == dense_cost(500, 1)
+
+
+class TestAdaptiveNeighborList:
+    """The adaptive object dispatches to the cheapest implementation per call."""
+
+    def _nl(self, n_particles: int = 64, n_systems: int = 1) -> AdaptiveNeighborList:
+        state = make_adaptive_state(n_particles=n_particles, n_systems=n_systems)
+        return AdaptiveNeighborList.from_state(
+            state, cutoff_table(jnp.array([2.0] * n_systems))
         )
 
-    def test_sparse_multi_system_picks_dense(self):
-        policy = CutoffNeighborListPolicy()
-        assert (
-            policy.choose(num_particles=10_000, num_systems=200)
-            is CutoffNeighborListStrategy.DENSE
-        )
+    def test_from_state_returns_adaptive(self):
+        assert isinstance(self._nl(), AdaptiveNeighborList)
 
-    def test_large_avg_picks_cell_list(self):
-        policy = CutoffNeighborListPolicy()
-        assert (
-            policy.choose(num_particles=20_000, num_systems=1)
-            is CutoffNeighborListStrategy.CELL_LIST
-        )
+    def test_seeds_three_implementations(self):
+        nl = self._nl()
+        types = {type(c.neighborlist) for c in nl.implementations}
+        assert types == {
+            DenseNearestNeighborList,
+            CellListNeighborList,
+            AllDenseNearestNeighborList,
+        }
 
-    def test_just_below_default_threshold_stays_dense(self):
-        policy = CutoffNeighborListPolicy()
-        assert (
-            policy.choose(num_particles=9_999, num_systems=1)
-            is CutoffNeighborListStrategy.DENSE
-        )
+    def test_chooses_dense_for_small(self):
+        assert isinstance(self._nl()._choose(64, 1), DenseNearestNeighborList)
 
-    def test_custom_threshold(self):
-        policy = CutoffNeighborListPolicy(
-            min_avg_particles_per_system_for_cell_list=500
-        )
-        assert (
-            policy.choose(num_particles=600, num_systems=1)
-            is CutoffNeighborListStrategy.CELL_LIST
-        )
+    def test_chooses_cell_list_for_large(self):
+        assert isinstance(self._nl()._choose(20_000, 1), CellListNeighborList)
 
-    def test_zero_systems_falls_back_to_dense(self):
-        policy = CutoffNeighborListPolicy()
-        assert (
-            policy.choose(num_particles=100_000, num_systems=0)
-            is CutoffNeighborListStrategy.DENSE
+    def test_per_call_dispatch_by_counts(self):
+        # One object routes differently depending on each call's counts.
+        nl = self._nl()
+        assert isinstance(nl._choose(64, 1), DenseNearestNeighborList)
+        assert isinstance(nl._choose(20_000, 1), CellListNeighborList)
+
+    def test_augmentation_overrides_choice(self):
+        # Appending a cheaper pair makes it win, demonstrating easy augmentation.
+        base = self._nl()
+        all_dense = base.implementations[2].neighborlist
+        augmented = AdaptiveNeighborList(
+            base.implementations + (NeighborListCandidate(all_dense, _always_cheapest),)
         )
+        assert augmented._choose(64, 1) is all_dense
 
-
-class TestAdaptiveCutoffFactory:
-    """The factory returns the right concrete class for the chosen strategy."""
-
-    def test_auto_picks_dense_for_small(self):
-        state = make_adaptive_state(n_particles=64, n_systems=1)
-        nl = adaptive_cutoff_neighborlist_from_state(
-            state, cutoff_table(jnp.array([2.0]))
-        )
-        assert isinstance(nl, DenseNearestNeighborList)
-
-    def test_auto_picks_cell_list_for_large(self):
-        state = make_adaptive_state(n_particles=20_000, n_systems=1)
-        nl = adaptive_cutoff_neighborlist_from_state(
-            state, cutoff_table(jnp.array([2.0]))
-        )
-        assert isinstance(nl, CellListNeighborList)
-
-    def test_forced_dense_bypasses_policy(self):
-        state = make_adaptive_state(n_particles=20_000, n_systems=1)
-        nl = adaptive_cutoff_neighborlist_from_state(
-            state,
-            cutoff_table(jnp.array([2.0])),
-            policy=CutoffNeighborListPolicy(strategy=CutoffNeighborListStrategy.DENSE),
-        )
-        assert isinstance(nl, DenseNearestNeighborList)
-
-    def test_forced_cell_list_bypasses_policy(self):
-        state = make_adaptive_state(n_particles=64, n_systems=1)
-        nl = adaptive_cutoff_neighborlist_from_state(
-            state,
-            cutoff_table(jnp.array([2.0])),
-            policy=CutoffNeighborListPolicy(
-                strategy=CutoffNeighborListStrategy.CELL_LIST
-            ),
-        )
-        assert isinstance(nl, CellListNeighborList)
-
-    def test_carries_cutoffs(self):
-        state = make_adaptive_state(n_particles=64, n_systems=1)
-        nl = adaptive_cutoff_neighborlist_from_state(
-            state, cutoff_table(jnp.array([3.5]))
-        )
-        assert isinstance(nl, DenseNearestNeighborList | CellListNeighborList)
-        npt.assert_array_equal(nl.cutoffs.data, jnp.array([3.5]))
+    def test_implementations_carry_cutoffs(self):
+        for candidate in self._nl().implementations:
+            impl = candidate.neighborlist
+            assert isinstance(
+                impl,
+                DenseNearestNeighborList
+                | CellListNeighborList
+                | AllDenseNearestNeighborList,
+            )
+            npt.assert_array_equal(impl.cutoffs.data, jnp.array([2.0]))
