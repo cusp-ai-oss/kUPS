@@ -37,8 +37,9 @@ def make_cycle_function[State](propagator: Propagator[State]) -> CycleFunction[S
     """JIT a propagator into a reusable per-cycle function with state donation.
 
     Pass the result as ``cycle_fn`` to both :func:`run_warmup_cycles` and
-    :func:`run_simulation_cycles` so a single traced-and-compiled program is
-    shared across the warmup and sampling phases.
+    :func:`run_simulation_cycles` so a single traced-and-compiled program is shared
+    across the warmup and sampling phases. For blocked stepping, compose the propagator
+    with :class:`~kups.core.propagator.LoopPropagator` before passing it in.
 
     Args:
         propagator: Step propagator to compile.
