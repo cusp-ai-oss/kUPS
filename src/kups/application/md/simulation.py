@@ -31,7 +31,6 @@ from kups.core.potential import (
     PotentialOut,
 )
 from kups.core.propagator import (
-    LoopPropagator,
     Propagator,
     ResetOnErrorPropagator,
     SequentialPropagator,
@@ -135,19 +134,16 @@ def run_md[State: IsMdState](
         Final simulation state after production run.
     """
     chain = key_chain(key)
-    # Check assertions after each step during warmup cycles
     cycle_fn = make_cycle_function(propagator)
     logging.info("Warmup")
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
-    # Each cycle fuses block_size steps into one dispatch and saves its final frame, so the
-    # trajectory keeps num_steps // block_size frames (block_size=1 = one step per cycle).
-    cycle_fn = make_cycle_function(LoopPropagator(propagator, config.block_size))
-    num_cycles = config.num_steps // config.block_size
     logger = CompositeLogger(
-        TqdmLogger(num_cycles),
-        HDF5StorageWriter(config.out_file, MDLoggedData(), state, num_cycles),
+        TqdmLogger(config.num_steps),
+        HDF5StorageWriter(config.out_file, MDLoggedData(), state, config.num_steps),
     )
-    state = run_simulation_cycles(next(chain), cycle_fn, state, num_cycles, logger)
+    state = run_simulation_cycles(
+        next(chain), cycle_fn, state, config.num_steps, logger
+    )
     return state

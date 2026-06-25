@@ -219,9 +219,6 @@ class MdRunConfig(BaseModel):
     """Number of production steps."""
     num_warmup_steps: int
     """Number of warmup steps before production."""
-    block_size: int = 1
-    """Production steps fused per on-device dispatch (1 = per-step). Only the last frame of
-    each block is saved, so the trajectory has num_steps // block_size frames."""
     seed: int | None
     """Random seed for reproducibility. None for time-based."""
 
