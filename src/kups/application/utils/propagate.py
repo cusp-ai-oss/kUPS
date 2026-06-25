@@ -15,7 +15,6 @@ from jax import Array
 
 from kups.core.logging import Logger
 from kups.core.propagator import (
-    LoopPropagator,
     Propagator,
     propagate_and_fix,
     propagator_with_assertions,
@@ -34,26 +33,21 @@ class CycleFunction[State](Protocol):
     def __call__(self, key: Array, state: State, /) -> Result[State, State]: ...
 
 
-def make_cycle_function[State](
-    propagator: Propagator[State], block_size: int = 1
-) -> CycleFunction[State]:
-    """JIT ``block_size`` propagator steps into one device dispatch (``1`` = per-step).
+def make_cycle_function[State](propagator: Propagator[State]) -> CycleFunction[State]:
+    """JIT a propagator into a reusable per-cycle function with state donation.
 
-    The cycle advances ``block_size`` steps per call -- amortizing the per-step
-    device->host assertion sync -- and returns the block's final state. Pass the result as
-    ``cycle_fn`` to :func:`run_warmup_cycles` / :func:`run_simulation_cycles`; a blocked
-    run therefore saves the last frame of each block.
+    Pass the result as ``cycle_fn`` to both :func:`run_warmup_cycles` and
+    :func:`run_simulation_cycles` so a single traced-and-compiled program is shared
+    across the warmup and sampling phases. For blocked stepping, compose the propagator
+    with :class:`~kups.core.propagator.LoopPropagator` before passing it in.
 
     Args:
         propagator: Step propagator to compile.
-        block_size: Steps fused per dispatch; ``1`` checks assertions every step.
 
     Returns:
         A jitted ``(key, state) -> Result`` cycle function.
     """
-    return jit(
-        as_result_function(LoopPropagator(propagator, block_size)), donate_argnums=(1,)
-    )
+    return jit(as_result_function(propagator), donate_argnums=(1,))
 
 
 def run_warmup_cycles[State](

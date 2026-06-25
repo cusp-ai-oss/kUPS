@@ -1,12 +1,11 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for blocked stepping via ``make_cycle_function(propagator, block_size)``.
+"""Tests for blocked stepping: ``make_cycle_function(LoopPropagator(propagator, K))``.
 
-``block_size`` steps are fused into one device dispatch and only the block's final state
-is returned, so the per-step (``block_size=1``) and blocked paths share one interface. A
-blocked run therefore saves the last frame of each block; ``run_simulation_cycles`` is
-unchanged.
+``LoopPropagator`` fuses ``K`` steps into one device dispatch and returns only the
+block's final state, so the per-step and blocked paths share one interface. A blocked
+run therefore saves the last frame of each block; ``run_simulation_cycles`` is unchanged.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from kups.application.utils.propagate import (
     make_cycle_function,
     run_simulation_cycles,
 )
+from kups.core.propagator import LoopPropagator
 from kups.core.utils.jax import dataclass
 
 
@@ -56,7 +56,7 @@ class _Log:
 
 def test_block_advances_block_size_steps():
     """One block call fuses block_size steps and returns the block's final state."""
-    out = make_cycle_function(_stepper, 5)(jax.random.key(0), _state())
+    out = make_cycle_function(LoopPropagator(_stepper, 5))(jax.random.key(0), _state())
     npt.assert_array_equal(out.value.step, jnp.array([5]))
     npt.assert_allclose(out.value.value, 5.0)
 
@@ -68,7 +68,7 @@ def test_blocked_matches_per_step_final_state():
         key, make_cycle_function(_stepper), _state(), 10, _Log()
     )
     blk = run_simulation_cycles(
-        key, make_cycle_function(_stepper, 5), _state(), 2, _Log()
+        key, make_cycle_function(LoopPropagator(_stepper, 5)), _state(), 2, _Log()
     )
     npt.assert_array_equal(per.step, blk.step)
     npt.assert_allclose(per.value, blk.value)
@@ -78,7 +78,11 @@ def test_saves_last_frame_of_each_block():
     """A blocked run logs once per block -- the last frame of each."""
     log = _Log()
     out = run_simulation_cycles(
-        jax.random.key(0), make_cycle_function(_stepper, 5), _state(), 4, log
+        jax.random.key(0),
+        make_cycle_function(LoopPropagator(_stepper, 5)),
+        _state(),
+        4,
+        log,
     )
     npt.assert_array_equal(out.step, jnp.array([20]))  # 4 blocks x 5
     npt.assert_allclose(log.values, [5.0, 10.0, 15.0, 20.0])  # block-final frames only
@@ -87,7 +91,7 @@ def test_saves_last_frame_of_each_block():
 def test_convergence_stops_early():
     out = run_simulation_cycles(
         jax.random.key(0),
-        make_cycle_function(_stepper, 5),
+        make_cycle_function(LoopPropagator(_stepper, 5)),
         _state(),
         10,
         _Log(),
