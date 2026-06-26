@@ -171,7 +171,7 @@ def _half_time[S: HasIntegratorParams[HasTimeStep]](
     Returns:
         New Indexed system with ``integrator_params.time_step`` halved.
     """
-    return bind(sys, lambda x: x.data.integrator_params.time_step).apply(
+    return bind(sys, lambda x: x.data.integrator_params.time_step).modify(
         lambda x: x / 2
     )
 
@@ -1080,7 +1080,7 @@ class CellPositionStep[State](Propagator[State]):
         # V_old, V_dot both lower-tri ⇒ V_new lower-tri.
         V_new = V_old + (params.time_step[..., None, None] / 2) * V_dot
         # Reconstruct TriclinicFrame so cached volume refreshes.
-        return self.systems.focus(lambda x: x.data.cell.frame).apply(
+        return self.systems.focus(lambda x: x.data.cell.frame).modify(
             state, lambda frame: frame.from_matrix(V_new)
         )
 

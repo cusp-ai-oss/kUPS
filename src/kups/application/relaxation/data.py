@@ -110,7 +110,7 @@ def relax_state_from_ase(
     # cell_factor = atom count (ASE's exp_cell_factor) balances the extensive
     # cell-virial gradient against the per-atom forces in the joint optimiser.
     n_atoms = float(p.data.positions.shape[0])
-    cell = bind(cell, lambda x: x.frame).apply(
+    cell = bind(cell, lambda x: x.frame).modify(
         lambda f: FrechetFrame.from_frame(f, cell_factor=n_atoms)
     )
     cell = cell[None]

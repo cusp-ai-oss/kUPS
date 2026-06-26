@@ -121,10 +121,10 @@ type Modifier[R] = Callable[[R], R]
 
 
 class _NOT_SET_TYPE(enum.Enum):
-    OBJ = enum.auto()
+    NOT_SET = enum.auto()
 
 
-_NOT_SET = _NOT_SET_TYPE.OBJ
+_NOT_SET = _NOT_SET_TYPE.NOT_SET
 
 
 S = TypeVar("S", covariant=True)
@@ -209,8 +209,8 @@ class Lens(Protocol[S, R]):
         """
         ...
 
-    def apply[S2, R2](self: Lens[S2, R2], state: S2, /, modifier: Modifier[R2]) -> S2:
-        """Apply a modifier function to the focused value.
+    def modify[S2, R2](self: Lens[S2, R2], state: S2, /, modifier: Modifier[R2]) -> S2:
+        """Apply a modifier function to the focused value and return the updated state.
 
         Args:
             state: The data structure to modify
@@ -345,7 +345,7 @@ class BoundLens(Protocol[S, R]):
         """
         ...
 
-    def apply[R2](self: BoundLens[S, R2], modifier: Modifier[R2]) -> S:
+    def modify[R2](self: BoundLens[S, R2], modifier: Modifier[R2]) -> S:
         """Apply a modifier function to the focused value in the bound data structure.
 
         Args:
@@ -410,7 +410,7 @@ class BaseLens(Lens[S, R], abc.ABC):
         return NestedLens(self, SimpleLens(view(where)))
 
     @override
-    def apply[S2](self: BaseLens[S2, R], state: S2, modifier: Modifier[R]) -> S2:
+    def modify[S2](self: BaseLens[S2, R], state: S2, modifier: Modifier[R]) -> S2:
         """Apply a modifier function to the focused value."""
         return self.set(state, modifier(self.get(state)))
 
@@ -586,7 +586,7 @@ class SimpleBoundLens(BoundLens[S, R]):
         return self.lens.set(self.target, value)
 
     @override
-    def apply(self, modifier: Modifier[R]) -> S:
+    def modify(self, modifier: Modifier[R]) -> S:
         """Apply a modifier to the focused value in the bound target."""
         return self.lens.set(self.target, modifier(self.lens.get(self.target)))
 
@@ -625,7 +625,7 @@ class SimpleBoundLens(BoundLens[S, R]):
 
 
 @dataclass
-class LambdaLens(BaseLens[S, R]):
+class ExplicitLens(BaseLens[S, R]):
     """A lens that uses custom getter and setter functions.
 
     This allows for more complex lens behavior that cannot be expressed
@@ -636,12 +636,12 @@ class LambdaLens(BaseLens[S, R]):
     _set: Update[S, R] = field(static=True)
 
     @override
-    def get[S2](self: LambdaLens[S2, R], state: S2) -> R:
+    def get[S2](self: ExplicitLens[S2, R], state: S2) -> R:
         """Get the focused value using the custom getter function."""
         return self._get(state)
 
     @override
-    def set[S2, R2](self: LambdaLens[S2, R2], state: S2, value: R2) -> S2:
+    def set[S2, R2](self: ExplicitLens[S2, R2], state: S2, value: R2) -> S2:
         """Set the focused value using the custom setter function."""
         return self._set(state, value)
 
@@ -724,7 +724,7 @@ class TreePathView:
 
 def all_where_lens[S, Target](
     obj: S,
-    conditional: Callable[[Any], bool],
+    predicate: Callable[[Any], bool],
     *,
     target_cls: type[Target] | None = None,
 ) -> Lens[S, tuple[Target, ...]]:
@@ -732,14 +732,17 @@ def all_where_lens[S, Target](
 
     Args:
         obj: An instance of the state type to infer the pytree structure
-        conditional: A predicate function that tests each element
-        target_cls: Optional type hint for the target type (currently unused)
+        predicate: A boolean predicate that tests each element
+        target_cls: Type-inference only; discarded at runtime. Binds the
+            ``Target`` typevar so callers like ``all_isinstance_lens`` get a
+            correctly typed ``Lens[S, tuple[cls, ...]]`` return type.
 
     Returns:
         A lens that focuses on all elements satisfying the condition as a tuple.
     """
-    leaves = jax.tree.leaves_with_path(obj, is_leaf=conditional)
-    paths = [p for p, obj in leaves if conditional(obj)]
+    _ = target_cls
+    leaves = jax.tree.leaves_with_path(obj, is_leaf=predicate)
+    paths = [p for p, obj in leaves if predicate(obj)]
 
     def getter(state: S) -> tuple[Target, ...]:
         return tuple(f(state) for f in map(TreePathView, paths))
@@ -777,7 +780,7 @@ def _traversal_lens[S, R](
             lifted(_PathTraversal(obj=state))
         ).set(state, value)
 
-    return LambdaLens(getter, setter)
+    return ExplicitLens(getter, setter)
 
 
 def lens[S, R](where: Callable[[S], R], /, *, cls: type[S] | None = None) -> Lens[S, R]:
@@ -861,7 +864,7 @@ def bind[S, R](obj: S, where: Callable[[S], R] | None = None) -> BoundLens[S, R]
         A BoundLens that operates on the given object
     """
     if where is None:
-        return SimpleBoundLens(lens(lambda x: x), obj)  # type: ignore[return-value]
+        return SimpleBoundLens(lens(identity), obj)  # type: ignore[return-value]
     return SimpleBoundLens(lens(where), obj)
 
 

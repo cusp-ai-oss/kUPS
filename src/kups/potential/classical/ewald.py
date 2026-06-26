@@ -146,7 +146,7 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
     def __call__(self, state: State, accept: Accept) -> State:
         mask = accept[self.system_idx]
         new_sf = self.new_structure_factor
-        return self.lens.apply(
+        return self.lens.modify(
             state,
             lambda cache: EwaldCache(
                 structure_factor=where_broadcast_last(

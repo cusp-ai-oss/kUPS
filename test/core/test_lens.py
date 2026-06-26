@@ -16,7 +16,7 @@ from kups.core.data import Table
 from kups.core.lens import (
     HasLensFields,
     IndexLens,
-    LambdaLens,
+    ExplicitLens,
     Lens,
     LensField,
     MergedLens,
@@ -82,7 +82,7 @@ def company():
     )
 
 
-@pytest.fixture(params=[SimpleLens, LambdaLens])
+@pytest.fixture(params=[SimpleLens, ExplicitLens])
 def direct_lens(request):
     return request.param
 
@@ -97,12 +97,12 @@ def name_lens(direct_lens):
 
     if direct_lens is SimpleLens:
         return lens(get_name)
-    elif direct_lens is LambdaLens:
+    elif direct_lens is ExplicitLens:
 
         def set_name(state: Person, value: str) -> Person:
             return Person(name=value, age=state.age, address=state.address)
 
-        return LambdaLens(view(get_name), set_name)
+        return ExplicitLens(view(get_name), set_name)
 
 
 @pytest.fixture
@@ -114,12 +114,12 @@ def age_lens(direct_lens):
 
     if direct_lens is SimpleLens:
         return lens(get_age)
-    elif direct_lens is LambdaLens:
+    elif direct_lens is ExplicitLens:
 
         def set_age(state: Person, value: int) -> Person:
             return Person(name=state.name, age=value, address=state.address)
 
-        return LambdaLens(view(get_age), set_age)
+        return ExplicitLens(view(get_age), set_age)
 
 
 @pytest.fixture(params=[("age_lens", 30), ("name_lens", "John Doe")])
@@ -130,7 +130,7 @@ def person_lens_and_target(request, direct_lens):
     return lens, target
 
 
-@pytest.fixture(params=[SimpleLens, LambdaLens])
+@pytest.fixture(params=[SimpleLens, ExplicitLens])
 def scores_lens(request):
     """Factory for creating scores lenses of different types."""
 
@@ -139,12 +139,12 @@ def scores_lens(request):
 
     if request.param is SimpleLens:
         return lens(get_scores)
-    elif request.param is LambdaLens:
+    elif request.param is ExplicitLens:
 
         def set_scores(state: Company, value: jax.Array) -> Company:
             return Company(name=state.name, employees=state.employees, scores=value)
 
-        return LambdaLens(view(get_scores), set_scores)
+        return ExplicitLens(view(get_scores), set_scores)
 
 
 class TestView:
@@ -207,7 +207,7 @@ class TestLensOperations:
         lens, val = person_lens_and_target
 
         # Apply modifier to increment age
-        modified_person = lens.apply(person, lambda age: age * 2)
+        modified_person = lens.modify(person, lambda age: age * 2)
         assert lens.get(modified_person) == val * 2
 
     def test_lens_focus(self, person):
@@ -308,7 +308,7 @@ class TestNestedLens:
             return replace(a, street=value, city="")
 
         outer = lens(get_address)
-        inner = LambdaLens(view(get_street), set_street_and_clear_city)
+        inner = ExplicitLens(view(get_street), set_street_and_clear_city)
 
         result = outer.nest(inner).set(person, "456 Oak Ave")
 
@@ -371,7 +371,7 @@ class TestBoundLens:
         assert person.name == "John Doe"  # Original unchanged
 
         # Test apply
-        new_person = bound_lens.apply(lambda name: name.upper())
+        new_person = bound_lens.modify(lambda name: name.upper())
         assert new_person.name == "JOHN DOE"
 
         # Test focus
@@ -431,8 +431,8 @@ class TestIndexLens:
             index_lens.at(jnp.array([0]))
 
 
-class TestLambdaLensSpecific:
-    """Tests specific to LambdaLens functionality that differs from SimpleLens."""
+class TestExplicitLensSpecific:
+    """Tests specific to ExplicitLens functionality that differs from SimpleLens."""
 
     def test_lambda_lens_custom_transformation(self, person):
         """Test lambda lens with custom transformation on get."""
@@ -443,7 +443,7 @@ class TestLambdaLensSpecific:
         def set_name(state: Person, value: str) -> Person:
             return Person(name=value, age=state.age, address=state.address)
 
-        upper_name_lens = LambdaLens(view(get_upper_name), set_name)
+        upper_name_lens = ExplicitLens(view(get_upper_name), set_name)
 
         # Test get with transformation
         assert upper_name_lens.get(person) == "JOHN DOE"
@@ -702,7 +702,7 @@ class TestMergedLens:
     def test_merged_lens_apply(self, person, merged_lens):
         """Test applying a modifier to merged lens values."""
         # Apply a modifier that uppercases the name and doubles the age
-        result = merged_lens.apply(person, lambda vals: (vals[0].upper(), vals[1] * 2))
+        result = merged_lens.modify(person, lambda vals: (vals[0].upper(), vals[1] * 2))
         assert result.name == "JOHN DOE"
         assert result.age == 60  # 30 * 2
 
@@ -784,14 +784,14 @@ class TestMergedLens:
         assert new_person.age == 30  # unchanged
 
     def test_merged_lens_with_lambda_lens(self, person):
-        """Test merging with a LambdaLens."""
+        """Test merging with a ExplicitLens."""
         name_lens = lens(lambda p: p.name, cls=Person)
 
         # Create a lambda lens for age
         def set_age(state: Person, value: int) -> Person:
             return Person(name=state.name, age=value, address=state.address)
 
-        age_lambda_lens = LambdaLens(view(lambda p: p.age), set_age)
+        age_lambda_lens = ExplicitLens(view(lambda p: p.age), set_age)
 
         merged = name_lens.merge(age_lambda_lens)
 
@@ -809,7 +809,7 @@ class TestMergedLens:
 
         # Perform various operations
         merged_lens.get(person)
-        merged_lens.apply(person, lambda x: (x[0].upper(), x[1] + 10))
+        merged_lens.modify(person, lambda x: (x[0].upper(), x[1] + 10))
 
         # Original should be unchanged
         assert person.name == original_name
@@ -1369,7 +1369,7 @@ class TestLensField:
         counter = Counter(count=5)
 
         count_lens = Counter.count
-        new_counter = count_lens.apply(counter, lambda x: x + 10)
+        new_counter = count_lens.modify(counter, lambda x: x + 10)
 
         assert new_counter.count == 15
         assert counter.count == 5  # Original unchanged
@@ -1741,7 +1741,7 @@ class TestMethodInvocationInLenses:
         x = Table(tuple(range(5)), jnp.arange(5))
 
         # Use apply for transformations as suggested by jonkhler
-        result = bind(x).apply(lambda s: s.map_data(lambda x: x * 2))
+        result = bind(x).modify(lambda s: s.map_data(lambda x: x * 2))
 
         assert isinstance(result, Table)
         assert jnp.array_equal(result.data, jnp.arange(5) * 2)
@@ -2433,7 +2433,7 @@ class TestIndexingAndSlicingInTraversal:
         npt.assert_array_equal(result[1], jnp.arange(4))
 
         # Apply transformation to the sliced portion
-        new_x = slice_lens.apply(
+        new_x = slice_lens.modify(
             x, lambda sliced: jax.tree.map(lambda y: y * 10, sliced)
         )
         assert len(new_x) == 3

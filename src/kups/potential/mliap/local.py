@@ -311,7 +311,7 @@ class LocalMLIAPPatch[State](Patch[State]):
         """
         new_cache = self.cache
         mask = accept[self.system_idx]
-        return self.lens.apply(
+        return self.lens.modify(
             state,
             lambda cache: tree_map(
                 lambda a, b: where_broadcast_last(mask, a, b), new_cache, cache
@@ -395,7 +395,7 @@ def local_mliap_energy_update[
     changes = inp.point_cloud_changes
     change_indices = changes.indices
     change_raw = change_indices.indices_in(old_point_cloud.particles.keys)
-    new_point_cloud = bind(old_point_cloud, lambda x: x.particles).apply(
+    new_point_cloud = bind(old_point_cloud, lambda x: x.particles).modify(
         lambda p: p.update(change_indices, changes.data)
     )
     n = old_point_cloud.particles.size
@@ -711,7 +711,7 @@ def make_local_mliap_from_state(
         out_idx_view = state.focus(
             lambda x: bind(
                 x.local_mliap_model.cache, lambda x: x.total_energies.data
-            ).apply(lambda x: jnp.arange(x.size, dtype=int))
+            ).modify(lambda x: jnp.arange(x.size, dtype=int))
         )
 
     model_lens = state.focus(lambda x: x.local_mliap_model.data)
