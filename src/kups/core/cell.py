@@ -1020,7 +1020,7 @@ def make_supercell[T, T2, C: Cell[Any]](
         lambda x: jnp.repeat(x[None], n_reps, axis=0).reshape(-1, *x.shape[1:]),
         to_replicate,
     )
-    replicated = to_shift.apply(
+    replicated = to_shift.modify(
         replicated,
         lambda y: jax.tree.map(
             lambda x: new_cell.wrap(

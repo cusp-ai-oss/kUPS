@@ -348,7 +348,7 @@ def run(config: Config) -> WidomState:
     state = run_warmup_cycles(
         next(chain), cycle_fn, state, config.run.num_warmup_cycles
     )
-    state = bind(state, lambda x: x.widom_statistics.data).apply(WidomStatistics.reset)
+    state = bind(state, lambda x: x.widom_statistics.data).modify(WidomStatistics.reset)
 
     logged_data = make_widom_logged_data(state)
     logger = CompositeLogger(

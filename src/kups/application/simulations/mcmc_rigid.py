@@ -190,7 +190,7 @@ class MCMCState:
 
     @property
     def guest_only(self) -> MCMCState:
-        return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
+        return bind(self, lambda x: x.particles.data).modify(MCMCParticles.guest_only)
 
     def blocking_spheres_neighborlist(
         self, cutoffs: Table[SystemId, Array]

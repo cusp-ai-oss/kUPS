@@ -322,7 +322,7 @@ class ScaledPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
             Scaled potential output with original patch
         """
         out = self.potential(state, patch)
-        out = bind(out).focus(lambda x: x.data).apply(lambda x: x * self.scale)
+        out = bind(out).focus(lambda x: x.data).modify(lambda x: x * self.scale)
         return out
 
 

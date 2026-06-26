@@ -97,10 +97,10 @@ def _prepare(
     )
     frames = systems.map_data(lambda s: s.cell.frame.materialize())
     keys_frame = frames[keys.data.system]
-    keys = bind(keys, lambda x: x.data.positions).apply(keys_frame.to_fractional)
+    keys = bind(keys, lambda x: x.data.positions).modify(keys_frame.to_fractional)
     if queries is not None:
         queries_frame = frames[queries.data.system]
-        queries = bind(queries, lambda x: x.data.positions).apply(
+        queries = bind(queries, lambda x: x.data.positions).modify(
             queries_frame.to_fractional
         )
 

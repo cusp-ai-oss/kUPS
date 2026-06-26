@@ -382,7 +382,7 @@ def mcmc_state_from_config(
     n_host = len(hp.keys)
     if host.cell_replication is not None:
         pos_lens = lens(lambda x: x.positions, cls=Particles)
-        p = pos_lens.apply(p, cell.wrap)
+        p = pos_lens.modify(p, cell.wrap)
         cell, p = make_supercell(cell, host.cell_replication, p, pos_lens)
         n_host = len(p.positions)
     n_ads = len(adsorbates)

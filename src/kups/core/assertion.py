@@ -414,7 +414,7 @@ class AssertionContext:
         return (
             bind(self)
             .focus(lambda ctx: ctx.assertions)
-            .apply(lambda assertions: assertions + (assertion,))
+            .modify(lambda assertions: assertions + (assertion,))
         )
 
     def check_assertions(self) -> Array:
@@ -601,11 +601,11 @@ def scan_handler(
         """Initialize all assertions to be true."""
 
         def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-            a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
+            a = bind(a).focus(lambda a: a.predicate).modify(jnp.ones_like)
             a = (
                 bind(a)
                 .focus(lambda a: (a.fix_args, a.fmt_args))
-                .apply(partial(jax.tree.map, jnp.empty_like))
+                .modify(partial(jax.tree.map, jnp.empty_like))
             )
             return a
 
@@ -657,11 +657,11 @@ def while_handler(
             return jnp.full_like(x, fill_value=-jnp.inf)
 
         def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-            a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
+            a = bind(a).focus(lambda a: a.predicate).modify(jnp.ones_like)
             a = (
                 bind(a)
                 .focus(lambda a: (a.fix_args, a.fmt_args))
-                .apply(partial(jax.tree.map, _sentinel_like))
+                .modify(partial(jax.tree.map, _sentinel_like))
             )
             return a
 

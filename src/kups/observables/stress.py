@@ -223,7 +223,7 @@ def total_lattice_gradient[C: Cell[AnyPeriodicity]](
         # so its row carries no atoms -- drop the coupling there.
         coupling = coupling * jnp.array(cell.periodic)[:, None]
         coupling_gradient = cell.frame.parameter_gradient(coupling)
-        return bind(partial, lambda c: c.frame).apply(
+        return bind(partial, lambda c: c.frame).modify(
             lambda f: tree_map(jnp.add, f, coupling_gradient)
         )
 
