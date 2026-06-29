@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from functools import cache
 from pathlib import Path
 from typing import Callable
 
@@ -64,6 +65,8 @@ def particles_from_ase(
 ]:
     """Build particle data and cell from an ASE Atoms object or file path.
 
+    Results are cached when ``atoms`` is a file path.
+
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
@@ -73,7 +76,26 @@ def particles_from_ase(
         rotates Cartesian positions into the lower-triangular frame.
     """
     if isinstance(atoms, (str, Path)):
-        atoms = next(ase.io.iread(atoms, index=-1, store_tags=True))
+        return _particles_from_path(atoms)
+    return _particles_from_atoms(atoms)
+
+
+@cache
+def _particles_from_path(
+    path: str | Path,
+) -> tuple[
+    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+]:
+    """Read an ASE-readable file and build cached particle data and cell."""
+    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+
+
+def _particles_from_atoms(
+    atoms: ase.Atoms,
+) -> tuple[
+    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+]:
+    """Build particle data and cell from an ASE Atoms object."""
     L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
     pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
     cell = Cell.from_pbc(TriclinicFrame.from_matrix(L), pbc)

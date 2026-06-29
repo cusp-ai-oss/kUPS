@@ -10,7 +10,7 @@ import logging
 from jax import Array
 
 from kups.application.mcmc.data import RunConfig
-from kups.application.mcmc.logging import MCMCLoggedData
+from kups.application.mcmc.logging import IsMCMCState, MCMCLoggedData
 from kups.application.utils.propagate import (
     make_cycle_function,
     run_simulation_cycles,
@@ -19,10 +19,10 @@ from kups.application.utils.propagate import (
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.propagator import Propagator
 from kups.core.storage import HDF5StorageWriter
-from kups.core.utils.jax import key_chain
+from kups.core.utils.jax import jit, key_chain
 
 
-def run_mcmc[State](
+def run_mcmc[State: IsMCMCState](
     key: Array,
     propagator: Propagator[State],
     state: State,
@@ -41,14 +41,22 @@ def run_mcmc[State](
     Returns:
         Final simulation state after production run.
     """
+
+    @jit
+    def _postfix_jit(state: State):
+        return state.groups.num_occupied
+
+    def postfix(state: State):
+        return {"Loading": f"{_postfix_jit(state)}"}
+
     chain = key_chain(key)
     cycle_fn = make_cycle_function(propagator)
     logging.info("Warming up (%d cycles)...", config.num_warmup_cycles)
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_cycles)
     logging.info("Production run (%d cycles)...", config.num_cycles)
-    logger = CompositeLogger(
+    logger = CompositeLogger[State](
         HDF5StorageWriter(config.out_file, logged_data, state, config.num_cycles),
-        TqdmLogger(config.num_cycles),
+        TqdmLogger(config.num_cycles, postfix=postfix),
     )
     state = run_simulation_cycles(
         next(chain), cycle_fn, state, config.num_cycles, logger
