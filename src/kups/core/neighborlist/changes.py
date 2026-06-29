@@ -67,12 +67,13 @@ def neighborlist_changes(
     p_idx = rh.indices.indices_in(lh.keys)
 
     # Build a single self-graph query with both old and proposed particles in
-    # the key table. ``queried_keys`` asks the neighbor list to enumerate
-    # only edges incident to the old/proposed changed rows.
+    # the key table. ``queried_keys`` enumerates edges incident to the changed
+    # old slots and the proposed rows. Concatenating in the shifted key space
+    # maps out-of-bounds (no-op) old slots to the combined OOB sentinel rather
+    # than ``len(lh)``, so an empty per-system change cannot alias the first
+    # appended particle and duplicate its edges.
     keys_combined = Table.union((lh, rh.data))
-    queried_keys = Index(
-        keys_combined.keys, jnp.concatenate([p_idx, jnp.arange(k) + N])
-    )
+    queried_keys = Index.concatenate(rh.indices, rh.data.index, shift_keys=True)
 
     # single neighborlist call
     all_edges = neighborlist(keys_combined, systems, queried_keys=queried_keys)

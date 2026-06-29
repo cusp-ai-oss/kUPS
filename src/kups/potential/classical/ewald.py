@@ -45,6 +45,7 @@ from kups.core.potential import (
     Energy,
     Potential,
     PotentialOut,
+    ScaledPotential,
     SummedPotential,
 )
 from kups.core.typing import (
@@ -56,7 +57,12 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.functools import pipe
-from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_zeros_like
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    no_jax_tracing,
+    tree_zeros_like,
+)
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
 from kups.potential.classical.coulomb import _pairwise_coulomb_energy
@@ -332,27 +338,6 @@ def ewald_short_range_energy(
     return WithPatch(total, IdPatch[Any]())
 
 
-def exclusion_correction_energy(
-    inp: EwaldShortRangeInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
-    """Correction for excluded pairs (e.g., bonded atoms).
-
-    Math: ``E_excl = E_sr(excluded) - E_vacuum(excluded)``.
-
-    Subtracts the vacuum Coulomb energy from the short-range Ewald energy
-    for excluded pairs, ensuring they have zero net Coulomb interaction
-    in the total Ewald sum.
-    """
-    return WithPatch(
-        jax.tree.map(
-            jnp.subtract,
-            ewald_short_range_energy(inp).data,
-            _pairwise_coulomb_energy(inp).data,
-        ),
-        IdPatch[Any](),
-    )
-
-
 def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy:
     """Reciprocal-space energy from structure factors.
 
@@ -525,7 +510,7 @@ def _structure_factor_update_jvp(
         full_response_dot += einops.einsum(
             d_positions,
             kvecs[batch_mask.indices],
-            "particles dim, particles shifts dim, -> particles shifts",
+            "particles dim, particles shifts dim -> particles shifts",
         )[..., None]
     if not isinstance(d_kvecs, jax.custom_derivatives.SymbolicZero):
         full_response_dot += einops.einsum(
@@ -898,16 +883,15 @@ def make_ewald_potential[
     ) -> Table[ParticleId, _ParticleData]:
         """Convert particles, deriving inclusion from `inclusion_fn`."""
         p = indexed.data
-        particle_ids = tuple(indexed.keys)
-        excl = Index(particle_ids, jnp.arange(len(particle_ids)), _cls=indexed.cls)
+        excl = Index.arange(len(indexed), label=ExclusionId)
         return Table(
             indexed.keys,
             _ParticleData(
                 p.positions,
                 p.charges,
                 p.system,
-                inclusion=inclusion_fn(p).to_cls(InclusionId),
-                exclusion=excl.to_cls(ExclusionId),
+                inclusion=inclusion_fn(p),
+                exclusion=excl,
             ),
         )
 
@@ -1026,14 +1010,15 @@ def make_ewald_potential[
         probe=excl_probe,
     )
     exclusion_correction = PotentialFromEnergy(
-        energy_fn=exclusion_correction_energy,
-        composer=LocalGraphSumComposer(excl_rg, parameter_lens),
+        energy_fn=_pairwise_coulomb_energy,
+        composer=LocalGraphSumComposer(excl_rg, lambda x: None),
         gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens.focus(lambda x: x.exclusion) if cache_lens else None,
         hessian_idx_view=hessian_idx_view,
         patch_idx_view=patch_idx_view,
     )
+    exclusion_correction = ScaledPotential(exclusion_correction, -1)
     if include_exclusion_mask:
         return EwaldPotential(
             (sr_potential, lr_potential, self_potential, exclusion_correction)

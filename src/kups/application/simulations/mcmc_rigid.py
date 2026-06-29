@@ -50,7 +50,7 @@ from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
-from kups.core.data.index import unify_keys_by_cls
+from kups.core.data.index import Index, unify_keys_by_cls
 from kups.core.lens import bind, identity_lens, lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
@@ -219,6 +219,31 @@ class MCMCState:
         )
 
 
+def _self_excluding(
+    particles: Table[ParticleId, MCMCParticles],
+    offset: int = 0,
+) -> Table[ParticleId, MCMCParticles]:
+    """Give every particle a unique exclusion group.
+
+    Used so a neighbor-list query keeps all geometric pairs (real exclusions are
+    applied later during refinement). ``offset`` shifts the group ids so the
+    proposed particles' groups stay disjoint from the current particles' groups
+    when both are combined in a single ``neighborlist_changes`` query; otherwise
+    a proposed atom and the current particle sharing the same group id would be
+    wrongly excluded.
+
+    Args:
+        particles: Particles to re-group.
+        offset: First group id to assign (default ``0``).
+
+    Returns:
+        The particles with each assigned its own exclusion group.
+    """
+    n = particles.size
+    self_group = Index.integer(jnp.arange(n) + offset, n=n + offset, label=GroupId)
+    return bind(particles, lambda p: p.data.group).set(self_group)
+
+
 @dataclass
 class MCMCStateUpdate:
     """Proposed MCMC state change with pre-computed neighbor lists.
@@ -269,10 +294,14 @@ class MCMCStateUpdate:
         particle_changes = WithIndices(proposal.particles.indices, new_particles)
         group_changes = WithIndices(proposal.groups.indices, new_groups)
 
+        # We don't want to exclude edges based on the group here and leave that for the refinement happening later.
         result = neighborlist_changes(
             AdaptiveNeighborList.from_state(state, state.max_cutoff),
-            state.particles,
-            particle_changes,
+            _self_excluding(state.particles),
+            WithIndices(
+                particle_changes.indices,
+                _self_excluding(new_particles, offset=state.particles.size),
+            ),
             state.systems,
             compaction=1.0,
         )

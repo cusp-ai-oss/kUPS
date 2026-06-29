@@ -8,8 +8,12 @@ separate before/after neighbor list calls would produce, while respecting
 system boundaries and the compaction fraction.
 """
 
+from collections import Counter
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from kups.core.capacity import FixedCapacity
@@ -17,6 +21,7 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.wrappers import WithIndices
 from kups.core.neighborlist import DenseNearestNeighborList, neighborlist_changes
+from kups.core.neighborlist.edges import Edges
 
 from .._builders import (
     call_with_retry,
@@ -25,6 +30,19 @@ from .._builders import (
     make_systems,
     valid_edge_set,
 )
+
+_EdgeKey = tuple[int, int, tuple[int, ...]]
+
+
+def _edge_counts(edges: Edges[Literal[2]], n_particles: int) -> Counter[_EdgeKey]:
+    """Count occurrences of each ``(i, j, shift)`` edge with both ends in range."""
+    raw = np.asarray(edges.indices.indices)
+    shifts = np.asarray(jnp.round(edges.shifts[:, 0, :]).astype(int))
+    counts: Counter[_EdgeKey] = Counter()
+    for (a, b), s in zip(raw, shifts):
+        if a < n_particles and b < n_particles:
+            counts[(int(a), int(b), tuple(int(x) for x in s))] += 1
+    return counts
 
 
 class TestNeighborlistChanges:
@@ -154,6 +172,48 @@ class TestNeighborlistChanges:
         assert (1, 0) in added
         assert (1, 2) not in added
         assert (2, 1) not in added
+
+    def test_noop_change_in_batch_does_not_duplicate_edges(self):
+        """A no-op per-system change must not duplicate another system's edges.
+
+        In batched GCMC one system often contributes an empty change while
+        another moves a particle. The empty change's slot is the out-of-bounds
+        sentinel; it must not alias an appended particle and cause that
+        particle's edges to be emitted more than once.
+        """
+        positions = jnp.array(
+            [
+                [0.0, 0.0, 0.0],  # 0 sys0
+                [1.0, 0.0, 0.0],  # 1 sys0 (moves next to particle 2)
+                [5.0, 0.0, 0.0],  # 2 sys0
+                [2.0, 0.0, 0.0],  # 3 sys1
+            ]
+        )
+        batch = jnp.array([0, 0, 0, 1])
+        N = 4
+        # rh row 0: sys0 real move; rh row 1: sys1 no-op (queried slot == N == OOB).
+        new_pos = jnp.array([[4.5, 0.0, 0.0], [8.0, 0.0, 0.0]])
+        rh_batch = jnp.array([0, 1])
+        changed_idx = jnp.array([1, N])
+
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+            )
+        )
+        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]))
+        nl = self._make_nl(cutoffs)
+
+        lh = make_lh(positions, batch)
+        rh_table, queried_keys = make_rh(lh, new_pos, rh_batch, changed_idx)
+        result = neighborlist_changes(
+            nl, lh, WithIndices(queried_keys, rh_table), systems
+        )
+
+        counts = _edge_counts(result.added, N)
+        assert (1, 2, (0, 0, 0)) in counts, "expected the moved particle's new edge"
+        duplicates = {e: c for e, c in counts.items() if c > 1}
+        assert not duplicates, f"duplicated added edges: {duplicates}"
 
     @pytest.mark.parametrize("compaction", [0.5, 0.75, 1.0])
     def test_compaction(self, compaction: float):

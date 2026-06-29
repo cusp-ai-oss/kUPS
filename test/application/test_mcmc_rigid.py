@@ -20,6 +20,11 @@ from kups.application.mcmc.data import (
     MotifParticles,
     RunConfig,
 )
+from kups.application.potential.classical.ewald import make_ewald_from_state
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+    make_lennard_jones_tail_correction_from_state,
+)
 from kups.application.simulations.mcmc_rigid import (
     Config,
     EwaldConfig,
@@ -27,6 +32,7 @@ from kups.application.simulations.mcmc_rigid import (
     MCMCState,
     MCMCStateUpdate,
     _probe,
+    init_state,
     make_propagator,
     run,
 )
@@ -34,13 +40,19 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Table, WithCache, WithIndices
 from kups.core.data.buffered import Buffered
 from kups.core.data.index import Index
+from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.parameter_scheduler import (
     AcceptanceHistory,
     Correlation,
     ParameterSchedulerState,
 )
-from kups.core.potential import EMPTY, PotentialOut
+from kups.core.potential import (
+    EMPTY,
+    PotentialAsPropagator,
+    PotentialOut,
+    sum_potentials,
+)
 from kups.core.typing import (
     GroupId,
     Label,
@@ -54,7 +66,9 @@ from kups.mcmc.moves import (
     ExchangeGroupData,
     ExchangeParticleData,
     ParticlePositionChanges,
+    delete_random_motif,
     exchange_changes_from_position_changes,
+    insert_random_motif,
 )
 from kups.potential.classical.blocking import BlockingSpheresParameters
 from kups.potential.classical.ewald import EwaldCache, EwaldParameters
@@ -477,6 +491,124 @@ def _assert_readable(out_file: str) -> None:
     assert jnp.isfinite(result.energy.mean).all().item()
     assert jnp.isfinite(result.loading.mean).all().item()
     assert (result.loading.mean >= 0.0).all().item()
+
+
+def _batched_config(n_hosts: int, init_adsorbates: tuple[int, ...]) -> Config:
+    """A multi-host (batched) CO2 config; each host is an independent system."""
+    base = _config(exchange_prob=0.5, init_adsorbates=init_adsorbates)
+    host = base.hosts[0]
+    return base.model_copy(update={"hosts": tuple(host for _ in range(n_hosts))})
+
+
+class TestExchangeEnergyConsistency:
+    """Incremental GCMC exchange energy must equal a full recomputation.
+
+    The propagator accepts/rejects moves with an incrementally updated energy,
+    which must match a full evaluation of the resulting configuration. On an
+    insertion/deletion the molecule's intramolecular real-space (short-range)
+    Ewald energy must be added/removed, not only its intermolecular pairs.
+    Checked here for a deletion on a batched (multi-system) charged system.
+    """
+
+    @staticmethod
+    def _full_potential():
+        sl = identity_lens(MCMCState)
+        return sum_potentials(
+            make_lennard_jones_from_state(sl, _probe),
+            make_lennard_jones_tail_correction_from_state(sl),
+            make_ewald_from_state(sl, _probe, include_exclusion_mask=True),
+        )
+
+    def test_batched_deletion_matches_full(self):
+        config = _batched_config(n_hosts=4, init_adsorbates=(2,))
+        state = init_state(jax.random.key(0), config)
+        pot = jax.jit(self._full_potential())
+
+        # Populate caches with a full evaluation.
+        prop = jax.jit(PotentialAsPropagator(pot))
+        state = prop(jax.random.key(1), state)
+
+        # Force a deletion of one molecule per system via the real move machinery.
+        proposal = jax.jit(delete_random_motif)(
+            jax.random.key(2),
+            state.motifs,
+            state.particles,
+            state.groups,
+            state.move_capacity,
+        )
+        update = jax.jit(MCMCStateUpdate.from_changes)(
+            jax.random.key(3), state, proposal
+        )
+
+        # Energy the propagator would use to accept/reject (incremental).
+        out = pot(state, patch=update)
+        e_incr = out.data.total_energies.data
+
+        # Apply the deletion and recompute the energy from scratch.
+        accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
+        new_state = out.patch(update(state, accept), accept)
+        n_after = new_state.groups.data.system.counts.data
+        assert int(n_after.max()) < 2, "deletion did not reduce molecule count"
+        e_full = pot(new_state).data.total_energies.data
+        npt.assert_allclose(e_incr, e_full, atol=1e-3)
+
+    def test_batched_insertion_matches_full(self):
+        config = _batched_config(n_hosts=4, init_adsorbates=(2,))
+        state = init_state(jax.random.key(0), config)
+        pot = jax.jit(self._full_potential())
+
+        # Populate caches with a full evaluation.
+        state = PotentialAsPropagator(pot)(jax.random.key(1), state)
+
+        # Force an insertion of one molecule per system via the real move machinery.
+        proposal = jax.jit(insert_random_motif)(
+            jax.random.key(2),
+            state.motifs,
+            state.particles,
+            state.groups,
+            state.systems.map_data(lambda s: s.cell),
+            state.move_capacity,
+        )
+        update = jax.jit(MCMCStateUpdate.from_changes)(
+            jax.random.key(3), state, proposal
+        )
+
+        # Energy the propagator would use to accept/reject (incremental).
+        out = pot(state, patch=update)
+        e_incr = out.data.total_energies.data
+
+        # Apply the insertion and recompute the energy from scratch.
+        accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
+        new_state = out.patch(update(state, accept), accept)
+        n_after = new_state.groups.data.system.counts.data
+        assert int(n_after.max()) > 2, "insertion did not add a molecule"
+        e_full = pot(new_state).data.total_energies.data
+        npt.assert_allclose(e_incr, e_full, rtol=1e-5, atol=1e-3)
+
+
+def test_reinsertion_onto_colliding_particle_matches_full(state: MCMCState):
+    """A moved molecule must still interact with a particle sharing its id.
+
+    ``_self_excluding`` numbers the moved molecule's groups from 0, so
+    without a disjoint offset it collides with particle 0's self-exclusion
+    group. Molecule 1 (isolated at ``[9, 9, 9]``) is reinserted next to
+    particle 0 (at ``[2, 2, 2]``); dropping that close-contact pair would
+    make the incremental delta disagree with a full evaluation.
+    """
+    pot = make_lennard_jones_from_state(identity_lens(MCMCState), _probe)
+    state = PotentialAsPropagator(pot)(jax.random.key(0), state)
+
+    proposal = _make_exchange_proposal(
+        jnp.array([1]), jnp.array([[4.0, 2.0, 2.0]]), jnp.array([1])
+    )
+    update = MCMCStateUpdate.from_changes(jax.random.key(1), state, proposal)
+
+    out = pot(state, patch=update)
+    accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
+    new_state = out.patch(update(state, accept), accept)
+    e_full = pot(new_state).data.total_energies.data
+    assert float(e_full[0]) > 1.0, "reinserted molecule must contact particle 0"
+    npt.assert_allclose(out.data.total_energies.data, e_full, rtol=1e-6, atol=1e-6)
 
 
 class TestRunNVT:

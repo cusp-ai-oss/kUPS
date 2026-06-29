@@ -238,20 +238,12 @@ class MCMCParticles(Particles):
     @override
     def inclusion(self) -> Index[InclusionId]:
         """Inclusion index derived from the system index."""
-        return Index(
-            tuple(InclusionId(lab) for lab in self.system.keys),
-            self.system.indices,
-            self.system.max_count,
-        )
+        return self.system.to_cls(InclusionId)
 
     @property
     def exclusion(self) -> Index[ExclusionId]:
         """Exclusion index derived from the group index."""
-        return Index(
-            tuple(ExclusionId(lab) for lab in self.group.keys),
-            self.group.indices,
-            self.group.max_count,
-        )
+        return self.group.to_cls(ExclusionId)
 
     def guest_only(self) -> MCMCParticles:
         # Buffered sanitizes the the data to only include particles with valid group membership.
@@ -493,6 +485,7 @@ def estimate_max_adsorbates(
 def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
     particles: Table[Any, T],
     group_index: Callable[[T], Index[K]],
+    radius_scale: float = 1,
 ) -> Table[K, Array]:
     """Estimate the volume occupied by particles, grouped by a chosen index.
 
@@ -505,10 +498,12 @@ def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
         particles: Particle table carrying atomic numbers.
         group_index: Selects the grouping index from the particle data, e.g.
             ``lambda p: p.system`` to aggregate per system.
+        radius_scale: Scale factor applied to the vdW radii (default 1.75 ).
 
     Returns:
         Table mapping each group key to its occupied volume (Ang^3).
     """
     radii = jnp.asarray(ase.data.vdw_radii)[particles.data.atomic_numbers]
-    volumes = jnp.nan_to_num(4.0 / 3.0 * jnp.pi * radii**3)
+    scaled_radii = radii * radius_scale
+    volumes = jnp.nan_to_num(4.0 / 3.0 * jnp.pi * scaled_radii**3)
     return group_index(particles.data).sum_over(volumes)
