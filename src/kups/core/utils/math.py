@@ -140,9 +140,9 @@ def triangular_3x3_det_and_inverse(
 ) -> tuple[jax.Array, jax.Array]:
     """Compute determinant and inverse of triangular 3×3 matrices.
 
-    Optimized computation for triangular matrices that exploits their structure.
-    Determinant is simply the product of diagonal elements, and inverse is
-    computed via triangular solve.
+    Exploits triangular structure with closed-form expressions: the determinant
+    is the product of diagonal elements and the inverse follows from forward
+    substitution. Upper-triangular inputs are handled by transposition.
 
     Args:
         A: Array of shape `(..., 3, 3)` containing triangular matrices.
@@ -160,14 +160,33 @@ def triangular_3x3_det_and_inverse(
         # det = 18 (product of diagonals: 1*3*6)
         ```
     """
+    if not lower:
+        det, inv = triangular_3x3_det_and_inverse(jnp.swapaxes(A, -1, -2), lower=True)
+        return det, jnp.swapaxes(inv, -1, -2)
 
-    @vectorize(signature="(3,3)->(),(3,3)")
-    def inner(A: jax.Array) -> tuple[jax.Array, jax.Array]:
-        det = jnp.diag(A).prod()
-        inv = jax.scipy.linalg.solve_triangular(A, jnp.eye(3), lower=lower)
-        return det, inv
+    a = A[..., 0, 0]
+    b = A[..., 1, 0]
+    c = A[..., 1, 1]
+    d = A[..., 2, 0]
+    e = A[..., 2, 1]
+    f = A[..., 2, 2]
 
-    return inner(A)
+    det = a * c * f
+    m00, m11, m22 = 1.0 / a, 1.0 / c, 1.0 / f
+    m10 = -b / (a * c)
+    m21 = -e / (c * f)
+    m20 = (e * b - c * d) / (a * c * f)
+
+    zero = jnp.zeros_like(a)
+    inv = jnp.stack(
+        [
+            jnp.stack([m00, zero, zero], axis=-1),
+            jnp.stack([m10, m11, zero], axis=-1),
+            jnp.stack([m20, m21, m22], axis=-1),
+        ],
+        axis=-2,
+    )
+    return det, inv
 
 
 def triangular_3x3_from_tril(tril: Array) -> Array:

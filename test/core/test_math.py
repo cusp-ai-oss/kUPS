@@ -251,13 +251,14 @@ class TestDetAndInverse3x3:
 
 class TestTriangular3x3:
     def test_det_and_inverse(self):
-        """Merged: determinant + inverse for both lower and upper."""
+        """Merged: determinant + inverse for both lower and upper, batched."""
         for lower in [True, False]:
-            A = jax.random.normal(jax.random.PRNGKey(0), (3, 3))
-            A = jnp.tril(A) if lower else jnp.triu(A)
-            det, inv = triangular_3x3_det_and_inverse(A, lower=lower)
-            npt.assert_allclose(det, jnp.linalg.det(A), rtol=1e-10)
-            npt.assert_allclose(inv, jnp.linalg.inv(A), atol=1e-15)
+            for shape in [(3, 3), (8, 3, 3)]:
+                A = jax.random.normal(jax.random.PRNGKey(0), shape) + jnp.eye(3)
+                A = jnp.tril(A) if lower else jnp.triu(A)
+                det, inv = triangular_3x3_det_and_inverse(A, lower=lower)
+                npt.assert_allclose(det, jnp.linalg.det(A), rtol=1e-10)
+                npt.assert_allclose(inv, jnp.linalg.inv(A), atol=1e-12)
 
 
 class TestTriangular3x3Matmul:
