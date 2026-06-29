@@ -63,7 +63,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.functools import pipe
-from kups.core.utils.jax import dataclass, field, key_chain, tree_map
+from kups.core.utils.jax import dataclass, field, key_chain
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.position import (
     center_of_mass,
@@ -1255,23 +1255,27 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
         def _propose_exchange(key: Array, s: State) -> ExchangeChanges:
             inner = state(s)
             c = key_chain(key)
-            ins = insert_random_motif(
-                next(c),
-                inner.motifs,
-                inner.particles,
-                inner.groups,
-                inner.systems.map_data(lambda d: d.cell),
-                inner.move_capacity,
-            )
-            deletion = delete_random_motif(
-                next(c),
-                inner.motifs,
-                inner.particles,
-                inner.groups,
-                inner.move_capacity,
-            )
+            move_key = next(c)
             w = jax.random.randint(next(c), (), 0, 2)
-            return tree_map(lambda a, b: jax.lax.select_n(w, a, b), ins, deletion)
+            # Only the selected move runs, so just its assertions are checked.
+            return jax.lax.cond(
+                w == 0,
+                lambda: insert_random_motif(
+                    move_key,
+                    inner.motifs,
+                    inner.particles,
+                    inner.groups,
+                    inner.systems.map_data(lambda d: d.cell),
+                    inner.move_capacity,
+                ),
+                lambda: delete_random_motif(
+                    move_key,
+                    inner.motifs,
+                    inner.particles,
+                    inner.groups,
+                    inner.move_capacity,
+                ),
+            )
 
         propose_fns.append(_symmetric(_propose_exchange))
         wts.append(exchange_weight)

@@ -247,29 +247,20 @@ def propose_mixed[State, Changes](
     propose_fns: tuple[ChangesFn[State, Changes], ...],
     weights: tuple[float, ...] | None = None,
 ) -> tuple[Changes, LogProbabilityRatio, Array]:
-    """Compute all proposals eagerly and select one at random.
+    """Select one proposal at random and evaluate only it.
 
-    All ``propose_fns`` are evaluated, then ``jax.lax.select_n`` picks one.
+    ``jax.lax.switch`` runs the chosen ``propose_fn`` and leaves the others
+    unevaluated, so only the selected move's assertions are checked.
     Returns (selected_changes, selected_log_ratio, which_index).
     """
     chain = key_chain(key)
-    # We purposefully reuse this key for all proposals!
-    # This is an optimization, since it allows for common subexpression elimination
-    # across proposals.
     key = next(chain)
-    all_results = tuple(fn(key, state) for fn in propose_fns)
-    all_changes = tuple(r[0] for r in all_results)
-    all_log_ratios = tuple(r[1] for r in all_results)
     if weights is None:
-        weights = tuple(1.0 for _ in propose_fns)
         which = jax.random.randint(next(chain), (), 0, len(propose_fns))
     else:
         probs = jnp.array(weights) / sum(weights)
         which = jax.random.choice(next(chain), len(propose_fns), p=probs)
-    selected = tree_map(lambda *cases: jax.lax.select_n(which, *cases), *all_changes)
-    log_ratio = tree_map(
-        lambda *cases: jax.lax.select_n(which, *cases), *all_log_ratios
-    )
+    selected, log_ratio = jax.lax.switch(which, propose_fns, key, state)
     return selected, log_ratio, which
 
 

@@ -18,7 +18,6 @@ Key Components:
 
 from __future__ import annotations
 
-import dataclasses
 import traceback
 import typing
 from collections.abc import Callable
@@ -55,12 +54,6 @@ from slub.util import get_bind_params
 from kups.core.lens import bind
 from kups.core.utils.jax import dataclass, field
 
-try:
-    from jax import typeof as get_aval
-except ImportError:
-    # pyrefly: ignore [missing-module-attribute]
-    from jax.core import get_aval  # pyright: ignore[reportAttributeAccessIssue]
-
 # Type alias for fix functions that take a state and fix arguments, returning a new state
 type Fix[State, FixArgs] = Callable[[State, FixArgs], State]
 
@@ -73,12 +66,6 @@ NO_ARGS: Final[_NO_ARGS] = _NO_ARGS()
 """Sentinel instance to distinguish between no arguments and None as an argument."""
 
 _TRACEBACK_MARKER: Final[str] = "\nAssertion created at:\n"
-
-
-def _strip_traceback(message: str) -> str:
-    """Strip the traceback suffix appended by runtime_assert."""
-    idx = message.find(_TRACEBACK_MARKER)
-    return message[:idx] if idx != -1 else message
 
 
 @dataclass
@@ -431,48 +418,6 @@ class AssertionContext:
         return self
 
 
-def _strip_ctx_tracebacks(ctx: AssertionContext, *, note: str = "") -> AssertionContext:
-    """Strip traceback suffixes from all assertion messages in a context."""
-    if not ctx.assertions:
-        return ctx
-
-    def _replace_msg(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-        stripped = _strip_traceback(a.message)
-        if note and stripped != a.message:
-            stripped += note
-        return dataclasses.replace(a, message=stripped)
-
-    return AssertionContext(assertions=tuple(map(_replace_msg, ctx.assertions)))
-
-
-def _normalize_ctx_for_comparison(out_info: tuple[Any, ...]) -> tuple[Any, ...]:
-    """Strip traceback suffixes from assertion messages for structural comparison."""
-    outvals, ctx = out_info
-    if not isinstance(ctx, AssertionContext):
-        return out_info
-    return (outvals, _strip_ctx_tracebacks(ctx))
-
-
-def _assert_same_tree[PyTree](old: PyTree, new: PyTree) -> None:
-    """Compare pytree structure and leaf shapes/dtypes."""
-    old_leaves, old_tree_def = jax.tree.flatten(old)
-    new_leaves, new_tree_def = jax.tree.flatten(new)
-    if old_tree_def != new_tree_def:
-        raise ValueError(
-            f"Function modified the tree structure: {new_tree_def} != {old_tree_def}"
-        )
-    leaf_mismatches: list[str] = []
-    for x, y in zip(old_leaves, new_leaves, strict=True):
-        xaval = get_aval(x)
-        yaval = get_aval(y)
-        if any(
-            getattr(xaval, attr) != getattr(yaval, attr) for attr in ["shape", "dtype"]
-        ):
-            leaf_mismatches.append(f"{xaval} != {yaval}")
-    if leaf_mismatches:
-        raise ValueError(f"Function modified the tree values: {leaf_mismatches}")
-
-
 def check_assertion_handler(
     interpreter: Interpreter[AssertionContext],
     ctx: AssertionContext,
@@ -540,52 +485,58 @@ def cond_handler(
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
-    """Custom cond handler that normalizes traceback strings before branch comparison.
+    """Custom cond handler that unions assertions across branches.
 
-    runtime_assert appends source-location tracebacks to assertion messages. Since
-    messages are static pytree fields, assertions at different source lines produce
-    different treedefs. This handler strips traceback suffixes so that branches with
-    the same base assertion compare as equal.
+    Branches may declare different assertions. The output context holds the
+    incoming assertions followed by every branch's assertions concatenated in
+    branch order. Each branch fills its own slots with real predicates and the
+    slots owned by other branches with passing placeholders (True predicate,
+    zeroed fmt_args/fix_args), so jax.lax.cond observes matching pytree
+    structures across branches. An unchosen branch thus contributes only passing
+    assertions.
     """
     _, bind_params = get_bind_params(eqn)
     branches = bind_params["branches"]
-
-    context_aware_branch_fns = [
-        reinterpret(jaxpr_as_fun(jaxpr), interpreter) for jaxpr in branches
-    ]
-
-    # Check that all branches produce the same context structure by tracing them with a dummy context
-    branch_ctx_trees = [
-        jax.jit(branch_fn).trace(ctx.push(), *invals[1:]).out_info
-        for branch_fn in context_aware_branch_fns
-    ]
     assert len(branches) > 0, "cond must have at least one branch"
-    # Normalize by stripping tracebacks before structural comparison
-    normalized = [_normalize_ctx_for_comparison(t) for t in branch_ctx_trees]
-    try:
-        for tree in normalized[1:]:
-            _assert_same_tree(normalized[0], tree)
-    except ValueError as e:
-        raise ValueError("Cond branches return inconsistent contexts.") from e
 
-    # Wrap branches to strip tracebacks from output contexts so that
-    # jax.lax.cond sees matching pytree structures across branches.
-    def _wrap_branch(
-        fn: Callable[..., tuple[Any, AssertionContext]],
+    branch_fns = [reinterpret(jaxpr_as_fun(jaxpr), interpreter) for jaxpr in branches]
+
+    # Dry-run trace each branch to learn the assertions it appends; the abstract
+    # leaves (shape/dtype) are used to build placeholders for the other branches.
+    n_in = len(ctx.assertions)
+    suffix_templates = [
+        jax.jit(fn).trace(ctx.push(), *invals[1:]).out_info[1].assertions[n_in:]
+        for fn in branch_fns
+    ]
+
+    def passing(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
+        """Passing copy of an assertion: True predicate, zeroed fmt/fix args."""
+        a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
+        return (
+            bind(a)
+            .focus(lambda a: (a.fmt_args, a.fix_args))
+            .apply(partial(jax.tree.map, jnp.zeros_like))
+        )
+
+    def wrap(
+        index: int, fn: Callable[..., tuple[Any, AssertionContext]]
     ) -> Callable[..., tuple[Any, AssertionContext]]:
         def wrapped(ctx: AssertionContext, *args: Any) -> tuple[Any, AssertionContext]:
             outvals, ctx_out = fn(ctx, *args)
-            return outvals, _strip_ctx_tracebacks(
-                ctx_out, note="\n(traceback unavailable: assertion inside cond branch)"
-            )
+            merged = list(ctx_out.assertions[:n_in])
+            for i, templates in enumerate(suffix_templates):
+                merged.extend(
+                    ctx_out.assertions[n_in:] if i == index else map(passing, templates)
+                )
+            return outvals, AssertionContext(tuple(merged))
 
         return wrapped
 
-    normalized_branch_fns = [_wrap_branch(fn) for fn in context_aware_branch_fns]
+    wrapped_fns = [wrap(i, fn) for i, fn in enumerate(branch_fns)]
 
-    outvals, ctx_out = jax.lax.cond(
-        invals[0], *reversed(normalized_branch_fns), ctx, *invals[1:]
-    )
+    # jax.lax.switch selects branch ``invals[0]`` (the cond/switch index) directly,
+    # matching the primitive's branch order and supporting any number of branches.
+    outvals, ctx_out = jax.lax.switch(invals[0], wrapped_fns, ctx, *invals[1:])
     return HandlerResult(ctx_out, outvals)
 
 

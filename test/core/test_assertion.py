@@ -304,13 +304,13 @@ class TestAssertionTracing:
         assert len(assertions) == 1
         assert isinstance(assertions[0], RuntimeAssertion)
 
-    def test_cond_tracing_fails_for_divergent_branches(self):
-        """Test assertion tracing through jax.lax.cond."""
+    def test_cond_unions_divergent_branches(self):
+        """Branches with different assertions are unioned; the unchosen branch is padded passing."""
 
         @jax.jit
         @with_runtime_assertions
         def cond_fn(x):
-            def f(x, y):
+            def f(x, y):  # true branch
                 runtime_assert(
                     predicate=x > 10,
                     message="Assertion failed: {a} < 10",
@@ -318,7 +318,7 @@ class TestAssertionTracing:
                 )
                 return 2 * x
 
-            def g(x, y):
+            def g(x, y):  # false branch
                 runtime_assert(
                     predicate=x > 10,
                     message="Assertion failed: {b} > 10",
@@ -328,18 +328,27 @@ class TestAssertionTracing:
 
             return jax.lax.cond(x == 6, f, g, x, x * 2)
 
-        with pytest.raises(
-            ValueError, match="Cond branches return inconsistent contexts."
-        ):
-            out, assertions = cond_fn(jnp.array(5.0))
+        # x != 6 takes the false branch (g, slot 0); its predicate (5 > 10) fails.
+        out, assertions = cond_fn(jnp.array(5.0))
+        assert isinstance(out, jax.Array)
+        assert len(assertions) == 2
+        assert not assertions[0].predicate
+        assert "{b} > 10" in assertions[0].message
+        # The true branch (f, slot 1) is padded passing.
+        assert assertions[1].predicate
+        assert "{a} < 10" in assertions[1].message
 
     def test_cond_tracing(self):
-        """Test assertion tracing through jax.lax.cond."""
+        """Test assertion tracing through jax.lax.cond.
+
+        The output unions both branches' assertions: slot 0 belongs to the false
+        branch, slot 1 to the true branch. The unchosen branch is padded passing.
+        """
 
         @with_runtime_assertions
         @jax.jit
         def cond_fn(x):
-            def falsy_fun(x, y):
+            def falsy_fun(x, y):  # false branch -> slot 0
                 runtime_assert(
                     predicate=x > 10,
                     message="Assertion failed: {a} < 10",
@@ -347,7 +356,7 @@ class TestAssertionTracing:
                 )
                 return 2 * x
 
-            def truthy_fun(x, y):
+            def truthy_fun(x, y):  # true branch -> slot 1
                 runtime_assert(
                     predicate=y > 10,
                     message="Assertion failed: {a} < 10",
@@ -357,13 +366,16 @@ class TestAssertionTracing:
 
             return jax.lax.cond(x > 5, truthy_fun, falsy_fun, x, x * 2)
 
+        # x = 5 takes the false branch; its predicate (5 > 10) fails.
         out, assertions = cond_fn(jnp.array(5.0))
         assert isinstance(out, jax.Array)
-        assert len(assertions) == 1
-        assert not assertions[0].predicate  # should fail since 5 < 10
+        assert len(assertions) == 2
+        assert not assertions[0].predicate  # false branch ran and failed
+        assert assertions[1].predicate  # true branch padded passing
 
+        # x = 6 takes the true branch; its predicate (12 > 10) passes.
         out, assertions = cond_fn(jnp.array(6.0))
-        assert assertions[0].predicate  # should pass since 12 > 10
+        assert all(bool(a.predicate) for a in assertions)
 
     def test_traceback_present_in_message(self):
         """Test that assertion messages include the creation-site traceback."""
@@ -378,8 +390,8 @@ class TestAssertionTracing:
         assert "\nAssertion created at:\n" in assertions[0].message
         assert "test_traceback_present_in_message" in assertions[0].message
 
-    def test_traceback_unavailable_in_cond(self):
-        """Test that assertions inside cond branches note the missing traceback."""
+    def test_traceback_present_in_cond(self):
+        """Test that assertions inside cond branches retain their creation-site traceback."""
 
         @with_runtime_assertions
         @jax.jit
@@ -395,9 +407,9 @@ class TestAssertionTracing:
             return jax.lax.cond(x > 5, true_branch, false_branch, x)
 
         _, assertions = cond_fn(jnp.array(3.0))
-        assert len(assertions) == 1
-        assert "\nAssertion created at:\n" not in assertions[0].message
-        assert "traceback unavailable" in assertions[0].message
+        assert len(assertions) == 2
+        assert all("\nAssertion created at:\n" in a.message for a in assertions)
+        assert all("test_traceback_present_in_cond" in a.message for a in assertions)
 
     def test_complex_nested_transformations(self):
         """Test assertion tracing through complex nested transformations."""
@@ -828,9 +840,13 @@ class TestAssertionErrorHandling:
 
             invalid_while(jnp.array(1.0))
 
-    def test_cond_branch_mismatch_errors(self):
-        """Test cond branches with mismatched assertions/fmt_args/shapes/dtypes/predicates."""
-        # Each factory creates a JIT function with inconsistent cond branches
+    def test_cond_branch_divergent_unions(self):
+        """Cond branches may declare different assertions/fmt_args/shapes/dtypes/predicates.
+
+        The output unions every branch's assertions, padding the unchosen branch
+        with passing placeholders, so none of these cases error.
+        """
+        # Each factory creates a JIT function with divergent cond branches
 
         # 1. Different number of assertions
         def make_mismatch_assertion_count():
@@ -987,19 +1003,23 @@ class TestAssertionErrorHandling:
 
             return test_fn
 
+        # (factory, expected number of unioned assertions across both branches)
         factories = [
-            make_mismatch_assertion_count,
-            make_mismatch_fmt_args_count,
-            make_mismatch_fmt_args_shapes,
-            make_mismatch_fmt_args_dtypes,
-            make_mismatch_predicate_shapes,
-            make_mismatch_predicate_dtypes,
+            (make_mismatch_assertion_count, 3),
+            (make_mismatch_fmt_args_count, 2),
+            (make_mismatch_fmt_args_shapes, 2),
+            (make_mismatch_fmt_args_dtypes, 2),
+            (make_mismatch_predicate_shapes, 2),
+            (make_mismatch_predicate_dtypes, 2),
         ]
 
-        for factory in factories:
+        for factory, expected in factories:
             fn = factory()
-            with pytest.raises(ValueError, match="return inconsistent contexts"):
-                fn(jnp.array(3.0))
+            # x = 3 takes the false branch; its real predicates pass and the true
+            # branch is padded passing, so the whole union passes.
+            _, assertions = fn(jnp.array(3.0))
+            assert len(assertions) == expected
+            assert all(bool(jnp.all(a.predicate)) for a in assertions)
 
 
 class TestAssertionIntegrationWithJAXEcosystem:

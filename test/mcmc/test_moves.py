@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,7 +10,7 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
-from kups.core.capacity import CapacityError, LensCapacity
+from kups.core.capacity import Capacity, CapacityError, LensCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import WithIndices
 from kups.core.data.buffered import Buffered, system_view
@@ -723,16 +725,22 @@ class TestExchangeMove:
         cls.move = staticmethod(_exchange_move_cache["move"])
 
     def test_insufficient_sizes_and_capacity(self):
-        """Merged: insufficient group size, particle size, and capacity."""
+        """Merged: insufficient group size, particle size, and capacity.
+
+        These assertions are checked against ``insert_random_motif`` directly:
+        ``ExchangeMove`` dispatches randomly and checks only the selected move's
+        assertions, so it cannot reliably exercise the insertion path.
+        """
         motifs = _make_motifs(jnp.zeros((1, 3)), jnp.zeros((1,), dtype=int), 1, 1)
-        cap1 = LensCapacity(1, lens(lambda x: x["capacity"], cls=dict))
-        cases = [
-            # (key_seed, positions_shape, sys_ids_p, n_sys_p, group_ids, n_groups,
-            #  max_gs, species, sys_ids_g, n_sys_g, max_count_g, capacity, exc, match)
-            {
-                "label": "insufficient_group_size",
-                "key_seed": 2,
-                "particles": _make_particles(
+        cell = Table.arange(self.systems, label=SystemId)
+        insert = jax.jit(
+            as_result_function(insert_random_motif), static_argnames="capacity"
+        )
+        cap1 = LensCapacity(1, lens(lambda x: x, cls=int))
+        # (particles, groups, capacity, expected_exception, match)
+        cases: list[tuple[Any, Any, Capacity[int], type[Exception], str | None]] = [
+            (  # No free group slot for the inserted motif.
+                _make_particles(
                     jax.random.uniform(
                         jax.random.key(2), (11, 3), minval=-0.5, maxval=0.5
                     ),
@@ -742,20 +750,15 @@ class TestExchangeMove:
                     11,
                     1,
                 ),
-                "groups": _make_groups(
-                    jnp.zeros((10,), dtype=int),
-                    jnp.zeros((10,), dtype=int),
-                    1,
+                _make_groups(
+                    jnp.zeros((10,), dtype=int), jnp.zeros((10,), dtype=int), 1
                 ),
-                "capacity": cap1,
-                "exc": AssertionError,
-                "match": "Array size insufficient",
-                "method": "fix_or_raise",
-            },
-            {
-                "label": "insufficient_particle_size",
-                "key_seed": 3,
-                "particles": _make_particles(
+                cap1,
+                AssertionError,
+                "Array size insufficient",
+            ),
+            (  # No free particle slot for the inserted motif.
+                _make_particles(
                     jax.random.uniform(
                         jax.random.key(3), (10, 3), minval=-0.5, maxval=0.5
                     ),
@@ -765,21 +768,18 @@ class TestExchangeMove:
                     10,
                     1,
                 ),
-                "groups": _make_groups(
+                _make_groups(
                     jnp.zeros((11,), dtype=int),
                     jnp.array([0] * 10 + [1]),
                     1,
                     max_count=12,
                 ),
-                "capacity": cap1,
-                "exc": AssertionError,
-                "match": "Array size insufficient",
-                "method": "fix_or_raise",
-            },
-            {
-                "label": "insufficient_capacity",
-                "key_seed": 3,
-                "particles": _make_particles(
+                cap1,
+                AssertionError,
+                "Array size insufficient",
+            ),
+            (  # Move capacity too small to hold the selected motif.
+                _make_particles(
                     jax.random.uniform(
                         jax.random.key(3), (11, 3), minval=-0.5, maxval=0.5
                     ),
@@ -789,34 +789,23 @@ class TestExchangeMove:
                     11,
                     1,
                 ),
-                "groups": _make_groups(
+                _make_groups(
                     jnp.zeros((11,), dtype=int),
                     jnp.array([0] * 10 + [1]),
                     1,
                     max_count=12,
                 ),
-                "capacity": LensCapacity(0, lens(lambda x: x["capacity"], cls=dict)),
-                "exc": CapacityError,
-                "match": None,
-                "method": "raise_assertion",
-            },
+                LensCapacity(0, lens(lambda x: x, cls=int)),
+                CapacityError,
+                None,
+            ),
         ]
-        for case in cases:
-            chain = key_chain(jax.random.key(case["key_seed"]))
-            _ = next(chain)  # consume one key for uniform
-            state = {
-                "particles": case["particles"],
-                "groups": case["groups"],
-                "motifs": motifs,
-                "systems": self.systems,
-                "capacity": case["capacity"],
-            }
-            if case["match"]:
-                with pytest.raises(case["exc"], match=case["match"]):
-                    self.move(next(chain), state).fix_or_raise(state)
-            else:
-                with pytest.raises(case["exc"]):
-                    self.move(next(chain), state).raise_assertion()
+        for particles, groups, capacity, exc, match in cases:
+            result = insert(
+                jax.random.key(0), motifs, particles, groups, cell, capacity
+            )
+            with pytest.raises(exc, match=match):
+                result.raise_assertion()
 
     def test_atomic_single_system(self):
         chain = key_chain(jax.random.key(3))
