@@ -21,6 +21,7 @@ from kups.core.potential import PotentialOut
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.mliap.local import (
     LocalMLIAPCache,
     LocalMLIAPComposer,
@@ -70,7 +71,7 @@ class State:
     atoms: Table[ParticleId, AtomData]
     systems: Table[SystemId, SystemData]
     model_config: LocalMLIAPData
-    out: PotentialOut[tuple[()], tuple[()]]
+    out: KahanSummand[PotentialOut[tuple[()], tuple[()]]]
     full_neighborlist: AllDenseNearestNeighborList
     update_nnlist: AllDenseNearestNeighborList
 
@@ -137,7 +138,9 @@ def simple_system():
                 msg_sum=jnp.zeros((n_atoms, embed_dim)),
             ),
         ),
-        out=PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), (), ()),
+        out=KahanSummand.init(
+            PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), (), ())
+        ),
         full_neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),

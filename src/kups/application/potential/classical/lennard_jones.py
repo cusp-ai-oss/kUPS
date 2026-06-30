@@ -39,6 +39,7 @@ from kups.core.potential import (
     empty_patch_idx_view,
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, SystemId
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
     IsLJGraphParticles,
@@ -108,7 +109,11 @@ def make_lennard_jones_from_state[State](
 def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
-        IsLJState[HasCache[LennardJonesParameters, PotentialOut[EmptyType, EmptyType]]],
+        IsLJState[
+            HasCache[
+                LennardJonesParameters, KahanSummand[PotentialOut[EmptyType, EmptyType]]
+            ]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
@@ -123,7 +128,10 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsLJState[
-            HasCache[LennardJonesParameters, PotentialOut[PositionsAndCell, EmptyType]]
+            HasCache[
+                LennardJonesParameters,
+                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
@@ -158,7 +166,9 @@ def make_lennard_jones_from_state[State](
 
 @overload
 def make_lennard_jones_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedLJGraphState[PotentialOut[EmptyType, EmptyType]]],
+    state: Lens[
+        State, IsCachedLJGraphState[KahanSummand[PotentialOut[EmptyType, EmptyType]]]
+    ],
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     parameters: LennardJonesParameters,
@@ -169,7 +179,10 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
 
 @overload
 def make_lennard_jones_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedLJGraphState[PotentialOut[PositionsAndCell, EmptyType]]],
+    state: Lens[
+        State,
+        IsCachedLJGraphState[KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]],
+    ],
     probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
     *,
     parameters: LennardJonesParameters,
@@ -247,7 +260,7 @@ def make_lennard_jones_from_state(
 type IsGlobalTailCorrectedIsLJState = IsLJState[
     MaybeCached[
         GlobalTailCorrectedLennardJonesParameters,
-        PotentialOut[Any, Any],
+        KahanSummand[PotentialOut[Any, Any]],
     ]
 ]
 

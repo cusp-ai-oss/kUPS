@@ -32,6 +32,7 @@ from kups.core.neighborlist import (
 from kups.core.patch import Patch, Probe
 from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.graph import IsGraphProbe
 from kups.potential.mliap.local import (
     IsLocalMLIAPGraphParticles,
@@ -86,7 +87,9 @@ def make_local_mliap_from_state[State, Gradient, Hessian](
 def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     state: Lens[
         State,
-        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut[Gradient, Hessian]]],
+        IsLocalMLIAPState[
+            HasCache[LocalMLIAPData, KahanSummand[PotentialOut[Gradient, Hessian]]]
+        ],
     ],
     probe: Probe[State, Ptch, IsGraphProbe[IsLocalMLIAPGraphParticles, Literal[2]]],
     gradient_lens: Lens[
@@ -95,11 +98,14 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     ] = ...,
     hessian_lens: Lens[Gradient, Hessian] = ...,
     hessian_idx_view: Lens[State, Hessian] = ...,
-    out_idx_view: Lens[State, PotentialOut[Gradient, Hessian]] | None = None,
+    out_idx_view: Lens[State, KahanSummand[PotentialOut[Gradient, Hessian]]]
+    | None = None,
     *,
     parameters: None = None,
     neighborlist_factory: NeighborListFactory[
-        IsLocalMLIAPState[HasCache[LocalMLIAPData, PotentialOut[Gradient, Hessian]]]
+        IsLocalMLIAPState[
+            HasCache[LocalMLIAPData, KahanSummand[PotentialOut[Gradient, Hessian]]]
+        ]
     ] = ...,
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 
@@ -123,7 +129,9 @@ def make_local_mliap_from_state[State, Gradient, Hessian](
 
 @overload
 def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
-    state: Lens[State, IsCachedLocalMLIAPState[PotentialOut[Gradient, Hessian]]],
+    state: Lens[
+        State, IsCachedLocalMLIAPState[KahanSummand[PotentialOut[Gradient, Hessian]]]
+    ],
     probe: Probe[State, Ptch, IsGraphProbe[IsLocalMLIAPGraphParticles, Literal[2]]],
     gradient_lens: Lens[
         LocalMLIAPInput[State, IsLocalMLIAPGraphParticles, HasCell[AnyPeriodicity]],
@@ -131,11 +139,12 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     ] = ...,
     hessian_lens: Lens[Gradient, Hessian] = ...,
     hessian_idx_view: Lens[State, Hessian] = ...,
-    out_idx_view: Lens[State, PotentialOut[Gradient, Hessian]] | None = None,
+    out_idx_view: Lens[State, KahanSummand[PotentialOut[Gradient, Hessian]]]
+    | None = None,
     *,
     parameters: LocalMLIAPData,
     neighborlist_factory: NeighborListFactory[
-        IsCachedLocalMLIAPState[PotentialOut[Gradient, Hessian]]
+        IsCachedLocalMLIAPState[KahanSummand[PotentialOut[Gradient, Hessian]]]
     ] = ...,
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 

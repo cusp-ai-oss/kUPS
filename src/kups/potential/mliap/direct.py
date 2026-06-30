@@ -45,6 +45,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.direct import DirectPotential
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.common.graph import (
@@ -139,7 +140,8 @@ def make_direct_mliap_potential[
     model_view: View[State, Model],
     *,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Patch[State]]:
     """Wrap a direct-gradient ``model_fn`` into a kUPS ``Potential``.
 

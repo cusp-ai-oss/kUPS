@@ -80,6 +80,7 @@ from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import GroupId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
+from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
     ExchangeChanges,
     ExchangeMove,
@@ -221,7 +222,11 @@ def init_state(key: Array, config: Config) -> WidomState:
         blocking_spheres_neighborlist_params=blocking_nlist,
         lj_parameters=WithCache(
             lj_params,
-            PotentialOut(Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY),
+            KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
+                )
+            ),
         ),
         ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
         blocking_spheres_parameters=blocking_spheres,

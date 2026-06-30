@@ -40,6 +40,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.uff_utils import compute_uff_bond_length
 from kups.potential.common.energy import (
     EnergyFunction,
@@ -177,7 +178,8 @@ def make_morse_bond_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, P]:
     """Create Morse bond potential for explicitly defined bonds.
 

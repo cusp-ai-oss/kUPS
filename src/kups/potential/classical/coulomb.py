@@ -34,6 +34,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     PotentialFromEnergy,
 )
@@ -107,7 +108,8 @@ def make_coulomb_vacuum_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create simple Coulomb potential for non-periodic systems.
 

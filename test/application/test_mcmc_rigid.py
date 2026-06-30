@@ -62,6 +62,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
     ExchangeChanges,
     ExchangeGroupData,
@@ -141,7 +142,9 @@ def _build_state() -> MCMCState:
             cutoff=Table((SystemId(0),), jnp.array([8.0])),
             tail_corrected=jnp.array([[True]]),
         ),
-        PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY),
+        KahanSummand.init(
+            PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY)
+        ),
     )
     ewald_params = WithCache(
         EwaldParameters(
@@ -153,17 +156,25 @@ def _build_state() -> MCMCState:
         ),
         EwaldCache(
             structure_factor=jnp.zeros((1, 1, 2)),
-            short_range=PotentialOut(
-                Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+            short_range=KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                )
             ),
-            long_range=PotentialOut(
-                Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+            long_range=KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                )
             ),
-            self_interaction=PotentialOut(
-                Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+            self_interaction=KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                )
             ),
-            exclusion=PotentialOut(
-                Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+            exclusion=KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                )
             ),
         ),
     )

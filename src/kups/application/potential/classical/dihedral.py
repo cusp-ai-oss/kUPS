@@ -30,6 +30,7 @@ from kups.core.potential import (
     empty_patch_idx_view,
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, ParticleId
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.dihedral import (
     DihedralParameters,
     IsBondedParticles,
@@ -91,7 +92,9 @@ def make_dihedral_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsDihedralState[
-            HasCache[DihedralParameters, PotentialOut[EmptyType, EmptyType]]
+            HasCache[
+                DihedralParameters, KahanSummand[PotentialOut[EmptyType, EmptyType]]
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
@@ -106,7 +109,10 @@ def make_dihedral_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsDihedralState[
-            HasCache[DihedralParameters, PotentialOut[PositionsAndCell, EmptyType]]
+            HasCache[
+                DihedralParameters,
+                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
@@ -138,7 +144,10 @@ def make_dihedral_from_state[State](
 
 @overload
 def make_dihedral_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedDihedralGraphState[PotentialOut[EmptyType, EmptyType]]],
+    state: Lens[
+        State,
+        IsCachedDihedralGraphState[KahanSummand[PotentialOut[EmptyType, EmptyType]]],
+    ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     parameters: DihedralParameters,
@@ -149,7 +158,10 @@ def make_dihedral_from_state[State, P: Patch[Any]](
 @overload
 def make_dihedral_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedDihedralGraphState[PotentialOut[PositionsAndCell, EmptyType]]
+        State,
+        IsCachedDihedralGraphState[
+            KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,

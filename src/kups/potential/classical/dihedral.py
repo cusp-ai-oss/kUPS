@@ -43,6 +43,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     EnergyFunction,
     PotentialFromEnergy,
@@ -282,7 +283,8 @@ def make_dihedral_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create UFF dihedral potential for explicitly defined dihedrals.
 
