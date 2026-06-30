@@ -25,6 +25,7 @@ from kups.application.mcmc.data import (
     mcmc_state_from_config,
 )
 from kups.core.cell import PeriodicCell, TriclinicFrame
+from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.typing import (
     GroupId,
@@ -372,8 +373,15 @@ def _motifs(species: list[list[int]]) -> Table[MotifParticleId, MotifParticles]:
     )
 
 
-def _systems(sides: list[float]) -> Table[SystemId, MCMCSystems]:
-    """Build a per-system table of cubic cells with the given side lengths."""
+def _systems(
+    sides: list[float], log_fugacity: float = 0.0
+) -> Table[SystemId, MCMCSystems]:
+    """Build a per-system table of cubic cells with the given side lengths.
+
+    Args:
+        sides: Cubic cell side length (Ang) per system.
+        log_fugacity: Log fugacity assigned to every system.
+    """
     n = len(sides)
     frames = TriclinicFrame.from_matrix(jnp.stack([jnp.eye(3) * s for s in sides]))
     return Table.arange(
@@ -381,7 +389,7 @@ def _systems(sides: list[float]) -> Table[SystemId, MCMCSystems]:
             cell=PeriodicCell(frames),
             temperature=jnp.full(n, 300.0),
             potential_energy=jnp.zeros(n),
-            log_fugacity=jnp.zeros((n, 1)),
+            log_fugacity=jnp.full((n, 1), log_fugacity),
         ),
         label=SystemId,
     )
@@ -420,3 +428,25 @@ class TestEstimateMaxAdsorbates:
         particles = _particles([8, 8, 8], [0, 0, 0])
         result = estimate_max_adsorbates(particles, _motifs([[6, 8]]), _systems([1.0]))
         npt.assert_array_equal(result.data, jnp.array([0]))
+
+    def test_low_fugacity_tracks_reservoir(self):
+        # Low fugacity -> estimate follows the enhanced reservoir occupancy.
+        particles = _particles([8], [0])
+        free = L**3 - _sphere_volume(8)
+        capacity = free / _sphere_volume(1)
+        activity = np.exp(-17.0 - np.log(300.0 * BOLTZMANN_CONSTANT))
+        ideal = activity * free * 1e4  # default max_enhancement
+        assert ideal < capacity  # fugacity-limited, not saturation-limited
+        result = estimate_max_adsorbates(
+            particles, _motifs([[1]]), _systems([L], log_fugacity=-17.0)
+        )
+        npt.assert_array_equal(result.data, jnp.array([np.floor(ideal)], dtype=int))
+
+    def test_high_fugacity_capped_at_capacity(self):
+        # High fugacity saturates the pore -> estimate equals geometric capacity.
+        particles = _particles([8], [0])
+        expected = np.floor((L**3 - _sphere_volume(8)) / _sphere_volume(1))
+        result = estimate_max_adsorbates(
+            particles, _motifs([[1]]), _systems([L], log_fugacity=5.0)
+        )
+        npt.assert_array_equal(result.data, jnp.array([expected], dtype=int))

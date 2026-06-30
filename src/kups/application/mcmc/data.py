@@ -28,7 +28,6 @@ from kups.core.typing import (
     ExclusionId,
     GroupId,
     HasAtomicNumbers,
-    HasCell,
     InclusionId,
     Label,
     MotifId,
@@ -457,29 +456,39 @@ def mcmc_state_from_config(
 def estimate_max_adsorbates(
     particles: Table[Any, MCMCParticles],
     motifs: Table[Any, MotifParticles],
-    systems: Table[SystemId, HasCell[AnyPeriodicity]],
+    systems: Table[SystemId, MCMCSystems],
+    max_enhancement: float = 1e4,
 ) -> Table[SystemId, Array]:
-    """Estimate the maximum number of motifs that could fit in each system.
+    """Estimate the maximum number of motifs that could be inserted per system.
 
-    The free volume per system (cell volume minus the volume occupied by
-    ``particles``) is divided by the smallest motif's occupied volume, giving
-    an upper bound on how many molecules could be inserted.
+    The estimate is ``saturation_capacity`` scaled by an approximate coverage.
+    The saturation capacity is the free volume (cell volume minus the volume
+    occupied by ``particles``) divided by the smallest motif's occupied volume,
+    i.e. the fully-packed limit. The expected occupancy of an ideal gas at the
+    system's reservoir activity, ``exp(log_activity) * free_volume``, is scaled
+    by ``max_enhancement`` to bound the adsorption enrichment and clamped to the
+    saturation capacity. The bound therefore tracks the simulated fugacity
+    rather than always returning the fully-packed count.
 
     Args:
         particles: Existing particles with atomic numbers and system membership.
         motifs: Motif templates, with each motif's atoms grouped by its system index.
-        systems: Per-system table providing the simulation cell.
+        systems: Per-system table providing the cell and reservoir activity.
+        max_enhancement: Upper bound on the adsorption enrichment over the
+            ideal-gas reservoir occupancy (Henry-factor ceiling).
 
     Returns:
         Table mapping each ``SystemId`` to the maximum motif count (clamped at zero).
     """
     total_volume = systems.map_data(lambda s: s.cell.volume)
     taken_volume = estimate_occupied_volume(particles, lambda s: s.system)
-    remaining_volume = total_volume - taken_volume
+    free_volume = (total_volume - taken_volume).map_data(lambda v: jnp.maximum(v, 0.0))
     min_motif_volume = estimate_occupied_volume(motifs, lambda s: s.motif).data.min()
-    return remaining_volume.map_data(
-        lambda v: jnp.floor(jnp.maximum(v, 0.0) / min_motif_volume).astype(int)
-    )
+    capacity = free_volume.map_data(lambda v: v / min_motif_volume)
+    activity = systems.map_data(lambda s: jnp.exp(s.log_activity).max(axis=-1))
+    capacity, ideal = Table.broadcast(capacity, activity * free_volume)
+    estimate = jnp.minimum(capacity.data, ideal.data * max_enhancement)
+    return capacity.set_data(jnp.floor(estimate).astype(int))
 
 
 def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
@@ -498,7 +507,7 @@ def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
         particles: Particle table carrying atomic numbers.
         group_index: Selects the grouping index from the particle data, e.g.
             ``lambda p: p.system`` to aggregate per system.
-        radius_scale: Scale factor applied to the vdW radii (default 1.75 ).
+        radius_scale: Scale factor applied to the vdW radii (default 1.0).
 
     Returns:
         Table mapping each group key to its occupied volume (Ang^3).
