@@ -40,6 +40,14 @@ class TestQuaternionBasics:
             decimal=6,
         )
 
+    def test_random_leading_element_batch_stable(self):
+        """The first sampled quaternion is independent of the batch size."""
+        key = jax.random.key(7)
+        npt.assert_array_equal(
+            Quaternion.random(key, shape=(1,)).components[0],
+            Quaternion.random(key, shape=(5,)).components[0],
+        )
+
 
 class TestQuaternionOperations:
     def test_multiply(self):

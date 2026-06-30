@@ -84,7 +84,9 @@ class Quaternion(Sliceable):
         Reference:
             K. Shoemake, "Uniform random rotations", Graphics Gems III, 1992.
         """
-        u1, u2, u3 = jax.random.uniform(key, shape=(3, *shape))
+        u = jax.random.uniform(key, shape=(*shape, 3))
+        u1, u2, u3 = u[..., 0], u[..., 1], u[..., 2]
+
         q = jnp.stack(
             [
                 jnp.sqrt(1 - u1) * jnp.sin(2 * jnp.pi * u2),
