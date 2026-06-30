@@ -296,10 +296,11 @@ class HDF5StorageWriter[State, WriterConfig]:
         Returns:
             The writer, for use within the ``with`` block.
         """
-        self._file = h5py.File(self.out_path, "w")
+        self._file = h5py.File(self.out_path, "w", libver="latest")
         self._group_writers = _init_group_writers(
             self._file, self.config, self.initial_state, self.total_steps
         )
+        self._file.swmr_mode = True
         # Start background writer thread
         self._bg_running = threading.Event()
         self._bg_running.set()
@@ -488,6 +489,8 @@ class Hdf5ObjWriter[Storage]:
         stacked = _stack_leaves(states)
         for j, dataset in enumerate(self.datasets):
             dataset[start:stop] = np.asarray(stacked[j])
+        if len(self.datasets) > 0:
+            self.datasets[0].file.flush()
 
 
 @jit
