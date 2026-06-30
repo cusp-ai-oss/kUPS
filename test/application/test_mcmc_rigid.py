@@ -221,7 +221,6 @@ def _movement_patch(key, state, changes):
         changes,
         state.particles,
         state.groups,
-        state.particles.data.system.num_labels,
     )
     return MCMCStateUpdate.from_changes(key, state, proposal)
 

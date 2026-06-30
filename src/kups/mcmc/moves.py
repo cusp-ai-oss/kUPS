@@ -537,7 +537,6 @@ def exchange_changes_from_position_changes(
     changes: ParticlePositionChanges,
     particles: Buffered[ParticleId, IsExchangeParticles],
     groups: Buffered[GroupId, HasMotifAndSystemIndex],
-    n_sys: int,
 ) -> ExchangeChanges:
     """Convert a ``ParticlePositionChanges`` into ``ExchangeChanges``.
 
@@ -548,8 +547,8 @@ def exchange_changes_from_position_changes(
         changes: Proposed particle position changes.
         particles: Current buffered particle positions.
         groups: Current buffered group metadata.
-        n_sys: Number of systems (determines group output size).
     """
+    n_sys = particles.data.system.num_labels
     selected = particles[changes.particle_ids]
 
     p_data = ExchangeParticleData(
@@ -1160,7 +1159,6 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                 pos_changes,
                 inner.particles,
                 inner.groups,
-                inner.particles.data.system.num_labels,
             ), log_ratio
 
         return wrapper

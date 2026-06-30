@@ -309,9 +309,8 @@ def make_propagator(
     def displacement_patch_fn(
         key: Array, state: WidomState, proposal: ParticlePositionChanges
     ) -> MCMCStateUpdate:
-        n_sys = len(state.systems)
         exchange = exchange_changes_from_position_changes(
-            proposal, state.particles, state.groups, n_sys
+            proposal, state.particles, state.groups
         )
         return MCMCStateUpdate.from_changes(key, state, exchange)
 
