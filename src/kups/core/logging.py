@@ -94,8 +94,8 @@ class TqdmLogger[State]:
 
     def log(self, state: State, step: int) -> None:
         if self._pbar is not None:
-            self._pbar.update(1)
-            if self._postfix is not None:
+            refreshed = self._pbar.update(1)
+            if refreshed and self._postfix is not None:
                 self._pbar.set_postfix(self._postfix(state))
 
 

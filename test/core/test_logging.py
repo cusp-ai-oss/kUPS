@@ -95,9 +95,18 @@ class TestTqdmLogger:
         logger: TqdmLogger[float] = TqdmLogger(num_steps=2, postfix=postfix)
         with logger:
             assert logger._pbar is not None
-            with patch.object(logger._pbar, "set_postfix") as mock_postfix:
+            with (
+                patch.object(logger._pbar, "update") as mock_update,
+                patch.object(logger._pbar, "set_postfix") as mock_postfix,
+            ):
+                # Postfix is only set when update() reports a display refresh.
+                mock_update.return_value = None
                 logger.log(3.14, 0)
-                mock_postfix.assert_called_once_with({"val": 3.14})
+                mock_postfix.assert_not_called()
+
+                mock_update.return_value = True
+                logger.log(2.71, 1)
+                mock_postfix.assert_called_once_with({"val": 2.71})
 
     def test_log_without_enter_is_noop(self) -> None:
         logger: TqdmLogger[str] = TqdmLogger(num_steps=5)
