@@ -10,8 +10,9 @@ systems with graph-based atomic representations.
 
 import json
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypedDict, overload
+from typing import Any, Literal, NamedTuple, Protocol, TypedDict, overload
 
 import jax
 import jax.numpy as jnp
@@ -57,6 +58,21 @@ class EnergyFn(Protocol):
 class IsTojaxedParticles(IsRadiusGraphPoints, HasAtomicNumbers, Protocol): ...
 
 
+class TojaxedRawEnergyAndFeatures(NamedTuple):
+    """Raw structured output from a feature-capable exported model."""
+
+    energy: Array
+    node_features: Array
+
+
+@dataclass
+class TojaxedMliapEvaluation:
+    """Energy and node representation aligned to the input kUPS tables."""
+
+    total_energies: Table[SystemId, Energy]
+    node_features: Table[ParticleId, Array]
+
+
 @dataclass
 class TojaxedMliap:
     """Jaxified model container.
@@ -65,11 +81,14 @@ class TojaxedMliap:
         cutoff: Model cutoff radius [Angstrom].
         params: Model parameters as a list of arrays.
         model: Exported JAX model.
+        node_feature_dimension: Width of a structured per-node representation,
+            or ``None`` for a legacy energy-only artifact.
     """
 
     cutoff: Table[SystemId, Array]
     params: list[Array]
     model: export.Exported = field(static=True)
+    node_feature_dimension: int | None = field(default=None, static=True)
 
     @staticmethod
     def from_zip_file(zip_file: str | Path) -> "TojaxedMliap":
@@ -88,17 +107,20 @@ class TojaxedMliap:
             with zf.open("model.jax") as f:
                 model = export.deserialize(f.read())  # type: ignore
             with zf.open("metadata.json") as f:
-                cutoff = json.loads(f.read().decode())["cutoff"]
+                metadata = json.loads(f.read().decode())
             with zf.open("params.msgpack") as f:
                 params = list(msgpack_deserialize(f.read()))
+        cutoff = metadata["cutoff"]
+        node_feature_dimension = _node_feature_dimension(metadata)
         return TojaxedMliap(
             cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
             params=params,
             model=model,
+            node_feature_dimension=node_feature_dimension,
         )
 
-    def call(self, input: AtomGraphInput) -> Array:
-        """Call the jaxified model on the given input."""
+    def call_raw(self, input: AtomGraphInput) -> Any:
+        """Call the exported model without narrowing its output contract."""
         args = (self.params, input)
         kwargs = {}
         leafes = self.model.in_tree.flatten_up_to((args, kwargs))
@@ -110,26 +132,73 @@ class TojaxedMliap:
         args, kwargs = self.model.in_tree.unflatten(leafes)
         return self.model.call(*args, **kwargs)
 
+    def call(self, input: AtomGraphInput) -> Array:
+        """Return energy from either a legacy or structured exported model."""
+        output = self.call_raw(input)
+        if self.node_feature_dimension is None:
+            return output
+        if not isinstance(output, Mapping) or "energy" not in output:
+            raise ValueError("feature-capable ToJAX artifact did not return energy")
+        return output["energy"]
+
+    def call_with_features(self, input: AtomGraphInput) -> TojaxedRawEnergyAndFeatures:
+        """Return energy and node features from one exported forward pass."""
+        if self.node_feature_dimension is None:
+            raise ValueError("ToJAX artifact does not expose node features")
+        output = self.call_raw(input)
+        if not isinstance(output, Mapping):
+            raise ValueError(
+                "feature-capable ToJAX artifact returned an unstructured value"
+            )
+        if "energy" not in output or "node_features" not in output:
+            raise ValueError(
+                "feature-capable ToJAX artifact returned an incomplete result"
+            )
+        node_features = output["node_features"]
+        if node_features.shape[-1] != self.node_feature_dimension:
+            raise ValueError(
+                "ToJAX node feature width does not match artifact metadata: "
+                f"{node_features.shape[-1]} != {self.node_feature_dimension}"
+            )
+        return TojaxedRawEnergyAndFeatures(output["energy"], node_features)
+
+
+def _node_feature_dimension(metadata: Mapping[str, Any]) -> int | None:
+    """Validate and return the optional structured node-feature contract."""
+    feature = metadata.get("node_features")
+    if feature is None:
+        return None
+    schema = metadata.get("output_schema")
+    if not isinstance(feature, Mapping) or not isinstance(schema, Mapping):
+        raise ValueError("node feature metadata requires a structured output_schema")
+    feature_schema = schema.get("node_features")
+    if "energy" not in schema or not isinstance(feature_schema, Mapping):
+        raise ValueError("output_schema must declare energy and node_features")
+    dimension = feature.get("dimension")
+    shape = feature_schema.get("shape")
+    if (
+        not isinstance(dimension, int)
+        or dimension <= 0
+        or not isinstance(shape, list)
+        or len(shape) != 2
+        or shape[-1] != dimension
+    ):
+        raise ValueError("node feature metadata has an invalid dimension or shape")
+    return dimension
+
 
 type JaxifiedInput = GraphPotentialInput[
     TojaxedMliap, IsTojaxedParticles, HasCell, Literal[2]
 ]
 
 
-def tojaxed_energy(
+def _prepare_tojaxed_input(
     inp: JaxifiedInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch]:
-    """Compute energy using a jaxified model.
-
-    Prepares graph data and calls the exported model.
-
-    Args:
-        inp: Graph potential input containing the jaxified model and graph data.
-
-    Returns:
-        Per-system energies.
-    """
-    graph = inp.graph.sorted_by_system(sort_edges=True)
+) -> tuple[Any, Array, AtomGraphInput]:
+    """Sort one kUPS graph and build the universal exported-model input."""
+    graph, sort_order = inp.graph.sorted_by_system(
+        sort_edges=True, return_sort_order=True
+    )
 
     n_sys = graph.systems.data.cell.vectors.shape[0] + 1
 
@@ -164,8 +233,76 @@ def tojaxed_energy(
         charge=jnp.zeros(n_sys),
         spin=jnp.zeros(n_sys),
     )
+    return graph, sort_order, input_dict
+
+
+def tojaxed_energy(
+    inp: JaxifiedInput,
+) -> WithPatch[Table[SystemId, Energy], IdPatch]:
+    """Compute energy using a jaxified model.
+
+    Prepares graph data and calls the exported model.
+
+    Args:
+        inp: Graph potential input containing the jaxified model and graph data.
+
+    Returns:
+        Per-system energies.
+    """
+    graph, _, input_dict = _prepare_tojaxed_input(inp)
     energy = sequential_vmap_with_vjp(inp.parameters.call)(input_dict)
     return WithPatch(graph.systems.set_data(energy[:-1]), IdPatch())  # Remove padding
+
+
+def tojaxed_energy_and_features(inp: JaxifiedInput) -> TojaxedMliapEvaluation:
+    """Evaluate energy and per-node representations in one exported call."""
+    graph, sort_order, input_dict = _prepare_tojaxed_input(inp)
+    output = sequential_vmap_with_vjp(inp.parameters.call_with_features)(input_dict)
+    energies = graph.systems.set_data(output.energy[:-1])
+    sorted_features = output.node_features[:-1]
+    inverse_order = (
+        jnp.empty_like(sort_order).at[sort_order].set(jnp.arange(len(sort_order)))
+    )
+    node_features = sorted_features[inverse_order]
+    feature_table = Table(
+        inp.graph.particles.keys,
+        node_features,
+        _cls=inp.graph.particles.cls,
+    )
+    return TojaxedMliapEvaluation(energies, feature_table)
+
+
+@dataclass
+class TojaxedMliapEvaluator[State]:
+    """Pure state evaluator for joint ToJAX energies and node representations."""
+
+    graph_constructor: RadiusGraphConstructor = field(static=True)
+    parameter_view: View[State, TojaxedMliap] = field(static=True)
+
+    def __call__(self, state: State) -> TojaxedMliapEvaluation:
+        graph = self.graph_constructor(state, None)
+        return tojaxed_energy_and_features(
+            GraphPotentialInput(self.parameter_view(state), graph)
+        )
+
+
+def make_tojaxed_evaluator[State](
+    particles_view: View[State, Table[ParticleId, IsTojaxedParticles]],
+    systems_view: View[State, Table[SystemId, HasCell]],
+    neighborlist_view: View[State, NearestNeighborList],
+    model: View[State, TojaxedMliap] | TojaxedMliap,
+    cutoffs_view: View[State, Table[SystemId, Array]],
+) -> TojaxedMliapEvaluator[State]:
+    """Build a single-pass energy and node-feature evaluator from kUPS views."""
+    model_view = (lambda _: model) if isinstance(model, TojaxedMliap) else model
+    graph_constructor = RadiusGraphConstructor(
+        particles=particles_view,
+        systems=systems_view,
+        cutoffs=cutoffs_view,
+        neighborlist=neighborlist_view,
+        probe=None,
+    )
+    return TojaxedMliapEvaluator(graph_constructor, model_view)
 
 
 def make_tojaxed_potential[State, Gradients, Hessians](
@@ -228,6 +365,34 @@ class IsTojaxedState(Protocol):
     def neighborlist(self) -> NearestNeighborList: ...
     @property
     def jaxified_model(self) -> TojaxedMliap: ...
+
+
+def make_tojaxed_evaluator_from_state[State](
+    state: Lens[State, IsTojaxedState],
+) -> TojaxedMliapEvaluator[State]:
+    """Create a joint energy and node-feature evaluator from a typed state.
+
+    This is the feature-capable counterpart of
+    :func:`make_tojaxed_from_state`. It uses the same particle, system,
+    neighbor-list, model, and cutoff views, so an MD or relaxation state can
+    share one ToJAX artifact across force evaluation and representation
+    learning.
+
+    Args:
+        state: Lens into the sub-state providing particles, cell,
+            neighbor list, and jaxified model.
+
+    Returns:
+        Pure evaluator returning per-system energies and per-particle node
+        features. The caller owns any outer ``jax.jit`` boundary.
+    """
+    return make_tojaxed_evaluator(
+        state.focus(lambda x: x.particles),
+        state.focus(lambda x: x.systems),
+        state.focus(lambda x: x.neighborlist),
+        state.focus(lambda x: x.jaxified_model),
+        state.focus(lambda x: x.jaxified_model.cutoff),
+    )
 
 
 @overload
