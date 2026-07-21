@@ -128,6 +128,42 @@ class TestCellListSubselect:
         assert single == multi
         assert single == {(a, b) for a in range(3) for b in range(3)}
 
+    def test_distinct_stencil_fast_path_matches_deduplicated_path(self):
+        positions = jnp.array(
+            [
+                [0.02, 0.05, 0.08],
+                [0.27, 0.05, 0.08],
+                [0.52, 0.05, 0.08],
+                [0.77, 0.05, 0.08],
+            ]
+        )
+        lh = make_lh(positions, jnp.zeros(len(positions), dtype=int))
+        systems, _ = make_systems(
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            jnp.array([1.0]),
+        )
+
+        def pairs(deduplicate_query_cells: bool):
+            candidates = _cell_list_subselect(
+                lh,
+                lh,
+                systems,
+                cutoffs=jnp.array([1.0]),
+                max_num_cells=FixedCapacity(128),
+                max_num_candidates=FixedCapacity(64),
+                deduplicate_query_cells=deduplicate_query_cells,
+            )
+            return {
+                (key, query)
+                for key, query in zip(
+                    candidates.key_idx.indices.tolist(),
+                    candidates.query_idx.indices.tolist(),
+                )
+                if key < len(positions) and query < len(positions)
+            }
+
+        assert pairs(False) == pairs(True)
+
 
 class TestFromState:
     def test_from_state_wires_lens_capacities(self):
