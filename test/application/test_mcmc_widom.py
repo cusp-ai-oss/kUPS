@@ -157,6 +157,19 @@ class TestInitState:
             blocked_state.blocking_spheres_parameters.radii, jnp.array([2.0])
         )
 
+    def test_spheres_on_one_host_of_a_batch(self):
+        # Sizing the blocking neighbor list must cover the sphere-free host too.
+        cif = _write_cubic_ar_cif()
+        config = _config(_host(cif, blocking_spheres=_SPHERES))
+        config = config.model_copy(
+            update={"hosts": (config.hosts[0], _host(cif))},
+        )
+        state = init_state(jax.random.key(0), config)
+        assert state.has_blocking_spheres
+        assert state.blocking_spheres_parameters.radii.shape == (1,)
+        params = state.blocking_spheres_neighborlist_params
+        assert params.avg_candidates > 0 and params.cells > 0
+
 
 class TestMakePropagator:
     """``init_state`` + ``make_propagator`` shared per host variant."""

@@ -201,10 +201,12 @@ def init_state(key: Array, config: Config) -> WidomState:
         tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
     if blocking_spheres.radii.shape[0] > 0:
+        # Systems without spheres have no radius to size from, so use the batch-wide max.
+        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
         blocking_nlist = UniversalNeighborlistParameters.estimate(
-            Table.arange(jnp.array([num_buffer_particles / n_sys]), label=SystemId),
+            particles.data.system.counts + num_buffer_particles / n_sys,
             system,
-            blocking_spheres.system.max_over(blocking_spheres.radii),
+            Table.broadcast_to(max_radius, system),
         )
     else:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)

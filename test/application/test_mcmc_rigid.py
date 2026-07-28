@@ -16,6 +16,7 @@ from kups.application.mcmc import (
 from kups.application.mcmc.analysis import analyze_mcmc_file
 from kups.application.mcmc.data import (
     AdsorbateConfig,
+    BlockingSphereConfig,
     HostConfig,
     MotifParticles,
     RunConfig,
@@ -497,6 +498,39 @@ def _batched_config(n_hosts: int, init_adsorbates: tuple[int, ...]) -> Config:
     base = _config(exchange_prob=0.5, init_adsorbates=init_adsorbates)
     host = base.hosts[0]
     return base.model_copy(update={"hosts": tuple(host for _ in range(n_hosts))})
+
+
+class TestInitStateBlockingSpheres:
+    """Sizing the blocking-sphere neighbor list must cover sphere-free systems too."""
+
+    @staticmethod
+    def _mixed_batch() -> Config:
+        """Two-host config where only the first host defines a blocking sphere."""
+        base = _batched_config(2, init_adsorbates=(1,))
+        blocked = base.hosts[0].model_copy(
+            update={
+                "blocking_spheres": (
+                    (BlockingSphereConfig(center=(0.0, 0.0, 0.0), radius=2.0),),
+                )
+            }
+        )
+        return base.model_copy(update={"hosts": (blocked, base.hosts[1])})
+
+    def test_spheres_on_one_host_of_a_batch(self):
+        state = init_state(jax.random.key(0), self._mixed_batch())
+        assert state.has_blocking_spheres
+        assert state.blocking_spheres_parameters.radii.shape == (1,)
+        # Capacities are estimated from the batch-wide max radius, so they are populated
+        # for every system rather than only the one owning the sphere.
+        params = state.blocking_spheres_neighborlist_params
+        assert params.avg_candidates > 0 and params.cells > 0
+
+    def test_no_spheres_leaves_capacities_empty(self):
+        state = init_state(jax.random.key(0), _batched_config(2, init_adsorbates=(1,)))
+        assert not state.has_blocking_spheres
+        assert state.blocking_spheres_neighborlist_params == (
+            UniversalNeighborlistParameters(0, 0, 0, 0)
+        )
 
 
 class TestExchangeEnergyConsistency:
