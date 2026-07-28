@@ -391,15 +391,23 @@ class Index[Key: SupportsSorting]:
             return self.indices
         if self.keys == tokens[: len(self.keys)]:
             return jnp.where(self.indices == len(self.keys), len(tokens), self.indices)
-        keys1 = np.asarray(self.keys, dtype=object)
-        keys2 = np.asarray(tokens, dtype=object)
-        mask = keys1[:, None] == keys2
-        missing = keys1[~(mask.sum(-1) == 1).astype(bool)]
+        counts: dict[Key, int] = {}
+        positions: dict[Key, int] = {}
+        for position, token in enumerate(tokens):
+            counts[token] = counts.get(token, 0) + 1
+            positions.setdefault(token, position)
+        missing = [key for key in self.keys if counts.get(key, 0) != 1]
         if not allow_missing and len(missing) > 0:
-            raise ValueError(f"Keys in self not found in target: {missing.tolist()}")
+            raise ValueError(f"Keys in self not found in target: {missing}")
         if len(tokens) == 0:
             return jnp.full_like(self.indices, fill_value=0)
-        idx_map = jnp.asarray(np.argmax(mask, axis=-1))
+        idx_map = jnp.asarray(
+            np.fromiter(
+                (positions.get(key, 0) for key in self.keys),
+                dtype=int,
+                count=len(self.keys),
+            )
+        )
         return idx_map.at[self.indices].get(mode="fill", fill_value=len(tokens))
 
     def update_labels(

@@ -276,8 +276,9 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         # Build sphere rh as Indexed[ParticleId, _BlockingSpherePoints]
         p = parameters.positions.shape[0]
         sphere_inclusion = parameters.system.to_cls(InclusionId)
-        # Let's just pick negative exclusion IDs for spheres to avoid any possible overlap with particle exclusion IDs
-        sphere_exclusion = Index.new(tuple(ExclusionId(-1 - i) for i in range(p)))
+        sphere_exclusion = Index.new(
+            tuple(ExclusionId(len(particles) + i) for i in range(p))
+        )
         spheres = Table.arange(
             _BlockingSpherePoints(
                 positions=parameters.positions,

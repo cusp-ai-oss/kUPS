@@ -14,7 +14,7 @@ from kups.core.data.index import (
     Index,
     unify_keys_by_cls,
 )
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 
 
@@ -197,6 +197,18 @@ class TestMatchIndices:
         merged = ("C", "H", "O")
         assert merged[int(i4[0])] == "H" and merged[int(i4[1])] == "O"
         assert merged[int(j4[0])] == "O" and merged[int(j4[1])] == "C"
+
+    def test_match_many_keys_against_key_below_range(self):
+        # Blocking-sphere shape: many particle exclusion ids matched against one
+        # foreign id that sorts below them, so the merged keyspace does not start
+        # with the particle keys and the lookup cannot short-circuit. Must stay
+        # linear -- a dense key comparison allocates n**2 bytes (37 GiB here).
+        n = 200_000
+        particles = Index.arange(n, label=ExclusionId)
+        foreign = Index.new((ExclusionId(-1),))
+        particle_idx, foreign_idx = Index.match(particles, foreign)
+        npt.assert_array_equal(particle_idx, np.arange(1, n + 1))
+        npt.assert_array_equal(foreign_idx, [0])
 
 
 class TestConcatenate:
