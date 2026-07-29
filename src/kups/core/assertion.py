@@ -252,17 +252,21 @@ def _make_constant_primitive(name: str) -> Primitive:
 
     def constant_p_batcher(
         batched_args: tuple[Any, ...], batch_dims: tuple[Any, ...], **kwargs: Any
-    ) -> tuple[Any, tuple[Any, ...]]:
-        return primitive.bind(*batched_args, **kwargs), batch_dims
+    ) -> tuple[Any, int]:
+        # The scalar result is broadcast onto the mapped axis of ``like``.
+        (like,), (bdim,) = batched_args, batch_dims
+        out = primitive.bind(like, **kwargs)
+        return jnp.broadcast_to(out, (like.shape[bdim],)), 0
 
     batching.primitive_batchers[primitive] = constant_p_batcher
 
-    def noop_p_dce_rule(
+    def constant_p_dce_rule(
         used_outputs: list[bool], eqn: JaxprEqn, **kwargs: Any
     ) -> tuple[list[bool], JaxprEqn]:
-        return list[bool](), eqn
+        # The primitive is opaque, so all inputs are used.
+        return [True] * len(eqn.invars), eqn
 
-    pe.dce_rules[primitive] = noop_p_dce_rule
+    pe.dce_rules[primitive] = constant_p_dce_rule
     return primitive
 
 

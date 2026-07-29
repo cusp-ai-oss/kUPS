@@ -637,6 +637,52 @@ class TestAssertionValidation:
         result, _ = test_fn(jnp.array(-1.0))
         assert not result
 
+    def test_check_assertions_under_jit_and_scan(self):
+        """Test that check_assertions is traceable by jit and scan."""
+        assert jax.jit(lambda x: (check_assertions(x), x + 1)[1])(
+            jnp.ones(3)
+        ).shape == (3,)
+
+        def body(carry: jax.Array, _: None) -> tuple[jax.Array, None]:
+            return carry + jnp.where(check_assertions(carry), 1.0, 0.0), None
+
+        out = jax.jit(lambda: jax.lax.scan(body, jnp.zeros(()), xs=None, length=3)[0])()
+        assert out == jnp.array(3.0)
+
+    def test_check_assertions_under_vmap(self):
+        """Test that check_assertions carries the mapped axes of its ``like`` arg."""
+        assert jax.vmap(check_assertions)(jnp.ones(4)).shape == (4,)
+        assert jax.vmap(check_assertions, in_axes=1)(jnp.ones((3, 4))).shape == (4,)
+        assert jax.vmap(jax.vmap(check_assertions))(jnp.ones((2, 3))).shape == (2, 3)
+
+        # An unmapped ``like`` keeps the result unmapped.
+        elementwise = jax.vmap(
+            lambda x: jnp.where(check_assertions(jnp.ones(3)), x, -x)
+        )(jnp.arange(4.0))
+        assert jnp.array_equal(elementwise, jnp.arange(4.0))
+
+    @pytest.mark.parametrize("x", [jnp.array([1.0, 2.0]), jnp.array([1.0, -1.0])])
+    def test_check_assertions_vmap_shape_matches_interpreter(self, x: jax.Array):
+        """Test that vmapped check_assertions has one shape with and without tracing."""
+
+        def fn(x: jax.Array) -> tuple[jax.Array, jax.Array]:
+            def inner(x_elem: jax.Array) -> jax.Array:
+                runtime_assert(predicate=x_elem > 0, message="must be positive")
+                return check_assertions(x_elem)
+
+            # Consuming the mask outside the vmap requires mask.shape == x.shape.
+            mask = jax.vmap(inner)(x)
+            return mask, jnp.where(mask, x, -x)
+
+        untraced = jax.eval_shape(fn, x)
+        traced = jax.eval_shape(lambda x: with_runtime_assertions(fn)(x)[0], x)
+        assert untraced == traced
+        assert untraced[0].shape == x.shape
+
+        mask, out = with_runtime_assertions(fn)(x)[0]
+        assert mask.shape == out.shape == x.shape
+        assert bool(jnp.all(mask)) == bool(jnp.all(x > 0))
+
     def test_assertion_check_and_str(self):
         """Test check method, custom exception type check, and string representation."""
         # Passing assertion check
