@@ -19,7 +19,6 @@ from typing import (
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import Array
 
 from kups.core.data.batched import Batched
@@ -93,6 +92,15 @@ class Table(Batched, Generic[TKey, TData]):
       Any ``Index[TKey]`` leaf inside another table's ``data`` acts as a
       foreign key referencing this table's primary keys.
 
+    **Key ordering:**
+
+    ``keys`` must be strictly increasing; the constructor raises otherwise,
+    mirroring :class:`~kups.core.data.index.Index`.  This is what makes the
+    two interoperable — an ``Index`` built from a table's keys (e.g. via
+    :attr:`index`) shares the same key ordering, so foreign-key lookups
+    resolve positionally.  To build a table from keys in arbitrary order,
+    use :meth:`new`, which sorts them and permutes ``data`` to match.
+
     Attributes:
         keys: Primary key column — unique sorted tuple, one entry per row.
         data: Value column — pytree of arrays with leading dimension ``len(keys)``.
@@ -113,30 +121,8 @@ class Table(Batched, Generic[TKey, TData]):
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
-        n = len(self.keys)
-        assert len(np.unique(np.asarray(self.keys, dtype=object))) == n, (
-            "Primary keys must be unique"
-        )
-
-        def _validate_and_broadcast(leaf: Any) -> Any:
-            if isinstance(leaf, (Index, Table)):
-                return leaf
-            dim = leaf.shape[0]
-            if dim != n and dim != 1:
-                raise ValueError(
-                    f"Leaf has size {dim} along axis 0, "
-                    f"expected {n} (or 1 for broadcasting)."
-                )
-            if dim == 1:
-                shape = (n,) + leaf.shape[1:]
-                return jnp.broadcast_to(leaf, shape)
-            return leaf
-
-        updated_data = tree_map(
-            _validate_and_broadcast,
-            self.data,
-            is_leaf=lambda x: isinstance(x, (Index, Table)),
-        )
+        _check_keys(self.keys)
+        updated_data = _broadcast_rows(self.data, len(self.keys))
         assert all(type(x) is self.cls for x in self.keys), (
             f"Key type mismatch: expected {self.cls.__name__}, "
             f"got {set(type(x).__name__ for x in self.keys)}."
@@ -148,6 +134,46 @@ class Table(Batched, Generic[TKey, TData]):
     def __str__(self) -> str:
         keys_str = _format_keys(self.keys)
         return f"Table({self.cls.__name__}, keys={keys_str}, data={self.data})"
+
+    @classmethod
+    def new[K: SupportsSorting, D](
+        cls, keys: Sequence[K], data: D, *, _cls: type[K] | None = None
+    ) -> Table[K, D]:
+        """Create a ``Table`` from keys given in arbitrary order.
+
+        The constructor requires ``keys`` to be strictly increasing; this
+        sorts them instead, permuting ``data`` to match so that every key
+        keeps the row it was passed with.  Nested ``Index`` columns are
+        permuted along with the arrays.
+
+        Args:
+            keys: Primary keys in any order. Must be unique.
+            data: Value column, aligned to ``keys`` as given.
+            _cls: Key type, for empty input where it cannot be inferred.
+
+        Returns:
+            A ``Table`` with sorted keys and correspondingly permuted rows.
+
+        Raises:
+            ValueError: If ``keys`` contains duplicates, or if a data leaf
+                has the wrong leading dimension.
+
+        Example::
+
+            >>> t = Table.new(("O", "H"), jnp.array([16.0, 1.0]))
+            >>> t.keys                 # ('H', 'O')
+            >>> t.data                 # array([1.0, 16.0])
+        """
+        keys = tuple(keys)
+        order = sorted(range(len(keys)), key=keys.__getitem__)
+        if order == list(range(len(keys))):
+            return Table(keys, data, _cls=_cls)
+        rows = _broadcast_rows(data, len(keys))
+        return Table(
+            tuple(keys[i] for i in order),
+            bind(rows).at((jnp.asarray(order),)).get(),
+            _cls=_cls,
+        )
 
     @classmethod
     def arange[D, Label: SupportsSorting](
@@ -323,9 +349,9 @@ class Table(Batched, Generic[TKey, TData]):
         """Join multiple ``Table`` objects on matching keys into tuple data.
 
         Performs a SQL-style ``JOIN`` on key equality. All arguments must
-        share the same key set. If keys appear in a different order, the
-        ``others`` are reindexed to match ``base``'s key ordering before
-        their data is combined.
+        share the same key set. Because keys are always sorted, a matching
+        key set implies a matching key order; ``others`` are nonetheless
+        reindexed onto ``base``'s keys if the two ever disagree.
 
         Args:
             base: The reference ``Table`` whose key ordering is preserved.
@@ -343,7 +369,7 @@ class Table(Batched, Generic[TKey, TData]):
         Example::
 
             >>> species = Table(("H", "O"), jnp.array([1, 8]))
-            >>> masses  = Table(("O", "H"), jnp.array([16.0, 1.0]))
+            >>> masses  = Table.new(("O", "H"), jnp.array([16.0, 1.0]))
             >>> joined  = Table.join(species, masses)
             >>> joined.data  # (array([1, 8]), array([1.0, 16.0]))
         """
@@ -851,6 +877,59 @@ class Table(Batched, Generic[TKey, TData]):
             return Table(args[0].keys, fn(*[a.data for a in args]))
 
         return wrapped
+
+
+def _check_keys(keys: tuple[Any, ...]) -> None:
+    """Enforce the primary-key invariant: strictly increasing.
+
+    Checked in one pass rather than by sorting, so that both halves of the
+    invariant get their own error message. Unsorted keys point the caller at
+    :meth:`Table.new`, which is the supported way to supply them.
+
+    Raises:
+        ValueError: If ``keys`` is unsorted or contains duplicates.
+    """
+    for a, b in zip(keys, keys[1:]):
+        if b < a:
+            raise ValueError(
+                f"Primary keys must be sorted, got {a!r} before {b!r}. "
+                "Use Table.new() to sort keys and permute data to match."
+            )
+        if not a < b:
+            raise ValueError(f"Primary keys must be unique, got {a!r} twice.")
+
+
+def _broadcast_rows[D](data: D, n: int) -> D:
+    """Check that every data leaf has ``n`` rows, broadcasting size-1 leaves.
+
+    ``Index`` and ``Table`` leaves are left alone — they carry their own key
+    column and validate themselves.
+
+    Args:
+        data: Value column to check.
+        n: Required leading-axis size.
+
+    Returns:
+        ``data`` with any size-1 leaf broadcast to ``n`` rows.
+
+    Raises:
+        ValueError: If a leaf's leading axis is neither ``n`` nor 1.
+    """
+
+    def _leaf(leaf: Any) -> Any:
+        if isinstance(leaf, (Index, Table)):
+            return leaf
+        dim = leaf.shape[0]
+        if dim != n and dim != 1:
+            raise ValueError(
+                f"Leaf has size {dim} along axis 0, "
+                f"expected {n} (or 1 for broadcasting)."
+            )
+        if dim == 1:
+            return jnp.broadcast_to(leaf, (n,) + leaf.shape[1:])
+        return leaf
+
+    return tree_map(_leaf, data, is_leaf=lambda x: isinstance(x, (Index, Table)))
 
 
 def _table_operator[K: SupportsSorting, A1, A2, A3](
