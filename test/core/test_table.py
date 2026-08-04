@@ -80,6 +80,88 @@ class TestConstruction:
         assert Table.arange(data_ar2).keys == (0, 1, 2)
 
 
+class TestKeyOrdering:
+    """Primary keys must be strictly increasing, as ``Index`` requires.
+
+    The constructor rejects anything else; ``Table.new`` is the supported
+    way to pass keys in arbitrary order.
+    """
+
+    def test_constructor_rejects_unsorted_keys(self):
+        with pytest.raises(ValueError, match="must be sorted"):
+            Table(("c", "a", "b"), jnp.array([30.0, 10.0, 20.0]))
+        with pytest.raises(ValueError, match="must be sorted"):
+            Table((SystemId(2), SystemId(0)), jnp.array([2.0, 0.0]), _cls=SystemId)
+        # the error names Table.new, so the fix is discoverable
+        with pytest.raises(ValueError, match=r"Table\.new\(\)"):
+            Table(("b", "a"), jnp.array([1.0, 2.0]))
+
+    def test_constructor_rejects_duplicate_keys(self):
+        with pytest.raises(ValueError, match="must be unique"):
+            Table(("a", "a"), jnp.array([1.0, 2.0]))
+
+    def test_new_sorts_keys_and_data(self):
+        t = Table.new(("c", "a", "b"), jnp.array([30.0, 10.0, 20.0]))
+        assert t.keys == ("a", "b", "c")
+        npt.assert_array_equal(t.data, [10.0, 20.0, 30.0])
+        # key -> value pairing survives the permutation
+        assert {k: float(v) for k, v in t} == {"a": 10.0, "b": 20.0, "c": 30.0}
+
+    def test_new_index_interop(self):
+        t = Table.new(
+            (SystemId(2), SystemId(0), SystemId(1)),
+            jnp.array([2.0, 0.0, 1.0]),
+            _cls=SystemId,
+        )
+        assert t.keys == (SystemId(0), SystemId(1), SystemId(2))
+        assert t.index.keys == t.keys
+        npt.assert_array_equal(t.index.indices, jnp.arange(3))
+        npt.assert_array_equal(t[t.index], t.data)
+        npt.assert_array_equal(t[Index.new([SystemId(1)])], [1.0])
+
+    def test_new_permutes_index_leaves(self):
+        # particle 2 -> system 1, particle 0 -> system 0, particle 1 -> system 0
+        t = Table.new(
+            (ParticleId(2), ParticleId(0), ParticleId(1)),
+            ParticleData(
+                positions=jnp.array([[2.0], [0.0], [1.0]]),
+                system=Index((SystemId(0), SystemId(1)), jnp.array([1, 0, 0])),
+            ),
+        )
+        assert t.keys == (ParticleId(0), ParticleId(1), ParticleId(2))
+        npt.assert_array_equal(t.data.positions, [[0.0], [1.0], [2.0]])
+        # the foreign key column is a per-row column and must be permuted too
+        npt.assert_array_equal(t.data.system.indices, [0, 0, 1])
+        assert t.data.system.keys == (SystemId(0), SystemId(1))
+
+    def test_new_passthrough_and_edge_cases(self):
+        # already sorted: identical to the constructor
+        t = Table.new(("a", "b"), jnp.array([1.0, 2.0]))
+        assert t.keys == ("a", "b")
+        npt.assert_array_equal(t.data, [1.0, 2.0])
+        # empty and single-key
+        assert Table.new((), jnp.zeros(0), _cls=str).keys == ()
+        assert Table.new(("a",), jnp.zeros(1)).keys == ("a",)
+        # duplicates are still rejected, not silently merged
+        with pytest.raises(ValueError, match="must be unique"):
+            Table.new(("b", "a", "b"), jnp.arange(3.0))
+        # size-1 leaves still broadcast, and are not mis-permuted
+        bc = Table.new(("c", "a"), Pair(jnp.array([3.0, 1.0]), jnp.ones(1)))
+        npt.assert_array_equal(bc.data.x, [1.0, 3.0])
+        npt.assert_array_equal(bc.data.y, [1.0, 1.0])
+
+    def test_new_is_stable_through_pytree_roundtrip(self):
+        t = Table.new(("c", "a", "b"), jnp.array([30.0, 10.0, 20.0]))
+        # __post_init__ re-runs on every unflatten; it must not permute again
+        rt = jax.tree.map(lambda x: x * 2, t)
+        assert rt.keys == ("a", "b", "c")
+        npt.assert_array_equal(rt.data, [20.0, 40.0, 60.0])
+
+        jitted = jax.jit(lambda x: x.map_data(lambda d: d + 1))(t)
+        assert jitted.keys == ("a", "b", "c")
+        npt.assert_array_equal(jitted.data, [11.0, 21.0, 31.0])
+
+
 class TestUtilities:
     def test_utilities(self):
         indexed = Table(("a", "b", "c"), jnp.arange(3.0))
@@ -288,8 +370,9 @@ class TestMerge:
         npt.assert_array_equal(result.data[0], [1.0, 2.0])
         npt.assert_array_equal(result.data[1], [3.0, 4.0])
 
-        # Reorders to match self
-        b2 = Table(("y", "x"), jnp.array([8.0, 6.0]))
+        # Keys supplied in a different order are sorted by Table.new, so the
+        # join still pairs x->6.0, y->8.0
+        b2 = Table.new(("y", "x"), jnp.array([8.0, 6.0]))
         result2 = Table.join(a, b2)
         npt.assert_array_equal(result2.data[1], [6.0, 8.0])
 
