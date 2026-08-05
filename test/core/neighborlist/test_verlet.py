@@ -1,41 +1,128 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the Verlet-skin margin bound (kups.core.neighborlist.verlet).
+"""Unit tests for the Verlet-skin neighbor list (kups.core.neighborlist.verlet).
 
 Covers the pure pieces: the deformation-aware ``skin_margin`` bound (motion
 threshold, compression, expansion, pure shear, triclinic boundary crossing,
-non-periodic axes, per-system accounting) and the single-image clamp on the
-build radius (``effective_build_radii``).
+non-periodic axes), the single-image clamp on the build radius, the
+completeness of the refine-based reuse path against a fresh dense build, and
+the ``TriggerStep`` backstop (fix flips the rebuild flag; an unabsorbable step
+escalates). MD integration lives in ``test/application/md/test_verlet.py``.
 """
 
 from __future__ import annotations
 
+import dataclasses
+
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import Array
 
-from kups.core.cell import Cell, TriclinicFrame
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import Table
 from kups.core.neighborlist import (
+    DenseNearestNeighborList,
+    Edges,
+    RebuildSkinStep,
     SkinMargin,
     SkinReference,
+    TriggerStep,
+    UniversalNeighborlistParameters,
+    build_skin_edges,
     effective_build_radii,
+    estimate_skin_params,
+    seed_verlet_state,
     skin_margin,
+    skin_neighborlist,
 )
-from kups.core.typing import SystemId
+from kups.core.result import as_result_function
+from kups.core.typing import ParticleId, SystemId
+from kups.core.utils.jax import dataclass
 
-from ._builders import make_lh, make_systems
+from ._builders import SamplePoints, SampleSystems, make_lh, make_systems
+
+
+@dataclass
+class SkinState:
+    """Minimal state satisfying what the verlet module reads and updates."""
+
+    particles: Table[ParticleId, SamplePoints]
+    systems: Table[SystemId, SampleSystems]
+    neighborlist_params: UniversalNeighborlistParameters
+    skin_neighborlist_params: UniversalNeighborlistParameters
+    stored_skin_edges: Edges | None = None
+    reference_positions: Array | None = None
+    reference_cell: Cell | None = None
+    should_rebuild: Array | None = None
+    skin_headroom: Array | None = None
+
+
+def _system_cell(lvecs: Array, periodic=(True, True, True)) -> Cell:
+    """A ``(1,)``-batched cell."""
+    frame = TriclinicFrame.from_matrix(jnp.asarray(lvecs)[None])
+    return Cell.from_pbc(frame, periodic)
+
+
+def _make_state(
+    lvecs: Array, positions: Array, cutoff: float, skin: float
+) -> SkinState:
+    n = positions.shape[0]
+    particles = make_lh(positions, jnp.zeros(n, dtype=int))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(lvecs)[None]))
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    counts = Table(systems.keys, jnp.array([n]))
+    return SkinState(
+        particles=particles,
+        systems=systems,
+        neighborlist_params=UniversalNeighborlistParameters.estimate(
+            counts, systems, cutoffs
+        ),
+        skin_neighborlist_params=estimate_skin_params(counts, systems, cutoffs, skin),
+    )
+
+
+def _edges_fixing(nl_factory, state):
+    """Build edges, growing lens-backed capacities via the assertion fixes."""
+    result = None
+    for _ in range(3):
+        nl = nl_factory(state)
+        result = jax.jit(as_result_function(nl))(state.particles, state.systems)
+        if not result.failed_assertions:
+            break
+        state = result.fix_or_raise(state)
+    assert result is not None
+    result.raise_assertion()
+    return result.value, state
+
+
+def _skin_edges_fixing(state: SkinState, cutoffs, skin: float):
+    result = None
+    for _ in range(3):
+        result = jax.jit(as_result_function(build_skin_edges))(state, cutoffs, skin)
+        if not result.failed_assertions:
+            break
+        state = result.fix_or_raise(state)
+    assert result is not None
+    result.raise_assertion()
+    return result.value, state
+
+
+def _edge_set(edges: Edges, state: SkinState) -> set:
+    """Directed (i, j, quantized difference vector) tuples of the valid rows."""
+    n = state.particles.size
+    idx = np.asarray(edges.indices.indices)
+    diff = np.asarray(edges.difference_vectors(state.particles, state.systems))[:, 0, :]
+    valid = (idx[:, 0] < n) & (idx[:, 1] < n)
+    return {
+        (int(i), int(j), tuple(np.round(d / 1e-6).astype(np.int64)))
+        for (i, j), d in zip(idx[valid], diff[valid])
+    }
+
 
 CUTOFF, SKIN = 3.5, 1.0
-
-
-def _cell(lvecs: Array, periodic=(True, True, True), n_sys: int = 1) -> Cell:
-    """An ``(n_sys,)``-batched cell."""
-    lv = jnp.asarray(lvecs)
-    if lv.ndim == 2:
-        lv = jnp.repeat(lv[None], n_sys, axis=0)
-    return Cell.from_pbc(TriclinicFrame.from_matrix(lv), periodic)
 
 
 def _margins(
@@ -63,7 +150,7 @@ def _margin_fires(*args, **kwargs) -> bool:
 class TestSkinMargin:
     def test_motion_threshold_at_half_skin(self):
         """One atom moving just under/over ``skin/2`` sits on the margin boundary."""
-        cell = _cell(20.0 * jnp.eye(3))
+        cell = _system_cell(20.0 * jnp.eye(3))
         pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
         for factor, expected in [(0.99, False), (1.01, True)]:
             moved = pos.at[0, 0].add(factor * SKIN / 2)
@@ -71,30 +158,30 @@ class TestSkinMargin:
 
     def test_compression_consumes_margin(self):
         """Isotropic compression consumes ``r_build * (1 - sigma_min)``."""
-        ref = _cell(20.0 * jnp.eye(3))
+        ref = _system_cell(20.0 * jnp.eye(3))
         pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
         for factor, expected in [(0.99, False), (1.01, True)]:
             f = 1.0 - factor * SKIN / (CUTOFF + SKIN)
-            now = _cell(20.0 * f * jnp.eye(3))
+            now = _system_cell(20.0 * f * jnp.eye(3))
             # Atoms ride the cell (pure affine motion): zero residual, all
             # margin consumption comes from the deformation term.
             assert _margin_fires(pos * f, pos, now, ref) is expected
 
     def test_expansion_consumes_no_margin(self):
         """Expansion moves non-listed pairs farther away; sigma_min > 1 is free."""
-        ref = _cell(20.0 * jnp.eye(3))
-        now = _cell(30.0 * jnp.eye(3))
+        ref = _system_cell(20.0 * jnp.eye(3))
+        now = _system_cell(30.0 * jnp.eye(3))
         pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
         assert _margin_fires(pos * 1.5, pos, now, ref) is False
 
     def test_pure_shear_consumes_margin(self):
         """An off-diagonal cell move must consume margin (sigma_min < 1) even
         though it is invisible to any per-axis length ratio."""
-        ref = _cell(20.0 * jnp.eye(3))
+        ref = _system_cell(20.0 * jnp.eye(3))
         pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
         for gamma, expected in [(1.0, False), (12.0, True)]:
             lvecs = jnp.array([[20.0, 0.0, 0.0], [gamma, 20.0, 0.0], [0.0, 0.0, 20.0]])
-            now = _cell(lvecs)
+            now = _system_cell(lvecs)
             # Atoms at fixed fractional coordinates: pure affine, zero residual.
             frac = ref.frame.to_fractional(pos)
             assert _margin_fires(now.frame.to_real(frac), pos, now, ref) is expected
@@ -109,7 +196,7 @@ class TestSkinMargin:
         minimum-image residual through the cell stays exact.
         """
         lvecs = jnp.array([[10.0, 0.0, 0.0], [5.0, 8.66, 0.0], [0.0, 0.0, 10.0]])
-        cell = _cell(lvecs)
+        cell = _system_cell(lvecs)
         f_ref = jnp.array([[0.5, 0.98, 0.5]])
         pos_ref = cell.frame.to_real(f_ref)
         for df, expected in [(0.04, False), (0.07, True)]:
@@ -122,7 +209,8 @@ class TestSkinMargin:
     def test_per_system_accounting(self):
         """One hot system must not charge a cold system's margin: pairs never
         span systems, so the motion term reduces per system."""
-        cell = _cell(20.0 * jnp.eye(3), n_sys=2)
+        frame = TriclinicFrame.from_matrix(jnp.repeat(20.0 * jnp.eye(3)[None], 2, 0))
+        cell = Cell.from_pbc(frame, (True, True, True))
         pos = jnp.array(
             [[1.0, 1.0, 1.0], [5.0, 5.0, 5.0], [1.0, 1.0, 1.0], [5.0, 5.0, 5.0]]
         )
@@ -137,7 +225,7 @@ class TestSkinMargin:
         """In a vacuum cell nothing wraps, so a large real move must trigger even
         when a periodic un-wrap of the bounding box would shrink it below the
         threshold (6 A move, 10 A box: un-wrapping would misread it as 4 A)."""
-        cell = _cell(10.0 * jnp.eye(3), periodic=(False, False, False))
+        cell = _system_cell(10.0 * jnp.eye(3), periodic=(False, False, False))
         pos_ref = jnp.array([[2.0, 5.0, 5.0]])
         pos_new = pos_ref + jnp.array([[6.0, 0.0, 0.0]])
         # 2 * 6 >= 10 triggers; the misread 2 * 4 would not.
@@ -147,16 +235,240 @@ class TestSkinMargin:
 class TestEffectiveBuildRadii:
     def test_unclamped_below_the_limit(self):
         """A radius inside the single-image regime passes through untouched."""
-        cell = _cell(8.0 * jnp.eye(3))
+        cell = _system_cell(8.0 * jnp.eye(3))
         radii = effective_build_radii(jnp.array([2.0]), 1.5, cell)
         assert float(radii[0]) == pytest.approx(3.5)  # 2 + 1.5 < 8 / 2
 
     def test_clamped_to_half_perpendicular_length(self):
-        cell = _cell(8.0 * jnp.eye(3))
+        cell = _system_cell(8.0 * jnp.eye(3))
         radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
         assert float(radii[0]) == pytest.approx(4.0)  # min(3+2, 8/2)
 
     def test_unclamped_in_vacuum(self):
-        cell = _cell(8.0 * jnp.eye(3), periodic=(False, False, False))
+        cell = _system_cell(8.0 * jnp.eye(3), periodic=(False, False, False))
         radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
         assert float(radii[0]) == pytest.approx(5.0)
+
+
+class TestReuseReproducesDense:
+    @pytest.mark.parametrize(
+        "lvecs",
+        [
+            pytest.param(15.0 * jnp.eye(3), id="cubic"),
+            pytest.param(
+                jnp.array([[12.0, 0.0, 0.0], [6.0, 10.0, 0.0], [1.0, 2.0, 11.0]]),
+                id="triclinic",
+            ),
+        ],
+    )
+    def test_refined_skin_list_matches_fresh_dense(self, lvecs):
+        """Refining the stored skin list to the true cutoff yields exactly the
+        edge set of a fresh dense build at the true cutoff (no dropped pairs,
+        including across sheared boundaries)."""
+        frac = jax.random.uniform(jax.random.key(0), (64, 3))
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
+
+        skin_edges, state = _skin_edges_fixing(state, cutoffs, SKIN)
+        state = dataclasses.replace(state, stored_skin_edges=skin_edges)
+
+        reuse, state = _edges_fixing(lambda s: skin_neighborlist(s, cutoffs), state)
+        fresh, state = _edges_fixing(
+            lambda s: DenseNearestNeighborList.from_state(s, cutoffs), state
+        )
+        reuse_set = _edge_set(reuse, state)
+        assert len(reuse_set) > 0
+        assert reuse_set == _edge_set(fresh, state)
+
+
+def _seeded(state: SkinState, cutoffs, skin: float, rebuild: bool) -> SkinState:
+    """Populate the Verlet fields so the cond-based steps can trace."""
+    state = seed_verlet_state(state, cutoffs, skin)
+    return dataclasses.replace(state, should_rebuild=jnp.array(rebuild))
+
+
+class TestSeedVerletState:
+    def test_contract(self):
+        """The seed schedules an assertion-covered first rebuild and deep-copies
+        the reference fields (aliased buffers break state donation)."""
+        lvecs = 15.0 * jnp.eye(3)
+        frac = jax.random.uniform(jax.random.key(5), (32, 3))
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
+        state = seed_verlet_state(state, cutoffs, SKIN)
+        assert bool(state.should_rebuild)
+        assert state.skin_headroom.shape == (1,)
+        assert state.reference_positions is not state.particles.data.positions
+
+    def test_overgrown_eager_seed_is_refit_to_the_static_params(self):
+        """An eager build silently outgrows undersized static capacities (its
+        capacity assertions cannot surface outside a trace); the seed must refit
+        the stored edges to the params-implied shape, or the first traced step's
+        ``lax.cond`` dies with mismatched branch shapes."""
+        lvecs = 15.0 * jnp.eye(3)
+        frac = jax.random.uniform(jax.random.key(5), (64, 3))
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
+        params = dataclasses.replace(state.skin_neighborlist_params, avg_edges=1)
+        state = seed_verlet_state(state, cutoffs, SKIN, params=params)
+        target = jax.eval_shape(lambda s: build_skin_edges(s, cutoffs, SKIN), state)
+        assert (
+            state.stored_skin_edges.indices.indices.shape
+            == target.indices.indices.shape
+        )
+
+
+class TestRebuildSkinStep:
+    def test_small_cell_clamps_instead_of_failing(self):
+        """(cutoff + skin) beyond the single-image limit shrinks the effective
+        skin rather than failing: the rebuild succeeds with the clamped budget."""
+        lvecs = 8.0 * jnp.eye(3)
+        frac = jax.random.uniform(jax.random.key(1), (16, 3))
+        state = _make_state(lvecs, frac @ lvecs, 3.0, 2.0)  # 3 + 2 > 8 / 2
+        cutoffs = Table(state.systems.keys, jnp.array([3.0]))
+        state = _seeded(state, cutoffs, 2.0, rebuild=True)
+        step = RebuildSkinStep(cutoffs, 2.0)
+        result = jax.jit(as_result_function(step))(jax.random.key(2), state)
+        result.raise_assertion()
+        assert float(result.value.skin_headroom[0]) == pytest.approx(1.0)  # 4.0 - 3.0
+        assert not bool(result.value.should_rebuild)
+
+    def test_cutoff_beyond_limit_has_no_fix(self):
+        """A cutoff that itself needs more than one periodic image cannot be
+        repaired by any skin choice and must fail the rebuild assertion."""
+        lvecs = 8.0 * jnp.eye(3)
+        frac = jax.random.uniform(jax.random.key(1), (16, 3))
+        state = _make_state(lvecs, frac @ lvecs, 4.5, 1.0)  # 4.5 > 8 / 2
+        cutoffs = Table(state.systems.keys, jnp.array([4.5]))
+        state = _seeded(state, cutoffs, 1.0, rebuild=True)
+        step = RebuildSkinStep(cutoffs, 1.0)
+        result = jax.jit(as_result_function(step))(jax.random.key(2), state)
+        assert result.failed_assertions
+        with pytest.raises(AssertionError, match="verlet_skin = 0"):
+            result.fix_or_raise(state)
+
+    def test_flag_off_is_identity(self):
+        lvecs = 15.0 * jnp.eye(3)
+        frac = jax.random.uniform(jax.random.key(3), (16, 3))
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
+        state = _seeded(state, cutoffs, SKIN, rebuild=False)
+        step = RebuildSkinStep(cutoffs, SKIN)
+        result = jax.jit(as_result_function(step))(jax.random.key(4), state)
+        result.raise_assertion()
+        assert float(result.value.skin_headroom[0]) == 0.0  # untouched seed value
+
+
+def _make_two_system_state(lvecs0, lvecs1, pos0, pos1, cutoff: float, skin: float):
+    """Two systems batched into one state (indices [0]*n0 + [1]*n1)."""
+    positions = jnp.concatenate([pos0, pos1])
+    mask = jnp.concatenate(
+        [jnp.zeros(len(pos0), dtype=int), jnp.ones(len(pos1), dtype=int)]
+    )
+    particles = make_lh(positions, mask)
+    frame = TriclinicFrame.from_matrix(jnp.stack([lvecs0, lvecs1]))
+    systems, cutoffs = make_systems(PeriodicCell(frame), jnp.full((2,), cutoff))
+    counts = Table(systems.keys, jnp.array([len(pos0), len(pos1)]))
+    state = SkinState(
+        particles=particles,
+        systems=systems,
+        neighborlist_params=UniversalNeighborlistParameters.estimate(
+            counts, systems, cutoffs
+        ),
+        skin_neighborlist_params=estimate_skin_params(counts, systems, cutoffs, skin),
+    )
+    return state, Table(systems.keys, jnp.full((2,), cutoff))
+
+
+class TestTriggerStepBackstop:
+    def _state(self, moved_by: float, headroom_prev: float) -> tuple[SkinState, Table]:
+        lvecs = 20.0 * jnp.eye(3)
+        pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
+        state = _make_state(lvecs, pos, CUTOFF, SKIN)
+        cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
+        state = _seeded(state, cutoffs, SKIN, rebuild=False)
+        state = dataclasses.replace(
+            state,
+            particles=dataclasses.replace(
+                state.particles,
+                data=dataclasses.replace(
+                    state.particles.data,
+                    positions=pos.at[0, 0].add(moved_by),
+                ),
+            ),
+            skin_headroom=jnp.array([headroom_prev]),
+        )
+        return state, cutoffs
+
+    def test_exhausted_margin_fix_flips_flag(self):
+        """An overshoot within one budget of the recorded headroom is repairable:
+        the fix requests a rebuild for the block replay."""
+        state, cutoffs = self._state(moved_by=0.55, headroom_prev=0.5)  # consumed 1.1
+        step = TriggerStep(cutoffs, SKIN)
+        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        assert result.failed_assertions
+        fixed = result.fix_or_raise(state)
+        assert bool(fixed.should_rebuild)
+
+    def test_unabsorbable_step_escalates(self):
+        """A single step consuming more than the whole budget cannot be fixed by
+        any rebuild schedule and must raise with the configuration hint."""
+        state, cutoffs = self._state(moved_by=1.0, headroom_prev=1.0)  # consumed 2.0
+        step = TriggerStep(cutoffs, SKIN)
+        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        assert result.failed_assertions
+        with pytest.raises(ValueError, match="cannot absorb"):
+            result.fix_or_raise(state)
+
+    def test_healthy_step_extrapolates_the_flag(self):
+        """Well inside the margin nothing fails; the flag anticipates one more
+        step of consumption."""
+        state, cutoffs = self._state(moved_by=0.2, headroom_prev=1.0)  # consumed 0.4
+        step = TriggerStep(cutoffs, SKIN)
+        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        result.raise_assertion()
+        # headroom 0.6, single step 0.4: another such step fits, no flag.
+        assert not bool(result.value.should_rebuild)
+        assert float(result.value.skin_headroom[0]) == pytest.approx(0.6)
+
+    def _two_system_state(self, move0: float, move1: float, headroom_prev):
+        lvecs = 20.0 * jnp.eye(3)
+        pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
+        state, cutoffs = _make_two_system_state(lvecs, lvecs, pos, pos, CUTOFF, SKIN)
+        state = _seeded(state, cutoffs, SKIN, rebuild=False)
+        moved = state.particles.data.positions
+        moved = moved.at[0, 0].add(move0).at[2, 0].add(move1)
+        state = dataclasses.replace(
+            state,
+            particles=dataclasses.replace(
+                state.particles,
+                data=dataclasses.replace(state.particles.data, positions=moved),
+            ),
+            skin_headroom=jnp.array(headroom_prev),
+        )
+        return state, cutoffs
+
+    def test_per_system_headroom_only_exhausted_system_fails(self):
+        """One exhausted system must trip the backstop even when the other is
+        fresh (pins the all/any reductions), and per-system headroom must be
+        recorded per system (a hot system must not charge the cold one)."""
+        state, cutoffs = self._two_system_state(
+            move0=0.0, move1=0.55, headroom_prev=[1.0, 0.5]
+        )
+        step = TriggerStep(cutoffs, SKIN)
+        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        assert result.failed_assertions  # system 1 is over; system 0 must not mask it
+        fixed = result.fix_or_raise(state)
+        assert bool(fixed.should_rebuild)
+
+    def test_per_system_headroom_is_not_coupled(self):
+        """A hot-but-healthy system leaves the cold system's headroom untouched."""
+        state, cutoffs = self._two_system_state(
+            move0=0.0, move1=0.4, headroom_prev=[1.0, 1.0]
+        )
+        step = TriggerStep(cutoffs, SKIN)
+        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        result.raise_assertion()
+        headroom = result.value.skin_headroom
+        assert float(headroom[0]) == pytest.approx(1.0)  # cold system: full budget
+        assert float(headroom[1]) == pytest.approx(0.2)  # hot system: 1.0 - 0.8
