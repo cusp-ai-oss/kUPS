@@ -5,4 +5,5 @@ positions:
   - [0, 0, 0]
 symbols:
   - "CH4"
+masses: [16.043]
 charges: [0.0]

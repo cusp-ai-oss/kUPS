@@ -76,9 +76,16 @@ class AdsorbateConfig(BaseModel):
         if not data.get("masses") or not data.get("atomic_numbers"):
             zs = [ase.data.atomic_numbers.get(s.split("_")[0], 0) for s in symbols]
             if not data.get("masses"):
-                data["masses"] = tuple(
-                    float(ase.data.atomic_masses[z]) if z > 0 else 0.0 for z in zs
-                )
+                unknown = [s for s, z in zip(symbols, zs, strict=True) if z == 0]
+                if unknown:
+                    raise ValueError(
+                        "Cannot derive masses from unrecognised symbols "
+                        f"{unknown!r} (ASE doesn't know these — typical for "
+                        "united-atom pseudo-symbols like CH4/CH3 or virtual "
+                        "sites like Mw/M_n2). Pass `masses=(...)` explicitly "
+                        "in AdsorbateConfig (0.0 for virtual sites)."
+                    )
+                data["masses"] = tuple(float(ase.data.atomic_masses[z]) for z in zs)
             if not data.get("atomic_numbers"):
                 data["atomic_numbers"] = tuple(zs)
         return data
