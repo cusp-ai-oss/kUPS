@@ -103,28 +103,37 @@ def _peng_robinson_log_fugacity(
     )
 
     solutions = cubic_roots(coefficients)
-    Z = jnp.where(jnp.isreal(solutions), solutions, jnp.nan).real  # type: ignore
+    Z_real = solutions.real
+    # A root is "physical" iff it's (nearly) real and compressibility-feasible
+    # (Z > Bmix so the log(Z − Bmix) below is finite).
+    is_real = jnp.abs(solutions.imag) < 1e-8
+    valid_solutions = is_real & (Z_real > Bmix + 1e-12)
+
+    # Double-where: substitute a safe placeholder Z for unphysical branches so
+    # `jnp.log` and friends stay finite. The placeholder value is never
+    # selected by the argmin below because the mask pins it to +inf, but
+    # using it avoids NaN gradients flowing back through unused branches.
+    safe_Z = jnp.where(valid_solutions, Z_real, Bmix + 1.0)
 
     SQ2 = jnp.sqrt(2)
     dA_dyi = 2 * jnp.einsum("ab,b->a", Aij, fraction)[:, None]
     ln_fugacity_coeff = (
-        (B[:, None] / Bmix) * (Z - 1)
-        - jnp.log(Z - Bmix)
+        (B[:, None] / Bmix) * (safe_Z - 1)
+        - jnp.log(safe_Z - Bmix)
         - (Amix / (2 * SQ2 * Bmix))
         * (dA_dyi / Amix - B[:, None] / Bmix)
-        * jnp.log((Z + (1 + SQ2) * Bmix) / (Z + (1 - SQ2) * Bmix))
+        * jnp.log((safe_Z + (1 + SQ2) * Bmix) / (safe_Z + (1 - SQ2) * Bmix))
     )
     # For component i in a mixture: f_i = phi_i * y_i * p
     ln_fugacity = ln_fugacity_coeff + jnp.log(pressure) + jnp.log(fraction)[:, None]
-    # Select gas phase fugacity
+    # Select gas phase fugacity: lowest ln_fugacity_coeff among valid roots.
     # https://github.com/iRASPA/RASPA2/blob/6498ab1eec9c8e0f063dcd0d71dd7add372c529b/src/equations_of_state.c#L364
-    valid_solutions = jnp.isfinite(Z) & (Z > 0)
-    solution_idx = jnp.nanargmin(
+    solution_idx = jnp.argmin(
         jnp.where(valid_solutions, ln_fugacity_coeff, jnp.inf), axis=1
     )
     ln_fugacity = ln_fugacity[jnp.arange(n), solution_idx]
-    Z = Z[solution_idx]
-    return ln_fugacity, Z
+    Z_selected = safe_Z[solution_idx]
+    return ln_fugacity, Z_selected
 
 
 def peng_robinson_log_fugacity(
