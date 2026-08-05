@@ -89,6 +89,11 @@ from kups.potential.common.graph import (
     PointCloud,
 )
 
+if TYPE_CHECKING:
+    # Annotation only: pme imports from this module, so importing it at runtime here
+    # would be circular.
+    from kups.potential.classical.pme import PMESettings
+
 TO_STANDARD_UNITS = HARTREE * BOHR
 """Conversion factor from atomic units to standard energy units."""
 
@@ -851,6 +856,7 @@ def make_ewald_potential[
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
 ) -> EwaldPotential[State, Gradients, Hessians, Ptch]:
     """Create the complete Ewald potential combining all component terms.
 
@@ -881,6 +887,13 @@ def make_ewald_potential[
         hessian_idx_view: Hessian index structure.
         patch_idx_view: Cached output index structure (optional).
         include_exclusion_mask: Whether to include the exclusion correction.
+        pme: When given, evaluate the reciprocal term with FFT-based PME
+            (``O(N log N)``) instead of the direct Ewald sum, whose dense
+            ``(N, N_k, 2)`` structure-factor tensor runs out of memory at large
+            ``N``. The short-range, self and exclusion terms are unchanged.
+            Note PME has no incremental structure-factor update, so a cached
+            (probe-driven) MC path loses the ``O(1)`` per-move reciprocal update
+            and re-evaluates the whole mesh on every trial move.
 
     Returns:
         Complete Ewald potential (sum of three or four components).
@@ -991,17 +1004,34 @@ def make_ewald_potential[
         patch_idx_view=patch_idx_view,
         cache_lens=cache_lens.focus(lambda x: x.short_range) if cache_lens else None,
     )
-    lr_potential = make_ewald_long_range_potential(
-        particles_view=atomic_view,
-        systems_view=systems_view,
-        parameter_lens=parameter_lens,
-        cache_lens=cache_lens,
-        probe=atomic_particles_probe,
-        gradient_lens=gradient_lens,
-        hessian_lens=hessian_lens,
-        hessian_idx_view=hessian_idx_view,
-        patch_idx_view=patch_idx_view,
-    )
+    if pme is None:
+        lr_potential = make_ewald_long_range_potential(
+            particles_view=atomic_view,
+            systems_view=systems_view,
+            parameter_lens=parameter_lens,
+            cache_lens=cache_lens,
+            probe=atomic_particles_probe,
+            gradient_lens=gradient_lens,
+            hessian_lens=hessian_lens,
+            hessian_idx_view=hessian_idx_view,
+            patch_idx_view=patch_idx_view,
+        )
+    else:
+        # Imported here, not at module scope, because pme imports from this module.
+        from kups.potential.classical.pme import make_pme_long_range_potential
+
+        lr_potential = make_pme_long_range_potential(
+            particles_view=atomic_view,
+            systems_view=systems_view,
+            parameter_lens=parameter_lens,
+            cache_lens=None,
+            probe=atomic_particles_probe,
+            gradient_lens=gradient_lens,
+            hessian_lens=hessian_lens,
+            hessian_idx_view=hessian_idx_view,
+            patch_idx_view=patch_idx_view,
+            settings=pme,
+        )
     self_potential = make_ewald_self_interaction_potential(
         particles_view=atomic_view,
         systems_view=systems_view,
