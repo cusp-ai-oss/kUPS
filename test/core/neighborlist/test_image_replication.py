@@ -30,6 +30,7 @@ cutoff/lattice combinations, in four layers of increasing integration:
 
 from __future__ import annotations
 
+import collections
 import itertools
 
 import jax
@@ -881,6 +882,78 @@ class TestFloat32AnchorBoundary:
         assert not (inside - got), (
             f"dropped clearly-inside edges: {sorted(inside - got)}"
         )
+
+
+# ============================================================================ #
+# queried_keys parity: restricting the query side to every id must reproduce
+# the full self-graph EXACTLY, as a multiset. The deep-replication regime
+# (ratio > 1) pins the self-image dedup — a self-image pair (i, i, s) and its
+# reverse (i, i, -s) are both emitted by replication, so QueriedKeysDedupMask
+# must keep exactly one orientation for MirrorPairEdges to restore, or every
+# self-image row is double-counted.
+# ============================================================================ #
+_QUERIED_COMPILED: dict = {}
+
+
+def _queried_nl_multiset(
+    nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, n: int, queried: bool
+):
+    """Edge multiset ``Counter[(i, j, shift)]`` of a full or queried-keys run."""
+    cell = _make_cell(matrix)
+    lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
+    systems, _ = make_systems(cell, jnp.array([cutoff]))
+    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
+    bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
+    fn = _compiled_nl(nl_cls, n, images, bins, (True, True, True), cutoff)
+    if queried:
+        result = fn(
+            keys=lh, systems=systems, queried_keys=Index(lh.keys, jnp.arange(n))
+        )
+    else:
+        result = fn(keys=lh, systems=systems)
+    result.raise_assertion()
+    edges = result.value
+    raw = np.asarray(edges.indices.indices)
+    shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)
+    keep = (raw[:, 0] < n) & (raw[:, 1] < n)
+    return collections.Counter(
+        (int(i), int(j), tuple(int(s) for s in sh))
+        for (i, j), sh in zip(raw[keep], shifts[keep])
+    )
+
+
+@pytest.mark.parametrize(
+    "nl_cls",
+    [DenseNearestNeighborList, CellListNeighborList],
+    ids=["dense", "cell_list"],
+)
+@pytest.mark.parametrize(
+    "cell_name,matrix",
+    [("ortho_cubic", CELLS[0][1]), ("sheared", CELLS[5][1])],
+    ids=["ortho_cubic", "sheared"],
+)
+@pytest.mark.parametrize("ratio", _E2E_RATIOS)
+class TestQueriedKeysMatchesFullSelfGraph:
+    n = 5
+
+    def test_edge_multiset_matches_full_self_graph(
+        self, nl_cls, cell_name, matrix, ratio
+    ):
+        cutoff = _cutoff_for(matrix, ratio)
+        frac = np.asarray(jax.random.uniform(jax.random.key(13), (self.n, 3)))
+        real = jnp.asarray(frac) @ jnp.asarray(matrix)
+        full = _queried_nl_multiset(nl_cls, real, matrix, cutoff, self.n, False)
+        queried = _queried_nl_multiset(nl_cls, real, matrix, cutoff, self.n, True)
+        assert queried == full, (
+            f"{cell_name}@{ratio}: queried-keys multiset diverges from the full "
+            f"self-graph: {dict((queried - full) + (full - queried))}"
+        )
+        # A self-image row (i, i, n) is in range iff |n @ A| < cutoff, so the
+        # regression is only exercised when the cutoff exceeds the shortest
+        # lattice vector (ortho_cubic @ 1.19 does; guard that it stays covered).
+        if cutoff > float(np.linalg.norm(np.asarray(matrix), axis=1).min()):
+            self_rows = [e for e in full if e[0] == e[1]]
+            assert self_rows, "case was expected to exercise self-image rows"
 
 
 # ============================================================================ #
