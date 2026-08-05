@@ -13,7 +13,8 @@ support batched parallel systems.
 - **[moves][kups.mcmc.moves]**: MC move proposals (translations, rotations, insertions/deletions)
 - **[probability][kups.mcmc.probability]**: Acceptance criteria (Boltzmann, fugacity, combined µVT)
 - **[fugacity][kups.mcmc.fugacity]**: Equation of state calculations for real gas mixtures
-- **[widom][kups.mcmc.widom]**: Widom ghost-insertion primitives (µ_ex, K_H, q_st)
+- **[widom][kups.mcmc.widom]**: Widom ghost-insertion primitives (µ_ex, K_H, q_st), TMMC C-matrix and energy-moment accumulators
+- **[flat_histogram][kups.mcmc.flat_histogram]**: Post-processing for flat-histogram (TMMC) adsorption data — Taylor-extrapolated isotherms and isosteric heats
 
 ## Typical Usage
 
@@ -45,6 +46,6 @@ combined = compose_propagators(nvt_propagator, gcmc_propagator)
 See individual module documentation for detailed APIs.
 """
 
-from kups.mcmc import fugacity, moves, probability, widom
+from kups.mcmc import flat_histogram, fugacity, moves, probability, widom
 
-__all__ = ["moves", "probability", "fugacity", "widom"]
+__all__ = ["moves", "probability", "fugacity", "widom", "flat_histogram"]
