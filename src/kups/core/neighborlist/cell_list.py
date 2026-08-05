@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
@@ -40,7 +41,7 @@ from kups.core.neighborlist.types import (
     PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import dataclass, jit
+from kups.core.utils.jax import dataclass, field, jit
 
 
 class IsCellListParams(Protocol):
@@ -81,6 +82,7 @@ def _cell_list_subselect(
     cutoffs: Array,
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
+    promise_unique_cells: bool = False,
 ) -> Candidates:
     cell = systems.data.cell
     key_positions, _ = cell.fold(keys.data.positions)
@@ -138,7 +140,18 @@ def _cell_list_subselect(
     # all-True, making the where a no-op.
     query_neighborhood_hashes = jnp.where(in_cell, hashes, cell_oob)
 
-    if not is_single_cell:
+    if not is_single_cell and promise_unique_cells:
+        # The promise only breaks through periodic wrap-around: with fewer
+        # than three cells along a periodic axis, distinct stencil offsets
+        # fold onto the same cell and emit duplicate candidates.
+        runtime_assert(
+            ((bins.data >= 3) | ~jnp.array(cell.periodic)).all(),
+            "promise_unique_cells requires at least three cells along every "
+            "periodic axis, got a minimum of {min_bins} per axis.",
+            fmt_args=dict(min_bins=jnp.min(bins.data, axis=0)),
+        )
+
+    if not is_single_cell and not promise_unique_cells:
         unique_queries = jnp.unique(
             jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
             axis=0,
@@ -153,7 +166,7 @@ def _cell_list_subselect(
         query_neighborhood_hashes,
         output_buffer_size=max_num_candidates,
         num_segments=cell_oob,
-        is_sorted=not is_single_cell,  # unique sorts the multi-cell neighborhood hashes
+        is_sorted=not is_single_cell and not promise_unique_cells,
     )
     key_idx = Index(keys.keys, selection_result.scatter_idxs)
     query_idx = Index(
@@ -170,13 +183,18 @@ class CellListSelector:
     """Selector for the cell-list algorithm.
 
     Calls the raw spatial-hash candidate emission, then replicates per image
-    multiplicity when ``max(cutoff/perp) > 0.5``.
+    multiplicity when ``max(cutoff/perp) > 0.5``. Set ``promise_unique_cells``
+    when the caller guarantees at least three cells along every periodic axis,
+    so each query's stencil cells are already distinct; this skips the
+    query-cell deduplication, replacing the multi-key unique sort with a
+    single-key hash sort.
     """
 
     cutoffs: Table[SystemId, Array]
     max_cells: Capacity[int]
     max_candidates: Capacity[int]
     max_image_candidates: Capacity[int]
+    promise_unique_cells: bool = field(default=False, static=True)
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         query = ctx.query_table
@@ -187,6 +205,7 @@ class CellListSelector:
             cutoffs=self.cutoffs.data,
             max_num_cells=self.max_cells,
             max_num_candidates=self.max_candidates,
+            promise_unique_cells=self.promise_unique_cells,
         )
         candidates = lift_query_candidates(candidates, ctx)
         return replicate_for_images(
