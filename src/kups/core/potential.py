@@ -35,9 +35,11 @@ from kups.core.data.index import Index
 from kups.core.lens import Lens, View, bind, const_lens
 from kups.core.patch import ComposedPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.propagator import Propagator
+from kups.core.sharding import shard_axis
 from kups.core.typing import (
     HasParticles,
     HasPositionsAndSystemIndex,
+    OriginDeviceId,
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, tree_map
@@ -717,3 +719,42 @@ class PotentialAsPropagator[State, Gradients, Hessians, StatePatch: Patch[Any]](
             state, energies.set_data(jnp.ones(len(energies), dtype=bool))
         )
         return patch_result
+
+
+@dataclass
+class ShardedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
+    Potential[State, Gradients, Hessians, StatePatch]
+):
+    """Combine a domain-decomposed potential's per-device output across the mesh.
+
+    Each device evaluates ``potential`` on its owned shard, yielding a
+    per-device PARTIAL per-system energy; ``psum`` makes the returned total the
+    global value, replicated. ONLY the energy is combined — gradients w.r.t.
+    the replicated positions/cell are already mesh-summed by ``shard_map``'s
+    transpose, and psumming them again would multiply forces by the device
+    count. Valid only inside ``shard_map`` over the ``OriginDeviceId`` axis.
+
+    The wrapped potential must not cache its own output (``cache_lens=None``):
+    a state patch produced below this wrapper would write the pre-``psum``
+    per-device partial into the state. Wrap in ``CachedPotential`` ABOVE this
+    combiner instead, so the cached value is the global one.
+
+    Attributes:
+        potential: Domain-decomposed base potential returning per-device
+            partial energies.
+    """
+
+    potential: Potential[State, Gradients, Hessians, StatePatch] = field(static=True)
+
+    def __call__(
+        self, state: State, patch: StatePatch | None = None
+    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        out = self.potential(state, patch)
+        energies = out.data.total_energies
+        global_energy = energies.set_data(
+            jax.lax.psum(energies.data, shard_axis(OriginDeviceId))
+        )
+        return WithPatch(
+            PotentialOut(global_energy, out.data.gradients, out.data.hessians),
+            out.patch,
+        )
