@@ -143,7 +143,7 @@ class TestCellListSubselect:
             jnp.array([1.0]),
         )
 
-        def pairs(deduplicate_query_cells: bool):
+        def pairs(promise_unique_cells: bool):
             candidates = _cell_list_subselect(
                 lh,
                 lh,
@@ -151,7 +151,7 @@ class TestCellListSubselect:
                 cutoffs=jnp.array([1.0]),
                 max_num_cells=FixedCapacity(128),
                 max_num_candidates=FixedCapacity(64),
-                deduplicate_query_cells=deduplicate_query_cells,
+                promise_unique_cells=promise_unique_cells,
             )
             return {
                 (key, query)

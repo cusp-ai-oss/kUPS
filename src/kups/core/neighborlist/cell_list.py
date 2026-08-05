@@ -81,7 +81,7 @@ def _cell_list_subselect(
     cutoffs: Array,
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
-    deduplicate_query_cells: bool = True,
+    promise_unique_cells: bool = False,
 ) -> Candidates:
     cell = systems.data.cell
     key_positions, _ = cell.fold(keys.data.positions)
@@ -139,7 +139,7 @@ def _cell_list_subselect(
     # all-True, making the where a no-op.
     query_neighborhood_hashes = jnp.where(in_cell, hashes, cell_oob)
 
-    if not is_single_cell and deduplicate_query_cells:
+    if not is_single_cell and not promise_unique_cells:
         unique_queries = jnp.unique(
             jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
             axis=0,
@@ -154,7 +154,7 @@ def _cell_list_subselect(
         query_neighborhood_hashes,
         output_buffer_size=max_num_candidates,
         num_segments=cell_oob,
-        is_sorted=not is_single_cell and deduplicate_query_cells,
+        is_sorted=not is_single_cell and not promise_unique_cells,
     )
     key_idx = Index(keys.keys, selection_result.scatter_idxs)
     query_idx = Index(
@@ -171,17 +171,18 @@ class CellListSelector:
     """Selector for the cell-list algorithm.
 
     Calls the raw spatial-hash candidate emission, then replicates per image
-    multiplicity when ``max(cutoff/perp) > 0.5``. Query-cell deduplication can
-    be disabled when the caller guarantees at least three cells along every
-    periodic axis; this replaces the multi-key unique sort with a single-key
-    hash sort.
+    multiplicity when ``max(cutoff/perp) > 0.5``. Set ``promise_unique_cells``
+    when the caller guarantees at least three cells along every periodic axis,
+    so each query's stencil cells are already distinct; this skips the
+    query-cell deduplication, replacing the multi-key unique sort with a
+    single-key hash sort.
     """
 
     cutoffs: Table[SystemId, Array]
     max_cells: Capacity[int]
     max_candidates: Capacity[int]
     max_image_candidates: Capacity[int]
-    deduplicate_query_cells: bool = field(default=True, static=True)
+    promise_unique_cells: bool = field(default=False, static=True)
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         query = ctx.query_table
@@ -192,7 +193,7 @@ class CellListSelector:
             cutoffs=self.cutoffs.data,
             max_num_cells=self.max_cells,
             max_num_candidates=self.max_candidates,
-            deduplicate_query_cells=self.deduplicate_query_cells,
+            promise_unique_cells=self.promise_unique_cells,
         )
         candidates = lift_query_candidates(candidates, ctx)
         return replicate_for_images(
