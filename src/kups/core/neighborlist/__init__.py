@@ -137,6 +137,10 @@ from kups.core.neighborlist.types import (
     PipelineContext,
     Postprocessor,
 )
+from kups.core.neighborlist.verlet import (
+    effective_build_radii,
+    skin_margin,
+)
 
 __all__ = [
     "AdaptiveNeighborList",
@@ -186,5 +190,7 @@ __all__ = [
     "all_dense_cost",
     "cell_list_cost",
     "dense_cost",
+    "effective_build_radii",
     "neighborlist_changes",
+    "skin_margin",
 ]
