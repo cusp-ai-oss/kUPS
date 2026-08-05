@@ -75,7 +75,9 @@ documentation = "https://cusp-ai-oss.github.io/kUPS/"
 
 [project.scripts]
 kups_md = "kups.application.simulations.md:main"
+kups_md_lj_dd = "kups.application.simulations.md_lj_dd:main"
 kups_relax = "kups.application.simulations.relax:main"
+kups_relax_lj_dd = "kups.application.simulations.relax_lj_dd:main"
 kups_mcmc_rigid = "kups.application.simulations.mcmc_rigid:main"
 kups_mcmc_widom = "kups.application.simulations.mcmc_widom:main"
 

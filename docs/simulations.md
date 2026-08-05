@@ -28,6 +28,8 @@ kups_md md_orb.yaml
 
 All integrators are built from the same composable propagator primitives described in the Propagators tutorial.
 
+**Domain decomposition:** `kups_md_lj_dd` (and `kups_relax_lj_dd` for optimization) run the LJ backend with the interaction graph domain-decomposed across all local devices: every device holds all atoms and computes only the edges incident on the atoms it owns, so the force work scales with the device count while trajectories stay bit-identical to a single-device run. Same YAML schema as `kups_md`/`kups_relax`, restricted to `potential.backend: lj`.
+
 ## Geometry Optimization
 
 Relax atomic positions (and optionally lattice vectors) to a local energy minimum with `kups_relax`. The force field is selected by the `potential.backend` field:
