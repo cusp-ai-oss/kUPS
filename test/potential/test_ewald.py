@@ -32,14 +32,16 @@ from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldLongRangeInput,
     EwaldParameters,
+    IncrementalUpdate,
     estimate_ewald_parameters,
     ewald_long_range_energy,
     ewald_net_charge_energy,
     ewald_self_interaction_energy,
     ewald_short_range_energy,
+    full_structure_factor,
+    incremental_structure_factor,
     kvecs_from_kmax,
     prefactor,
-    structure_factor,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 
@@ -253,7 +255,7 @@ class TestEwald:
         e_atomic = (
             ewald_short_range_energy(sr_inp).data.data[0]
             + ewald_long_range_energy(
-                EwaldLongRangeInput(PointCloud(all_particles, systems), params, None)
+                EwaldLongRangeInput(PointCloud(all_particles, systems), params)
             ).data.data[0]
             + ewald_self_interaction_energy(sr_inp).data.data[0]
         )
@@ -337,7 +339,7 @@ class TestEwald:
         sr_input = GraphPotentialInput(params, graph)
         sr_result = ewald_short_range_energy(sr_input)
 
-        lr_input = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+        lr_input = EwaldLongRangeInput(PointCloud(particles, systems), params)
         lr_result = ewald_long_range_energy(lr_input)
         self_result = ewald_self_interaction_energy(sr_input)
 
@@ -366,7 +368,7 @@ class TestEwald:
         pdata = _make_particle_data(positions, charges, n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
         systems = _make_systems(cell[None], jnp.array([5.0]))
-        inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+        inp = EwaldLongRangeInput(PointCloud(particles, systems), params)
 
         e_net = ewald_net_charge_energy(inp).data[0]
         Q, V = 2.5, L**3
@@ -386,7 +388,7 @@ class TestEwald:
         pdata = _make_particle_data(jnp.zeros((1, 3)), jnp.array([1.0]), n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
         systems = _make_systems(cell[None], jnp.array([5.0]))
-        inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+        inp = EwaldLongRangeInput(PointCloud(particles, systems), params)
 
         pref = prefactor(inp)
         npt.assert_array_equal(pref[0, 0], jnp.asarray(0.0))
@@ -418,7 +420,7 @@ class TestEwald:
                 reciprocal_lattice_shifts=Table((SystemId(0),), kvecs[None]),
             )
             sr_inp = GraphPotentialInput(params, graph)
-            lr_inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+            lr_inp = EwaldLongRangeInput(PointCloud(particles, systems), params)
             return (
                 ewald_short_range_energy(sr_inp).data.data[0]
                 + ewald_long_range_energy(lr_inp).data.data[0]
@@ -527,8 +529,8 @@ class TestStructureFactorCache:
         """Build a charge-ordered cubic lattice and a builder for its Ewald input.
 
         Returns:
-            Tuple of the particle table and a function mapping positions (plus an
-            optional cache and previous-particle data) to an Ewald input.
+            Tuple of the particle table and a function mapping positions to an
+            Ewald input.
         """
         grid = jnp.stack(
             jnp.meshgrid(*(3 * [jnp.arange(self.REPEATS)]), indexing="ij"), axis=-1
@@ -549,15 +551,9 @@ class TestStructureFactorCache:
             _make_particle_data(positions, charges), label=ParticleId
         )
 
-        def make_input(
-            pos: Array,
-            cache: EwaldCache[Any, Any] | None = None,
-            changes: WithIndices[ParticleId, PointCloudParticles] | None = None,
-        ) -> EwaldLongRangeInput[Any]:
+        def make_input(pos: Array) -> EwaldLongRangeInput[Any]:
             patched = bind(particles).focus(lambda p: p.data.positions).set(pos)
-            return EwaldLongRangeInput(
-                PointCloud(patched, systems), params, cache, None, changes
-            )
+            return EwaldLongRangeInput(PointCloud(patched, systems), params)
 
         return particles, make_input
 
@@ -603,11 +599,13 @@ class TestStructureFactorCache:
             if not compensated:
                 sk = KahanSummand.init(sk.value)
             new_pos = pos.at[idx].add(delta)
-            sk, _ = structure_factor(make_input(new_pos, self._cache(sk), previous))
+            sk, _ = incremental_structure_factor(
+                make_input(new_pos), IncrementalUpdate(self._cache(sk), previous)
+            )
             return (sk, new_pos), None
 
         positions = particles.data.positions
-        sk0, _ = structure_factor(make_input(positions))
+        sk0 = full_structure_factor(make_input(positions))
         (sk, pos), _ = jax.lax.scan(step, (sk0, positions), (moved, deltas))
         # Without compensation only the running sum survives, as before this change.
         return (sk.total if compensated else sk.value), pos
