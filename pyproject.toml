@@ -78,6 +78,7 @@ kups_md = "kups.application.simulations.md:main"
 kups_relax = "kups.application.simulations.relax:main"
 kups_mcmc_rigid = "kups.application.simulations.mcmc_rigid:main"
 kups_mcmc_widom = "kups.application.simulations.mcmc_widom:main"
+kups_mcmc_nvtw = "kups.application.simulations.mcmc_nvtw:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -91,6 +91,21 @@ kups_mcmc_widom mcmc_widom.yaml
 
 Per-cycle [`WidomStatistics`][kups.mcmc.widom.WidomStatistics] snapshots are written to the HDF5 output file. [`analyze_widom_file`][kups.application.mcmc.analysis.analyze_widom_file] reduces them post-hoc into block-averaged $\mu^\mathrm{ex}$, $K_H$, and $q_\mathrm{st}$ with standard errors (Vlugt 2008 eq. 16, $N=0$).
 
+## Flat-Histogram (TMMC) Adsorption
+
+Compute full adsorption isotherms, isosteric heats, and working capacities from a *single* simulation temperature using transition-matrix Monte Carlo (Witman, Mahynski & Smit 2018). The entry point fans out $N_\mathrm{max} + 1$ parallel NVT systems — one per macrostate $N = 0, \ldots, N_\mathrm{max}$ — over a shared host framework; ghost insertion/deletion probes accumulate the TMMC collection matrix and per-macrostate energy moments.
+
+| Command | Force Field | Description |
+|---------|-------------|-------------|
+| `kups_mcmc_nvtw` | Lennard-Jones + Ewald | Flat-histogram NVT+W for isotherms and $q_\mathrm{st}$ over a $(T, P)$ range |
+
+```sh
+cd examples
+kups_mcmc_nvtw mcmc_nvtw.yaml
+```
+
+Per-cycle accumulator snapshots are written to the HDF5 output file. Post-processing with [`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummary] reconstructs $\ln Q_c(N, V, \beta)$ from the C-matrix, Taylor-extrapolates it in $\beta$ using the collected energy cumulants, and evaluates isotherms and isosteric heats at arbitrary $(T, P)$. The isosteric heat is a [`jax.grad`][jax.grad] through the loading function — including the Peng-Robinson equation of state — with no finite-difference hyperparameter.
+
 # Machine-learning Force Fields
 
 CuspAI publishes JAX exports of MACE and Orb on the Hugging Face Hub — one repository per model so each retains its upstream license:
