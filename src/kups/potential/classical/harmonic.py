@@ -98,7 +98,7 @@ def harmonic_bond_energy(
     x0 = inp.parameters.x0[edg_species[:, 0], edg_species[:, 1]]
     k = inp.parameters.k[edg_species[:, 0], edg_species[:, 1]]
     edge_energy = (jnp.linalg.norm(graph.edge_shifts[:, 0], axis=-1) - x0) ** 2 * k
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy)
+    total_energies = graph.reduce_edges_to_systems(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 
@@ -154,7 +154,7 @@ def harmonic_angle_energy(
     )
     angle = jnp.rad2deg(angle)
     edge_energy = (angle - theta0) ** 2 * k
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy)
+    total_energies = graph.reduce_edges_to_systems(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 

@@ -72,7 +72,7 @@ def _pairwise_coulomb_energy(
     edg = inp.graph.particles[inp.graph.edges.indices]
     qij = edg.charges[:, 0] * edg.charges[:, 1]
     dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
-    energies = inp.graph.edge_batch_mask.sum_over(qij / dists) / 2 * TO_STANDARD_UNITS
+    energies = inp.graph.reduce_edges_to_systems(qij / dists) / 2 * TO_STANDARD_UNITS
     assert len(energies) == inp.graph.batch_size
     return WithPatch(energies, IdPatch[Any]())
 

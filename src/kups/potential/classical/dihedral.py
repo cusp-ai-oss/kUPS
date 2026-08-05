@@ -264,7 +264,7 @@ def dihedral_energy(
     # UFF torsion energy: U(phi) = 1/2 V [1 - cos(n*phi0)*cos(n*phi)]
     edge_energy = 0.5 * V * (1.0 - jnp.cos(n * phi0) * jnp.cos(n * phi))
 
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy)
+    total_energies = graph.reduce_edges_to_systems(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 
