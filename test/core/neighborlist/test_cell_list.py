@@ -5,6 +5,7 @@
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
@@ -163,6 +164,36 @@ class TestCellListSubselect:
             }
 
         assert pairs(False) == pairs(True)
+
+    def test_broken_promise_emits_runtime_assertion(self):
+        from kups.core.result import as_result_function
+
+        positions = jnp.array([[0.02, 0.05, 0.08], [0.52, 0.55, 0.58]])
+        lh = make_lh(positions, jnp.zeros(len(positions), dtype=int))
+        systems, _ = make_systems(
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            jnp.array([1.0]),
+        )
+
+        def run(cutoff: float):
+            return as_result_function(
+                lambda: _cell_list_subselect(
+                    lh,
+                    lh,
+                    systems,
+                    cutoffs=jnp.array([cutoff]),
+                    max_num_cells=FixedCapacity(128),
+                    max_num_candidates=FixedCapacity(64),
+                    promise_unique_cells=True,
+                )
+            )()
+
+        # 4 A box, cutoff 2.0 -> 2 bins/axis: stencil offsets wrap onto the
+        # same cell, so the promise is broken.
+        with pytest.raises(AssertionError):
+            run(2.0).raise_assertion()
+        # cutoff 1.0 -> 4 bins/axis satisfies the promise.
+        run(1.0).raise_assertion()
 
 
 class TestFromState:

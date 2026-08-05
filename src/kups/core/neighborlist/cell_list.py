@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
@@ -138,6 +139,17 @@ def _cell_list_subselect(
     # are excluded). For fully-periodic cells fold guarantees in_cell is
     # all-True, making the where a no-op.
     query_neighborhood_hashes = jnp.where(in_cell, hashes, cell_oob)
+
+    if not is_single_cell and promise_unique_cells:
+        # The promise only breaks through periodic wrap-around: with fewer
+        # than three cells along a periodic axis, distinct stencil offsets
+        # fold onto the same cell and emit duplicate candidates.
+        runtime_assert(
+            ((bins.data >= 3) | ~jnp.array(cell.periodic)).all(),
+            "promise_unique_cells requires at least three cells along every "
+            "periodic axis, got a minimum of {min_bins} per axis.",
+            fmt_args=dict(min_bins=jnp.min(bins.data, axis=0)),
+        )
 
     if not is_single_cell and not promise_unique_cells:
         unique_queries = jnp.unique(
