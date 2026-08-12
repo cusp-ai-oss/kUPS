@@ -15,6 +15,7 @@ from jax import Array
 
 from kups.core.cell import Cell
 from kups.core.data import Index, Table
+from kups.core.utils.kahan import KahanSummand
 
 _P_co = TypeVar("_P_co", bound=tuple[bool, bool, bool], covariant=True)
 
@@ -465,6 +466,19 @@ class HasPotentialEnergy(Protocol):
 
     @property
     def potential_energy(self) -> Array: ...
+
+
+@runtime_checkable
+class HasCompensatedPotentialEnergy(Protocol):
+    r"""Protocol for systems whose potential energy is accumulated incrementally.
+
+    Attributes:
+        potential_energy: Potential energy in eV as a compensated accumulator, so
+            that small increments survive being added to a large total.
+    """
+
+    @property
+    def potential_energy(self) -> KahanSummand[Array]: ...
 
 
 @runtime_checkable

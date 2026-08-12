@@ -34,6 +34,7 @@ from kups.application.simulations.mcmc_rigid import (
     MCMCStateUpdate,
     _probe,
     init_state,
+    make_guest_stress,
     make_propagator,
     run,
 )
@@ -129,7 +130,7 @@ def _build_state() -> MCMCState:
         MCMCSystems(
             cell=PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * L)),
             temperature=jnp.array([300.0]),
-            potential_energy=jnp.array([0.0]),
+            potential_energy=KahanSummand.init(jnp.array([0.0])),
             log_fugacity=jnp.array([[0.0]]),  # (n_sys, n_motifs)
         ),
         label=SystemId,
@@ -155,7 +156,7 @@ def _build_state() -> MCMCState:
             ),
         ),
         EwaldCache(
-            structure_factor=jnp.zeros((1, 1, 2)),
+            structure_factor=KahanSummand.init(jnp.zeros((1, 1, 2))),
             short_range=KahanSummand.init(
                 PotentialOut(
                     Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
@@ -412,6 +413,17 @@ class TestMakePropagator:
         potential, propagator = make_propagator(state, config)
         assert callable(propagator)
         assert callable(potential)
+
+
+class TestMakeGuestStress:
+    def test_evaluates_through_cache_lens(self, state: MCMCState):
+        """Guest stress applies its cache patch and yields a physical tensor."""
+        # Applying the patch writes back through the cache lens, which only
+        # resolves if every leaf of its focus function is a settable path.
+        stress = make_guest_stress(state)(jax.random.key(0), state).data.potential
+        assert jnp.isfinite(stress).all()
+        assert jnp.abs(stress).max() > 0
+        npt.assert_allclose(stress, jnp.swapaxes(stress, -1, -2), atol=1e-12)
 
 
 # --- End-to-end smoke tests for the rigid-body MCMC entry point ---
@@ -683,7 +695,7 @@ class TestRunGCMC:
 
     def test_state_has_finite_energy(self, run_result):
         state, _ = run_result
-        assert jnp.isfinite(state.systems.data.potential_energy[0]).item()
+        assert jnp.isfinite(state.systems.data.potential_energy.total[0]).item()
 
     def test_analyzer_reads_back_physical_outputs(self, run_result):
         _, out_file = run_result

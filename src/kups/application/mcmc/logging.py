@@ -166,7 +166,7 @@ def make_mcmc_logged_data[S: IsMCMCState](
             guest_stress = Table(state.systems.keys, StressResult(z, z, z))
         sys_keys = state.systems.keys
         system_step = MCMCSystemStepData(
-            potential_energy=state.systems.data.potential_energy,
+            potential_energy=state.systems.data.potential_energy.total,
             lj_energy=state.lj_parameters.cache.total.total_energies.data,
             ewald_short_range_energy=ewald.short_range.total.total_energies.data,
             ewald_long_range_energy=ewald.long_range.total.total_energies.data,

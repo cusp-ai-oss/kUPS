@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax import Array
 
 from kups.core.utils.jax import dataclass, kahan_summation
 
@@ -86,6 +87,13 @@ class KahanSummand[T]:
     def __add__(self, other: KahanSummand[T] | T) -> KahanSummand[T]:
         """Accumulate a value or another summand.
 
+        Adding a plain value applies the compensation to the addend, which keeps
+        the running sum close to the true total when many small values are
+        accumulated. Adding another summand instead adds the two compensations to
+        each other and folds in the exact rounding error of the value addition:
+        the addend is then of comparable magnitude, and subtracting a compensation
+        from it would round the compensation away entirely.
+
         Args:
             other: A PyTree to add, or another ``KahanSummand`` whose value and
                 compensation are both folded in.
@@ -93,16 +101,31 @@ class KahanSummand[T]:
         Returns:
             A new summand with the updated running sum and compensation.
         """
-        addend: T
-        compensate: T
-        if isinstance(other, KahanSummand):
-            addend = other.value
-            compensate = jax.tree.map(jnp.add, self.compensate, other.compensate)
-        else:
-            addend = other
-            compensate = self.compensate
-        value, error = kahan_summation(self.value, addend, compensate=compensate)
-        return KahanSummand(value, error)
+        if not isinstance(other, KahanSummand):
+            value, error = kahan_summation(
+                self.value, other, compensate=self.compensate
+            )
+            return KahanSummand(value, error)
+
+        def excess(total: Array, a: Array, b: Array) -> Array:
+            """Amount by which `fl(a + b)` exceeds `a + b`, exactly.
+
+            Knuth's 2Sum, which needs no ordering of the operands. The cheaper
+            ``(total - a) - b`` is only exact for ``|a| >= |b|``, which a sum over
+            potential terms cannot guarantee.
+            """
+            b_part = total - a
+            a_part = total - b_part
+            return (a_part - a) + (b_part - b)
+
+        value = jax.tree.map(jnp.add, self.value, other.value)
+        compensate = jax.tree.map(
+            lambda c, o, e: c + o + e,
+            self.compensate,
+            other.compensate,
+            jax.tree.map(excess, value, self.value, other.value),
+        )
+        return KahanSummand(value, compensate)
 
     def __radd__(self, other: KahanSummand[T] | T) -> KahanSummand[T]:
         """Accumulate from the left so `sum` and `other + summand` work.
@@ -115,3 +138,18 @@ class KahanSummand[T]:
             A new summand with the updated running sum and compensation.
         """
         return self.__add__(other)
+
+    def __mul__(self, other: float) -> KahanSummand[T]:
+        """Scale the running sum and its compensation by `other`.
+
+        Args:
+            other: Scalar factor.
+
+        Returns:
+            A summand representing `other` times the accumulated sum.
+        """
+        return jax.tree.map(lambda x: other * x, self)
+
+    def __rmul__(self, other: float) -> KahanSummand[T]:
+        """Scale from the left, see [__mul__][kups.core.utils.kahan.KahanSummand.__mul__]."""
+        return self.__mul__(other)

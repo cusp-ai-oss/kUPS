@@ -3,6 +3,7 @@
 
 from typing import Any, cast
 
+import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
@@ -16,6 +17,7 @@ from kups.core.patch import Accept, ComposedPatch, WithPatch
 from kups.core.potential import CachedPotential, Potential, PotentialOut
 from kups.core.typing import GroupId, MotifId, SystemId
 from kups.core.utils.jax import dataclass, field
+from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.probability import BoltzmannLogProbabilityRatio, motif_counts
 
 # -- helpers for motif_counts tests --
@@ -120,7 +122,7 @@ class MockState:
     """Mock state class for testing."""
 
     temperature: Array
-    last_potential_out: PotentialOut
+    last_potential_out: KahanSummand[PotentialOut]
 
 
 @dataclass
@@ -140,10 +142,12 @@ class TestNVTProbabilityRatio:
         cls.n_systems = 3
         cls.temperature = jnp.array([300.0, 350.0, 400.0])
         cls.old_energies = jnp.array([-100.0, -150.0, -200.0])
-        cls.last_potential_out = PotentialOut(
-            total_energies=Table.arange(cls.old_energies, label=SystemId),
-            gradients=(),
-            hessians=(),
+        cls.last_potential_out = KahanSummand.init(
+            PotentialOut(
+                total_energies=Table.arange(cls.old_energies, label=SystemId),
+                gradients=(),
+                hessians=(),
+            )
         )
         cls.state = MockState(
             temperature=cls.temperature, last_potential_out=cls.last_potential_out
@@ -160,21 +164,27 @@ class TestNVTProbabilityRatio:
         )
 
         def mock_potential(
-            state: MockState, patch: MockPatch | None = None
-        ) -> WithPatch[PotentialOut[tuple[()], tuple[()]], MockPatch]:
+            state: MockState,
+            patch: MockPatch | None = None,
+            *,
+            include_compensate: bool = False,
+        ) -> WithPatch[Any, MockPatch]:
             new_potential_out: PotentialOut[tuple[()], tuple[()]] = PotentialOut(
                 total_energies=Table.arange(new_energies, label=SystemId),
                 gradients=(),
                 hessians=(),
             )
+            if include_compensate:
+                return WithPatch(KahanSummand.init(new_potential_out), result_patch)
             return WithPatch(new_potential_out, result_patch)
 
         potential = CachedPotential(
             cast(Potential[MockState, Any, Any, MockPatch], mock_potential),
-            lens(lambda x: x.last_potential_out, cls=MockState),
+            lens(lambda x: x.last_potential_out.value, cls=MockState),
             lambda state: PotentialOut(
                 Table.arange(jnp.arange(3), label=SystemId), (), ()
             ),
+            lens(lambda x: x.last_potential_out.compensate, cls=MockState),
         )
         return potential
 
@@ -251,10 +261,12 @@ class TestNVTProbabilityRatio:
         new_energy = jnp.array([BOLTZMANN_CONSTANT])
         temperature = jnp.array([1.0])
 
-        simple_potential_out = PotentialOut(
-            total_energies=Table.arange(old_energy, label=SystemId),
-            gradients=(),
-            hessians=(),
+        simple_potential_out = KahanSummand.init(
+            PotentialOut(
+                total_energies=Table.arange(old_energy, label=SystemId),
+                gradients=(),
+                hessians=(),
+            )
         )
         simple_state = MockState(temperature, simple_potential_out)
 
@@ -273,10 +285,12 @@ class TestNVTProbabilityRatio:
     def test_scalar_temperature_broadcasting(self):
         """Test scalar temperature broadcasts against vector energies."""
         scalar_temp = jnp.array([500.0])
-        scalar_potential_out = PotentialOut(
-            total_energies=Table.arange(jnp.array([-100.0]), label=SystemId),
-            gradients=(),
-            hessians=(),
+        scalar_potential_out = KahanSummand.init(
+            PotentialOut(
+                total_energies=Table.arange(jnp.array([-100.0]), label=SystemId),
+                gradients=(),
+                hessians=(),
+            )
         )
         scalar_state = MockState(scalar_temp, scalar_potential_out)
         new_energies = jnp.array([-105.0])
@@ -296,10 +310,12 @@ class TestNVTProbabilityRatio:
         single_old_energy = jnp.array([-100.0])
         single_new_energy = jnp.array([-105.0])
 
-        single_potential_out = PotentialOut(
-            total_energies=Table.arange(single_old_energy, label=SystemId),
-            gradients=(),
-            hessians=(),
+        single_potential_out = KahanSummand.init(
+            PotentialOut(
+                total_energies=Table.arange(single_old_energy, label=SystemId),
+                gradients=(),
+                hessians=(),
+            )
         )
         single_state = MockState(single_temp, single_potential_out)
 
@@ -320,4 +336,84 @@ class TestNVTProbabilityRatio:
             probability_ratio_and_patch.data.data,
             expected_log_ratio,
             rtol=1e-10,
+        )
+
+
+class TestCompensatedEnergyDifference:
+    """Float32 accuracy of the acceptance ratio for small moves on a large total."""
+
+    # ulp(BASE) in float32 is 2**-7 ~ 7.8e-3, i.e. four times the move size, so
+    # the running sums cannot resolve DELTA at all.
+    BASE = 1e5
+    DELTA = 2e-3
+    TEMPERATURE = 300.0
+    N_STEPS = 20
+    DTYPE = jnp.float32
+
+    def _state(self) -> MockState:
+        energies = Table.arange(
+            jnp.full((1,), self.BASE, dtype=self.DTYPE), label=SystemId
+        )
+        return MockState(
+            jnp.full((1,), self.TEMPERATURE, dtype=self.DTYPE),
+            KahanSummand.init(PotentialOut(energies, (), ())),
+        )
+
+    def _cached_potential(self) -> CachedPotential[MockState, Any, Any, MockPatch]:
+        """Potential that folds a fixed delta into its cached total, as MC does."""
+        cache = lens(lambda x: x.last_potential_out, cls=MockState)
+
+        def potential(
+            state: MockState,
+            patch: MockPatch | None = None,
+            *,
+            include_compensate: bool = False,
+        ) -> WithPatch[Any, MockPatch]:
+            keys = cache.get(state).value.total_energies.keys
+            delta = PotentialOut(
+                Table(keys, jnp.full((1,), self.DELTA, dtype=self.DTYPE)), (), ()
+            )
+            summand = cache.get(state) + delta
+            if include_compensate:
+                return WithPatch(summand, MockPatch())
+            return WithPatch(summand.total, MockPatch())
+
+        return CachedPotential(
+            cast(Potential[MockState, Any, Any, MockPatch], potential),
+            lens(lambda x: x.last_potential_out.value, cls=MockState),
+            None,
+            lens(lambda x: x.last_potential_out.compensate, cls=MockState),
+        )
+
+    def test_ratio_resolves_delta_below_ulp(self):
+        """The log ratio stays exact over many accepted moves; the values do not."""
+        potential = self._cached_potential()
+        ratio = BoltzmannLogProbabilityRatio(
+            temperature=lambda s: Table.arange(s.temperature, label=SystemId),
+            potential=potential,
+        )
+        accept = Table.arange(jnp.ones(1, dtype=bool), label=SystemId)
+        kt = self.TEMPERATURE * BOLTZMANN_CONSTANT
+        expected = -self.DELTA / kt
+
+        def step(state: MockState, _: None) -> tuple[MockState, tuple[Array, Array]]:
+            old = potential.cached_value(state)
+            new = potential(state, MockPatch(), include_compensate=True)
+            # Differencing the running sums alone loses most of the move.
+            naive = (old.value.total_energies - new.data.value.total_energies).data / kt
+            return new.patch(state, accept), (
+                ratio(state, MockPatch()).data.data,
+                naive,
+            )
+
+        final, (compensated, naive) = jax.lax.scan(
+            step, self._state(), length=self.N_STEPS
+        )
+
+        npt.assert_allclose(compensated, expected, rtol=1e-4)
+        assert bool(jnp.all(jnp.abs(naive - expected) > 0.5 * abs(expected)))
+        npt.assert_allclose(
+            potential.cached_value(final).total.total_energies.data,
+            self.BASE + self.N_STEPS * self.DELTA,
+            rtol=1e-7,
         )

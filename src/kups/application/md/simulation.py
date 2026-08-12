@@ -26,8 +26,8 @@ from kups.core.potential import (
     EMPTY,
     CachedPotential,
     EmptyType,
-    MappedPotential,
-    MappedPotentialInput,
+    LinearMappedPotential,
+    LinearMappedPotentialInput,
     Potential,
     PotentialAsPropagator,
     PotentialOut,
@@ -73,7 +73,7 @@ class IsMdState(IsState[MDParticles, MDSystems], Protocol):
 
 
 def potential_map(
-    input: MappedPotentialInput[IsMdState, IsMdGradients, Any],
+    input: LinearMappedPotentialInput[IsMdState, IsMdGradients, Any],
 ) -> PotentialOut[tuple[Array, Cell[AnyPeriodicity]], EmptyType]:
     """Map the full potential output to the specific gradients needed for MD."""
     return PotentialOut(
@@ -101,7 +101,7 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     Returns:
         Propagator that advances the state by one MD step.
     """
-    mapped_potential = MappedPotential(potential, potential_map)
+    mapped_potential = LinearMappedPotential(potential, potential_map)
     derivative_computation = PotentialAsPropagator(
         CachedPotential(
             mapped_potential,

@@ -18,7 +18,8 @@ differences rather than full recomputation (e.g., subtract old particle contribu
 add new particle contribution, reuse rest).
 """
 
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, overload
 
 import jax
 import jax.numpy as jnp
@@ -28,9 +29,11 @@ from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.potential import (
+    CompensatedPotentialResult,
     Energy,
     Potential,
     PotentialOut,
+    PotentialResult,
 )
 from kups.core.typing import SystemId
 from kups.core.utils.jax import (
@@ -233,12 +236,44 @@ class PotentialFromEnergy[
         static=True
     )
 
-    @jit
+    @overload
     def __call__(
         self,
         state: State,
         patch: StatePatch | None = None,
-    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    @jit(static_argnames="include_compensate")
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
+        """Compute energy, gradients and Hessians for the composed inputs.
+
+        Args:
+            state: Current simulation state
+            patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
+
+        Returns:
+            Potential output with the cache update patch composed
+        """
         dp_plan = self.composer(state, patch)
         assert len(dp_plan) > 0, "At least one configuration must be added."
         outs: list[PotentialOut[Gradients, Hessians]] = []
@@ -320,7 +355,6 @@ class PotentialFromEnergy[
             for out in outs[1:]:
                 summand = summand + out
 
-        total = summand.total
         if self.cache_lens is not None:
             assert self.patch_idx_view is not None, (
                 "Patch index view must be set when cache lens is set."
@@ -332,7 +366,9 @@ class PotentialFromEnergy[
         else:
             cache_patch = IdPatch[State]()
         out_patch = ComposedPatch((cache_patch, *patches))
-        return WithPatch(total, out_patch)
+        if include_compensate:
+            return WithPatch(summand, out_patch)
+        return WithPatch(summand.total, out_patch)
 
 
 if TYPE_CHECKING:

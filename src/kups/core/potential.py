@@ -16,11 +16,15 @@ Key components:
 
 Potentials support linearity: energies, gradients, and Hessians can be summed,
 enabling modular force field composition (e.g., bonded + non-bonded + Coulomb).
+
+Every potential can also report the Kahan compensation of its accumulated total
+via ``include_compensate=True``, see
+[Potential][kups.core.potential.Potential].
 """
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple, Protocol, overload
 
 import jax
 import jax.numpy as jnp
@@ -37,6 +41,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, tree_map
+from kups.core.utils.kahan import KahanSummand
 
 type Energy = Array
 """Type alias for energy arrays, typically shape (n_systems,)."""
@@ -49,8 +54,6 @@ class EmptyType:
     Use this when a potential does not compute gradients or Hessians,
     rather than None, to maintain type safety.
     """
-
-    ...
 
 
 EMPTY: EmptyType = EmptyType()
@@ -141,6 +144,17 @@ class PotentialOut[Gradients, Hessians]:
         return self.total_energies, self.gradients, self.hessians
 
 
+type PotentialResult[State, Gradients, Hessians] = WithPatch[
+    PotentialOut[Gradients, Hessians], Patch[State]
+]
+"""Potential output paired with the patch that commits it to the state."""
+
+type CompensatedPotentialResult[State, Gradients, Hessians] = WithPatch[
+    KahanSummand[PotentialOut[Gradients, Hessians]], Patch[State]
+]
+"""Potential output as an accumulator carrying the compensation of its total."""
+
+
 class Potential[
     State,
     Gradients,
@@ -164,18 +178,27 @@ class Potential[
         - Molecular dynamics: Reuse neighbor lists
         - General: Avoid redundant calculations
 
+    Incremental updates accumulate small energy changes onto a large cached total,
+    which loses low-order bits in single precision. Potentials therefore keep a
+    [KahanSummand][kups.core.utils.kahan.KahanSummand] internally and expose its
+    compensation via ``include_compensate=True``. Differencing two compensated
+    totals (see
+    [KahanSummand.difference][kups.core.utils.kahan.KahanSummand.difference])
+    recovers the energy change exactly, which matters for Monte Carlo acceptance
+    where the change is far smaller than the total.
+
     Example:
         ```python
         class LennardJonesPotential:
-            def __call__(self, state, patch=None):
+            def __call__(self, state, patch=None, *, include_compensate=False):
                 # Compute LJ energy and forces
                 energy = compute_lj_energy(state.positions)
                 forces = compute_lj_forces(state.positions)
 
-                return WithPatch(
-                    PotentialOut(energy, {"positions": forces}, EMPTY),
-                    IdPatch()  # No state caching needed
-                )
+                out = PotentialOut(energy, {"positions": forces}, EMPTY)
+                if include_compensate:
+                    out = KahanSummand.init(out)  # Nothing accumulated, so zero
+                return WithPatch(out, IdPatch())  # No state caching needed
 
         # Use in simulation
         potential = LennardJonesPotential()
@@ -185,14 +208,41 @@ class Potential[
         ```
     """
 
+    @overload
     def __call__(
-        self, state: State, patch: StatePatch | None = None
-    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
         """Compute potential energy and derivatives.
 
         Args:
             state: Current simulation state
             patch: Optional state patch for incremental updates
+            include_compensate: Return the output as a
+                [KahanSummand][kups.core.utils.kahan.KahanSummand] carrying the
+                rounding error accumulated so far. The compensation is zero
+                unless the potential accumulates onto a cached total.
 
         Returns:
             Potential output and state patch
@@ -242,25 +292,54 @@ class SummedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
         if len(self.potentials) == 0:
             raise ValueError("At least one potential must be provided")
 
+    @overload
     def __call__(
-        self, state: State, patch: StatePatch | None = None
-    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
         """Evaluate all potentials and sum their outputs.
 
         Calls each potential in sequence with the same state and patch, then
         sums the resulting energies, gradients, and Hessians element-wise.
-        Patches are composed in order.
+        Patches are composed in order. The summands are always compensated so
+        that the terms are added with Kahan summation.
 
         Args:
             state: Current simulation state
             patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
 
         Returns:
             Combined potential output with composed patches
         """
-        outs = [s(state, patch) for s in self.potentials]
+        outs = [s(state, patch, include_compensate=True) for s in self.potentials]
         # Sum using WithPatch.__add__ (adds data and composes patches)
-        return sum(outs[1:], outs[0])
+        total = sum(outs[1:], outs[0])
+        if include_compensate:
+            return total
+        return total.map_data(lambda x: x.total)
 
 
 def sum_potentials[State, Gradients, Hessians, StatePatch: Patch[Any]](
@@ -306,24 +385,52 @@ class ScaledPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
     potential: Potential[State, Gradients, Hessians, StatePatch] = field(static=True)
     scale: float = field(static=True)
 
+    @overload
     def __call__(
-        self, state: State, patch: StatePatch | None = None
-    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
         """Evaluate potential and scale the output.
 
         Computes the base potential then multiplies energies, gradients, and
-        Hessians by the scale factor. The patch is passed through unchanged.
+        Hessians by the scale factor. The compensation is scaled along with the
+        value. The patch is passed through unchanged.
 
         Args:
             state: Current simulation state
             patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
 
         Returns:
             Scaled potential output with original patch
         """
-        out = self.potential(state, patch)
+        out = self.potential(state, patch, include_compensate=True)
         out = bind(out).focus(lambda x: x.data).apply(lambda x: x * self.scale)
-        return out
+        if include_compensate:
+            return out
+        return out.map_data(lambda x: x.total)
 
 
 @dataclass
@@ -341,6 +448,11 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
         cache: Lens to the cache location in state
         patch_idx_view: Maps acceptance mask indices to cached structure.
             If ``None``, all-zero indices are used.
+        compensate_cache: Lens to a second location holding the Kahan
+            compensation of the cached output. Required for potentials that
+            accumulate onto the cached total, so that differencing two cached
+            totals stays exact; ``None`` for potentials that recompute from
+            scratch, where the compensation is never read back.
 
     The patch_idx_view provides the indexing structure matching the potential
     output, used to selectively update cached values based on acceptance masks.
@@ -368,63 +480,121 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = field(
         static=True, default=None
     )
+    compensate_cache: Lens[State, PotentialOut[Any, Any]] | None = field(
+        static=True, default=None
+    )
 
+    @overload
     def __call__(
-        self, state: State, patch: StatePatch | None = None
-    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
         """Evaluate potential and update cache.
 
         Computes the base potential, then creates a patch that will update the
         cached value when applied with an acceptance mask. The cache update uses
-        the patch_idx_view to determine which cached entries to modify.
+        the patch_idx_view to determine which cached entries to modify. When
+        ``compensate_cache`` is set, the compensation is committed alongside the
+        value so that the next call can difference against a compensated total.
 
         Args:
             state: Current simulation state
             patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
 
         Returns:
             Potential output with cache update patch composed
         """
-        result = self.potential(state, patch)
+        result = self.potential(state, patch, include_compensate=True)
+        summand = result.data
         if self.patch_idx_view is not None:
             patch_idx = self.patch_idx_view(state)
         else:
-            assert len(result.data.total_energies) == 1, (
+            assert len(summand.value.total_energies) == 1, (
                 "patch_idx_view must be provided for multi-system potentials"
             )
-            sys_keys = result.data.total_energies.keys
+            sys_keys = summand.value.total_energies.keys
             patch_idx = tree_map(
-                lambda x: Index(sys_keys, jnp.zeros(x.shape, dtype=int)), result.data
+                lambda x: Index(sys_keys, jnp.zeros(x.shape, dtype=int)), summand.value
             )
-        cache_patch = IndexLensPatch(result.data, patch_idx, self.cache)
-        return WithPatch(result.data, ComposedPatch((result.patch, cache_patch)))
+        patches: list[Patch[State]] = [
+            result.patch,
+            IndexLensPatch(summand.value, patch_idx, self.cache),
+        ]
+        if self.compensate_cache is not None:
+            patches.append(
+                IndexLensPatch(summand.compensate, patch_idx, self.compensate_cache)
+            )
+        out_patch = ComposedPatch(tuple(patches))
+        if include_compensate:
+            return WithPatch(summand, out_patch)
+        return WithPatch(summand.total, out_patch)
 
-    def cached_value(self, state: State) -> PotentialOut[Gradients, Hessians]:
+    def cached_value(
+        self, state: State
+    ) -> KahanSummand[PotentialOut[Gradients, Hessians]]:
         """Retrieve the cached potential output from state.
 
         Args:
             state: Simulation state containing cached values
 
         Returns:
-            Previously computed and cached potential output
+            Previously computed and cached potential output. The compensation is
+            the one accumulated up to that point, or zero when no
+            ``compensate_cache`` is configured.
         """
-        return self.cache.get(state)
+        value = self.cache.get(state)
+        if self.compensate_cache is None:
+            return KahanSummand.init(value)
+        return KahanSummand(value, self.compensate_cache.get(state))
 
 
-class MappedPotentialInput[State, InGrad, InHess](NamedTuple):
+class LinearMappedPotentialInput[State, InGrad, InHess](NamedTuple):
     state: State
     potential_out: PotentialOut[InGrad, InHess]
 
 
 @dataclass
-class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch[Any]](
-    Potential[State, OutGrad, OutHess, StatePatch]
-):
+class LinearMappedPotential[
+    State,
+    InGrad,
+    OutGrad,
+    InHess,
+    OutHess,
+    StatePatch: Patch[Any],
+](Potential[State, OutGrad, OutHess, StatePatch]):
     """Wrap a potential and transform its gradient and hessian outputs.
 
     Applies mapping functions to gradients and hessians returned by the inner
     potential, enabling projection (e.g., extracting position gradients from a
     combined position+lattice gradient structure).
+
+    The mapping must be linear: it is applied to the running sum and to the
+    compensation separately, so a cached accumulator survives the mapping.
+    Projections and weighted sums of the output qualify, anything nonlinear does
+    not.
 
     Attributes:
         potential: Base potential to wrap
@@ -434,7 +604,7 @@ class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch
     Example:
         ```python
         # Extract position gradients from VirialTheoremGradients
-        position_potential = MappedPotential(
+        position_potential = LinearMappedPotential(
             potential=full_potential,  # Returns VirialTheoremGradients
             gradient_map=lambda g: g.positions,
             hessian_map=lambda h: h,  # Pass through hessians unchanged
@@ -447,16 +617,55 @@ class MappedPotential[State, InGrad, OutGrad, InHess, OutHess, StatePatch: Patch
 
     potential: Potential[State, InGrad, InHess, StatePatch] = field(static=True)
     mapping: View[
-        MappedPotentialInput[State, InGrad, InHess], PotentialOut[OutGrad, OutHess]
+        LinearMappedPotentialInput[State, InGrad, InHess],
+        PotentialOut[OutGrad, OutHess],
     ] = field(static=True)
 
+    @overload
     def __call__(
-        self, state: State, patch: StatePatch | None = None
-    ) -> WithPatch[PotentialOut[OutGrad, OutHess], Patch[State]]:
-        result = self.potential(state, patch)
-        input = MappedPotentialInput(state, result.data)
-        mapped_out = self.mapping(input)
-        return WithPatch(mapped_out, result.patch)
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, OutGrad, OutHess]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, OutGrad, OutHess]: ...
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, OutGrad, OutHess]
+        | CompensatedPotentialResult[State, OutGrad, OutHess]
+    ):
+        """Evaluate the wrapped potential and map its output.
+
+        Args:
+            state: Current simulation state
+            patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
+
+        Returns:
+            Mapped potential output with the original patch
+        """
+        result = self.potential(state, patch, include_compensate=True)
+        mapped = KahanSummand(
+            self.mapping(LinearMappedPotentialInput(state, result.data.value)),
+            self.mapping(LinearMappedPotentialInput(state, result.data.compensate)),
+        )
+        if include_compensate:
+            return WithPatch(mapped, result.patch)
+        return WithPatch(mapped.total, result.patch)
 
 
 @dataclass
