@@ -29,7 +29,6 @@ from kups.potential.common.graph import (
     HyperGraph,
     LocalGraphSumComposer,
     PointCloud,
-    empty_graph_probe,
 )
 
 
@@ -569,6 +568,20 @@ class _SimplePatch:
         return self.new_state
 
 
+@dataclass
+class _PointCloudGraphProbe:
+    """Graph probe for a point cloud: particle updates, no neighbour lists."""
+
+    particles: object
+    neighborlist_after: object = EmptyNeighborList[Literal[0]]()
+    neighborlist_before: object = EmptyNeighborList[Literal[0]]()
+
+
+def _point_cloud_probe(probe_result):
+    """Adapt a particle-only update into the unified graph probe shape."""
+    return lambda state, patch: _PointCloudGraphProbe(particles=probe_result)
+
+
 def _make_probe_update(
     particles: Table[ParticleId, _PointData],
     particle_idx: int,
@@ -649,7 +662,7 @@ class TestGraphConstructorEmptyWithPatch:
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-            probe=empty_graph_probe(lambda s, p: probe_result),
+            probe=_point_cloud_probe(probe_result),
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=False)
@@ -669,7 +682,7 @@ class TestGraphConstructorEmptyWithPatch:
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-            probe=empty_graph_probe(lambda s, p: probe_result),
+            probe=_point_cloud_probe(probe_result),
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=True)
@@ -903,7 +916,7 @@ class TestLocalGraphSumComposerWithPatch:
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-            probe=empty_graph_probe(lambda s, p: probe_result),
+            probe=_point_cloud_probe(probe_result),
         )
         composer = LocalGraphSumComposer(
             graph_constructor=constructor,

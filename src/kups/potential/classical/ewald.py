@@ -79,13 +79,13 @@ from kups.potential.common.geometry import (
     PositionsAndSystemIndex,
 )
 from kups.potential.common.graph import (
+    FullGraphSumComposer,
     GraphConstructor,
     GraphPotentialInput,
     IsGraphProbe,
     IsRadiusGraphPoints,
     LocalGraphSumComposer,
     PointCloud,
-    empty_graph_probe,
 )
 
 TO_STANDARD_UNITS = HARTREE * BOHR
@@ -105,14 +105,15 @@ class EwaldCache[Gradient, Hessian]:
     """Cached structure factors and per-component outputs for incremental updates.
 
     Attributes:
-        structure_factor: Complex structure factors, shape `(n_groups, n_kvecs, 2)`.
+        structure_factor: Compensated accumulator over complex structure factors,
+            each of shape `(n_groups, n_kvecs, 2)`.
         short_range: Cached real-space short-range output.
         long_range: Cached reciprocal-space long-range output.
         self_interaction: Cached self-interaction correction output.
         exclusion: Cached bonded-pair exclusion correction output.
     """
 
-    structure_factor: Array  # (n_groups, n_kvecs, 2)
+    structure_factor: KahanSummand[Array]  # (n_groups, n_kvecs, 2)
     short_range: KahanSummand[PotentialOut[Gradient, Hessian]]
     long_range: KahanSummand[PotentialOut[Gradient, Hessian]]
     self_interaction: KahanSummand[PotentialOut[Gradient, Hessian]]
@@ -129,7 +130,7 @@ class EwaldCache[Gradient, Hessian]:
             hessian,
         )
         return EwaldCache(
-            jnp.zeros((n_sys, n_kvecs, 2), dtype=float),
+            KahanSummand.init(jnp.zeros((n_sys, n_kvecs, 2), dtype=float)),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
@@ -142,11 +143,12 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
     """Patch for updating Ewald structure factors on Monte Carlo accept/reject.
 
     Attributes:
-        new_structure_factor: Updated structure factors to apply on acceptance.
+        new_structure_factor: Updated structure factor accumulator to apply on
+            acceptance; its Kahan compensation is carried over with the value.
         lens: Lens to the ``EwaldCache`` in the state.
     """
 
-    new_structure_factor: Array
+    new_structure_factor: KahanSummand[Array]
     system_idx: Index[SystemId]
     lens: Lens[State, EwaldCache[Gradient, Hessian]] = field(static=True)
 
@@ -156,8 +158,10 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
         return self.lens.apply(
             state,
             lambda cache: EwaldCache(
-                structure_factor=where_broadcast_last(
-                    mask, new_sf, cache.structure_factor
+                structure_factor=jax.tree.map(
+                    lambda new, old: where_broadcast_last(mask, new, old),
+                    new_sf,
+                    cache.structure_factor,
                 ),
                 short_range=cache.short_range,
                 long_range=cache.long_range,
@@ -443,14 +447,17 @@ def _structure_factor_update(
     batch_mask: Index[SystemId],
     cache: EwaldCache[Any, Any],
     changes: WithIndices[ParticleId, IsEwaldPointData],
-) -> Array:
+) -> KahanSummand[Array]:
     """Incremental structure factor update.
 
     Math: ``S'(k) = S(k) + dS(k)`` where
     ``dS = sum_changed [rho_new(k) - rho_old(k)]``.
 
     Adds the contribution of changed particles and subtracts their old
-    contribution, using the cached ``S(k)`` from the previous step.
+    contribution, using the cached ``S(k)`` from the previous step. The delta is
+    folded in with Kahan compensation so the low-order bits dropped when a small
+    ``dS(k)`` meets a large ``S(k)`` are carried into the next update instead of
+    accumulating as drift over a long chain of moves.
     """
     idx = changes.indices
     idx_data = idx.indices
@@ -475,8 +482,7 @@ def _structure_factor_update(
         updates.system.num_labels,
         mode="drop",
     )
-    new_sk = cache.structure_factor + sk_delta
-    return new_sk
+    return cache.structure_factor + sk_delta
 
 
 @functools.partial(_structure_factor_update.defjvp, symbolic_zeros=True)
@@ -492,7 +498,8 @@ def _structure_factor_update_jvp(
     Computes the full structure factor JVP (not incremental delta) because
     the cached structure factor is treated as a constant -- only the current
     positions/charges/kvecs contribute tangents. This ensures correct
-    gradients through the incremental update path.
+    gradients through the incremental update path. The Kahan compensation is
+    exactly zero in real arithmetic and hence carries a zero tangent.
     """
     positions, charges, kvecs = primals
     d_positions, d_charges, d_kvecs = tangents
@@ -504,7 +511,6 @@ def _structure_factor_update_jvp(
         cache,
         changes,
     )
-    sk_dot = jnp.zeros_like(sk)
     full_response = _frequency_response(positions, charges, kvecs, batch_mask)
     full_response_dot = jnp.zeros_like(full_response)
     if not isinstance(d_positions, jax.custom_derivatives.SymbolicZero):
@@ -536,26 +542,29 @@ def _structure_factor_update_jvp(
         batch_mask.num_labels,
         mode="drop",
     )
-    return sk, sk_dot
+    return sk, KahanSummand(sk_dot, jnp.zeros_like(sk_dot))
 
 
 def structure_factor[State](
     inp: EwaldLongRangeInput[State],
-) -> tuple[Array, Patch[State]]:
+) -> tuple[KahanSummand[Array], Patch[State]]:
     """Compute the structure factor, dispatching between full and incremental.
 
     Uses ``_structure_factor_full`` when no ``changes_from_prev`` is available,
     otherwise ``_structure_factor_update`` for incremental MC updates.
 
     Returns:
-        Tuple of structure factor array and a cache patch.
+        Tuple of the structure factor accumulator and a cache patch. A full
+        recomputation starts a fresh accumulator with zero compensation.
     """
     if inp.changes_from_prev is None:
-        sk = _structure_factor_full(
-            inp.point_cloud.particles.data.positions,
-            inp.point_cloud.particles.data.charges,
-            inp.kvecs,
-            inp.point_cloud.particles.data.system,
+        sk = KahanSummand.init(
+            _structure_factor_full(
+                inp.point_cloud.particles.data.positions,
+                inp.point_cloud.particles.data.charges,
+                inp.kvecs,
+                inp.point_cloud.particles.data.system,
+            )
         )
     else:
         assert inp.cache is not None, "Cache required for structure factor update"
@@ -608,10 +617,11 @@ def ewald_long_range_energy[State](
 
     Wraps ``structure_factor`` + ``long_range``, adds the neutralizing-background
     correction (``ewald_net_charge_energy``) for nonzero net charge, and returns a
-    cache patch for structure factor updates on MC accept/reject.
+    cache patch for structure factor updates on MC accept/reject. ``S(k)`` is read
+    off the accumulator with its compensation applied.
     """
     structure_out, patch = structure_factor(inp)
-    energy = long_range(inp, structure_out)
+    energy = long_range(inp, structure_out.total)
     assert energy.shape == (inp.point_cloud.batch_size,), (
         f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     )
@@ -787,7 +797,6 @@ def make_ewald_self_interaction_potential[
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
     parameter_view: View[State, EwaldParameters],
-    probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
         PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients
     ] = EMPTY_LENS,
@@ -797,15 +806,22 @@ def make_ewald_self_interaction_potential[
     cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
     | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
-    """Create the Ewald self-interaction correction potential."""
+    """Create the Ewald self-interaction correction potential.
+
+    The self energy depends only on the charges present, not on their positions,
+    and costs a single sum over particles. It is therefore recomputed in full on
+    every call rather than accumulated from per-move deltas: accumulating it
+    would form each delta as the difference of two full-system sums, whose
+    rounding error then compounds over the Monte Carlo chain.
+    """
     return PotentialFromEnergy(
         energy_fn=ewald_self_interaction_energy,
-        composer=LocalGraphSumComposer(
+        composer=FullGraphSumComposer(
             graph_constructor=GraphConstructor(
                 particles=particles_view,
                 systems=systems_view,
                 neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-                probe=empty_graph_probe(probe),
+                probe=None,
             ),
             parameter_view=parameter_view,
         ),
@@ -989,7 +1005,6 @@ def make_ewald_potential[
         particles_view=atomic_view,
         systems_view=systems_view,
         parameter_view=parameter_lens,
-        probe=atomic_particles_probe,
         gradient_lens=gradient_lens,
         hessian_lens=hessian_lens,
         hessian_idx_view=hessian_idx_view,
