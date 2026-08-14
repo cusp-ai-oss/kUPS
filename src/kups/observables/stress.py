@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -39,6 +38,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import tree_map
+from kups.core.utils.segment import segment_sum
 
 
 @runtime_checkable
@@ -135,7 +135,7 @@ def _molecular_stress_via_virial_theorem(
     )
     offsets = positions[ref_idx]
     rel = batched_cells.wrap(positions - offsets[group.indices])
-    com = jax.ops.segment_sum(rel, group.indices, num_groups)
+    com = segment_sum(rel, group.indices, num_groups)
     counts = jnp.bincount(group.indices, length=num_groups)[:, None]
     com = com / jnp.maximum(counts, 1) + offsets
     com = group_cells.wrap(com)

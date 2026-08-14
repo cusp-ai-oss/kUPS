@@ -262,6 +262,57 @@ class TestGetitem:
         indexed = Table.arange(jnp.array([100.0, 200.0, 300.0]))
         npt.assert_array_equal(indexed[Index.new([2, 0])], [300.0, 100.0])
 
+    def test_multi_dimensional_index(self):
+        """A 2-D index, as edges carry, keeps its shape ahead of the feature dims."""
+        table = Table.arange(jnp.arange(6.0, dtype=jnp.float32).reshape(3, 2))
+        pairs = Index.integer(jnp.asarray([[0, 2], [1, 1]]), n=3)
+        gathered = table[pairs]
+        assert gathered.shape == (2, 2, 2)
+        npt.assert_array_equal(gathered, [[[0.0, 1.0], [4.0, 5.0]], [[2.0, 3.0]] * 2])
+
+    def test_grad_accumulates_in_a_wider_float(self):
+        """Rows gathered many times sum their float32 cotangents once, not per edge."""
+        table = Table.arange(jnp.zeros((2, 3), jnp.float32), label=ParticleId)
+        edges = Index.integer(jnp.zeros(10, int), n=2, label=ParticleId)
+        cotangent = jnp.asarray([1e8, *[1.0] * 8, -1e8], jnp.float32)[:, None]
+
+        def loss(positions: jax.Array) -> jax.Array:
+            return jnp.sum(
+                Table(table.keys, positions, _cls=ParticleId)[edges] * cotangent
+            )
+
+        npt.assert_array_equal(jax.grad(loss)(table.data)[0], jnp.full(3, 8.0))
+
+    def test_single_row_tables_keep_plain_indexing(self):
+        """One row gathers by broadcast, which an out-of-range mask only slows down."""
+        single = Table.arange(jnp.asarray([[1.0, 2.0]], jnp.float32), label=ParticleId)
+        oob = Index.integer([0, 1], n=1, label=ParticleId)
+        npt.assert_array_equal(single[oob], [[1.0, 2.0], [1.0, 2.0]])
+
+    def test_out_of_bounds_reads_zero_but_keeps_index_sentinels(self):
+        """A float leaf reads zero out of bounds; an ``Index`` leaf keeps the sentinel."""
+        data = ParticleData(
+            jnp.asarray([[1.0, 1.0], [2.0, 2.0]], jnp.float32),
+            Index.integer(jnp.asarray([0, 1]), n=2, label=SystemId),
+        )
+        oob = Index.integer([0, 2], n=2, label=ParticleId)
+        gathered = Table.arange(data, label=ParticleId)[oob]
+        npt.assert_array_equal(gathered.positions, [[1.0, 1.0], [0.0, 0.0]])
+        npt.assert_array_equal(gathered.system.indices, [0, 2])
+        assert not gathered.system.valid_mask[1]
+
+    def test_non_float_leaves_keep_plain_indexing(self):
+        """Integer and boolean leaves clamp out of bounds, as ``at[].get()`` does."""
+        oob = Index.integer([0, 2], n=2)
+        ints = Table.arange(jnp.asarray([10, 20], jnp.int32))
+        npt.assert_array_equal(ints[oob], [10, 20])
+        flags = Table.arange(jnp.asarray([False, True]))
+        npt.assert_array_equal(flags[oob], [False, True])
+        npt.assert_array_equal(
+            flags.at(oob, args={"mode": "fill", "fill_value": False}).get(),
+            [False, False],
+        )
+
 
 class TestSlice:
     def test_slice(self):

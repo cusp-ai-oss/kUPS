@@ -367,6 +367,41 @@ class TestSumOver:
             [[6.0, 8.0], [3.0, 4.0]],
         )
 
+    def test_accumulates_in_a_wider_float(self):
+        """A cancelling spike leaves the float32 addends the plain scatter rounds away."""
+        data = jnp.asarray([1e8, *[1.0] * 8, -1e8], jnp.float32)
+        idx = Index.integer(jnp.zeros(10, int), n=1, label=SystemId)
+        summed = idx.sum_over(data)
+        assert summed.data.dtype == jnp.float32
+        npt.assert_array_equal(summed.data, [8.0])
+        assert jax.ops.segment_sum(data, idx.indices, 1)[0] != 8.0
+
+    def test_out_of_bounds_entries_are_dropped(self):
+        """The OOB sentinel contributes to no key."""
+        idx = Index.integer(jnp.asarray([0, 2, 1, 2]), n=2, label=SystemId)
+        npt.assert_array_equal(
+            idx.sum_over(jnp.asarray([1.0, 9.0, 3.0, 9.0], jnp.float32)).data,
+            [1.0, 3.0],
+        )
+
+    def test_multi_dimensional_index(self):
+        """A 2-D index groups elementwise, one contribution per entry."""
+        idx = Index.integer(jnp.asarray([[0, 1], [1, 2]]), n=2, label=SystemId)
+        npt.assert_array_equal(
+            idx.sum_over(jnp.ones((2, 2), jnp.float32)).data, [1.0, 2.0]
+        )
+
+    def test_grad_is_a_gather(self):
+        """Reverse mode hands each contribution its key's cotangent."""
+        idx = Index.integer(jnp.asarray([0, 2, 1, 0]), n=2, label=SystemId)
+        cotangent = jnp.asarray([10.0, 100.0], jnp.float32)
+
+        def loss(x: jax.Array) -> jax.Array:
+            return jnp.sum(idx.sum_over(x).data * cotangent)
+
+        grad = jax.grad(loss)(jnp.ones(4, jnp.float32))
+        npt.assert_array_equal(grad, [10.0, 0.0, 100.0, 10.0])
+
 
 class TestMaxOver:
     def test_max_over(self):

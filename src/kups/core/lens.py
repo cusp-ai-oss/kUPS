@@ -46,6 +46,7 @@ from typing import (
 )
 
 import jax
+import jax.numpy as jnp
 from jax import Array
 from jax.tree_util import DictKey, GetAttrKey, SequenceKey
 
@@ -61,6 +62,7 @@ from kups.core.utils.jax import (
     tree_map,
     tree_scatter_set,
 )
+from kups.core.utils.segment import segment_take
 
 
 class View[S, R](Protocol):
@@ -646,6 +648,70 @@ class LambdaLens(BaseLens[S, R]):
         return self._set(state, value)
 
 
+def _leading_axis_rows(idxs: Any) -> Array | None:
+    """The row index of a leading-axis gather, or ``None`` for any other index.
+
+    Args:
+        idxs: Index expression handed to ``Array.at[]``, which may equally be a
+            slice, an integer, ``None``, or a tuple selecting several axes.
+
+    Returns:
+        The integer array selecting rows, of any rank, or ``None`` when `idxs`
+        does not select whole rows of the leading axis by index.
+    """
+    if isinstance(idxs, tuple):
+        if len(idxs) != 1:
+            return None
+        idxs = idxs[0]
+    if not isinstance(idxs, Array) or idxs.ndim == 0:
+        return None
+    return idxs if jnp.issubdtype(idxs.dtype, jnp.integer) else None
+
+
+def _wide_gather_args(args: ScatterArgs) -> dict[str, Any] | None:
+    """The `segment_take` keywords reproducing `args`, or ``None`` if it cannot.
+
+    Reproducible are the bare gather and an explicit fill, the two policies that
+    keep the gather an exact adjoint of the sum. A caller asking to clamp keeps
+    plain indexing, whose cotangents are dropped rather than piled into the
+    clamped row, as does one leaning on ``at[].get()``'s own defaults, which
+    ignore a `fill_value` given without a `mode` and fill with NaN without one.
+
+    Args:
+        args: Scatter keywords the leaf would otherwise be gathered with.
+
+    Returns:
+        Keywords for [segment_take][kups.core.utils.segment.segment_take], or
+        ``None`` when `args` asks for something it cannot express.
+    """
+    if not args:
+        return {"mode": None, "fill_value": 0}
+    if set(args) != {"mode", "fill_value"} or args["mode"] not in ("fill", "drop"):
+        return None
+    return {"mode": args["mode"], "fill_value": args["fill_value"]}
+
+
+def _gathers_wide(arr: Array) -> bool:
+    """Whether gathering `arr` is worth the wide adjoint.
+
+    Integer and boolean leaves have no cotangent to accumulate; a weakly typed
+    leaf would come back strongly typed and promote differently downstream; and
+    a single-row table gathers by broadcast, which the out-of-range mask would
+    only make more expensive than the adjoint saves.
+
+    Args:
+        arr: Leaf about to be gathered.
+
+    Returns:
+        ``True`` when the wide adjoint both helps and changes nothing else.
+    """
+    return (
+        arr.shape[0] > 1
+        and jnp.issubdtype(arr.dtype, jnp.inexact)
+        and not arr.weak_type
+    )
+
+
 @dataclass
 class IndexLens(BaseLens[S, R]):
     """A lens that performs array indexing operations on the focused data.
@@ -667,9 +733,22 @@ class IndexLens(BaseLens[S, R]):
 
     @override
     def get[S2](self: IndexLens[S2, R], state: S2) -> R:
-        """Get values by applying array indexing to the focused data."""
+        """Get values by applying array indexing to the focused data.
+
+        Multi-row float leaves selected by a plain integer index array are
+        gathered with [segment_take][kups.core.utils.segment.segment_take],
+        whose reverse pass sums the cotangents landing in each row in a wider
+        float. Such a leaf takes its fill value where the index is out of range,
+        zero by default, rather than the clamped last row a bare ``at[].get()``
+        would give; every other leaf, and every other form of index, keeps the
+        plain indexing semantics.
+        """
+        rows = _leading_axis_rows(self.idxs)
 
         def _array_getter(scatter_args: ScatterArgs, arr: Array) -> Array:
+            take = _wide_gather_args(scatter_args)
+            if rows is not None and take is not None and _gathers_wide(arr):
+                return segment_take(arr, rows, **take)
             return arr.at[self.idxs].get(**scatter_args)
 
         def _getter(arr: Array | HasScatterArgs) -> Array | HasScatterArgs:

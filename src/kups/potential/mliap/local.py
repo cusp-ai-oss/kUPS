@@ -67,6 +67,7 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.segment import segment_sum
 from kups.potential.common.energy import (
     PotentialFromEnergy,
     Sum,
@@ -344,7 +345,7 @@ def local_mliap_energy_full[
         edges.difference_vectors(point_cloud.particles, point_cloud.systems)[:, 0],
     )
     # Aggregate messages
-    msg_sum = jax.ops.segment_sum(edge_emb, edges.indices.indices[:, 0], n)
+    msg_sum = segment_sum(edge_emb, edges.indices.indices[:, 0], n)
     # Node-wise energies
     energies = inp.config.readout_function(node_emb, msg_sum)
     # Total energies per system
@@ -417,8 +418,8 @@ def local_mliap_energy_update[
     # Update message sums
     msg_sum = (
         inp.config.cache.msg_sum
-        - jax.ops.segment_sum(old_edge_emb, inp.edges_deleted.indices.indices[:, 0], n)
-        + jax.ops.segment_sum(new_edge_emb, inp.edges.indices.indices[:, 0], n)
+        - segment_sum(old_edge_emb, inp.edges_deleted.indices.indices[:, 0], n)
+        + segment_sum(new_edge_emb, inp.edges.indices.indices[:, 0], n)
     )
     # Node-wise readout
     energies = inp.config.readout_function(node_emb, msg_sum)

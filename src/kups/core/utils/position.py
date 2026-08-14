@@ -9,7 +9,6 @@ axes pass through unchanged. The same code path covers fully-periodic
 crystals, vacuum clusters, and slab / wire geometries.
 """
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -17,6 +16,7 @@ from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.typing import HasPositionsAndGroupIndex, HasWeights, ParticleId
 from kups.core.utils.jax import jit
+from kups.core.utils.segment import segment_sum
 
 
 @jit
@@ -70,12 +70,12 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     offsets = positions[ref_idx]
     rel_positions = positions - offsets[group_ids]
     rel_positions = batched_cells.wrap(rel_positions)
-    center_of_masses = jax.ops.segment_sum(
+    center_of_masses = segment_sum(
         rel_positions * weight,
         group_ids,
         num_groups,
     )
-    total_mass = jax.ops.segment_sum(
+    total_mass = segment_sum(
         weight,
         group_ids,
         num_groups,

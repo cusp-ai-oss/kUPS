@@ -66,6 +66,7 @@ from kups.core.utils.jax import (
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.segment import segment_sum
 from kups.potential.classical.coulomb import _pairwise_coulomb_energy
 from kups.potential.common.energy import (
     EnergyFunction,
@@ -307,7 +308,7 @@ def ewald_self_interaction_energy(
     """
     sys_idx = inp.graph.systems.index
     energies = (
-        -jax.ops.segment_sum(
+        -segment_sum(
             inp.graph.particles.data.charges**2,
             inp.graph.particles.data.system.indices,
             inp.graph.batch_size,
@@ -427,7 +428,7 @@ def _structure_factor_full(
         Structure factor, shape ``(n_systems, n_kvecs, 2)``.
     """
     response = _frequency_response(positions, charges, kvecs, batch_mask)
-    structure_factor = jax.ops.segment_sum(
+    structure_factor = segment_sum(
         response,
         batch_mask.indices,
         batch_mask.num_labels,
@@ -471,12 +472,12 @@ def _structure_factor_update(
         kvecs,
         updates.system,
     )
-    sk_delta = jax.ops.segment_sum(
+    sk_delta = segment_sum(
         new_response,
         batch_mask.indices[idx_data],
         batch_mask.num_labels,
         mode="drop",
-    ) - jax.ops.segment_sum(
+    ) - segment_sum(
         old_response,
         updates.system.indices,
         updates.system.num_labels,
@@ -536,7 +537,7 @@ def _structure_factor_update_jvp(
             full_response,
             "particles, particles, particles shifts two -> particles shifts two",
         )
-    sk_dot = jax.ops.segment_sum(
+    sk_dot = segment_sum(
         full_response_dot,
         batch_mask.indices,
         batch_mask.num_labels,
@@ -597,7 +598,7 @@ def ewald_net_charge_energy(inp: EwaldLongRangeInput[Any]) -> Table[SystemId, En
     """
     particles = inp.point_cloud.particles.data
     sys_idx = inp.point_cloud.systems.index
-    net_charge = jax.ops.segment_sum(
+    net_charge = segment_sum(
         particles.charges,
         particles.system.indices,
         inp.point_cloud.batch_size,
