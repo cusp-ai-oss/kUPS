@@ -13,6 +13,7 @@ organized into the following modules:
 - **[ops][kups.core.utils.ops]**: Array operations with broadcasting utilities
 - **[position][kups.core.utils.position]**: Particle position utilities for periodic systems
 - **[quaternion][kups.core.utils.quaternion]**: 3D rotation representation and operations
+- **[segment][kups.core.utils.segment]**: Segment sums accumulated in a wider float, and their gather adjoint
 
 Most commonly used items can be imported directly from submodules.
 """
