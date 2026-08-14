@@ -14,7 +14,7 @@ from kups.core.data.index import (
     Index,
     unify_keys_by_cls,
 )
-from kups.core.typing import ExclusionId, ParticleId, SystemId
+from kups.core.typing import ExclusionId, MotifId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 
 
@@ -347,6 +347,19 @@ class TestCombineIndices:
             (SystemId(1), ParticleId(0)),
         )
         npt.assert_array_equal(result4.indices, [0, 0, 1])
+
+    def test_combined_counts_with_colliding_flattened_keys(self):
+        # Regression: the per-(system, motif) counts expression used by GCMC logging.
+        # 1.0.4's Table key check flattened the tuple keys via np.asarray(dtype=object),
+        # so SystemId(0) collided with MotifId(0) and any multi-system x multi-motif
+        # batch raised "Primary keys must be unique".
+        system = Index.new([SystemId(0), SystemId(0), SystemId(1), SystemId(1)])
+        motif = Index.new([MotifId(0), MotifId(1), MotifId(0), MotifId(1)])
+        counts = Index.combine(system, motif).counts
+        assert counts.keys == tuple(
+            (SystemId(s), MotifId(m)) for s in range(2) for m in range(2)
+        )
+        npt.assert_array_equal(counts.data, [1, 1, 1, 1])
 
 
 class TestSumOver:

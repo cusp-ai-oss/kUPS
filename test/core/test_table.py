@@ -10,7 +10,7 @@ import pytest
 
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.typing import GroupId, Label, ParticleId, SystemId
+from kups.core.typing import GroupId, Label, MotifId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 
 
@@ -99,6 +99,14 @@ class TestKeyOrdering:
     def test_constructor_rejects_duplicate_keys(self):
         with pytest.raises(ValueError, match="must be unique"):
             Table(("a", "a"), jnp.array([1.0, 2.0]))
+
+    def test_accepts_tuple_keys_with_colliding_elements(self):
+        # Regression: 1.0.4 checked uniqueness via np.unique(np.asarray(keys, dtype=object)),
+        # which turns equal-length tuple keys into a 2-D array and compares the flattened
+        # scalars, so any multi-system x multi-motif key set was rejected as "duplicate".
+        keys = tuple((SystemId(s), MotifId(m)) for s in range(2) for m in range(2))
+        table = Table(keys, jnp.arange(4))
+        assert table.keys == keys
 
     def test_new_sorts_keys_and_data(self):
         t = Table.new(("c", "a", "b"), jnp.array([30.0, 10.0, 20.0]))
