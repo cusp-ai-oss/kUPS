@@ -90,28 +90,23 @@ def _particles_from_path(
     return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
 
 
-def _particles_from_atoms(
-    atoms: ase.Atoms,
+def _build_particles_and_cell(
+    *,
+    positions: Array,
+    cell_vectors: Array,
+    periodicity: AnyPeriodicity,
+    masses: Array,
+    atomic_numbers: Array,
+    charges: Array,
+    labels: list[Label],
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
-    """Build particle data and cell from an ASE Atoms object."""
-    L, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
-    cell = Cell.from_pbc(TriclinicFrame.from_matrix(L), pbc)
-    positions = uc_transform(jnp.asarray(atoms.positions))
-    masses = jnp.asarray(atoms.get_masses())
-    atomic_numbers = jnp.asarray(atoms.get_atomic_numbers())
+    """Build particle data and cell from extracted source data."""
+    L, uc_transform = to_lower_triangular(cell_vectors)
+    cell = Cell.from_pbc(TriclinicFrame.from_matrix(L), periodicity)
+    positions = uc_transform(positions)
     n_atoms = len(masses)
-    charges = jnp.asarray(
-        atoms.info.get(
-            "_atom_type_partial_charge",
-            atoms.info.get("_atom_site_charge", jnp.zeros((len(positions),))),
-        )
-    )
-    labels = list(
-        map(Label, atoms.info.get("_atom_site_label", atoms.get_chemical_symbols()))
-    )
     particles = Table.arange(
         Particles(
             positions=positions,
@@ -124,3 +119,34 @@ def _particles_from_atoms(
         label=ParticleId,
     )
     return particles, cell, uc_transform
+
+
+def _particles_from_atoms(
+    atoms: ase.Atoms,
+) -> tuple[
+    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+]:
+    """Build particle data and cell from an ASE Atoms object."""
+    cell_vectors = jnp.asarray(atoms.cell.array)
+    pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
+    positions = jnp.asarray(atoms.positions)
+    masses = jnp.asarray(atoms.get_masses())
+    atomic_numbers = jnp.asarray(atoms.get_atomic_numbers())
+    charges = jnp.asarray(
+        atoms.info.get(
+            "_atom_type_partial_charge",
+            atoms.info.get("_atom_site_charge", jnp.zeros((len(positions),))),
+        )
+    )
+    labels = list(
+        map(Label, atoms.info.get("_atom_site_label", atoms.get_chemical_symbols()))
+    )
+    return _build_particles_and_cell(
+        positions=positions,
+        cell_vectors=cell_vectors,
+        periodicity=pbc,
+        masses=masses,
+        atomic_numbers=atomic_numbers,
+        charges=charges,
+        labels=labels,
+    )
