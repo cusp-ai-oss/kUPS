@@ -1,10 +1,13 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
-from jax import Array
+from jax import Array, random
 
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
@@ -16,14 +19,17 @@ from kups.core.cell import (
 )
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.lens import lens
+from kups.core.data.wrappers import WithIndices
+from kups.core.lens import bind, lens
 from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.coulomb import coulomb_vacuum_energy
 from kups.potential.classical.ewald import (
     TO_STANDARD_UNITS,
+    EwaldCache,
     EwaldLongRangeInput,
     EwaldParameters,
     estimate_ewald_parameters,
@@ -33,6 +39,7 @@ from kups.potential.classical.ewald import (
     ewald_short_range_energy,
     kvecs_from_kmax,
     prefactor,
+    structure_factor,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 
@@ -496,3 +503,132 @@ class TestEwaldParametersMake:
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=2.0)
         npt.assert_allclose(params.cutoff.data[0], 2.0)
+
+
+class TestStructureFactorCache:
+    """Tests for the compensated structure factor cache used by incremental MC."""
+
+    REPEATS = 4
+    L = 8.0
+    N_STEPS = 1000
+    # (2, 2, 2) is the charge-ordering wavevector of the lattice below, where the
+    # structure factor peaks at |S| = N and accumulation error is largest.
+    SHIFTS = jnp.array([[2, 2, 2], [1, 0, 0], [0, 1, 2]])
+    # Single precision keeps the accumulation error well above the float64
+    # reference; the test suite otherwise runs with x64 enabled.
+    DTYPE = jnp.float32
+
+    def _setup(
+        self,
+    ) -> tuple[
+        Table[ParticleId, PointCloudParticles],
+        Callable[..., EwaldLongRangeInput[Any]],
+    ]:
+        """Build a charge-ordered cubic lattice and a builder for its Ewald input.
+
+        Returns:
+            Tuple of the particle table and a function mapping positions (plus an
+            optional cache and previous-particle data) to an Ewald input.
+        """
+        grid = jnp.stack(
+            jnp.meshgrid(*(3 * [jnp.arange(self.REPEATS)]), indexing="ij"), axis=-1
+        ).reshape(-1, 3)
+        positions = (grid * (self.L / self.REPEATS)).astype(self.DTYPE)
+        charges = ((-1.0) ** grid.sum(-1)).astype(self.DTYPE)
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(jnp.eye(3, dtype=self.DTYPE) * self.L)
+        )
+        params = EwaldParameters(
+            alpha=Table((SystemId(0),), jnp.array([0.35], dtype=self.DTYPE)),
+            cutoff=Table((SystemId(0),), jnp.array([3.0], dtype=self.DTYPE)),
+            reciprocal_lattice_shifts=Table((SystemId(0),), self.SHIFTS[None]),
+        )
+        systems = _make_systems(cell[None], params.cutoff.data)
+        # Indices are built once outside any trace; only positions vary.
+        particles = Table.arange(
+            _make_particle_data(positions, charges), label=ParticleId
+        )
+
+        def make_input(
+            pos: Array,
+            cache: EwaldCache[Any, Any] | None = None,
+            changes: WithIndices[ParticleId, PointCloudParticles] | None = None,
+        ) -> EwaldLongRangeInput[Any]:
+            patched = bind(particles).focus(lambda p: p.data.positions).set(pos)
+            return EwaldLongRangeInput(
+                PointCloud(patched, systems), params, cache, None, changes
+            )
+
+        return particles, make_input
+
+    def _cache(self, summand: KahanSummand[Array]) -> EwaldCache[Any, Any]:
+        """Wrap a structure factor accumulator in an otherwise-zero cache."""
+        zeros = EwaldCache.make(1, len(self.SHIFTS))
+        return EwaldCache(
+            summand,
+            zeros.short_range,
+            zeros.long_range,
+            zeros.self_interaction,
+            zeros.exclusion,
+        )
+
+    def _walk(self, compensated: bool) -> tuple[Array, Array]:
+        """Run a chain of single-particle moves, returning final S(k) and positions.
+
+        Args:
+            compensated: Keep the Kahan compensation between updates; if ``False``
+                it is dropped each step, leaving the plain running sum.
+
+        Returns:
+            Tuple of the S(k) the energy would consume and the final positions.
+        """
+        particles, make_input = self._setup()
+        n = len(particles)
+        moved = random.randint(random.key(2), (self.N_STEPS,), 0, n)
+        deltas = random.normal(random.key(1), (self.N_STEPS, 3), self.DTYPE) * 1e-4
+
+        @jax.jit
+        def step(
+            carry: tuple[KahanSummand[Array], Array], move: tuple[Array, Array]
+        ) -> tuple[tuple[KahanSummand[Array], Array], None]:
+            sk, pos = carry
+            idx, delta = move
+            previous = WithIndices(
+                Index.integer(idx[None], n=n, label=ParticleId),
+                jax.tree.map(lambda x: x[idx][None], particles.data),
+            )
+            previous = (
+                bind(previous).focus(lambda p: p.data.positions).set(pos[idx][None])
+            )
+            if not compensated:
+                sk = KahanSummand.init(sk.value)
+            new_pos = pos.at[idx].add(delta)
+            sk, _ = structure_factor(make_input(new_pos, self._cache(sk), previous))
+            return (sk, new_pos), None
+
+        positions = particles.data.positions
+        sk0, _ = structure_factor(make_input(positions))
+        (sk, pos), _ = jax.lax.scan(step, (sk0, positions), (moved, deltas))
+        # Without compensation only the running sum survives, as before this change.
+        return (sk.total if compensated else sk.value), pos
+
+    def _reference(self, positions: Array) -> np.ndarray:
+        """Structure factor of `positions` in float64, shape ``(n_kvecs, 2)``."""
+        particles, make_input = self._setup()
+        kvecs = np.asarray(make_input(positions).kvecs[0], dtype=np.float64)
+        phase = np.asarray(positions, dtype=np.float64) @ kvecs.T
+        q = np.asarray(particles.data.charges, dtype=np.float64)[:, None]
+        return np.stack(
+            [(q * np.cos(phase)).sum(0), (q * np.sin(phase)).sum(0)], axis=-1
+        )
+
+    def test_compensation_reduces_drift(self):
+        """Carrying the compensation shrinks drift over a chain of moves."""
+        reference = self._reference(self._walk(compensated=True)[1])
+        errors = {
+            compensated: float(
+                np.abs(np.asarray(self._walk(compensated)[0][0]) - reference).max()
+            )
+            for compensated in (True, False)
+        }
+        assert errors[True] < errors[False] / 4, errors

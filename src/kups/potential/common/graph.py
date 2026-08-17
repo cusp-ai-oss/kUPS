@@ -37,7 +37,7 @@ from jax import Array
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind, lens
-from kups.core.neighborlist import Edges, EmptyNeighborList, NeighborList
+from kups.core.neighborlist import Edges, NeighborList
 from kups.core.patch import Patch, Probe
 from kups.core.typing import (
     HasCell,
@@ -185,38 +185,6 @@ class IsGraphProbe[P: IsRadiusGraphPoints, Degree: int](Protocol):
     def neighborlist_after(self) -> NeighborList[Degree]: ...
     @property
     def neighborlist_before(self) -> NeighborList[Degree]: ...
-
-
-@dataclass
-class _EmptyGraphProbeResult[P: IsRadiusGraphPoints]:
-    """Unified graph probe result for point-cloud particle updates."""
-
-    particles: WithIndices[ParticleId, P]
-    neighborlist_after: NeighborList[Literal[0]]
-    neighborlist_before: NeighborList[Literal[0]]
-
-
-def empty_graph_probe[
-    State,
-    Ptch: Patch[Any],
-    P: IsRadiusGraphPoints,
-](
-    probe_particles: Probe[State, Ptch, WithIndices[ParticleId, P]] | None,
-) -> Probe[State, Ptch, IsGraphProbe[P, Literal[0]]] | None:
-    """Adapt a particle-only point-cloud probe to the unified graph probe shape."""
-
-    if probe_particles is None:
-        return None
-
-    def probe(state: State, patch: Ptch) -> IsGraphProbe[P, Literal[0]]:
-        empty = EmptyNeighborList[Literal[0]]()
-        return _EmptyGraphProbeResult(
-            particles=probe_particles(state, patch),
-            neighborlist_after=empty,
-            neighborlist_before=empty,
-        )
-
-    return probe
 
 
 @dataclass
