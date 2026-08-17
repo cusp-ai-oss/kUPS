@@ -37,10 +37,10 @@ from kups.core.utils.jax import (
     dataclass,
     field,
     jit,
-    kahan_summation,
     linearize,
     tree_structure,
 )
+from kups.core.utils.kahan import KahanSummand
 
 
 class Summand[Input](NamedTuple):
@@ -226,8 +226,8 @@ class PotentialFromEnergy[
     gradient_lens: Lens[Input, Gradients] = field(static=True)
     hessian_lens: Lens[Gradients, Hessians] = field(static=True)
     hessian_idx_view: View[State, Hessians] = field(static=True)
-    cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = field(
-        static=True
+    cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]] | None = (
+        field(static=True)
     )
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = field(
         static=True
@@ -306,21 +306,28 @@ class PotentialFromEnergy[
             outs.append(weight * out)
             patches.append(energy_result.patch)
 
-        # If the dispatcher demands it, we add the previous total potential
+        # Fold the weighted deltas into the cached running summand, carrying the
+        # Kahan compensation across calls. A full recompute starts a fresh summand.
         if dp_plan.add_previous_total:
             assert self.cache_lens is not None, (
                 "Cache lens must be set for caching previous total potential."
             )
-            outs.append(self.cache_lens.get(state))
+            summand = self.cache_lens.get(state)
+            for out in outs:
+                summand = summand + out
+        else:
+            summand = KahanSummand.init(outs[0])
+            for out in outs[1:]:
+                summand = summand + out
 
-        # Aggregate the result with Kahan summation
-        total = kahan_summation(*outs)[0]
+        total = summand.total
         if self.cache_lens is not None:
             assert self.patch_idx_view is not None, (
                 "Patch index view must be set when cache lens is set."
             )
+            idx = self.patch_idx_view(state)
             cache_patch = IndexLensPatch(
-                total, self.patch_idx_view(state), self.cache_lens
+                summand, KahanSummand(idx, idx), self.cache_lens
             )
         else:
             cache_patch = IdPatch[State]()

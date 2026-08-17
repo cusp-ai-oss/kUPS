@@ -13,7 +13,8 @@ from typing import Any, Protocol
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.potential import Potential, PotentialOut
-from kups.core.utils.jax import dataclass, field, jit, kahan_summation
+from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import SumComposer
 
 
@@ -44,8 +45,8 @@ class DirectPotential[
         field(static=True)
     )
     composer: SumComposer[State, Input, StatePatch] = field(static=True)
-    cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = field(
-        static=True
+    cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]] | None = (
+        field(static=True)
     )
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = field(
         static=True
@@ -66,16 +67,25 @@ class DirectPotential[
             outs.append(weight * result.data)
             patches.append(result.patch)
 
+        # Fold the weighted deltas into the cached running summand, carrying the
+        # Kahan compensation across calls. A full recompute starts a fresh summand.
         if dp_plan.add_previous_total:
             assert self.cache_lens is not None
-            outs.append(self.cache_lens.get(state))
+            summand = self.cache_lens.get(state)
+            for out in outs:
+                summand = summand + out
+        else:
+            summand = KahanSummand.init(outs[0])
+            for out in outs[1:]:
+                summand = summand + out
 
-        total = kahan_summation(*outs)[0]
+        total = summand.total
 
         if self.cache_lens is not None:
             assert self.patch_idx_view is not None
+            idx = self.patch_idx_view(state)
             cache_patch = IndexLensPatch(
-                total, self.patch_idx_view(state), self.cache_lens
+                summand, KahanSummand(idx, idx), self.cache_lens
             )
         else:
             cache_patch = IdPatch[State]()

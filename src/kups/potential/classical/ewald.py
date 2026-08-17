@@ -63,6 +63,7 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     tree_zeros_like,
 )
+from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
 from kups.potential.classical.coulomb import _pairwise_coulomb_energy
@@ -112,10 +113,10 @@ class EwaldCache[Gradient, Hessian]:
     """
 
     structure_factor: Array  # (n_groups, n_kvecs, 2)
-    short_range: PotentialOut[Gradient, Hessian]
-    long_range: PotentialOut[Gradient, Hessian]
-    self_interaction: PotentialOut[Gradient, Hessian]
-    exclusion: PotentialOut[Gradient, Hessian]
+    short_range: KahanSummand[PotentialOut[Gradient, Hessian]]
+    long_range: KahanSummand[PotentialOut[Gradient, Hessian]]
+    self_interaction: KahanSummand[PotentialOut[Gradient, Hessian]]
+    exclusion: KahanSummand[PotentialOut[Gradient, Hessian]]
 
     @classmethod
     @no_jax_tracing
@@ -129,10 +130,10 @@ class EwaldCache[Gradient, Hessian]:
         )
         return EwaldCache(
             jnp.zeros((n_sys, n_kvecs, 2), dtype=float),
-            tree_zeros_like(out),
-            tree_zeros_like(out),
-            tree_zeros_like(out),
-            tree_zeros_like(out),
+            KahanSummand.init(tree_zeros_like(out)),
+            KahanSummand.init(tree_zeros_like(out)),
+            KahanSummand.init(tree_zeros_like(out)),
+            KahanSummand.init(tree_zeros_like(out)),
         )
 
 
@@ -717,7 +718,8 @@ def make_ewald_short_range_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the Ewald real-space (short-range) potential."""
 
@@ -792,7 +794,8 @@ def make_ewald_self_interaction_potential[
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the Ewald self-interaction correction potential."""
     return PotentialFromEnergy(

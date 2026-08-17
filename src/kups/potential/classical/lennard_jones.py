@@ -55,6 +55,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     EnergyFunction,
     PotentialFromEnergy,
@@ -363,7 +364,8 @@ def make_lennard_jones_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create a standard Lennard-Jones potential with sharp cutoff."""
     graph_fn = GraphConstructor(
@@ -410,7 +412,8 @@ def make_pair_tail_corrected_lennard_jones_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create a Lennard-Jones potential with smooth pairwise tail correction."""
     radius_graph_fn = GraphConstructor(
@@ -450,7 +453,8 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Patch[State]]:
     """Create analytical long-range tail correction for Lennard-Jones potential."""
     return PotentialFromEnergy(

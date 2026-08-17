@@ -59,7 +59,7 @@ class TestDataclass:
         assert len({p1, p2, p3}) == 2
 
         # Marker
-        assert getattr(_Point, "_jax_dataclass") is True
+        assert _Point._jax_dataclass is True
 
     def test_dataclass_pytree_operations(self):
         """Test is_jax_pytree, complex_types, empty, idempotent."""
@@ -489,6 +489,16 @@ class TestIsin:
 class TestKahanSummation:
     """Tests for kahan_summation."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_x64(self):
+        """Force float32 so rounding is coarse enough to lose an addend."""
+        prev = jax.config.read("jax_enable_x64")
+        jax.config.update("jax_enable_x64", False)
+        try:
+            yield
+        finally:
+            jax.config.update("jax_enable_x64", prev)
+
     def test_kahan_summation(self):
         # Basic sum
         result, comp = kahan_summation(jnp.array([1.0, 2.0]), jnp.array([3.0, 4.0]))
@@ -498,6 +508,19 @@ class TestKahanSummation:
         total, comp = kahan_summation(jnp.array([1.0]), jnp.array([2.0]))
         total, comp = kahan_summation(total, jnp.array([3.0]), compensate=comp)
         npt.assert_allclose(total, jnp.array([6.0]))
+
+    def test_compensation_tracks_lost_bits(self):
+        """The addend rounded away by the sum is returned as compensation."""
+        # Half an ulp of `big`, so the sum is unchanged and all of `small`
+        # survives in the compensation, which the true total subtracts.
+        big, small = jnp.array(2.0**20), jnp.array(2.0**-4)
+        total, comp = kahan_summation(big, small)
+        npt.assert_array_equal(total, big)
+        npt.assert_array_equal(total - comp, big + small)
+
+        # Feeding it back recovers the increment the running sum cannot hold.
+        total, comp = kahan_summation(total, small, compensate=comp)
+        npt.assert_array_equal(total - big, 2.0**-3)
 
 
 class TestTreeOps:

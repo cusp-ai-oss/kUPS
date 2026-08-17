@@ -48,6 +48,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.cosine_angle import CosineAngleParameters
 from kups.potential.classical.dihedral import DihedralParameters
 from kups.potential.classical.harmonic import (
@@ -67,8 +68,10 @@ N_PARTICLES = 4
 _LABELS = ("A", "B")
 _PARTICLE_INDEX = tuple(ParticleId(i) for i in range(N_PARTICLES))
 
-EmptyCache = PotentialOut[EmptyType, EmptyType]
-_empty_cache = PotentialOut(Table.arange(jnp.zeros(1), label=SystemId), EMPTY, EMPTY)
+EmptyCache = KahanSummand[PotentialOut[EmptyType, EmptyType]]
+_empty_cache = KahanSummand.init(
+    PotentialOut(Table.arange(jnp.zeros(1), label=SystemId), EMPTY, EMPTY)
+)
 
 
 @dataclass

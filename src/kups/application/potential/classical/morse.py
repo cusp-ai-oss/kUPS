@@ -31,6 +31,7 @@ from kups.core.potential import (
     empty_patch_idx_view,
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, ParticleId
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.morse import (
     IsBondedParticles,
     MorseBondParameters,
@@ -92,7 +93,9 @@ def make_morse_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsMorseBondState[
-            HasCache[MorseBondParameters, PotentialOut[EmptyType, EmptyType]]
+            HasCache[
+                MorseBondParameters, KahanSummand[PotentialOut[EmptyType, EmptyType]]
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
@@ -107,7 +110,10 @@ def make_morse_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsMorseBondState[
-            HasCache[MorseBondParameters, PotentialOut[PositionsAndCell, EmptyType]]
+            HasCache[
+                MorseBondParameters,
+                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
@@ -139,7 +145,10 @@ def make_morse_bond_from_state[State](
 
 @overload
 def make_morse_bond_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedMorseBondGraphState[PotentialOut[EmptyType, EmptyType]]],
+    state: Lens[
+        State,
+        IsCachedMorseBondGraphState[KahanSummand[PotentialOut[EmptyType, EmptyType]]],
+    ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: MorseBondParameters,
@@ -150,7 +159,10 @@ def make_morse_bond_from_state[State, P: Patch[Any]](
 @overload
 def make_morse_bond_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedMorseBondGraphState[PotentialOut[PositionsAndCell, EmptyType]]
+        State,
+        IsCachedMorseBondGraphState[
+            KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,

@@ -65,6 +65,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp, tree_map
+from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.ops import where_broadcast_last
 from kups.potential.common.energy import (
     PotentialFromEnergy,
@@ -547,7 +548,8 @@ def make_local_mliap_potential[
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create a local MLIAP potential with single message passing.
 

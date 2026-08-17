@@ -28,6 +28,7 @@ from kups.core.propagator import StateProperty
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import GroupId, MotifId, MotifParticleId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.widom import WidomStatistics
 from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
@@ -58,7 +59,8 @@ class IsMCMCState(Protocol):
     def lj_parameters(
         self,
     ) -> WithCache[
-        GlobalTailCorrectedLennardJonesParameters, PotentialOut[EmptyType, EmptyType]
+        GlobalTailCorrectedLennardJonesParameters,
+        KahanSummand[PotentialOut[EmptyType, EmptyType]],
     ]: ...
     @property
     def ewald_parameters(
@@ -165,11 +167,11 @@ def make_mcmc_logged_data[S: IsMCMCState](
         sys_keys = state.systems.keys
         system_step = MCMCSystemStepData(
             potential_energy=state.systems.data.potential_energy,
-            lj_energy=state.lj_parameters.cache.total_energies.data,
-            ewald_short_range_energy=ewald.short_range.total_energies.data,
-            ewald_long_range_energy=ewald.long_range.total_energies.data,
-            ewald_self_energy=ewald.self_interaction.total_energies.data,
-            ewald_exclusion_energy=ewald.exclusion.total_energies.data,
+            lj_energy=state.lj_parameters.cache.total.total_energies.data,
+            ewald_short_range_energy=ewald.short_range.total.total_energies.data,
+            ewald_long_range_energy=ewald.long_range.total.total_energies.data,
+            ewald_self_energy=ewald.self_interaction.total.total_energies.data,
+            ewald_exclusion_energy=ewald.exclusion.total.total_energies.data,
             translation_step_width=state.translation_params.map_data(
                 lambda p: p.value
             ).data,

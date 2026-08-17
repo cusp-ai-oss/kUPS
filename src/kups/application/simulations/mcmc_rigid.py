@@ -92,6 +92,7 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     tree_map,
 )
+from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
     ExchangeChanges,
     make_gcmc_mcmc_propagator,
@@ -164,7 +165,8 @@ class MCMCState:
     systems: Table[SystemId, MCMCSystems]
     neighborlist_params: UniversalNeighborlistParameters
     lj_parameters: WithCache[
-        GlobalTailCorrectedLennardJonesParameters, PotentialOut[EmptyType, EmptyType]
+        GlobalTailCorrectedLennardJonesParameters,
+        KahanSummand[PotentialOut[EmptyType, EmptyType]],
     ]
     ewald_parameters: WithCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]
     blocking_spheres_parameters: BlockingSpheresParameters
@@ -460,7 +462,11 @@ def init_state(key: Array, config: Config) -> MCMCState:
         blocking_spheres_neighborlist_params=blocking_nlist,
         lj_parameters=WithCache(
             lj_params,
-            PotentialOut(Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY),
+            KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
+                )
+            ),
         ),
         ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
         blocking_spheres_parameters=blocking_spheres,

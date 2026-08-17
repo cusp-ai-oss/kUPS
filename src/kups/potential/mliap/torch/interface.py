@@ -52,6 +52,7 @@ from kups.core.typing import (
 )
 from kups.core.utils.functools import constant
 from kups.core.utils.jax import dataclass, field
+from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.torch import TorchModuleWrapper
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.common.graph import (
@@ -367,7 +368,7 @@ def make_torch_mliap_potential[
     model: View[State, TorchMliap] | TorchMliap,
     patch_idx_view: View[State, PotentialOut[PositionsAndCell, EmptyType]]
     | None = None,
-    out_cache_lens: Lens[State, PotentialOut[PositionsAndCell, EmptyType]]
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]]
     | None = None,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[State]]: ...
 
@@ -385,7 +386,7 @@ def make_torch_mliap_potential[
     model: View[State, TorchMliap] | TorchMliap,
     patch_idx_view: View[State, PotentialOut[PositionsAndCell, EmptyType]]
     | None = None,
-    out_cache_lens: Lens[State, PotentialOut[PositionsAndCell, EmptyType]]
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]]
     | None = None,
     *,
     gradient: Lens[Geometry, PositionsAndCell],

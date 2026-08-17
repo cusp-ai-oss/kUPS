@@ -31,6 +31,7 @@ from kups.core.potential import (
     empty_patch_idx_view,
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, ParticleId
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.inversion import (
     InversionParameters,
     IsBondedParticles,
@@ -98,7 +99,9 @@ def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsInversionState[
-            HasCache[InversionParameters, PotentialOut[EmptyType, EmptyType]]
+            HasCache[
+                InversionParameters, KahanSummand[PotentialOut[EmptyType, EmptyType]]
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
@@ -113,7 +116,10 @@ def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsInversionState[
-            HasCache[InversionParameters, PotentialOut[PositionsAndCell, EmptyType]]
+            HasCache[
+                InversionParameters,
+                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
@@ -145,7 +151,10 @@ def make_inversion_from_state[State](
 
 @overload
 def make_inversion_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedInversionGraphState[PotentialOut[EmptyType, EmptyType]]],
+    state: Lens[
+        State,
+        IsCachedInversionGraphState[KahanSummand[PotentialOut[EmptyType, EmptyType]]],
+    ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,
     parameters: InversionParameters,
@@ -156,7 +165,10 @@ def make_inversion_from_state[State, P: Patch[Any]](
 @overload
 def make_inversion_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedInversionGraphState[PotentialOut[PositionsAndCell, EmptyType]]
+        State,
+        IsCachedInversionGraphState[
+            KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[4]]],
     *,

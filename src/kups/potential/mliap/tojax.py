@@ -27,6 +27,7 @@ from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Energy, PotentialOut
 from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp
+from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.msgpack import deserialize as msgpack_deserialize
 from kups.potential.common.energy import PotentialFromEnergy
 from kups.potential.common.graph import (
@@ -182,7 +183,8 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
-    out_cache_lens: Lens[State, PotentialOut[Gradients, Hessians]] | None = None,
+    out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
 ) -> PotentialFromEnergy[State, JaxifiedInput, Gradients, Hessians, Patch[Any]]:
     """Create a jaxified machine learning potential.
 

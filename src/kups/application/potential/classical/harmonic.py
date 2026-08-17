@@ -32,6 +32,7 @@ from kups.core.potential import (
     empty_patch_idx_view,
 )
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, ParticleId
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.harmonic import (
     HarmonicAngleParameters,
     HarmonicBondParameters,
@@ -104,7 +105,9 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicBondState[
-            HasCache[HarmonicBondParameters, PotentialOut[EmptyType, EmptyType]]
+            HasCache[
+                HarmonicBondParameters, KahanSummand[PotentialOut[EmptyType, EmptyType]]
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
@@ -119,7 +122,10 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicBondState[
-            HasCache[HarmonicBondParameters, PotentialOut[PositionsAndCell, EmptyType]]
+            HasCache[
+                HarmonicBondParameters,
+                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
@@ -151,7 +157,10 @@ def make_harmonic_bond_from_state[State](
 
 @overload
 def make_harmonic_bond_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedHarmonicBondState[PotentialOut[EmptyType, EmptyType]]],
+    state: Lens[
+        State,
+        IsCachedHarmonicBondState[KahanSummand[PotentialOut[EmptyType, EmptyType]]],
+    ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: HarmonicBondParameters,
@@ -162,7 +171,10 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
 @overload
 def make_harmonic_bond_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedHarmonicBondState[PotentialOut[PositionsAndCell, EmptyType]]
+        State,
+        IsCachedHarmonicBondState[
+            KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
@@ -294,7 +306,10 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicAngleState[
-            HasCache[HarmonicAngleParameters, PotentialOut[EmptyType, EmptyType]]
+            HasCache[
+                HarmonicAngleParameters,
+                KahanSummand[PotentialOut[EmptyType, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
@@ -309,7 +324,10 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsHarmonicAngleState[
-            HasCache[HarmonicAngleParameters, PotentialOut[PositionsAndCell, EmptyType]]
+            HasCache[
+                HarmonicAngleParameters,
+                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+            ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
@@ -341,7 +359,10 @@ def make_harmonic_angle_from_state[State](
 
 @overload
 def make_harmonic_angle_from_state[State, P: Patch[Any]](
-    state: Lens[State, IsCachedHarmonicAngleState[PotentialOut[EmptyType, EmptyType]]],
+    state: Lens[
+        State,
+        IsCachedHarmonicAngleState[KahanSummand[PotentialOut[EmptyType, EmptyType]]],
+    ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
     *,
     parameters: HarmonicAngleParameters,
@@ -352,7 +373,10 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
 @overload
 def make_harmonic_angle_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedHarmonicAngleState[PotentialOut[PositionsAndCell, EmptyType]]
+        State,
+        IsCachedHarmonicAngleState[
+            KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[3]]],
     *,

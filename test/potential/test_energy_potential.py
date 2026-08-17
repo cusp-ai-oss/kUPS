@@ -15,6 +15,7 @@ from kups.core.lens import lens, view
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Energy, PotentialOut
 from kups.core.typing import SystemId
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     IdentityComposer,
     PotentialFromEnergy,
@@ -27,7 +28,7 @@ class ExampleState(NamedTuple):
     """Test state containing positions."""
 
     positions: Array
-    total_potential: PotentialOut | None = None
+    total_potential: KahanSummand[PotentialOut] | None = None
 
 
 class ExampleInput(NamedTuple):
@@ -85,7 +86,7 @@ class MockLenses:
                 gradients = ExampleGradients(positions=jnp.zeros_like(state.positions))
                 n_particles, n_dims = state.positions.shape
                 hessians = ExampleHessians(positions=jnp.zeros(n_particles * n_dims))
-                return PotentialOut(energy, gradients, hessians)
+                return KahanSummand.init(PotentialOut(energy, gradients, hessians))
             return state.total_potential
 
         return lens(get_potential)
@@ -238,7 +239,7 @@ class TestPotentialFromEnergy:
         )
         state = ExampleState(
             positions=jnp.array([[1.0, 2.0], [3.0, 4.0]]),
-            total_potential=existing_potential,
+            total_potential=KahanSummand.init(existing_potential),
         )
         result = potential(state)
         expected = 0.5 * jnp.sum(state.positions**2) + 5.0
