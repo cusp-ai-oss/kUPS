@@ -8,11 +8,16 @@ force fields) into the kUPS Potential protocol. Unlike PotentialFromEnergy which
 uses autodiff, this passes through whatever gradients/Hessians the model provides.
 """
 
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, overload
 
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
-from kups.core.potential import Potential, PotentialOut
+from kups.core.potential import (
+    CompensatedPotentialResult,
+    Potential,
+    PotentialOut,
+    PotentialResult,
+)
 from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import SumComposer
@@ -52,10 +57,44 @@ class DirectPotential[
         static=True
     )
 
-    @jit
+    @overload
     def __call__(
-        self, state: State, patch: StatePatch | None = None
-    ) -> WithPatch[PotentialOut[Gradients, Hessians], Patch[State]]:
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    @jit(static_argnames="include_compensate")
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
+        """Evaluate the model and accumulate the composed inputs.
+
+        Args:
+            state: Current simulation state
+            patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
+
+        Returns:
+            Potential output with the cache update patch composed
+        """
         dp_plan = self.composer(state, patch)
         assert len(dp_plan) > 0, "At least one configuration must be added."
 
@@ -79,8 +118,6 @@ class DirectPotential[
             for out in outs[1:]:
                 summand = summand + out
 
-        total = summand.total
-
         if self.cache_lens is not None:
             assert self.patch_idx_view is not None
             idx = self.patch_idx_view(state)
@@ -91,4 +128,6 @@ class DirectPotential[
             cache_patch = IdPatch[State]()
 
         out_patch = ComposedPatch((cache_patch, *patches))
-        return WithPatch(total, out_patch)
+        if include_compensate:
+            return WithPatch(summand, out_patch)
+        return WithPatch(summand.total, out_patch)

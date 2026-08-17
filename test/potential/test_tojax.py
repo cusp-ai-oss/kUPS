@@ -25,6 +25,7 @@ from kups.core.potential import PotentialOut
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.msgpack import serialize as msgpack_serialize
 from kups.potential.common.energy import PotentialFromEnergy
 from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_potential
@@ -52,7 +53,7 @@ class State:
     atoms: Table[ParticleId, AtomData]
     systems: Table[SystemId, SystemData]
     jaxified_model: TojaxedMliap
-    out: PotentialOut[tuple[()], tuple[()]]
+    out: KahanSummand[PotentialOut[tuple[()], tuple[()]]]
     neighborlist: AllDenseNearestNeighborList
 
 
@@ -143,7 +144,9 @@ def simple_system(jaxified_model):
             label=SystemId,
         ),
         jaxified_model=jaxified_model,
-        out=PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), (), ()),
+        out=KahanSummand.init(
+            PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), (), ())
+        ),
         neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),

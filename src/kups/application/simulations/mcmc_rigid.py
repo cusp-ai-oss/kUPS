@@ -510,7 +510,7 @@ def make_guest_stress(
         potential,
         lens(
             lambda x: PotentialOut(
-                x.systems.map_data(lambda s: s.potential_energy),
+                x.systems.map_data(lambda s: s.potential_energy.value),
                 PositionsAndCell(
                     x.particles.set_data(x.particles.data.position_gradients),
                     x.systems.set_data(x.systems.data.cell_gradients),

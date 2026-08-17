@@ -35,6 +35,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.utils.kahan import KahanSummand
 
 L = 10.0  # cubic box side (Ang)
 
@@ -150,7 +151,7 @@ class TestHostOnly:
         assert self.systems2.data.log_fugacity.shape == (1, 1)
         assert jnp.isfinite(self.systems2.data.log_fugacity).all()
         assert float(self.systems2.data.log_fugacity[0, 0]) < 0
-        npt.assert_allclose(self.systems2.data.potential_energy, jnp.array([0.0]))
+        npt.assert_allclose(self.systems2.data.potential_energy.total, jnp.array([0.0]))
 
 
 class TestWithInitialAdsorbates:
@@ -388,7 +389,7 @@ def _systems(
         MCMCSystems(
             cell=PeriodicCell(frames),
             temperature=jnp.full(n, 300.0),
-            potential_energy=jnp.zeros(n),
+            potential_energy=KahanSummand.init(jnp.zeros(n)),
             log_fugacity=jnp.full((n, 1), log_fugacity),
         ),
         label=SystemId,

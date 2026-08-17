@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -12,12 +14,13 @@ from kups.core.lens import SimpleLens, view
 from kups.core.patch import IdPatch, WithPatch
 from kups.core.potential import (
     CachedPotential,
-    MappedPotential,
+    LinearMappedPotential,
     PotentialOut,
     sum_potentials,
 )
 from kups.core.result import as_result_function
 from kups.core.typing import SystemId
+from kups.core.utils.kahan import KahanSummand
 
 
 # Test fixtures and helper classes
@@ -49,7 +52,7 @@ class MockPotential:
         self.gradient_multiplier = gradient_multiplier
         self.hessian_multiplier = hessian_multiplier
 
-    def __call__(self, state, patch=None):
+    def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
         # Mock implementation that returns predictable values
         energy = jnp.array([1.0, 2.0, 3.0]) * self.energy_multiplier
         gradients = {
@@ -65,6 +68,8 @@ class MockPotential:
             hessians=hessians,
         )
 
+        if include_compensate:
+            return WithPatch(KahanSummand.init(potential_out), IdPatch())
         return WithPatch(potential_out, IdPatch())
 
 
@@ -398,9 +403,9 @@ class TestCachedPotential:
         # Get the cached value (should be the initial state)
         cached_value = cached_potential.cached_value(test_state)
 
-        assert isinstance(cached_value, PotentialOut)
+        assert isinstance(cached_value, KahanSummand)
         assert jnp.array_equal(
-            cached_value.total_energies.data, jnp.array([0.0, 0.0, 0.0])
+            cached_value.value.total_energies.data, jnp.array([0.0, 0.0, 0.0])
         )
 
     def test_composed_patch_functionality(self, cached_potential, test_state):
@@ -424,7 +429,7 @@ class TestCachedPotential:
         class MockPotentialWithAssertions:
             """Mock potential that returns assertions."""
 
-            def __call__(self, state, patch=None):
+            def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
                 potential_out = PotentialOut(
                     total_energies=Table.arange(
                         jnp.array([1.0, 2.0, 3.0]), label=SystemId
@@ -439,6 +444,8 @@ class TestCachedPotential:
                     fmt_args={"value": jnp.array(1.0)},
                     fix_args=jnp.array(1.0),
                 )
+                if include_compensate:
+                    return WithPatch(KahanSummand.init(potential_out), IdPatch())
                 return WithPatch(potential_out, IdPatch())
 
         # Create cached potential with assertion-generating mock
@@ -525,7 +532,7 @@ class TestCachedPotential:
         # Test cached value access with nested structure
         cached_value = cached_pot.cached_value(complex_state)
         assert jnp.array_equal(
-            cached_value.total_energies.data, jnp.array([10.0, 20.0, 30.0])
+            cached_value.value.total_energies.data, jnp.array([10.0, 20.0, 30.0])
         )
 
     def test_empty_gradients_and_hessians(self, cache_lens, patch_idx_view):
@@ -534,7 +541,7 @@ class TestCachedPotential:
         class SimpleEnergyPotential:
             """Potential that only returns energies."""
 
-            def __call__(self, state, patch=None):
+            def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
                 potential_out = PotentialOut(
                     total_energies=Table.arange(
                         jnp.array([1.0, 2.0, 3.0]), label=SystemId
@@ -542,6 +549,8 @@ class TestCachedPotential:
                     gradients=(),
                     hessians=(),
                 )
+                if include_compensate:
+                    return WithPatch(KahanSummand.init(potential_out), IdPatch())
                 return WithPatch(potential_out, IdPatch())
 
         # Update fixtures for empty gradients/hessians
@@ -584,13 +593,13 @@ class TestCachedPotential:
 
 
 class TestMappedPotential:
-    """Tests for MappedPotential class."""
+    """Tests for LinearMappedPotential class."""
 
     def test_gradient_mapping(self):
         """Test that gradients are correctly mapped."""
         potential = MockPotential()
 
-        mapped = MappedPotential(
+        mapped = LinearMappedPotential(
             potential,
             lambda inp: PotentialOut(
                 inp.potential_out.total_energies,
@@ -611,7 +620,7 @@ class TestMappedPotential:
         """Test that hessians are correctly mapped."""
         potential = MockPotential()
 
-        mapped = MappedPotential(
+        mapped = LinearMappedPotential(
             potential,
             lambda inp: PotentialOut(
                 inp.potential_out.total_energies,
@@ -628,7 +637,7 @@ class TestMappedPotential:
         """Test mapping both gradients and hessians."""
         potential = MockPotential()
 
-        mapped = MappedPotential(
+        mapped = LinearMappedPotential(
             potential,
             lambda inp: PotentialOut(
                 inp.potential_out.total_energies,
@@ -646,7 +655,7 @@ class TestMappedPotential:
         """Test that energy is not affected by mapping."""
         potential = MockPotential(energy_multiplier=5.0)
 
-        mapped = MappedPotential(
+        mapped = LinearMappedPotential(
             potential,
             lambda inp: PotentialOut(
                 inp.potential_out.total_energies, jnp.array(0.0), jnp.array(0.0)
@@ -663,17 +672,17 @@ class TestMappedPotential:
         """Test that patch is passed through unchanged."""
         potential = MockPotential()
 
-        mapped = MappedPotential(potential, lambda inp: inp.potential_out)
+        mapped = LinearMappedPotential(potential, lambda inp: inp.potential_out)
 
         result = mapped({"positions": jnp.zeros((2, 2))})
 
         assert isinstance(result.patch, IdPatch)
 
     def test_jit_compatible(self):
-        """Test that MappedPotential works with JIT."""
+        """Test that LinearMappedPotential works with JIT."""
         potential = MockPotential()
 
-        mapped = MappedPotential(
+        mapped = LinearMappedPotential(
             potential,
             lambda inp: PotentialOut(
                 inp.potential_out.total_energies,
@@ -688,12 +697,12 @@ class TestMappedPotential:
         assert jnp.array_equal(result.data.gradients, jnp.array([1.0, 2.0]))
 
     def test_composition_with_sum(self):
-        """Test MappedPotential composed with SummedPotential."""
+        """Test LinearMappedPotential composed with SummedPotential."""
         p1 = MockPotential(energy_multiplier=1.0, gradient_multiplier=1.0)
         p2 = MockPotential(energy_multiplier=2.0, gradient_multiplier=2.0)
 
         summed = sum_potentials(p1, p2)
-        mapped = MappedPotential(
+        mapped = LinearMappedPotential(
             summed,
             lambda inp: PotentialOut(
                 inp.potential_out.total_energies,

@@ -36,8 +36,6 @@ from kups.core.patch import ComposedPatch, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
-    EmptyType,
-    MappedPotential,
     Potential,
     PotentialOut,
 )
@@ -45,9 +43,9 @@ from kups.core.propagator import LogProbabilityRatio, LogProbabilityRatioFn
 from kups.core.typing import (
     GroupId,
     HasCell,
+    HasCompensatedPotentialEnergy,
     HasLogActivity,
     HasMotifAndSystemIndex,
-    HasPotentialEnergy,
     HasTemperature,
     SystemId,
 )
@@ -69,6 +67,11 @@ class BoltzmannLogProbabilityRatio[State, Move: Patch[Any]](
     $$
 
     This corresponds to the Metropolis criterion for constant N, V, T simulations.
+
+    Both energies are taken as compensated accumulators and differenced via
+    [KahanSummand.difference][kups.core.utils.kahan.KahanSummand.difference], so
+    a move that changes a large total by a tiny amount keeps full precision
+    instead of losing $\\Delta U$ to rounding in $U_{\\text{new}}$.
 
     Type Parameters:
         State: Simulation state type
@@ -98,12 +101,12 @@ class BoltzmannLogProbabilityRatio[State, Move: Patch[Any]](
     def __call__(
         self, state: State, patch: Move
     ) -> WithPatch[LogProbabilityRatio, Patch[State]]:
-        old_energies = self.potential.cached_value(state).total_energies
-        potential_out = self.potential(state, patch)
-        new_energies = potential_out.data.total_energies
+        old = self.potential.cached_value(state)
+        potential_out = self.potential(state, patch, include_compensate=True)
         temperature = self.temperature(state)
 
-        log_ratio = (old_energies - new_energies) / (temperature * BOLTZMANN_CONSTANT)
+        energy_difference = old.difference(potential_out.data).total_energies
+        log_ratio = energy_difference / (temperature * BOLTZMANN_CONSTANT)
         out_patch = potential_out.patch
         return WithPatch(log_ratio, out_patch)
 
@@ -257,7 +260,7 @@ def motif_counts(groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
     return _f(groups.data.system.indices, groups.data.motif.indices)
 
 
-class IsBoltzmannSystems(HasPotentialEnergy, HasTemperature, Protocol): ...
+class IsBoltzmannSystems(HasCompensatedPotentialEnergy, HasTemperature, Protocol): ...
 
 
 class IsBoltzmannState(Protocol):
@@ -283,7 +286,7 @@ class MuVTSystems(
     HasLogActivity,
     HasCell[AnyPeriodicity],
     HasTemperature,
-    HasPotentialEnergy,
+    HasCompensatedPotentialEnergy,
     Protocol,
 ): ...
 
@@ -300,21 +303,24 @@ class IsMuVTState(Protocol):
 def make_boltzmann_probability_ratio[State, Move: Patch[Any]](
     state: Lens[State, IsBoltzmannState], potential: Potential[State, Any, Any, Move]
 ) -> tuple[
-    CachedPotential[State, EmptyType, EmptyType, Move],
+    CachedPotential[State, Any, Any, Move],
     BoltzmannLogProbabilityRatio[State, Move],
 ]:
     """Build a Boltzmann acceptance criterion for NVT (canonical) Monte Carlo.
 
     Wraps ``potential`` in a
     [CachedPotential][kups.core.potential.CachedPotential] so that the previous
-    energy is read from ``state.previous_energy`` and the new energy is evaluated
-    on demand, then assembles a
+    energy and its compensation are read from ``state.systems.potential_energy``
+    and the new energy is evaluated on demand, then assembles a
     [BoltzmannLogProbabilityRatio][kups.mcmc.probability.BoltzmannLogProbabilityRatio].
+
+    The cached output is stored as-is, so ``potential`` must not produce
+    gradients or Hessians: the cache covers energies only.
 
     Args:
         state: Lens into the sub-state satisfying
             [IsBoltzmannState][kups.mcmc.probability.IsBoltzmannState] (needs
-            ``systems.temperature`` and ``previous_energy``).
+            ``systems.temperature`` and ``systems.potential_energy``).
         potential: Potential to evaluate on the proposed configuration.
 
     Returns:
@@ -322,18 +328,22 @@ def make_boltzmann_probability_ratio[State, Move: Patch[Any]](
         ready to be called with ``(state, patch)``.
     """
     potential = CachedPotential(
-        MappedPotential(
-            potential,
-            lambda input: PotentialOut(
-                input.potential_out.total_energies, EMPTY, EMPTY
-            ),
-        ),
+        potential,
         state.focus(
             lambda x: PotentialOut(
-                x.systems.map_data(lambda x: x.potential_energy), EMPTY, EMPTY
+                x.systems.map_data(lambda s: s.potential_energy.value), EMPTY, EMPTY
             )
         ),
         state.focus(lambda x: PotentialOut(x.systems.index, EMPTY, EMPTY)),  # type: ignore
+        # Persisting the compensation is what keeps `U_old - U_new` exact across
+        # a chain of accepted moves.
+        state.focus(
+            lambda x: PotentialOut(
+                x.systems.map_data(lambda s: s.potential_energy.compensate),
+                EMPTY,
+                EMPTY,
+            )
+        ),
     )
     return potential, BoltzmannLogProbabilityRatio(
         state.focus(lambda x: x.systems.map_data(lambda s: s.temperature)),
@@ -379,7 +389,7 @@ def make_fugacity_probability_ratio[State, Move: Patch[Any]](
 def make_muvt_probability_ratio[State, Move: Patch[Any]](
     state: Lens[State, IsMuVTState], potential: Potential[State, Any, Any, Move]
 ) -> tuple[
-    CachedPotential[State, EmptyType, EmptyType, Move],
+    CachedPotential[State, Any, Any, Move],
     MuVTLogProbabilityRatio[State, Move],
 ]:
     """Build the combined acceptance criterion for grand canonical (μVT) Monte Carlo.

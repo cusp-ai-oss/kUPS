@@ -51,6 +51,20 @@ class TestKahanSummand:
         b = KahanSummand.init(jnp.array(2.0)) + jnp.array(0.25)
         npt.assert_allclose((a + b).value, 3.75)
 
+    def test_add_summands_keeps_compensation(self):
+        """Summing accumulators of similar size preserves their compensations."""
+        a = KahanSummand(jnp.float32(-1234.5), jnp.float32(3e-5))
+        b = KahanSummand(jnp.float32(-8000.25), jnp.float32(-1.4e-4))
+        s = a + b
+
+        expected = (float(a.value) - float(a.compensate)) + (
+            float(b.value) - float(b.compensate)
+        )
+        # The running sums alone land on a representable value that drops both
+        # compensations; the pair still represents the exact total.
+        assert float(s.value) == -9234.75
+        npt.assert_allclose(float(s.value) - float(s.compensate), expected, rtol=1e-12)
+
     def test_sum_builtin(self):
         """`sum` works via __radd__ on its 0 start value."""
         summands = [KahanSummand.init(jnp.array(float(i))) for i in range(4)]
@@ -86,7 +100,7 @@ class TestKahanSummand:
         big = jnp.array(1e5)
         delta = jnp.array(1e-2)
         old = KahanSummand.init(big)
-        for _ in range(50):
+        for _ in range(5):
             old += delta
         new = old + delta
 

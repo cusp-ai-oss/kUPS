@@ -36,6 +36,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
+from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.quaternion import Quaternion
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 
@@ -274,13 +275,17 @@ class MCMCSystems:
     Attributes:
         cell: Cell geometry, batched shape ``(n_systems,)``.
         temperature: Temperature (K), shape ``(n_systems,)``.
-        potential_energy: Total potential energy per system (eV), shape ``(n_systems,)``.
+        potential_energy: Total potential energy per system (eV) as a compensated
+            accumulator, each entry of shape ``(n_systems,)``. Monte Carlo folds
+            per-move energy changes into it, so the compensation keeps changes
+            far below ``ulp`` of the total from being lost.
         log_fugacity: Log fugacity per species (dimensionless), shape ``(n_systems, n_species)``.
+        cell_gradients: Energy gradients w.r.t. the cell, defaults to zeros.
     """
 
     cell: Cell[Any]
     temperature: Array
-    potential_energy: Array
+    potential_energy: KahanSummand[Array]
     log_fugacity: Array
     cell_gradients: Cell[Any] = field(default=None)  # type: ignore[assignment]
 
@@ -402,7 +407,7 @@ def mcmc_state_from_config(
         MCMCSystems(
             cell=cell[None],
             temperature=jnp.array([host.temperature]),
-            potential_energy=jnp.zeros(1),
+            potential_energy=KahanSummand.init(jnp.zeros(1)),
             log_fugacity=result.log_fugacity[None],
         ),
         label=SystemId,
