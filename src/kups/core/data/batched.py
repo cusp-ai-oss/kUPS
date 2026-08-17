@@ -25,25 +25,26 @@ class Batched:
             shapes = tuple(x.shape for x in leaves)
         except AttributeError:
             return
-        if not isinstance(leaves[0], jax.Array | np.ndarray):
+        # An empty leaf list means there is nothing to validate; this happens when a
+        # pytree is rebuilt with ``None`` placeholders instead of arrays.
+        if not leaves or not isinstance(leaves[0], jax.Array | np.ndarray):
             return
-        if len(shapes) > 0:
-            reference = shapes[0]
-            if len(reference) == 0:
-                raise ValueError(
-                    f"Batched cannot be initialized with no leading dimension. Got shapes: {shapes}."
-                )
-            errors: list[tuple[int, tuple[int, ...]]] = []
-            for i, shape in enumerate(shapes[1:]):
-                if len(shape) == 0 or shape[0] != reference[0]:
-                    errors.append((i + 1, shape))
-            if len(errors) > 0:
-                msg = "Inconsistent shapes in batched data: "
-                msg += f"Expected all leaves to have the same first dimension size {reference[0]}.\n"
-                msg += "The following leaves have different shapes: "
-                for idx, shape in errors:
-                    msg += f"Leaf {idx} has shape {shape}, expected {reference}. "
-                raise ValueError(msg)
+        reference = shapes[0]
+        if len(reference) == 0:
+            raise ValueError(
+                f"Batched cannot be initialized with no leading dimension. Got shapes: {shapes}."
+            )
+        errors: list[tuple[int, tuple[int, ...]]] = []
+        for i, shape in enumerate(shapes[1:]):
+            if len(shape) == 0 or shape[0] != reference[0]:
+                errors.append((i + 1, shape))
+        if len(errors) > 0:
+            msg = "Inconsistent shapes in batched data: "
+            msg += f"Expected all leaves to have the same first dimension size {reference[0]}.\n"
+            msg += "The following leaves have different shapes: "
+            for idx, shape in errors:
+                msg += f"Leaf {idx} has shape {shape}, expected {reference}. "
+            raise ValueError(msg)
 
     def __len__(self) -> int:
         """Return the batch size (leading dimension size).
