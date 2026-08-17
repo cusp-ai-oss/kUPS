@@ -491,11 +491,12 @@ def make_guest_stress(
 ) -> StateProperty[MCMCState, Table[SystemId, StressResult]]:
     """Build guest-only stress tensor function from MCMCState."""
     state_lens = identity_lens(MCMCState)
+    # The tail correction is deliberately not differentiated here: its energy
+    # depends on the cell through the volume, so ``dU_tail/dh`` would add
+    # ``(U_tail / V) * I`` to the configurational stress on top of the
+    # closed-form ``p_tail`` added below, double-counting it.
     potentials: list[Potential[MCMCState, PositionsAndCell, EmptyType, Any]] = [
         make_lennard_jones_from_state(state_lens, gradient=POSITIONS_AND_CELL),
-        make_lennard_jones_tail_correction_from_state(
-            state_lens, gradient=POSITIONS_AND_CELL
-        ),
     ]
     if state.is_charged:
         potentials.append(
