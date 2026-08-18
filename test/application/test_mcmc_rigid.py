@@ -42,7 +42,7 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Table, WithCache, WithIndices
 from kups.core.data.buffered import Buffered
 from kups.core.data.index import Index
-from kups.core.lens import identity_lens
+from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.parameter_scheduler import (
     AcceptanceHistory,
@@ -424,6 +424,28 @@ class TestMakeGuestStress:
         assert jnp.isfinite(stress).all()
         assert jnp.abs(stress).max() > 0
         npt.assert_allclose(stress, jnp.swapaxes(stress, -1, -2), atol=1e-12)
+
+    def test_tail_correction_stays_out_of_configurational_stress(
+        self, state: MCMCState
+    ):
+        """The analytical tail reaches the stress only via ``tail_correction``.
+
+        ``U_tail`` depends on the cell through the volume, so differentiating it
+        would add ``(U_tail / V) * I`` to the configurational term on top of the
+        closed-form correction that ``analyze_mcmc`` already sums in.
+        """
+
+        def stress(tail_corrected: bool):
+            toggled = bind(state, lambda x: x.lj_parameters.data.tail_corrected).set(
+                jnp.full((1, 1), tail_corrected, dtype=bool)
+            )
+            return make_guest_stress(toggled)(jax.random.key(0), toggled).data
+
+        on, off = stress(True), stress(False)
+        npt.assert_array_equal(on.potential, off.potential)
+        # Guard: without this the test would also pass if the tail vanished.
+        assert jnp.all(jnp.diagonal(on.tail_correction[0]) < 0)
+        npt.assert_array_equal(off.tail_correction, jnp.zeros_like(off.tail_correction))
 
 
 # --- End-to-end smoke tests for the rigid-body MCMC entry point ---
