@@ -10,7 +10,8 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from kups.application.utils.particles import Particles
+from kups.application.utils.particles import Particles, particles_from_arrays
+from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, VacuumCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import InclusionId, Label, ParticleId, SystemId
@@ -257,3 +258,265 @@ class TestParticlesFromAsePbcDispatch:
         assert isinstance(cell, Cell)
         assert not isinstance(cell, (PeriodicCell, VacuumCell))
         assert cell.periodic == pbc
+
+
+class TestParticlesFromArrays:
+    """Test the public source-neutral particle constructor."""
+
+    @staticmethod
+    def _valid_inputs():
+        return {
+            "positions": np.array([[0.2, 0.4, 0.6], [1.1, 1.3, 1.5]]),
+            "cell_vectors": np.diag([4.0, 5.0, 6.0]),
+            "periodicity": (True, True, True),
+            "masses": np.array([22.99, 35.45]),
+            "atomic_numbers": np.array([11, 17]),
+            "labels": ["Na", "Cl"],
+        }
+
+    @staticmethod
+    def _assert_particle_parity(actual, expected):
+        assert actual.keys == expected.keys
+        assert all(isinstance(key, ParticleId) for key in actual.keys)
+        npt.assert_allclose(actual.data.positions, expected.data.positions)
+        npt.assert_allclose(actual.data.masses, expected.data.masses)
+        npt.assert_array_equal(actual.data.atomic_numbers, expected.data.atomic_numbers)
+        npt.assert_allclose(actual.data.charges, expected.data.charges)
+        assert actual.data.labels.keys == expected.data.labels.keys
+        npt.assert_array_equal(actual.data.labels.indices, expected.data.labels.indices)
+        assert actual.data.system.keys == expected.data.system.keys
+        npt.assert_array_equal(actual.data.system.indices, expected.data.system.indices)
+
+    def test_numpy_orthogonal_periodic_matches_ase(self):
+        from ase import Atoms
+
+        from kups.application.utils.particles import particles_from_ase
+
+        inputs = self._valid_inputs()
+        charges = np.array([0.75, -0.75])
+        atoms = Atoms(
+            "NaCl",
+            positions=inputs["positions"],
+            cell=inputs["cell_vectors"],
+            pbc=True,
+        )
+        atoms.set_masses(inputs["masses"])
+        atoms.info["_atom_type_partial_charge"] = charges
+        atoms.info["_atom_site_label"] = inputs["labels"]
+
+        expected_particles, expected_cell, expected_transform = particles_from_ase(
+            atoms
+        )
+        inputs["periodicity"] = np.array([True, True, True], dtype=bool)
+        actual_particles, actual_cell, actual_transform = particles_from_arrays(
+            **inputs,
+            charges=charges,
+        )
+
+        self._assert_particle_parity(actual_particles, expected_particles)
+        assert isinstance(actual_cell, PeriodicCell)
+        assert type(actual_cell) is type(expected_cell)
+        assert type(actual_cell.frame) is type(expected_cell.frame)
+        assert isinstance(actual_cell.frame, TriclinicFrame)
+        assert actual_cell.periodic == expected_cell.periodic
+        npt.assert_allclose(actual_cell.vectors, expected_cell.vectors)
+        npt.assert_allclose(actual_cell.frame.tril, expected_cell.frame.tril)
+        probe = jnp.array([[0.25, 0.5, 0.75], [-0.4, 1.2, 0.3]])
+        npt.assert_allclose(
+            actual_transform(probe), expected_transform(probe), atol=1e-12
+        )
+
+    def test_jax_non_lower_triangular_joint_transformation(self):
+        from ase import Atoms
+
+        from kups.application.utils.particles import particles_from_ase
+
+        positions = jnp.array([[0.4, 0.8, 1.2], [1.5, 0.3, 2.1]])
+        cell_vectors = jnp.array([[0.0, 2.0, 0.0], [1.5, 0.2, 0.0], [0.3, 0.4, 3.0]])
+        masses = jnp.array([12.0, 16.0])
+        atomic_numbers = jnp.array([6, 8])
+        labels = ["C", "O"]
+        atoms = Atoms(
+            "CO",
+            positions=np.asarray(positions),
+            cell=np.asarray(cell_vectors),
+            pbc=(True, False, True),
+        )
+        atoms.set_masses(np.asarray(masses))
+
+        expected_particles, expected_cell, expected_transform = particles_from_ase(
+            atoms
+        )
+        actual_particles, actual_cell, actual_transform = particles_from_arrays(
+            positions=positions,
+            cell_vectors=cell_vectors,
+            periodicity=jnp.array([True, False, True]),
+            masses=masses,
+            atomic_numbers=atomic_numbers,
+            labels=labels,
+        )
+
+        self._assert_particle_parity(actual_particles, expected_particles)
+        assert type(actual_cell) is Cell
+        assert actual_cell.periodic == (True, False, True)
+        assert all(type(value) is bool for value in actual_cell.periodic)
+        npt.assert_allclose(actual_cell.vectors, expected_cell.vectors, atol=1e-12)
+        npt.assert_allclose(
+            actual_particles.data.positions,
+            actual_transform(positions),
+            atol=1e-12,
+        )
+        npt.assert_allclose(
+            jnp.triu(actual_cell.vectors, k=1), jnp.zeros((3, 3)), atol=1e-12
+        )
+        probe = jnp.array([[0.6, -0.2, 0.9], [1.1, 0.7, -0.5]])
+        npt.assert_allclose(
+            actual_transform(probe), expected_transform(probe), atol=1e-12
+        )
+
+    def test_omitted_charges_default_to_floating_zeros(self):
+        particles, _, _ = particles_from_arrays(**self._valid_inputs())
+
+        npt.assert_array_equal(particles.data.charges, jnp.zeros(2))
+        assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
+
+    def test_integer_masses_and_charges_are_promoted(self):
+        inputs = self._valid_inputs()
+        inputs["positions"] = np.array([[0, 1, 2], [1, 2, 3]], dtype=int)
+        inputs["cell_vectors"] = np.diag(np.array([4, 5, 6], dtype=int))
+        inputs["masses"] = np.array([23, 35], dtype=int)
+        charges = np.array([1, -1], dtype=int)
+
+        particles, cell, _ = particles_from_arrays(**inputs, charges=charges)
+
+        assert jnp.issubdtype(particles.data.masses.dtype, jnp.floating)
+        assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
+        assert jnp.issubdtype(particles.data.positions.dtype, jnp.floating)
+        assert jnp.issubdtype(cell.vectors.dtype, jnp.floating)
+        npt.assert_array_equal(particles.data.masses, jnp.array([23.0, 35.0]))
+        npt.assert_array_equal(particles.data.charges, jnp.array([1.0, -1.0]))
+
+    def test_numpy_boolean_mask_constructs_periodic_cell(self):
+        inputs = self._valid_inputs()
+        inputs["periodicity"] = np.array([True, True, True], dtype=bool)
+
+        _, cell, _ = particles_from_arrays(**inputs)
+
+        assert isinstance(cell, PeriodicCell)
+        assert cell.periodic == (True, True, True)
+
+    def test_numpy_boolean_tuple_constructs_vacuum_cell(self):
+        inputs = self._valid_inputs()
+        inputs["periodicity"] = (np.bool_(False),) * 3
+
+        _, cell, _ = particles_from_arrays(**inputs)
+
+        assert isinstance(cell, VacuumCell)
+        assert cell.periodic == (False, False, False)
+
+    def test_mixed_mask_constructs_generic_cell_with_python_booleans(self):
+        inputs = self._valid_inputs()
+        inputs["periodicity"] = jnp.array([True, False, True])
+
+        _, cell, _ = particles_from_arrays(**inputs)
+
+        assert type(cell) is Cell
+        assert type(cell.periodic) is tuple
+        assert cell.periodic == (True, False, True)
+        assert all(type(value) is bool for value in cell.periodic)
+
+    @pytest.mark.parametrize(
+        ("argument", "value"),
+        [
+            ("positions", np.zeros((2, 2))),
+            ("cell_vectors", np.eye(2)),
+        ],
+        ids=["positions", "cell-vectors"],
+    )
+    def test_invalid_geometry_shape(self, argument, value):
+        inputs = self._valid_inputs()
+        inputs[argument] = value
+
+        with pytest.raises(ValueError, match=argument):
+            particles_from_arrays(**inputs)
+
+    @pytest.mark.parametrize(
+        ("argument", "value"),
+        [
+            ("masses", np.ones(1)),
+            ("atomic_numbers", np.array([11, 17, 19])),
+            ("charges", np.zeros(1)),
+        ],
+    )
+    def test_mismatched_particle_field_length(self, argument, value):
+        inputs = self._valid_inputs()
+        inputs[argument] = value
+
+        with pytest.raises(ValueError, match=argument):
+            particles_from_arrays(**inputs)
+
+    def test_incorrect_label_count(self):
+        inputs = self._valid_inputs()
+        inputs["labels"] = ["Na"]
+
+        with pytest.raises(ValueError, match="labels"):
+            particles_from_arrays(**inputs)
+
+    @pytest.mark.parametrize("labels", ["Na", b"Na"], ids=["str", "bytes"])
+    def test_string_like_scalar_labels_are_rejected(self, labels):
+        inputs = self._valid_inputs()
+        inputs["labels"] = labels
+
+        with pytest.raises(TypeError, match="labels"):
+            particles_from_arrays(**inputs)
+
+    def test_non_string_label(self):
+        inputs = self._valid_inputs()
+        inputs["labels"] = ["Na", 17]
+
+        with pytest.raises(TypeError, match="labels"):
+            particles_from_arrays(**inputs)
+
+    def test_floating_atomic_numbers_are_rejected(self):
+        inputs = self._valid_inputs()
+        inputs["atomic_numbers"] = np.array([11.0, 17.0])
+
+        with pytest.raises(TypeError, match="atomic_numbers"):
+            particles_from_arrays(**inputs)
+
+    @pytest.mark.parametrize(
+        ("argument", "value"),
+        [
+            ("positions", np.zeros((2, 3), dtype=bool)),
+            ("cell_vectors", np.eye(3, dtype=complex)),
+            ("masses", np.array(["23", "35"])),
+            ("charges", np.array([1.0, object()], dtype=object)),
+            ("atomic_numbers", np.array([True, False])),
+        ],
+        ids=["boolean", "complex", "string", "object", "atomic-boolean"],
+    )
+    def test_incompatible_physical_dtype(self, argument, value):
+        inputs = self._valid_inputs()
+        inputs[argument] = value
+
+        with pytest.raises(TypeError, match=argument):
+            particles_from_arrays(**inputs)
+
+    @pytest.mark.parametrize(
+        "periodicity",
+        [(1, 1, 0), ("yes", "yes", "no")],
+        ids=["integer", "string"],
+    )
+    def test_non_boolean_periodicity_is_rejected(self, periodicity):
+        inputs = self._valid_inputs()
+        inputs["periodicity"] = periodicity
+
+        with pytest.raises(TypeError, match="periodicity"):
+            particles_from_arrays(**inputs)
+
+    def test_periodicity_requires_exactly_three_values(self):
+        inputs = self._valid_inputs()
+        inputs["periodicity"] = [True, False]
+
+        with pytest.raises(ValueError, match="periodicity"):
+            particles_from_arrays(**inputs)
