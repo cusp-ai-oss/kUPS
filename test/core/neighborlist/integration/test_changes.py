@@ -49,12 +49,12 @@ class TestNeighborlistChanges:
     """Tests for the single-call ``neighborlist_changes`` utility."""
 
     @staticmethod
-    def _make_nl(cutoffs, capacity=32):
+    def _make_nl(cutoff, capacity=32):
         return DenseNearestNeighborList(
             avg_candidates=FixedCapacity(capacity),
             avg_edges=FixedCapacity(capacity),
             avg_image_candidates=FixedCapacity(capacity),
-            cutoffs=cutoffs,
+            cutoff=cutoff,
         )
 
     def test_matches_separate_calls(self):
@@ -69,8 +69,8 @@ class TestNeighborlistChanges:
 
         batch = jnp.zeros(N, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([3.0]))
-        nl = self._make_nl(cutoffs)
+        systems, _ = make_systems(cell, jnp.array([3.0]))
+        nl = self._make_nl(3.0)
 
         # --- reference: two separate calls ---
         full_new_pos = positions.at[changed_idx].set(new_positions)
@@ -118,8 +118,8 @@ class TestNeighborlistChanges:
 
         batch = jnp.zeros(3, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([1.5]))
-        nl = self._make_nl(cutoffs)
+        systems, _ = make_systems(cell, jnp.array([1.5]))
+        nl = self._make_nl(1.5)
 
         lh = make_lh(positions, batch)
         rh_table, queried_keys = make_rh(
@@ -157,8 +157,8 @@ class TestNeighborlistChanges:
                 jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
             )
         )
-        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]))
-        nl = self._make_nl(cutoffs)
+        systems, _ = make_systems(cell, jnp.array([1.5, 1.5]))
+        nl = self._make_nl(1.5)
 
         lh = make_lh(positions, batch)
         rh_table, queried_keys = make_rh(
@@ -224,8 +224,8 @@ class TestNeighborlistChanges:
 
         batch = jnp.zeros(3, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([1.5]))
-        nl = self._make_nl(cutoffs)
+        systems, _ = make_systems(cell, jnp.array([1.5]))
+        nl = self._make_nl(1.5)
 
         lh = make_lh(positions, batch)
         rh_table, queried_keys = make_rh(
@@ -253,8 +253,8 @@ class TestNeighborlistChanges:
 
         batch = jnp.zeros(N, dtype=int)
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([3.0]))
-        nl = self._make_nl(cutoffs, capacity=64)
+        systems, _ = make_systems(cell, jnp.array([3.0]))
+        nl = self._make_nl(3.0, capacity=64)
 
         full_new_pos = positions.at[changed_idx].set(new_positions)
         lh_after = make_lh(full_new_pos, batch)

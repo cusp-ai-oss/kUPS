@@ -113,7 +113,7 @@ def _make_systems(cell: Cell[Periodic3D], cutoff: Array) -> Table[SystemId, Syst
     return Table(keys, SystemData(cell=cell, cutoff=cutoff))
 
 
-def _build_neighborlist(particles, systems, n_particles):
+def _build_neighborlist(particles, systems, n_particles, cutoff: float):
     """Build neighbor list with sufficient initial capacity.
 
     Args:
@@ -121,8 +121,8 @@ def _build_neighborlist(particles, systems, n_particles):
         systems: System table.
         n_particles: Number of particles (used as avg edges per particle).
             Total capacity = n_particles * n_particles (dense O(N^2)).
+        cutoff: Cutoff radius [Å].
     """
-    cutoffs = systems.map_data(lambda d: d.cutoff)
 
     @jax.jit
     @as_result_function
@@ -134,7 +134,7 @@ def _build_neighborlist(particles, systems, n_particles):
     statics = AllDenseNearestNeighborList(
         avg_edges=FixedCapacity(n_particles),
         avg_image_candidates=FixedCapacity(n_particles),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     while (edge_result := nn_search(statics)).failed_assertions:
         statics = edge_result.fix_or_raise(statics)
@@ -235,7 +235,7 @@ class TestEwald:
         estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-3)
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([estimates.alpha])),
-            cutoff=Table((SystemId(0),), jnp.array([estimates.real_cutoff])),
+            cutoff=estimates.real_cutoff,
             reciprocal_lattice_shifts=Table(
                 (SystemId(0),), kvecs_from_kmax(cell, estimates.k_max)[None]
             ),
@@ -244,9 +244,9 @@ class TestEwald:
         # 1. Atomic Ewald: no bonded exclusions
         pdata = _make_particle_data(positions, charges, n_systems=1)
         all_particles = Table.arange(pdata, label=ParticleId)
-        systems = _make_systems(cell[None], params.cutoff.data)
+        systems = _make_systems(cell[None], jnp.array([params.cutoff]))
 
-        edges = _build_neighborlist(all_particles, systems, len(charges))
+        edges = _build_neighborlist(all_particles, systems, len(charges), params.cutoff)
 
         graph = HyperGraph(particles=all_particles, systems=systems, edges=edges)
         sr_inp = GraphPotentialInput(params, graph)
@@ -317,7 +317,7 @@ class TestEwald:
         )
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.asarray([estimates.alpha])),
-            cutoff=Table((SystemId(0),), jnp.asarray([estimates.real_cutoff])),
+            cutoff=estimates.real_cutoff,
             reciprocal_lattice_shifts=Table(
                 (SystemId(0),), kvecs_from_kmax(cell, estimates.k_max)[None]
             ),
@@ -325,9 +325,9 @@ class TestEwald:
 
         pdata = _make_particle_data(positions, charges, n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
-        systems = _make_systems(cell[None], params.cutoff.data)
+        systems = _make_systems(cell[None], jnp.asarray([params.cutoff]))
 
-        edges = _build_neighborlist(particles, systems, len(charges))
+        edges = _build_neighborlist(particles, systems, len(charges), params.cutoff)
 
         graph = HyperGraph(
             particles=particles,
@@ -357,7 +357,7 @@ class TestEwald:
         alpha = 0.4
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([alpha])),
-            cutoff=Table((SystemId(0),), jnp.array([5.0])),
+            cutoff=5.0,
             # net-charge term ignores k-vectors; a dummy shift suffices.
             reciprocal_lattice_shifts=Table(
                 (SystemId(0),), jnp.zeros((1, 1, 3), dtype=int)
@@ -380,7 +380,7 @@ class TestEwald:
         shifts = jnp.array([[[0, 0, 0], [1, 0, 0], [1, 1, 0]]])  # (0,0,0) first
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([0.4])),
-            cutoff=Table((SystemId(0),), jnp.array([5.0])),
+            cutoff=5.0,
             reciprocal_lattice_shifts=Table((SystemId(0),), shifts),
         )
         pdata = _make_particle_data(jnp.zeros((1, 3)), jnp.array([1.0]), n_systems=1)
@@ -408,13 +408,13 @@ class TestEwald:
         pdata = _make_particle_data(positions, charges, n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
         systems = _make_systems(cell[None], jnp.array([rc]))
-        edges = _build_neighborlist(particles, systems, len(charges))
+        edges = _build_neighborlist(particles, systems, len(charges), rc)
         graph = HyperGraph(particles=particles, systems=systems, edges=edges)
 
         def total_energy(alpha: float) -> Array:
             params = EwaldParameters(
                 alpha=Table((SystemId(0),), jnp.array([alpha])),
-                cutoff=Table((SystemId(0),), jnp.array([rc])),
+                cutoff=rc,
                 reciprocal_lattice_shifts=Table((SystemId(0),), kvecs[None]),
             )
             sr_inp = GraphPotentialInput(params, graph)
@@ -450,8 +450,7 @@ class TestEwaldParametersMake:
         params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
         assert params.alpha.data.shape == (1,)
         assert float(params.alpha.data[0]) > 0
-        assert len(params.cutoff.keys) == 1
-        assert float(params.cutoff.data[0]) > 0
+        assert params.cutoff > 0
         assert params.reciprocal_lattice_shifts.data.shape[0] == 1
         assert params.reciprocal_lattice_shifts.data.shape[2] == 3
 
@@ -484,7 +483,7 @@ class TestEwaldParametersMake:
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
         assert params.alpha.data.shape == (2,)
-        assert len(params.cutoff.keys) == 2
+        assert params.cutoff > 0
         assert params.reciprocal_lattice_shifts.data.shape[0] == 2
         # k-vectors zero-padded to max count
         assert params.reciprocal_lattice_shifts.data.ndim == 3
@@ -502,7 +501,7 @@ class TestEwaldParametersMake:
             label=SystemId,
         )
         params = EwaldParameters.make(particles, systems, real_cutoff=2.0)
-        npt.assert_allclose(params.cutoff.data[0], 2.0)
+        npt.assert_allclose(params.cutoff, 2.0)
 
 
 class TestStructureFactorCache:
@@ -540,10 +539,12 @@ class TestStructureFactorCache:
         )
         params = EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([0.35], dtype=self.DTYPE)),
-            cutoff=Table((SystemId(0),), jnp.array([3.0], dtype=self.DTYPE)),
+            cutoff=3.0,
             reciprocal_lattice_shifts=Table((SystemId(0),), self.SHIFTS[None]),
         )
-        systems = _make_systems(cell[None], params.cutoff.data)
+        systems = _make_systems(
+            cell[None], jnp.array([params.cutoff], dtype=self.DTYPE)
+        )
         # Indices are built once outside any trace; only positions vary.
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId

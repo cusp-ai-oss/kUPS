@@ -109,7 +109,7 @@ def mock_exported():
 def jaxified_model(mock_exported):
     exported, params = mock_exported
     return TojaxedMliap(
-        cutoff=Table((SystemId(0),), jnp.array([5.0])),
+        cutoff=5.0,
         params=params,
         model=exported,
     )
@@ -150,7 +150,7 @@ def simple_system(jaxified_model):
         neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
-            cutoffs=Table((SystemId(0),), jnp.array([5.0])),
+            cutoff=5.0,
         ),
     )
 
@@ -188,7 +188,7 @@ class TestTojaxedMliapFromZipFile:
 
         model = TojaxedMliap.from_zip_file(zip_path)
 
-        assert jnp.allclose(model.cutoff.data, jnp.array([cutoff]))
+        assert jnp.allclose(model.cutoff, cutoff)
         assert model.params is not None
         assert model.model is not None
 

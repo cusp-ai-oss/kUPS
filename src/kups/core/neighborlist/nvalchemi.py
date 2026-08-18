@@ -39,10 +39,9 @@ from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.common import Candidates, candidates_to_batch
-from kups.core.neighborlist.compact import ReduceCompactor
+from kups.core.neighborlist.compact import MaskOnlyCompactor
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.masks import (
-    DistanceCutoffMask,
     ExclusionMask,
     InBoundsMask,
     InclusionMatchMask,
@@ -394,22 +393,15 @@ def _run_pipeline(
     Returns:
         Compacted pair ``Edges`` indexing ``keys``.
     """
-    query_size = (
-        queried_keys.size
-        if queried_keys is not None
-        else (queries.size if queries is not None else keys.size)
-    )
-    cutoffs = systems.map_data(lambda _s: jnp.full((systems.size,), cutoff))
     pipeline = Pipeline[Literal[2]](
         selector=selector,
         masks=(
             InBoundsMask(),
             InclusionMatchMask(),
             QueriedKeysDedupMask(),
-            DistanceCutoffMask(cutoffs=cutoffs),
             ExclusionMask(),
         ),
-        compactor=ReduceCompactor(avg_edges=avg_edges.multiply(query_size)),
+        compactor=(MaskOnlyCompactor()),
         postprocessors=(MirrorPairEdges(),),
     )
     if queries is not None:
@@ -440,7 +432,7 @@ class NvalchemiCellListNeighborList(NeighborList[Literal[2]]):
 
     Example:
         ```python
-        nl = NvalchemiCellListNeighborList.from_state(state, cutoffs)
+        nl = NvalchemiCellListNeighborList.from_state(state, cutoff)
         edges = nl(particles, systems)
         ```
     """
@@ -455,21 +447,21 @@ class NvalchemiCellListNeighborList(NeighborList[Literal[2]]):
         cls,
         state: S,
         lens: Lens[S, IsNvalchemiCellListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> NvalchemiCellListNeighborList:
         """Construct from a ``state`` and a lens to its toolkit parameters.
 
         Args:
             state: Object exposing the cell-list toolkit parameters via ``lens``.
             lens: Lens focusing the ``IsNvalchemiCellListParams`` parameters.
-            cutoffs: Per-system cutoffs; the maximum becomes the static cutoff.
+            cutoff: Cutoff radius [Å].
 
         Returns:
             A configured ``NvalchemiCellListNeighborList``.
         """
         params = lens.get(state)
         return cls(
-            cutoff=float(jnp.max(jnp.asarray(cutoffs.data))),
+            cutoff=cutoff,
             max_neighbors=LensCapacity(
                 params.max_neighbors, lens.focus(lambda x: x.max_neighbors)
             ),
@@ -483,10 +475,10 @@ class NvalchemiCellListNeighborList(NeighborList[Literal[2]]):
     def from_state(
         cls,
         state: IsNeighborListState[IsNvalchemiCellListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> NvalchemiCellListNeighborList:
         """Construct from a state exposing ``neighborlist_params``."""
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoff)
 
     @overload
     def __call__(
@@ -547,7 +539,7 @@ class NvalchemiNaiveNeighborList(NeighborList[Literal[2]]):
 
     Example:
         ```python
-        nl = NvalchemiNaiveNeighborList.from_state(state, cutoffs)
+        nl = NvalchemiNaiveNeighborList.from_state(state, cutoff)
         edges = nl(particles, systems)
         ```
     """
@@ -562,21 +554,21 @@ class NvalchemiNaiveNeighborList(NeighborList[Literal[2]]):
         cls,
         state: S,
         lens: Lens[S, IsNvalchemiNaiveParams],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> NvalchemiNaiveNeighborList:
         """Construct from a ``state`` and a lens to its toolkit parameters.
 
         Args:
             state: Object exposing the naive toolkit parameters via ``lens``.
             lens: Lens focusing the ``IsNvalchemiNaiveParams`` parameters.
-            cutoffs: Per-system cutoffs; the maximum becomes the static cutoff.
+            cutoff: Cutoff radius [Å].
 
         Returns:
             A configured ``NvalchemiNaiveNeighborList``.
         """
         params = lens.get(state)
         return cls(
-            cutoff=float(jnp.max(jnp.asarray(cutoffs.data))),
+            cutoff=cutoff,
             max_neighbors=LensCapacity(
                 params.max_neighbors, lens.focus(lambda x: x.max_neighbors)
             ),
@@ -590,10 +582,10 @@ class NvalchemiNaiveNeighborList(NeighborList[Literal[2]]):
     def from_state(
         cls,
         state: IsNeighborListState[IsNvalchemiNaiveParams],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> NvalchemiNaiveNeighborList:
         """Construct from a state exposing ``neighborlist_params``."""
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoff)
 
     @overload
     def __call__(

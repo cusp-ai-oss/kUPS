@@ -83,13 +83,13 @@ class LennardJonesParameters:
         labels: Species labels as ``Index``.
         sigma: Length scale parameters [Å], shape ``(n_species, n_species)``.
         epsilon: Energy well depths [energy units], shape ``(n_species, n_species)``.
-        cutoff: Cutoff radius [Å], shape ``(n_systems,)``.
+        cutoff: Cutoff radius [Å].
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
     sigma: Array  # (n_species, n_species) float
     epsilon: Array  # (n_species, n_species) float
-    cutoff: Table[SystemId, Array]  # (n_graphs,) float
+    cutoff: float = field(static=True)
 
     @classmethod
     def from_dict(
@@ -109,11 +109,10 @@ class LennardJonesParameters:
         labels = tuple(parameters.keys())
         raw = [(s or 1.0, e or 0.0) for s, e in parameters.values()]
         sigma, epsilon = jnp.asarray(raw).T
-        cutoff_indexed = Table((SystemId(0),), jnp.array([cutoff]))
         match mixing_rule:
             case "lorentz_berthelot":
                 return cls.from_lorentz_berthelot_mixing(
-                    labels, sigma, epsilon, cutoff_indexed
+                    labels, sigma, epsilon, float(cutoff)
                 )
             case _ as unreachable:
                 assert_never(unreachable)
@@ -124,7 +123,7 @@ class LennardJonesParameters:
         labels: tuple[str, ...],
         sigma: Array,
         epsilon: Array,
-        cutoff: Table[SystemId, Array],
+        cutoff: float,
     ) -> LennardJonesParameters:
         """Create parameters using Lorentz-Berthelot mixing rules.
 
@@ -159,8 +158,7 @@ def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
     r2 = jnp.sum(graph.edge_shifts[:, 0] ** 2, axis=-1)
     c6 = (sigma**2 / r2) ** 3
     edge_energy = 4 * epsilon * (c6**2 - c6)
-    batch = graph.edge_batch_mask.indices
-    mask = r2 < jnp.pow(inp.parameters.cutoff.data, 2)[batch]
+    mask = r2 < inp.parameters.cutoff**2
     return edge_energy * mask
 
 
@@ -179,10 +177,10 @@ class PairTailCorrectedLennardJonesParameters(LennardJonesParameters):
     """Lennard-Jones parameters with smooth pairwise tail correction.
 
     Attributes:
-        truncation_radius: Radius where smoothing begins [Å], shape ``(n_systems,)``.
+        truncation_radius: Radius where smoothing begins [Å].
     """
 
-    truncation_radius: Table[SystemId, Array]  # (n_graphs,)
+    truncation_radius: float = field(static=True)
 
 
 type PairTailCorrectedLennardJonesInput = GraphPotentialInput[
@@ -203,8 +201,8 @@ def pair_tail_corrected_lennard_jones_energy(
     edge_energy = lennard_jones_edge_energy(cast(LennardJonesInput, inp))
 
     batch = graph.edge_batch_mask
-    r_tr = inp.parameters.truncation_radius[batch]
-    r_cut = inp.parameters.cutoff[batch]
+    r_tr = inp.parameters.truncation_radius
+    r_cut = inp.parameters.cutoff
     mask = r > r_tr
     remove = r >= r_cut
     factor1 = ((r_cut**2) - r**2) ** 2
@@ -289,7 +287,7 @@ def _global_tail_correction_common(
     volume = inp.graph.systems.data.cell.volume[:, None, None]
     density = (counts[:, :, None] * counts[:, None, :]) / volume
     sigma = inp.parameters.sigma
-    cutoff = inp.parameters.cutoff.data[:, None, None]
+    cutoff = inp.parameters.cutoff
     term1 = (sigma / cutoff) ** 3
     term2 = term1**3
     return density, volume, term1, term2, inp.parameters.tail_corrected, n_graphs

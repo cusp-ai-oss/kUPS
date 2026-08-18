@@ -60,21 +60,19 @@ def _ensure_lower_triangular(atoms: ase.Atoms) -> ase.Atoms:
     return out
 
 
-def _build_state(atoms: ase.Atoms, cutoff: float) -> tuple[EvalState, Table]:
+def _build_state(atoms: ase.Atoms, cutoff: float) -> EvalState:
     """Construct an ``EvalState`` from an ``ase.Atoms`` and a scalar cutoff."""
     positions = jnp.asarray(np.asarray(atoms.get_positions()))
     particles = make_lh(positions, jnp.zeros(len(atoms), dtype=int))
-    systems, cutoff_table = make_systems(
-        _atoms_to_cell(atoms), jnp.array([float(cutoff)])
-    )
+    systems, _ = make_systems(_atoms_to_cell(atoms), jnp.array([float(cutoff)]))
     particles_per_system = Table(systems.keys, jnp.array([len(atoms)]))
     nl_params = UniversalNeighborlistParameters.estimate(
-        particles_per_system, systems, cutoff_table
+        particles_per_system, systems, float(cutoff)
     )
     state = EvalState(
         particles=particles, systems=systems, neighborlist_params=nl_params
     )
-    return state, cutoff_table
+    return state
 
 
 def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
@@ -84,11 +82,11 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     """
     atoms = _ensure_lower_triangular(atoms)
     n = len(atoms)
-    state, cutoff_table = _build_state(atoms, cutoff)
+    state = _build_state(atoms, cutoff)
 
     result = None
     for _ in range(2):
-        nl = nl_cls.from_state(state, cutoff_table)
+        nl = nl_cls.from_state(state, float(cutoff))
         result = jax.jit(as_result_function(nl))(
             keys=state.particles,
             systems=state.systems,

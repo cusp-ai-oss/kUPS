@@ -19,7 +19,6 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.neighborlist import RefineCutoffNeighborList, RefineMaskNeighborList
 
 from .._builders import (
-    cutoff_table,
     make_edges,
     make_lh,
     make_rh,
@@ -59,7 +58,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(10),
-            cutoffs=cutoff_table(cutoffs),
+            cutoff=1.5,
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -103,7 +102,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(10),
-            cutoffs=cutoff_table(cutoffs),
+            cutoff=2.1,
         )
 
         _sys, _cut = make_systems(cell, cutoffs)
@@ -128,7 +127,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(10),
-            cutoffs=cutoff_table(cutoffs),
+            cutoff=1.1,
         )
 
         rh_update, queried_keys = make_rh(
@@ -168,7 +167,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(4),
-            cutoffs=cutoff_table(jnp.array([1.0])),
+            cutoff=1.0,
         )
 
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
@@ -202,7 +201,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(4),
-            cutoffs=cutoff_table(jnp.array([1.0])),
+            cutoff=1.0,
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
 
@@ -237,7 +236,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(4),
-            cutoffs=cutoff_table(jnp.array([2.0])),
+            cutoff=2.0,
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
 
@@ -259,7 +258,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(5),
-            cutoffs=cutoff_table(cutoffs),
+            cutoff=0.1,
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -295,7 +294,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(10),
-            cutoffs=cutoff_table(cutoffs),
+            cutoff=1.5,
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -318,7 +317,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(10),
-            cutoffs=cutoff_table(cutoffs),
+            cutoff=2.0,
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
@@ -341,7 +340,7 @@ class TestRefineCutoffNeighborList:
             refinement_nl = RefineCutoffNeighborList(
                 candidates=candidates,
                 avg_edges=FixedCapacity(5),
-                cutoffs=cutoff_table(jnp.array([2.0])),
+                cutoff=2.0,
             )
             _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
             edges = refinement_nl(keys=lh, systems=_sys)
@@ -370,7 +369,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(5),
-            cutoffs=cutoff_table(jnp.array([10.0])),
+            cutoff=10.0,
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))

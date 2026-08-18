@@ -193,7 +193,7 @@ class TestLoadMACE:
         assert isinstance(mliap, TorchMliap)
         assert isinstance(mliap.wrapper.module, MACEModule)
         assert mliap.compute_cell_gradients
-        assert float(mliap.cutoff.data[0]) == pytest.approx(4.5)
+        assert mliap.cutoff == pytest.approx(4.5)
 
     def test_load_overrides_cutoff(self, tmp_path):
         from kups.potential.mliap.torch import load_mace
@@ -203,7 +203,7 @@ class TestLoadMACE:
         torch.save(mock, model_path)
 
         mliap = load_mace(model_path, device="cpu", cutoff=6.0)
-        assert float(mliap.cutoff.data[0]) == pytest.approx(6.0)
+        assert mliap.cutoff == pytest.approx(6.0)
 
     def test_load_nonexistent_file_raises(self):
         from kups.potential.mliap.torch import load_mace
@@ -329,6 +329,6 @@ class TestUniversalInterfaceAPI:
         module = MACEModule(mock, species_to_index=torch.arange(6), num_species=5)
         mliap = TorchMliap.from_module(module, cutoff=5.0)
         assert isinstance(mliap, TorchMliap)
-        assert float(mliap.cutoff.data[0]) == pytest.approx(5.0)
+        assert mliap.cutoff == pytest.approx(5.0)
         assert mliap.wrapper.requires_grad
-        assert jnp.allclose(mliap.cutoff.data, jnp.array([5.0]))
+        assert mliap.cutoff == pytest.approx(5.0)

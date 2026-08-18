@@ -15,7 +15,6 @@ from __future__ import annotations
 from typing import Literal, overload
 
 import jax.numpy as jnp
-from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.data import Index, Table
@@ -196,7 +195,7 @@ class RefineCutoffNeighborList:
     Attributes:
         candidates: Precomputed edges to refine (should be conservative/over-inclusive).
         avg_edges: Capacity for output edge array.
-        cutoffs: Per-system cutoff distances used by this refinement.
+        cutoff: Cutoff radius [Å] used by this refinement.
 
     Use cases:
         - Multiple potentials sharing one neighbor list with different cutoffs
@@ -212,12 +211,12 @@ class RefineCutoffNeighborList:
 
         # Share across potentials with different cutoffs
         lj_nl = RefineCutoffNeighborList(
-            candidates=base_edges, avg_edges=cap1, cutoffs=lj_cutoffs
+            candidates=base_edges, avg_edges=cap1, cutoff=lj_cutoff
         )
         lj_edges = lj_nl(particles, cells)  # LJ cutoff
 
         coulomb_nl = RefineCutoffNeighborList(
-            candidates=base_edges, avg_edges=cap2, cutoffs=coulomb_cutoffs
+            candidates=base_edges, avg_edges=cap2, cutoff=coulomb_cutoff
         )
         coulomb_edges = coulomb_nl(particles, cells)  # Coulomb cutoff
         ```
@@ -225,7 +224,7 @@ class RefineCutoffNeighborList:
 
     candidates: Edges[Literal[2]]
     avg_edges: Capacity[int]
-    cutoffs: Table[SystemId, Array]
+    cutoff: float = field(static=True)
 
     @overload
     def __call__(
@@ -262,7 +261,7 @@ class RefineCutoffNeighborList:
             if queried_keys is not None
             else (queries.size if queries is not None else keys.size)
         )
-        cutoffs = Table.broadcast_to(self.cutoffs, systems)
+        cutoffs = systems.map_data(lambda _s: jnp.full((systems.size,), self.cutoff))
         pipeline = Pipeline[Literal[2]](
             selector=PrecomputedEdgesSelector(
                 self.candidates, recompute_mic_shifts=True

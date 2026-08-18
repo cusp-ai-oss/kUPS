@@ -38,7 +38,7 @@ from kups.core.neighborlist.types import (
     PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import dataclass, jit
+from kups.core.utils.jax import dataclass, field, jit
 
 
 class IsAllDenseNeighborListParams(Protocol):
@@ -100,15 +100,15 @@ class AllDenseNearestNeighborList:
     Attributes:
         avg_edges: Capacity manager for edge array.
         avg_image_candidates: Capacity manager for image candidate pairs.
-        cutoffs: Per-system cutoff distances used by this neighbor list.
+        cutoff: Cutoff radius [Å] used by this neighbor list.
 
     Example:
         ```python
         # Construct from state and a lens to the neighbor list parameters:
-        nl = AllDenseNearestNeighborList.new(state, lens(lambda s: s.nl_params), cutoffs)
+        nl = AllDenseNearestNeighborList.new(state, lens(lambda s: s.nl_params), cutoff)
 
         # Or, if the state implements IsNeighborListState:
-        nl = AllDenseNearestNeighborList.from_state(state, cutoffs)
+        nl = AllDenseNearestNeighborList.from_state(state, cutoff)
 
         edges = nl(particles, systems)
         ```
@@ -116,14 +116,14 @@ class AllDenseNearestNeighborList:
 
     avg_edges: Capacity[int]
     avg_image_candidates: Capacity[int]
-    cutoffs: Table[SystemId, Array]
+    cutoff: float = field(static=True)
 
     @classmethod
     def new[S](
         cls,
         state: S,
         lens: Lens[S, IsAllDenseNeighborListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> AllDenseNearestNeighborList:
         params = lens.get(state)
         return AllDenseNearestNeighborList(
@@ -132,16 +132,16 @@ class AllDenseNearestNeighborList:
                 params.avg_image_candidates,
                 lens.focus(lambda x: x.avg_image_candidates),
             ),
-            cutoffs=cutoffs,
+            cutoff=cutoff,
         )
 
     @classmethod
     def from_state(
         cls,
         state: IsNeighborListState[IsAllDenseNeighborListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> AllDenseNearestNeighborList:
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoff)
 
     @overload
     def __call__(
@@ -179,7 +179,7 @@ class AllDenseNearestNeighborList:
             if queried_keys is not None
             else (queries.size if queries is not None else keys.size)
         )
-        cutoffs = Table.broadcast_to(self.cutoffs, systems)
+        cutoffs = systems.map_data(lambda _s: jnp.full((systems.size,), self.cutoff))
         pipeline = Pipeline[Literal[2]](
             selector=AllDenseSelector(
                 cutoffs=cutoffs,

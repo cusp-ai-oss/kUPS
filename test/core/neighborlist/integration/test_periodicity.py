@@ -25,13 +25,13 @@ def _run_cell_list(positions, cell, cutoff):
     """Run ``CellListNeighborList`` on a single-system fixture."""
     n = len(positions)
     lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    systems, _ = make_systems(cell, jnp.array([cutoff]))
     nl = CellListNeighborList(
         avg_candidates=FixedCapacity(max(n * n, 8)),
         avg_edges=FixedCapacity(max(n * n, 8)),
         cells=FixedCapacity(512),
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
     result.raise_assertion()
@@ -42,12 +42,12 @@ def _run_dense(positions, cell, cutoff):
     """Run ``DenseNearestNeighborList`` on the same fixture, for cross-check."""
     n = len(positions)
     lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    systems, _ = make_systems(cell, jnp.array([cutoff]))
     nl = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(max(n * n, 8)),
         avg_edges=FixedCapacity(max(n * n, 8)),
         avg_image_candidates=FixedCapacity(max(n * n, 8)),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
     result.raise_assertion()

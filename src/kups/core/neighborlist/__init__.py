@@ -86,6 +86,8 @@ from kups.core.neighborlist.adaptive import (
     all_dense_cost,
     cell_list_cost,
     dense_cost,
+    nvalchemi_cell_list_cost,
+    nvalchemi_naive_cost,
 )
 from kups.core.neighborlist.all_connected import (
     InclusionGroupSelector,
@@ -210,4 +212,6 @@ __all__ = [
     "cell_list_cost",
     "dense_cost",
     "neighborlist_changes",
+    "nvalchemi_cell_list_cost",
+    "nvalchemi_naive_cost",
 ]

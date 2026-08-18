@@ -92,7 +92,7 @@ class UniversalNeighborlistParameters:
         cls,
         particles_per_system: Table[SystemId, Array],
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
         *,
         base: float = 2,
         multiplier: float = 1.0,
@@ -100,13 +100,13 @@ class UniversalNeighborlistParameters:
         """Estimate parameters for all neighbor list types from system geometry.
 
         Computes conservative initial capacities based on particle density
-        and cutoff radii. The estimates are rounded up to the next power of
+        and cutoff radius. The estimates are rounded up to the next power of
         ``base`` to amortize future resizing.
 
         Args:
             particles_per_system: Number of particles per system.
             systems: System data with cell information.
-            cutoffs: Cutoff distance per system.
+            cutoff: Cutoff radius [Å].
             base: Base for power-of rounding (default 2).
             multiplier: Safety factor applied to the estimate (default 1.0).
 
@@ -117,29 +117,35 @@ class UniversalNeighborlistParameters:
         def _next_power(total: float | Array) -> int:
             return int(next_higher_power(jnp.array(total * multiplier), base=base))
 
-        sys = Table.join(systems, particles_per_system, cutoffs)
+        cutoff_arr = jnp.asarray(cutoff)
+        sys = Table.join(systems, particles_per_system)
         total_candidates = total_image_candidates = total_edges = max_cells = 0
         max_neighbors = max_shifts = 0
         with no_post_init():
-            for _, (s, n_p, c) in sys:
-                n_bins = num_cells(s, c).prod()
+            for _, (s, n_p) in sys:
+                n_bins = num_cells(s, cutoff_arr).prod()
                 candidates = min(n_p / n_bins * (3**3), n_p)
                 # A cutoff reaching past perp/2 replicates each candidate once per
                 # periodic image (product of per-axis image counts). Summing per
-                # system keeps the estimate tight for heterogeneous cutoffs instead
-                # of assuming every system replicates at the maximum rate.
-                images = candidate_image_counts(s.cell, c).prod()
+                # system keeps the estimate tight across heterogeneous box
+                # geometries instead of assuming every system replicates at the
+                # maximum rate.
+                images = candidate_image_counts(s.cell, cutoff_arr).prod()
                 image_candidates = _next_power(candidates) * images
                 total_candidates += candidates
                 total_image_candidates += image_candidates
-                edges = _estimate_avg_num_edges(n_p, s.cell.volume, c, base, multiplier)
+                edges = _estimate_avg_num_edges(
+                    n_p, s.cell.volume, cutoff, base, multiplier
+                )
                 total_edges += edges
                 max_cells = max(n_bins, max_cells)
                 max_neighbors = max(edges, max_neighbors)
                 # nvalchemi naive shift count: prod(2 * ceil(cutoff/perp) * pbc + 1).
                 periodic = jnp.asarray(s.cell.periodic)
                 shift_range = jnp.where(
-                    periodic, jnp.ceil(c[..., None] / s.cell.perpendicular_lengths), 0
+                    periodic,
+                    jnp.ceil(cutoff_arr[..., None] / s.cell.perpendicular_lengths),
+                    0,
                 ).astype(int)
                 max_shifts = max(int(jnp.prod(2 * shift_range + 1)), max_shifts)
 

@@ -60,13 +60,13 @@ def test_evaluate_radius_graph_potential_lj():
         labels=(Label("A"), Label("B")),
         sigma=jnp.ones((2, 2)),
         epsilon=jnp.ones((2, 2)) * 0.5,
-        cutoff=Table((SystemId(0),), jnp.array([5.0])),
+        cutoff=5.0,
     )
 
     result = evaluate_radius_graph_potential(
         PointCloud(particles, systems),
         lj_params,
-        cutoffs=lj_params.cutoff,
+        cutoff=lj_params.cutoff,
         energy_fn=lennard_jones_energy,
     )
 

@@ -109,13 +109,13 @@ def test_real_matches_dense_single_system(method, lvecs):
     n, cutoff = 96, 4.0
     positions = jnp.asarray(rng.uniform(0.0, 12.0, size=(n, 3)))
     lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = systems_from_lvecs(lvecs * 1.2, jnp.array([cutoff]))
+    systems, _ = systems_from_lvecs(lvecs * 1.2, jnp.array([cutoff]))
 
     dense = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(n * n),
         avg_edges=FixedCapacity(n * 128),
         avg_image_candidates=FixedCapacity(n * n),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     if method == "naive":
         nl = NvalchemiNaiveNeighborList(
@@ -144,14 +144,14 @@ def test_real_matches_dense_with_queried_keys():
     n, cutoff = 64, 4.0
     positions = jnp.asarray(rng.uniform(0.0, 12.0, size=(n, 3)))
     lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = systems_from_lvecs(_CUBIC * 1.2, jnp.array([cutoff]))
+    systems, _ = systems_from_lvecs(_CUBIC * 1.2, jnp.array([cutoff]))
     queried = Index(lh.keys, jnp.array([2, 5, 11], dtype=int))
 
     dense = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(n * n),
         avg_edges=FixedCapacity(n * 128),
         avg_image_candidates=FixedCapacity(n * n),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     nl = NvalchemiCellListNeighborList(
         cutoff=cutoff,
@@ -177,13 +177,13 @@ def test_real_matches_dense_multi_system(method):
     batch = jnp.array([0] * 40 + [1] * 56)  # contiguous two-system layout
     lh = make_lh(positions, batch)
     lvecs = jnp.concatenate([_CUBIC, _TRICLINIC], axis=0) * 1.2
-    systems, cutoffs = systems_from_lvecs(lvecs, jnp.array([cutoff, cutoff]))
+    systems, _ = systems_from_lvecs(lvecs, jnp.array([cutoff, cutoff]))
 
     dense = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(n * n),
         avg_edges=FixedCapacity(n * 128),
         avg_image_candidates=FixedCapacity(n * n),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     if method == "naive":
         nl = NvalchemiNaiveNeighborList(
@@ -244,13 +244,13 @@ def test_real_multi_system_noncontiguous(method):
     batch = jnp.asarray(np.arange(n) % 2)  # alternating: maximally non-contiguous
     lh = make_lh(positions, batch)
     lvecs = jnp.concatenate([_CUBIC, _TRICLINIC], axis=0) * 1.2
-    systems, cutoffs = systems_from_lvecs(lvecs, jnp.array([cutoff, cutoff]))
+    systems, _ = systems_from_lvecs(lvecs, jnp.array([cutoff, cutoff]))
 
     dense = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(n * n),
         avg_edges=FixedCapacity(n * 128),
         avg_image_candidates=FixedCapacity(n * n),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     if method == "naive":
         nl = NvalchemiNaiveNeighborList(
@@ -284,7 +284,7 @@ def test_real_multi_system_queried_keys(method):
     batch = jnp.asarray(np.arange(n) % 2)
     lh = make_lh(positions, batch)
     lvecs = jnp.concatenate([_CUBIC, _TRICLINIC], axis=0) * 1.2
-    systems, cutoffs = systems_from_lvecs(lvecs, jnp.array([cutoff, cutoff]))
+    systems, _ = systems_from_lvecs(lvecs, jnp.array([cutoff, cutoff]))
     # Affected atoms in both systems (even -> system 0, odd -> system 1).
     queried = Index(lh.keys, jnp.array([4, 9, 22, 37, 50, 63, 88, 101, 124, 139]))
 
@@ -292,7 +292,7 @@ def test_real_multi_system_queried_keys(method):
         avg_candidates=FixedCapacity(n * n),
         avg_edges=FixedCapacity(n * 128),
         avg_image_candidates=FixedCapacity(n * n),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     if method == "naive":
         nl = NvalchemiNaiveNeighborList(
@@ -334,13 +334,13 @@ _CAPACITIES = {
 }
 
 
-def _make_nl(method, params, cutoffs):
+def _make_nl(method, params, cutoff):
     cls = (
         NvalchemiCellListNeighborList
         if method == "cell_list"
         else NvalchemiNaiveNeighborList
     )
-    return cls.new(params, identity_lens(_NvalParams), cutoffs)
+    return cls.new(params, identity_lens(_NvalParams), cutoff)
 
 
 def _result(make, params, lh, systems):
@@ -360,8 +360,8 @@ def _capacity_system(seed):
     n, cutoff = 64, 4.0
     positions = jnp.asarray(rng.uniform(0.0, 12.0, size=(n, 3)))
     lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = systems_from_lvecs(_CUBIC * 1.2, jnp.array([cutoff]))
-    return n, lh, systems, cutoffs
+    systems, _ = systems_from_lvecs(_CUBIC * 1.2, jnp.array([cutoff]))
+    return n, lh, systems, cutoff
 
 
 @real_nvalchemi
@@ -372,8 +372,8 @@ def _capacity_system(seed):
 def test_real_capacity_assertion_fires(method, capacity):
     """A generous build passes all assertions; undersizing any one capacity to 1
     trips its runtime assertion under ``as_result_function``."""
-    _, lh, systems, cutoffs = _capacity_system(seed=8)
-    make = lambda p: _make_nl(method, p, cutoffs)  # noqa: E731
+    _, lh, systems, cutoff = _capacity_system(seed=8)
+    make = lambda p: _make_nl(method, p, cutoff)  # noqa: E731
 
     good = _result(make, _NvalParams(**_GENEROUS), lh, systems)
     assert good.all_assertions_pass
@@ -387,8 +387,8 @@ def test_real_capacity_assertion_fires(method, capacity):
 def test_real_capacity_grow_converges(method):
     """From all-tiny capacities, the standard fix loop grows every capacity until
     assertions pass, and the converged list matches the brute-force reference."""
-    n, lh, systems, cutoffs = _capacity_system(seed=9)
-    make = lambda p: _make_nl(method, p, cutoffs)  # noqa: E731
+    n, lh, systems, cutoff = _capacity_system(seed=9)
+    make = lambda p: _make_nl(method, p, cutoff)  # noqa: E731
 
     params = _NvalParams(max_neighbors=1, avg_edges=1, max_total_cells=1, max_shifts=1)
     result = _result(make, params, lh, systems)
@@ -404,6 +404,6 @@ def test_real_capacity_grow_converges(method):
         avg_candidates=FixedCapacity(n * n),
         avg_edges=FixedCapacity(n * 128),
         avg_image_candidates=FixedCapacity(n * n),
-        cutoffs=cutoffs,
+        cutoff=cutoff,
     )
     assert _edge_signature(result.value, n) == _edge_signature(dense(lh, systems), n)

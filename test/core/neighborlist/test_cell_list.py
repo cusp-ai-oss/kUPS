@@ -17,7 +17,7 @@ from kups.core.neighborlist.cell_list import (
 )
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems
+from ._builders import EvalState, make_lh, make_systems
 
 
 class TestCellHashClampsAtBoundary:
@@ -207,7 +207,7 @@ class TestFromState:
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        nl = CellListNeighborList.from_state(state, cutoff_table(jnp.array([2.0])))
+        nl = CellListNeighborList.from_state(state, 2.0)
 
         assert isinstance(nl.cells, LensCapacity)
         assert isinstance(nl.avg_candidates, LensCapacity)

@@ -13,7 +13,7 @@ from kups.core.neighborlist.parameters import (
 )
 from kups.core.typing import SystemId
 
-from ._builders import cutoff_table, make_systems
+from ._builders import make_systems
 
 
 def _is_power_of_two(n: int) -> bool:
@@ -38,12 +38,11 @@ class TestUniversalNeighborlistParametersEstimate:
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
         systems, _ = make_systems(cell, jnp.array([cutoff]))
         particles_per_system = Table((SystemId(0),), jnp.array([n_particles]))
-        cutoffs = cutoff_table(jnp.array([cutoff]))
-        return particles_per_system, systems, cutoffs
+        return particles_per_system, systems, cutoff
 
     def test_estimate_single_system(self):
-        ppc, systems, cutoffs = self._single_system()
-        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        ppc, systems, cutoff = self._single_system()
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoff)
 
         assert isinstance(params, UniversalNeighborlistParameters)
         # 10 Å box, cutoff 2 -> 5 bins/axis -> 125 cells.
@@ -59,8 +58,8 @@ class TestUniversalNeighborlistParametersEstimate:
     def test_wide_cutoff_replicates_image_candidates(self):
         # cutoff 6 in a 10 Å box: ratio 0.6 -> floor(1.2)+1 = 2 images/axis,
         # i.e. 8x candidate replication.
-        ppc, systems, cutoffs = self._single_system(n_particles=200, cutoff=6.0)
-        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        ppc, systems, cutoff = self._single_system(n_particles=200, cutoff=6.0)
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoff)
         # 1 bin/axis -> candidates capped at n_particles=200 -> 256.
         assert params.avg_candidates == 256
         # the rounded candidate buffer is what gets replicated 8x:
@@ -75,9 +74,9 @@ class TestUniversalNeighborlistParametersEstimate:
         )
         # System 0: cutoff 2 (1 image), 1000 particles -> 216 candidates -> 256.
         # System 1: cutoff 6 (8 images), 10 particles -> 10 candidates -> 16.
-        systems, cutoffs = make_systems(cell, jnp.array([2.0, 6.0]))
+        systems, _ = make_systems(cell, jnp.array([2.0, 6.0]))
         ppc = Table((SystemId(0), SystemId(1)), jnp.array([1000, 10]))
-        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, 2.0)
         # mean candidates = (216 + 10) / 2 = 113 -> 128.
         assert params.avg_candidates == 128
         # each system's rounded candidate buffer replicates by its own image
@@ -102,8 +101,8 @@ class TestUniversalNeighborlistParametersEstimate:
         assert params.avg_image_candidates == 2048
 
     def test_all_fields_positive_powers_of_two(self):
-        ppc, systems, cutoffs = self._single_system(n_particles=512)
-        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        ppc, systems, cutoff = self._single_system(n_particles=512)
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoff)
         assert _is_power_of_two(params.avg_candidates)
         assert _is_power_of_two(params.avg_edges)
         assert params.cells > 0
@@ -114,8 +113,7 @@ class TestUniversalNeighborlistParametersEstimate:
         )
         systems, _ = make_systems(cell, jnp.array([2.0, 2.0]))
         ppc = Table((SystemId(0), SystemId(1)), jnp.array([100, 200]))
-        cutoffs = cutoff_table(jnp.array([2.0, 2.0]))
-        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, 2.0)
         assert params.cells == 125
         assert params.avg_edges > 0
         assert params.avg_candidates > 0

@@ -243,8 +243,9 @@ class IsUniversalNeighborlistParams(Protocol):
     """Protocol for parameters required by any neighbor list implementation.
 
     A superset of ``IsAllDenseNeighborListParams``, ``IsDenseNeighborlistParams``,
-    and ``IsCellListParams``. Satisfying this protocol allows constructing any
-    of the three neighbor list types.
+    ``IsCellListParams``, ``IsNvalchemiNaiveParams``, and
+    ``IsNvalchemiCellListParams``. Satisfying this protocol allows constructing
+    any neighbor list type, including the ``nvalchemiops``-backed lists.
     """
 
     @property
@@ -255,10 +256,16 @@ class IsUniversalNeighborlistParams(Protocol):
     def avg_image_candidates(self) -> int: ...
     @property
     def cells(self) -> int: ...
+    @property
+    def max_neighbors(self) -> int: ...
+    @property
+    def max_shifts(self) -> int: ...
+    @property
+    def max_total_cells(self) -> int: ...
 
 
 class NeighborListFactory[State](Protocol):
-    """Constructs a pair :class:`NeighborList` for a given state and cutoffs.
+    """Constructs a pair :class:`NeighborList` for a given state and cutoff.
 
     Used by radius-based potential factories so the construction strategy
     can be swapped without coupling the potential to a concrete
@@ -275,7 +282,7 @@ class NeighborListFactory[State](Protocol):
     def __call__(
         self,
         state: State,
-        cutoffs: Table[SystemId, Array],
+        cutoff: float,
     ) -> NeighborList[Literal[2]]: ...
 
 

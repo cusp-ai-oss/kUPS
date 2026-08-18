@@ -86,7 +86,7 @@ def _dense_nl_edges(real: jax.Array, matrix: Matrix, cutoff: float, n: int) -> E
         avg_candidates=FixedCapacity(n),
         avg_edges=FixedCapacity(n * images),
         avg_image_candidates=FixedCapacity(n * images),
-        cutoffs=cutoff_table(jnp.array([cutoff])),
+        cutoff=cutoff,
     )
     result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
     result.raise_assertion()

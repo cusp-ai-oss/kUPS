@@ -173,7 +173,7 @@ def evaluate_radius_graph_potential[
     point_cloud: PointCloud[P, S],
     parameters: Parameters,
     *,
-    cutoffs: Table[SystemId, Array],
+    cutoff: float,
     energy_fn: EnergyFunction[
         _RadiusGraphEvalState,
         GraphPotentialInput[Parameters, P, S, Literal[2]],
@@ -196,19 +196,19 @@ def evaluate_radius_graph_potential[
     Args:
         point_cloud: Particles and systems (cell).
         parameters: Parameters forwarded to ``energy_fn``.
-        cutoffs: Indexed cutoff data per system.
+        cutoff: Cutoff radius [Å].
         energy_fn: Edge-based energy function.
         gradient_lens: Lens selecting the differentiation target.
         hessian_lens: Lens selecting the gradient for Hessian computation.
         hessian_idx_view: View used to index into the Hessian output.
         neighborlist_factory: Builds a ``NeighborList[Literal[2]]`` from the
-            internal eval state and per-system cutoffs.
+            internal eval state and cutoff.
 
     Returns:
         ``PotentialOut`` containing energy, gradients, and Hessians.
     """
     neighborlist_params = UniversalNeighborlistParameters.estimate(
-        point_cloud.particles.data.system.counts, point_cloud.systems, cutoffs
+        point_cloud.particles.data.system.counts, point_cloud.systems, cutoff
     )
     state = _RadiusGraphEvalState(
         neighborlist_params=neighborlist_params,
@@ -221,7 +221,7 @@ def evaluate_radius_graph_potential[
             graph_constructor=GraphConstructor(
                 particles=constant(point_cloud.particles),
                 systems=constant(point_cloud.systems),
-                neighborlist=lambda s: neighborlist_factory(s, cutoffs),
+                neighborlist=lambda s: neighborlist_factory(s, cutoff),
                 probe=None,
             ),
             parameter_view=constant(parameters),
@@ -302,17 +302,10 @@ def evaluate_ewald_potential[
     sr_cloud: PointCloud[_EwaldRadiusGraphPointsImpl, HasCell[Periodic3D]] = PointCloud(
         sr_particles, point_cloud.systems
     )
-    sr_cutoffs = Table(
-        point_cloud.systems.keys,
-        jnp.broadcast_to(
-            jnp.array(parameters.cutoff),
-            (point_cloud.systems.size,),
-        ),
-    )
     sr_out = evaluate_radius_graph_potential(
         point_cloud=sr_cloud,
         parameters=parameters,
-        cutoffs=sr_cutoffs,
+        cutoff=parameters.cutoff,
         energy_fn=ewald_short_range_energy,
         gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).focus(
             gradient_lens.get

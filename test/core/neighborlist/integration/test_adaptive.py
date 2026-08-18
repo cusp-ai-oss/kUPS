@@ -37,12 +37,12 @@ def _fixture(n: int = 30, cutoff: float = 3.5):
     positions = jnp.asarray(rng.uniform(1.0, L - 1.0, size=(n, 3)))
     cell = PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
     lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    systems, _ = make_systems(cell, jnp.array([cutoff]))
     params = UniversalNeighborlistParameters(
         avg_edges=64, avg_candidates=64, avg_image_candidates=64, cells=64
     )
     state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-    return state, lh, systems, cutoffs
+    return state, lh, systems, cutoff
 
 
 def _run(
@@ -59,22 +59,22 @@ class TestAdaptiveNeighborListEndToEnd:
     def test_auto_matches_forced_dense(self):
         """The factory returns an adaptive object whose AUTO dispatch (dense for
         the small fixture) matches a forced ``DenseNearestNeighborList``."""
-        state, lh, systems, cutoffs = _fixture()
-        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        state, lh, systems, cutoff = _fixture()
+        nl = AdaptiveNeighborList.from_state(state, cutoff)
         assert isinstance(nl, AdaptiveNeighborList)
 
         ref = DenseNearestNeighborList(
             avg_candidates=FixedCapacity(900),
             avg_edges=FixedCapacity(900),
             avg_image_candidates=FixedCapacity(900),
-            cutoffs=cutoffs,
+            cutoff=cutoff,
         )
         assert _run(nl, lh, systems) == _run(ref, lh, systems)
 
     def test_seeded_implementations_agree(self):
         """Every seeded implementation yields the same edge set on one fixture."""
-        state, lh, systems, cutoffs = _fixture()
-        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        state, lh, systems, cutoff = _fixture()
+        nl = AdaptiveNeighborList.from_state(state, cutoff)
         edge_sets = [_run(c.neighborlist, lh, systems) for c in nl.implementations]
         assert all(edges == edge_sets[0] for edges in edge_sets)
         assert edge_sets[0]  # non-empty

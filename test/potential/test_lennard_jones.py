@@ -94,13 +94,6 @@ def _make_point_cloud_graph(
 _LABELS = ("A", "B")
 
 
-def _cutoff(*vals: float) -> Table[SystemId, jax.Array]:
-    return Table(
-        tuple(SystemId(i) for i in range(len(vals))),
-        jnp.array(list(vals)),
-    )
-
-
 _jit_lj_energy = jax.jit(lennard_jones_energy)
 _jit_pair_tail_energy = jax.jit(pair_tail_corrected_lennard_jones_energy)
 _jit_global_tail_energy = jax.jit(global_lennard_jones_tail_correction_energy)
@@ -115,7 +108,7 @@ class TestLennardJonesParameters:
 
     def test_initialization(self):
         params = LennardJonesParameters.from_lorentz_berthelot_mixing(
-            labels=_LABELS, sigma=self.sigma, epsilon=self.epsilon, cutoff=_cutoff(12.0)
+            labels=_LABELS, sigma=self.sigma, epsilon=self.epsilon, cutoff=12.0
         )
         npt.assert_allclose(params.sigma, jnp.array([[2.8, 2.925], [2.925, 3.05]]))
         npt.assert_allclose(
@@ -128,7 +121,7 @@ class TestLennardJonesParameters:
             labels=("X",),
             sigma=jnp.array([2.8]),
             epsilon=jnp.array([27.0]),
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         npt.assert_allclose(params.sigma, jnp.array([[2.8]]))
         npt.assert_allclose(params.epsilon, jnp.array([[27.0]]))
@@ -139,7 +132,7 @@ class TestLennardJonesParameters:
                 labels=_LABELS,
                 sigma=jnp.array([[2.8, 3.05]]),
                 epsilon=jnp.array([27.0]),
-                cutoff=_cutoff(12.0),
+                cutoff=12.0,
             )
             assert False, "Should have raised"
         except AssertionError:
@@ -155,7 +148,7 @@ class TestLennardJonesEnergy:
             labels=_LABELS,
             sigma=cls.sigma,
             epsilon=cls.epsilon,
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         cls.graph = _make_graph(
             positions=jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
@@ -228,7 +221,7 @@ class TestLennardJonesEnergy:
             labels=_LABELS,
             sigma=s,
             epsilon=jnp.zeros((2, 2)),
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         result_zero = energy_fn(GraphPotentialInput(params_zero, self.graph))
         assert jnp.isclose(result_zero.data.data[0], 0.0, atol=1e-10)
@@ -294,7 +287,7 @@ class TestLennardJonesEnergy:
                 labels=_LABELS,
                 sigma=sigma,
                 epsilon=epsilon,
-                cutoff=_cutoff(12.0),
+                cutoff=12.0,
             )
             return lennard_jones_energy(
                 GraphPotentialInput(params, self.graph)
@@ -320,7 +313,7 @@ class TestPairTailCorrectedLennardJonesEnergy:
             labels=_LABELS,
             sigma=cls.sigma,
             epsilon=cls.epsilon,
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         cls.graph = _make_graph(
             positions=jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
@@ -343,8 +336,8 @@ class TestPairTailCorrectedLennardJonesEnergy:
             labels=_LABELS,
             sigma=self.sigma,
             epsilon=self.epsilon,
-            cutoff=_cutoff(2.0),
-            truncation_radius=_cutoff(1.5),
+            cutoff=2.0,
+            truncation_radius=1.5,
         )
         corrected_nc = energy_fn(GraphPotentialInput(params_nc, self.graph)).data.data
         npt.assert_allclose(corrected_nc, target)
@@ -354,8 +347,8 @@ class TestPairTailCorrectedLennardJonesEnergy:
             labels=_LABELS,
             sigma=self.sigma,
             epsilon=self.epsilon,
-            cutoff=_cutoff(1.2),
-            truncation_radius=_cutoff(1.0),
+            cutoff=1.2,
+            truncation_radius=1.0,
         )
         corrected_b = energy_fn(GraphPotentialInput(params_b, self.graph)).data.data
         npt.assert_allclose(corrected_b, target)
@@ -365,8 +358,8 @@ class TestPairTailCorrectedLennardJonesEnergy:
             labels=_LABELS,
             sigma=self.sigma,
             epsilon=self.epsilon,
-            cutoff=_cutoff(1.2),
-            truncation_radius=_cutoff(0.8),
+            cutoff=1.2,
+            truncation_radius=0.8,
         )
         corrected_c = energy_fn(GraphPotentialInput(params_c, self.graph)).data.data
         npt.assert_array_less(corrected_c, target)
@@ -377,8 +370,8 @@ class TestPairTailCorrectedLennardJonesEnergy:
             labels=_LABELS,
             sigma=self.sigma,
             epsilon=self.epsilon,
-            cutoff=_cutoff(1.0),
-            truncation_radius=_cutoff(0.8),
+            cutoff=1.0,
+            truncation_radius=0.8,
         )
         result_o = energy_fn(GraphPotentialInput(params_o, self.graph)).data.data
         npt.assert_allclose(result_o, 0.0)
@@ -395,7 +388,7 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
             sigma=cls.sigma,
             epsilon=cls.epsilon,
             tail_corrected=jnp.ones((2, 2), dtype=jnp.bool_),
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         cls.graph = _make_point_cloud_graph(
             positions=jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
@@ -412,7 +405,7 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
         N = jnp.array([1, 1])
         V = self.cells.volume[0]
         density = N[:, None] * N[None, :] / V
-        cutoff = self.parameters.cutoff.data[0]
+        cutoff = self.parameters.cutoff
         term1 = (self.sigma / cutoff) ** 3
         target = (
             8
@@ -435,7 +428,7 @@ class TestGlobalTailCorrectionPressure:
             sigma=jnp.array([[1.0, 1.2], [1.2, 1.0]]),
             epsilon=jnp.array([[1.0, 0.8], [0.8, 1.0]]),
             tail_corrected=jnp.ones((2, 2), dtype=jnp.bool_),
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         cls.graph = _make_point_cloud_graph(
             positions=jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
@@ -461,7 +454,7 @@ class TestGlobalTailCorrectionPressure:
             sigma=self.parameters.sigma,
             epsilon=self.parameters.epsilon,
             tail_corrected=jnp.array([[True, False], [False, True]]),
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         result_d = _jit_global_tail_pressure(
             GraphPotentialInput(params_disabled, self.graph)
@@ -483,7 +476,7 @@ class TestPotentialFactoryFunctions:
             sigma=jnp.array([[1.0, 1.2], [1.2, 1.0]]),
             epsilon=jnp.array([[1.0, 0.8], [0.8, 1.0]]),
             tail_corrected=jnp.ones((2, 2), dtype=jnp.bool_),
-            cutoff=_cutoff(12.0),
+            cutoff=12.0,
         )
         state = {"particles": particles, "systems": systems, "parameters": params}
         pressure_fn = make_global_lennard_jones_tail_correction_pressure(

@@ -266,7 +266,7 @@ def offline_radial_distribution_function(
         _SystemData(cell, jnp.array([rmax])),
         label=SystemId,
     )
-    cutoffs = Table((SystemId(0),), jnp.array([rmax]))
+    cutoff = rmax
     particles_per_system = Table((SystemId(0),), jnp.array([positions.shape[-2]]))
 
     @dataclass
@@ -297,9 +297,9 @@ def offline_radial_distribution_function(
         )
 
     params = UniversalNeighborlistParameters.estimate(
-        particles_per_system, systems, cutoffs
+        particles_per_system, systems, cutoff
     )
-    capacity = DenseNearestNeighborList.from_state(_NeighborListState(params), cutoffs)
+    capacity = DenseNearestNeighborList.from_state(_NeighborListState(params), cutoff)
     while (out := rdf_with_capacity(capacity)).failed_assertions:
         capacity = out.fix_or_raise(capacity)
     result = out.value

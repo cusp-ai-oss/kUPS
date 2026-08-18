@@ -75,8 +75,8 @@ def _make_systems(
     return Table.arange(data, label=SystemId)
 
 
-def _system_cutoffs(systems: Table[SystemId, _SystemData]):
-    return systems.map_data(lambda d: d.cutoff)
+def _system_cutoff(systems: Table[SystemId, _SystemData]) -> float:
+    return float(jnp.max(systems.data.cutoff))
 
 
 def _make_edges(
@@ -371,7 +371,7 @@ class TestGraphConstructorRadius:
             avg_candidates=FixedCapacity(50),
             avg_edges=FixedCapacity(50),
             avg_image_candidates=FixedCapacity(50),
-            cutoffs=_system_cutoffs(systems),
+            cutoff=_system_cutoff(systems),
         )
 
     def test_basic(self):
@@ -801,7 +801,7 @@ class TestGraphConstructorRadiusWithPatch:
             avg_candidates=FixedCapacity(50),
             avg_edges=FixedCapacity(50),
             avg_image_candidates=FixedCapacity(50),
-            cutoffs=_system_cutoffs(systems),
+            cutoff=_system_cutoff(systems),
         )
 
     def test_fallback_no_probe(self):
