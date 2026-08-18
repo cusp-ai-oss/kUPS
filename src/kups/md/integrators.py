@@ -45,6 +45,7 @@ from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, tree_map, vectorize
 from kups.core.utils.math import solve_affine_ode
 from kups.core.utils.random import sample_like
+from kups.core.utils.segment import segment_sum
 from kups.md.observables import (
     instantaneous_pressure,
     instantaneous_pressure_tensor,
@@ -815,7 +816,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
             particles.data.momenta, particles.data.masses
         )
         # K: total kinetic energy per system [energy]
-        kinetic_energy = jax.ops.segment_sum(
+        kinetic_energy = segment_sum(
             per_particle_ke,
             particles.data.system.indices,
             particles.data.system.num_labels,

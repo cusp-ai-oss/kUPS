@@ -34,6 +34,7 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     skip_post_init_if_disabled,
 )
+from kups.core.utils.segment import segment_sum
 from kups.core.utils.subselect import subselect
 
 type PyTree = Any
@@ -528,8 +529,12 @@ class Index[Key: SupportsSorting]:
     def sum_over(self, array: Array) -> Table[Key, Array]:
         """Sums ``array`` values grouped by this index via segment sum.
 
+        Accumulates in a float wider than ``array``, so a key taking ``k``
+        contributions rounds once rather than ``k`` times. Entries whose index
+        is the OOB sentinel contribute nothing.
+
         Args:
-            array: Array with leading dimension matching ``self.indices``.
+            array: Array whose leading dimensions match ``self.indices``.
 
         Returns:
             A ``Table`` mapping each key to its summed values.
@@ -538,7 +543,7 @@ class Index[Key: SupportsSorting]:
 
         return Table(
             self.keys,
-            jax.ops.segment_sum(array, self.indices, self.num_labels, mode="drop"),
+            segment_sum(array, self.indices, self.num_labels),
             _cls=self._cls,
         )
 
