@@ -278,9 +278,10 @@ class EnergyCumulants:
 
     Attributes:
         mean: $\kappa_1 = \langle E \rangle$, shape ``(n_systems,)`` [energy].
-        cumulants: $\kappa_2, \ldots, \kappa_P$ stacked along the leading
-            axis, shape ``(max_order - 1, n_systems)``; entry ``k - 2`` holds
-            $\kappa_k$ [energy$^k$].
+        cumulants: $\kappa_2, \ldots, \kappa_P$ stacked along the trailing
+            axis (leading axes stay per-system, so tables/vmap batch over
+            them), shape ``(n_systems, max_order - 1)``; entry ``[..., k - 2]``
+            holds $\kappa_k$ [energy$^k$].
     """
 
     mean: Energy
@@ -289,12 +290,12 @@ class EnergyCumulants:
     @property
     def max_order(self) -> int:
         """Highest cumulant order $P$ stored."""
-        return self.cumulants.shape[0] + 1
+        return self.cumulants.shape[-1] + 1
 
     @property
     def variance(self) -> Array:
         r"""$\kappa_2 = \mathrm{Var}(E)$, shape ``(n_systems,)``."""
-        return self.cumulants[0]
+        return self.cumulants[..., 0]
 
 
 @dataclass
@@ -312,9 +313,10 @@ class EnergyMoments:
     Attributes:
         count: Number of samples accumulated, shape ``(n_systems,)``.
         mean: Running sample mean $\bar{x}_n$, shape ``(n_systems,)`` [energy].
-        central_sums: $M_2, \ldots, M_P$ stacked along the leading axis,
-            shape ``(max_order - 1, n_systems)``; entry ``p - 2`` holds $M_p$
-            [energy$^p$].
+        central_sums: $M_2, \ldots, M_P$ stacked along the trailing axis
+            (leading axes stay per-system, so tables/vmap batch over them),
+            shape ``(n_systems, max_order - 1)``; entry ``[..., p - 2]`` holds
+            $M_p$ [energy$^p$].
     """
 
     count: Array
@@ -324,7 +326,7 @@ class EnergyMoments:
     @property
     def max_order(self) -> int:
         """Highest moment order $P$ accumulated."""
-        return self.central_sums.shape[0] + 1
+        return self.central_sums.shape[-1] + 1
 
     @staticmethod
     def zeros(n_systems: int, max_order: int = 4) -> EnergyMoments:
@@ -341,7 +343,7 @@ class EnergyMoments:
         return EnergyMoments(
             count=jnp.zeros(n_systems, dtype=int),
             mean=jnp.zeros(n_systems),
-            central_sums=jnp.zeros((max_order - 1, n_systems)),
+            central_sums=jnp.zeros((n_systems, max_order - 1)),
         )
 
     def reset(self) -> EnergyMoments:
@@ -378,7 +380,7 @@ class EnergyMoments:
         delta = energy - self.mean
         delta_n = delta / nf
 
-        old = {p: self.central_sums[p - 2] for p in range(2, self.max_order + 1)}
+        old = {p: self.central_sums[..., p - 2] for p in range(2, self.max_order + 1)}
         new_sums = [
             old[p]
             # Cross terms re-centre the old sums onto the new mean; M_1 = 0
@@ -390,7 +392,7 @@ class EnergyMoments:
         return EnergyMoments(
             count=n,
             mean=self.mean + delta_n,
-            central_sums=jnp.stack(new_sums),
+            central_sums=jnp.stack(new_sums, axis=-1),
         )
 
     def finalize(self) -> EnergyCumulants:
@@ -408,7 +410,7 @@ class EnergyMoments:
             Cumulants $\kappa_1, \ldots, \kappa_P$ of the accumulated samples.
         """
         nf = self.count.astype(float)
-        mu = {p: self.central_sums[p - 2] / nf for p in range(2, self.max_order + 1)}
+        mu = {p: self.central_sums[..., p - 2] / nf for p in range(2, self.max_order + 1)}
         kappa: dict[int, Array] = {}
         for p in range(2, self.max_order + 1):
             kappa[p] = mu[p] - sum(
@@ -416,7 +418,9 @@ class EnergyMoments:
             )
         return EnergyCumulants(
             mean=self.mean,
-            cumulants=jnp.stack([kappa[p] for p in range(2, self.max_order + 1)]),
+            cumulants=jnp.stack(
+                [kappa[p] for p in range(2, self.max_order + 1)], axis=-1
+            ),
         )
 
 

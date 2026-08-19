@@ -270,9 +270,9 @@ class TestEnergyMoments:
 
         npt.assert_allclose(cumulants.mean[0], ref_mean, rtol=1e-10)
         npt.assert_allclose(cumulants.variance[0], ref_m2, rtol=1e-10)
-        npt.assert_allclose(cumulants.cumulants[1, 0], ref_m3, rtol=1e-9, atol=1e-12)
+        npt.assert_allclose(cumulants.cumulants[0, 1], ref_m3, rtol=1e-9, atol=1e-12)
         npt.assert_allclose(
-            cumulants.cumulants[2, 0], ref_m4 - 3 * ref_m2**2, rtol=1e-9, atol=1e-12
+            cumulants.cumulants[0, 2], ref_m4 - 3 * ref_m2**2, rtol=1e-9, atol=1e-12
         )
 
     def test_arbitrary_order_matches_numpy_reference(self):
@@ -289,13 +289,13 @@ class TestEnergyMoments:
         mu = {p: np.mean(dev**p) for p in range(2, 7)}
         for p in range(2, 7):
             npt.assert_allclose(
-                moments.central_sums[p - 2, 0], mu[p] * len(samples), rtol=1e-8
+                moments.central_sums[0, p - 2], mu[p] * len(samples), rtol=1e-8
             )
 
         c = moments.finalize()
-        npt.assert_allclose(c.cumulants[3, 0], mu[5] - 10 * mu[2] * mu[3], rtol=1e-8)
+        npt.assert_allclose(c.cumulants[0, 3], mu[5] - 10 * mu[2] * mu[3], rtol=1e-8)
         npt.assert_allclose(
-            c.cumulants[4, 0],
+            c.cumulants[0, 4],
             mu[6] - 15 * mu[2] * mu[4] - 10 * mu[3] ** 2 + 30 * mu[2] ** 3,
             rtol=1e-8,
         )
