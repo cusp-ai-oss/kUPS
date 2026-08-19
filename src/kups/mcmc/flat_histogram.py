@@ -31,12 +31,21 @@ All public functions and the [`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummar
 dataclass operate on plain [`jax.Array`][jax.Array] inputs and are fully
 vectorised across pressure grids.
 
+Scope: the macrostate axis is the 1-D loading $N$ of a **single adsorbate
+species** in a **single system** (Witman 2018 treats exactly this case);
+mixtures would need a multi-dimensional macrostate lattice and a tensor
+C-matrix. Batches of systems are handled by [`jax.vmap`][jax.vmap] over the
+leading axis of the per-macrostate arrays.
+
 [^witman2018]:
     Witman, M., Mahynski, N. A. & Smit, B. (2018). *J. Chem. Theory Comput.*
     **14**, 6149--6158. DOI: 10.1021/acs.jctc.8b00534
 """
 
 from __future__ import annotations
+
+from math import factorial
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -45,7 +54,7 @@ from jax import Array
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
 from kups.core.utils.jax import dataclass, field
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
-from kups.mcmc.widom import EnergyCumulants
+from kups.mcmc.widom import EnergyCumulants, TransitionStatistics
 
 type LogPartitionFunction = Array
 r"""Natural logarithm of $Q_c(N, V, \beta)$, shape ``(n_max+1,)``."""
@@ -66,35 +75,41 @@ type DeletionProbability = Array
 r"""TMMC deletion probability $P(N \to N-1)$, shape ``(n_max+1,)``."""
 
 
+class TransitionProbabilities(NamedTuple):
+    r"""Per-macrostate TMMC transition probabilities, each shape ``(n_max+1,)``.
+
+    Attributes:
+        insertion: $P(N \to N+1)$.
+        deletion: $P(N \to N-1)$.
+    """
+
+    insertion: InsertionProbability
+    deletion: DeletionProbability
+
+
 def transition_probabilities(
-    acceptance_insertion: Array,
-    acceptance_deletion: Array,
-    n_trials_insertion: Array,
-    n_trials_deletion: Array,
-) -> tuple[InsertionProbability, DeletionProbability]:
-    r"""Normalise accumulated C-matrix counts into per-macrostate transition probabilities.
+    statistics: TransitionStatistics,
+) -> TransitionProbabilities:
+    r"""Normalise an accumulated C-matrix into per-macrostate transition probabilities.
 
     Applies Witman 2018 eq 7:
 
     $$P(N \to N + \Delta) = \frac{C(N, N + \Delta)}{\sum_\Delta C(N, N + \Delta)}.$$
 
     Args:
-        acceptance_insertion: Accumulated $\min(1, \mathrm{acc})$ for
-            $N \to N+1$, shape ``(n_max+1,)``.
-        acceptance_deletion: Accumulated $\min(1, \mathrm{acc})$ for
-            $N \to N-1$, shape ``(n_max+1,)``.
-        n_trials_insertion: Ghost-insertion trial count per macrostate.
-        n_trials_deletion: Ghost-deletion trial count per macrostate
-            (includes trials at $N = 0$, which contribute zero acceptance).
+        statistics: Accumulated TMMC C-matrix
+            ([`TransitionStatistics`][kups.mcmc.widom.TransitionStatistics]),
+            with each field indexed by macrostate $N$, shape ``(n_max+1,)``.
 
     Returns:
-        A pair ``(P(N → N+1), P(N → N-1))``, each shape ``(n_max+1,)``.
+        ``TransitionProbabilities(insertion, deletion)``, each shape
+        ``(n_max+1,)``.
     """
-    total = n_trials_insertion + n_trials_deletion
+    total = statistics.n_trials_insertion + statistics.n_trials_deletion
     safe_total = jnp.where(total > 0, total, 1)
-    return (
-        acceptance_insertion / safe_total,
-        acceptance_deletion / safe_total,
+    return TransitionProbabilities(
+        insertion=statistics.acceptance_insertion / safe_total,
+        deletion=statistics.acceptance_deletion / safe_total,
     )
 
 
@@ -128,8 +143,8 @@ def reconstruct_log_partition_fn(
         $\ln Q_c(N, V, \beta_\mathrm{sim})$ of shape ``(n_max+1,)``, anchored
         to ``0`` at $N = 0$.
     """
-    ratio = jnp.log(insertion_probability[:-1]) - jnp.log(deletion_probability[1:])
-    delta_log_qc = ratio - (log_fugacity + jnp.log(beta))
+    log_ratio = jnp.log(insertion_probability[:-1]) - jnp.log(deletion_probability[1:])
+    delta_log_qc = log_ratio - (log_fugacity + jnp.log(beta))
     return jnp.concatenate([jnp.zeros(1), jnp.cumsum(delta_log_qc)])
 
 
@@ -142,20 +157,15 @@ def extrapolate_log_partition_fn(
 ) -> LogPartitionFunction:
     r"""Taylor-expand $\ln Q_c$ from $\beta_\mathrm{sim}$ to $\beta_\mathrm{target}$.
 
-    Implements Witman 2018 eq 9 to the specified order using the per-macrostate
-    energy cumulants collected during simulation. Using the convention that
-    [`EnergyCumulants.mean`][kups.mcmc.widom.EnergyCumulants] stores the raw
-    running mean $\langle E\rangle$ and ``third``/``fourth`` already carry the
-    signs appropriate for $\partial^n \ln Q_c / \partial \beta^n$:
+    Implements Witman 2018 eq 9 to arbitrary order using the per-macrostate
+    energy cumulants collected during simulation. Since
+    $\partial^k \ln Q_c / \partial\beta^k = (-1)^k \kappa_k$ (see
+    [`EnergyCumulants`][kups.mcmc.widom.EnergyCumulants]),
 
     $$\ln Q_c(\beta')
         \approx \ln Q_c(\beta)
-        - \langle E\rangle\,\delta\beta
-        + \tfrac{1}{2}\mathrm{Var}\,\delta\beta^2
-        + \tfrac{1}{6}\kappa_3\,\delta\beta^3
-        + \tfrac{1}{24}\kappa_4\,\delta\beta^4$$
-
-    with $\delta\beta = \beta_\mathrm{target} - \beta_\mathrm{sim}$.
+        + \sum_{k=1}^{K} \frac{(-\delta\beta)^k}{k!}\,\kappa_k,
+    \qquad \delta\beta = \beta' - \beta.$$
 
     Args:
         log_partition_fn_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
@@ -163,27 +173,23 @@ def extrapolate_log_partition_fn(
         cumulants: Per-macrostate energy cumulants.
         beta_sim: Simulation inverse temperature.
         beta_target: Target inverse temperature.
-        order: Taylor order (1--4). Higher orders require more sampling to
-            converge.
+        order: Taylor order $K$, at most ``cumulants.max_order``. Higher
+            orders require more sampling to converge.
 
     Returns:
         Extrapolated $\ln Q_c(N, V, \beta_\mathrm{target})$, shape
         ``(n_max+1,)``.
 
     Raises:
-        ValueError: If ``order`` is not in 1--4.
+        ValueError: If ``order`` is not in ``1..cumulants.max_order``.
     """
-    if not 1 <= order <= 4:
-        raise ValueError(f"order must be in 1..4, got {order}")
+    if not 1 <= order <= cumulants.max_order:
+        raise ValueError(f"order must be in 1..{cumulants.max_order}, got {order}")
 
     db = beta_target - beta_sim
     result = log_partition_fn_sim - cumulants.mean * db
-    if order >= 2:
-        result = result + cumulants.variance * db**2 / 2.0
-    if order >= 3:
-        result = result + cumulants.third * db**3 / 6.0
-    if order >= 4:
-        result = result + cumulants.fourth * db**4 / 24.0
+    for k in range(2, order + 1):
+        result = result + cumulants.cumulants[k - 2] * (-db) ** k / factorial(k)
     return result
 
 
@@ -224,9 +230,9 @@ def average_loading(distribution: MacrostateDistribution) -> Loading:
 def _log_fugacity_at_pressures(
     pressures_pa: Array,
     temperature_k: Array,
-    critical_pressure_pa: float,
-    critical_temperature_k: float,
-    acentric_factor: float,
+    critical_pressure_pa: Array | float,
+    critical_temperature_k: Array | float,
+    acentric_factor: Array | float,
 ) -> Array:
     r"""Return $\ln f$ at each pressure for a single-component gas. Shape ``(n_p,)``.
 
@@ -244,14 +250,14 @@ def _log_fugacity_at_pressures(
     return result.log_fugacity[..., 0]
 
 
-def isotherm(
+def isotherm_from_log_partition_fn(
     log_partition_fn: LogPartitionFunction,
     beta: Array,
     pressures: Array,
     temperature: Array,
-    critical_pressure: float,
-    critical_temperature: float,
-    acentric_factor: float,
+    critical_pressure: Array | float,
+    critical_temperature: Array | float,
+    acentric_factor: Array | float,
 ) -> Loading:
     r"""Vectorised adsorption isotherm $\langle N \rangle(P)$ at fixed $T$.
 
@@ -293,9 +299,9 @@ def _loading_from_T_logP(
     cumulants: EnergyCumulants,
     beta_sim: Array,
     order: int,
-    critical_pressure: float,
-    critical_temperature: float,
-    acentric_factor: float,
+    critical_pressure: Array | float,
+    critical_temperature: Array | float,
+    acentric_factor: Array | float,
 ) -> Array:
     r"""Pure, differentiable $\langle N \rangle(T, \ln P)$ at one state point.
 
@@ -322,15 +328,15 @@ def _loading_from_T_logP(
     return average_loading(macrostate_distribution(log_qc, beta, log_fugacity))
 
 
-def isosteric_heat(
+def isosteric_heat_from_log_partition_fn(
     log_partition_fn_sim: LogPartitionFunction,
     cumulants: EnergyCumulants,
     beta_sim: Array,
     pressures: Array,
     temperature: Array,
-    critical_pressure: float,
-    critical_temperature: float,
-    acentric_factor: float,
+    critical_pressure: Array | float,
+    critical_temperature: Array | float,
+    acentric_factor: Array | float,
     order: int = 3,
 ) -> IsostericHeat:
     r"""Isosteric heat $q_\mathrm{st}$ via Clausius--Clapeyron with autodiff.
@@ -389,7 +395,7 @@ def isosteric_heat(
     return jax.vmap(q_st_at)(jnp.log(pressures))
 
 
-def working_capacity(
+def working_capacity_from_log_partition_fn(
     log_partition_fn_sim: LogPartitionFunction,
     cumulants: EnergyCumulants,
     beta_sim: Array,
@@ -397,9 +403,9 @@ def working_capacity(
     pressure_ads: Array,
     temperature_des: Array,
     pressure_des: Array,
-    critical_pressure: float,
-    critical_temperature: float,
-    acentric_factor: float,
+    critical_pressure: Array | float,
+    critical_temperature: Array | float,
+    acentric_factor: Array | float,
     order: int = 3,
 ) -> Array:
     r"""Working capacity $n_\mathrm{wc} = \langle N\rangle_\mathrm{ads} - \langle N\rangle_\mathrm{des}$.
@@ -417,7 +423,7 @@ def working_capacity(
             beta,
             order,
         )
-        return isotherm(
+        return isotherm_from_log_partition_fn(
             log_qc,
             beta,
             jnp.atleast_1d(p),
@@ -439,11 +445,13 @@ class AdsorbateEOS:
     All values are in SI units (Pa, K, dimensionless) at the boundary; internal
     unit conversion is handled downstream by
     [peng_robinson_log_fugacity][kups.mcmc.fugacity.peng_robinson_log_fugacity].
+    The parameters are pytree leaves, so they may be plain floats or traced
+    arrays (e.g. to differentiate observables w.r.t. the EOS parameters).
     """
 
-    critical_pressure: float = field(static=True)
-    critical_temperature: float = field(static=True)
-    acentric_factor: float = field(static=True)
+    critical_pressure: Array | float
+    critical_temperature: Array | float
+    acentric_factor: Array | float
 
 
 @dataclass
@@ -471,23 +479,27 @@ class TMMCSummary:
 
     @staticmethod
     def from_transition_statistics(
-        acceptance_insertion: Array,
-        acceptance_deletion: Array,
-        n_trials_insertion: Array,
-        n_trials_deletion: Array,
+        statistics: TransitionStatistics,
         cumulants: EnergyCumulants,
         beta_sim: Array,
         log_fugacity_sim: Array,
         adsorbate: AdsorbateEOS,
         order: int = 3,
     ) -> TMMCSummary:
-        r"""Build a summary directly from raw C-matrix counts."""
-        p_ins, p_del = transition_probabilities(
-            acceptance_insertion,
-            acceptance_deletion,
-            n_trials_insertion,
-            n_trials_deletion,
-        )
+        r"""Build a summary directly from an accumulated C-matrix.
+
+        Args:
+            statistics: Accumulated TMMC C-matrix, indexed by macrostate $N$.
+            cumulants: Per-macrostate energy cumulants.
+            beta_sim: Simulation inverse temperature.
+            log_fugacity_sim: Simulation log-fugacity $\ln f$.
+            adsorbate: Peng-Robinson parameters for the reservoir species.
+            order: Taylor order for the $\beta$-extrapolation.
+
+        Returns:
+            Summary ready for isotherm / heat / capacity evaluation.
+        """
+        p_ins, p_del = transition_probabilities(statistics)
         log_qc = reconstruct_log_partition_fn(p_ins, p_del, beta_sim, log_fugacity_sim)
         return TMMCSummary(
             log_partition_fn_sim=log_qc,
@@ -511,7 +523,7 @@ class TMMCSummary:
         r"""$\langle N \rangle(P)$ at fixed $T$, vectorised across pressures."""
         beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
         log_qc = self.extrapolate(beta)
-        return isotherm(
+        return isotherm_from_log_partition_fn(
             log_qc,
             beta,
             pressures,
@@ -523,7 +535,7 @@ class TMMCSummary:
 
     def isosteric_heat(self, pressures: Array, temperature: Array) -> IsostericHeat:
         r"""Autodiff Clausius--Clapeyron heat across a pressure grid."""
-        return isosteric_heat(
+        return isosteric_heat_from_log_partition_fn(
             self.log_partition_fn_sim,
             self.cumulants,
             self.beta_sim,
@@ -543,7 +555,7 @@ class TMMCSummary:
         pressure_des: Array,
     ) -> Array:
         r"""Working capacity between adsorption and desorption conditions."""
-        return working_capacity(
+        return working_capacity_from_log_partition_fn(
             self.log_partition_fn_sim,
             self.cumulants,
             self.beta_sim,

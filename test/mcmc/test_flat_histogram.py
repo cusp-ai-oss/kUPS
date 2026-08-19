@@ -18,15 +18,15 @@ from kups.mcmc.flat_histogram import (
     TMMCSummary,
     average_loading,
     extrapolate_log_partition_fn,
-    isosteric_heat,
-    isotherm,
+    isosteric_heat_from_log_partition_fn,
+    isotherm_from_log_partition_fn,
     macrostate_distribution,
     reconstruct_log_partition_fn,
     transition_probabilities,
-    working_capacity,
+    working_capacity_from_log_partition_fn,
 )
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
-from kups.mcmc.widom import EnergyCumulants
+from kups.mcmc.widom import EnergyCumulants, TransitionStatistics
 
 # CO2-like EOS parameters for integration tests.
 _CO2 = AdsorbateEOS(
@@ -43,17 +43,19 @@ class TestTransitionProbabilities:
     def test_normalises_by_total_trials(self):
         acc_ins = jnp.array([1.0, 2.0, 0.5])
         acc_del = jnp.array([0.0, 1.0, 0.3])
-        n_ins = jnp.array([4, 4, 4], dtype=jnp.int32)
-        n_del = jnp.array([4, 4, 4], dtype=jnp.int32)
-        p_ins, p_del = transition_probabilities(acc_ins, acc_del, n_ins, n_del)
+        n_ins = jnp.array([4, 4, 4], dtype=int)
+        n_del = jnp.array([4, 4, 4], dtype=int)
+        p_ins, p_del = transition_probabilities(
+            TransitionStatistics(acc_ins, acc_del, n_ins, n_del)
+        )
         npt.assert_allclose(p_ins, acc_ins / 8.0)
         npt.assert_allclose(p_del, acc_del / 8.0)
 
     def test_safe_at_zero_trials(self):
         """No divide-by-zero when a macrostate was never visited."""
         acc = jnp.zeros(3)
-        n = jnp.zeros(3, dtype=jnp.int32)
-        p_ins, p_del = transition_probabilities(acc, acc, n, n)
+        n = jnp.zeros(3, dtype=int)
+        p_ins, p_del = transition_probabilities(TransitionStatistics(acc, acc, n, n))
         npt.assert_array_equal(p_ins, jnp.zeros(3))
         npt.assert_array_equal(p_del, jnp.zeros(3))
 
@@ -101,11 +103,16 @@ class TestExtrapolate:
 
         # Build derivatives ⟨E⟩=-dln Q/dβ, Var=d²ln Q/dβ², κ_3=d³ln Q/dβ³.
         dlnq_dbeta = c1 + 2 * c2 * beta_0 + 3 * c3 * beta_0**2
+        # kappa_2 = d²lnQ/dβ², kappa_3 = -d³lnQ/dβ³ (standard cumulants).
         cumulants = EnergyCumulants(
             mean=jnp.asarray(-dlnq_dbeta),
-            variance=jnp.asarray(2 * c2 + 6 * c3 * beta_0),
-            third=jnp.asarray(6 * c3),
-            fourth=jnp.asarray(0.0),
+            cumulants=jnp.stack(
+                [
+                    jnp.asarray(2 * c2 + 6 * c3 * beta_0),
+                    jnp.asarray(-6 * c3),
+                    jnp.asarray(0.0),
+                ]
+            ),
         )
         log_qc_sim = jnp.asarray(true_log_qc(beta_0))
         for beta_target in [2.0, 2.1, 1.8, 3.0]:
@@ -120,12 +127,52 @@ class TestExtrapolate:
                 float(result), true_log_qc(beta_target), rtol=1e-10, atol=1e-10
             )
 
+    def test_quintic_ln_qc_is_exact_at_order_5(self):
+        r"""Arbitrary-degree extrapolation: a quintic $\ln Q_c(\beta)$ is exact
+        at order 5 when the cumulants encode its derivatives."""
+        beta_0 = 1.5
+        coeffs = [0.3, -2.0, 0.9, -0.25, 0.05, -0.004]  # c_0 .. c_5
+
+        def true_log_qc(beta: float) -> float:
+            return sum(c * beta**j for j, c in enumerate(coeffs))
+
+        def derivative(k: int) -> float:
+            return sum(
+                c * (math.factorial(j) // math.factorial(j - k)) * beta_0 ** (j - k)
+                for j, c in enumerate(coeffs)
+                if j >= k
+            )
+
+        # kappa_k = (-1)^k d^k lnQ/dbeta^k (standard cumulants).
+        cumulants = EnergyCumulants(
+            mean=jnp.asarray(-derivative(1)),
+            cumulants=jnp.stack(
+                [jnp.asarray((-1.0) ** k * derivative(k)) for k in range(2, 6)]
+            ),
+        )
+        log_qc_sim = jnp.asarray(true_log_qc(beta_0))
+        for beta_target in [1.5, 1.2, 2.0]:
+            result = extrapolate_log_partition_fn(
+                log_qc_sim,
+                cumulants,
+                jnp.asarray(beta_0),
+                jnp.asarray(beta_target),
+                order=5,
+            )
+            npt.assert_allclose(
+                float(result), true_log_qc(beta_target), rtol=1e-10, atol=1e-10
+            )
+
     def test_zero_displacement_returns_simulation_value(self):
         cumulants = EnergyCumulants(
             mean=jnp.array([1.0, 2.0, 3.0]),
-            variance=jnp.array([0.1, 0.2, 0.3]),
-            third=jnp.array([0.01, 0.02, 0.03]),
-            fourth=jnp.array([0.001, 0.002, 0.003]),
+            cumulants=jnp.array(
+                [
+                    [0.1, 0.2, 0.3],
+                    [0.01, 0.02, 0.03],
+                    [0.001, 0.002, 0.003],
+                ]
+            ),
         )
         log_qc = jnp.array([0.0, -1.0, -2.0])
         result = extrapolate_log_partition_fn(
@@ -136,10 +183,7 @@ class TestExtrapolate:
     @pytest.mark.parametrize("order", [0, 5, -1])
     def test_invalid_order_raises(self, order: int):
         cumulants = EnergyCumulants(
-            mean=jnp.array([0.0]),
-            variance=jnp.array([0.0]),
-            third=jnp.array([0.0]),
-            fourth=jnp.array([0.0]),
+            mean=jnp.array([0.0]), cumulants=jnp.zeros((3, 1))
         )
         with pytest.raises(ValueError):
             extrapolate_log_partition_fn(
@@ -185,7 +229,7 @@ class TestIsotherm:
     def test_shape_matches_pressure_grid(self):
         log_qc = jnp.array([0.0, -1.0, -2.0, -2.5])
         pressures = jnp.array([1e4, 1e5, 1e6])
-        loadings = isotherm(
+        loadings = isotherm_from_log_partition_fn(
             log_qc,
             jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
             pressures,
@@ -202,7 +246,7 @@ class TestIsotherm:
         """⟨N⟩ must be non-decreasing in P for a fixed-site attractive model."""
         log_qc = jnp.linspace(0.0, -10.0, 6)  # increasingly favourable binding
         pressures = jnp.logspace(3, 7, 10)
-        loadings = isotherm(
+        loadings = isotherm_from_log_partition_fn(
             log_qc,
             jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
             pressures,
@@ -223,14 +267,14 @@ class TestIsostericHeat:
         log_qc_sim = jnp.array([0.0, -3.0, -5.0, -6.0])
         cumulants = EnergyCumulants(
             mean=jnp.array([0.0, -0.2, -0.35, -0.5]),
-            variance=jnp.array([0.0, 0.01, 0.02, 0.03]),
-            third=jnp.zeros(4),
-            fourth=jnp.zeros(4),
+            cumulants=jnp.stack(
+                [jnp.array([0.0, 0.01, 0.02, 0.03]), jnp.zeros(4), jnp.zeros(4)]
+            ),
         )
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         pressures = jnp.array([1e4, 1e5, 1e6])
 
-        q = isosteric_heat(
+        q = isosteric_heat_from_log_partition_fn(
             log_qc_sim,
             cumulants,
             beta_sim,
@@ -260,9 +304,9 @@ class TestIsostericHeat:
         log_qc_sim = jnp.array([0.0, -3.0, -5.0, -6.0])
         cumulants = EnergyCumulants(
             mean=jnp.array([0.0, -0.2, -0.35, -0.5]),
-            variance=jnp.array([0.0, 0.01, 0.02, 0.03]),
-            third=jnp.zeros(4),
-            fourth=jnp.zeros(4),
+            cumulants=jnp.stack(
+                [jnp.array([0.0, 0.01, 0.02, 0.03]), jnp.zeros(4), jnp.zeros(4)]
+            ),
         )
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         T = 300.0
@@ -290,7 +334,7 @@ class TestIsostericHeat:
         dlogP_fd = (loading(T, log_P + h_lp) - loading(T, log_P - h_lp)) / (2.0 * h_lp)
         q_fd = BOLTZMANN_CONSTANT * T**2 * dT_fd / dlogP_fd
 
-        q_ad = isosteric_heat(
+        q_ad = isosteric_heat_from_log_partition_fn(
             log_qc_sim,
             cumulants,
             beta_sim,
@@ -311,14 +355,9 @@ class TestWorkingCapacity:
     def test_swing_loading_difference(self):
         """n_wc = ⟨N⟩_ads - ⟨N⟩_des; both terms come from the same summary."""
         log_qc_sim = jnp.linspace(0.0, -4.0, 5)
-        cumulants = EnergyCumulants(
-            mean=jnp.zeros(5),
-            variance=jnp.zeros(5),
-            third=jnp.zeros(5),
-            fourth=jnp.zeros(5),
-        )
+        cumulants = EnergyCumulants(mean=jnp.zeros(5), cumulants=jnp.zeros((3, 5)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
-        n_wc = working_capacity(
+        n_wc = working_capacity_from_log_partition_fn(
             log_qc_sim,
             cumulants,
             beta_sim,
@@ -388,22 +427,16 @@ class TestAnalyticalLangmuirRoundTrip:
         p_ins_core = p_del[1:] * jnp.exp(delta + log_f_sim + jnp.log(beta))
         p_ins = jnp.concatenate([p_ins_core, jnp.zeros(1)])
 
-        n_trials = jnp.full(M + 1, 10_000, dtype=jnp.int32)
-        acc_ins = p_ins * 2 * n_trials.astype(jnp.float64)
-        acc_del = p_del * 2 * n_trials.astype(jnp.float64)
+        n_trials = jnp.full(M + 1, 10_000, dtype=int)
+        acc_ins = p_ins * 2 * n_trials.astype(float)
+        acc_del = p_del * 2 * n_trials.astype(float)
 
         # Cumulants aren't exercised here (β_target == β_sim); pass zeros.
         cumulants = EnergyCumulants(
-            mean=jnp.zeros(M + 1),
-            variance=jnp.zeros(M + 1),
-            third=jnp.zeros(M + 1),
-            fourth=jnp.zeros(M + 1),
+            mean=jnp.zeros(M + 1), cumulants=jnp.zeros((3, M + 1))
         )
         summary = TMMCSummary.from_transition_statistics(
-            acc_ins,
-            acc_del,
-            n_trials,
-            n_trials,
+            TransitionStatistics(acc_ins, acc_del, n_trials, n_trials),
             cumulants=cumulants,
             beta_sim=jnp.asarray(beta),
             log_fugacity_sim=log_f_sim,
@@ -452,22 +485,14 @@ class TestTMMCSummary:
         p_ins_core = beta_f * jnp.exp(delta) * p_del[1:]
         p_ins = jnp.concatenate([p_ins_core, jnp.zeros(1)])
 
-        n_trials = jnp.full(4, 1000, dtype=jnp.int32)
+        n_trials = jnp.full(4, 1000, dtype=int)
         # P = acc / (n_ins + n_del) ⇒ acc = P · 2 · n.
-        acc_ins = p_ins * (2 * n_trials.astype(jnp.float64))
-        acc_del = p_del * (2 * n_trials.astype(jnp.float64))
+        acc_ins = p_ins * (2 * n_trials.astype(float))
+        acc_del = p_del * (2 * n_trials.astype(float))
 
-        cumulants = EnergyCumulants(
-            mean=jnp.zeros(4),
-            variance=jnp.zeros(4),
-            third=jnp.zeros(4),
-            fourth=jnp.zeros(4),
-        )
+        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((3, 4)))
         summary = TMMCSummary.from_transition_statistics(
-            acc_ins,
-            acc_del,
-            n_trials,
-            n_trials,
+            TransitionStatistics(acc_ins, acc_del, n_trials, n_trials),
             cumulants=cumulants,
             beta_sim=beta,
             log_fugacity_sim=log_f,
@@ -481,12 +506,7 @@ class TestTMMCSummary:
     def test_methods_dispatch_to_module_level_functions(self):
         """Sanity: summary methods produce the same values as calling the functions."""
         ln_qc_sim = jnp.array([0.0, -2.0, -3.5, -4.5])
-        cumulants = EnergyCumulants(
-            mean=jnp.zeros(4),
-            variance=jnp.zeros(4),
-            third=jnp.zeros(4),
-            fourth=jnp.zeros(4),
-        )
+        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((3, 4)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         summary = TMMCSummary(
             log_partition_fn_sim=ln_qc_sim,
@@ -497,7 +517,7 @@ class TestTMMCSummary:
         )
         pressures = jnp.array([1e4, 1e5])
         via_method = summary.isotherm(pressures, jnp.asarray(300.0))
-        via_function = isotherm(
+        via_function = isotherm_from_log_partition_fn(
             summary.extrapolate(beta_sim),
             beta_sim,
             pressures,
