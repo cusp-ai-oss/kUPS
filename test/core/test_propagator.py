@@ -25,6 +25,7 @@ from kups.core.propagator import (
     LoopPropagator,
     MCMCPropagator,
     PalindromePropagator,
+    ResetOnErrorPropagator,
     ScheduledPropertyPropagator,
     SequentialPropagator,
     StatePropertySum,
@@ -987,6 +988,140 @@ class TestPropagateAndFix:
         fn = propagator_with_assertions(prop)
         with pytest.raises(ValueError, match="cannot be jax transformed"):
             jax.jit(lambda k, s: propagate_and_fix(fn, k, s))(rng_key, simple_state)
+
+
+@dataclass
+class _BudgetState:
+    """State for the fused-loop repair tests: ``x`` advances, ``ref`` resets on
+    'rebuild', and the margin ``x - ref`` must stay within ``budget``."""
+
+    x: Array
+    ref: Array
+    budget: Array
+    flag: Array
+    rebuilds: Array
+    committed: Array
+
+
+def _flip_flag(state: _BudgetState, args: Array) -> _BudgetState:
+    return bind(state).focus(lambda s: s.flag).set(jnp.array(True))
+
+
+@dataclass
+class _MaybeRebuild:
+    def __call__(self, key: Array, state: _BudgetState) -> _BudgetState:
+        def rebuild(s: _BudgetState) -> _BudgetState:
+            runtime_assert(s.rebuilds < 100, "rebuild bound {n}", {"n": s.rebuilds})
+            return (
+                bind(s)
+                .focus(lambda s: (s.ref, s.flag, s.rebuilds))
+                .set((s.x, jnp.array(False), s.rebuilds + 1))
+            )
+
+        return jax.lax.cond(state.flag, rebuild, lambda s: s, state)
+
+
+@dataclass
+class _StepAndTrigger:
+    """Advances ``x`` by 1 per step — except the step taken when ``committed``
+    equals ``spike_at``, which advances by ``1 + spike`` (a surprise the
+    one-step-lookahead trigger cannot predict)."""
+
+    spike_at: int = field(static=True, default=-1)
+    spike: float = field(static=True, default=0.0)
+
+    def __call__(self, key: Array, state: _BudgetState) -> _BudgetState:
+        size = 1.0 + self.spike * (state.committed == self.spike_at)
+        state = bind(state).focus(lambda s: s.x).set(state.x + size)
+        consumed = state.x - state.ref
+        runtime_assert(
+            consumed <= state.budget,
+            "margin exhausted: {c}",
+            {"c": consumed},
+            fix_fn=_flip_flag,
+            fix_args=consumed,
+        )
+        # Fire the flag one step early, so the next iteration rebuilds in-trace.
+        flag = consumed + 1.0 > state.budget
+        return (
+            bind(state)
+            .focus(lambda s: (s.flag, s.committed))
+            .set((flag, state.committed + 1))
+        )
+
+
+class TestAssertionRepairInFusedLoop:
+    """The composition the Verlet-skin MD path relies on: a ``runtime_assert``
+    with a fix, raised inside ``lax.cond`` inside a ``LoopPropagator``, wrapped
+    in ``ResetOnErrorPropagator``, repaired by ``propagate_and_fix``.
+
+    A failing iteration is reverted; because the failed condition is a function
+    of the reverted state, later iterations re-fail and revert the same way, so
+    the dispatch output stalls at the last valid step. The fix then flips the
+    rebuild flag and the re-dispatch resumes from there."""
+
+    BLOCK = 8
+
+    def _cycle(self, spike_at: int = -1, spike: float = 0.0):
+        step = ResetOnErrorPropagator(
+            SequentialPropagator((_MaybeRebuild(), _StepAndTrigger(spike_at, spike)))
+        )
+        return jax.jit(as_result_function(LoopPropagator(step, self.BLOCK)))
+
+    def _state(self, budget: float) -> _BudgetState:
+        return _BudgetState(
+            x=jnp.array(0.0),
+            ref=jnp.array(0.0),
+            budget=jnp.array(budget),
+            flag=jnp.array(False),
+            rebuilds=jnp.array(0),
+            committed=jnp.array(0),
+        )
+
+    def test_cond_rebuilds_inside_fused_loop(self, rng_key):
+        """The early-firing trigger keeps the assert green across blocks; the
+        cond branch runs on device inside the ``while_loop``."""
+        cycle = self._cycle()
+        state = self._state(budget=3.0)
+        for i in range(3):
+            state = propagate_and_fix(cycle, jax.random.fold_in(rng_key, i), state)
+        assert int(state.committed) == 3 * self.BLOCK
+        assert int(state.rebuilds) > 0
+
+    def test_midblock_failure_reverts_fixes_and_resumes(self, rng_key):
+        """A mid-block surprise (spike on the 5th step, absorbable only from a
+        fresh rebuild) reverts at the offending iteration with the four earlier
+        steps kept, and one fix suffices: the re-dispatch resumes from the
+        stalled state, rebuilds, and completes. ``max_tries=2`` rules out an
+        implementation that discards the pre-failure work and replays from the
+        block start (it would need a third dispatch)."""
+        cycle = self._cycle(spike_at=4, spike=1.5)
+        state = propagate_and_fix(cycle, rng_key, self._state(budget=3.0), max_tries=2)
+        # Deterministic trace: steps 1-4 commit (with one in-trace rebuild at
+        # step 4), the 2.5-sized 5th step exhausts the fresh margin and stalls
+        # the dispatch; the fix + re-dispatch then commits 8 more steps.
+        assert int(state.committed) == 4 + self.BLOCK
+        assert float(state.x) == pytest.approx(4 + 2.5 + (self.BLOCK - 1))
+        assert bool(state.flag) is False
+
+    def test_fix_exception_propagates(self, rng_key):
+        """A fix that raises (the escalation path) surfaces its error."""
+
+        def raising_fix(state: _BudgetState, args: Array) -> _BudgetState:
+            raise ValueError("cannot absorb")
+
+        @dataclass
+        class _FailingStep:
+            def __call__(self, key: Array, state: _BudgetState) -> _BudgetState:
+                runtime_assert(
+                    state.x < 0.0, "always fails", fix_fn=raising_fix, fix_args=state.x
+                )
+                return state
+
+        step = ResetOnErrorPropagator(_FailingStep())
+        cycle = jax.jit(as_result_function(LoopPropagator(step, 3)))
+        with pytest.raises(ValueError, match="cannot absorb"):
+            propagate_and_fix(cycle, rng_key, self._state(budget=1.0))
 
 
 @dataclass

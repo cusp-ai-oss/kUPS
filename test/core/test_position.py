@@ -27,6 +27,19 @@ class ParticlesWithMass:
     group: Index[GroupId]
 
 
+@dataclass
+class ParticlesUsingMasses:
+    positions: jax.Array
+    masses: jax.Array
+    group: Index[GroupId]
+
+
+@dataclass
+class ParticlesWithoutWeights:
+    positions: jax.Array
+    group: Index[GroupId]
+
+
 def _make_group_index(ids: list[int], num_groups: int) -> Index[GroupId]:
     """Create an Index[GroupId] from integer group assignments."""
     labels = tuple(GroupId(i) for i in range(num_groups))
@@ -113,6 +126,37 @@ class TestCenterOfMass:
         com4 = center_of_mass(particles4, cells_2sys[:2])
         expected_wrapped = cells_2sys[:2].wrap(positions4)
         npt.assert_allclose(com4, expected_wrapped, atol=1e-10)
+
+    def test_masses_weight_the_average_when_weights_are_absent(self, cells_2sys):
+        """Test that a masses field weights the CoM, and that its absence does not.
+
+        Every particle type in the package names this field masses rather than
+        weights, so checking only for weights would silently fall back to an
+        unweighted centroid throughout the library.
+        """
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        group = _make_group_index([0, 0], 1)
+
+        weighted = center_of_mass(
+            Table.arange(
+                ParticlesUsingMasses(
+                    positions=positions, masses=jnp.array([3.0, 1.0]), group=group
+                ),
+                label=ParticleId,
+            ),
+            cells_2sys[:1],
+        )
+        npt.assert_allclose(weighted, jnp.array([[0.25, 0.0, 0.0]]), atol=1e-10)
+
+        # Same geometry with no weight field at all falls back to the centroid.
+        unweighted = center_of_mass(
+            Table.arange(
+                ParticlesWithoutWeights(positions=positions, group=group),
+                label=ParticleId,
+            ),
+            cells_2sys[:1],
+        )
+        npt.assert_allclose(unweighted, jnp.array([[0.5, 0.0, 0.0]]), atol=1e-10)
 
     def test_center_of_mass_assertion_error(self, cells_2sys):
         """Test that assertion error is raised when cells don't match groups."""

@@ -14,7 +14,12 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
-from kups.core.typing import HasPositionsAndGroupIndex, HasWeights, ParticleId
+from kups.core.typing import (
+    HasMasses,
+    HasPositionsAndGroupIndex,
+    HasWeights,
+    ParticleId,
+)
 from kups.core.utils.jax import jit
 from kups.core.utils.segment import segment_sum
 
@@ -36,7 +41,8 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
         yield incorrect results.
 
     Args:
-        particles: Indexed particles, optionally supporting `HasWeights` for mass weighting.
+        particles: Indexed particles, optionally supporting `HasWeights` (or
+            `HasMasses`) for mass weighting; unweighted otherwise.
         cells: Cell(s) carrying lattice geometry and per-axis periodicity.
             Must have one cell per group.
 
@@ -65,6 +71,8 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     positions = particles.data.positions
     if isinstance(particles.data, HasWeights):
         weight = particles.data.weights[:, None]
+    elif isinstance(particles.data, HasMasses):
+        weight = particles.data.masses[:, None]
     else:
         weight = jnp.ones_like(positions[:, 0])[:, None]
     offsets = positions[ref_idx]
@@ -100,7 +108,7 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
 
     Args:
         particles: Indexed particles with position and group index data. Supports
-            `HasWeights` if center of mass needs to be computed.
+            `HasWeights` or `HasMasses` if center of mass needs to be computed.
         cells: Cell(s) carrying lattice geometry and per-axis periodicity.
         center_of_masses: Optional precomputed centers of mass. If `None`,
             will be computed automatically.

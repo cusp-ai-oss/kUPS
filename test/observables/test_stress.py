@@ -19,9 +19,10 @@ from kups.core.cell import (
     VacuumCell,
 )
 from kups.core.data import Index, Table
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import GroupId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import (
+    molecular_stress_via_virial_theorem,
     stress_via_virial_theorem,
     total_lattice_gradient,
 )
@@ -76,6 +77,64 @@ def _make_particles(
             positions=positions,
             position_gradients=position_gradients,
             system=Index(sys_keys, system_ids),
+        ),
+    )
+
+
+@dataclass
+class _MolecularVirialParticles:
+    positions: Array
+    position_gradients: Array
+    masses: Array
+    group: Index[GroupId]
+    system: Index[SystemId]
+
+
+@dataclass
+class _MolecularGroups:
+    system: Index[SystemId]
+
+
+def _make_molecular_particles(
+    positions: Array,
+    position_gradients: Array,
+    group_ids: Array,
+    n_groups: int,
+    system_ids: Array | None = None,
+    n_systems: int = 1,
+    masses: Array | None = None,
+) -> Table[ParticleId, _MolecularVirialParticles]:
+    """Helper: particle Table carrying a group index as well as a system index.
+
+    ``masses`` default to equal weights, which makes the centre of mass
+    coincide with the geometric centroid.
+    """
+    n = positions.shape[0]
+    if system_ids is None:
+        system_ids = jnp.zeros(n, dtype=int)
+    if masses is None:
+        masses = jnp.ones(n)
+    return Table(
+        tuple(ParticleId(i) for i in range(n)),
+        _MolecularVirialParticles(
+            positions=positions,
+            position_gradients=position_gradients,
+            masses=masses,
+            group=Index(tuple(GroupId(i) for i in range(n_groups)), group_ids),
+            system=Index(tuple(SystemId(i) for i in range(n_systems)), system_ids),
+        ),
+    )
+
+
+def _make_groups(
+    group_system_ids: Array, n_systems: int = 1
+) -> Table[GroupId, _MolecularGroups]:
+    """Helper: group Table assigning each group to a system."""
+    n = group_system_ids.shape[0]
+    return Table(
+        tuple(GroupId(i) for i in range(n)),
+        _MolecularGroups(
+            system=Index(tuple(SystemId(i) for i in range(n_systems)), group_system_ids)
         ),
     )
 
@@ -297,3 +356,79 @@ class TestTotalLatticeGradient:
             positions, g, _periodic(frame), _periodic(partial_frame), system
         )
         assert not jnp.allclose(periodic.data.frame.vectors, partial_frame.vectors)
+
+
+class TestMolecularStressViaVirialTheorem:
+    """σ referenced to group centres of mass rather than atom positions.
+
+    One test per property that delegating the reference point to
+    ``center_of_mass`` could have broken: equivalence with the atomic formula,
+    minimum-image handling, and mass weighting itself. Tests that pass no
+    explicit masses use equal weights, where the centre of mass coincides with
+    the geometric centroid.
+    """
+
+    def test_singleton_groups_reduce_to_atomic_virial(self):
+        """One particle per group makes the centroid the particle itself."""
+        positions = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        lv = jnp.eye(3)[None] * 20.0
+        systems = _make_systems(lv)
+        atomic = stress_via_virial_theorem(_make_particles(positions), systems)
+        molecular = molecular_stress_via_virial_theorem(
+            _make_molecular_particles(
+                positions, positions, jnp.arange(2, dtype=int), n_groups=2
+            ),
+            _make_groups(jnp.zeros(2, dtype=int)),
+            systems,
+        )
+        npt.assert_allclose(molecular.data, atomic.data, atol=1e-12)
+
+    def test_centroid_uses_the_image_nearest_each_particle(self):
+        """A group straddling the boundary must not be centred in mid-box.
+
+        Particles at ``x = 9`` and ``x = 2`` in a 10 A box form one molecule
+        across the boundary; its centroid is ``x = 0.5 (mod L)``, not the naive
+        in-box mean ``5.5``. Each particle then pairs with the centroid image
+        closest to itself -- ``x = 10.5`` for the particle at ``9`` -- so the
+        virial stays continuous as a molecule drifts across the boundary.
+        """
+        L = 10.0
+        positions = jnp.array([[9.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        gradients = jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        result = molecular_stress_via_virial_theorem(
+            _make_molecular_particles(
+                positions, gradients, jnp.zeros(2, dtype=int), n_groups=1
+            ),
+            _make_groups(jnp.zeros(1, dtype=int)),
+            _make_systems(jnp.eye(3)[None] * L),
+        )
+        expected = jnp.zeros((3, 3)).at[0, 0].set(-10.5 / L**3)
+        npt.assert_allclose(result.data[0], expected, atol=1e-12)
+        # The naive in-box centroid (5.5) would give a different answer.
+        assert not jnp.allclose(result.data[0, 0, 0], -5.5 / L**3)
+
+    def test_reference_point_is_mass_weighted(self):
+        """A heteronuclear pair is referenced to its COM, not its centroid.
+
+        Two particles at ``x = 0`` and ``x = 6`` with masses ``1`` and ``3``
+        have COM ``x = 4.5`` but centroid ``x = 3``. Only the light particle
+        carries a force, so the position virial reads off the reference point
+        directly and the two conventions are cleanly separated.
+        """
+        L = 40.0  # large enough that no minimum-image wrapping intervenes
+        positions = jnp.array([[0.0, 0.0, 0.0], [6.0, 0.0, 0.0]])
+        gradients = jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        result = molecular_stress_via_virial_theorem(
+            _make_molecular_particles(
+                positions,
+                gradients,
+                jnp.zeros(2, dtype=int),
+                n_groups=1,
+                masses=jnp.array([1.0, 3.0]),
+            ),
+            _make_groups(jnp.zeros(1, dtype=int)),
+            _make_systems(jnp.eye(3)[None] * L),
+        )
+        com_x, centroid_x = 4.5, 3.0
+        npt.assert_allclose(result.data[0, 0, 0], -com_x / L**3, atol=1e-12)
+        assert not jnp.allclose(result.data[0, 0, 0], -centroid_x / L**3)
