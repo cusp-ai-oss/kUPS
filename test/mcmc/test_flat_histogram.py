@@ -168,9 +168,9 @@ class TestExtrapolate:
             mean=jnp.array([1.0, 2.0, 3.0]),
             cumulants=jnp.array(
                 [
-                    [0.1, 0.2, 0.3],
-                    [0.01, 0.02, 0.03],
-                    [0.001, 0.002, 0.003],
+                    [0.1, 0.01, 0.001],
+                    [0.2, 0.02, 0.002],
+                    [0.3, 0.03, 0.003],
                 ]
             ),
         )
@@ -183,7 +183,7 @@ class TestExtrapolate:
     @pytest.mark.parametrize("order", [0, 5, -1])
     def test_invalid_order_raises(self, order: int):
         cumulants = EnergyCumulants(
-            mean=jnp.array([0.0]), cumulants=jnp.zeros((3, 1))
+            mean=jnp.array([0.0]), cumulants=jnp.zeros((1, 3))
         )
         with pytest.raises(ValueError):
             extrapolate_log_partition_fn(
@@ -268,7 +268,8 @@ class TestIsostericHeat:
         cumulants = EnergyCumulants(
             mean=jnp.array([0.0, -0.2, -0.35, -0.5]),
             cumulants=jnp.stack(
-                [jnp.array([0.0, 0.01, 0.02, 0.03]), jnp.zeros(4), jnp.zeros(4)]
+                [jnp.array([0.0, 0.01, 0.02, 0.03]), jnp.zeros(4), jnp.zeros(4)],
+                axis=-1,
             ),
         )
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
@@ -305,7 +306,8 @@ class TestIsostericHeat:
         cumulants = EnergyCumulants(
             mean=jnp.array([0.0, -0.2, -0.35, -0.5]),
             cumulants=jnp.stack(
-                [jnp.array([0.0, 0.01, 0.02, 0.03]), jnp.zeros(4), jnp.zeros(4)]
+                [jnp.array([0.0, 0.01, 0.02, 0.03]), jnp.zeros(4), jnp.zeros(4)],
+                axis=-1,
             ),
         )
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
@@ -355,7 +357,7 @@ class TestWorkingCapacity:
     def test_swing_loading_difference(self):
         """n_wc = ⟨N⟩_ads - ⟨N⟩_des; both terms come from the same summary."""
         log_qc_sim = jnp.linspace(0.0, -4.0, 5)
-        cumulants = EnergyCumulants(mean=jnp.zeros(5), cumulants=jnp.zeros((3, 5)))
+        cumulants = EnergyCumulants(mean=jnp.zeros(5), cumulants=jnp.zeros((5, 3)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         n_wc = working_capacity_from_log_partition_fn(
             log_qc_sim,
@@ -433,7 +435,7 @@ class TestAnalyticalLangmuirRoundTrip:
 
         # Cumulants aren't exercised here (β_target == β_sim); pass zeros.
         cumulants = EnergyCumulants(
-            mean=jnp.zeros(M + 1), cumulants=jnp.zeros((3, M + 1))
+            mean=jnp.zeros(M + 1), cumulants=jnp.zeros((M + 1, 3))
         )
         summary = TMMCSummary.from_transition_statistics(
             TransitionStatistics(acc_ins, acc_del, n_trials, n_trials),
@@ -490,7 +492,7 @@ class TestTMMCSummary:
         acc_ins = p_ins * (2 * n_trials.astype(float))
         acc_del = p_del * (2 * n_trials.astype(float))
 
-        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((3, 4)))
+        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((4, 3)))
         summary = TMMCSummary.from_transition_statistics(
             TransitionStatistics(acc_ins, acc_del, n_trials, n_trials),
             cumulants=cumulants,
@@ -506,7 +508,7 @@ class TestTMMCSummary:
     def test_methods_dispatch_to_module_level_functions(self):
         """Sanity: summary methods produce the same values as calling the functions."""
         ln_qc_sim = jnp.array([0.0, -2.0, -3.5, -4.5])
-        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((3, 4)))
+        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((4, 3)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         summary = TMMCSummary(
             log_partition_fn_sim=ln_qc_sim,

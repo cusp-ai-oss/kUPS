@@ -189,7 +189,7 @@ def extrapolate_log_partition_fn(
     db = beta_target - beta_sim
     result = log_partition_fn_sim - cumulants.mean * db
     for k in range(2, order + 1):
-        result = result + cumulants.cumulants[k - 2] * (-db) ** k / factorial(k)
+        result = result + cumulants.cumulants[..., k - 2] * (-db) ** k / factorial(k)
     return result
 
 
