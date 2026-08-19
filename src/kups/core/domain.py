@@ -43,6 +43,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field
+from kups.core.utils.segment import segment_sum
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.potential.common.graph import Decomposition, HyperGraph
 
@@ -150,7 +151,7 @@ def owned_subset[P: IsDecomposedParticle](
     """
     n = len(particles)
     origin = particles.data.origin
-    counts = jax.ops.segment_sum(
+    counts = segment_sum(
         jnp.ones(n, dtype=jnp.int32), origin.indices, origin.num_labels, mode="drop"
     )
     cap_owned = cap_owned.generate_assertion(counts.max())

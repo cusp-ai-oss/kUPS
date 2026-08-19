@@ -14,6 +14,8 @@ energy-only ``psum``, and that owned-buffer overflow raises instead of
 corrupting results.
 """
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -45,6 +47,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, shard_map
+from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.ewald import (
     EwaldLongRangeInput,
     EwaldParameters,
@@ -209,11 +212,13 @@ def test_sharded_owned_only_broadcasts_over_trailing_axes() -> None:
 class _PartialEnergyPotential:
     """Fake DD potential: per-device partial energy, transpose-summed gradients."""
 
-    def __call__(self, state: jax.Array, patch: None = None):
+    def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
         device = jax.lax.axis_index(_AXIS)
         energies = Table.arange(jnp.array([1.0 + device]) * state[0], label=SystemId)
         gradients = jnp.full((3,), 7.0) * state[0]
-        return WithPatch(PotentialOut(energies, gradients, EMPTY), IdPatch[jax.Array]())
+        out = PotentialOut(energies, gradients, EMPTY)
+        data = KahanSummand.init(out) if include_compensate else out
+        return WithPatch(data, IdPatch[jax.Array]())
 
 
 def test_sharded_potential_psums_energy_and_passes_gradients_through() -> None:
@@ -234,6 +239,51 @@ def test_sharded_potential_psums_energy_and_passes_gradients_through() -> None:
     # Partials 1 + d for d in 0..n_dev-1.
     assert jnp.allclose(energy, n_dev + n_dev * (n_dev - 1) / 2)
     assert jnp.allclose(gradients, jnp.full((3,), 7.0))
+
+
+@dataclass
+class _SpikedEnergyPotential:
+    """Fake DD potential whose per-device partials cancel catastrophically.
+
+    Devices contribute ``[1e16, 1, -1e16, 1, 1, ...]``: the true total is
+    ``n_dev - 2``, but any plain float sum in mesh order rounds the small
+    contributions away against the spikes. Only a combine that folds the
+    accumulators with exact 2Sum recovers the total exactly.
+    """
+
+    def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
+        device = jax.lax.axis_index(_AXIS)
+        spike = jnp.where(device == 0, 1e16, jnp.where(device == 2, -1e16, 1.0))
+        energies = Table.arange(spike[None] * state[0], label=SystemId)
+        out = PotentialOut(energies, EMPTY, EMPTY)
+        data = KahanSummand.init(out) if include_compensate else out
+        return WithPatch(data, IdPatch[jax.Array]())
+
+
+def test_sharded_potential_combines_kahan_summands_exactly() -> None:
+    """The cross-mesh energy combine must fold compensations with exact 2Sum.
+
+    A plain ``psum`` of the values (or of values and compensations separately)
+    loses the small partials against the 1e16 spikes; the exact fold carries
+    them in the compensation, so the accumulator's total is exactly
+    ``n_dev - 2``."""
+    if len(jax.devices()) < 4:
+        pytest.skip("needs >= 4 devices so the spikes bracket a small partial")
+    n_dev = len(jax.devices())
+    wrapped = ShardedPotential(_SpikedEnergyPotential())
+
+    def per_device(state: jax.Array) -> tuple[jax.Array, jax.Array]:
+        summand = wrapped(state, include_compensate=True).data
+        energies = summand.value.total_energies.data
+        compensations = summand.compensate.total_energies.data
+        return energies, compensations
+
+    value, compensate = shard_map(
+        per_device, in_specs=(_REPL,), out_specs=(_REPL, _REPL), mesh=_mesh()
+    )(jnp.ones(1))
+    # value - compensate is the exact total; value alone (any float-sum order,
+    # psum included) cannot represent the small partials next to the spikes.
+    assert float(value[0] - compensate[0]) == float(n_dev - 2)
 
 
 # --------------------------------------------------------------------------- #
