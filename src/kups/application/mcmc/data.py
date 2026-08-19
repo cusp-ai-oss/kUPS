@@ -62,33 +62,56 @@ class AdsorbateConfig(BaseModel):
     charges: tuple[float, ...] = ()
     """Partial charges on each atom (e). Defaults to zeros."""
     masses: tuple[float, ...] = ()
-    """Atomic masses (amu). Derived from symbols via ASE if omitted."""
+    """Atomic masses (amu). Derived from ``atomic_numbers`` via ASE if omitted;
+    an atomic number of 0 yields a massless virtual site."""
     atomic_numbers: tuple[int, ...] = ()
-    """Atomic numbers. Derived from symbols via ASE if omitted."""
+    """Atomic numbers (0 for virtual sites). Derived from symbols via ASE if
+    omitted; underscore suffixes are ignored (``O_co2`` resolves as ``O``)."""
 
     @model_validator(mode="before")
     @classmethod
     def _fill_defaults_from_ase(cls, data: dict) -> dict:  # type: ignore[override]
-        """Derive charges, masses, and atomic numbers from symbols when absent."""
+        """Derive charges, atomic numbers, and masses from symbols when absent.
+
+        Masses derive from ``atomic_numbers``; an explicit atomic number of 0
+        marks a massless virtual site. Symbols that ASE cannot resolve
+        (united-atom pseudo-symbols like ``CH4``, virtual sites like ``Mw``)
+        make the derivation ambiguous, so such configs must set
+        ``atomic_numbers`` (0 for virtual sites) or ``masses`` explicitly.
+        """
         symbols = data.get("symbols", ())
         if not data.get("charges"):
             data["charges"] = tuple(0.0 for _ in symbols)
-        if not data.get("masses") or not data.get("atomic_numbers"):
-            zs = [ase.data.atomic_numbers.get(s.split("_")[0], 0) for s in symbols]
-            if not data.get("masses"):
+        explicit_numbers = bool(data.get("atomic_numbers"))
+        if not explicit_numbers:
+            data["atomic_numbers"] = tuple(
+                ase.data.atomic_numbers.get(s.split("_")[0], 0) for s in symbols
+            )
+        if not data.get("masses"):
+            zs = data["atomic_numbers"]
+            if not explicit_numbers and any(z == 0 for z in zs):
                 unknown = [s for s, z in zip(symbols, zs, strict=True) if z == 0]
-                if unknown:
-                    raise ValueError(
-                        "Cannot derive masses from unrecognised symbols "
-                        f"{unknown!r} (ASE doesn't know these — typical for "
-                        "united-atom pseudo-symbols like CH4/CH3 or virtual "
-                        "sites like Mw/M_n2). Pass `masses=(...)` explicitly "
-                        "in AdsorbateConfig (0.0 for virtual sites)."
-                    )
-                data["masses"] = tuple(float(ase.data.atomic_masses[z]) for z in zs)
-            if not data.get("atomic_numbers"):
-                data["atomic_numbers"] = tuple(zs)
+                raise ValueError(
+                    f"Cannot derive masses for unrecognised symbols {unknown!r} "
+                    "(ASE doesn't know these — typical for united-atom "
+                    "pseudo-symbols like CH4/CH3 or virtual sites like "
+                    "Mw/M_n2). Set `atomic_numbers` (0 for massless virtual "
+                    "sites) or `masses` explicitly."
+                )
+            data["masses"] = tuple(
+                float(ase.data.atomic_masses[z]) if z > 0 else 0.0 for z in zs
+            )
         return data
+
+    @model_validator(mode="after")
+    def _check_per_atom_lengths(self) -> AdsorbateConfig:
+        """Reject per-atom fields whose length differs from ``symbols``."""
+        n = len(self.symbols)
+        for name in ("positions", "charges", "masses", "atomic_numbers"):
+            m = len(getattr(self, name))
+            if m != n:
+                raise ValueError(f"`{name}` has {m} entries, expected {n} (one per symbol)")
+        return self
 
     @property
     def as_particles(self) -> Table[MotifParticleId, MotifParticles]:

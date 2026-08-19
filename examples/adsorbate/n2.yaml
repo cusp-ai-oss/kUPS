@@ -9,5 +9,5 @@ symbols:
   - "N_n2"
   - "M_n2"
   - "N_n2"
-masses: [14.007, 0.0, 14.007]
+atomic_numbers: [7, 0, 7] # 0 = massless virtual site (M); masses derive from these
 charges: [-0.482, 0.964, -0.482]

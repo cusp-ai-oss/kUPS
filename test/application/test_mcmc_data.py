@@ -108,7 +108,8 @@ class TestAdsorbateConfig:
 
     def test_unrecognised_symbols_without_masses_raise(self):
         """United-atom pseudo-symbols have no ASE mass; silently deriving 0
-        poisons MD (division by mass). The config must demand explicit masses."""
+        poisons MD (division by mass). The config must demand explicit
+        atomic numbers or masses."""
         with pytest.raises(ValueError, match="unrecognised symbols"):
             AdsorbateConfig(
                 critical_temperature=190.6,
@@ -116,6 +117,35 @@ class TestAdsorbateConfig:
                 acentric_factor=0.011,
                 positions=((0.0, 0.0, 0.0),),
                 symbols=("CH4_sp3",),
+            )
+
+    def test_masses_from_explicit_atomic_numbers(self):
+        """Explicit atomic numbers resolve masses even for symbols ASE does
+        not know; an atomic number of 0 marks a massless virtual site."""
+        cfg = AdsorbateConfig(
+            critical_temperature=647.1,
+            critical_pressure=2.21e7,
+            acentric_factor=0.344,
+            positions=(
+                (0.0, 0.0, 0.0),
+                (0.76, 0.59, 0.0),
+                (-0.76, 0.59, 0.0),
+                (0.0, 0.15, 0.0),
+            ),
+            symbols=("Ow", "Hw", "Hw", "Mw"),
+            atomic_numbers=(8, 1, 1, 0),
+        )
+        npt.assert_allclose(cfg.masses, (15.999, 1.008, 1.008, 0.0), atol=1e-3)
+
+    def test_per_atom_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="one per symbol"):
+            AdsorbateConfig(
+                critical_temperature=190.6,
+                critical_pressure=4.6e6,
+                acentric_factor=0.011,
+                positions=((0.0, 0.0, 0.0),),
+                symbols=("CH4_sp3",),
+                masses=(16.043, 16.043),
             )
 
     def test_auto_derived_charges(self):
