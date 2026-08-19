@@ -1,0 +1,22 @@
+version: 2
+
+# Actions are pinned to commit SHAs, which do not update themselves. Dependabot
+# reads the `# vX.Y.Z` comment beside each SHA to know the current version, and
+# rewrites both the SHA and the comment when it opens a bump PR.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Composite actions are scanned per-directory, separately from the workflows.
+  - package-ecosystem: github-actions
+    directory: /.github/actions/setup
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
