@@ -38,7 +38,7 @@ from kups.application.mcmc.data import (
     MCMCParticles,
     MCMCSystems,
     place_adsorbates,
-    prepare_host,
+    prepare_system,
 )
 from kups.application.mcmc.logging import make_tmmc_logged_data
 from kups.application.potential.classical.blocking import (
@@ -196,7 +196,7 @@ def build_tmmc_state(
     macrostates = range(n_max + 1)
 
     # Expensive step (CIF parse, supercell, motifs, Peng-Robinson) — once.
-    prepared = prepare_host(host, adsorbates)
+    prepared = prepare_system(host, adsorbates)
 
     ps: list[Table[ParticleId, MCMCParticles]] = []
     gs: list[Table[GroupId, MCMCGroup]] = []
@@ -481,10 +481,7 @@ def summarize(config: Config, state: NVTWidomState) -> TMMCSummary:
     stats = state.transition_statistics.data
     beta_sim = 1.0 / (BOLTZMANN_CONSTANT * state.systems.data.temperature[0])
     return TMMCSummary.from_transition_statistics(
-        acceptance_insertion=stats.acceptance_insertion,
-        acceptance_deletion=stats.acceptance_deletion,
-        n_trials_insertion=stats.n_trials_insertion,
-        n_trials_deletion=stats.n_trials_deletion,
+        stats,
         cumulants=state.energy_moments.data.finalize(),
         beta_sim=beta_sim,
         log_fugacity_sim=state.systems.data.log_fugacity[0, 0],
