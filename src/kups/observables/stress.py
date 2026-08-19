@@ -32,13 +32,14 @@ from kups.core.typing import (
     GroupId,
     HasCell,
     HasGroupIndex,
+    HasMasses,
     HasPositions,
     HasSystemIndex,
     ParticleId,
     SystemId,
 )
 from kups.core.utils.jax import tree_map
-from kups.core.utils.segment import segment_sum
+from kups.core.utils.position import center_of_mass
 
 
 @runtime_checkable
@@ -59,8 +60,15 @@ class IsVirialSystems(HasCell[AnyPeriodicity], Protocol):
 
 
 @runtime_checkable
-class IsMolecularVirialParticles(HasPositions, HasGroupIndex, HasSystemIndex, Protocol):
-    """Particles with position gradients, group and system assignment."""
+class IsMolecularVirialParticles(
+    HasPositions, HasGroupIndex, HasSystemIndex, HasMasses, Protocol
+):
+    """Particles with position gradients, masses, group and system assignment.
+
+    Masses are required because the molecular virial is taken about each
+    group's centre of mass, not its geometric centroid; the two differ for
+    heteronuclear or asymmetric groups.
+    """
 
     @property
     def position_gradients(self) -> Array: ...
@@ -120,25 +128,18 @@ def _molecular_stress_via_virial_theorem(
     position_gradients: Array,
     vector_gradients: Array,
     positions: Array,
+    com: Array,
     group: Index[GroupId],
     group_cells: Cell[AnyPeriodicity],
     system: Index[SystemId],
     system_cell: Cell[AnyPeriodicity],
 ) -> Array:
-    """Molecular virial stress using center-of-mass positions (RASPA convention)."""
-    num_groups = group.num_labels
+    """Molecular virial stress about per-group centres of mass (RASPA convention).
+
+    ``com`` comes from [center_of_mass][kups.core.utils.position.center_of_mass],
+    which is mass-weighted and minimum-image aware.
+    """
     batched_cells = group_cells[group.indices]
-    ref_idx = (
-        jnp.zeros(num_groups, dtype=int)
-        .at[group.indices]
-        .set(jnp.arange(group.indices.shape[0]), mode="drop")
-    )
-    offsets = positions[ref_idx]
-    rel = batched_cells.wrap(positions - offsets[group.indices])
-    com = segment_sum(rel, group.indices, num_groups)
-    counts = jnp.bincount(group.indices, length=num_groups)[:, None]
-    com = com / jnp.maximum(counts, 1) + offsets
-    com = group_cells.wrap(com)
     rel_pos = batched_cells.wrap(
         positions - com.at[group.indices].get(mode="fill", fill_value=0)
     )
@@ -229,8 +230,13 @@ def molecular_stress_via_virial_theorem(
 ) -> Table[SystemId, Array]:
     """Compute molecular virial stress tensor (RASPA convention).
 
+    The position virial is taken about each group's mass-weighted centre of
+    mass rather than about the individual atoms, so intramolecular forces
+    cancel. For heteronuclear or asymmetric groups this differs from the
+    unweighted geometric centroid.
+
     Args:
-        particles: Per-particle positions, group/system index, and gradients.
+        particles: Per-particle positions, masses, group/system index, and gradients.
         groups: Per-group system assignment.
         systems: Per-system cell and cell gradients (lower-triangular).
 
@@ -243,6 +249,7 @@ def molecular_stress_via_virial_theorem(
         particles.data.position_gradients,
         cell.frame.vectors_gradient(systems.data.cell_gradients.frame),
         particles.data.positions,
+        center_of_mass(particles, group_cells),
         particles.data.group,
         group_cells,
         particles.data.system,
