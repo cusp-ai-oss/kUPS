@@ -20,7 +20,8 @@ Contents:
   (Witman 2018).
 - [EnergyMoments][kups.mcmc.widom.EnergyMoments] /
   [EnergyCumulants][kups.mcmc.widom.EnergyCumulants]: Pébay/Welford online
-  central moments 1--4 for Taylor expansion of $\ln Q_c(\beta)$.
+  central moments of arbitrary order (default 4) for Taylor expansion of
+  $\ln Q_c(\beta)$.
 
 References:
     Widom, B. (1963). J. Chem. Phys., 39, 2808.
@@ -33,6 +34,7 @@ References:
 
 from __future__ import annotations
 
+from math import comb
 from typing import Any, Callable
 
 import jax.numpy as jnp
@@ -116,15 +118,26 @@ class WidomStatistics:
 
     @staticmethod
     def zeros(n_systems: int) -> WidomStatistics:
-        """Zero-initialize."""
+        """Create a zero-initialized accumulator.
+
+        Args:
+            n_systems: Number of systems accumulated in parallel.
+
+        Returns:
+            Accumulator with all sums and counts at zero, shape ``(n_systems,)``.
+        """
         return WidomStatistics(
             sum_boltzmann=jnp.zeros(n_systems),
             sum_delta_u_boltzmann=jnp.zeros(n_systems),
-            n_samples=jnp.zeros(n_systems, dtype=jnp.int32),
+            n_samples=jnp.zeros(n_systems, dtype=int),
         )
 
     def reset(self) -> WidomStatistics:
-        """Zero all fields."""
+        """Zero all fields.
+
+        Returns:
+            Fresh accumulator of the same shape with all fields at zero.
+        """
         return self.zeros(int(self.n_samples.shape[0]))
 
     def update(self, ln_alpha: LogAcceptanceRatio, delta_u: Energy) -> WidomStatistics:
@@ -135,6 +148,9 @@ class WidomStatistics:
             delta_u: Per-system ghost insertion energy. With a zero-move-log
                 insertion proposal and a bare Boltzmann log-ratio,
                 $\Delta U = -k_BT \ln\alpha$ exactly.
+
+        Returns:
+            Accumulator with the sample folded into the running sums.
         """
         boltzmann = jnp.exp(ln_alpha)
         return WidomStatistics(
@@ -148,8 +164,10 @@ class WidomStatistics:
 class TransitionStatistics:
     r"""TMMC collection-matrix (C-matrix) accumulator for $N \to N \pm 1$ moves.
 
-    Each ghost evaluation contributes $\min(1, \exp\ln\alpha)$ to the
-    corresponding row (Witman 2018, eq 5--7). Downstream, transition
+    Here $\alpha$ is the Metropolis acceptance ratio of the ghost move (the
+    exponential of the log-ratio produced by the proposal pipeline). Each
+    ghost evaluation contributes the acceptance probability $\min(1, \alpha)$
+    to the corresponding row (Witman 2018, eq 5--7). Downstream, transition
     probabilities are recovered as
 
     $$P(N \to N+1) = \frac{\text{acceptance\_insertion}}
@@ -158,8 +176,8 @@ class TransitionStatistics:
     All arrays have shape ``(n_systems,)``.
 
     Attributes:
-        acceptance_insertion: $\sum \min(1, \exp\ln\alpha_\text{ins})$.
-        acceptance_deletion: $\sum \min(1, \exp\ln\alpha_\text{del})$.
+        acceptance_insertion: $\sum \min(1, \alpha_\text{ins})$.
+        acceptance_deletion: $\sum \min(1, \alpha_\text{del})$.
         n_trials_insertion: Number of ghost insertions evaluated.
         n_trials_deletion: Number of ghost deletions evaluated (incremented
             even when $N = 0$; the accepted fraction is zero there).
@@ -172,20 +190,39 @@ class TransitionStatistics:
 
     @staticmethod
     def zeros(n_systems: int) -> TransitionStatistics:
-        """Create a zero-initialized accumulator for ``n_systems`` macrostates."""
+        """Create a zero-initialized accumulator for ``n_systems`` macrostates.
+
+        Args:
+            n_systems: Number of macrostates accumulated in parallel.
+
+        Returns:
+            Accumulator with all sums and counts at zero, shape ``(n_systems,)``.
+        """
         return TransitionStatistics(
             acceptance_insertion=jnp.zeros(n_systems),
             acceptance_deletion=jnp.zeros(n_systems),
-            n_trials_insertion=jnp.zeros(n_systems, dtype=jnp.int32),
-            n_trials_deletion=jnp.zeros(n_systems, dtype=jnp.int32),
+            n_trials_insertion=jnp.zeros(n_systems, dtype=int),
+            n_trials_deletion=jnp.zeros(n_systems, dtype=int),
         )
 
     def reset(self) -> TransitionStatistics:
-        """Zero all fields."""
+        """Zero all fields.
+
+        Returns:
+            Fresh accumulator of the same shape with all fields at zero.
+        """
         return self.zeros(int(self.n_trials_insertion.shape[0]))
 
     def update_insertion(self, ln_alpha: LogAcceptanceRatio) -> TransitionStatistics:
-        r"""Accumulate a ghost-insertion $\ln\alpha$. Trial count is incremented unconditionally."""
+        r"""Accumulate a ghost insertion. Trial count is incremented unconditionally.
+
+        Args:
+            ln_alpha: Per-system log Metropolis ratio $\ln\alpha$ of the
+                ghost insertion.
+
+        Returns:
+            Accumulator with $\min(1, \alpha)$ added to the insertion row.
+        """
         acceptance = jnp.minimum(1.0, jnp.exp(ln_alpha))
         return TransitionStatistics(
             acceptance_insertion=self.acceptance_insertion + acceptance,
@@ -199,11 +236,20 @@ class TransitionStatistics:
         ln_alpha: LogAcceptanceRatio,
         macrostate_n: ParticleCount,
     ) -> TransitionStatistics:
-        r"""Accumulate a ghost-deletion $\ln\alpha$; zero contribution when $N = 0$.
+        r"""Accumulate a ghost deletion; zero contribution when $N = 0$.
 
         The trial count always increments — the fraction of accepted deletions
         at $N = 0$ is zero, but the denominator still counts the trial, so
         $P(0 \to 1)$ is not inflated.
+
+        Args:
+            ln_alpha: Per-system log Metropolis ratio $\ln\alpha$ of the
+                ghost deletion.
+            macrostate_n: Per-system particle count $N$; systems at $N = 0$
+                contribute nothing to the acceptance sum.
+
+        Returns:
+            Accumulator with $\min(1, \alpha)$ added to the deletion row.
         """
         acceptance = jnp.minimum(1.0, jnp.exp(ln_alpha))
         acceptance = jnp.where(macrostate_n > 0, acceptance, 0.0)
@@ -217,115 +263,160 @@ class TransitionStatistics:
 
 @dataclass
 class EnergyCumulants:
-    r"""Finalized central moments of the potential energy distribution.
+    r"""Finalized cumulants of the potential energy distribution.
 
-    These match the $\beta$-derivatives of the configurational partition function
-    (Witman 2018, eq 10):
+    Stores the standard cumulants $\kappa_2, \ldots, \kappa_P$ of the energy
+    ($\kappa_2 = \mathrm{Var}$, $\kappa_3 = \mu_3$,
+    $\kappa_4 = \mu_4 - 3\mu_2^2$, ... with $\mu_k$ the central moments),
+    plus $\kappa_1 = \langle E \rangle$ as ``mean``. They determine the
+    $\beta$-derivatives of the configurational partition function
+    (Witman 2018, eq 10) via
 
-    $$\kappa_k = \partial^k \ln Q_c / \partial(-\beta)^k.$$
+    $$\partial^k \ln Q_c / \partial\beta^k = (-1)^k \kappa_k,$$
+
+    which is what the flat-histogram Taylor extrapolation consumes.
 
     Attributes:
-        mean: $\kappa_1 = \langle E \rangle$ [energy].
-        variance: $\kappa_2 = \langle (E - \langle E\rangle)^2 \rangle$ [energy$^2$].
-        third: $\kappa_3 = -\langle (E - \langle E\rangle)^3 \rangle$ [energy$^3$].
-        fourth: $\kappa_4 = \langle (E - \langle E\rangle)^4 \rangle - 3\,\mathrm{Var}^2$
-            (excess kurtosis $\times$ variance$^2$) [energy$^4$].
+        mean: $\kappa_1 = \langle E \rangle$, shape ``(n_systems,)`` [energy].
+        cumulants: $\kappa_2, \ldots, \kappa_P$ stacked along the leading
+            axis, shape ``(max_order - 1, n_systems)``; entry ``k - 2`` holds
+            $\kappa_k$ [energy$^k$].
     """
 
     mean: Energy
-    variance: Array
-    third: Array
-    fourth: Array
+    cumulants: Array
+
+    @property
+    def max_order(self) -> int:
+        """Highest cumulant order $P$ stored."""
+        return self.cumulants.shape[0] + 1
+
+    @property
+    def variance(self) -> Array:
+        r"""$\kappa_2 = \mathrm{Var}(E)$, shape ``(n_systems,)``."""
+        return self.cumulants[0]
 
 
 @dataclass
 class EnergyMoments:
-    r"""Pébay one-pass accumulator for central moments 1--4 of per-system energy.
+    r"""Pébay one-pass accumulator for central moments of per-system energy.
 
     Maintains the unnormalized central-moment sums
 
-    $$M_k = \sum_{i=1}^{n} (x_i - \bar{x}_n)^k,$$
+    $$M_p = \sum_{i=1}^{n} (x_i - \bar{x}_n)^p, \qquad p = 2, \ldots, P,$$
 
-    updated via the single-sample specialisations of Pébay (2008) eqs 1.2, 1.5,
-    1.6. Call :meth:`finalize` to convert to physical cumulants.
+    for an arbitrary maximum order $P$ (default 4, enough for the third-order
+    Taylor expansion of $\ln Q_c(\beta)$), updated via the single-sample
+    recurrence of Pébay (2008). Call :meth:`finalize` to convert to cumulants.
 
     Attributes:
-        count: Number of samples accumulated.
-        mean: Running sample mean $\bar{x}_n$ [energy].
-        m2: Sum of squared deviations [energy$^2$].
-        m3: Sum of cubed deviations [energy$^3$].
-        m4: Sum of fourth-order deviations [energy$^4$].
+        count: Number of samples accumulated, shape ``(n_systems,)``.
+        mean: Running sample mean $\bar{x}_n$, shape ``(n_systems,)`` [energy].
+        central_sums: $M_2, \ldots, M_P$ stacked along the leading axis,
+            shape ``(max_order - 1, n_systems)``; entry ``p - 2`` holds $M_p$
+            [energy$^p$].
     """
 
     count: Array
     mean: Energy
-    m2: Array
-    m3: Array
-    m4: Array
+    central_sums: Array
+
+    @property
+    def max_order(self) -> int:
+        """Highest moment order $P$ accumulated."""
+        return self.central_sums.shape[0] + 1
 
     @staticmethod
-    def zeros(n_systems: int) -> EnergyMoments:
-        """Zero-initialize for ``n_systems`` macrostates."""
+    def zeros(n_systems: int, max_order: int = 4) -> EnergyMoments:
+        """Create a zero-initialized accumulator for ``n_systems`` macrostates.
+
+        Args:
+            n_systems: Number of macrostates accumulated in parallel.
+            max_order: Highest central-moment order to track (at least 2).
+
+        Returns:
+            Accumulator with all sums and counts at zero.
+        """
+        assert max_order >= 2, "at least mean and variance must be tracked"
         return EnergyMoments(
-            count=jnp.zeros(n_systems, dtype=jnp.int32),
+            count=jnp.zeros(n_systems, dtype=int),
             mean=jnp.zeros(n_systems),
-            m2=jnp.zeros(n_systems),
-            m3=jnp.zeros(n_systems),
-            m4=jnp.zeros(n_systems),
+            central_sums=jnp.zeros((max_order - 1, n_systems)),
         )
 
     def reset(self) -> EnergyMoments:
-        """Zero all fields."""
-        return self.zeros(int(self.count.shape[0]))
+        """Zero all fields.
+
+        Returns:
+            Fresh accumulator of the same shape and order with all fields zero.
+        """
+        return self.zeros(int(self.count.shape[0]), max_order=self.max_order)
 
     def update(self, energy: Energy) -> EnergyMoments:
         r"""Incorporate one per-system energy sample (Pébay single-sample update).
 
-        Uses the standard Welford-style recurrences for higher moments — cf.
-        Pébay (2008). The coefficients $(n-1)(n-2)$ and $(n-1)(n^2-3n+3)$
-        ensure $M_3 = M_4 = 0$ at $n = 1$ and $M_3 = 0$ for any symmetric pair
-        at $n = 2$.
+        With $\delta = x - \bar{x}_{n-1}$ and $\delta_n = \delta / n$, the
+        general recurrence for a single new sample is
+
+        $$M_p \leftarrow M_p
+            + \sum_{k=1}^{p-2} \binom{p}{k} (-\delta_n)^k M_{p-k}
+            + \delta_n^p (n-1) \left[(n-1)^{p-1} + (-1)^p\right],$$
+
+        the one-value specialisation of Pébay (2008), eq 2.9. For $p \le 4$
+        this reduces to the familiar Welford-style updates; each order reads
+        only the previous orders' old values.
+
+        Args:
+            energy: Per-system energy sample, shape ``(n_systems,)``.
+
+        Returns:
+            Accumulator with the sample folded into all tracked moments.
         """
         n = self.count + 1
         nf = n.astype(energy.dtype)
         n_prev = nf - 1.0
-
         delta = energy - self.mean
         delta_n = delta / nf
-        delta_n_sq = delta_n * delta_n
-        # term1 = δ² (n-1)/n — the single-sample "pair" contribution.
-        term1 = delta * delta_n * n_prev
 
-        new_mean = self.mean + delta_n
-        # Update m4 and m3 before m2 — they read old m2 / m3 values.
-        new_m4 = (
-            self.m4
-            + term1 * delta_n_sq * (nf * nf - 3.0 * nf + 3.0)
-            + 6.0 * delta_n_sq * self.m2
-            - 4.0 * delta_n * self.m3
-        )
-        new_m3 = self.m3 + term1 * delta_n * (nf - 2.0) - 3.0 * delta_n * self.m2
-        new_m2 = self.m2 + term1
-
+        old = {p: self.central_sums[p - 2] for p in range(2, self.max_order + 1)}
+        new_sums = [
+            old[p]
+            # Cross terms re-centre the old sums onto the new mean; M_1 = 0
+            # and the M_0 = n - 1 term is folded into the tail below.
+            + sum(comb(p, k) * (-delta_n) ** k * old[p - k] for k in range(1, p - 1))
+            + delta_n**p * n_prev * (n_prev ** (p - 1) + (-1.0) ** p)
+            for p in range(2, self.max_order + 1)
+        ]
         return EnergyMoments(
             count=n,
-            mean=new_mean,
-            m2=new_m2,
-            m3=new_m3,
-            m4=new_m4,
+            mean=self.mean + delta_n,
+            central_sums=jnp.stack(new_sums),
         )
 
     def finalize(self) -> EnergyCumulants:
-        r"""Normalize $M_k$ by $n$ and map to cumulants for Taylor expansion."""
-        nf = self.count.astype(jnp.float64)
-        variance = self.m2 / nf
-        third_central = self.m3 / nf
-        fourth_central = self.m4 / nf
+        r"""Normalize $M_p$ by $n$ and map central moments to cumulants.
+
+        Uses the standard recursion (valid since $\mu_1 = 0$)
+
+        $$\kappa_p = \mu_p - \sum_{m=2}^{p-2} \binom{p-1}{m-1}
+            \kappa_m \mu_{p-m},$$
+
+        which yields $\kappa_2 = \mu_2$, $\kappa_3 = \mu_3$,
+        $\kappa_4 = \mu_4 - 3\mu_2^2$, ...
+
+        Returns:
+            Cumulants $\kappa_1, \ldots, \kappa_P$ of the accumulated samples.
+        """
+        nf = self.count.astype(float)
+        mu = {p: self.central_sums[p - 2] / nf for p in range(2, self.max_order + 1)}
+        kappa: dict[int, Array] = {}
+        for p in range(2, self.max_order + 1):
+            kappa[p] = mu[p] - sum(
+                comb(p - 1, m - 1) * kappa[m] * mu[p - m] for m in range(2, p - 1)
+            )
         return EnergyCumulants(
             mean=self.mean,
-            variance=variance,
-            third=-third_central,
-            fourth=fourth_central - 3.0 * variance**2,
+            cumulants=jnp.stack([kappa[p] for p in range(2, self.max_order + 1)]),
         )
 
 
@@ -348,6 +439,16 @@ class GhostProbe[State, Changes, Move: Patch[Any], Stat](Propagator[State]):
     update_fn: Callable[[State, Stat, Array], Stat] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
+        r"""Run one ghost move and fold $\ln\alpha$ into the accumulator.
+
+        Args:
+            key: JAX PRNG key.
+            state: Current simulation state; only the lens-accessed statistic
+                changes.
+
+        Returns:
+            State with the updated accumulator written back through the lens.
+        """
         ln_alpha = widom_test(
             key,
             state,

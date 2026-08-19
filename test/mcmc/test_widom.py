@@ -131,7 +131,7 @@ class TestWidomStatistics:
         r = stats.reset()
         npt.assert_array_equal(r.sum_boltzmann, jnp.zeros(2))
         npt.assert_array_equal(r.sum_delta_u_boltzmann, jnp.zeros(2))
-        npt.assert_array_equal(r.n_samples, jnp.zeros(2, dtype=jnp.int32))
+        npt.assert_array_equal(r.n_samples, jnp.zeros(2, dtype=int))
 
 
 class TestGhostProbe:
@@ -164,7 +164,7 @@ class TestGhostProbe:
             energies * jnp.array([1.0, 0.5]),
             rtol=1e-10,
         )
-        npt.assert_array_equal(stats.n_samples, jnp.array([1, 1], dtype=jnp.int32))
+        npt.assert_array_equal(stats.n_samples, jnp.array([1, 1], dtype=int))
 
     def test_does_not_mutate_non_stat_state(self):
         n_systems = 2
@@ -193,20 +193,20 @@ class TestTransitionStatistics:
     def test_zeros_has_correct_shape_and_dtype(self):
         stats = TransitionStatistics.zeros(4)
         assert stats.acceptance_insertion.shape == (4,)
-        assert stats.n_trials_insertion.dtype == jnp.int32
+        assert jnp.issubdtype(stats.n_trials_insertion.dtype, jnp.integer)
         npt.assert_array_equal(stats.acceptance_insertion, jnp.zeros(4))
-        npt.assert_array_equal(stats.n_trials_deletion, jnp.zeros(4, dtype=jnp.int32))
+        npt.assert_array_equal(stats.n_trials_deletion, jnp.zeros(4, dtype=int))
 
     def test_reset_restores_zeros(self):
         stats = TransitionStatistics(
             acceptance_insertion=jnp.array([1.0, 2.0]),
             acceptance_deletion=jnp.array([0.5, 1.5]),
-            n_trials_insertion=jnp.array([7, 9], dtype=jnp.int32),
-            n_trials_deletion=jnp.array([7, 9], dtype=jnp.int32),
+            n_trials_insertion=jnp.array([7, 9], dtype=int),
+            n_trials_deletion=jnp.array([7, 9], dtype=int),
         )
         reset = stats.reset()
         npt.assert_array_equal(reset.acceptance_insertion, jnp.zeros(2))
-        npt.assert_array_equal(reset.n_trials_insertion, jnp.zeros(2, dtype=jnp.int32))
+        npt.assert_array_equal(reset.n_trials_insertion, jnp.zeros(2, dtype=int))
 
     def test_update_insertion_clamps_and_increments(self):
         stats = TransitionStatistics.zeros(3)
@@ -215,10 +215,10 @@ class TestTransitionStatistics:
         updated = stats.update_insertion(ln_alpha)
         expected_acc = jnp.minimum(1.0, jnp.exp(ln_alpha))
         npt.assert_allclose(updated.acceptance_insertion, expected_acc, rtol=1e-10)
-        npt.assert_array_equal(updated.n_trials_insertion, jnp.ones(3, dtype=jnp.int32))
+        npt.assert_array_equal(updated.n_trials_insertion, jnp.ones(3, dtype=int))
         # Deletion side untouched
         npt.assert_array_equal(updated.acceptance_deletion, jnp.zeros(3))
-        npt.assert_array_equal(updated.n_trials_deletion, jnp.zeros(3, dtype=jnp.int32))
+        npt.assert_array_equal(updated.n_trials_deletion, jnp.zeros(3, dtype=int))
 
     def test_update_deletion_masks_at_N0_but_increments_trial(self):
         stats = TransitionStatistics.zeros(3)
@@ -230,7 +230,7 @@ class TestTransitionStatistics:
         expected_acc = jnp.where(macrostate_n > 0, expected_acc, 0.0)
         npt.assert_allclose(updated.acceptance_deletion, expected_acc, rtol=1e-10)
         # The trial count increments even at N = 0 so P(0 → 1) is not inflated.
-        npt.assert_array_equal(updated.n_trials_deletion, jnp.ones(3, dtype=jnp.int32))
+        npt.assert_array_equal(updated.n_trials_deletion, jnp.ones(3, dtype=int))
 
     def test_repeated_updates_accumulate(self):
         stats = TransitionStatistics.zeros(2)
@@ -238,7 +238,7 @@ class TestTransitionStatistics:
             stats = stats.update_insertion(jnp.array([0.0, 0.0]))  # acc=1 each
         npt.assert_allclose(stats.acceptance_insertion, jnp.array([5.0, 5.0]))
         npt.assert_array_equal(
-            stats.n_trials_insertion, jnp.array([5, 5], dtype=jnp.int32)
+            stats.n_trials_insertion, jnp.array([5, 5], dtype=int)
         )
 
 
@@ -270,10 +270,34 @@ class TestEnergyMoments:
 
         npt.assert_allclose(cumulants.mean[0], ref_mean, rtol=1e-10)
         npt.assert_allclose(cumulants.variance[0], ref_m2, rtol=1e-10)
-        # cumulants.third has the sign flip: -third_central
-        npt.assert_allclose(cumulants.third[0], -ref_m3, rtol=1e-9, atol=1e-12)
+        npt.assert_allclose(cumulants.cumulants[1, 0], ref_m3, rtol=1e-9, atol=1e-12)
         npt.assert_allclose(
-            cumulants.fourth[0], ref_m4 - 3 * ref_m2**2, rtol=1e-9, atol=1e-12
+            cumulants.cumulants[2, 0], ref_m4 - 3 * ref_m2**2, rtol=1e-9, atol=1e-12
+        )
+
+    def test_arbitrary_order_matches_numpy_reference(self):
+        """max_order=6: M_p sums and the cumulant recursion (kappa_5, kappa_6)
+        against two-pass NumPy references."""
+        rng = np.random.default_rng(7)
+        samples = rng.exponential(scale=1.5, size=200)  # skewed on purpose
+
+        moments = EnergyMoments.zeros(1, max_order=6)
+        for x in samples:
+            moments = moments.update(jnp.array([x]))
+
+        dev = samples - samples.mean()
+        mu = {p: np.mean(dev**p) for p in range(2, 7)}
+        for p in range(2, 7):
+            npt.assert_allclose(
+                moments.central_sums[p - 2, 0], mu[p] * len(samples), rtol=1e-8
+            )
+
+        c = moments.finalize()
+        npt.assert_allclose(c.cumulants[3, 0], mu[5] - 10 * mu[2] * mu[3], rtol=1e-8)
+        npt.assert_allclose(
+            c.cumulants[4, 0],
+            mu[6] - 15 * mu[2] * mu[4] - 10 * mu[3] ** 2 + 30 * mu[2] ** 3,
+            rtol=1e-8,
         )
 
     def test_multi_system_independence(self):
@@ -297,6 +321,6 @@ class TestEnergyMoments:
         for _ in range(10):
             moments = moments.update(jnp.array([1.0, 2.0, 3.0]))
         reset = moments.reset()
-        npt.assert_array_equal(reset.count, jnp.zeros(3, dtype=jnp.int32))
+        npt.assert_array_equal(reset.count, jnp.zeros(3, dtype=int))
         npt.assert_array_equal(reset.mean, jnp.zeros(3))
-        npt.assert_array_equal(reset.m2, jnp.zeros(3))
+        npt.assert_array_equal(reset.central_sums, jnp.zeros((3, 3)))
