@@ -172,6 +172,48 @@ class TestCubicRoots:
         assert jnp.all(jnp.isfinite(roots))
 
 
+class TestCubicRootsGradients:
+    """Custom JVP (implicit differentiation) of [`cubic_roots`][kups.core.utils.math.cubic_roots]."""
+
+    @staticmethod
+    def _sorted_real_roots(coeffs: jax.Array) -> jax.Array:
+        return jnp.sort(cubic_roots(coeffs).real)
+
+    def test_matches_finite_differences_distinct_roots(self):
+        """Jacobian for well-separated roots agrees with central differences."""
+        coeffs = jnp.array([1.0, -6.0, 11.0, -6.0])  # roots 1, 2, 3
+        jac = jax.jacfwd(self._sorted_real_roots)(coeffs)
+        h = 1e-6
+        for i in range(4):
+            e = jnp.zeros(4).at[i].set(h)
+            fd = (
+                self._sorted_real_roots(coeffs + e)
+                - self._sorted_real_roots(coeffs - e)
+            ) / (2 * h)
+            npt.assert_allclose(jac[:, i], fd, rtol=1e-5, atol=1e-8)
+
+    def test_matches_implicit_function_theorem(self):
+        """dz/dd = -1 / F'(z) with F'(z) = 3az^2 + 2bz + c."""
+        coeffs = jnp.array([1.0, -6.0, 11.0, -6.0])  # roots 1, 2, 3
+        jac = jax.jacfwd(self._sorted_real_roots)(coeffs)
+        roots = self._sorted_real_roots(coeffs)
+        dF_dz = 3 * roots**2 - 12 * roots + 11
+        npt.assert_allclose(jac[:, 3], -1.0 / dF_dz, rtol=1e-8)
+
+    @pytest.mark.parametrize(
+        "coeffs",
+        [
+            [1.0, -3.0, 3.0, -1.0],  # (x-1)^3, triple root: F'(z) = 0 exactly
+            [1.0, -6.0, 12.0, -8.0],  # (x-2)^3
+            [1.0, -5.0, 7.0, -3.0],  # (x-1)^2 (x-3), double root
+        ],
+    )
+    def test_repeated_roots_stay_finite(self, coeffs: list[float]):
+        """At repeated roots dF/dz vanishes; the clamped JVP must not NaN/inf."""
+        jac = jax.jacfwd(self._sorted_real_roots)(jnp.array(coeffs))
+        assert np.all(np.isfinite(jac)), f"non-finite Jacobian: {jac}"
+
+
 class TestDetAndInverse3x3:
     def test_det_and_inverse(self):
         """Merged: correctness, properties, edge_cases."""

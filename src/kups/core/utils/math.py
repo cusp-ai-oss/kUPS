@@ -48,7 +48,7 @@ def log_factorial_ratio(N: Array, M: Array) -> Array:
 def _cubic_roots_core(coefficients: Array) -> Array:
     """Companion-matrix eigvals solver for a single cubic polynomial."""
     a, b, c, d = coefficients
-    C = jnp.array([[0, 0, -d / a], [1, 0, -c / a], [0, 1, -b / a]], dtype=jnp.float_)
+    C = jnp.array([[0, 0, -d / a], [1, 0, -c / a], [0, 1, -b / a]], dtype=float)
     return jnp.linalg.eigvals(C)
 
 
@@ -63,6 +63,13 @@ def _cubic_roots_core_jvp(  # pyright: ignore[reportUnusedFunction]
     $$\frac{\partial z}{\partial p} = -\frac{\partial F / \partial p}
                                           {\partial F / \partial z}.$$
 
+    At a repeated root $\partial F / \partial z = 0$ and the true sensitivity
+    is unbounded (a perturbed triple root moves like $\varepsilon^{1/3}$);
+    the computed roots there also carry $O(\mathrm{eps}^{1/3})$ error, so any
+    denominator below $O(\mathrm{eps}^{2/3})$ is numerical noise. The modulus
+    of the denominator is therefore clamped from below at that scale (phase
+    preserved), keeping tangents finite — if large — instead of NaN/inf.
+
     Forward uses :func:`jax.numpy.linalg.eigvals` (unchanged numerics);
     backward bypasses its pathological gradient.
 
@@ -76,7 +83,14 @@ def _cubic_roots_core_jvp(  # pyright: ignore[reportUnusedFunction]
     da, db, dc, dd = coefficients_dot
     dF_dz = 3 * a * roots**2 + 2 * b * roots + c
     dF_from_coeffs = roots**3 * da + roots**2 * db + roots * dc + dd
-    return roots, -dF_from_coeffs / dF_dz
+    finfo = jnp.finfo(roots.real.dtype)
+    r = jnp.abs(roots)
+    term_scale = 3 * jnp.abs(a) * r**2 + 2 * jnp.abs(b) * r + jnp.abs(c)
+    tol = finfo.eps ** (2 / 3) * term_scale + finfo.tiny
+    mod = jnp.abs(dF_dz)
+    phase = jnp.where(mod > 0, dF_dz / jnp.where(mod > 0, mod, 1.0), 1.0 + 0.0j)
+    safe_dF_dz = phase * jnp.maximum(mod, tol)
+    return roots, -dF_from_coeffs / safe_dF_dz
 
 
 @jit

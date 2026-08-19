@@ -105,9 +105,12 @@ def _peng_robinson_log_fugacity(
     solutions = cubic_roots(coefficients)
     Z_real = solutions.real
     # A root is "physical" iff it's (nearly) real and compressibility-feasible
-    # (Z > Bmix so the log(Z − Bmix) below is finite).
-    is_real = jnp.abs(solutions.imag) < 1e-8
-    valid_solutions = is_real & (Z_real > Bmix + 1e-12)
+    # (Z > Bmix so the log(Z − Bmix) below is finite). Tolerances derive from
+    # the working dtype: eps^(1/2) bounds the imaginary-part noise of real
+    # roots, eps^(3/4) is the strictly-positive margin of log's argument.
+    eps = jnp.finfo(Z_real.dtype).eps
+    is_real = jnp.abs(solutions.imag) < eps**0.5
+    valid_solutions = is_real & (Z_real > Bmix + eps**0.75)
 
     # Double-where: substitute a safe placeholder Z for unphysical branches so
     # `jnp.log` and friends stay finite. The placeholder value is never
