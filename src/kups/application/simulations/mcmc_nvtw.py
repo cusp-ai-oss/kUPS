@@ -87,6 +87,7 @@ from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import GroupId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
+from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.flat_histogram import AdsorbateEOS, TMMCSummary
 from kups.mcmc.moves import (
     ExchangeMove,
@@ -270,7 +271,11 @@ def build_tmmc_state(
         blocking_spheres_neighborlist_params=blocking_nlist,
         lj_parameters=WithCache(
             lj_params,
-            PotentialOut(Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY),
+            KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
+                )
+            ),
         ),
         ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
         blocking_spheres_parameters=blocking_spheres,
@@ -291,7 +296,7 @@ def build_tmmc_state(
             TransitionStatistics.zeros(n_sys), label=SystemId
         ),
         energy_moments=Table.arange(EnergyMoments.zeros(n_sys), label=SystemId),
-        macrostate_n=jnp.asarray(list(macrostates), dtype=jnp.int32),
+        macrostate_n=jnp.asarray(list(macrostates), dtype=int),
     )
 
 
@@ -314,7 +319,7 @@ class EnergyMomentsObserver(Propagator[NVTWidomState]):
 
     def __call__(self, key: Array, state: NVTWidomState) -> NVTWidomState:
         del key
-        energy = state.systems.data.potential_energy
+        energy = state.systems.data.potential_energy.total
         new_moments = state.energy_moments.data.update(energy)
         return replace(
             state,
