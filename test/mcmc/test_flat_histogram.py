@@ -182,9 +182,7 @@ class TestExtrapolate:
 
     @pytest.mark.parametrize("order", [0, 5, -1])
     def test_invalid_order_raises(self, order: int):
-        cumulants = EnergyCumulants(
-            mean=jnp.array([0.0]), cumulants=jnp.zeros((1, 3))
-        )
+        cumulants = EnergyCumulants(mean=jnp.array([0.0]), cumulants=jnp.zeros((1, 3)))
         with pytest.raises(ValueError):
             extrapolate_log_partition_fn(
                 jnp.array([0.0]),
