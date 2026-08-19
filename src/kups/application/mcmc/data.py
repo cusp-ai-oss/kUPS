@@ -379,8 +379,8 @@ def _make_molecule(
 
 
 @dataclass
-class PreparedHost:
-    r"""Host + motif data prepared once per host, reused for every adsorbate count.
+class PreparedSystem:
+    r"""One fully prepared system — host, motifs, reservoir — awaiting adsorbate placement.
 
     Holds everything that does not depend on the number of adsorbates placed
     in a particular macrostate: the parsed host framework, its supercell, the
@@ -411,10 +411,10 @@ class PreparedHost:
     n_adsorbate_species: int = field(static=True)
 
 
-def prepare_host(
+def prepare_system(
     host: HostConfig,
     adsorbates: tuple[AdsorbateConfig, ...],
-) -> PreparedHost:
+) -> PreparedSystem:
     """Perform the expensive per-host work once: CIF parse, supercell, motifs, fugacity.
 
     Args:
@@ -422,7 +422,7 @@ def prepare_host(
         adsorbates: Adsorbate species configurations.
 
     Returns:
-        A :class:`PreparedHost` bundle ready to be fed into
+        A :class:`PreparedSystem` bundle ready to be fed into
         :func:`place_adsorbates` any number of times.
     """
     hp, cell, _ = particles_from_ase(host.cif_file)
@@ -480,7 +480,7 @@ def prepare_host(
         label=GroupId,
     )
 
-    return PreparedHost(
+    return PreparedSystem(
         motifs=motifs,
         cell=cell,
         host_particles=host_particles,
@@ -493,7 +493,7 @@ def prepare_host(
 
 def place_adsorbates(
     key: Array,
-    prepared: PreparedHost,
+    prepared: PreparedSystem,
     init_adsorbates: tuple[int, ...],
 ) -> tuple[
     Table[ParticleId, MCMCParticles],
@@ -504,7 +504,7 @@ def place_adsorbates(
 
     Args:
         key: JAX PRNG key for random adsorbate placement.
-        prepared: Output of :func:`prepare_host`.
+        prepared: Output of :func:`prepare_system`.
         init_adsorbates: Number of adsorbates to place per species.
 
     Returns:
@@ -557,7 +557,7 @@ def mcmc_state_from_config(
     Host atoms get one group each (sentinel motif). Initial adsorbates
     from ``host.init_adsorbates`` are placed randomly within the unit cell.
     Log activity is computed internally via Peng-Robinson EOS. Thin
-    composition of :func:`prepare_host` and :func:`place_adsorbates`.
+    composition of :func:`prepare_system` and :func:`place_adsorbates`.
 
     Args:
         key: JAX PRNG key for random adsorbate placement.
@@ -567,7 +567,7 @@ def mcmc_state_from_config(
     Returns:
         Tuple of ``(particles, groups, system, motifs)``.
     """
-    prepared = prepare_host(host, adsorbates)
+    prepared = prepare_system(host, adsorbates)
     particles, groups, system = place_adsorbates(key, prepared, host.init_adsorbates)
     return particles, groups, system, prepared.motifs
 
