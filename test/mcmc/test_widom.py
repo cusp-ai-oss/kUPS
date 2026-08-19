@@ -237,9 +237,7 @@ class TestTransitionStatistics:
         for _ in range(5):
             stats = stats.update_insertion(jnp.array([0.0, 0.0]))  # acc=1 each
         npt.assert_allclose(stats.acceptance_insertion, jnp.array([5.0, 5.0]))
-        npt.assert_array_equal(
-            stats.n_trials_insertion, jnp.array([5, 5], dtype=int)
-        )
+        npt.assert_array_equal(stats.n_trials_insertion, jnp.array([5, 5], dtype=int))
 
 
 # -- EnergyMoments (Welford / Pébay) ------------------------------------

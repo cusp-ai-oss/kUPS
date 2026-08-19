@@ -410,7 +410,9 @@ class EnergyMoments:
             Cumulants $\kappa_1, \ldots, \kappa_P$ of the accumulated samples.
         """
         nf = self.count.astype(float)
-        mu = {p: self.central_sums[..., p - 2] / nf for p in range(2, self.max_order + 1)}
+        mu = {
+            p: self.central_sums[..., p - 2] / nf for p in range(2, self.max_order + 1)
+        }
         kappa: dict[int, Array] = {}
         for p in range(2, self.max_order + 1):
             kappa[p] = mu[p] - sum(
