@@ -73,22 +73,22 @@ def make_torch_mliap_from_state[State](
 
 
 @overload
-def make_torch_mliap_from_state[State](
-    state: Lens[State, IsTorchMliapGraphState],
+def make_torch_mliap_from_state[State, Focus: IsTorchMliapGraphState](
+    state: Lens[State, Focus],
     *,
     parameters: TorchMliap,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsTorchMliapGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_torch_mliap_from_state[State](
-    state: Lens[State, IsTorchMliapGraphState],
+def make_torch_mliap_from_state[State, Focus: IsTorchMliapGraphState](
+    state: Lens[State, Focus],
     *,
     parameters: TorchMliap,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsTorchMliapGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 

@@ -64,12 +64,12 @@ class LjPotentialConfig(BaseModel):
     parameters: dict[str, tuple[float | None, float | None]]
     mixing_rule: MixingRule
 
-    def build[State](
+    def build[State, Focus: IsLJGraphState](
         self,
-        state_lens: Lens[State, IsLJGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
         neighborlist_factory: NeighborListFactory[
-            Any
+            Focus
         ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the LJ potential with its parameters bound in."""
@@ -93,12 +93,12 @@ class TojaxPotentialConfig(BaseModel):
     backend: Literal["tojax"] = "tojax"
     model_path: str | Path
 
-    def build[State](
+    def build[State, Focus: IsTojaxedGraphState](
         self,
-        state_lens: Lens[State, IsTojaxedGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
         neighborlist_factory: NeighborListFactory[
-            Any
+            Focus
         ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the jaxified potential from the exported model."""
@@ -120,12 +120,12 @@ class MaceConfig(BaseModel):
     device: Literal["cpu", "cuda"] = "cuda"
     dtype: Literal["float32", "float64"] = "float32"
 
-    def build[State](
+    def build[State, Focus: IsTorchMliapGraphState](
         self,
-        state_lens: Lens[State, IsTorchMliapGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
         neighborlist_factory: NeighborListFactory[
-            Any
+            Focus
         ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Load the MACE checkpoint and build the potential (lazy torch import)."""
@@ -156,12 +156,12 @@ class UmaConfig(BaseModel):
     task_name: UMATaskName = "omat"
     inference_settings: UMAInferenceSettings = "default"
 
-    def build[State](
+    def build[State, Focus: IsTorchMliapGraphState](
         self,
-        state_lens: Lens[State, IsTorchMliapGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
         neighborlist_factory: NeighborListFactory[
-            Any
+            Focus
         ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Load the UMA checkpoint and build the potential (lazy torch import)."""
