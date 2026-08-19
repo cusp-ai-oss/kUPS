@@ -110,7 +110,9 @@ class AdsorbateConfig(BaseModel):
         for name in ("positions", "charges", "masses", "atomic_numbers"):
             m = len(getattr(self, name))
             if m != n:
-                raise ValueError(f"`{name}` has {m} entries, expected {n} (one per symbol)")
+                raise ValueError(
+                    f"`{name}` has {m} entries, expected {n} (one per symbol)"
+                )
         return self
 
     @property
