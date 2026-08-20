@@ -9,7 +9,8 @@ working capacities from an NVT+W simulation performed at a single temperature.
 
 Pipeline:
 
-1. C-matrix $\to$ transition probabilities $P(N \to N \pm 1)$ (eq 7).
+1. C-matrix $\to$ transition probabilities $P(N \to N \pm 1)$ (eq 7), via
+   [probabilities][kups.mcmc.widom.TransitionStatistics.probabilities].
 2. Transition probabilities $\to$ $\ln Q_c(N, V, \beta_\mathrm{sim})$ via
    a prefix sum of the detailed-balance ratio (eq 8).
 3. Taylor-expand $\ln Q_c(N, V, \beta)$ in $\beta$ using the per-macrostate
@@ -18,97 +19,165 @@ Pipeline:
    [peng_robinson_log_fugacity][kups.mcmc.fugacity.peng_robinson_log_fugacity]
    for the reservoir fugacity.
 
-The isosteric heat of adsorption (eq 19) is computed with [`jax.grad`][jax.grad]
-through the full $\langle N \rangle(T, \ln P)$ pipeline, including the
-Peng--Robinson equation of state. Autodiff is enabled by the implicit-function
-JVP attached to [`cubic_roots`][kups.core.utils.math.cubic_roots] and the
+Axis convention: the macrostate $N$ is the **trailing** axis of every array in
+the pipeline ([MacrostateId][kups.core.typing.MacrostateId]), so a ladder is
+one row of ``n_max + 1`` rungs and any leading axes stay per-system. Every
+step above is written against ``axis=-1``, which makes it rank-polymorphic:
+a lone ladder of shape ``(n_max+1,)`` and a batch of shape
+``(n_systems, n_max+1)`` follow the identical code path and produce bitwise
+identical results. Per-system inputs that carry no macrostate axis
+($\beta_\mathrm{sim}$, $\ln f$) gain a trailing singleton before broadcasting.
+
+[`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummary] is the public entry
+point: it holds the reconstructed ladders as ``Table[SystemId, ...]`` rows
+keyed by system, exposes the observables as methods, and returns
+``Table``-typed results so the keys survive the whole post-processing chain.
+
+The isosteric heat of adsorption (eq 19) is computed by autodiff through the
+full $\langle N \rangle(T, \ln P)$ pipeline, including the Peng--Robinson
+equation of state. Both derivatives are taken with respect to scalars, so a
+single forward-mode pass ([`jax.jacfwd`][jax.jacfwd]) yields them for every
+system at once. Differentiability is enabled by the implicit-function JVP
+attached to [`cubic_roots`][kups.core.utils.math.cubic_roots] and the
 double-where sanitisation in
 [`peng_robinson_log_fugacity`][kups.mcmc.fugacity.peng_robinson_log_fugacity].
 
-All public functions and the [`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummary]
-dataclass operate on plain [`jax.Array`][jax.Array] inputs and are fully
-vectorised across pressure grids.
-
 Scope: the macrostate axis is the 1-D loading $N$ of a **single adsorbate
-species** in a **single system** (Witman 2018 treats exactly this case);
-mixtures would need a multi-dimensional macrostate lattice and a tensor
-C-matrix. Batches of systems are handled by [`jax.vmap`][jax.vmap] over the
-leading axis of the per-macrostate arrays.
+species** --- one ladder per system, exactly the case Witman 2018 treats ---
+so every equation-of-state argument is a ``Table[MotifId, AdsorbateEOS]`` of
+length one, asserted at the point of use. The multicomponent successor follows
+Shen & Errington [^shen2005]: the full $\Pi(N_1, N_2)$ surface is assembled
+from two pure-species ladders plus constant-$N_\mathrm{total}$ semigrand
+slices (identity-swap dynamics), all reconstructed by the same telescoping
+recursion used here --- no least-squares solve on the documented path.
 
 [^witman2018]:
     Witman, M., Mahynski, N. A. & Smit, B. (2018). *J. Chem. Theory Comput.*
     **14**, 6149--6158. DOI: 10.1021/acs.jctc.8b00534
+
+[^shen2005]:
+    Shen, V. K. & Errington, J. R. (2005). *J. Chem. Phys.* **122**, 064508.
+    DOI: 10.1063/1.1844372
 """
 
 from __future__ import annotations
 
 from math import factorial
-from typing import NamedTuple
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
+from kups.core.data import Table
+from kups.core.typing import MotifId, SystemId
 from kups.core.utils.jax import dataclass, field
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
-from kups.mcmc.widom import EnergyCumulants, TransitionStatistics
+from kups.mcmc.widom import (
+    DeletionProbability,
+    EnergyCumulants,
+    InsertionProbability,
+    TransitionStatistics,
+)
 
 type LogPartition = Array
-r"""Natural logarithm of $Q_c(N, V, \beta)$, shape ``(n_max+1,)``."""
+r"""Natural logarithm of $Q_c(N, V, \beta)$, shape ``(..., n_max+1)``.
+
+The trailing axis is the macrostate ([MacrostateId][kups.core.typing.MacrostateId]);
+leading axes, if any, are per-system.
+"""
 
 type MacrostateDistribution = Array
-r"""Grand-canonical distribution $\Pi(N; \mu, V, \beta)$, shape ``(n_max+1,)``."""
+r"""Grand-canonical distribution $\Pi(N; \mu, V, \beta)$, shape ``(..., n_max+1)``."""
 
 type Loading = Array
-r"""Expected loading $\langle N \rangle$, scalar or shape ``(n_pressures,)``."""
+r"""Expected loading $\langle N \rangle$, shape ``(...)`` or ``(..., n_pressures)``."""
 
 type IsostericHeat = Array
-r"""Isosteric heat $q_\mathrm{st}$ [energy], scalar or shape ``(n_pressures,)``."""
-
-type InsertionProbability = Array
-r"""TMMC insertion probability $P(N \to N+1)$, shape ``(n_max+1,)``."""
-
-type DeletionProbability = Array
-r"""TMMC deletion probability $P(N \to N-1)$, shape ``(n_max+1,)``."""
+r"""Isosteric heat $q_\mathrm{st}$ [energy], shape ``(...)`` or ``(..., n_pressures)``."""
 
 
-class TransitionProbabilities(NamedTuple):
-    r"""Per-macrostate TMMC transition probabilities, each shape ``(n_max+1,)``.
+@dataclass
+class AdsorbateEOS:
+    r"""Peng-Robinson equation-of-state parameters for adsorbate species.
+
+    Always carried as a ``Table[MotifId, AdsorbateEOS]``, so each field holds
+    one entry per species and the whole bundle is the ``(n,)``-shaped
+    per-component layout that
+    [peng_robinson_log_fugacity][kups.mcmc.fugacity.peng_robinson_log_fugacity]
+    expects. The single-ladder pipeline in this module asserts a length of
+    one; the multicomponent successor described in the module scope note is
+    what lifts that restriction.
+
+    All values are in SI units (Pa, K, dimensionless) at the boundary;
+    internal unit conversion happens downstream. The parameters are pytree
+    leaves, so they may be traced (e.g. to differentiate observables with
+    respect to the EOS parameters).
 
     Attributes:
-        insertion: $P(N \to N+1)$.
-        deletion: $P(N \to N-1)$.
+        critical_pressure: $P_c$ [Pa], shape ``(n_species,)``.
+        critical_temperature: $T_c$ [K], shape ``(n_species,)``.
+        acentric_factor: $\omega$ [-], shape ``(n_species,)``.
     """
 
-    insertion: InsertionProbability
-    deletion: DeletionProbability
+    critical_pressure: Array
+    critical_temperature: Array
+    acentric_factor: Array
+
+    @staticmethod
+    def single_species(
+        critical_pressure: Array | float,
+        critical_temperature: Array | float,
+        acentric_factor: Array | float,
+    ) -> Table[MotifId, AdsorbateEOS]:
+        r"""Build the one-species EOS table the flat-histogram pipeline consumes.
+
+        Args:
+            critical_pressure: $P_c$ of the adsorbate [Pa].
+            critical_temperature: $T_c$ of the adsorbate [K].
+            acentric_factor: $\omega$ of the adsorbate [-].
+
+        Returns:
+            A ``Table[MotifId, AdsorbateEOS]`` with a single row.
+        """
+        return Table.arange(
+            AdsorbateEOS(
+                critical_pressure=jnp.atleast_1d(jnp.asarray(critical_pressure)),
+                critical_temperature=jnp.atleast_1d(jnp.asarray(critical_temperature)),
+                acentric_factor=jnp.atleast_1d(jnp.asarray(acentric_factor)),
+            ),
+            label=MotifId,
+        )
 
 
-def transition_probabilities(
-    statistics: TransitionStatistics,
-) -> TransitionProbabilities:
-    r"""Normalise an accumulated C-matrix into per-macrostate transition probabilities.
+def _with_macrostate_axis(per_system: Array) -> Array:
+    r"""Append a singleton macrostate axis to a per-system quantity.
 
-    Applies Witman 2018 eq 7:
-
-    $$P(N \to N + \Delta) = \frac{C(N, N + \Delta)}{\sum_\Delta C(N, N + \Delta)}.$$
-
-    Args:
-        statistics: Accumulated TMMC C-matrix
-            ([`TransitionStatistics`][kups.mcmc.widom.TransitionStatistics]),
-            with each field indexed by macrostate $N$, shape ``(n_max+1,)``.
-
-    Returns:
-        ``TransitionProbabilities(insertion, deletion)``, each shape
-        ``(n_max+1,)``.
+    Quantities like $\beta$ and $\ln f$ are one value per system, with no
+    macrostate axis of their own. A trailing singleton lets them broadcast
+    against a ``(..., n_max+1)`` ladder: a per-system ``(n_systems,)`` becomes
+    ``(n_systems, 1)``, which lines up with the ladder's trailing macrostate
+    axis. A rank-0 value already broadcasts against every axis, so it is
+    passed through untouched and keeps scalar inputs giving scalar results.
     """
-    total = statistics.n_trials_insertion + statistics.n_trials_deletion
-    safe_total = jnp.where(total > 0, total, 1)
-    return TransitionProbabilities(
-        insertion=statistics.acceptance_insertion / safe_total,
-        deletion=statistics.acceptance_deletion / safe_total,
+    value = jnp.asarray(per_system)
+    return value if value.ndim == 0 else value[..., None]
+
+
+def _single_species(adsorbates: Table[MotifId, AdsorbateEOS]) -> AdsorbateEOS:
+    """Unwrap the sole species of an EOS table, or fail loudly.
+
+    Raises:
+        AssertionError: If ``adsorbates`` does not hold exactly one species.
+    """
+    assert len(adsorbates) == 1, (
+        f"the flat-histogram ladder samples a single adsorbate species, got "
+        f"{len(adsorbates)}. A mixture needs the multi-dimensional macrostate "
+        "lattice of the Shen & Errington (2005) spanning-tree construction "
+        "described in this module's scope note, not the 1-D ladder here."
     )
+    return adsorbates.data
 
 
 def reconstruct_log_partition(
@@ -126,24 +195,27 @@ def reconstruct_log_partition(
 
     For an ideal-gas reference, $q(\beta)\exp(\beta\mu) = \beta f$, so the
     correction term is $\ln\beta + \ln f$ at every macrostate, so the
-    reconstruction is a [`jnp.cumsum`][jax.numpy.cumsum] over the macrostate
-    axis.
+    reconstruction is a [`jnp.cumsum`][jax.numpy.cumsum] over the trailing
+    macrostate axis.
 
     Args:
-        insertion_probability: $P(N \to N+1)$, shape ``(n_max+1,)``.
-        deletion_probability: $P(N \to N-1)$, shape ``(n_max+1,)``.
+        insertion_probability: $P(N \to N+1)$, shape ``(..., n_max+1)``.
+        deletion_probability: $P(N \to N-1)$, shape ``(..., n_max+1)``.
         beta: Simulation inverse temperature $1/(k_B T_\mathrm{sim})$
-            [1/energy].
+            [1/energy], one value per system.
         log_fugacity: Simulation log-fugacity $\ln f$ [dimensionless after
-            unit scaling].
+            unit scaling], one value per system.
 
     Returns:
-        $\ln Q_c(N, V, \beta_\mathrm{sim})$ of shape ``(n_max+1,)``, anchored
-        to ``0`` at $N = 0$.
+        $\ln Q_c(N, V, \beta_\mathrm{sim})$ of shape ``(..., n_max+1)``,
+        anchored to ``0`` at $N = 0$.
     """
-    log_ratio = jnp.log(insertion_probability[:-1]) - jnp.log(deletion_probability[1:])
-    delta_log_qc = log_ratio - (log_fugacity + jnp.log(beta))
-    return jnp.concatenate([jnp.zeros(1), jnp.cumsum(delta_log_qc)])
+    log_ratio = jnp.log(insertion_probability[..., :-1]) - jnp.log(
+        deletion_probability[..., 1:]
+    )
+    delta_log_qc = log_ratio - _with_macrostate_axis(log_fugacity + jnp.log(beta))
+    anchor = jnp.zeros_like(delta_log_qc[..., :1])
+    return jnp.concatenate([anchor, jnp.cumsum(delta_log_qc, axis=-1)], axis=-1)
 
 
 def extrapolate_log_partition(
@@ -167,16 +239,17 @@ def extrapolate_log_partition(
 
     Args:
         log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
-            ``(n_max+1,)``.
-        cumulants: Per-macrostate energy cumulants.
-        beta_sim: Simulation inverse temperature.
+            ``(..., n_max+1)``.
+        cumulants: Per-macrostate energy cumulants; ``mean`` shares the
+            ladder's shape and ``cumulants`` appends the moment-order axis.
+        beta_sim: Simulation inverse temperature, one value per system.
         beta_target: Target inverse temperature.
         order: Taylor order $K$, at most ``cumulants.max_order``. Higher
             orders require more sampling to converge.
 
     Returns:
         Extrapolated $\ln Q_c(N, V, \beta_\mathrm{target})$, shape
-        ``(n_max+1,)``.
+        ``(..., n_max+1)``.
 
     Raises:
         ValueError: If ``order`` is not in ``1..cumulants.max_order``.
@@ -184,7 +257,7 @@ def extrapolate_log_partition(
     if not 1 <= order <= cumulants.max_order:
         raise ValueError(f"order must be in 1..{cumulants.max_order}, got {order}")
 
-    db = beta_target - beta_sim
+    db = _with_macrostate_axis(beta_target - beta_sim)
     result = log_partition_sim - cumulants.mean * db
     for k in range(2, order + 1):
         result = result + cumulants.cumulants[..., k - 2] * (-db) ** k / factorial(k)
@@ -203,94 +276,78 @@ def macrostate_distribution(
     by :func:`reconstruct_log_partition`.
 
     Args:
-        log_partition: $\ln Q_c(N, V, \beta)$, shape ``(n_max+1,)``.
-        beta: Inverse temperature.
-        log_fugacity: $\ln f$ at target conditions.
+        log_partition: $\ln Q_c(N, V, \beta)$, shape ``(..., n_max+1)``.
+        beta: Inverse temperature, one value per system.
+        log_fugacity: $\ln f$ at target conditions, one value per system.
 
     Returns:
-        Normalised distribution $\Pi(N)$, shape ``(n_max+1,)``.
+        Distribution $\Pi(N)$ of shape ``(..., n_max+1)``, normalised over
+        the trailing macrostate axis.
     """
-    n_values = jnp.arange(log_partition.shape[0])
-    log_weights = (log_fugacity + jnp.log(beta)) * n_values + log_partition
-    return jax.nn.softmax(log_weights)
+    n_values = jnp.arange(log_partition.shape[-1])
+    log_activity = _with_macrostate_axis(log_fugacity + jnp.log(beta))
+    return jax.nn.softmax(log_activity * n_values + log_partition, axis=-1)
 
 
 def average_loading(distribution: MacrostateDistribution) -> Loading:
     r"""Compute $\langle N \rangle = \sum_N N\,\Pi(N)$.
 
     Args:
-        distribution: Normalised $\Pi(N)$, shape ``(n_max+1,)``.
+        distribution: Normalised $\Pi(N)$, shape ``(..., n_max+1)``.
 
     Returns:
-        Scalar expected loading $\langle N \rangle$.
+        Expected loading $\langle N \rangle$, one value per system (the
+        trailing macrostate axis is summed away).
     """
-    n_values = jnp.arange(distribution.shape[0])
-    return jnp.sum(n_values * distribution)
+    n_values = jnp.arange(distribution.shape[-1])
+    return jnp.sum(n_values * distribution, axis=-1)
 
 
 def _log_fugacity_at_pressures(
     pressures_pa: Array,
     temperature_k: Array,
-    critical_pressure_pa: Array | float,
-    critical_temperature_k: Array | float,
-    acentric_factor: Array | float,
+    adsorbates: Table[MotifId, AdsorbateEOS],
 ) -> Array:
-    r"""Return $\ln f$ at each pressure for a single-component gas. Shape ``(n_p,)``.
+    r"""Return $\ln f$ at each pressure for the sole adsorbate. Shape ``(n_p,)``.
 
     Uses kUPS's internal units (``PASCAL``, ``KELVIN``). Peng-Robinson's
     numpy-style ``vectorize`` broadcasts the leading pressure axis
-    automatically.
+    automatically, and the EOS table's single row is already the ``(n,)``
+    per-component layout it expects.
     """
+    eos = _single_species(adsorbates)
     result = peng_robinson_log_fugacity(
         pressures_pa * PASCAL,
         temperature_k * KELVIN,
-        jnp.atleast_1d(jnp.asarray(critical_pressure_pa)) * PASCAL,
-        jnp.atleast_1d(jnp.asarray(critical_temperature_k)) * KELVIN,
-        jnp.atleast_1d(jnp.asarray(acentric_factor)),
+        eos.critical_pressure * PASCAL,
+        eos.critical_temperature * KELVIN,
+        eos.acentric_factor,
     )
     return result.log_fugacity[..., 0]
 
 
-def isotherm_from_log_partition(
+def _isotherm(
     log_partition: LogPartition,
     beta: Array,
     pressures: Array,
     temperature: Array,
-    critical_pressure: Array | float,
-    critical_temperature: Array | float,
-    acentric_factor: Array | float,
+    adsorbates: Table[MotifId, AdsorbateEOS],
 ) -> Loading:
-    r"""Vectorised adsorption isotherm $\langle N \rangle(P)$ at fixed $T$.
+    r"""Vectorised $\langle N \rangle(P)$ at fixed $T$; see :meth:`TMMCSummary.isotherm`.
 
     Evaluates Witman 2018 eq 18 for every pressure in ``pressures``, vmapped
-    over the pressure grid. Fugacity comes from Peng-Robinson; the macrostate
-    distribution is rebuilt at each pressure.
-
-    Args:
-        log_partition: $\ln Q_c(N, V, \beta)$ at the target $\beta$,
-            shape ``(n_max+1,)``.
-        beta: Inverse temperature corresponding to ``temperature``.
-        pressures: Pressure grid [Pa], shape ``(n_pressures,)``.
-        temperature: Temperature [K].
-        critical_pressure: $P_c$ of the adsorbate [Pa].
-        critical_temperature: $T_c$ of the adsorbate [K].
-        acentric_factor: $\omega$ of the adsorbate [-].
-
-    Returns:
-        $\langle N \rangle$ at each pressure, shape ``(n_pressures,)``.
+    over the pressure grid and stacked onto a trailing pressure axis so the
+    leading per-system axes are untouched: ``(..., n_max+1)`` in,
+    ``(..., n_pressures)`` out.
     """
-    log_fugacities = _log_fugacity_at_pressures(
-        pressures,
-        temperature,
-        critical_pressure,
-        critical_temperature,
-        acentric_factor,
-    )
-    distributions = jax.vmap(
-        macrostate_distribution,
-        in_axes=(None, None, 0),
-    )(log_partition, beta, log_fugacities)
-    return jax.vmap(average_loading)(distributions)
+    log_fugacities = _log_fugacity_at_pressures(pressures, temperature, adsorbates)
+
+    def loading_at(log_fugacity: Array) -> Loading:
+        return average_loading(
+            macrostate_distribution(log_partition, beta, log_fugacity)
+        )
+
+    return jax.vmap(loading_at, out_axes=-1)(log_fugacities)
 
 
 def _loading_from_temperature_log_pressure(
@@ -300,15 +357,14 @@ def _loading_from_temperature_log_pressure(
     cumulants: EnergyCumulants,
     beta_sim: Array,
     order: int,
-    critical_pressure: Array | float,
-    critical_temperature: Array | float,
-    acentric_factor: Array | float,
-) -> Array:
+    adsorbates: Table[MotifId, AdsorbateEOS],
+) -> Loading:
     r"""Pure, differentiable $\langle N \rangle(T, \ln P)$ at one state point.
 
-    Used by :func:`isosteric_heat` as the target of ``jax.grad`` — composes
-    the Taylor extrapolation, Peng--Robinson fugacity, macrostate distribution,
-    and $\langle N\rangle$ marginalisation.
+    Used by :func:`_isosteric_heat` as the target of forward-mode autodiff —
+    composes the Taylor extrapolation, Peng--Robinson fugacity, macrostate
+    distribution, and $\langle N\rangle$ marginalisation. Both differentiated
+    arguments are scalars; the result carries the ladder's per-system shape.
     """
     beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
     log_qc = extrapolate_log_partition(
@@ -322,25 +378,21 @@ def _loading_from_temperature_log_pressure(
     log_fugacity = _log_fugacity_at_pressures(
         jnp.atleast_1d(pressure),
         temperature,
-        critical_pressure,
-        critical_temperature,
-        acentric_factor,
+        adsorbates,
     )[0]
     return average_loading(macrostate_distribution(log_qc, beta, log_fugacity))
 
 
-def isosteric_heat_from_log_partition(
+def _isosteric_heat(
     log_partition_sim: LogPartition,
     cumulants: EnergyCumulants,
     beta_sim: Array,
     pressures: Array,
     temperature: Array,
-    critical_pressure: Array | float,
-    critical_temperature: Array | float,
-    acentric_factor: Array | float,
+    adsorbates: Table[MotifId, AdsorbateEOS],
     order: int = 3,
 ) -> IsostericHeat:
-    r"""Isosteric heat $q_\mathrm{st}$ via Clausius--Clapeyron with autodiff.
+    r"""Clausius--Clapeyron $q_\mathrm{st}$; see :meth:`TMMCSummary.isosteric_heat`.
 
     Uses the triple-product rule
 
@@ -348,27 +400,15 @@ def isosteric_heat_from_log_partition(
         \frac{(\partial \langle N\rangle / \partial T)_P}
              {(\partial \langle N\rangle / \partial \ln P)_T}.$$
 
-    Both partial derivatives come from a single [`jax.grad`][jax.grad] on the
-    pure loading function $\langle N \rangle(T, \ln P)$, vmapped across the
-    pressure grid.
-
-    Args:
-        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$,
-            shape ``(n_max+1,)``.
-        cumulants: Per-macrostate energy cumulants.
-        beta_sim: Simulation inverse temperature.
-        pressures: Pressure grid [Pa], shape ``(n_pressures,)``.
-        temperature: Target temperature [K].
-        critical_pressure: $P_c$ of the adsorbate [Pa].
-        critical_temperature: $T_c$ of the adsorbate [K].
-        acentric_factor: $\omega$ of the adsorbate [-].
-        order: Taylor order for the $\beta$-extrapolation.
-
-    Returns:
-        $q_\mathrm{st}$ [energy] at each pressure, shape ``(n_pressures,)``.
+    Both partial derivatives come from one forward-mode pass over the pure
+    loading function $\langle N \rangle(T, \ln P)$ — the differentiation
+    targets are two scalars, so [`jax.jacfwd`][jax.jacfwd] returns
+    derivatives shaped like the loading itself and the whole batch of systems
+    is differentiated at once, where [`jax.grad`][jax.grad] would insist on a
+    scalar output. The pressure grid is vmapped onto a trailing axis.
     """
 
-    def loading_fn(t: Array, log_p: Array) -> Array:
+    def loading_fn(t: Array, log_p: Array) -> Loading:
         return _loading_from_temperature_log_pressure(
             t,
             log_p,
@@ -376,201 +416,209 @@ def isosteric_heat_from_log_partition(
             cumulants,
             beta_sim,
             order,
-            critical_pressure,
-            critical_temperature,
-            acentric_factor,
+            adsorbates,
         )
 
-    loading_grad = jax.grad(loading_fn, argnums=(0, 1))
+    loading_jacobian = jax.jacfwd(loading_fn, argnums=(0, 1))
 
-    def q_st_at(log_p: Array) -> Array:
-        dn_dt, dn_dlog_p = loading_grad(temperature, log_p)
+    def q_st_at(log_p: Array) -> IsostericHeat:
+        dn_dt, dn_dlog_p = loading_jacobian(temperature, log_p)
         return BOLTZMANN_CONSTANT * temperature**2 * dn_dt / dn_dlog_p
 
-    return jax.vmap(q_st_at)(jnp.log(pressures))
+    return jax.vmap(q_st_at, out_axes=-1)(jnp.log(pressures))
 
 
-def working_capacity_from_log_partition(
+def _working_capacity(
     log_partition_sim: LogPartition,
     cumulants: EnergyCumulants,
     beta_sim: Array,
-    temperature_ads: Array,
     pressure_ads: Array,
-    temperature_des: Array,
     pressure_des: Array,
-    critical_pressure: Array | float,
-    critical_temperature: Array | float,
-    acentric_factor: Array | float,
+    temperature: Array,
+    adsorbates: Table[MotifId, AdsorbateEOS],
     order: int = 3,
-) -> Array:
-    r"""Working capacity $n_\mathrm{wc} = \langle N\rangle_\mathrm{ads} - \langle N\rangle_\mathrm{des}$.
+) -> Loading:
+    r"""Pressure-swing $n_\mathrm{wc}$; see :meth:`TMMCSummary.working_capacity`."""
 
-    Evaluates Witman 2018 eq 20 for a single $(T_\mathrm{ads}, P_\mathrm{ads}) \to (T_\mathrm{des}, P_\mathrm{des})$
-    swing process. Both end points use the Taylor-extrapolated $\ln Q_c$.
-
-    Args:
-        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$,
-            shape ``(n_max+1,)``.
-        cumulants: Per-macrostate energy cumulants.
-        beta_sim: Simulation inverse temperature.
-        temperature_ads: Adsorption temperature [K].
-        pressure_ads: Adsorption pressure [Pa].
-        temperature_des: Desorption temperature [K].
-        pressure_des: Desorption pressure [Pa].
-        critical_pressure: $P_c$ of the adsorbate [Pa].
-        critical_temperature: $T_c$ of the adsorbate [K].
-        acentric_factor: $\omega$ of the adsorbate [-].
-        order: Taylor order for the $\beta$-extrapolation.
-
-    Returns:
-        Scalar $n_\mathrm{wc}$ [particles].
-    """
-
-    def loading(t: Array, p: Array) -> Array:
+    def loading(pressure: Array) -> Loading:
         return _loading_from_temperature_log_pressure(
-            t,
-            jnp.log(p),
+            temperature,
+            jnp.log(pressure),
             log_partition_sim,
             cumulants,
             beta_sim,
             order,
-            critical_pressure,
-            critical_temperature,
-            acentric_factor,
+            adsorbates,
         )
 
-    return loading(temperature_ads, pressure_ads) - loading(
-        temperature_des, pressure_des
-    )
-
-
-@dataclass
-class AdsorbateEOS:
-    r"""Peng-Robinson equation-of-state parameters for a single adsorbate species.
-
-    All values are in SI units (Pa, K, dimensionless) at the boundary; internal
-    unit conversion is handled downstream by
-    [peng_robinson_log_fugacity][kups.mcmc.fugacity.peng_robinson_log_fugacity].
-    The parameters are pytree leaves, so they may be plain floats or traced
-    arrays (e.g. to differentiate observables w.r.t. the EOS parameters).
-    """
-
-    critical_pressure: Array | float
-    critical_temperature: Array | float
-    acentric_factor: Array | float
+    return loading(pressure_ads) - loading(pressure_des)
 
 
 @dataclass
 class TMMCSummary:
     r"""Post-processed TMMC simulation at a single temperature.
 
-    Bundles $\ln Q_c(\beta_\mathrm{sim})$, the per-macrostate energy cumulants,
-    and the reservoir EOS so that downstream observables are one method call
-    away. All methods are pure and JIT/vmap-compatible.
+    Bundles $\ln Q_c(\beta_\mathrm{sim})$, the per-macrostate energy
+    cumulants, and the reservoir EOS so that downstream observables are one
+    method call away. Every field is keyed: one row per system, holding that
+    system's whole macrostate ladder along the row's trailing axis. The
+    observable methods keep those keys, so a batch of hosts is post-processed
+    in a single call and stays labelled throughout. All methods are pure and
+    JIT/vmap-compatible.
 
     Attributes:
-        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
+        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, rows of shape
             ``(n_max+1,)``.
-        cumulants: Per-macrostate energy cumulants.
-        beta_sim: Simulation inverse temperature.
-        adsorbate: Peng-Robinson parameters for the reservoir species.
+        cumulants: Per-macrostate energy cumulants, rows of shape
+            ``(n_max+1, order-1)`` (plus the ``(n_max+1,)`` mean).
+        beta_sim: Simulation inverse temperature, one scalar row per system.
+        adsorbates: Peng-Robinson parameters for the reservoir species.
+            Exactly one species, asserted at the point of use — see the
+            module scope note for the multicomponent successor.
         order: Taylor order for the $\beta$-extrapolation (default 3).
     """
 
-    log_partition_sim: LogPartition
-    cumulants: EnergyCumulants
-    beta_sim: Array
-    adsorbate: AdsorbateEOS
+    log_partition_sim: Table[SystemId, LogPartition]
+    cumulants: Table[SystemId, EnergyCumulants]
+    beta_sim: Table[SystemId, Array]
+    adsorbates: Table[MotifId, AdsorbateEOS]
     order: int = field(static=True, default=3)
 
     @staticmethod
     def from_transition_statistics(
-        statistics: TransitionStatistics,
-        cumulants: EnergyCumulants,
-        beta_sim: Array,
-        log_fugacity_sim: Array,
-        adsorbate: AdsorbateEOS,
+        statistics: Table[SystemId, TransitionStatistics],
+        cumulants: Table[SystemId, EnergyCumulants],
+        beta_sim: Table[SystemId, Array],
+        log_fugacity_sim: Table[SystemId, Array],
+        adsorbates: Table[MotifId, AdsorbateEOS],
         order: int = 3,
     ) -> TMMCSummary:
-        r"""Build a summary directly from an accumulated C-matrix.
+        r"""Build a summary directly from accumulated C-matrices.
 
         Args:
-            statistics: Accumulated TMMC C-matrix, indexed by macrostate $N$.
+            statistics: Accumulated TMMC C-matrix per system, each row
+                indexed by macrostate $N$ along its trailing axis.
             cumulants: Per-macrostate energy cumulants.
             beta_sim: Simulation inverse temperature.
             log_fugacity_sim: Simulation log-fugacity $\ln f$.
-            adsorbate: Peng-Robinson parameters for the reservoir species.
+            adsorbates: Peng-Robinson parameters for the reservoir species.
             order: Taylor order for the $\beta$-extrapolation.
 
         Returns:
             Summary ready for isotherm / heat / capacity evaluation.
         """
-        p_ins, p_del = transition_probabilities(statistics)
-        log_qc = reconstruct_log_partition(p_ins, p_del, beta_sim, log_fugacity_sim)
+
+        def reconstruct(
+            statistics: TransitionStatistics, beta: Array, log_fugacity: Array
+        ) -> LogPartition:
+            probabilities = statistics.probabilities()
+            return reconstruct_log_partition(
+                probabilities.insertion,
+                probabilities.deletion,
+                beta,
+                log_fugacity,
+            )
+
         return TMMCSummary(
-            log_partition_sim=log_qc,
+            log_partition_sim=Table.transform(reconstruct)(
+                statistics, beta_sim, log_fugacity_sim
+            ),
             cumulants=cumulants,
             beta_sim=beta_sim,
-            adsorbate=adsorbate,
+            adsorbates=adsorbates,
             order=order,
         )
 
-    def extrapolate(self, beta_target: Array) -> LogPartition:
+    def _per_ladder[R](
+        self, fn: Callable[[LogPartition, EnergyCumulants, Array], R]
+    ) -> Table[SystemId, R]:
+        r"""Apply ``fn`` to each system's $\ln Q_c$, cumulants and $\beta_\mathrm{sim}$."""
+        return Table.transform(fn)(
+            self.log_partition_sim, self.cumulants, self.beta_sim
+        )
+
+    def extrapolate(self, beta_target: Array) -> Table[SystemId, LogPartition]:
         r"""$\ln Q_c$ at a target inverse temperature via Taylor expansion."""
-        return extrapolate_log_partition(
-            self.log_partition_sim,
-            self.cumulants,
-            self.beta_sim,
-            beta_target,
-            self.order,
+        return self._per_ladder(
+            lambda log_partition, cumulants, beta_sim: extrapolate_log_partition(
+                log_partition, cumulants, beta_sim, beta_target, self.order
+            )
         )
 
-    def isotherm(self, pressures: Array, temperature: Array) -> Loading:
-        r"""$\langle N \rangle(P)$ at fixed $T$, vectorised across pressures."""
+    def isotherm(
+        self, pressures: Array, temperature: Array
+    ) -> Table[SystemId, Loading]:
+        r"""$\langle N \rangle(P)$ at fixed $T$, vectorised across pressures.
+
+        Args:
+            pressures: Pressure grid [Pa], shape ``(n_pressures,)``.
+            temperature: Temperature [K].
+
+        Returns:
+            $\langle N \rangle$ per system, rows of shape ``(n_pressures,)``.
+        """
         beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
-        log_qc = self.extrapolate(beta)
-        return isotherm_from_log_partition(
-            log_qc,
-            beta,
-            pressures,
-            temperature,
-            self.adsorbate.critical_pressure,
-            self.adsorbate.critical_temperature,
-            self.adsorbate.acentric_factor,
+        return self.extrapolate(beta).map_data(
+            lambda log_partition: _isotherm(
+                log_partition, beta, pressures, temperature, self.adsorbates
+            )
         )
 
-    def isosteric_heat(self, pressures: Array, temperature: Array) -> IsostericHeat:
-        r"""Autodiff Clausius--Clapeyron heat across a pressure grid."""
-        return isosteric_heat_from_log_partition(
-            self.log_partition_sim,
-            self.cumulants,
-            self.beta_sim,
-            pressures,
-            temperature,
-            self.adsorbate.critical_pressure,
-            self.adsorbate.critical_temperature,
-            self.adsorbate.acentric_factor,
-            self.order,
+    def isosteric_heat(
+        self, pressures: Array, temperature: Array
+    ) -> Table[SystemId, IsostericHeat]:
+        r"""Autodiff Clausius--Clapeyron heat across a pressure grid.
+
+        Args:
+            pressures: Pressure grid [Pa], shape ``(n_pressures,)``.
+            temperature: Temperature [K].
+
+        Returns:
+            $q_\mathrm{st}$ [energy] per system, rows of shape
+            ``(n_pressures,)``.
+        """
+        return self._per_ladder(
+            lambda log_partition, cumulants, beta_sim: _isosteric_heat(
+                log_partition,
+                cumulants,
+                beta_sim,
+                pressures,
+                temperature,
+                self.adsorbates,
+                self.order,
+            )
         )
 
     def working_capacity(
         self,
-        temperature_ads: Array,
         pressure_ads: Array,
-        temperature_des: Array,
         pressure_des: Array,
-    ) -> Array:
-        r"""Working capacity between adsorption and desorption conditions."""
-        return working_capacity_from_log_partition(
-            self.log_partition_sim,
-            self.cumulants,
-            self.beta_sim,
-            temperature_ads,
-            pressure_ads,
-            temperature_des,
-            pressure_des,
-            self.adsorbate.critical_pressure,
-            self.adsorbate.critical_temperature,
-            self.adsorbate.acentric_factor,
-            self.order,
+        temperature: Array,
+    ) -> Table[SystemId, Loading]:
+        r"""Isothermal working capacity
+        $n_\mathrm{wc} = \langle N\rangle_\mathrm{ads} - \langle N\rangle_\mathrm{des}$.
+
+        Evaluates Witman 2018 eq 20 for a pressure swing at fixed
+        temperature. A temperature swing is the difference of two
+        :meth:`isotherm` calls, so it needs no method of its own.
+
+        Args:
+            pressure_ads: Adsorption pressure [Pa].
+            pressure_des: Desorption pressure [Pa].
+            temperature: Swing temperature [K].
+
+        Returns:
+            $n_\mathrm{wc}$ [particles], one scalar row per system.
+        """
+        return self._per_ladder(
+            lambda log_partition, cumulants, beta_sim: _working_capacity(
+                log_partition,
+                cumulants,
+                beta_sim,
+                pressure_ads,
+                pressure_des,
+                temperature,
+                self.adsorbates,
+                self.order,
+            )
         )

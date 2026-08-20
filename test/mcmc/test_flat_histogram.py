@@ -7,57 +7,56 @@ from __future__ import annotations
 
 import math
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
 
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
+from kups.core.data import Table
+from kups.core.typing import SystemId
 from kups.mcmc.flat_histogram import (
     AdsorbateEOS,
     TMMCSummary,
+    _isosteric_heat,
+    _isotherm,
+    _working_capacity,
     average_loading,
     extrapolate_log_partition,
-    isosteric_heat_from_log_partition,
-    isotherm_from_log_partition,
     macrostate_distribution,
     reconstruct_log_partition,
-    transition_probabilities,
-    working_capacity_from_log_partition,
 )
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 from kups.mcmc.widom import EnergyCumulants, TransitionStatistics
 
 # CO2-like EOS parameters for integration tests.
-_CO2 = AdsorbateEOS(
+_CO2 = AdsorbateEOS.single_species(
     critical_pressure=7.38e6,  # Pa
     critical_temperature=304.2,  # K
     acentric_factor=0.228,
 )
 
 
-# -- transition_probabilities --------------------------------------------
+def _rows(tree):
+    """Add a leading (length-1) system axis to every leaf of ``tree``."""
+    return jax.tree.map(lambda x: jnp.asarray(x)[None], tree)
 
 
-class TestTransitionProbabilities:
-    def test_normalises_by_total_trials(self):
-        acc_ins = jnp.array([1.0, 2.0, 0.5])
-        acc_del = jnp.array([0.0, 1.0, 0.3])
-        n_ins = jnp.array([4, 4, 4], dtype=int)
-        n_del = jnp.array([4, 4, 4], dtype=int)
-        p_ins, p_del = transition_probabilities(
-            TransitionStatistics(acc_ins, acc_del, n_ins, n_del)
-        )
-        npt.assert_allclose(p_ins, acc_ins / 8.0)
-        npt.assert_allclose(p_del, acc_del / 8.0)
-
-    def test_safe_at_zero_trials(self):
-        """No divide-by-zero when a macrostate was never visited."""
-        acc = jnp.zeros(3)
-        n = jnp.zeros(3, dtype=int)
-        p_ins, p_del = transition_probabilities(TransitionStatistics(acc, acc, n, n))
-        npt.assert_array_equal(p_ins, jnp.zeros(3))
-        npt.assert_array_equal(p_del, jnp.zeros(3))
+def _summary(
+    log_partition_sim: jnp.ndarray,
+    cumulants: EnergyCumulants,
+    beta_sim: jnp.ndarray,
+    order: int = 1,
+) -> TMMCSummary:
+    """Wrap one system's raw ladder into a keyed :class:`TMMCSummary`."""
+    return TMMCSummary(
+        log_partition_sim=Table.arange(_rows(log_partition_sim), label=SystemId),
+        cumulants=Table.arange(_rows(cumulants), label=SystemId),
+        beta_sim=Table.arange(_rows(beta_sim), label=SystemId),
+        adsorbates=_CO2,
+        order=order,
+    )
 
 
 # -- reconstruct_log_partition ---------------------------------------
@@ -87,6 +86,21 @@ class TestReconstructLogPartition:
             p_ins, p_del, jnp.asarray(1.0), jnp.asarray(0.0)
         )
         assert float(result[0]) == 0.0
+
+    def test_prefix_sum_runs_along_the_trailing_axis(self):
+        """A stack of ladders reconstructs row-by-row, per-system β and ln f."""
+        p_ins = jnp.array([[0.1, 0.2, 0.0], [0.3, 0.05, 0.0]])
+        p_del = jnp.array([[0.5, 0.3, 0.4], [0.5, 0.2, 0.7]])
+        beta = jnp.array([1.0, 2.0])
+        log_f = jnp.array([0.0, -1.0])
+
+        batched = reconstruct_log_partition(p_ins, p_del, beta, log_f)
+        assert batched.shape == (2, 3)
+        for row in range(2):
+            single = reconstruct_log_partition(
+                p_ins[row], p_del[row], beta[row], log_f[row]
+            )
+            npt.assert_array_equal(batched[row], single)
 
 
 # -- extrapolate_log_partition ---------------------------------------
@@ -180,6 +194,35 @@ class TestExtrapolate:
         )
         npt.assert_allclose(result, log_qc, rtol=1e-12)
 
+    def test_batched_ladders_extrapolate_row_by_row(self):
+        """The moment-order axis stays trailing; macrostates sit before it."""
+        cumulants = EnergyCumulants(
+            mean=jnp.array([[1.0, 2.0, 3.0], [-1.0, 0.5, 0.25]]),
+            cumulants=jnp.stack(
+                [
+                    jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+                    jnp.array([[0.01, 0.02, 0.03], [0.04, 0.05, 0.06]]),
+                ],
+                axis=-1,
+            ),
+        )
+        log_qc = jnp.array([[0.0, -1.0, -2.0], [0.0, -0.5, -3.0]])
+        beta_sim = jnp.array([1.0, 1.5])
+
+        batched = extrapolate_log_partition(
+            log_qc, cumulants, beta_sim, jnp.asarray(1.2), order=3
+        )
+        assert batched.shape == (2, 3)
+        for row in range(2):
+            single = extrapolate_log_partition(
+                log_qc[row],
+                jax.tree.map(lambda x: x[row], cumulants),  # noqa: B023
+                beta_sim[row],
+                jnp.asarray(1.2),
+                order=3,
+            )
+            npt.assert_array_equal(batched[row], single)
+
     @pytest.mark.parametrize("order", [0, 5, -1])
     def test_invalid_order_raises(self, order: int):
         cumulants = EnergyCumulants(mean=jnp.array([0.0]), cumulants=jnp.zeros((1, 3)))
@@ -214,10 +257,25 @@ class TestMacrostateDistribution:
         expected = np.exp(log_w) / np.exp(log_w).sum()
         npt.assert_allclose(dist, expected, rtol=1e-10)
 
+    def test_normalises_each_row_of_a_batch(self):
+        """Softmax runs over the trailing macrostate axis, not the batch."""
+        log_qc = jnp.array([[0.0, -1.0, -0.5], [0.0, 2.0, 1.0]])
+        dist = macrostate_distribution(
+            log_qc, jnp.array([1.0, 3.0]), jnp.array([-1.0, 0.5])
+        )
+        assert dist.shape == (2, 3)
+        npt.assert_allclose(jnp.sum(dist, axis=-1), jnp.ones(2), rtol=1e-12)
+
     def test_average_loading_matches_hand_calculation(self):
         dist = jnp.array([0.2, 0.3, 0.4, 0.1])
         expected = 0 * 0.2 + 1 * 0.3 + 2 * 0.4 + 3 * 0.1
         npt.assert_allclose(float(average_loading(dist)), expected, rtol=1e-12)
+
+    def test_average_loading_reduces_only_the_macrostate_axis(self):
+        dist = jnp.array([[0.2, 0.3, 0.4, 0.1], [0.5, 0.5, 0.0, 0.0]])
+        loadings = average_loading(dist)
+        assert loadings.shape == (2,)
+        npt.assert_allclose(loadings, jnp.array([1.4, 0.5]), rtol=1e-12)
 
 
 # -- isotherm -----------------------------------------------------------
@@ -227,14 +285,12 @@ class TestIsotherm:
     def test_shape_matches_pressure_grid(self):
         log_qc = jnp.array([0.0, -1.0, -2.0, -2.5])
         pressures = jnp.array([1e4, 1e5, 1e6])
-        loadings = isotherm_from_log_partition(
+        loadings = _isotherm(
             log_qc,
             jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
             pressures,
             jnp.asarray(300.0),
-            _CO2.critical_pressure,
-            _CO2.critical_temperature,
-            _CO2.acentric_factor,
+            _CO2,
         )
         assert loadings.shape == (3,)
         assert jnp.all(loadings >= 0)
@@ -244,17 +300,45 @@ class TestIsotherm:
         """⟨N⟩ must be non-decreasing in P for a fixed-site attractive model."""
         log_qc = jnp.linspace(0.0, -10.0, 6)  # increasingly favourable binding
         pressures = jnp.logspace(3, 7, 10)
-        loadings = isotherm_from_log_partition(
+        loadings = _isotherm(
             log_qc,
             jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
             pressures,
             jnp.asarray(300.0),
-            _CO2.critical_pressure,
-            _CO2.critical_temperature,
-            _CO2.acentric_factor,
+            _CO2,
         )
         diffs = jnp.diff(loadings)
         assert jnp.all(diffs >= -1e-10), f"loadings non-monotonic: {loadings}"
+
+    def test_pressure_axis_is_appended_to_per_system_axes(self):
+        log_qc = jnp.array([[0.0, -1.0, -2.0, -2.5], [0.0, -3.0, -4.0, -4.5]])
+        pressures = jnp.array([1e4, 1e5, 1e6])
+        loadings = _isotherm(
+            log_qc,
+            jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
+            pressures,
+            jnp.asarray(300.0),
+            _CO2,
+        )
+        assert loadings.shape == (2, 3)
+
+    def test_rejects_multicomponent_eos_table(self):
+        two_species = Table.arange(
+            AdsorbateEOS(
+                critical_pressure=jnp.array([7.38e6, 4.86e6]),
+                critical_temperature=jnp.array([304.2, 150.7]),
+                acentric_factor=jnp.array([0.228, -0.002]),
+            ),
+            label=SystemId,
+        )
+        with pytest.raises(AssertionError, match="single adsorbate species"):
+            _isotherm(
+                jnp.array([0.0, -1.0]),
+                jnp.asarray(1.0),
+                jnp.array([1e5]),
+                jnp.asarray(300.0),
+                two_species,
+            )
 
 
 # -- isosteric heat (autodiff Clausius-Clapeyron) -----------------------
@@ -273,15 +357,13 @@ class TestIsostericHeat:
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         pressures = jnp.array([1e4, 1e5, 1e6])
 
-        q = isosteric_heat_from_log_partition(
+        q = _isosteric_heat(
             log_qc_sim,
             cumulants,
             beta_sim,
             pressures,
             jnp.asarray(300.0),
-            _CO2.critical_pressure,
-            _CO2.critical_temperature,
-            _CO2.acentric_factor,
+            _CO2,
             order=2,
         )
         assert q.shape == (3,)
@@ -322,9 +404,7 @@ class TestIsostericHeat:
                     cumulants,
                     beta_sim,
                     2,
-                    _CO2.critical_pressure,
-                    _CO2.critical_temperature,
-                    _CO2.acentric_factor,
+                    _CO2,
                 )
             )
 
@@ -334,15 +414,13 @@ class TestIsostericHeat:
         dlogP_fd = (loading(T, log_P + h_lp) - loading(T, log_P - h_lp)) / (2.0 * h_lp)
         q_fd = BOLTZMANN_CONSTANT * T**2 * dT_fd / dlogP_fd
 
-        q_ad = isosteric_heat_from_log_partition(
+        q_ad = _isosteric_heat(
             log_qc_sim,
             cumulants,
             beta_sim,
             jnp.array([P_test]),
             jnp.asarray(T),
-            _CO2.critical_pressure,
-            _CO2.critical_temperature,
-            _CO2.acentric_factor,
+            _CO2,
             order=2,
         )
         npt.assert_allclose(float(q_ad[0]), q_fd, rtol=1e-3)
@@ -353,21 +431,18 @@ class TestIsostericHeat:
 
 class TestWorkingCapacity:
     def test_swing_loading_difference(self):
-        """n_wc = ⟨N⟩_ads - ⟨N⟩_des; both terms come from the same summary."""
+        """n_wc = ⟨N⟩_ads - ⟨N⟩_des; both terms come from the same ladder."""
         log_qc_sim = jnp.linspace(0.0, -4.0, 5)
         cumulants = EnergyCumulants(mean=jnp.zeros(5), cumulants=jnp.zeros((5, 3)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
-        n_wc = working_capacity_from_log_partition(
+        n_wc = _working_capacity(
             log_qc_sim,
             cumulants,
             beta_sim,
-            jnp.asarray(300.0),
             jnp.asarray(1e6),  # adsorption at high P
-            jnp.asarray(300.0),
             jnp.asarray(1e3),  # desorption at low P
-            _CO2.critical_pressure,
-            _CO2.critical_temperature,
-            _CO2.acentric_factor,
+            jnp.asarray(300.0),
+            _CO2,
             order=1,
         )
         # Positive because ads P > des P and the material is attractive.
@@ -389,9 +464,9 @@ class TestAnalyticalLangmuirRoundTrip:
     we build transition-matrix counts that exactly satisfy Witman eq 8 and
     then run the full pipeline:
 
-    C-matrix $\\to$ :func:`transition_probabilities` $\\to$
-    :func:`reconstruct_log_partition` $\\to$
-    :class:`TMMCSummary` $\\to$ :func:`isotherm`.
+    C-matrix $\\to$ [`TransitionStatistics.probabilities`][kups.mcmc.widom.TransitionStatistics.probabilities]
+    $\\to$ :func:`reconstruct_log_partition` $\\to$
+    :class:`TMMCSummary` $\\to$ :meth:`TMMCSummary.isotherm`.
 
     The resulting $\\langle N\\rangle(P)$ is compared against the closed-form
     Langmuir $\\langle N \\rangle = M\\,x/(1+x)$ with
@@ -406,12 +481,13 @@ class TestAnalyticalLangmuirRoundTrip:
         beta = 1.0 / (BOLTZMANN_CONSTANT * T)
         P_sim = 1.0e5
 
+        eos = _CO2.data
         pr_sim = peng_robinson_log_fugacity(
             jnp.asarray(P_sim * PASCAL),
             jnp.asarray(T * KELVIN),
-            jnp.atleast_1d(jnp.asarray(_CO2.critical_pressure) * PASCAL),
-            jnp.atleast_1d(jnp.asarray(_CO2.critical_temperature) * KELVIN),
-            jnp.atleast_1d(jnp.asarray(_CO2.acentric_factor)),
+            eos.critical_pressure * PASCAL,
+            eos.critical_temperature * KELVIN,
+            eos.acentric_factor,
         )
         log_f_sim = jnp.asarray(float(pr_sim.log_fugacity[0]))
 
@@ -436,16 +512,21 @@ class TestAnalyticalLangmuirRoundTrip:
             mean=jnp.zeros(M + 1), cumulants=jnp.zeros((M + 1, 3))
         )
         summary = TMMCSummary.from_transition_statistics(
-            TransitionStatistics(acc_ins, acc_del, n_trials, n_trials),
-            cumulants=cumulants,
-            beta_sim=jnp.asarray(beta),
-            log_fugacity_sim=log_f_sim,
-            adsorbate=_CO2,
+            Table.arange(
+                _rows(TransitionStatistics(acc_ins, acc_del, n_trials, n_trials)),
+                label=SystemId,
+            ),
+            cumulants=Table.arange(_rows(cumulants), label=SystemId),
+            beta_sim=Table.arange(_rows(jnp.asarray(beta)), label=SystemId),
+            log_fugacity_sim=Table.arange(_rows(log_f_sim), label=SystemId),
+            adsorbates=_CO2,
             order=1,
         )
 
         # ln Q_c must round-trip exactly.
-        npt.assert_allclose(summary.log_partition_sim, log_qc_true, atol=1e-12, rtol=0)
+        npt.assert_allclose(
+            summary.log_partition_sim.data[0], log_qc_true, atol=1e-12, rtol=0
+        )
 
         # Isotherm at several pressures must match the closed-form Langmuir.
         pressures = jnp.logspace(2, 7, 6)
@@ -455,16 +536,16 @@ class TestAnalyticalLangmuirRoundTrip:
             pr = peng_robinson_log_fugacity(
                 jnp.asarray(P_pa * PASCAL),
                 jnp.asarray(T * KELVIN),
-                jnp.atleast_1d(jnp.asarray(_CO2.critical_pressure) * PASCAL),
-                jnp.atleast_1d(jnp.asarray(_CO2.critical_temperature) * KELVIN),
-                jnp.atleast_1d(jnp.asarray(_CO2.acentric_factor)),
+                eos.critical_pressure * PASCAL,
+                eos.critical_temperature * KELVIN,
+                eos.acentric_factor,
             )
             log_f = float(pr.log_fugacity[0])
             x = np.exp(log_f + np.log(float(beta)) + float(beta) * eps_ev)
             return M * x / (1.0 + x)
 
         expected = np.array([analytical(float(p)) for p in pressures])
-        npt.assert_allclose(tmmc_loading, expected, atol=1e-12, rtol=1e-10)
+        npt.assert_allclose(tmmc_loading.data[0], expected, atol=1e-12, rtol=1e-10)
 
 
 # -- TMMCSummary facade -------------------------------------------------
@@ -490,38 +571,143 @@ class TestTMMCSummary:
 
         cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((4, 3)))
         summary = TMMCSummary.from_transition_statistics(
-            TransitionStatistics(acc_ins, acc_del, n_trials, n_trials),
-            cumulants=cumulants,
-            beta_sim=beta,
-            log_fugacity_sim=log_f,
-            adsorbate=_CO2,
+            Table.arange(
+                _rows(TransitionStatistics(acc_ins, acc_del, n_trials, n_trials)),
+                label=SystemId,
+            ),
+            cumulants=Table.arange(_rows(cumulants), label=SystemId),
+            beta_sim=Table.arange(_rows(beta), label=SystemId),
+            log_fugacity_sim=Table.arange(_rows(log_f), label=SystemId),
+            adsorbates=_CO2,
             order=1,
         )
+        assert summary.log_partition_sim.keys == (SystemId(0),)
         npt.assert_allclose(
-            summary.log_partition_sim, ln_qc_true, rtol=1e-10, atol=1e-10
+            summary.log_partition_sim.data[0], ln_qc_true, rtol=1e-10, atol=1e-10
         )
 
-    def test_methods_dispatch_to_module_level_functions(self):
-        """Sanity: summary methods produce the same values as calling the functions."""
+    def test_methods_return_keyed_tables(self):
+        """Every observable keeps the system keys and appends its own axis."""
         ln_qc_sim = jnp.array([0.0, -2.0, -3.5, -4.5])
         cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((4, 3)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
-        summary = TMMCSummary(
-            log_partition_sim=ln_qc_sim,
-            cumulants=cumulants,
-            beta_sim=beta_sim,
-            adsorbate=_CO2,
-            order=1,
+        summary = _summary(ln_qc_sim, cumulants, beta_sim, order=1)
+        pressures = jnp.array([1e4, 1e5])
+        temperature = jnp.asarray(300.0)
+
+        loading = summary.isotherm(pressures, temperature)
+        heat = summary.isosteric_heat(pressures, temperature)
+        capacity = summary.working_capacity(
+            jnp.asarray(1e6), jnp.asarray(1e3), temperature
         )
+        log_partition = summary.extrapolate(beta_sim)
+
+        for result in (loading, heat, capacity, log_partition):
+            assert isinstance(result, Table)
+            assert result.keys == (SystemId(0),)
+        assert loading.data.shape == (1, 2)
+        assert heat.data.shape == (1, 2)
+        assert capacity.data.shape == (1,)
+        assert log_partition.data.shape == (1, 4)
+
+    def test_methods_dispatch_to_module_level_helpers(self):
+        """Sanity: summary methods produce the same values as the raw helpers."""
+        ln_qc_sim = jnp.array([0.0, -2.0, -3.5, -4.5])
+        cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((4, 3)))
+        beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
+        summary = _summary(ln_qc_sim, cumulants, beta_sim, order=1)
         pressures = jnp.array([1e4, 1e5])
         via_method = summary.isotherm(pressures, jnp.asarray(300.0))
-        via_function = isotherm_from_log_partition(
-            summary.extrapolate(beta_sim),
+        via_function = _isotherm(
+            ln_qc_sim,
             beta_sim,
             pressures,
             jnp.asarray(300.0),
-            _CO2.critical_pressure,
-            _CO2.critical_temperature,
-            _CO2.acentric_factor,
+            _CO2,
         )
-        npt.assert_allclose(via_method, via_function, rtol=1e-10)
+        npt.assert_allclose(via_method.data[0], via_function, rtol=1e-10)
+
+
+# -- batched ladders ---------------------------------------------------
+
+
+class TestBatchedLadders:
+    """A stack of ladders must be bitwise identical to looping over them.
+
+    Every pipeline step reduces along the trailing macrostate axis only, so
+    adding a leading per-system axis cannot change any single system's
+    numbers. This is the exactness guarantee that lets ``mcmc_nvtw``
+    post-process a whole batch of hosts in one call.
+    """
+
+    @staticmethod
+    def _inputs() -> tuple[
+        TransitionStatistics, EnergyCumulants, jnp.ndarray, jnp.ndarray
+    ]:
+        acc_ins = jnp.array([[0.9, 0.6, 0.2, 0.0], [0.7, 0.45, 0.1, 0.0]])
+        acc_del = jnp.array([[0.0, 0.8, 0.9, 0.95], [0.0, 0.5, 0.85, 0.9]])
+        n_trials = jnp.full((2, 4), 500, dtype=int)
+        statistics = TransitionStatistics(
+            acceptance_insertion=acc_ins * 1000.0,
+            acceptance_deletion=acc_del * 1000.0,
+            n_trials_insertion=n_trials,
+            n_trials_deletion=n_trials,
+        )
+        cumulants = EnergyCumulants(
+            mean=jnp.array([[0.0, -0.2, -0.35, -0.5], [0.0, -0.15, -0.3, -0.44]]),
+            cumulants=jnp.stack(
+                [
+                    jnp.array([[0.0, 0.01, 0.02, 0.03], [0.0, 0.02, 0.03, 0.04]]),
+                    jnp.zeros((2, 4)),
+                    jnp.zeros((2, 4)),
+                ],
+                axis=-1,
+            ),
+        )
+        beta_sim = 1.0 / (BOLTZMANN_CONSTANT * jnp.array([300.0, 280.0]))
+        log_fugacity_sim = jnp.array([-1.0, -0.5])
+        return statistics, cumulants, beta_sim, log_fugacity_sim
+
+    @classmethod
+    def _summary(cls, system: int | None) -> TMMCSummary:
+        """Summary over both systems (``None``) or over one system alone."""
+        statistics, cumulants, beta_sim, log_fugacity_sim = cls._inputs()
+        if system is not None:
+            take = lambda x: x[system][None]  # noqa: E731
+            statistics = jax.tree.map(take, statistics)
+            cumulants = jax.tree.map(take, cumulants)
+            beta_sim = take(beta_sim)
+            log_fugacity_sim = take(log_fugacity_sim)
+        return TMMCSummary.from_transition_statistics(
+            Table.arange(statistics, label=SystemId),
+            cumulants=Table.arange(cumulants, label=SystemId),
+            beta_sim=Table.arange(beta_sim, label=SystemId),
+            log_fugacity_sim=Table.arange(log_fugacity_sim, label=SystemId),
+            adsorbates=_CO2,
+            order=2,
+        )
+
+    def test_batched_equals_per_system_loop(self):
+        pressures = jnp.array([1e4, 1e5, 1e6])
+        temperature = jnp.asarray(310.0)
+
+        batched = self._summary(None)
+        assert len(batched.log_partition_sim) == 2
+        batched_results = (
+            batched.log_partition_sim,
+            batched.isotherm(pressures, temperature),
+            batched.isosteric_heat(pressures, temperature),
+            batched.working_capacity(jnp.asarray(1e6), jnp.asarray(1e3), temperature),
+        )
+        for system in range(2):
+            single = self._summary(system)
+            single_results = (
+                single.log_partition_sim,
+                single.isotherm(pressures, temperature),
+                single.isosteric_heat(pressures, temperature),
+                single.working_capacity(
+                    jnp.asarray(1e6), jnp.asarray(1e3), temperature
+                ),
+            )
+            for batch, one in zip(batched_results, single_results, strict=True):
+                npt.assert_array_equal(batch.data[system], one.data[0])
