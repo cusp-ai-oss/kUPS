@@ -891,9 +891,10 @@ class TestFloat32AnchorBoundary:
 # MirrorPairEdges to restore, or every self-image row is double-counted.
 # ============================================================================ #
 def _queried_nl_multiset(
-    nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, n: int, queried: bool
+    nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, queried: bool
 ):
     """Edge multiset ``Counter[(i, j, shift)]`` of a full or queried-keys run."""
+    n = real.shape[0]
     cell = _make_cell(matrix)
     lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
     systems, _ = make_systems(cell, jnp.array([cutoff]))
@@ -939,7 +940,7 @@ class TestQueriedKeysSingleAtomSelfImages:
             if 0.0 < float(np.linalg.norm(n)) < ratio
         )
         for queried in (False, True):
-            got = _queried_nl_multiset(nl_cls, real, matrix, cutoff, 1, queried)
+            got = _queried_nl_multiset(nl_cls, real, matrix, cutoff, queried)
             assert got == expected, (
                 f"ratio={ratio}, queried={queried}: "
                 f"{dict((got - expected) + (expected - got))}"
