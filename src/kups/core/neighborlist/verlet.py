@@ -17,7 +17,6 @@ keeps the build radius inside the single-image regime that edge reuse requires.
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
@@ -119,9 +118,10 @@ def skin_margin(
     2. **Atom motion on top of the deformation.** Each atom's *non-affine*
        displacement is ``u_i = x_i - x_i_ref @ F`` — what remains after riding
        the cell — minimum-image wrapped in the current cell so that a boundary
-       crossing (even along a sheared lattice vector) is undone exactly. A pair
-       distance changes by at most the two endpoint displacements,
-       ``2 max|u|``.
+       crossing (even along a sheared lattice vector) is undone exactly (a
+       genuine non-affine drift beyond half a cell would be under-measured, but
+       rebuilds fire at skin scale long before that). A pair distance changes
+       by at most the two endpoint displacements, ``2 max|u|``.
 
     The stored list is therefore complete while, per system,
 
@@ -147,13 +147,10 @@ def skin_margin(
     system = particles.data.system.indices
     cutoff_values = Table.broadcast_to(cutoffs, systems).data
     deform = reference.cell.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
-    # Non-affine residual u_i: subtract each atom's cell-riding motion, then
-    # minimum-image wrap so a boundary crossing does not read as a large move.
+    # u_i = x_i - x_i_ref @ F, min-image wrapped
     co_moved = jnp.einsum("ni,nij->nj", reference.positions, deform[system])
     residual = cell_now[system].wrap(particles.data.positions - co_moved)
-    u_max = jax.ops.segment_max(
-        jnp.linalg.norm(residual, axis=-1), system, num_segments=systems.size
-    )
+    u_max = particles.data.system.max_over(jnp.linalg.norm(residual, axis=-1)).data
     u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
     # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ
     # (cheaper than an SVD; the clamp guards eigvalsh's tiny negative noise).
