@@ -1,48 +1,18 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verlet neighbor list with a skin.
+"""Verlet neighbor list with a skin: the margin accounting.
 
-Builds a *conservative* neighbor list at ``cutoff + skin`` once, stores its edges
-in the simulation state, and reuses them for many steps via
-[`RefineCutoffNeighborList`][kups.core.neighborlist.refine.RefineCutoffNeighborList]
-(which re-masks to the true cutoff and recomputes minimum-image shifts for the
-current — possibly deformed — cell). The expensive build then runs only when the
-margin bookkeeping below demands it, amortizing it over the rebuild window.
-
-## Completeness bound
-
-A pair absent from the stored skin list had build-time minimum-image distance
-``> r_build`` (and every periodic image of it was farther still). Decompose the
-change since the build into the affine cell deformation ``F = h_ref⁻¹ h_now``
-(row convention: pair vectors map as ``d ↦ d @ F``, and so do the image lattice
-vectors) and the per-atom *non-affine* residual ``u_i = x_i - x_i_ref @ F``. Then
-every image of a non-listed pair now sits at distance at least
-``σ_min(F) * r_build - 2 * max|u|``, with ``σ_min`` the smallest singular value
-of ``F``. The stored list therefore still contains every pair within ``cutoff``
-while
-
-    2 * max|u| + r_build * max(0, 1 - σ_min(F))  <=  r_build - cutoff
-
-The left side is the *consumed* margin and the right side the *budget*
-(:func:`skin_margin` computes both; the difference is the *headroom*). Because
-``σ_min`` sees the full deformation, pure shear consumes margin like any other
-strain — the trigger is not blind to off-diagonal cell moves. Residuals are
-minimum-image wrapped in the current cell (honoring per-axis periodicity), so an
-atom crossing a boundary along a sheared lattice vector is undone exactly; only
-a genuine non-affine drift beyond half a cell between rebuilds (impossible in
-practice, since rebuilds fire at skin scale) would be under-measured.
-
-## Single-image clamp
-
-Refine-based reuse can only represent one periodic image per stored pair, so the
-build radius is clamped to half the smallest perpendicular length over periodic
-axes (:func:`effective_build_radii`). A cell that compresses mid-run therefore
-degrades to a thinner effective skin — more frequent rebuilds — instead of
-failing. Only when the *cutoff itself* no longer fits (no skin can help; the
-refine path would drop images) does the rebuild raise, telling the user to set
-``verlet_skin = 0``.
-
+A Verlet-skin scheme builds one conservative neighbor list at an enlarged
+radius ``r_build ≈ cutoff + skin``, stores its edges, and reuses them over many
+steps via
+[`RefineCutoffNeighborList`][kups.core.neighborlist.refine.RefineCutoffNeighborList],
+amortizing the expensive build over the rebuild window. This module holds the
+pure geometry underneath such a scheme:
+[`skin_margin`][kups.core.neighborlist.verlet.skin_margin] decides how long the
+stored list remains complete, and
+[`effective_build_radii`][kups.core.neighborlist.verlet.effective_build_radii]
+keeps the build radius inside the single-image regime that edge reuse requires.
 """
 
 from __future__ import annotations
@@ -50,78 +20,145 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import ArrayLike
 
 from kups.core.cell import AnyPeriodicity, Cell
-
-# Above this ratio of build radius to a cell's perpendicular length, a build needs
-# more than one periodic image per pair and the refine-based reuse path is incomplete.
-_SINGLE_IMAGE_LIMIT = 0.5
+from kups.core.data import Table
+from kups.core.neighborlist.types import NeighborListSystems
+from kups.core.typing import HasPositionsAndSystemIndex, ParticleId, SystemId
+from kups.core.utils.jax import dataclass
 
 
 def effective_build_radii(
-    cutoffs: Array, skin: float, cell: Cell[AnyPeriodicity]
+    cutoffs: Array, skin: ArrayLike, cell: Cell[AnyPeriodicity]
 ) -> Array:
-    """Per-system build radius: ``cutoff + skin`` clamped to the single-image limit.
+    """Per-system build radius: ``cutoff + skin``, clamped to a single image.
 
-    The refine-based reuse path collapses each stored pair to one minimum image,
-    so the build must not replicate images: the radius is capped at half the
-    cell's smallest perpendicular length over periodic axes (no cap in vacuum).
+    Reusing stored edges keeps exactly one periodic image per pair, so the
+    build radius must stay below half the cell's smallest perpendicular length
+    on every periodic axis — beyond that, second images enter the build sphere
+    and the reuse path would drop them. A cell that compresses mid-run thus
+    degrades to a thinner effective skin (more frequent rebuilds) instead of an
+    incomplete list. No clamp applies in vacuum.
 
     Args:
-        cutoffs: true cutoffs (Å), ``(n_sys,)``.
-        skin: requested skin width (Å).
+        cutoffs: True cutoffs (Å), ``(n_sys,)``.
+        skin: Requested skin width (Å).
         cell: ``(n_sys,)``-batched cell the build runs in.
 
     Returns:
         Build radii (Å), ``(n_sys,)``. ``radii - cutoffs`` is the effective skin.
     """
     perp = cell.perpendicular_lengths
-    limit = _SINGLE_IMAGE_LIMIT * jnp.min(
-        jnp.where(jnp.array(cell.periodic), perp, jnp.inf), axis=-1
-    )
+    limit = 0.5 * jnp.min(jnp.where(jnp.array(cell.periodic), perp, jnp.inf), axis=-1)
     return jnp.minimum(cutoffs + skin, limit)
 
 
-def skin_margin(
-    positions: Array,
-    reference_positions: Array,
-    cell_now: Cell[AnyPeriodicity],
-    cell_ref: Cell[AnyPeriodicity],
-    system: Array,
-    cutoffs: Array,
-    skin: float,
-) -> tuple[Array, Array]:
-    """Consumed and budgeted completeness margin of the stored skin list.
+@dataclass
+class SkinReference:
+    """Geometry snapshot taken when the skin list was built.
 
-    Implements the bound from the module docstring: the deformation term uses
-    the smallest singular value of ``F = h_ref⁻¹ h_now`` per system, the motion
-    term the largest minimum-image *non-affine* residual per system. Pairs
-    never span systems, so the accounting is fully per system — one hot system
-    neither charges nor rebuilds the others.
+    [`skin_margin`][kups.core.neighborlist.verlet.skin_margin] measures the
+    drift of the current geometry relative to this snapshot. The arrays must
+    not alias the live position/cell buffers (donated jitted steps would then
+    receive the same buffer twice).
+
+    Attributes:
+        positions: Cartesian positions at the build, ``(N, 3)``.
+        cell: ``(n_sys,)``-batched cell at the build.
+    """
+
+    positions: Array
+    cell: Cell[AnyPeriodicity]
+
+
+@dataclass
+class SkinMargin:
+    """Per-system completeness accounting of a stored skin list.
+
+    Attributes:
+        consumed: Worst-case distance (Å) by which atom motion and cell
+            deformation since the build can have pulled a non-listed pair
+            inward, ``(n_sys,)``.
+        budget: Distance (Å) such a pair had to spare at build time — the
+            effective skin ``r_build - cutoff``, ``(n_sys,)``.
+    """
+
+    consumed: Array
+    budget: Array
+
+    @property
+    def headroom(self) -> Array:
+        """``budget - consumed``; the stored list is complete while ``>= 0``."""
+        return self.budget - self.consumed
+
+
+def skin_margin(
+    particles: Table[ParticleId, HasPositionsAndSystemIndex],
+    systems: Table[SystemId, NeighborListSystems],
+    reference: SkinReference,
+    cutoffs: Table[SystemId, Array],
+    skin: ArrayLike,
+) -> Table[SystemId, SkinMargin]:
+    """How much of the skin list's safety margin the geometry has used up.
+
+    A skin list built at radius ``r_build`` stays complete for the true
+    ``cutoff`` as long as no pair that was *outside* ``r_build`` at build time
+    has come *inside* ``cutoff`` since. Two things move pairs inward:
+
+    1. **Cell deformation.** Between the build and now the cell changed by the
+       linear map ``F = h_ref⁻¹ h_now`` (row-vector convention), which maps
+       every build-time pair vector ``d`` — including those to periodic images —
+       to ``d @ F``. A linear map cannot shrink any vector by more than its
+       smallest singular value: ``|d @ F| >= σ_min(F) |d|`` for all ``d``. So
+       the affine part of the motion leaves every non-listed pair at distance
+       at least ``σ_min(F) r_build``, an inward move of at most
+       ``r_build (1 - σ_min(F))`` — and none at all if the cell only expanded
+       (``σ_min >= 1``). Because ``σ_min`` sees the whole map, pure shear
+       counts like any other strain, unlike per-axis length ratios.
+    2. **Atom motion on top of the deformation.** Each atom's *non-affine*
+       displacement is ``u_i = x_i - x_i_ref @ F`` — what remains after riding
+       the cell — minimum-image wrapped in the current cell so that a boundary
+       crossing (even along a sheared lattice vector) is undone exactly. A pair
+       distance changes by at most the two endpoint displacements,
+       ``2 max|u|``.
+
+    The stored list is therefore complete while, per system,
+
+        consumed := 2 max|u| + r_build max(0, 1 - σ_min(F))  <=  r_build - cutoff =: budget
+
+    i.e. while the worst-case inward motion of a non-listed pair (*consumed*)
+    has not eaten the extra radius the build added on top of the cutoff
+    (*budget*). Pairs never span systems, so the accounting is fully per
+    system: one hot system neither charges nor rebuilds the others.
 
     Args:
-        positions: current cartesian positions, ``(N, 3)``.
-        reference_positions: positions at the last rebuild, ``(N, 3)``.
-        cell_now: current cells, ``(n_sys,)``-batched.
-        cell_ref: cells at the last rebuild, ``(n_sys,)``-batched.
-        system: particle → system index array, ``(N,)``.
-        cutoffs: true cutoffs (Å), ``(n_sys,)``.
-        skin: requested skin width (Å).
+        particles: Current particle table (positions and system index).
+        systems: Current system table (cells).
+        reference: Positions and cell snapshot taken at the last build.
+        cutoffs: True cutoffs (Å) per system.
+        skin: Requested skin width (Å) the list was built with.
 
     Returns:
-        ``(consumed, budget)``, both ``(n_sys,)``. The stored list is complete
-        while ``consumed <= budget`` in every system; ``budget - consumed`` is
-        the headroom.
+        Per-system [`SkinMargin`][kups.core.neighborlist.verlet.SkinMargin]
+        table (``consumed`` and ``budget``, both in Å).
     """
-    deform = cell_ref.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
-    co_moved = jnp.einsum("ni,nij->nj", reference_positions, deform[system])
-    residual = cell_now[system].wrap(positions - co_moved)
+    cell_now = systems.data.cell
+    system = particles.data.system.indices
+    cutoff_values = Table.broadcast_to(cutoffs, systems).data
+    deform = reference.cell.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
+    # Non-affine residual u_i: subtract each atom's cell-riding motion, then
+    # minimum-image wrap so a boundary crossing does not read as a large move.
+    co_moved = jnp.einsum("ni,nij->nj", reference.positions, deform[system])
+    residual = cell_now[system].wrap(particles.data.positions - co_moved)
     u_max = jax.ops.segment_max(
-        jnp.linalg.norm(residual, axis=-1), system, num_segments=cutoffs.shape[0]
+        jnp.linalg.norm(residual, axis=-1), system, num_segments=systems.size
     )
     u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
+    # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ
+    # (cheaper than an SVD; the clamp guards eigvalsh's tiny negative noise).
     gram = deform @ jnp.swapaxes(deform, -1, -2)
     sigma_min = jnp.sqrt(jnp.maximum(jnp.linalg.eigvalsh(gram)[..., 0], 0.0))
-    r_build = effective_build_radii(cutoffs, skin, cell_ref)
+    r_build = effective_build_radii(cutoff_values, skin, reference.cell)
     consumed = 2.0 * u_max + r_build * jnp.maximum(0.0, 1.0 - sigma_min)
-    return consumed, r_build - cutoffs
+    return Table(systems.keys, SkinMargin(consumed, r_build - cutoff_values))
