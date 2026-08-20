@@ -74,9 +74,9 @@ class Decomposition[P: HasPositionsAndSystemIndex](Protocol):
     total, while gradients w.r.t. replicated inputs are already mesh-summed by
     ``shard_map``'s transpose, so only the energy output needs an explicit ``psum``.
 
-    ``P`` appears in input position only (``owned_only`` consumes the particle table), so
-    the Protocol is contravariant in ``P`` — the variance a covariant particle container
-    needs from a strategy field it holds.
+    ``P`` appears in input position only (``owned_only`` consumes the particle table), so a
+    strategy written against ``HasPositionsAndSystemIndex`` is usable for any concrete
+    particle type — which is what lets a bare ``Replicated()`` be the default here.
     """
 
     def owned_only(self, particles: Table[ParticleId, P], x: Array) -> Array:
@@ -111,6 +111,7 @@ class PointCloud(Generic[Part, Sys]):
     Attributes:
         particles: Indexed particle data with positions and system assignment.
         systems: Indexed system data with cell information.
+        decomposition: Placement policy for per-node reductions (``Replicated`` by default).
     """
 
     particles: Table[ParticleId, Part]
@@ -121,11 +122,6 @@ class PointCloud(Generic[Part, Sys]):
     def batch_size(self) -> int:
         return self.particles.data.system.num_labels
 
-    @property
-    def node_batch_mask(self) -> Index[SystemId]:
-        """Per-node system index — the segment for reducing per-node values to per-system totals."""
-        return self.particles.data.system
-
     def reduce_nodes_to_systems(self, node_value: Array) -> Table[SystemId, Array]:
         """Reduce a per-node quantity to per-system totals, counting owned rows only.
 
@@ -134,7 +130,7 @@ class PointCloud(Generic[Part, Sys]):
         the *global* value inline (e.g. the Ewald structure factor) completes it via
         ``self.decomposition.combine_across_shards``.
         """
-        return self.node_batch_mask.sum_over(
+        return self.particles.data.system.sum_over(
             self.decomposition.owned_only(self.particles, node_value)
         )
 

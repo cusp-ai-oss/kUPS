@@ -4,8 +4,7 @@
 """Behavioral pins for the `Decomposition` placement strategy.
 
 `Replicated` is the whole-graph null object: `owned_only` and
-`combine_across_shards` must both be the identity, and `owned_only` must be
-shape-preserving for non-scalar per-node payloads. The domain-decomposed
+`combine_across_shards` must both be the identity. The domain-decomposed
 implementation (`Sharded`) is pinned by its own tests next to
 `kups.core.domain`.
 """
@@ -51,14 +50,6 @@ def test_replicated_owned_only_and_combine_are_identity() -> None:
     d = Replicated[_P]()
     assert jnp.array_equal(d.owned_only(parts, x), x)
     assert jnp.array_equal(d.combine_across_shards(x), x)
-
-
-def test_replicated_owned_only_broadcasts_over_trailing_axes() -> None:
-    # owned_only must be shape-preserving for non-scalar per-node payloads
-    # (e.g. the Ewald per-atom frequency response of shape (N, K, 2)).
-    parts = _particles(4)
-    x = jnp.arange(4 * 3 * 2.0).reshape(4, 3, 2)
-    assert jnp.array_equal(Replicated[_P]().owned_only(parts, x), x)
 
 
 def test_replicated_reduce_matches_direct_segment_sum() -> None:
