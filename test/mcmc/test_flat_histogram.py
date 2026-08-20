@@ -17,13 +17,13 @@ from kups.mcmc.flat_histogram import (
     AdsorbateEOS,
     TMMCSummary,
     average_loading,
-    extrapolate_log_partition_fn,
-    isosteric_heat_from_log_partition_fn,
-    isotherm_from_log_partition_fn,
+    extrapolate_log_partition,
+    isosteric_heat_from_log_partition,
+    isotherm_from_log_partition,
     macrostate_distribution,
-    reconstruct_log_partition_fn,
+    reconstruct_log_partition,
     transition_probabilities,
-    working_capacity_from_log_partition_fn,
+    working_capacity_from_log_partition,
 )
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 from kups.mcmc.widom import EnergyCumulants, TransitionStatistics
@@ -60,10 +60,10 @@ class TestTransitionProbabilities:
         npt.assert_array_equal(p_del, jnp.zeros(3))
 
 
-# -- reconstruct_log_partition_fn ---------------------------------------
+# -- reconstruct_log_partition ---------------------------------------
 
 
-class TestReconstructLogPartitionFn:
+class TestReconstructLogPartition:
     def test_roundtrip_from_known_log_qc(self):
         """Given ln Q_c, construct P_ins/P_del from detailed balance and recover it."""
         ln_qc_true = jnp.array([0.0, -1.0, -2.5, -4.0, -5.0])
@@ -77,19 +77,19 @@ class TestReconstructLogPartitionFn:
         p_ins_core = beta * beta_f * jnp.exp(delta_true) * p_del[1:]
         p_ins_full = jnp.concatenate([p_ins_core, jnp.zeros(1)])
 
-        reconstructed = reconstruct_log_partition_fn(p_ins_full, p_del, beta, log_f)
+        reconstructed = reconstruct_log_partition(p_ins_full, p_del, beta, log_f)
         npt.assert_allclose(reconstructed, ln_qc_true, rtol=1e-10, atol=1e-12)
 
     def test_anchors_to_zero_at_N0(self):
         p_ins = jnp.array([0.1, 0.2, 0.0])
         p_del = jnp.array([0.5, 0.3, 0.4])
-        result = reconstruct_log_partition_fn(
+        result = reconstruct_log_partition(
             p_ins, p_del, jnp.asarray(1.0), jnp.asarray(0.0)
         )
         assert float(result[0]) == 0.0
 
 
-# -- extrapolate_log_partition_fn ---------------------------------------
+# -- extrapolate_log_partition ---------------------------------------
 
 
 class TestExtrapolate:
@@ -116,7 +116,7 @@ class TestExtrapolate:
         )
         log_qc_sim = jnp.asarray(true_log_qc(beta_0))
         for beta_target in [2.0, 2.1, 1.8, 3.0]:
-            result = extrapolate_log_partition_fn(
+            result = extrapolate_log_partition(
                 log_qc_sim,
                 cumulants,
                 jnp.asarray(beta_0),
@@ -152,7 +152,7 @@ class TestExtrapolate:
         )
         log_qc_sim = jnp.asarray(true_log_qc(beta_0))
         for beta_target in [1.5, 1.2, 2.0]:
-            result = extrapolate_log_partition_fn(
+            result = extrapolate_log_partition(
                 log_qc_sim,
                 cumulants,
                 jnp.asarray(beta_0),
@@ -175,7 +175,7 @@ class TestExtrapolate:
             ),
         )
         log_qc = jnp.array([0.0, -1.0, -2.0])
-        result = extrapolate_log_partition_fn(
+        result = extrapolate_log_partition(
             log_qc, cumulants, jnp.asarray(1.0), jnp.asarray(1.0), order=4
         )
         npt.assert_allclose(result, log_qc, rtol=1e-12)
@@ -184,7 +184,7 @@ class TestExtrapolate:
     def test_invalid_order_raises(self, order: int):
         cumulants = EnergyCumulants(mean=jnp.array([0.0]), cumulants=jnp.zeros((1, 3)))
         with pytest.raises(ValueError):
-            extrapolate_log_partition_fn(
+            extrapolate_log_partition(
                 jnp.array([0.0]),
                 cumulants,
                 jnp.asarray(1.0),
@@ -227,7 +227,7 @@ class TestIsotherm:
     def test_shape_matches_pressure_grid(self):
         log_qc = jnp.array([0.0, -1.0, -2.0, -2.5])
         pressures = jnp.array([1e4, 1e5, 1e6])
-        loadings = isotherm_from_log_partition_fn(
+        loadings = isotherm_from_log_partition(
             log_qc,
             jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
             pressures,
@@ -244,7 +244,7 @@ class TestIsotherm:
         """⟨N⟩ must be non-decreasing in P for a fixed-site attractive model."""
         log_qc = jnp.linspace(0.0, -10.0, 6)  # increasingly favourable binding
         pressures = jnp.logspace(3, 7, 10)
-        loadings = isotherm_from_log_partition_fn(
+        loadings = isotherm_from_log_partition(
             log_qc,
             jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0)),
             pressures,
@@ -273,7 +273,7 @@ class TestIsostericHeat:
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         pressures = jnp.array([1e4, 1e5, 1e6])
 
-        q = isosteric_heat_from_log_partition_fn(
+        q = isosteric_heat_from_log_partition(
             log_qc_sim,
             cumulants,
             beta_sim,
@@ -298,7 +298,7 @@ class TestIsostericHeat:
         A regression in either would show up as a divergence between the
         autodiff Clausius--Clapeyron result and local finite differences.
         """
-        from kups.mcmc.flat_histogram import _loading_from_T_logP
+        from kups.mcmc.flat_histogram import _loading_from_temperature_log_pressure
 
         log_qc_sim = jnp.array([0.0, -3.0, -5.0, -6.0])
         cumulants = EnergyCumulants(
@@ -315,7 +315,7 @@ class TestIsostericHeat:
 
         def loading(t: float, lp: float) -> float:
             return float(
-                _loading_from_T_logP(
+                _loading_from_temperature_log_pressure(
                     jnp.asarray(t),
                     jnp.asarray(lp),
                     log_qc_sim,
@@ -334,7 +334,7 @@ class TestIsostericHeat:
         dlogP_fd = (loading(T, log_P + h_lp) - loading(T, log_P - h_lp)) / (2.0 * h_lp)
         q_fd = BOLTZMANN_CONSTANT * T**2 * dT_fd / dlogP_fd
 
-        q_ad = isosteric_heat_from_log_partition_fn(
+        q_ad = isosteric_heat_from_log_partition(
             log_qc_sim,
             cumulants,
             beta_sim,
@@ -357,7 +357,7 @@ class TestWorkingCapacity:
         log_qc_sim = jnp.linspace(0.0, -4.0, 5)
         cumulants = EnergyCumulants(mean=jnp.zeros(5), cumulants=jnp.zeros((5, 3)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
-        n_wc = working_capacity_from_log_partition_fn(
+        n_wc = working_capacity_from_log_partition(
             log_qc_sim,
             cumulants,
             beta_sim,
@@ -390,7 +390,7 @@ class TestAnalyticalLangmuirRoundTrip:
     then run the full pipeline:
 
     C-matrix $\\to$ :func:`transition_probabilities` $\\to$
-    :func:`reconstruct_log_partition_fn` $\\to$
+    :func:`reconstruct_log_partition` $\\to$
     :class:`TMMCSummary` $\\to$ :func:`isotherm`.
 
     The resulting $\\langle N\\rangle(P)$ is compared against the closed-form
@@ -445,9 +445,7 @@ class TestAnalyticalLangmuirRoundTrip:
         )
 
         # ln Q_c must round-trip exactly.
-        npt.assert_allclose(
-            summary.log_partition_fn_sim, log_qc_true, atol=1e-12, rtol=0
-        )
+        npt.assert_allclose(summary.log_partition_sim, log_qc_true, atol=1e-12, rtol=0)
 
         # Isotherm at several pressures must match the closed-form Langmuir.
         pressures = jnp.logspace(2, 7, 6)
@@ -500,7 +498,7 @@ class TestTMMCSummary:
             order=1,
         )
         npt.assert_allclose(
-            summary.log_partition_fn_sim, ln_qc_true, rtol=1e-10, atol=1e-10
+            summary.log_partition_sim, ln_qc_true, rtol=1e-10, atol=1e-10
         )
 
     def test_methods_dispatch_to_module_level_functions(self):
@@ -509,7 +507,7 @@ class TestTMMCSummary:
         cumulants = EnergyCumulants(mean=jnp.zeros(4), cumulants=jnp.zeros((4, 3)))
         beta_sim = jnp.asarray(1.0 / (BOLTZMANN_CONSTANT * 300.0))
         summary = TMMCSummary(
-            log_partition_fn_sim=ln_qc_sim,
+            log_partition_sim=ln_qc_sim,
             cumulants=cumulants,
             beta_sim=beta_sim,
             adsorbate=_CO2,
@@ -517,7 +515,7 @@ class TestTMMCSummary:
         )
         pressures = jnp.array([1e4, 1e5])
         via_method = summary.isotherm(pressures, jnp.asarray(300.0))
-        via_function = isotherm_from_log_partition_fn(
+        via_function = isotherm_from_log_partition(
             summary.extrapolate(beta_sim),
             beta_sim,
             pressures,
