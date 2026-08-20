@@ -6,13 +6,13 @@
 Parallel to :mod:`kups.application.simulations.relax` (LJ backend), but every
 optimizer step runs under a ``shard_map`` over the ``OriginDeviceId`` mesh:
 each device holds all atoms and builds only its owned-incident edge shard (see
-:mod:`kups.core.domain`), while the UNCHANGED relaxation propagator, run loop,
+:mod:`kups.core.domain`), while the unchanged relaxation propagator, run loop,
 convergence check, HDF5 logging, and capacity-resize machinery operate on the
 fully replicated state. Forces come out full and replicated, so the trajectory
-is bit-identical to a single-device run. The only differences from
-:mod:`kups.application.simulations.relax` are the origin-bearing
-particles/state, the sharded LJ potential, and the shard-mapped propagator
-wrapper.
+matches a single-device run to tight tolerance (identical up to floating-point
+summation order). The only differences from
+:mod:`kups.application.simulations.relax` are the origin-bearing particles/state,
+the sharded LJ potential, and the shard-mapped propagator wrapper.
 """
 
 from __future__ import annotations
@@ -41,11 +41,10 @@ from kups.application.relaxation.data import (
 from kups.application.relaxation.simulation import make_relax_propagator, run_relax
 from kups.application.simulations._domain_decomposition import (
     ShardMappedPropagator,
+    load_and_partition,
     make_sharded_lj_potential,
     mesh_max_cell_list_view,
     origin_mesh,
-    partition,
-    with_origin,
 )
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.core.capacity import FixedCapacity
@@ -107,36 +106,35 @@ class RelaxLjDDState:
 
 def init_state(
     config: Config, n_devices: int
-) -> tuple[RelaxLjDDState, FixedCapacity[int], LennardJonesParameters]:
-    """Build the DD relaxation state (placeholder ``opt_state``); also return
-    the owned capacity and LJ parameters."""
+) -> tuple[
+    Table[ParticleId, RelaxParticlesDD],
+    Table[SystemId, RelaxSystems],
+    UniversalNeighborlistParameters,
+    FixedCapacity[int],
+    LennardJonesParameters,
+]:
+    """Load and partition the DD relaxation inputs.
+
+    Returns the state's pieces rather than the state itself: ``opt_state`` needs
+    the optimizer ``run`` builds, so ``run`` assembles the state once.
+
+    Returns:
+        Tuple of the origin-tagged particles, the systems, the neighbor-list
+        parameters, the owned capacity, and the LJ parameters.
+    """
     lj = LennardJonesParameters.from_dict(
         cutoff=config.potential.cutoff,
         parameters=config.potential.parameters,
         mixing_rule=config.potential.mixing_rule,
     )
-    all_particles: list[Table[ParticleId, RelaxParticles]] = []
-    all_systems: list[Table[SystemId, RelaxSystems]] = []
-    for inp_file in config.inp_files:
-        logging.info(f"Loading structure from {inp_file}")
-        particles_i, systems_i = relax_state_from_ase(inp_file)
-        all_particles.append(particles_i)
-        all_systems.append(systems_i)
-    base, systems = Table.union(all_particles, all_systems)
-
-    origin, cap_owned = partition(base, systems, n_devices)
-    particles = with_origin(base, origin, RelaxParticlesDD)
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, lj.cutoff
+    particles, systems, neighborlist_params, cap_owned = load_and_partition(
+        config.inp_files,
+        relax_state_from_ase,
+        RelaxParticlesDD,
+        lj.cutoff,
+        n_devices,
     )
-    state = RelaxLjDDState(
-        particles=particles,
-        systems=systems,
-        neighborlist_params=neighborlist_params,
-        opt_state=(),  # placeholder; filled by run() once opt_init is built
-        step=jnp.array([0]),
-    )
-    return state, cap_owned, lj
+    return particles, systems, neighborlist_params, cap_owned, lj
 
 
 def run(config: Config, mesh: jax.sharding.Mesh | None = None) -> RelaxLjDDState:
@@ -152,7 +150,9 @@ def run(config: Config, mesh: jax.sharding.Mesh | None = None) -> RelaxLjDDState
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
 
-    state, cap_owned, lj = init_state(config, mesh.size)
+    particles, systems, neighborlist_params, cap_owned, lj = init_state(
+        config, mesh.size
+    )
 
     neighborlist = mesh_max_cell_list_view(
         state_lens.focus(lambda s: s.neighborlist_params), lj.cutoff
@@ -164,11 +164,11 @@ def run(config: Config, mesh: jax.sharding.Mesh | None = None) -> RelaxLjDDState
         state_lens, potential, optimizer, gradient
     )
     state = RelaxLjDDState(
-        particles=state.particles,
-        systems=state.systems,
-        neighborlist_params=state.neighborlist_params,
-        opt_state=opt_init(state.particles, state.systems),
-        step=state.step,
+        particles=particles,
+        systems=systems,
+        neighborlist_params=neighborlist_params,
+        opt_state=opt_init(particles, systems),
+        step=jnp.array([0]),
     )
     state = device_put_replicated(state, mesh)
     return run_relax(key, ShardMappedPropagator(propagator, mesh), state, config.run)

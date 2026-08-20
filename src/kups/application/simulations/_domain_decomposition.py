@@ -13,7 +13,10 @@ gradient filters, configs).
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, Literal
+import logging
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any, Callable, Literal, cast
 
 import jax
 import numpy as np
@@ -32,8 +35,10 @@ from kups.core.lens import Lens, View, const_lens
 from kups.core.neighborlist import (
     CellListNeighborList,
     NeighborList,
+    NeighborListSystems,
     UniversalNeighborlistParameters,
 )
+from kups.core.patch import Patch
 from kups.core.potential import EMPTY_LENS, EmptyType, Potential, ShardedPotential
 from kups.core.propagator import Propagator
 from kups.core.sharding import shard_axis
@@ -56,7 +61,12 @@ from kups.potential.common.geometry import (
     PositionsAndCell,
     position_and_cell_idx_view,
 )
-from kups.potential.common.graph import GRAPH_GEOMETRY, LocalGraphSumComposer
+from kups.potential.common.graph import (
+    GRAPH_GEOMETRY,
+    GraphConstructor,
+    GraphPotentialInput,
+    LocalGraphSumComposer,
+)
 
 _AXIS = shard_axis(OriginDeviceId)
 _REPL = jax.sharding.PartitionSpec()
@@ -74,7 +84,7 @@ def with_origin[P, D: IsDecomposedParticle](
 ) -> Table[ParticleId, D]:
     """Re-tag a particle table as ``cls`` (the same fields plus ``origin``)."""
     d = particles.data
-    values = {f.name: getattr(d, f.name) for f in dataclasses.fields(type(d))}
+    values = {f.name: getattr(d, f.name) for f in dataclasses.fields(type(d)) if f.init}
     return particles.set_data(cls(**values, origin=origin))
 
 
@@ -91,6 +101,53 @@ def partition[P: HasPositionsAndSystemIndex, S: HasCell[AnyPeriodicity]](
     origin = MortonPartitioner()(particles, systems, n_devices)
     cap_owned = FixedCapacity(int(origin.counts.data.max()))
     return origin, cap_owned
+
+
+def load_and_partition[
+    P: HasPositionsAndSystemIndex,
+    S: NeighborListSystems,
+    D: IsDecomposedParticle,
+](
+    inp_files: Iterable[str | Path],
+    loader: Callable[[str | Path], tuple[Table[ParticleId, P], Table[SystemId, S]]],
+    particle_cls: Callable[..., D],
+    cutoff: Table[SystemId, Array],
+    n_devices: int,
+) -> tuple[
+    Table[ParticleId, D],
+    Table[SystemId, S],
+    UniversalNeighborlistParameters,
+    FixedCapacity[int],
+]:
+    """Load the input structures, partition them, and size the neighbor list.
+
+    Args:
+        inp_files: Structure files, concatenated into one multi-system state.
+        loader: Reads one file into its particle and system tables.
+        particle_cls: Origin-bearing particle class the loaded particles are
+            re-tagged as.
+        cutoff: Per-system interaction cutoff the neighbor-list estimate uses.
+        n_devices: Size of the mesh the particles are partitioned over.
+
+    Returns:
+        Tuple of the origin-tagged particles, the systems, the estimated
+        neighbor-list parameters, and the owned-buffer capacity.
+    """
+    all_particles: list[Table[ParticleId, P]] = []
+    all_systems: list[Table[SystemId, S]] = []
+    for inp_file in inp_files:
+        logging.info(f"Loading structure from {inp_file}")
+        particles_i, systems_i = loader(inp_file)
+        all_particles.append(particles_i)
+        all_systems.append(systems_i)
+    base, systems = Table.union(all_particles, all_systems)
+
+    origin, cap_owned = partition(base, systems, n_devices)
+    particles = with_origin(base, origin, particle_cls)
+    neighborlist_params = UniversalNeighborlistParameters.estimate(
+        particles.data.system.counts, systems, cutoff
+    )
+    return particles, systems, neighborlist_params, cap_owned
 
 
 def mesh_max_cell_list_view[State](
@@ -124,16 +181,23 @@ def make_sharded_lj_potential[State: IsState[Any, Any]](
     neighborlist: View[State, NeighborList[Literal[2]]],
     cap_owned: Capacity[int],
     gradient: Lens[Geometry, PositionsAndCell],
-) -> Potential[State, PositionsAndCell, EmptyType, Any]:
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]:
     """The DD Lennard-Jones potential: owned-incident shard + energy ``psum``.
 
     Hand-assembled (rather than ``make_lennard_jones_from_state``, which
     hardwires the whole-graph constructor): only the graph constructor and the
     ``ShardedPotential`` wrapper differ from the stock LJ potential.
     """
-    gradient_lens: Any = GRAPH_GEOMETRY.nest(gradient)
-    graph_constructor: Any = make_sharded_radius_graph_from_state(
-        state_lens, neighborlist, cap_owned
+    # The stock pipeline types both of these for the whole-graph case and both
+    # generics are invariant, so the sharded constructor and the nested geometry
+    # lens go in as casts rather than as ``Any``-typed locals.
+    graph_constructor = cast(
+        GraphConstructor[State, Patch[Any], Any, Any, Literal[2]],
+        make_sharded_radius_graph_from_state(state_lens, neighborlist, cap_owned),
+    )
+    gradient_lens = cast(
+        Lens[GraphPotentialInput[Any, Any, Any, Literal[2]], PositionsAndCell],
+        GRAPH_GEOMETRY.nest(gradient),
     )
     composer = LocalGraphSumComposer(
         graph_constructor=graph_constructor,

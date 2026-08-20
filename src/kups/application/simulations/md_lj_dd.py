@@ -6,13 +6,14 @@
 Parallel to :mod:`kups.application.simulations.md` (LJ backend), but every
 integrator step runs under a ``shard_map`` over the ``OriginDeviceId`` mesh:
 each device holds all atoms and builds only its owned-incident edge shard (see
-:mod:`kups.core.domain`), while the UNCHANGED MD propagator, run loop, HDF5
+:mod:`kups.core.domain`), while the unchanged MD propagator, run loop, HDF5
 logging, and capacity-resize machinery operate on the fully replicated state.
 Stochastic thermostats draw from the replicated PRNG key, so every device
-samples identical noise and the trajectory is bit-identical to a single-device
-run. The only differences from :mod:`kups.application.simulations.md` are the
-origin-bearing particles/state, the sharded LJ potential, and the shard-mapped
-propagator wrapper.
+samples identical noise and the trajectory matches a single-device run to tight
+tolerance (identical up to floating-point summation order). The only differences
+from :mod:`kups.application.simulations.md` are the origin-bearing
+particles/state, the sharded LJ potential, and the shard-mapped propagator
+wrapper.
 """
 
 from __future__ import annotations
@@ -41,11 +42,10 @@ from kups.application.md.simulation import make_md_propagator, run_md
 from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.simulations._domain_decomposition import (
     ShardMappedPropagator,
+    load_and_partition,
     make_sharded_lj_potential,
     mesh_max_cell_list_view,
     origin_mesh,
-    partition,
-    with_origin,
 )
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.core.capacity import FixedCapacity
@@ -113,19 +113,12 @@ def init_state(
         parameters=config.potential.parameters,
         mixing_rule=config.potential.mixing_rule,
     )
-    all_particles: list[Table[ParticleId, MDParticles]] = []
-    all_systems: list[Table[SystemId, MDSystems]] = []
-    for inp_file in config.inp_files:
-        logging.info(f"Loading structure from {inp_file}")
-        particles_i, systems_i = md_state_from_ase(inp_file, config.md, key=key)
-        all_particles.append(particles_i)
-        all_systems.append(systems_i)
-    base, systems = Table.union(all_particles, all_systems)
-
-    origin, cap_owned = partition(base, systems, n_devices)
-    particles = with_origin(base, origin, MDParticlesDD)
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, lj.cutoff
+    particles, systems, neighborlist_params, cap_owned = load_and_partition(
+        config.inp_files,
+        lambda inp_file: md_state_from_ase(inp_file, config.md, key=key),
+        MDParticlesDD,
+        lj.cutoff,
+        n_devices,
     )
     state = LjMdStateDD(
         particles=particles,
@@ -145,12 +138,35 @@ def run(config: Config, mesh: jax.sharding.Mesh | None = None) -> LjMdStateDD:
     """
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
-    state_lens = identity_lens(LjMdStateDD)
     mesh = mesh if mesh is not None else origin_mesh()
 
     mb_key = next(chain) if config.md.initialize_momenta else None
     state, cap_owned, lj = init_state(mb_key, config, mesh.size)
+    return run_from_state(next(chain), state, cap_owned, lj, config, mesh)
 
+
+def run_from_state(
+    key: Array,
+    state: LjMdStateDD,
+    cap_owned: FixedCapacity[int],
+    lj: LennardJonesParameters,
+    config: Config,
+    mesh: jax.sharding.Mesh,
+) -> LjMdStateDD:
+    """Wire the sharded potential and shard-mapped step around ``state``, then run.
+
+    The seam ``run`` uses after ``init_state``, so a caller that has to adjust
+    the freshly built state (its neighbor-list estimate, say) can do so first.
+
+    Args:
+        key: PRNG key for the run loop.
+        state: Initial replicated-on-host DD state.
+        cap_owned: Owned-buffer capacity from ``init_state``.
+        lj: Lennard-Jones parameters from ``init_state``.
+        config: Run configuration.
+        mesh: Device mesh to decompose over.
+    """
+    state_lens = identity_lens(LjMdStateDD)
     neighborlist = mesh_max_cell_list_view(
         state_lens.focus(lambda s: s.neighborlist_params), lj.cutoff
     )
@@ -160,8 +176,7 @@ def run(config: Config, mesh: jax.sharding.Mesh | None = None) -> LjMdStateDD:
     propagator = ShardMappedPropagator(
         make_md_propagator(state_lens, config.md.integrator, potential), mesh
     )
-    state = device_put_replicated(state, mesh)
-    return run_md(next(chain), propagator, state, config.run)
+    return run_md(key, propagator, device_put_replicated(state, mesh), config.run)
 
 
 def main() -> None:
