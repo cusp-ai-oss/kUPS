@@ -17,7 +17,9 @@ Contents:
   analyzer.
 - [TransitionStatistics][kups.mcmc.widom.TransitionStatistics]: TMMC
   collection-matrix (C-matrix) accumulator for flat-histogram runs
-  (Witman 2018).
+  (Witman 2018), normalised to
+  [TransitionProbabilities][kups.mcmc.widom.TransitionProbabilities] by
+  [probabilities][kups.mcmc.widom.TransitionStatistics.probabilities].
 - [EnergyMoments][kups.mcmc.widom.EnergyMoments] /
   [EnergyCumulants][kups.mcmc.widom.EnergyCumulants]: Pébay/Welford online
   central moments of arbitrary order (default 4) for Taylor expansion of
@@ -35,7 +37,7 @@ References:
 from __future__ import annotations
 
 from math import comb
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import jax.numpy as jnp
 from jax import Array
@@ -60,6 +62,24 @@ r"""Potential energy [energy]."""
 
 type ParticleCount = Array
 r"""Macrostate particle count $N$ [dimensionless, integer]."""
+
+type InsertionProbability = Array
+r"""TMMC insertion probability $P(N \to N+1)$ [dimensionless]."""
+
+type DeletionProbability = Array
+r"""TMMC deletion probability $P(N \to N-1)$ [dimensionless]."""
+
+
+class TransitionProbabilities(NamedTuple):
+    r"""Normalised TMMC transition probabilities, both of the input's shape.
+
+    Attributes:
+        insertion: $P(N \to N+1)$.
+        deletion: $P(N \to N-1)$.
+    """
+
+    insertion: InsertionProbability
+    deletion: DeletionProbability
 
 
 def widom_test[State, Changes, Move: Patch[Any]](
@@ -173,7 +193,15 @@ class TransitionStatistics:
     $$P(N \to N+1) = \frac{\text{acceptance\_insertion}}
         {n_\text{trials,ins} + n_\text{trials,del}}$$
 
-    All arrays have shape ``(n_systems,)``.
+    by :meth:`probabilities`.
+
+    Shapes: every field's **leading** axis is per-system, shape
+    ``(n_systems,)`` as accumulated --- one entry per parallel simulation box,
+    which for a flat-histogram run is one rung of the macrostate ladder.
+    Post-processing regroups those rungs into a trailing macrostate axis
+    ([MacrostateId][kups.core.typing.MacrostateId]), giving
+    ``(n_systems, n_max + 1)``; every method here is elementwise, so it is
+    indifferent to that regrouping.
 
     Attributes:
         acceptance_insertion: $\sum \min(1, \alpha_\text{ins})$.
@@ -212,6 +240,30 @@ class TransitionStatistics:
             Fresh accumulator of the same shape with all fields at zero.
         """
         return tree_zeros_like(self)
+
+    def probabilities(self) -> TransitionProbabilities:
+        r"""Normalise the accumulated C-matrix into transition probabilities.
+
+        Applies Witman 2018 eq 7,
+
+        $$P(N \to N + \Delta) = \frac{C(N, N + \Delta)}
+            {\sum_\Delta C(N, N + \Delta)},$$
+
+        elementwise, so the result has whatever shape the accumulator has
+        --- ``(n_systems,)`` as sampled, or ``(n_systems, n_max + 1)`` once
+        post-processing has regrouped the rungs onto a trailing macrostate
+        axis. Never-visited entries yield zero rather than a division by zero.
+
+        Returns:
+            ``TransitionProbabilities(insertion, deletion)``, each shaped like
+            the accumulated fields.
+        """
+        total = self.n_trials_insertion + self.n_trials_deletion
+        safe_total = jnp.where(total > 0, total, 1)
+        return TransitionProbabilities(
+            insertion=self.acceptance_insertion / safe_total,
+            deletion=self.acceptance_deletion / safe_total,
+        )
 
     def update_insertion(self, ln_alpha: LogAcceptanceRatio) -> TransitionStatistics:
         r"""Accumulate a ghost insertion. Trial count is incremented unconditionally.
@@ -282,6 +334,13 @@ class EnergyCumulants:
             axis (leading axes stay per-system, so tables/vmap batch over
             them), shape ``(n_systems, max_order - 1)``; entry ``[..., k - 2]``
             holds $\kappa_k$ [energy$^k$].
+
+    Flat-histogram post-processing regroups the leading per-system axis into
+    ``(n_systems, n_max + 1)``, appending a macrostate axis
+    ([MacrostateId][kups.core.typing.MacrostateId]) *before* the moment-order
+    axis: ``mean`` becomes ``(n_systems, n_max + 1)`` and ``cumulants``
+    becomes ``(n_systems, n_max + 1, max_order - 1)``. Indexing an order as
+    ``[..., k - 2]`` is what makes both layouts read the same.
     """
 
     mean: Energy

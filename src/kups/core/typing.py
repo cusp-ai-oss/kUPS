@@ -39,6 +39,19 @@ class MotifId(int):
     """Sentinel type for motif template indices."""
 
 
+class MacrostateId(int):
+    """Sentinel type for flat-histogram macrostate indices.
+
+    Names the macrostate axis of a flat-histogram (TMMC) ladder --- the
+    particle count $N = 0, \\ldots, N_\\mathrm{max}$ of the sampled species.
+    That axis is **positional and trailing** throughout the flat-histogram
+    post-processing pipeline, never a ``Table`` key: a ladder's rungs are
+    gathered along the last axis of one row, while the leading ``Table`` axis
+    stays per-system. This sentinel therefore appears only in type aliases
+    and docstrings, to say *which* axis is meant.
+    """
+
+
 class InclusionId(int):
     """Sentinel type for inclusion group indices."""
 
