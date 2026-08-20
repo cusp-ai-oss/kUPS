@@ -885,16 +885,11 @@ class TestFloat32AnchorBoundary:
 
 
 # ============================================================================ #
-# queried_keys parity: restricting the query side to every id must reproduce
-# the full self-graph EXACTLY, as a multiset. The deep-replication regime
-# (ratio > 1) pins the self-image dedup — a self-image pair (i, i, s) and its
-# reverse (i, i, -s) are both emitted by replication, so QueriedKeysDedupMask
-# must keep exactly one orientation for MirrorPairEdges to restore, or every
-# self-image row is double-counted.
+# queried_keys self-image dedup: a single atom in a cubic box has only
+# self-image neighbors (0, 0, n). Replication emits each pair in both
+# orientations (n and -n), so QueriedKeysDedupMask must keep exactly one for
+# MirrorPairEdges to restore, or every self-image row is double-counted.
 # ============================================================================ #
-_QUERIED_COMPILED: dict = {}
-
-
 def _queried_nl_multiset(
     nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, n: int, queried: bool
 ):
@@ -927,33 +922,28 @@ def _queried_nl_multiset(
     [DenseNearestNeighborList, CellListNeighborList],
     ids=["dense", "cell_list"],
 )
-@pytest.mark.parametrize(
-    "cell_name,matrix",
-    [("ortho_cubic", CELLS[0][1]), ("sheared", CELLS[5][1])],
-    ids=["ortho_cubic", "sheared"],
-)
-@pytest.mark.parametrize("ratio", _E2E_RATIOS)
-class TestQueriedKeysMatchesFullSelfGraph:
-    n = 5
+# 2.3 puts the cutoff above twice the lattice length (second-shell images).
+@pytest.mark.parametrize("ratio", [1.19, 2.3])
+class TestQueriedKeysSingleAtomSelfImages:
+    box = 4.0
 
-    def test_edge_multiset_matches_full_self_graph(
-        self, nl_cls, cell_name, matrix, ratio
-    ):
-        cutoff = _cutoff_for(matrix, ratio)
-        frac = np.asarray(jax.random.uniform(jax.random.key(13), (self.n, 3)))
-        real = jnp.asarray(frac) @ jnp.asarray(matrix)
-        full = _queried_nl_multiset(nl_cls, real, matrix, cutoff, self.n, False)
-        queried = _queried_nl_multiset(nl_cls, real, matrix, cutoff, self.n, True)
-        assert queried == full, (
-            f"{cell_name}@{ratio}: queried-keys multiset diverges from the full "
-            f"self-graph: {dict((queried - full) + (full - queried))}"
+    def test_each_in_range_self_image_appears_exactly_once(self, nl_cls, ratio):
+        matrix: Matrix = (np.eye(3) * self.box).tolist()
+        cutoff = ratio * self.box
+        real = jnp.array([[1.3, 2.1, 0.7]])
+        # Exact truth: one edge per nonzero integer shift with |n| * box < cutoff.
+        span = range(-int(np.ceil(ratio)), int(np.ceil(ratio)) + 1)
+        expected = collections.Counter(
+            (0, 0, n)
+            for n in itertools.product(span, span, span)
+            if 0.0 < float(np.linalg.norm(n)) < ratio
         )
-        # A self-image row (i, i, n) is in range iff |n @ A| < cutoff, so the
-        # regression is only exercised when the cutoff exceeds the shortest
-        # lattice vector (ortho_cubic @ 1.19 does; guard that it stays covered).
-        if cutoff > float(np.linalg.norm(np.asarray(matrix), axis=1).min()):
-            self_rows = [e for e in full if e[0] == e[1]]
-            assert self_rows, "case was expected to exercise self-image rows"
+        for queried in (False, True):
+            got = _queried_nl_multiset(nl_cls, real, matrix, cutoff, 1, queried)
+            assert got == expected, (
+                f"ratio={ratio}, queried={queried}: "
+                f"{dict((got - expected) + (expected - got))}"
+            )
 
 
 # ============================================================================ #

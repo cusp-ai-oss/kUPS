@@ -73,16 +73,10 @@ class QueriedKeysDedupMask:
 
     Pair selectors emit candidates in ``keys`` space. When ``ctx.queried_keys``
     is set, the query side was restricted to those affected ``keys`` rows.
-    We keep edges whose key endpoint is unaffected, plus ONE orientation of
-    every edge whose endpoints are both affected; ``MirrorPairEdges`` restores
-    the reverse orientation after compaction. For distinct endpoints the kept
-    orientation is ``key > query``. A self-image row ``(i, i, s)`` is its own
-    pair with reverse ``(i, i, -s)`` — both are emitted by image replication —
-    so the kept orientation is the lexicographically positive shift; keeping
-    both (as ``key >= query`` did) made the mirror emit each self-image twice
-    whenever the cutoff exceeds a perpendicular cell length. The zero-shift
-    self row is dropped here (its mirror is itself; ``ExclusionMask`` drops it
-    anyway as the pair's minimum image).
+    We keep edges whose key endpoint is unaffected, plus one orientation for
+    edges where both endpoints are affected: ``key > query``, or for self-image
+    rows ``(i, i, ±s)`` the lexicographically positive shift.
+    ``MirrorPairEdges`` restores the reverse orientation after compaction.
 
     Returns all-True for full self-graphs and bipartite queries.
     """
