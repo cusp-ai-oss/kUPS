@@ -50,7 +50,7 @@ from kups.core.propagator import (
     Propagator,
 )
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, field, key_chain
+from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
 
 type LogAcceptanceRatio = Array
 r"""Log Metropolis acceptance ratio $\ln\alpha$ [dimensionless]."""
@@ -138,7 +138,7 @@ class WidomStatistics:
         Returns:
             Fresh accumulator of the same shape with all fields at zero.
         """
-        return self.zeros(int(self.n_samples.shape[0]))
+        return tree_zeros_like(self)
 
     def update(self, ln_alpha: LogAcceptanceRatio, delta_u: Energy) -> WidomStatistics:
         r"""Accumulate one ghost insertion.
@@ -211,7 +211,7 @@ class TransitionStatistics:
         Returns:
             Fresh accumulator of the same shape with all fields at zero.
         """
-        return self.zeros(int(self.n_trials_insertion.shape[0]))
+        return tree_zeros_like(self)
 
     def update_insertion(self, ln_alpha: LogAcceptanceRatio) -> TransitionStatistics:
         r"""Accumulate a ghost insertion. Trial count is incremented unconditionally.
@@ -223,7 +223,7 @@ class TransitionStatistics:
         Returns:
             Accumulator with $\min(1, \alpha)$ added to the insertion row.
         """
-        acceptance = jnp.minimum(1.0, jnp.exp(ln_alpha))
+        acceptance = jnp.exp(jnp.minimum(0.0, ln_alpha))
         return TransitionStatistics(
             acceptance_insertion=self.acceptance_insertion + acceptance,
             acceptance_deletion=self.acceptance_deletion,
@@ -251,7 +251,7 @@ class TransitionStatistics:
         Returns:
             Accumulator with $\min(1, \alpha)$ added to the deletion row.
         """
-        acceptance = jnp.minimum(1.0, jnp.exp(ln_alpha))
+        acceptance = jnp.exp(jnp.minimum(0.0, ln_alpha))
         acceptance = jnp.where(macrostate_n > 0, acceptance, 0.0)
         return TransitionStatistics(
             acceptance_insertion=self.acceptance_insertion,
@@ -352,7 +352,7 @@ class EnergyMoments:
         Returns:
             Fresh accumulator of the same shape and order with all fields zero.
         """
-        return self.zeros(int(self.count.shape[0]), max_order=self.max_order)
+        return tree_zeros_like(self)
 
     def update(self, energy: Energy) -> EnergyMoments:
         r"""Incorporate one per-system energy sample (Pébay single-sample update).
