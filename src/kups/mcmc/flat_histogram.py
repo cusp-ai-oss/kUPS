@@ -11,8 +11,7 @@ Pipeline:
 
 1. C-matrix $\to$ transition probabilities $P(N \to N \pm 1)$ (eq 7).
 2. Transition probabilities $\to$ $\ln Q_c(N, V, \beta_\mathrm{sim})$ via
-   a prefix sum of the detailed-balance ratio (eq 8). This replaces a
-   Python loop with a single [`jnp.cumsum`][jax.numpy.cumsum].
+   a prefix sum of the detailed-balance ratio (eq 8).
 3. Taylor-expand $\ln Q_c(N, V, \beta)$ in $\beta$ using the per-macrostate
    energy cumulants collected during simulation (eq 9--10).
 4. Reweight into the grand canonical ensemble (eq 3) using
@@ -25,7 +24,6 @@ Peng--Robinson equation of state. Autodiff is enabled by the implicit-function
 JVP attached to [`cubic_roots`][kups.core.utils.math.cubic_roots] and the
 double-where sanitisation in
 [`peng_robinson_log_fugacity`][kups.mcmc.fugacity.peng_robinson_log_fugacity].
-No ``delta_T`` hyperparameter and no finite-difference truncation error.
 
 All public functions and the [`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummary]
 dataclass operate on plain [`jax.Array`][jax.Array] inputs and are fully
@@ -56,7 +54,7 @@ from kups.core.utils.jax import dataclass, field
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 from kups.mcmc.widom import EnergyCumulants, TransitionStatistics
 
-type LogPartitionFunction = Array
+type LogPartition = Array
 r"""Natural logarithm of $Q_c(N, V, \beta)$, shape ``(n_max+1,)``."""
 
 type MacrostateDistribution = Array
@@ -113,12 +111,12 @@ def transition_probabilities(
     )
 
 
-def reconstruct_log_partition_fn(
+def reconstruct_log_partition(
     insertion_probability: InsertionProbability,
     deletion_probability: DeletionProbability,
     beta: Array,
     log_fugacity: Array,
-) -> LogPartitionFunction:
+) -> LogPartition:
     r"""Reconstruct $\ln Q_c(N, V, \beta_\mathrm{sim})$ from TMMC transition probabilities.
 
     Applies Witman 2018 eq 8 as a prefix sum over macrostates:
@@ -127,9 +125,9 @@ def reconstruct_log_partition_fn(
         = -\ln[q(\beta)\exp(\beta\mu)] + \ln\frac{P(N \to N+1)}{P(N+1 \to N)}.$$
 
     For an ideal-gas reference, $q(\beta)\exp(\beta\mu) = \beta f$, so the
-    correction term is $\ln\beta + \ln f$ at every macrostate. The full
-    reconstruction is a single [`jnp.cumsum`][jax.numpy.cumsum] over the
-    macrostate axis.
+    correction term is $\ln\beta + \ln f$ at every macrostate, so the
+    reconstruction is a [`jnp.cumsum`][jax.numpy.cumsum] over the macrostate
+    axis.
 
     Args:
         insertion_probability: $P(N \to N+1)$, shape ``(n_max+1,)``.
@@ -148,13 +146,13 @@ def reconstruct_log_partition_fn(
     return jnp.concatenate([jnp.zeros(1), jnp.cumsum(delta_log_qc)])
 
 
-def extrapolate_log_partition_fn(
-    log_partition_fn_sim: LogPartitionFunction,
+def extrapolate_log_partition(
+    log_partition_sim: LogPartition,
     cumulants: EnergyCumulants,
     beta_sim: Array,
     beta_target: Array,
     order: int = 3,
-) -> LogPartitionFunction:
+) -> LogPartition:
     r"""Taylor-expand $\ln Q_c$ from $\beta_\mathrm{sim}$ to $\beta_\mathrm{target}$.
 
     Implements Witman 2018 eq 9 to arbitrary order using the per-macrostate
@@ -168,7 +166,7 @@ def extrapolate_log_partition_fn(
     \qquad \delta\beta = \beta' - \beta.$$
 
     Args:
-        log_partition_fn_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
+        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
             ``(n_max+1,)``.
         cumulants: Per-macrostate energy cumulants.
         beta_sim: Simulation inverse temperature.
@@ -187,42 +185,45 @@ def extrapolate_log_partition_fn(
         raise ValueError(f"order must be in 1..{cumulants.max_order}, got {order}")
 
     db = beta_target - beta_sim
-    result = log_partition_fn_sim - cumulants.mean * db
+    result = log_partition_sim - cumulants.mean * db
     for k in range(2, order + 1):
         result = result + cumulants.cumulants[..., k - 2] * (-db) ** k / factorial(k)
     return result
 
 
 def macrostate_distribution(
-    log_partition_fn: LogPartitionFunction,
+    log_partition: LogPartition,
     beta: Array,
     log_fugacity: Array,
 ) -> MacrostateDistribution:
     r"""Compute $\Pi(N; \mu, V, \beta)$ from $\ln Q_c$ and a reservoir fugacity.
 
     Witman 2018 eq 3 with $\beta\mu = \ln(\beta f / q(\beta))$; the
-    ideal-gas $q$-factor cancels with the one absorbed into ``log_partition_fn``
-    by :func:`reconstruct_log_partition_fn`.
-
-    Uses the standard log-sum-exp trick to avoid overflow at large $N$.
+    ideal-gas $q$-factor cancels with the one absorbed into ``log_partition``
+    by :func:`reconstruct_log_partition`.
 
     Args:
-        log_partition_fn: $\ln Q_c(N, V, \beta)$, shape ``(n_max+1,)``.
+        log_partition: $\ln Q_c(N, V, \beta)$, shape ``(n_max+1,)``.
         beta: Inverse temperature.
         log_fugacity: $\ln f$ at target conditions.
 
     Returns:
         Normalised distribution $\Pi(N)$, shape ``(n_max+1,)``.
     """
-    n_values = jnp.arange(log_partition_fn.shape[0])
-    log_weights = (log_fugacity + jnp.log(beta)) * n_values + log_partition_fn
-    log_weights = log_weights - jnp.max(log_weights)
-    weights = jnp.exp(log_weights)
-    return weights / jnp.sum(weights)
+    n_values = jnp.arange(log_partition.shape[0])
+    log_weights = (log_fugacity + jnp.log(beta)) * n_values + log_partition
+    return jax.nn.softmax(log_weights)
 
 
 def average_loading(distribution: MacrostateDistribution) -> Loading:
-    r"""Compute $\langle N \rangle = \sum_N N\,\Pi(N)$."""
+    r"""Compute $\langle N \rangle = \sum_N N\,\Pi(N)$.
+
+    Args:
+        distribution: Normalised $\Pi(N)$, shape ``(n_max+1,)``.
+
+    Returns:
+        Scalar expected loading $\langle N \rangle$.
+    """
     n_values = jnp.arange(distribution.shape[0])
     return jnp.sum(n_values * distribution)
 
@@ -250,8 +251,8 @@ def _log_fugacity_at_pressures(
     return result.log_fugacity[..., 0]
 
 
-def isotherm_from_log_partition_fn(
-    log_partition_fn: LogPartitionFunction,
+def isotherm_from_log_partition(
+    log_partition: LogPartition,
     beta: Array,
     pressures: Array,
     temperature: Array,
@@ -261,12 +262,12 @@ def isotherm_from_log_partition_fn(
 ) -> Loading:
     r"""Vectorised adsorption isotherm $\langle N \rangle(P)$ at fixed $T$.
 
-    Evaluates Witman 2018 eq 18 for every pressure in ``pressures`` in a single
-    JAX computation — no Python loop. Fugacity comes from Peng-Robinson; the
-    macrostate distribution is rebuilt at each pressure.
+    Evaluates Witman 2018 eq 18 for every pressure in ``pressures``, vmapped
+    over the pressure grid. Fugacity comes from Peng-Robinson; the macrostate
+    distribution is rebuilt at each pressure.
 
     Args:
-        log_partition_fn: $\ln Q_c(N, V, \beta)$ at the target $\beta$,
+        log_partition: $\ln Q_c(N, V, \beta)$ at the target $\beta$,
             shape ``(n_max+1,)``.
         beta: Inverse temperature corresponding to ``temperature``.
         pressures: Pressure grid [Pa], shape ``(n_pressures,)``.
@@ -288,14 +289,14 @@ def isotherm_from_log_partition_fn(
     distributions = jax.vmap(
         macrostate_distribution,
         in_axes=(None, None, 0),
-    )(log_partition_fn, beta, log_fugacities)
+    )(log_partition, beta, log_fugacities)
     return jax.vmap(average_loading)(distributions)
 
 
-def _loading_from_T_logP(
+def _loading_from_temperature_log_pressure(
     temperature: Array,
     log_pressure_pa: Array,
-    log_partition_fn_sim: LogPartitionFunction,
+    log_partition_sim: LogPartition,
     cumulants: EnergyCumulants,
     beta_sim: Array,
     order: int,
@@ -310,8 +311,8 @@ def _loading_from_T_logP(
     and $\langle N\rangle$ marginalisation.
     """
     beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
-    log_qc = extrapolate_log_partition_fn(
-        log_partition_fn_sim,
+    log_qc = extrapolate_log_partition(
+        log_partition_sim,
         cumulants,
         beta_sim,
         beta,
@@ -328,8 +329,8 @@ def _loading_from_T_logP(
     return average_loading(macrostate_distribution(log_qc, beta, log_fugacity))
 
 
-def isosteric_heat_from_log_partition_fn(
-    log_partition_fn_sim: LogPartitionFunction,
+def isosteric_heat_from_log_partition(
+    log_partition_sim: LogPartition,
     cumulants: EnergyCumulants,
     beta_sim: Array,
     pressures: Array,
@@ -347,13 +348,12 @@ def isosteric_heat_from_log_partition_fn(
         \frac{(\partial \langle N\rangle / \partial T)_P}
              {(\partial \langle N\rangle / \partial \ln P)_T}.$$
 
-    Both partial derivatives come from [`jax.grad`][jax.grad] on the pure
-    loading function $\langle N \rangle(T, \ln P)$, vmapped across the
-    pressure grid. No ``delta_T`` hyperparameter, no finite-difference
-    truncation error.
+    Both partial derivatives come from a single [`jax.grad`][jax.grad] on the
+    pure loading function $\langle N \rangle(T, \ln P)$, vmapped across the
+    pressure grid.
 
     Args:
-        log_partition_fn_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$,
+        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$,
             shape ``(n_max+1,)``.
         cumulants: Per-macrostate energy cumulants.
         beta_sim: Simulation inverse temperature.
@@ -369,10 +369,10 @@ def isosteric_heat_from_log_partition_fn(
     """
 
     def loading_fn(t: Array, log_p: Array) -> Array:
-        return _loading_from_T_logP(
+        return _loading_from_temperature_log_pressure(
             t,
             log_p,
-            log_partition_fn_sim,
+            log_partition_sim,
             cumulants,
             beta_sim,
             order,
@@ -381,22 +381,17 @@ def isosteric_heat_from_log_partition_fn(
             acentric_factor,
         )
 
-    dN_dT = jax.grad(loading_fn, argnums=0)
-    dN_dlogP = jax.grad(loading_fn, argnums=1)
+    loading_grad = jax.grad(loading_fn, argnums=(0, 1))
 
     def q_st_at(log_p: Array) -> Array:
-        return (
-            BOLTZMANN_CONSTANT
-            * temperature**2
-            * dN_dT(temperature, log_p)
-            / dN_dlogP(temperature, log_p)
-        )
+        dn_dt, dn_dlog_p = loading_grad(temperature, log_p)
+        return BOLTZMANN_CONSTANT * temperature**2 * dn_dt / dn_dlog_p
 
     return jax.vmap(q_st_at)(jnp.log(pressures))
 
 
-def working_capacity_from_log_partition_fn(
-    log_partition_fn_sim: LogPartitionFunction,
+def working_capacity_from_log_partition(
+    log_partition_sim: LogPartition,
     cumulants: EnergyCumulants,
     beta_sim: Array,
     temperature_ads: Array,
@@ -412,26 +407,37 @@ def working_capacity_from_log_partition_fn(
 
     Evaluates Witman 2018 eq 20 for a single $(T_\mathrm{ads}, P_\mathrm{ads}) \to (T_\mathrm{des}, P_\mathrm{des})$
     swing process. Both end points use the Taylor-extrapolated $\ln Q_c$.
+
+    Args:
+        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$,
+            shape ``(n_max+1,)``.
+        cumulants: Per-macrostate energy cumulants.
+        beta_sim: Simulation inverse temperature.
+        temperature_ads: Adsorption temperature [K].
+        pressure_ads: Adsorption pressure [Pa].
+        temperature_des: Desorption temperature [K].
+        pressure_des: Desorption pressure [Pa].
+        critical_pressure: $P_c$ of the adsorbate [Pa].
+        critical_temperature: $T_c$ of the adsorbate [K].
+        acentric_factor: $\omega$ of the adsorbate [-].
+        order: Taylor order for the $\beta$-extrapolation.
+
+    Returns:
+        Scalar $n_\mathrm{wc}$ [particles].
     """
 
     def loading(t: Array, p: Array) -> Array:
-        beta = 1.0 / (BOLTZMANN_CONSTANT * t)
-        log_qc = extrapolate_log_partition_fn(
-            log_partition_fn_sim,
+        return _loading_from_temperature_log_pressure(
+            t,
+            jnp.log(p),
+            log_partition_sim,
             cumulants,
             beta_sim,
-            beta,
             order,
-        )
-        return isotherm_from_log_partition_fn(
-            log_qc,
-            beta,
-            jnp.atleast_1d(p),
-            t,
             critical_pressure,
             critical_temperature,
             acentric_factor,
-        )[0]
+        )
 
     return loading(temperature_ads, pressure_ads) - loading(
         temperature_des, pressure_des
@@ -463,7 +469,7 @@ class TMMCSummary:
     away. All methods are pure and JIT/vmap-compatible.
 
     Attributes:
-        log_partition_fn_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
+        log_partition_sim: $\ln Q_c(N, V, \beta_\mathrm{sim})$, shape
             ``(n_max+1,)``.
         cumulants: Per-macrostate energy cumulants.
         beta_sim: Simulation inverse temperature.
@@ -471,7 +477,7 @@ class TMMCSummary:
         order: Taylor order for the $\beta$-extrapolation (default 3).
     """
 
-    log_partition_fn_sim: LogPartitionFunction
+    log_partition_sim: LogPartition
     cumulants: EnergyCumulants
     beta_sim: Array
     adsorbate: AdsorbateEOS
@@ -500,19 +506,19 @@ class TMMCSummary:
             Summary ready for isotherm / heat / capacity evaluation.
         """
         p_ins, p_del = transition_probabilities(statistics)
-        log_qc = reconstruct_log_partition_fn(p_ins, p_del, beta_sim, log_fugacity_sim)
+        log_qc = reconstruct_log_partition(p_ins, p_del, beta_sim, log_fugacity_sim)
         return TMMCSummary(
-            log_partition_fn_sim=log_qc,
+            log_partition_sim=log_qc,
             cumulants=cumulants,
             beta_sim=beta_sim,
             adsorbate=adsorbate,
             order=order,
         )
 
-    def extrapolate(self, beta_target: Array) -> LogPartitionFunction:
+    def extrapolate(self, beta_target: Array) -> LogPartition:
         r"""$\ln Q_c$ at a target inverse temperature via Taylor expansion."""
-        return extrapolate_log_partition_fn(
-            self.log_partition_fn_sim,
+        return extrapolate_log_partition(
+            self.log_partition_sim,
             self.cumulants,
             self.beta_sim,
             beta_target,
@@ -523,7 +529,7 @@ class TMMCSummary:
         r"""$\langle N \rangle(P)$ at fixed $T$, vectorised across pressures."""
         beta = 1.0 / (BOLTZMANN_CONSTANT * temperature)
         log_qc = self.extrapolate(beta)
-        return isotherm_from_log_partition_fn(
+        return isotherm_from_log_partition(
             log_qc,
             beta,
             pressures,
@@ -535,8 +541,8 @@ class TMMCSummary:
 
     def isosteric_heat(self, pressures: Array, temperature: Array) -> IsostericHeat:
         r"""Autodiff Clausius--Clapeyron heat across a pressure grid."""
-        return isosteric_heat_from_log_partition_fn(
-            self.log_partition_fn_sim,
+        return isosteric_heat_from_log_partition(
+            self.log_partition_sim,
             self.cumulants,
             self.beta_sim,
             pressures,
@@ -555,8 +561,8 @@ class TMMCSummary:
         pressure_des: Array,
     ) -> Array:
         r"""Working capacity between adsorption and desorption conditions."""
-        return working_capacity_from_log_partition_fn(
-            self.log_partition_fn_sim,
+        return working_capacity_from_log_partition(
+            self.log_partition_sim,
             self.cumulants,
             self.beta_sim,
             temperature_ads,
