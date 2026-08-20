@@ -15,6 +15,8 @@ lives in ``test/application/md/test_verlet.py``.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -90,24 +92,13 @@ def _seeded(state: SkinState, cutoffs, skin: float, rebuild: bool) -> SkinState:
     return dataclasses.replace(state, verlet_skin=group)
 
 
-def _edges_fixing(nl_factory, state):
+def _edges_fixing(
+    build: Callable[[SkinState], Edges[Literal[2]]], state: SkinState
+) -> tuple[Edges[Literal[2]], SkinState]:
     """Build edges, growing lens-backed capacities via the assertion fixes."""
     result = None
     for _ in range(3):
-        nl = nl_factory(state)
-        result = jax.jit(as_result_function(nl))(state.particles, state.systems)
-        if not result.failed_assertions:
-            break
-        state = result.fix_or_raise(state)
-    assert result is not None
-    result.raise_assertion()
-    return result.value, state
-
-
-def _skin_edges_fixing(state: SkinState, cutoffs, skin: float):
-    result = None
-    for _ in range(3):
-        result = jax.jit(as_result_function(build_skin_edges))(state, cutoffs, skin)
+        result = jax.jit(as_result_function(build))(state)
         if not result.failed_assertions:
             break
         state = result.fix_or_raise(state)
@@ -275,16 +266,23 @@ class TestReuseReproducesDense:
 
         # Replace the untrusted eager seed content with a traced (assertion
         # covered) build, growing capacities as needed.
-        skin_edges, state = _skin_edges_fixing(state, cutoffs, SKIN)
+        skin_edges, state = _edges_fixing(
+            lambda s: build_skin_edges(s, cutoffs, SKIN), state
+        )
         group = state.verlet_skin
         assert group is not None
         state = dataclasses.replace(
             state, verlet_skin=dataclasses.replace(group, edges=skin_edges)
         )
 
-        reuse, state = _edges_fixing(lambda s: skin_neighborlist(s, cutoffs), state)
+        reuse, state = _edges_fixing(
+            lambda s: skin_neighborlist(s, cutoffs)(s.particles, s.systems), state
+        )
         fresh, state = _edges_fixing(
-            lambda s: DenseNearestNeighborList.from_state(s, cutoffs), state
+            lambda s: DenseNearestNeighborList.from_state(s, cutoffs)(
+                s.particles, s.systems
+            ),
+            state,
         )
         reuse_set = _edge_set(reuse, state)
         assert len(reuse_set) > 0

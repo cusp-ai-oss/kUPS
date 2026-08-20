@@ -359,9 +359,8 @@ class VerletSkinState:
             A fully populated group, ready to be placed on the state.
         """
         if params is None:
-            counts = particles.data.system.counts
             params = estimate_skin_params(
-                Table(systems.keys, counts.data), systems, cutoffs, skin
+                particles.data.system.counts, systems, cutoffs, skin
             )
         params_lens = identity_lens(UniversalNeighborlistParameters)
 
@@ -583,8 +582,9 @@ class VerletSkinPropagator[State: IsVerletState]:
     The rebuild request travels as the ``should_rebuild`` bit — rather than
     the fix assigning a fresh edge list directly — because the build must run
     *in-trace*: only there do its capacity assertions surface and auto-grow
-    the buffers, while an eager build inside the fix would silently truncate
-    on overflow.
+    the buffers, while an eager build inside the fix would outgrow the static
+    params without recording the growth, and refitting its output back to the
+    params-implied shape would silently drop edges.
 
     Attributes:
         step: The wrapped dynamics step (e.g. one MD or relaxation step).
