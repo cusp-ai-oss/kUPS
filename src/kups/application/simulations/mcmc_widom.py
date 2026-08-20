@@ -15,7 +15,6 @@ import time
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import rich
 from jax import Array
 from nanoargs.cli import NanoArgs
@@ -28,6 +27,7 @@ from kups.application.mcmc.data import (
     MCMCGroup,
     MCMCParticles,
     MCMCSystems,
+    assemble_mcmc_parameters,
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import IsWidomState, make_widom_logged_data
@@ -53,18 +53,14 @@ from kups.application.utils.propagate import (
     run_warmup_cycles,
 )
 from kups.core.constants import BOLTZMANN_CONSTANT
-from kups.core.data import Table, WithCache
+from kups.core.data import Table
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
 from kups.core.lens import Lens, bind, identity_lens
 from kups.core.logging import CompositeLogger, TqdmLogger
-from kups.core.neighborlist import UniversalNeighborlistParameters
-from kups.core.parameter_scheduler import ParameterSchedulerState
 from kups.core.patch import Patch
 from kups.core.potential import (
-    EMPTY,
     PotentialAsPropagator,
-    PotentialOut,
     sum_potentials,
 )
 from kups.core.propagator import (
@@ -79,23 +75,18 @@ from kups.core.propagator import (
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import GroupId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, key_chain, tree_map
-from kups.core.utils.kahan import KahanSummand
+from kups.core.utils.jax import dataclass, key_chain
 from kups.mcmc.moves import (
     ExchangeChanges,
-    ExchangeMove,
     ParticlePositionChanges,
     exchange_changes_from_position_changes,
     make_displacement_mcmc_propagator,
+    make_exchange_move,
 )
 from kups.mcmc.probability import make_muvt_probability_ratio
 from kups.mcmc.widom import GhostProbe, WidomStatistics
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
-)
-from kups.potential.classical.ewald import (
-    EwaldCache,
-    EwaldParameters,
 )
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -189,60 +180,30 @@ def init_state(key: Array, config: Config) -> WidomState:
         (groups, config.max_num_adsorbates),
     )
 
-    ewald_params = EwaldParameters.make(
+    params = assemble_mcmc_parameters(
         particles,
         system,
-        epsilon_total=config.ewald.precision,
-        real_cutoff=config.ewald.real_cutoff,
+        lj_params,
+        blocking_spheres,
+        ewald_precision=config.ewald.precision,
+        ewald_real_cutoff=config.ewald.real_cutoff,
+        buffer_particles_per_system=num_buffer_particles / n_sys,
     )
-    n_kvecs = ewald_params.reciprocal_lattice_shifts.data.shape[1]
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts + num_buffer_particles / n_sys,
-        system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
-    )
-    if blocking_spheres.radii.shape[0] > 0:
-        # Systems without spheres have no radius to size from, so use the batch-wide max.
-        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
-        blocking_nlist = UniversalNeighborlistParameters.estimate(
-            particles.data.system.counts + num_buffer_particles / n_sys,
-            system,
-            Table.broadcast_to(max_radius, system),
-        )
-    else:
-        blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
-    min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
 
     return WidomState(
         particles=particles,
         groups=groups,
         motifs=motifs,
         systems=system,
-        neighborlist_params=neighborlist_params,
-        blocking_spheres_neighborlist_params=blocking_nlist,
-        lj_parameters=WithCache(
-            lj_params,
-            KahanSummand.init(
-                PotentialOut(
-                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
-                )
-            ),
-        ),
-        ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
-        blocking_spheres_parameters=blocking_spheres,
-        translation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
-            label=SystemId,
-        ),
-        rotation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
-        reinsertion_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
-        exchange_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
+        neighborlist_params=params.neighborlist_params,
+        blocking_spheres_neighborlist_params=params.blocking_spheres_neighborlist_params,
+        lj_parameters=params.lj_parameters,
+        ewald_parameters=params.ewald_parameters,
+        blocking_spheres_parameters=params.blocking_spheres_parameters,
+        translation_params=params.translation_params,
+        rotation_params=params.rotation_params,
+        reinsertion_params=params.reinsertion_params,
+        exchange_params=params.exchange_params,
         widom_statistics=Table.arange(WidomStatistics.zeros(n_sys), label=SystemId),
     )
 
@@ -274,13 +235,7 @@ def make_widom_probe_from_state[S: IsWidomState, Move: Patch[Any]](
     with a bare Boltzmann ratio (plain Widom) or a fugacity-corrected ratio
     (Widom-in-GCMC).
     """
-    exchange = ExchangeMove(
-        positions=state.focus(lambda x: x.particles),
-        groups=state.focus(lambda x: x.groups),
-        motifs=state.focus(lambda x: x.motifs),
-        cell=state.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
-        capacity=state.focus(lambda x: x.move_capacity),
-    )
+    exchange = make_exchange_move(state)
     return GhostProbe(
         propose_fn=exchange.propose_insertion,
         patch_fn=patch_fn,
