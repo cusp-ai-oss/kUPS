@@ -41,7 +41,12 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import (
+    AdaptiveNeighborList,
+    UniversalNeighborlistParameters,
+    VerletSkinState,
+    skin_neighborlist,
+)
 from kups.core.typing import ParticleId, SystemId
 from kups.relaxation.config import make_optimizer
 
@@ -70,9 +75,16 @@ def run(config: Config) -> None:
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
-    potential, cutoff = config.potential.build(state_lens, gradient)
+    skin = config.run.verlet_skin
+    potential, cutoff = config.potential.build(
+        state_lens,
+        gradient,
+        neighborlist_factory=skin_neighborlist
+        if skin > 0
+        else AdaptiveNeighborList.from_state,
+    )
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, gradient
+        state_lens, potential, optimizer, gradient, verlet_skin=skin, cutoffs=cutoff
     )
 
     all_particles: list[Table[ParticleId, RelaxParticles]] = []
@@ -96,6 +108,9 @@ def run(config: Config) -> None:
         neighborlist_params=neighborlist_params,
         opt_state=opt_state,
         step=jnp.array([0]),
+        verlet_skin=VerletSkinState.seed(particles, systems, cutoff, skin)
+        if skin > 0
+        else None,
     )
     logging.info("Starting relaxation")
     run_relax(key, propagator, state, config.run)

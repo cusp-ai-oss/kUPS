@@ -20,6 +20,7 @@ from kups.application.utils.propagate import make_cycle_function, run_simulation
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
+from kups.core.neighborlist import IsVerletState, VerletSkinPropagator
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
@@ -54,6 +55,10 @@ class IsRelaxState(IsState[RelaxParticles, RelaxSystems], Protocol):
     def step(self) -> Array: ...
 
 
+class IsVerletRelaxState(IsRelaxState, IsVerletState, Protocol):
+    """Relaxation state that can also carry the Verlet-skin group."""
+
+
 class OptInit(Protocol):
     """Protocol for initialising an Optax optimizer state from gradients."""
 
@@ -64,11 +69,14 @@ class OptInit(Protocol):
     ) -> optax.OptState: ...
 
 
-def make_relax_propagator[State: IsRelaxState](
+def make_relax_propagator[State: IsVerletRelaxState](
     state_lens: Lens[State, State],
     potential: Potential[State, Any, EmptyType, Any],
     optimizer: Optimizer[PositionsAndCell, Any],
     gradient: Lens[Geometry, PositionsAndCell],
+    *,
+    verlet_skin: float = 0.0,
+    cutoffs: Table[SystemId, Array] | None = None,
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
 
@@ -82,6 +90,13 @@ def make_relax_propagator[State: IsRelaxState](
             DOFs (not raw ``(positions, cell)``) so the filter's atoms-ride-the-cell
             coupling is applied on every ``set``; using the raw property would drop
             that coupling and diverge from ASE's cell filters.
+        verlet_skin: Neighbor-list skin width (Å). ``0`` (default) leaves the
+            potential's own neighbor-list construction untouched. ``> 0`` wraps
+            the optimisation step in a
+            [`VerletSkinPropagator`][kups.core.neighborlist.verlet.VerletSkinPropagator],
+            whose docstring states the contract on the potential, the state and
+            the error recovery.
+        cutoffs: True per-system cutoffs; required when ``verlet_skin > 0``.
 
     Returns:
         Tuple of ``(propagator, opt_init)`` where *propagator* performs one
@@ -127,12 +142,15 @@ def make_relax_propagator[State: IsRelaxState](
         return optimizer.init(params, prefix)
 
     pot = CachedPotential(potential, lens(cached_out), cached_index)
-    relax_prop = RelaxationPropagator(
+    relax_prop: Propagator[State] = RelaxationPropagator(
         potential=pot,
         property=lens(to_geometry).nest(gradient),
         opt_state=state_lens.focus(lambda x: x.opt_state),
         optimizer=optimizer,
     )
+    if verlet_skin > 0:
+        assert cutoffs is not None, "verlet_skin > 0 requires cutoffs."
+        relax_prop = VerletSkinPropagator(relax_prop, cutoffs, verlet_skin)
     step_prop = step_counter_propagator(state_lens.focus(lambda x: x.step))
     prop = ResetOnErrorPropagator(SequentialPropagator((relax_prop, step_prop)))
     return prop, opt_init

@@ -43,7 +43,12 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import (
+    AdaptiveNeighborList,
+    UniversalNeighborlistParameters,
+    VerletSkinState,
+    skin_neighborlist,
+)
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -72,8 +77,14 @@ def run(config: Config) -> None:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
-    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+    skin = config.md.verlet_skin
+    potential, cutoff = config.potential.build(
+        state_lens,
+        POSITIONS_AND_CELL,
+        neighborlist_factory=skin_neighborlist
+        if skin > 0
+        else AdaptiveNeighborList.from_state,
+    )
 
     mb_key = next(chain) if config.md.initialize_momenta else None
     all_particles: list[Table[ParticleId, MDParticles]] = []
@@ -95,6 +106,12 @@ def run(config: Config) -> None:
         systems=systems,
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
+        verlet_skin=VerletSkinState.seed(particles, systems, cutoff, skin)
+        if skin > 0
+        else None,
+    )
+    propagator = make_md_propagator(
+        state_lens, config.md.integrator, potential, verlet_skin=skin, cutoffs=cutoff
     )
     run_md(next(chain), propagator, state, config.run)
 
