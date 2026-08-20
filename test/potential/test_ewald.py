@@ -524,7 +524,7 @@ class TestStructureFactorCache:
         self,
     ) -> tuple[
         Table[ParticleId, PointCloudParticles],
-        Callable[..., EwaldLongRangeInput[Any]],
+        Callable[[Array], EwaldLongRangeInput[Any]],
     ]:
         """Build a charge-ordered cubic lattice and a builder for its Ewald input.
 

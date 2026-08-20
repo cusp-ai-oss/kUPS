@@ -265,9 +265,12 @@ type EwaldSelfInput = GraphPotentialInput[
 class IncrementalUpdate:
     """Cached previous structure factors + the changed particles to fold into them (MC accept/reject).
 
-    Bundling the two makes "an incremental update has a cache to update" a type fact, not a runtime
-    assert: ``inp.incremental is not None`` is exactly the cached-|S|² path, and ``.cache`` is then
-    statically present.
+    Bundling the two keeps the cache statically present on the incremental path.
+
+    Attributes:
+        cache: Structure factors and per-component outputs from the previous step.
+        changes: Previous data of the changed particles, whose contribution is replaced by
+            their current data in the point cloud.
     """
 
     cache: EwaldCache[Any, Any]
@@ -529,21 +532,45 @@ def _structure_factor_update_jvp(
     return sk, KahanSummand(sk_dot, jnp.zeros_like(sk_dot))
 
 
-def full_structure_factor(inp: EwaldLongRangeInput[Any]) -> KahanSummand[Array]:
-    """Global structure factor recomputed from the full point cloud.
+def _reduce_structure_factor(
+    inp: EwaldLongRangeInput[Any], rho: Array
+) -> KahanSummand[Array]:
+    """Global structure factor of an already-computed per-particle frequency response.
 
     Math: ``S(k) = sum_i rho_i(k)``, reduced owned-only per system and completed
-    across the mesh, so the result is the GLOBAL ``S`` under domain
-    decomposition (and a plain per-system sum when replicated).
+    across the mesh, so the result is the global ``S`` under domain decomposition
+    (and a plain per-system sum when replicated).
 
     Returns:
         A fresh accumulator with zero compensation (nothing accumulated yet).
     """
     pc = inp.point_cloud
-    p = pc.particles.data
-    rho = _frequency_response(p.positions, p.charges, inp.kvecs, p.system)
     return KahanSummand.init(
         pc.decomposition.combine_across_shards(pc.reduce_nodes_to_systems(rho).data)
+    )
+
+
+def _cache_patch[State](
+    inp: EwaldLongRangeInput[State], sk: KahanSummand[Array]
+) -> Patch[State]:
+    """Patch committing the structure factor accumulator — value and compensation — to the cache."""
+    if inp.cache_lens is None:
+        return IdPatch[State]()
+    return EwaldCachePatch(sk, inp.point_cloud.systems.index, inp.cache_lens)
+
+
+def full_structure_factor(inp: EwaldLongRangeInput[Any]) -> KahanSummand[Array]:
+    """Global structure factor recomputed from the full point cloud.
+
+    Math: ``S(k) = sum_i rho_i(k)`` over the whole particle table, via
+    ``_reduce_structure_factor``.
+
+    Returns:
+        A fresh accumulator with zero compensation (nothing accumulated yet).
+    """
+    p = inp.point_cloud.particles.data
+    return _reduce_structure_factor(
+        inp, _frequency_response(p.positions, p.charges, inp.kvecs, p.system)
     )
 
 
@@ -553,8 +580,7 @@ def incremental_structure_factor[State](
     """Fold changed particles into the cached structure factor (MC accept/reject).
 
     Math: ``S'(k) = S(k) + Σ_changed [ρ_new(k) − ρ_old(k)]`` from the cached ``S`` in
-    ``update.cache``. The full (non-incremental) path recomputes ``S`` via
-    ``full_structure_factor`` instead.
+    ``update.cache``.
 
     Returns:
         Tuple of the structure factor accumulator and a cache patch. The delta
@@ -564,12 +590,7 @@ def incremental_structure_factor[State](
     sk = _structure_factor_update(
         p.positions, p.charges, inp.kvecs, p.system, update.cache, update.changes
     )
-    patch = (
-        EwaldCachePatch(sk, inp.point_cloud.systems.index, inp.cache_lens)
-        if inp.cache_lens is not None
-        else IdPatch[State]()
-    )
-    return sk, patch
+    return sk, _cache_patch(inp, sk)
 
 
 def ewald_net_charge_energy(inp: EwaldLongRangeInput[Any]) -> Table[SystemId, Energy]:
@@ -619,51 +640,48 @@ def ewald_long_range_energy[State](
 def _ewald_long_range_incremental[State](
     inp: EwaldLongRangeInput[State], update: IncrementalUpdate
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
-    """Incremental (MC accept/reject) path: cached ``|S|²`` form. Single-device only — DD-MC is out of
-    scope, so no owned masking here. ``S(k)`` is read off the accumulator with its compensation
-    applied."""
+    """Incremental (MC accept/reject) path: cached ``|S|²`` form.
+
+    Math: ``E_lr = TO_STANDARD_UNITS * sum_k P(k) |S'(k)|^2 + E_net``, with ``S'``
+    read off the accumulator with its compensation applied.
+
+    Single-device only: domain-decomposed MC is out of scope, so no owned masking here.
+    """
     structure, patch = incremental_structure_factor(inp, update)
     energy = long_range(inp, structure.total)
     assert energy.shape == (inp.point_cloud.batch_size,), (
         f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     )
-    energy = energy * TO_STANDARD_UNITS
-    total = ewald_net_charge_energy(inp).map_data(lambda e_net: e_net + energy)
+    total = ewald_net_charge_energy(inp) + energy * TO_STANDARD_UNITS
     return WithPatch(total, patch)
 
 
 def _ewald_long_range_full[State](
     inp: EwaldLongRangeInput[State],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
-    """Full, domain-decomposition-aware path: owned partial structure factor -> global S (combined live,
-    inside the differentiated energy) -> per-atom reciprocal energy ``e_i = Σ_k P ρ_i·S`` -> owned-atom
-    per-system partial. ``Σ_i e_i = Σ_k P|S|²`` reproduces the standard energy; under a ``shard_map`` the
-    partials sum (energy psummed by the wrapper, forces auto-summed through the transpose)."""
+    """Full, domain-decomposition-aware path: per-atom reciprocal energy.
+
+    Math: ``e_i = sum_k P(k) rho_i(k) . S(k)``, whose sum over atoms reproduces the
+    standard ``sum_k P(k) |S(k)|^2``.
+
+    ``S`` is combined across the mesh live, inside the differentiated energy, so the
+    owned-atom reduction of ``e_i`` is each device's per-system partial: under a
+    ``shard_map`` the energy partials are summed by the wrapper's ``psum`` and the
+    gradients through the transpose.
+    """
     pc = inp.point_cloud
     p = pc.particles.data
     rho = _frequency_response(p.positions, p.charges, inp.kvecs, p.system)  # (N, K, 2)
-    # Owned partial structure factor per system, then combined across the mesh to the
-    # GLOBAL S (live, inside the differentiated energy): S must be global before |S|²
-    # is formed. A full recomputation starts a fresh accumulator with zero
-    # compensation; the cache patch commits the accumulator, not just its value.
-    sk = full_structure_factor(inp)
-    structure = sk.value
-    patch = (
-        EwaldCachePatch(sk, pc.systems.index, inp.cache_lens)
-        if inp.cache_lens is not None
-        else IdPatch[State]()
-    )
+    sk = _reduce_structure_factor(inp, rho)
     e_per_atom = einops.einsum(
         prefactor(inp)[p.system.indices],
         rho,
-        structure[p.system.indices],
+        sk.value[p.system.indices],
         "n k, n k t, n k t -> n",
     )
-    e_net = ewald_net_charge_energy(inp)
-    total = pc.reduce_nodes_to_systems(e_per_atom).map_data(
-        lambda e: e * TO_STANDARD_UNITS + e_net.data
-    )
-    return WithPatch(total, patch)
+    e_reciprocal = pc.reduce_nodes_to_systems(e_per_atom) * TO_STANDARD_UNITS
+    total = e_reciprocal + ewald_net_charge_energy(inp)
+    return WithPatch(total, _cache_patch(inp, sk))
 
 
 @dataclass
