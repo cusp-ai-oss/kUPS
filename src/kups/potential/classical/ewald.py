@@ -610,15 +610,10 @@ def ewald_net_charge_energy(inp: EwaldLongRangeInput[Any]) -> Table[SystemId, En
     """
     pc = inp.point_cloud
     particles = pc.particles.data
-    net_charge = segment_sum(
-        particles.charges,
-        particles.system.indices,
-        pc.batch_size,
-        mode="drop",
-    )
+    net_charge = particles.system.sum_over(particles.charges)
     alpha = inp.parameters.alpha[pc.systems.index]
     prefac = -jnp.pi / (2 * inp.volume * alpha**2) * TO_STANDARD_UNITS
-    per_atom = (prefac * net_charge)[particles.system.indices] * particles.charges
+    per_atom = (net_charge * prefac)[particles.system] * particles.charges
     return pc.reduce_nodes_to_systems(per_atom)
 
 
