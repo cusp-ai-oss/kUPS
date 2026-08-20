@@ -411,7 +411,6 @@ class PreparedSystem:
         log_fugacity: Per-species log-fugacity at the host's $(T, P)$,
             shape ``(n_adsorbates,)``.
         temperature: Host temperature [K].
-        n_adsorbate_species: Number of adsorbate species (for sizing indices).
     """
 
     motifs: Table[MotifParticleId, MotifParticles]
@@ -420,7 +419,6 @@ class PreparedSystem:
     host_groups: Table[GroupId, MCMCGroup]
     log_fugacity: Array
     temperature: float = field(static=True)
-    n_adsorbate_species: int = field(static=True)
 
 
 def prepare_system(
@@ -497,7 +495,6 @@ def prepare_system(
         host_groups=host_groups,
         log_fugacity=result.log_fugacity,
         temperature=host.temperature,
-        n_adsorbate_species=n_ads,
     )
 
 
