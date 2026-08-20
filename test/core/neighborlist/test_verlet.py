@@ -6,9 +6,10 @@
 Covers the pure pieces: the deformation-aware ``skin_margin`` bound (motion
 threshold, compression, expansion, pure shear, triclinic boundary crossing,
 non-periodic axes), the single-image clamp on the build radius, the
-completeness of the refine-based reuse path against a fresh dense build, and
-the ``TriggerStep`` backstop (fix flips the rebuild flag; an unabsorbable step
-escalates). MD integration lives in ``test/application/md/test_verlet.py``.
+completeness of the refine-based reuse path against a fresh dense build,
+``VerletSkinState.seed``, and the ``VerletSkinPropagator`` rebuild/backstop
+(fix flips the rebuild flag; an unabsorbable step escalates). MD integration
+lives in ``test/application/md/test_verlet.py``.
 """
 
 from __future__ import annotations
@@ -26,15 +27,14 @@ from kups.core.data import Table
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     Edges,
-    RebuildSkinStep,
     SkinMargin,
     SkinReference,
-    TriggerStep,
     UniversalNeighborlistParameters,
+    VerletSkinPropagator,
+    VerletSkinState,
     build_skin_edges,
     effective_build_radii,
     estimate_skin_params,
-    seed_verlet_state,
     skin_margin,
     skin_neighborlist,
 )
@@ -44,20 +44,17 @@ from kups.core.utils.jax import dataclass
 
 from ._builders import SamplePoints, SampleSystems, make_lh, make_systems
 
+CUTOFF, SKIN = 3.5, 1.0
+
 
 @dataclass
 class SkinState:
-    """Minimal state satisfying what the verlet module reads and updates."""
+    """Minimal state satisfying ``IsVerletState``."""
 
     particles: Table[ParticleId, SamplePoints]
     systems: Table[SystemId, SampleSystems]
     neighborlist_params: UniversalNeighborlistParameters
-    skin_neighborlist_params: UniversalNeighborlistParameters
-    stored_skin_edges: Edges | None = None
-    reference_positions: Array | None = None
-    reference_cell: Cell | None = None
-    should_rebuild: Array | None = None
-    skin_headroom: Array | None = None
+    verlet_skin: VerletSkinState | None = None
 
 
 def _system_cell(lvecs: Array, periodic=(True, True, True)) -> Cell:
@@ -66,9 +63,12 @@ def _system_cell(lvecs: Array, periodic=(True, True, True)) -> Cell:
     return Cell.from_pbc(frame, periodic)
 
 
-def _make_state(
-    lvecs: Array, positions: Array, cutoff: float, skin: float
-) -> SkinState:
+def _identity_step(key: Array, state: SkinState) -> SkinState:
+    del key
+    return state
+
+
+def _make_state(lvecs: Array, positions: Array, cutoff: float) -> SkinState:
     n = positions.shape[0]
     particles = make_lh(positions, jnp.zeros(n, dtype=int))
     cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(lvecs)[None]))
@@ -80,8 +80,14 @@ def _make_state(
         neighborlist_params=UniversalNeighborlistParameters.estimate(
             counts, systems, cutoffs
         ),
-        skin_neighborlist_params=estimate_skin_params(counts, systems, cutoffs, skin),
     )
+
+
+def _seeded(state: SkinState, cutoffs, skin: float, rebuild: bool) -> SkinState:
+    """Populate the Verlet-skin group so the cond-based propagator can trace."""
+    group = VerletSkinState.seed(state.particles, state.systems, cutoffs, skin)
+    group = dataclasses.replace(group, should_rebuild=jnp.array(rebuild))
+    return dataclasses.replace(state, verlet_skin=group)
 
 
 def _edges_fixing(nl_factory, state):
@@ -120,9 +126,6 @@ def _edge_set(edges: Edges, state: SkinState) -> set:
         (int(i), int(j), tuple(np.round(d / 1e-6).astype(np.int64)))
         for (i, j), d in zip(idx[valid], diff[valid])
     }
-
-
-CUTOFF, SKIN = 3.5, 1.0
 
 
 def _margins(
@@ -266,11 +269,18 @@ class TestReuseReproducesDense:
         edge set of a fresh dense build at the true cutoff (no dropped pairs,
         including across sheared boundaries)."""
         frac = jax.random.uniform(jax.random.key(0), (64, 3))
-        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF)
         cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
+        state = _seeded(state, cutoffs, SKIN, rebuild=True)
 
+        # Replace the untrusted eager seed content with a traced (assertion
+        # covered) build, growing capacities as needed.
         skin_edges, state = _skin_edges_fixing(state, cutoffs, SKIN)
-        state = dataclasses.replace(state, stored_skin_edges=skin_edges)
+        group = state.verlet_skin
+        assert group is not None
+        state = dataclasses.replace(
+            state, verlet_skin=dataclasses.replace(group, edges=skin_edges)
+        )
 
         reuse, state = _edges_fixing(lambda s: skin_neighborlist(s, cutoffs), state)
         fresh, state = _edges_fixing(
@@ -281,24 +291,18 @@ class TestReuseReproducesDense:
         assert reuse_set == _edge_set(fresh, state)
 
 
-def _seeded(state: SkinState, cutoffs, skin: float, rebuild: bool) -> SkinState:
-    """Populate the Verlet fields so the cond-based steps can trace."""
-    state = seed_verlet_state(state, cutoffs, skin)
-    return dataclasses.replace(state, should_rebuild=jnp.array(rebuild))
-
-
-class TestSeedVerletState:
+class TestVerletSkinStateSeed:
     def test_contract(self):
         """The seed schedules an assertion-covered first rebuild and deep-copies
         the reference fields (aliased buffers break state donation)."""
         lvecs = 15.0 * jnp.eye(3)
         frac = jax.random.uniform(jax.random.key(5), (32, 3))
-        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF)
         cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
-        state = seed_verlet_state(state, cutoffs, SKIN)
-        assert bool(state.should_rebuild)
-        assert state.skin_headroom.shape == (1,)
-        assert state.reference_positions is not state.particles.data.positions
+        group = VerletSkinState.seed(state.particles, state.systems, cutoffs, SKIN)
+        assert bool(group.should_rebuild)
+        assert group.headroom.shape == (1,)
+        assert group.reference.positions is not state.particles.data.positions
 
     def test_overgrown_eager_seed_is_refit_to_the_static_params(self):
         """An eager build silently outgrows undersized static capacities (its
@@ -307,59 +311,92 @@ class TestSeedVerletState:
         ``lax.cond`` dies with mismatched branch shapes."""
         lvecs = 15.0 * jnp.eye(3)
         frac = jax.random.uniform(jax.random.key(5), (64, 3))
-        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        state = _make_state(lvecs, frac @ lvecs, CUTOFF)
         cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
-        params = dataclasses.replace(state.skin_neighborlist_params, avg_edges=1)
-        state = seed_verlet_state(state, cutoffs, SKIN, params=params)
-        target = jax.eval_shape(lambda s: build_skin_edges(s, cutoffs, SKIN), state)
-        assert (
-            state.stored_skin_edges.indices.indices.shape
-            == target.indices.indices.shape
+        counts = Table(state.systems.keys, jnp.array([64]))
+        params = dataclasses.replace(
+            estimate_skin_params(counts, state.systems, cutoffs, SKIN), avg_edges=1
         )
+        group = VerletSkinState.seed(
+            state.particles, state.systems, cutoffs, SKIN, params=params
+        )
+        state = dataclasses.replace(state, verlet_skin=group)
+        target = jax.eval_shape(lambda s: build_skin_edges(s, cutoffs, SKIN), state)
+        assert group.edges.indices.indices.shape == target.indices.indices.shape
 
 
-class TestRebuildSkinStep:
+def _move_atom(state: SkinState, index: int, by: float) -> SkinState:
+    moved = state.particles.data.positions.at[index, 0].add(by)
+    return dataclasses.replace(
+        state,
+        particles=dataclasses.replace(
+            state.particles,
+            data=dataclasses.replace(state.particles.data, positions=moved),
+        ),
+    )
+
+
+def _with_headroom(state: SkinState, headroom) -> SkinState:
+    group = state.verlet_skin
+    assert group is not None
+    return dataclasses.replace(
+        state,
+        verlet_skin=dataclasses.replace(group, headroom=jnp.array(headroom)),
+    )
+
+
+class TestVerletSkinPropagatorRebuild:
     def test_small_cell_clamps_instead_of_failing(self):
         """(cutoff + skin) beyond the single-image limit shrinks the effective
         skin rather than failing: the rebuild succeeds with the clamped budget."""
         lvecs = 8.0 * jnp.eye(3)
         frac = jax.random.uniform(jax.random.key(1), (16, 3))
-        state = _make_state(lvecs, frac @ lvecs, 3.0, 2.0)  # 3 + 2 > 8 / 2
+        state = _make_state(lvecs, frac @ lvecs, 3.0)  # 3 + 2 > 8 / 2
         cutoffs = Table(state.systems.keys, jnp.array([3.0]))
         state = _seeded(state, cutoffs, 2.0, rebuild=True)
-        step = RebuildSkinStep(cutoffs, 2.0)
-        result = jax.jit(as_result_function(step))(jax.random.key(2), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, 2.0)
+        result = jax.jit(as_result_function(prop))(jax.random.key(2), state)
         result.raise_assertion()
-        assert float(result.value.skin_headroom[0]) == pytest.approx(1.0)  # 4.0 - 3.0
-        assert not bool(result.value.should_rebuild)
+        group = result.value.verlet_skin
+        assert group is not None
+        assert float(group.headroom[0]) == pytest.approx(1.0)  # 4.0 - 3.0
+        assert not bool(group.should_rebuild)
 
     def test_cutoff_beyond_limit_has_no_fix(self):
         """A cutoff that itself needs more than one periodic image cannot be
         repaired by any skin choice and must fail the rebuild assertion."""
         lvecs = 8.0 * jnp.eye(3)
         frac = jax.random.uniform(jax.random.key(1), (16, 3))
-        state = _make_state(lvecs, frac @ lvecs, 4.5, 1.0)  # 4.5 > 8 / 2
+        state = _make_state(lvecs, frac @ lvecs, 4.5)  # 4.5 > 8 / 2
         cutoffs = Table(state.systems.keys, jnp.array([4.5]))
         state = _seeded(state, cutoffs, 1.0, rebuild=True)
-        step = RebuildSkinStep(cutoffs, 1.0)
-        result = jax.jit(as_result_function(step))(jax.random.key(2), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, 1.0)
+        result = jax.jit(as_result_function(prop))(jax.random.key(2), state)
         assert result.failed_assertions
         with pytest.raises(AssertionError, match="verlet_skin = 0"):
             result.fix_or_raise(state)
 
-    def test_flag_off_is_identity(self):
+    def test_flag_off_leaves_the_reference_untouched(self):
+        """With ``should_rebuild`` unset the stored list and its reference
+        survive the step (only the measured headroom is refreshed)."""
         lvecs = 15.0 * jnp.eye(3)
         frac = jax.random.uniform(jax.random.key(3), (16, 3))
-        state = _make_state(lvecs, frac @ lvecs, CUTOFF, SKIN)
+        positions = frac @ lvecs
+        state = _make_state(lvecs, positions, CUTOFF)
         cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
         state = _seeded(state, cutoffs, SKIN, rebuild=False)
-        step = RebuildSkinStep(cutoffs, SKIN)
-        result = jax.jit(as_result_function(step))(jax.random.key(4), state)
+        state = _move_atom(state, index=0, by=0.1)  # well within the margin
+        prop = VerletSkinPropagator(_identity_step, cutoffs, SKIN)
+        result = jax.jit(as_result_function(prop))(jax.random.key(4), state)
         result.raise_assertion()
-        assert float(result.value.skin_headroom[0]) == 0.0  # untouched seed value
+        group = result.value.verlet_skin
+        assert group is not None
+        # No rebuild: the reference still holds the seed-time positions.
+        np.testing.assert_array_equal(group.reference.positions, positions)
+        assert not bool(group.should_rebuild)
 
 
-def _make_two_system_state(lvecs0, lvecs1, pos0, pos1, cutoff: float, skin: float):
+def _make_two_system_state(lvecs0, lvecs1, pos0, pos1, cutoff: float):
     """Two systems batched into one state (indices [0]*n0 + [1]*n1)."""
     positions = jnp.concatenate([pos0, pos1])
     mask = jnp.concatenate(
@@ -375,47 +412,37 @@ def _make_two_system_state(lvecs0, lvecs1, pos0, pos1, cutoff: float, skin: floa
         neighborlist_params=UniversalNeighborlistParameters.estimate(
             counts, systems, cutoffs
         ),
-        skin_neighborlist_params=estimate_skin_params(counts, systems, cutoffs, skin),
     )
     return state, Table(systems.keys, jnp.full((2,), cutoff))
 
 
-class TestTriggerStepBackstop:
-    def _state(self, moved_by: float, headroom_prev: float) -> tuple[SkinState, Table]:
+class TestVerletSkinPropagatorBackstop:
+    def _state(self, moved_by: float, headroom_prev: float):
         lvecs = 20.0 * jnp.eye(3)
         pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
-        state = _make_state(lvecs, pos, CUTOFF, SKIN)
+        state = _make_state(lvecs, pos, CUTOFF)
         cutoffs = Table(state.systems.keys, jnp.array([CUTOFF]))
         state = _seeded(state, cutoffs, SKIN, rebuild=False)
-        state = dataclasses.replace(
-            state,
-            particles=dataclasses.replace(
-                state.particles,
-                data=dataclasses.replace(
-                    state.particles.data,
-                    positions=pos.at[0, 0].add(moved_by),
-                ),
-            ),
-            skin_headroom=jnp.array([headroom_prev]),
-        )
+        state = _with_headroom(_move_atom(state, 0, moved_by), [headroom_prev])
         return state, cutoffs
 
     def test_exhausted_margin_fix_flips_flag(self):
         """An overshoot within one budget of the recorded headroom is repairable:
         the fix requests a rebuild for the block replay."""
         state, cutoffs = self._state(moved_by=0.55, headroom_prev=0.5)  # consumed 1.1
-        step = TriggerStep(cutoffs, SKIN)
-        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, SKIN)
+        result = jax.jit(as_result_function(prop))(jax.random.key(0), state)
         assert result.failed_assertions
         fixed = result.fix_or_raise(state)
-        assert bool(fixed.should_rebuild)
+        assert fixed.verlet_skin is not None
+        assert bool(fixed.verlet_skin.should_rebuild)
 
     def test_unabsorbable_step_escalates(self):
         """A single step consuming more than the whole budget cannot be fixed by
         any rebuild schedule and must raise with the configuration hint."""
         state, cutoffs = self._state(moved_by=1.0, headroom_prev=1.0)  # consumed 2.0
-        step = TriggerStep(cutoffs, SKIN)
-        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, SKIN)
+        result = jax.jit(as_result_function(prop))(jax.random.key(0), state)
         assert result.failed_assertions
         with pytest.raises(ValueError, match="cannot absorb"):
             result.fix_or_raise(state)
@@ -424,29 +451,22 @@ class TestTriggerStepBackstop:
         """Well inside the margin nothing fails; the flag anticipates one more
         step of consumption."""
         state, cutoffs = self._state(moved_by=0.2, headroom_prev=1.0)  # consumed 0.4
-        step = TriggerStep(cutoffs, SKIN)
-        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, SKIN)
+        result = jax.jit(as_result_function(prop))(jax.random.key(0), state)
         result.raise_assertion()
+        group = result.value.verlet_skin
+        assert group is not None
         # headroom 0.6, single step 0.4: another such step fits, no flag.
-        assert not bool(result.value.should_rebuild)
-        assert float(result.value.skin_headroom[0]) == pytest.approx(0.6)
+        assert not bool(group.should_rebuild)
+        assert float(group.headroom[0]) == pytest.approx(0.6)
 
     def _two_system_state(self, move0: float, move1: float, headroom_prev):
         lvecs = 20.0 * jnp.eye(3)
         pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
-        state, cutoffs = _make_two_system_state(lvecs, lvecs, pos, pos, CUTOFF, SKIN)
+        state, cutoffs = _make_two_system_state(lvecs, lvecs, pos, pos, CUTOFF)
         state = _seeded(state, cutoffs, SKIN, rebuild=False)
-        moved = state.particles.data.positions
-        moved = moved.at[0, 0].add(move0).at[2, 0].add(move1)
-        state = dataclasses.replace(
-            state,
-            particles=dataclasses.replace(
-                state.particles,
-                data=dataclasses.replace(state.particles.data, positions=moved),
-            ),
-            skin_headroom=jnp.array(headroom_prev),
-        )
-        return state, cutoffs
+        state = _move_atom(_move_atom(state, 0, move0), 2, move1)
+        return _with_headroom(state, headroom_prev), cutoffs
 
     def test_per_system_headroom_only_exhausted_system_fails(self):
         """One exhausted system must trip the backstop even when the other is
@@ -455,20 +475,23 @@ class TestTriggerStepBackstop:
         state, cutoffs = self._two_system_state(
             move0=0.0, move1=0.55, headroom_prev=[1.0, 0.5]
         )
-        step = TriggerStep(cutoffs, SKIN)
-        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, SKIN)
+        result = jax.jit(as_result_function(prop))(jax.random.key(0), state)
         assert result.failed_assertions  # system 1 is over; system 0 must not mask it
         fixed = result.fix_or_raise(state)
-        assert bool(fixed.should_rebuild)
+        assert fixed.verlet_skin is not None
+        assert bool(fixed.verlet_skin.should_rebuild)
 
     def test_per_system_headroom_is_not_coupled(self):
         """A hot-but-healthy system leaves the cold system's headroom untouched."""
         state, cutoffs = self._two_system_state(
             move0=0.0, move1=0.4, headroom_prev=[1.0, 1.0]
         )
-        step = TriggerStep(cutoffs, SKIN)
-        result = jax.jit(as_result_function(step))(jax.random.key(0), state)
+        prop = VerletSkinPropagator(_identity_step, cutoffs, SKIN)
+        result = jax.jit(as_result_function(prop))(jax.random.key(0), state)
         result.raise_assertion()
-        headroom = result.value.skin_headroom
+        group = result.value.verlet_skin
+        assert group is not None
+        headroom = group.headroom
         assert float(headroom[0]) == pytest.approx(1.0)  # cold system: full budget
         assert float(headroom[1]) == pytest.approx(0.2)  # hot system: 1.0 - 0.8
