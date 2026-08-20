@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import pytest
 from jax import Array
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
+from kups.core.cell import Cell, TriclinicFrame
 from kups.core.data import Table
 from kups.core.neighborlist import (
     SkinMargin,
@@ -147,12 +147,12 @@ class TestSkinMargin:
 class TestEffectiveBuildRadii:
     def test_unclamped_below_the_limit(self):
         """A radius inside the single-image regime passes through untouched."""
-        cell = PeriodicCell(TriclinicFrame.from_matrix(8.0 * jnp.eye(3)[None]))
+        cell = _cell(8.0 * jnp.eye(3))
         radii = effective_build_radii(jnp.array([2.0]), 1.5, cell)
         assert float(radii[0]) == pytest.approx(3.5)  # 2 + 1.5 < 8 / 2
 
     def test_clamped_to_half_perpendicular_length(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(8.0 * jnp.eye(3)[None]))
+        cell = _cell(8.0 * jnp.eye(3))
         radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
         assert float(radii[0]) == pytest.approx(4.0)  # min(3+2, 8/2)
 
