@@ -190,9 +190,12 @@ class TestRun:
             stats.n_trials_deletion,
             jnp.full(N_MAX + 1, n_trials, dtype=jnp.int32),
         )
+        # Ghost probes leave the configuration (and hence the energy)
+        # untouched, so the energy is sampled once per cycle, not once per
+        # probe.
         npt.assert_array_equal(
             state.energy_moments.data.count,
-            jnp.full(N_MAX + 1, n_trials, dtype=jnp.int32),
+            jnp.full(N_MAX + 1, config.run.num_cycles, dtype=jnp.int32),
         )
 
     def test_no_deletion_acceptance_at_empty_macrostate(self, run_result):
@@ -209,10 +212,10 @@ class TestRun:
         assert bool(jnp.all(stats.acceptance_deletion >= 0.0))
         assert bool(jnp.all(stats.acceptance_deletion <= n_trials))
 
-    def test_summary_reconstructs_finite_log_partition_fn(self, run_result):
+    def test_summary_reconstructs_finite_log_partition(self, run_result):
         state, config = run_result
         summary = summarize(config, state)
-        log_qc = summary.log_partition_fn_sim
+        log_qc = summary.log_partition_sim
         assert log_qc.shape == (N_MAX + 1,)
         assert float(log_qc[0]) == 0.0  # anchored at N = 0
         assert bool(jnp.all(jnp.isfinite(log_qc)))

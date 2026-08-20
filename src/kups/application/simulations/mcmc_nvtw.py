@@ -37,6 +37,7 @@ from kups.application.mcmc.data import (
     MCMCGroup,
     MCMCParticles,
     MCMCSystems,
+    assemble_mcmc_parameters,
     place_adsorbates,
     prepare_system,
 )
@@ -63,17 +64,13 @@ from kups.application.utils.propagate import (
     run_warmup_cycles,
 )
 from kups.core.constants import BOLTZMANN_CONSTANT
-from kups.core.data import Table, WithCache
+from kups.core.data import Table
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
-from kups.core.lens import identity_lens, lens
+from kups.core.lens import identity_lens
 from kups.core.logging import CompositeLogger, TqdmLogger
-from kups.core.neighborlist import UniversalNeighborlistParameters
-from kups.core.parameter_scheduler import ParameterSchedulerState
 from kups.core.potential import (
-    EMPTY,
     PotentialAsPropagator,
-    PotentialOut,
     sum_potentials,
 )
 from kups.core.propagator import (
@@ -86,14 +83,13 @@ from kups.core.propagator import (
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import GroupId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, key_chain, tree_map
-from kups.core.utils.kahan import KahanSummand
+from kups.core.utils.jax import dataclass, key_chain
 from kups.mcmc.flat_histogram import AdsorbateEOS, TMMCSummary
 from kups.mcmc.moves import (
-    ExchangeMove,
     ParticlePositionChanges,
     exchange_changes_from_position_changes,
     make_displacement_mcmc_propagator,
+    make_exchange_move,
 )
 from kups.mcmc.probability import make_muvt_probability_ratio
 from kups.mcmc.widom import (
@@ -103,10 +99,6 @@ from kups.mcmc.widom import (
 )
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
-)
-from kups.potential.classical.ewald import (
-    EwaldCache,
-    EwaldParameters,
 )
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -238,65 +230,35 @@ def build_tmmc_state(
     blocking_spheres = BlockingSpheresParameters.from_data(
         [host.blocking_spheres] * n_sys
     )
-    ewald_params = EwaldParameters.make(
+    params = assemble_mcmc_parameters(
         particles,
         system,
-        epsilon_total=ewald.precision,
-        real_cutoff=ewald.real_cutoff,
+        lj_params,
+        blocking_spheres,
+        ewald_precision=ewald.precision,
+        ewald_real_cutoff=ewald.real_cutoff,
+        buffer_particles_per_system=num_buffer_particles / n_sys,
     )
-    n_kvecs = ewald_params.reciprocal_lattice_shifts.data.shape[1]
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts + num_buffer_particles / n_sys,
-        system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
-    )
-    if blocking_spheres.radii.shape[0] > 0:
-        # Systems without spheres have no radius to size from, so use the batch-wide max.
-        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
-        blocking_nlist = UniversalNeighborlistParameters.estimate(
-            particles.data.system.counts + num_buffer_particles / n_sys,
-            system,
-            Table.broadcast_to(max_radius, system),
-        )
-    else:
-        blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
-    min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
 
     return NVTWidomState(
         particles=particles,
         groups=groups,
         motifs=motifs,
         systems=system,
-        neighborlist_params=neighborlist_params,
-        blocking_spheres_neighborlist_params=blocking_nlist,
-        lj_parameters=WithCache(
-            lj_params,
-            KahanSummand.init(
-                PotentialOut(
-                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
-                )
-            ),
-        ),
-        ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
-        blocking_spheres_parameters=blocking_spheres,
-        translation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
-            label=SystemId,
-        ),
-        rotation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
-        reinsertion_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
-        exchange_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
+        neighborlist_params=params.neighborlist_params,
+        blocking_spheres_neighborlist_params=params.blocking_spheres_neighborlist_params,
+        lj_parameters=params.lj_parameters,
+        ewald_parameters=params.ewald_parameters,
+        blocking_spheres_parameters=params.blocking_spheres_parameters,
+        translation_params=params.translation_params,
+        rotation_params=params.rotation_params,
+        reinsertion_params=params.reinsertion_params,
+        exchange_params=params.exchange_params,
         transition_statistics=Table.arange(
             TransitionStatistics.zeros(n_sys), label=SystemId
         ),
         energy_moments=Table.arange(EnergyMoments.zeros(n_sys), label=SystemId),
-        macrostate_n=jnp.asarray(list(macrostates), dtype=int),
+        macrostate_n=jnp.arange(n_max + 1),
     )
 
 
@@ -314,16 +276,15 @@ def init_state(key: Array, config: Config) -> NVTWidomState:
 
 @dataclass
 class EnergyMomentsObserver(Propagator[NVTWidomState]):
-    """Reads ``state.systems.data.potential_energy`` into a Welford accumulator
-    at ``state.energy_moments``."""
+    """Folds ``state.systems.data.potential_energy`` into the Pébay moment
+    accumulator at ``state.energy_moments``."""
 
     def __call__(self, key: Array, state: NVTWidomState) -> NVTWidomState:
         del key
         energy = state.systems.data.potential_energy.total
-        new_moments = state.energy_moments.data.update(energy)
         return replace(
             state,
-            energy_moments=Table(state.energy_moments.keys, new_moments),
+            energy_moments=state.energy_moments.map_data(lambda d: d.update(energy)),
         )
 
 
@@ -398,14 +359,8 @@ def make_propagator(
     # `ChangesFn`s over the full state, and the μVT ratio supplies the
     # fugacity-corrected log acceptance. `GhostProbe` runs the probe but
     # discards the resulting patch — state is never modified.
-    exchange = ExchangeMove(
-        positions=state_lens.focus(lambda x: x.particles),
-        groups=state_lens.focus(lambda x: x.groups),
-        motifs=state_lens.focus(lambda x: x.motifs),
-        cell=state_lens.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
-        capacity=state_lens.focus(lambda x: x.move_capacity),
-    )
-    stat_lens = lens(lambda s: s.transition_statistics.data, cls=NVTWidomState)
+    exchange = make_exchange_move(state_lens)
+    stat_lens = state_lens.focus(lambda x: x.transition_statistics.data)
 
     ghost_insertion = GhostProbe(
         propose_fn=exchange.propose_insertion,
@@ -423,14 +378,14 @@ def make_propagator(
     )
     energy_observer: Propagator[NVTWidomState] = EnergyMomentsObserver()
 
-    widom_cycle = SequentialPropagator(
-        (ghost_insertion, ghost_deletion, energy_observer)
+    # The ghost probes discard their patches, so the potential energy is
+    # unchanged across the widom loop: sample it once per cycle, outside it.
+    widom_loop = LoopPropagator(
+        SequentialPropagator((ghost_insertion, ghost_deletion)),
+        config.num_widom_per_cycle,
     )
     production = SequentialPropagator(
-        (
-            ResetOnErrorPropagator(nvt_loop),
-            LoopPropagator(widom_cycle, config.num_widom_per_cycle),
-        )
+        (ResetOnErrorPropagator(nvt_loop), widom_loop, energy_observer)
     )
     init_prop = ResetOnErrorPropagator(PotentialAsPropagator(cached_potential))
     return init_prop, production
@@ -440,13 +395,8 @@ def _reset_accumulators(state: NVTWidomState) -> NVTWidomState:
     """Zero the C-matrix and energy-moments accumulators."""
     return replace(
         state,
-        transition_statistics=Table(
-            state.transition_statistics.keys,
-            state.transition_statistics.data.reset(),
-        ),
-        energy_moments=Table(
-            state.energy_moments.keys, state.energy_moments.data.reset()
-        ),
+        transition_statistics=state.transition_statistics.map_data(lambda d: d.reset()),
+        energy_moments=state.energy_moments.map_data(lambda d: d.reset()),
     )
 
 
@@ -505,7 +455,7 @@ def main() -> None:
     state = run(config)
     summary = summarize(config, state)
     rich.print("Macrostate N:", state.macrostate_n)
-    rich.print("ln Q_c(N, V, β_sim):", summary.log_partition_fn_sim)
+    rich.print("ln Q_c(N, V, β_sim):", summary.log_partition_sim)
 
 
 if __name__ == "__main__":
