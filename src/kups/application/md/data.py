@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data structures and ASE initialisation for molecular dynamics simulations."""
+"""Data structures and builders for molecular dynamics simulations."""
 
 from __future__ import annotations
 
@@ -266,6 +266,94 @@ class MdParameters(BaseModel):
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
 
 
+def md_state_from_particles(
+    particles: Table[ParticleId, Particles],
+    cell: Cell[AnyPeriodicity],
+    config: MdParameters,
+    *,
+    key: Array | None = None,
+) -> tuple[Table[ParticleId, MDParticles], Table[SystemId, MDSystems]]:
+    """Build one-system MD particle and system tables from source-neutral data.
+
+    The supplied particles and cell must already describe the same system in
+    the same kUPS coordinate frame. This function does not transform geometry;
+    it only adds the system dimension to the cell.
+
+    Args:
+        particles: Non-empty particle table for exactly one complete system.
+        cell: Unbatched cell with vectors of shape ``(3, 3)``.
+        config: MD configuration with temperature, timestep, and
+            thermostat/barostat parameters.
+        key: JAX PRNG key for Maxwell-Boltzmann momenta initialisation. If None,
+            momenta are set to zero.
+
+    Returns:
+        MD particle and system tables preserving the input particle keys and
+        referenced ``SystemId``.
+
+    Raises:
+        ValueError: If ``particles`` is empty, does not contain one valid
+            system reference per particle, or if ``cell`` is already batched.
+    """
+    p = particles.data
+    n_particles = len(particles)
+    if n_particles == 0:
+        raise ValueError("particles must contain at least one particle.")
+    if len(p.system.keys) != 1:
+        raise ValueError(
+            "particles must reference exactly one system; "
+            f"got {len(p.system.keys)} system keys."
+        )
+    if p.system.indices.shape != (n_particles,):
+        raise ValueError(
+            "particles must contain one system reference per particle; "
+            f"got shape {p.system.indices.shape} for {n_particles} particles."
+        )
+    if bool(jnp.any(p.system.indices != 0)):
+        raise ValueError(
+            "particles system references must all select the sole SystemId."
+        )
+    if cell.vectors.shape != (3, 3):
+        raise ValueError(
+            f"cell.vectors must have shape (3, 3); got {cell.vectors.shape}."
+        )
+
+    if key is not None:
+        # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT))
+        std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
+        momenta = jax.random.normal(key, (n_particles, 3)) * std[:, None]
+        momenta = remove_center_of_mass_momentum(momenta, p.masses, p.system)
+    else:
+        momenta = jnp.zeros((n_particles, 3))
+
+    md_particles = particles.set_data(
+        MDParticles(
+            positions=p.positions,
+            masses=p.masses,
+            atomic_numbers=p.atomic_numbers,
+            charges=p.charges,
+            labels=p.labels,
+            system=p.system,
+            position_gradients=jnp.zeros_like(p.positions),
+            momenta=momenta,
+        )
+    )
+
+    batched_cell = cell[None]
+    systems = Table(
+        (p.system.keys[0],),
+        MDSystems(
+            cell=batched_cell,
+            integrator_params=_build_integrator_params(config, batched_cell),
+            cell_gradients=tree_zeros_like(batched_cell),
+            cell_momentum=jnp.zeros(batched_cell.vectors.shape),
+            potential_energy=jnp.array([0.0]),
+        ),
+    )
+
+    return md_particles, systems
+
+
 def md_state_from_ase(
     atoms: ase.Atoms | str | Path,
     config: MdParameters,
@@ -285,45 +373,8 @@ def md_state_from_ase(
     Returns:
         Tuple of (particles, systems) ready for use with MD integrators.
     """
-    base, cell, _ = particles_from_ase(atoms)
-    p = base.data
-    n_atoms = p.positions.shape[0]
-
-    if key is not None:
-        # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT))
-        std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
-        momenta = jax.random.normal(key, (n_atoms, 3)) * std[:, None]
-        momenta = remove_center_of_mass_momentum(momenta, p.masses, p.system)
-    else:
-        momenta = jnp.zeros((n_atoms, 3))
-
-    particles = Table.arange(
-        MDParticles(
-            positions=p.positions,
-            masses=p.masses,
-            atomic_numbers=p.atomic_numbers,
-            charges=p.charges,
-            labels=p.labels,
-            system=p.system,
-            position_gradients=jnp.zeros_like(p.positions),
-            momenta=momenta,
-        ),
-        label=ParticleId,
-    )
-
-    cell = cell[None]  # Add system dimension
-    systems = Table.arange(
-        MDSystems(
-            cell=cell,
-            integrator_params=_build_integrator_params(config, cell),
-            cell_gradients=tree_zeros_like(cell),
-            cell_momentum=jnp.zeros(cell.vectors.shape),
-            potential_energy=jnp.array([0.0]),
-        ),
-        label=SystemId,
-    )
-
-    return particles, systems
+    particles, cell, _ = particles_from_ase(atoms)
+    return md_state_from_particles(particles, cell, config, key=key)
 
 
 def _gao_barostat_mass(
@@ -427,5 +478,6 @@ __all__ = [
     "CSVRNPTParams",
     "BAOABNPTLangevinParams",
     "IntegratorParams",
+    "md_state_from_particles",
     "md_state_from_ase",
 ]
