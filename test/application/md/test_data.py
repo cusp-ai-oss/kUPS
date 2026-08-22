@@ -176,6 +176,17 @@ def test_invalid_reference_into_single_system_key_is_rejected(
         md_state_from_particles(particles, _cell(), md_config)
 
 
+def test_column_vector_system_indices_are_rejected(md_config: MdParameters) -> None:
+    particles = _particles(
+        Index((SystemId(12),), jnp.zeros((2, 1), dtype=int)),
+    )
+
+    with pytest.raises(
+        ValueError, match=r"particles.*one system reference per particle"
+    ):
+        md_state_from_particles(particles, _cell(), md_config)
+
+
 def test_batched_cell_is_rejected(md_config: MdParameters) -> None:
     particles = _particles(
         Index((SystemId(12),), jnp.zeros(2, dtype=int)),

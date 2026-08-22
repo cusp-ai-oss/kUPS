@@ -293,7 +293,8 @@ def md_state_from_particles(
 
     Raises:
         ValueError: If ``particles`` is empty, does not contain one valid
-            system reference per particle, or if ``cell`` is already batched.
+            system reference per particle, or if ``cell.vectors`` does not
+            have shape ``(3, 3)``.
     """
     p = particles.data
     n_particles = len(particles)
