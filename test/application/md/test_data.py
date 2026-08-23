@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for source-neutral molecular-dynamics data construction."""
+"""Tests for kups.application.md.data."""
 
 from __future__ import annotations
 
@@ -54,6 +54,7 @@ def md_config() -> MdParameters:
 
 
 def _cell() -> Cell[AnyPeriodicity]:
+    """Return an unbatched triclinic test cell."""
     return Cell.from_pbc(
         TriclinicFrame.from_matrix(
             jnp.array(
@@ -73,6 +74,7 @@ def _particles(
     *,
     keys: tuple[ParticleId, ...] | None = None,
 ) -> Table[ParticleId, Particles]:
+    """Build a one-system particle table for builder tests."""
     n_particles = len(system)
     if keys is None:
         keys = tuple(ParticleId(i) for i in range(n_particles))
@@ -95,6 +97,7 @@ def _particles(
 
 
 def _assert_tree_allclose(actual: object, expected: object) -> None:
+    """Compare two PyTrees numerically, including structure."""
     actual_structure = jax.tree_util.tree_structure(actual)
     expected_structure = jax.tree_util.tree_structure(expected)
     assert actual_structure == expected_structure
@@ -107,6 +110,7 @@ def _assert_tree_allclose(actual: object, expected: object) -> None:
 
 
 def test_public_builder_signature_and_export() -> None:
+    """Public signature, keyword-only key, and module export."""
     signature = inspect.signature(md_state_from_particles)
 
     assert tuple(signature.parameters) == (
@@ -121,6 +125,7 @@ def test_public_builder_signature_and_export() -> None:
 
 
 def test_builder_preserves_identity_and_geometry(md_config: MdParameters) -> None:
+    """Particle keys, the sole SystemId, and geometry are preserved."""
     system_key = SystemId(12)
     particle_keys = (ParticleId(4), ParticleId(9))
     particles = _particles(
@@ -147,6 +152,7 @@ def test_builder_preserves_identity_and_geometry(md_config: MdParameters) -> Non
 
 
 def test_empty_particles_are_rejected(md_config: MdParameters) -> None:
+    """Empty particle tables raise ValueError."""
     particles = _particles(
         Index((SystemId(12),), jnp.empty((0,), dtype=int)),
         keys=(),
@@ -157,6 +163,7 @@ def test_empty_particles_are_rejected(md_config: MdParameters) -> None:
 
 
 def test_multiple_system_keys_are_rejected(md_config: MdParameters) -> None:
+    """Multiple SystemId keys raise ValueError."""
     particles = _particles(
         Index((SystemId(12), SystemId(13)), jnp.array([0, 1])),
     )
@@ -168,6 +175,7 @@ def test_multiple_system_keys_are_rejected(md_config: MdParameters) -> None:
 def test_invalid_reference_into_single_system_key_is_rejected(
     md_config: MdParameters,
 ) -> None:
+    """Indices that do not select the sole SystemId raise ValueError."""
     particles = _particles(
         Index((SystemId(12),), jnp.array([0, 1])),
     )
@@ -177,6 +185,7 @@ def test_invalid_reference_into_single_system_key_is_rejected(
 
 
 def test_column_vector_system_indices_are_rejected(md_config: MdParameters) -> None:
+    """Column-vector system.indices raise ValueError."""
     particles = _particles(
         Index((SystemId(12),), jnp.zeros((2, 1), dtype=int)),
     )
@@ -188,6 +197,7 @@ def test_column_vector_system_indices_are_rejected(md_config: MdParameters) -> N
 
 
 def test_batched_cell_is_rejected(md_config: MdParameters) -> None:
+    """A cell whose vectors are not shape (3, 3) raises ValueError."""
     particles = _particles(
         Index((SystemId(12),), jnp.zeros(2, dtype=int)),
     )
@@ -199,6 +209,7 @@ def test_batched_cell_is_rejected(md_config: MdParameters) -> None:
 def test_ase_wrapper_delegates_to_source_neutral_builder(
     md_config: MdParameters, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """md_state_from_ase forwards adapter output to the source-neutral builder."""
     particles = _particles(
         Index((SystemId(0),), jnp.zeros(2, dtype=int)),
     )
@@ -241,6 +252,7 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
 def test_ase_wrapper_retains_input_forms(
     md_config: MdParameters, tmp_path: Path, use_path: bool
 ) -> None:
+    """ASE Atoms and file-path inputs remain supported."""
     atoms = ase.Atoms(
         "Ar2",
         positions=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
@@ -262,6 +274,7 @@ def test_ase_wrapper_retains_input_forms(
 def test_array_builder_matches_ase_for_skewed_cell(
     md_config: MdParameters,
 ) -> None:
+    """Array and ASE paths agree for the same skewed-cell input."""
     positions = jnp.array(
         [
             [0.4, 0.8, 1.2],
@@ -322,6 +335,7 @@ def test_array_builder_matches_ase_for_skewed_cell(
 def test_canonical_array_outputs_support_table_union(
     md_config: MdParameters,
 ) -> None:
+    """Canonical source-adapter outputs remain compatible with Table.union()."""
     outputs = []
     for offset in (0.0, 0.5):
         particles, cell, _ = particles_from_arrays(
@@ -360,6 +374,7 @@ def test_canonical_array_outputs_support_table_union(
 def test_key_alone_controls_momentum_initialization(
     md_config: MdParameters,
 ) -> None:
+    """key controls momenta; MdParameters.initialize_momenta is ignored."""
     particles = _particles(
         Index((SystemId(4),), jnp.zeros(3, dtype=int)),
     )
@@ -404,6 +419,7 @@ def test_key_alone_controls_momentum_initialization(
 def test_builder_initial_zero_state_and_pytree_contract(
     md_config: MdParameters,
 ) -> None:
+    """Zero-state fields, dtypes, shapes, and PyTree layout are preserved."""
     particles = _particles(
         Index((SystemId(4),), jnp.zeros(3, dtype=int)),
     )
@@ -498,6 +514,7 @@ def test_integrator_parameters_and_unit_conversions(
     integrator: str,
     expected_type: type[object],
 ) -> None:
+    """Integrator parameters and unit conversions match for every base integrator."""
     config = md_config.model_copy(update={"integrator": integrator})
     particles = _particles(
         Index((SystemId(4),), jnp.zeros(3, dtype=int)),
