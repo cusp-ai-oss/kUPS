@@ -12,6 +12,7 @@ protocol and can be composed using [sum_potentials][kups.core.potential.sum_pote
 - **[classical][kups.potential.classical]**: Classical force fields (Lennard-Jones, Coulomb, Ewald, harmonic bonds/angles)
 - **[mliap][kups.potential.mliap]**: Machine learning interatomic potentials (MACE)
 - **[common][kups.potential.common]**: Shared utilities for graph construction and energy computation
+- **[dispersion][kups.potential.dispersion]**: Dispersion corrections (D3) composable with any potential
 
 ## Usage Pattern
 

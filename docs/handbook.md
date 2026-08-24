@@ -97,6 +97,46 @@ state = run_md(next(chain), propagator, state, config.run)
 
 `run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
 
+## Adding a dispersion correction
+
+Semi-local DFT misses long-range London dispersion, and MLIPs trained on it inherit that gap: layer spacings come out too large, molecular crystals under-bind, physisorption is too weak. [D3][kups.potential.dispersion.d3] adds it back.
+
+What kUPS implements is the **pairwise (two-body) D3 term with Becke-Johnson damping** — the `C₆`/`C₈` sum, which is what the published per-functional `s6`/`s8`/`a1`/`a2` fits are fitted to. The Axilrod-Teller-Muto three-body term and the zero-damping D3(0) variant are **not** implemented. ATM is small for dense molecular solids but not always negligible in porous frameworks, so if you are chasing adsorption enthalpies to better than a few kJ/mol, budget for it being absent.
+
+D3 is a *correction*, not a force field, so it composes rather than replaces. Give both terms the **same** gradient filter — [sum_potentials][kups.core.potential.sum_potentials] merges gradient pytrees element-wise, so their structures have to match — and add them:
+
+```python
+from kups.application.potential.dispersion.d3 import make_d3_from_state
+from kups.core.potential import sum_potentials
+from kups.potential.dispersion import D3Parameters
+
+d3 = make_d3_from_state(
+    state_lens,
+    parameters=D3Parameters.from_functional("pbe"),
+    gradient=POSITIONS_AND_CELL,
+)
+total = sum_potentials(mlip, d3)
+```
+
+That is all that is required. Energies, forces and cell gradients are additive, so stress via [stress_via_virial_theorem][kups.observables.stress.stress_via_virial_theorem] is correct with no extra wiring. Pick the parameterisation with `from_functional` to match whatever functional the MLIP's training data used, or pass `s6`/`s8`/`a1`/`a2` explicitly to `D3Parameters.from_damping`. As with the other force fields, parameters may instead live on the state as `d3_parameters`, which is what you want if they change during a run.
+
+**Size the neighbor list from the largest cutoff.** Each potential builds its own neighbor list from its own cutoff, but they share `state.neighborlist_params`. D3's cutoff is normally far larger than an MLIP's 5–6 Å, so it has to drive the estimate:
+
+```python
+cutoff = jax.tree.map(jnp.maximum, mlip_cutoff, d3.cutoff)
+neighborlist_params = UniversalNeighborlistParameters.estimate(
+    particles.data.system.counts, systems, cutoff
+)
+```
+
+Getting this wrong costs recompiles, not correctness — the capacity retry loop grows what is too small.
+
+**The cutoff is the cost.** D3's real-space sum converges absolutely, so no Ewald machinery is needed, but it is genuinely long-ranged. `simple-dftd3` defaults to 60 a₀ (31.75 Å), which at condensed-phase density means of order 10⁴ neighbours per atom. kUPS defaults to a much cheaper 15 Å; the neglected tail is roughly `4πρ⟨C₆⟩/(3R³)` per atom and varies slowly, so forces converge far faster with cutoff than energies do. Raise `cutoff` when absolute energies or pressures matter, or when reproducing published D3 numbers.
+
+The truncation is abrupt — no shift, no switching function, matching `simple-dftd3`. The step as a pair crosses the cutoff is tiny (2.6 µeV per carbon pair at 15 Å, or order 2 µeV/atom per 0.01 Å of motion at a condensed-phase density) but non-zero, so it sets a floor on NVE energy conservation and on a meaningful force-convergence threshold. Raising the cutoff shrinks the step; it does not remove it.
+
+D3 always recomputes in full: the coordination number couples atoms beyond any single moved pair, so the incremental Monte-Carlo path that Lennard-Jones and Ewald use would be wrong here rather than merely slow.
+
 ## Where to go next
 
 Pick a packaged simulation from [Simulations](simulations.md) and trace it back through the relevant chapters. [Troubleshooting](troubleshooting.md) covers the GPU and JIT errors that come up most often.
