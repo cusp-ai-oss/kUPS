@@ -40,6 +40,15 @@ into ``keys``.
     - Only for single-system simulations or testing
     - Crosses system boundaries (use with caution!)
 
+### GPU-Backed Implementations
+
+These require the optional ``nvalchemiops`` package (CUDA/Warp kernels).
+
+- **[NvalchemiCellListNeighborList][kups.core.neighborlist.NvalchemiCellListNeighborList]**:
+  O(N) cell-list search on the GPU.
+- **[NvalchemiNaiveNeighborList][kups.core.neighborlist.NvalchemiNaiveNeighborList]**:
+  O(N²) all-pairs search on the GPU.
+
 ### Refinement Implementations
 
 These let one expensive base neighbor list be shared across multiple potentials.
@@ -115,6 +124,14 @@ from kups.core.neighborlist.masks import (
     QueriedKeysDedupMask,
     TouchesQueriedKeysMask,
 )
+from kups.core.neighborlist.nvalchemi import (
+    IsNvalchemiCellListParams,
+    IsNvalchemiNaiveParams,
+    NvalchemiCellListNeighborList,
+    NvalchemiMethod,
+    NvalchemiNaiveNeighborList,
+    NvalchemiSelector,
+)
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.neighborlist.postprocess import MirrorPairEdges
@@ -162,6 +179,8 @@ __all__ = [
     "IsCellListParams",
     "IsDenseNeighborlistParams",
     "IsNeighborListState",
+    "IsNvalchemiCellListParams",
+    "IsNvalchemiNaiveParams",
     "IsUniversalNeighborlistParams",
     "Mask",
     "MaskOnlyCompactor",
@@ -173,6 +192,10 @@ __all__ = [
     "NeighborListFactory",
     "NeighborListPoints",
     "NeighborListSystems",
+    "NvalchemiCellListNeighborList",
+    "NvalchemiMethod",
+    "NvalchemiNaiveNeighborList",
+    "NvalchemiSelector",
     "Pipeline",
     "PipelineContext",
     "Postprocessor",
