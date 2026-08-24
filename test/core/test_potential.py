@@ -135,6 +135,54 @@ class TestPotentialOut:
         assert jnp.array_equal(result.gradients["pos"], expected_gradients["pos"])
         assert jnp.array_equal(result.hessians["pos"], expected_hessians["pos"])
 
+    @pytest.mark.parametrize("operation", ["add", "subtract"])
+    @pytest.mark.parametrize("field", ["gradients", "hessians"])
+    def test_mismatched_derivative_structures_are_rejected(
+        self, operation, field, sample_energy, sample_gradients, sample_hessians
+    ):
+        """Combining incompatible derivative payloads must name the contract.
+
+        ``jax.tree.map`` would otherwise report a bare pytree mismatch, which says
+        nothing about the actual mistake: two potentials built with different
+        gradient or Hessian filters. ``__sub__`` is checked as well as ``__add__``
+        because no library path currently reaches it -- the incremental update
+        path multiplies by a weight and accumulates through ``kahan_summation``,
+        which uses its own ``tree_map`` -- so this test is its only guard.
+        """
+        base = dict(
+            total_energies=Table.arange(sample_energy, label=SystemId),
+            gradients=sample_gradients,
+            hessians=sample_hessians,
+        )
+        # an extra leaf is enough to change the structure without changing shapes
+        other = dict(base)
+        other[field] = {**base[field], "extra": jnp.zeros(2)}
+
+        left, right = PotentialOut(**base), PotentialOut(**other)
+        label = "gradient" if field == "gradients" else "Hessian"
+        with pytest.raises(ValueError) as exc_info:
+            _ = left + right if operation == "add" else left - right
+
+        message = str(exc_info.value)
+        assert f"Cannot {operation} potential outputs" in message
+        assert f"incompatible {label} structures" in message
+        # the structures themselves must be in the message, or it is not actionable
+        assert "left=" in message and "right=" in message
+
+    def test_matching_structures_still_combine(
+        self, sample_energy, sample_gradients, sample_hessians
+    ):
+        """The guard must not reject the ordinary case it sits in front of."""
+        out = PotentialOut(
+            total_energies=Table.arange(sample_energy, label=SystemId),
+            gradients=sample_gradients,
+            hessians=sample_hessians,
+        )
+        assert jnp.array_equal((out + out).total_energies.data, sample_energy * 2)
+        assert jnp.array_equal(
+            (out - out).total_energies.data, jnp.zeros_like(sample_energy)
+        )
+
     def test_mul_operation(self, sample_energy, sample_gradients, sample_hessians):
         """Test multiplication of PotentialOut by scalar."""
         pot_out = PotentialOut(
@@ -244,6 +292,32 @@ class TestComposePotentials:
         """Test that composing empty potentials raises ValueError."""
         with pytest.raises(ValueError, match="At least one potential must be provided"):
             sum_potentials()
+
+    def test_compose_potentials_with_mismatched_gradients_raises(self):
+        """The structure check must survive the trip through ``WithPatch.__add__``.
+
+        ``sum_potentials`` folds outputs with ``WithPatch.__add__``, which
+        delegates to ``PotentialOut.__add__``. Testing the operator alone would
+        not show that the error reaches a caller rather than being swallowed on
+        the way, and this is the path a user actually hits: two potentials built
+        with different gradient filters.
+        """
+
+        class _NoGradientPotential:
+            def __call__(self, state, patch=None):
+                del state, patch
+                out = PotentialOut(
+                    total_energies=Table.arange(
+                        jnp.array([1.0, 2.0, 3.0]), label=SystemId
+                    ),
+                    gradients={},
+                    hessians={"pos": jnp.zeros((1, 2, 2))},
+                )
+                return WithPatch(out, IdPatch())
+
+        composed = sum_potentials(MockPotential(), _NoGradientPotential())
+        with pytest.raises(ValueError, match="incompatible gradient structures"):
+            composed({"positions": jnp.array([[0.0, 0.0]])})
 
     def test_compose_potentials_linearity(self):
         """Test that composition preserves linearity."""

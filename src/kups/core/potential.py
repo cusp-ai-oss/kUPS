@@ -115,14 +115,31 @@ class PotentialOut[Gradients, Hessians]:
     gradients: Gradients
     hessians: Hessians
 
+    def _validate_derivative_structure(
+        self, other: PotentialOut[Any, Any], operation: str
+    ) -> None:
+        """Raise a useful error before JAX reports an opaque pytree mismatch."""
+        for field_name, label in (("gradients", "gradient"), ("hessians", "Hessian")):
+            left = jax.tree.structure(getattr(self, field_name))
+            right = jax.tree.structure(getattr(other, field_name))
+            if left != right:
+                raise ValueError(
+                    f"Cannot {operation} potential outputs with incompatible {label} "
+                    f"structures: left={left}, right={right}. Potentials combined "
+                    "with sum_potentials must use matching gradient and Hessian "
+                    "filters."
+                )
+
     def __add__(
         self, other: PotentialOut[Gradients, Hessians]
     ) -> PotentialOut[Gradients, Hessians]:
+        self._validate_derivative_structure(other, "add")
         return jax.tree.map(jnp.add, self, other)
 
     def __sub__(
         self, other: PotentialOut[Gradients, Hessians]
     ) -> PotentialOut[Gradients, Hessians]:
+        self._validate_derivative_structure(other, "subtract")
         return jax.tree.map(jnp.subtract, self, other)
 
     def __mul__(self, other: float) -> PotentialOut[Gradients, Hessians]:
