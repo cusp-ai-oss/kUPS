@@ -126,6 +126,7 @@ conflicts = [[{ extra = "uma" }, { extra = "mace" }]]
 JAX_ENABLE_X64 = "True"
 JAX_PLATFORMS = { value = "cpu", "skip_if_set" = true }
 JAX_DISABLE_MOST_OPTIMIZATIONS = { value = "True", "skip_if_set" = true }
+XLA_FLAGS = { value = "--xla_force_host_platform_device_count=4", "skip_if_set" = true }
 
 [tool.pytest.ini_options]
 addopts = "-n auto --durations=10 --dist loadfile -v --color=yes --cov=kups"

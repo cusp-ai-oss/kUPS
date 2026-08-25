@@ -22,7 +22,7 @@ import traceback
 import typing
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Final, Self, no_type_check, override
+from typing import Any, Final, Self, override
 
 import jax
 import jax.interpreters.partial_eval as pe
@@ -217,14 +217,10 @@ def _make_noop_primitive(name: str) -> Primitive:
     return primitive
 
 
-@no_type_check
 def _scalar_bool(x: ShapedArray) -> ShapedArray:
-    # JAX 0.10 renamed the ShapeDtypeStruct kwarg ``vma`` → ``manual_axis_type``.
-    mat = getattr(x, "manual_axis_type", getattr(x, "vma", None))
-    try:
-        return ShapedArray((), jnp.bool, sharding=x.sharding, manual_axis_type=mat)
-    except TypeError:
-        return ShapedArray((), jnp.bool, sharding=x.sharding, vma=mat)
+    # No vma copy needed: operand vma flows through the paired noop
+    # primitive's pass-through avals.
+    return ShapedArray((), jnp.bool, sharding=x.sharding)
 
 
 def _make_constant_primitive(name: str) -> Primitive:
