@@ -5,4 +5,6 @@ positions:
   - [0, 0, 0]
 symbols:
   - "CH4"
+atomic_numbers: [6] # carbon backbone of the united atom
+masses: [16.043] # united-atom mass (C + 4 H) — not derivable from Z
 charges: [0.0]

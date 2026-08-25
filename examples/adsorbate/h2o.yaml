@@ -11,4 +11,5 @@ symbols:
   - "Hw"
   - "Hw"
   - "Mw"
+atomic_numbers: [8, 1, 1, 0] # 0 = massless virtual site (M); masses derive from these
 charges: [0.0, 0.5564, 0.5564, -1.1128]

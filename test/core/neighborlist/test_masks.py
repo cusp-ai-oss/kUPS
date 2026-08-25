@@ -69,6 +69,27 @@ class TestQueriedKeysDedupMask:
         result = QueriedKeysDedupMask()(batch, ctx)
         assert result.tolist() == [True, False, True]
 
+    def test_self_image_rows_keep_one_orientation(self):
+        # A self-image pair (i, i, s) has reverse (i, i, -s); replication emits
+        # both, so exactly the lexicographically positive shift may survive —
+        # keeping both made MirrorPairEdges double-count every self-image.
+        lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        ctx = make_pipeline_ctx(lh, queried_keys=jnp.array([0, 1]))
+        shifts = jnp.array(
+            [
+                [[1.0, 0.0, 0.0]],  # +x: kept
+                [[-1.0, 0.0, 0.0]],  # -x: the mirror of the row above
+                [[0.0, 0.0, 0.0]],  # zero shift: its mirror is itself
+                [[0.0, -1.0, 2.0]],  # first nonzero component negative
+                [[0.0, 1.0, -2.0]],  # first nonzero component positive
+            ]
+        )
+        batch = make_batch(
+            lh.keys, jnp.array([1, 1, 1, 0, 0]), jnp.array([1, 1, 1, 0, 0]), shifts
+        )
+        result = QueriedKeysDedupMask()(batch, ctx)
+        assert result.tolist() == [True, False, False, False, True]
+
 
 class TestTouchesQueriedKeysMask:
     def test_no_queried_keys_keeps_every_row(self):

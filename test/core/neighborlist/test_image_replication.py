@@ -30,6 +30,7 @@ cutoff/lattice combinations, in four layers of increasing integration:
 
 from __future__ import annotations
 
+import collections
 import itertools
 
 import jax
@@ -881,6 +882,69 @@ class TestFloat32AnchorBoundary:
         assert not (inside - got), (
             f"dropped clearly-inside edges: {sorted(inside - got)}"
         )
+
+
+# ============================================================================ #
+# queried_keys self-image dedup: a single atom in a cubic box has only
+# self-image neighbors (0, 0, n). Replication emits each pair in both
+# orientations (n and -n), so QueriedKeysDedupMask must keep exactly one for
+# MirrorPairEdges to restore, or every self-image row is double-counted.
+# ============================================================================ #
+def _queried_nl_multiset(
+    nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, queried: bool
+):
+    """Edge multiset ``Counter[(i, j, shift)]`` of a full or queried-keys run."""
+    n = real.shape[0]
+    cell = _make_cell(matrix)
+    lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
+    systems, _ = make_systems(cell, jnp.array([cutoff]))
+    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
+    bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
+    fn = _compiled_nl(nl_cls, n, images, bins, (True, True, True), cutoff)
+    if queried:
+        result = fn(
+            keys=lh, systems=systems, queried_keys=Index(lh.keys, jnp.arange(n))
+        )
+    else:
+        result = fn(keys=lh, systems=systems)
+    result.raise_assertion()
+    edges = result.value
+    raw = np.asarray(edges.indices.indices)
+    shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)
+    keep = (raw[:, 0] < n) & (raw[:, 1] < n)
+    return collections.Counter(
+        (int(i), int(j), tuple(int(s) for s in sh))
+        for (i, j), sh in zip(raw[keep], shifts[keep])
+    )
+
+
+@pytest.mark.parametrize(
+    "nl_cls",
+    [DenseNearestNeighborList, CellListNeighborList],
+    ids=["dense", "cell_list"],
+)
+# 2.3 puts the cutoff above twice the lattice length (second-shell images).
+@pytest.mark.parametrize("ratio", [1.19, 2.3])
+class TestQueriedKeysSingleAtomSelfImages:
+    box = 4.0
+
+    def test_each_in_range_self_image_appears_exactly_once(self, nl_cls, ratio):
+        matrix: Matrix = (np.eye(3) * self.box).tolist()
+        cutoff = ratio * self.box
+        real = jnp.array([[1.3, 2.1, 0.7]])
+        # Exact truth: one edge per nonzero integer shift with |n| * box < cutoff.
+        span = range(-int(np.ceil(ratio)), int(np.ceil(ratio)) + 1)
+        expected = collections.Counter(
+            (0, 0, n)
+            for n in itertools.product(span, span, span)
+            if 0.0 < float(np.linalg.norm(n)) < ratio
+        )
+        for queried in (False, True):
+            got = _queried_nl_multiset(nl_cls, real, matrix, cutoff, queried)
+            assert got == expected, (
+                f"ratio={ratio}, queried={queried}: "
+                f"{dict((got - expected) + (expected - got))}"
+            )
 
 
 # ============================================================================ #

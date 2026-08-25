@@ -74,8 +74,9 @@ class QueriedKeysDedupMask:
     Pair selectors emit candidates in ``keys`` space. When ``ctx.queried_keys``
     is set, the query side was restricted to those affected ``keys`` rows.
     We keep edges whose key endpoint is unaffected, plus one orientation for
-    edges where both endpoints are affected. ``MirrorPairEdges`` restores the
-    reverse orientation after compaction.
+    edges where both endpoints are affected: ``key > query``, or for self-image
+    rows ``(i, i, ±s)`` the lexicographically positive shift.
+    ``MirrorPairEdges`` restores the reverse orientation after compaction.
 
     Returns all-True for full self-graphs and bipartite queries.
     """
@@ -85,8 +86,16 @@ class QueriedKeysDedupMask:
     ) -> Array:
         if ctx.queried_keys is None:
             return jnp.ones((batch.key_idx.size,), dtype=bool)
-        return ~isin(batch.key_idx.indices, ctx.queried_keys, ctx.keys.size) | (
-            batch.key_idx.indices >= batch.query_idx.indices
+        key = batch.key_idx.indices
+        query = batch.query_idx.indices
+        shift = batch.edges.shifts[:, 0, :]
+        first_nonzero = jnp.take_along_axis(
+            shift, jnp.argmax(shift != 0, axis=-1)[:, None], axis=-1
+        )[:, 0]
+        return (
+            ~isin(key, ctx.queried_keys, ctx.keys.size)
+            | (key > query)
+            | ((key == query) & (first_nonzero > 0))
         )
 
 
