@@ -27,7 +27,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Cell
-from kups.core.data import Index, Table
+from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     Edges,
@@ -148,14 +148,12 @@ type BlockingSpheresNeighborListFactory = Callable[
 class IsBlockingSpheresProbe(Protocol):
     """Probe result for blocking spheres incremental updates.
 
-    Bundles changed particle indices with the updated neighbor list,
-    enabling efficient re-evaluation when only a subset of particles move.
+    Exposes the particles a patch touches, so the sphere query can be
+    restricted to them instead of sweeping the whole configuration.
     """
 
     @property
-    def changed_particle_idx(self) -> Array: ...
-    @property
-    def neighborlist(self) -> NeighborList[Literal[2]]: ...
+    def particles(self) -> WithIndices[ParticleId, _BlockingParticles]: ...
 
 
 @dataclass
@@ -224,7 +222,8 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         systems_view: Extracts indexed systems from state
         parameters_view: Extracts blocking sphere parameters from state
         neighborlist_view: Extracts a factory that binds cutoffs to a neighbor list
-        probe: Probe providing a IsBlockingSpheresProbe
+        probe: Probe providing a IsBlockingSpheresProbe; without it a patched
+            state is evaluated over every particle
     """
 
     particles_view: View[State, Table[ParticleId, _BlockingParticles]] = field(
@@ -243,31 +242,36 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
     def __call__(
         self, state: State, patch: Ptch | None
     ) -> Sum[BlockingSpheresPotentialInput]:  # type: ignore[reportReturnType]
+        changed: Index[ParticleId] | None = None
+        if patch is not None:
+            # The patch is always applied; a probe only narrows the sphere query
+            # to the particles it touches, otherwise everything is re-evaluated.
+            if self.probe is not None:
+                changed = self.probe(state, patch).particles.indices
+            systems = self.systems_view(state)
+            state = patch(
+                state, systems.set_data(jnp.ones(len(systems), dtype=jnp.bool_))
+            )
+
         particles = self.particles_view(state)
+        if changed is not None:
+            particles = Table.arange(particles[changed], label=ParticleId)
+            queried = particles.data.group.valid_mask & changed.valid_mask
+        else:
+            queried = particles.data.group.valid_mask
         systems = self.systems_view(state)
         parameters = self.parameters_view(state)
         neighborlist_factory = self.neighborlist_view(state)
-        probe_neighborlist = None
-
-        if patch is not None and self.probe is not None:
-            n_sys = particles.data.system.num_labels
-            patched_state = patch(
-                state, systems.set_data(jnp.ones((n_sys,), dtype=jnp.bool_))
-            )
-            probe_result = self.probe(state, patch)
-            probe_neighborlist = probe_result.neighborlist
-            particles = self.particles_view(patched_state)
 
         # Build cutoffs: remap sphere system indices into systems index space
         seg_ids = parameters.system.indices_in(tuple(systems.keys))
         max_radii = jax.ops.segment_max(parameters.radii, seg_ids, len(systems.keys))
         cutoffs = Table(systems.keys, max_radii)
 
-        # NNList particles
         nnlist_particles = particles.map_data(
             lambda p: _BlockingSpherePoints(
                 positions=p.positions,
-                system=(sys := p.system.apply_mask(p.group.valid_mask)),
+                system=(sys := p.system.apply_mask(queried)),
                 inclusion=sys.to_cls(InclusionId),
                 exclusion=Index.arange(len(sys), label=ExclusionId),
             )
@@ -289,7 +293,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
             label=ParticleId,
         )
 
-        neighborlist = probe_neighborlist or neighborlist_factory(cutoffs)
+        neighborlist = neighborlist_factory(cutoffs)
         edges = neighborlist(nnlist_particles, systems, queries=spheres)
         cell = systems.map_data(lambda s: s.cell)
         groups = self.groups_view(state)
@@ -324,7 +328,8 @@ def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch[Any]
         systems_view: Extracts indexed systems from state
         parameters_view: Extracts blocking sphere parameters (positions, radii)
         neighborlist_view: Extracts a factory that binds cutoffs to a neighbor list
-        probe: Probe returning a IsBlockingSpheresProbe; ``None`` for full recomputation
+        probe: Probe returning a IsBlockingSpheresProbe; ``None`` evaluates a
+            patched state over every particle
         gradient_lens: Specifies gradients to compute
         hessian_lens: Specifies Hessians to compute
         hessian_idx_view: Hessian index structure

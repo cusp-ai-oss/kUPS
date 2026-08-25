@@ -308,7 +308,7 @@ def make_propagator(
             make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True)
         )
     if state.has_blocking_spheres:
-        potentials.append(make_blocking_spheres_from_state(state_lens))
+        potentials.append(make_blocking_spheres_from_state(state_lens, _probe))
     potential = sum_potentials(*potentials)
     cached_potential, muvt_ratio = make_muvt_probability_ratio(state_lens, potential)
     boltzmann_ratio = muvt_ratio.boltzmann_log_likelihood_ratio
