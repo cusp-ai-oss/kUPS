@@ -64,7 +64,7 @@ def make_lh(
     """
     n = len(positions)
     n_sys = int(jnp.max(batch_mask)) + 1 if n > 0 else 1
-    sys_keys = tuple(range(n_sys))
+    sys_keys = tuple(SystemId(i) for i in range(n_sys))
     pi_keys = tuple(ParticleId(i) for i in range(n))
     if exclusion_ids is None:
         exclusion_ids = jnp.arange(n)
@@ -122,7 +122,7 @@ def make_rh(
     """Create proposed particle data and the affected ``lh`` ids for testing."""
     n_rh = len(update_positions)
     n_sys = int(jnp.max(update_batch_mask)) + 1
-    sys_keys = tuple(range(n_sys))
+    sys_keys = tuple(SystemId(i) for i in range(n_sys))
     rh_pi_keys = tuple(ParticleId(i) for i in range(n_rh))
     if exclusion_ids is None:
         exclusion_ids = queried_keys
