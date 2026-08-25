@@ -29,7 +29,7 @@ from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import GroupId, MotifId, MotifParticleId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
-from kups.mcmc.widom import WidomStatistics
+from kups.mcmc.widom import EnergyMoments, TransitionStatistics, WidomStatistics
 from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -239,6 +239,63 @@ def make_widom_logged_data[S: IsWidomState](state: S) -> WidomLoggedData[S]:
         return state.widom_statistics
 
     return WidomLoggedData(
+        fixed=WriterGroupConfig(fixed_view, Once()),
+        per_step=WriterGroupConfig(step_view, EveryNStep(1)),
+    )
+
+
+class IsTMMCState(IsMCMCState, Protocol):
+    """Protocol for states compatible with TMMC (flat-histogram) logging."""
+
+    @property
+    def transition_statistics(self) -> Table[SystemId, TransitionStatistics]: ...
+    @property
+    def energy_moments(self) -> Table[SystemId, EnergyMoments]: ...
+    @property
+    def macrostate_n(self) -> Array: ...
+    @property
+    def move_capacity(self) -> Capacity[int]: ...
+
+
+@dataclass
+class TMMCFixedData:
+    """One-shot TMMC-run metadata: thermodynamic state and macrostate labels."""
+
+    systems: Table[SystemId, MCMCSystems]
+    macrostate_n: Array
+
+
+@dataclass
+class TMMCStepData:
+    """Per-cycle cumulative TMMC accumulators (C-matrix + energy moments)."""
+
+    transition_statistics: Table[SystemId, TransitionStatistics]
+    energy_moments: Table[SystemId, EnergyMoments]
+
+
+@dataclass
+class TMMCLoggedData[S]:
+    """HDF5 writer layout for ``kups_mcmc_nvtw``: thermo state and macrostate
+    labels once, cumulative accumulator snapshot per cycle."""
+
+    fixed: WriterGroupConfig[S, TMMCFixedData]
+    per_step: WriterGroupConfig[S, TMMCStepData]
+
+
+def make_tmmc_logged_data[S: IsTMMCState](state: S) -> TMMCLoggedData[S]:
+    """Snapshot systems + macrostates once, TMMC accumulators each cycle."""
+    del state
+
+    def fixed_view(state: S) -> TMMCFixedData:
+        return TMMCFixedData(systems=state.systems, macrostate_n=state.macrostate_n)
+
+    def step_view(state: S) -> TMMCStepData:
+        return TMMCStepData(
+            transition_statistics=state.transition_statistics,
+            energy_moments=state.energy_moments,
+        )
+
+    return TMMCLoggedData(
         fixed=WriterGroupConfig(fixed_view, Once()),
         per_step=WriterGroupConfig(step_view, EveryNStep(1)),
     )

@@ -950,6 +950,29 @@ def _scheduler[S](
     return PropertyScheduler(params_lens, Table.transform(acceptance_target_schedule))
 
 
+def make_exchange_move[State](
+    state: Lens[State, IsExchangeState],
+) -> ExchangeMove[State]:
+    """Build the insertion/deletion move for an exchange-capable state.
+
+    Args:
+        state: Lens into the sub-state satisfying ``IsExchangeState``.
+
+    Returns:
+        ``ExchangeMove`` focused on the state's particles, groups, motifs,
+        cells, and move capacity. Its ``propose_insertion`` /
+        ``propose_deletion`` are usable both as MCMC proposals and as
+        [GhostProbe][kups.mcmc.widom.GhostProbe] probes.
+    """
+    return ExchangeMove(
+        positions=state.focus(lambda x: x.particles),
+        groups=state.focus(lambda x: x.groups),
+        motifs=state.focus(lambda x: x.motifs),
+        cell=state.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
+        capacity=state.focus(lambda x: x.move_capacity),
+    )
+
+
 def make_group_translation_mcmc_propagator[State, Move: Patch[Any]](
     state: Lens[State, IsTranslationState],
     patch_fn: PatchFn[State, ParticlePositionChanges, Move],
@@ -1101,13 +1124,7 @@ def make_exchange_mcmc_propagator[State, Move: Patch[Any]](
     probability_fn: LogProbabilityRatioFn[State, Move],
 ) -> MCMCPropagator[State, ExchangeChanges, Move]:
     """Build an MCMC propagator for grand-canonical insertion/deletion moves."""
-    move = ExchangeMove(
-        positions=state.focus(lambda x: x.particles),
-        groups=state.focus(lambda x: x.groups),
-        motifs=state.focus(lambda x: x.motifs),
-        cell=state.focus(lambda x: x.systems.map_data(lambda d: d.cell)),
-        capacity=state.focus(lambda x: x.move_capacity),
-    )
+    move = make_exchange_move(state)
     return MCMCPropagator(
         patch_fn,
         (move,),

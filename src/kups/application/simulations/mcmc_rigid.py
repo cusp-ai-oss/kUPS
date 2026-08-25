@@ -30,6 +30,7 @@ from kups.application.mcmc.data import (
     HostConfig,
     MotifParticles,
     StressResult,
+    assemble_mcmc_parameters,
     estimate_max_adsorbates,
     mcmc_state_from_config,
 )
@@ -90,7 +91,6 @@ from kups.core.utils.jax import (
     dataclass,
     key_chain,
     no_jax_tracing,
-    tree_map,
 )
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
@@ -407,7 +407,6 @@ def init_state(key: Array, config: Config) -> MCMCState:
         f"{len(groups)} molecules, across {len(system)} systems."
     )
     max_adsorbates = estimate_max_adsorbates(particles, motifs, system)
-    n_sys = len(system)
     lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
         cutoff=config.lj.cutoff,
         parameters=config.lj.parameters,
@@ -428,61 +427,30 @@ def init_state(key: Array, config: Config) -> MCMCState:
         (groups, int(max_adsorbates.data.sum())),
     )
 
-    ewald_params = EwaldParameters.make(
+    params = assemble_mcmc_parameters(
         particles,
         system,
-        epsilon_total=config.ewald.precision,
-        real_cutoff=config.ewald.real_cutoff,
+        lj_params,
+        blocking_spheres,
+        ewald_precision=config.ewald.precision,
+        ewald_real_cutoff=config.ewald.real_cutoff,
+        buffer_particles_per_system=num_buffer_particles,
     )
-    n_kvecs = ewald_params.reciprocal_lattice_shifts.data.shape[1]
-
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts + num_buffer_particles,
-        system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
-    )
-    if blocking_spheres.radii.shape[0] > 0:
-        # Systems without spheres have no radius to size from, so use the batch-wide max.
-        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
-        blocking_nlist = UniversalNeighborlistParameters.estimate(
-            particles.data.system.counts + num_buffer_particles,
-            system,
-            Table.broadcast_to(max_radius, system),
-        )
-    else:
-        blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
-    logging.info(f"Estimated neighbor list parameters: {neighborlist_params}")
-    min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
+    logging.info(f"Estimated neighbor list parameters: {params.neighborlist_params}")
     return MCMCState(
         particles=particles,
         groups=groups,
         motifs=motifs,
         systems=system,
-        neighborlist_params=neighborlist_params,
-        blocking_spheres_neighborlist_params=blocking_nlist,
-        lj_parameters=WithCache(
-            lj_params,
-            KahanSummand.init(
-                PotentialOut(
-                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
-                )
-            ),
-        ),
-        ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
-        blocking_spheres_parameters=blocking_spheres,
-        translation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
-            label=SystemId,
-        ),
-        rotation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
-        reinsertion_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
-        exchange_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
-        ),
+        neighborlist_params=params.neighborlist_params,
+        blocking_spheres_neighborlist_params=params.blocking_spheres_neighborlist_params,
+        lj_parameters=params.lj_parameters,
+        ewald_parameters=params.ewald_parameters,
+        blocking_spheres_parameters=params.blocking_spheres_parameters,
+        translation_params=params.translation_params,
+        rotation_params=params.rotation_params,
+        reinsertion_params=params.reinsertion_params,
+        exchange_params=params.exchange_params,
     )
 
 
