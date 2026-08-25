@@ -23,13 +23,12 @@ import numpy as np
 from jax import Array
 
 from kups.core.capacity import Capacity, FixedCapacity
-from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.domain import (
     IsDecomposedParticle,
     MeshMaxCapacity,
-    MortonPartitioner,
     make_sharded_radius_graph_from_state,
+    partition_equal_counts,
 )
 from kups.core.lens import Lens, View, const_lens
 from kups.core.neighborlist import (
@@ -43,7 +42,6 @@ from kups.core.potential import EMPTY_LENS, EmptyType, Potential, ShardedPotenti
 from kups.core.propagator import Propagator
 from kups.core.sharding import shard_axis
 from kups.core.typing import (
-    HasCell,
     HasPositionsAndSystemIndex,
     IsState,
     OriginDeviceId,
@@ -88,21 +86,6 @@ def with_origin[P, D: IsDecomposedParticle](
     return particles.set_data(cls(**values, origin=origin))
 
 
-def partition[P: HasPositionsAndSystemIndex, S: HasCell[AnyPeriodicity]](
-    particles: Table[ParticleId, P],
-    systems: Table[SystemId, S],
-    n_devices: int,
-) -> tuple[Index[OriginDeviceId], FixedCapacity[int]]:
-    """Morton-partition the particles; also return the owned-buffer capacity.
-
-    ``cap_owned`` (the max atoms any device owns) must be known before the
-    potential is built. The Morton cut is balanced, so it is exact.
-    """
-    origin = MortonPartitioner()(particles, systems, n_devices)
-    cap_owned = FixedCapacity(int(origin.counts.data.max()))
-    return origin, cap_owned
-
-
 def load_and_partition[
     P: HasPositionsAndSystemIndex,
     S: NeighborListSystems,
@@ -142,7 +125,10 @@ def load_and_partition[
         all_systems.append(systems_i)
     base, systems = Table.union(all_particles, all_systems)
 
-    origin, cap_owned = partition(base, systems, n_devices)
+    origin = partition_equal_counts(len(base), n_devices)
+    # The owned-buffer capacity (max atoms any device owns) must be known
+    # before the potential is built; the equal-count cut makes it exact.
+    cap_owned = FixedCapacity(int(origin.counts.data.max()))
     particles = with_origin(base, origin, particle_cls)
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, cutoff
