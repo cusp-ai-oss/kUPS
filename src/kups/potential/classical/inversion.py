@@ -198,7 +198,7 @@ def inversion_energy(
     )
     edge_energy = k_scaled * (c0 + c1 * cos_omega + c2 * cos_2omega)
 
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy)
+    total_energies = graph.reduce_edges_to_systems(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 

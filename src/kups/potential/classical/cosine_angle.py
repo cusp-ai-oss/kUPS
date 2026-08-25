@@ -212,7 +212,7 @@ def cosine_angle_energy(
 
     edge_energy = jnp.where(is_linear, energy_linear, energy_general)
 
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy)
+    total_energies = graph.reduce_edges_to_systems(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 

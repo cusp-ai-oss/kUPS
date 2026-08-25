@@ -170,7 +170,7 @@ def lennard_jones_energy(
     """Compute total Lennard-Jones energy per system."""
     graph = inp.graph
     edge_energy = lennard_jones_edge_energy(inp)
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy) / 2
+    total_energies = graph.reduce_edges_to_systems(edge_energy) / 2
     return WithPatch(total_energies, IdPatch[Any]())
 
 
@@ -214,7 +214,7 @@ def pair_tail_corrected_lennard_jones_energy(
         mask, edge_energy * factor1 * factor2 / div, edge_energy
     )
     corrected_edge_energy = jnp.where(remove, 0.0, corrected_edge_energy)
-    total_energies = batch.sum_over(corrected_edge_energy) / 2
+    total_energies = graph.reduce_edges_to_systems(corrected_edge_energy) / 2
     return WithPatch(total_energies, IdPatch[Any]())
 
 

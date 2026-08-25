@@ -28,6 +28,7 @@ from typing import (
     Protocol,
     TypeVar,
     overload,
+    override,
     runtime_checkable,
 )
 
@@ -59,6 +60,47 @@ Sys = TypeVar("Sys", covariant=True, bound=HasCell[AnyPeriodicity])
 Degree = TypeVar("Degree", bound=int)
 
 
+class Decomposition[P: HasPositionsAndSystemIndex](Protocol):
+    """Placement policy for per-node reductions: which rows a device counts, how partials combine.
+
+    The single seam through which domain decomposition enters the stock energy functions.
+    Every device holds the full particle table; the policy decides which rows it *counts*
+    when reducing per-node values to per-system totals (``owned_only``) and how a value
+    that must be globally complete inside the energy is combined across the mesh
+    (``combine_across_shards``). ``Replicated`` (the default) makes both the identity, so
+    single-device evaluation is unchanged. The domain-decomposed policy — mask rows to
+    the owning device, ``psum`` across the mesh — is ``Sharded`` in ``kups.core.domain``:
+    per-device energies come out as per-system partials whose mesh sum is the global
+    total, while gradients w.r.t. replicated inputs are already mesh-summed by
+    ``shard_map``'s transpose, so only the energy output needs an explicit ``psum``.
+
+    ``P`` appears in input position only (``owned_only`` consumes the particle table), so a
+    strategy written against ``HasPositionsAndSystemIndex`` is usable for any concrete
+    particle type — which is what lets a bare ``Replicated()`` be the default here.
+    """
+
+    def owned_only(self, particles: Table[ParticleId, P], x: Array) -> Array:
+        """Mask rows this device does not own to the fold identity (identity when replicated)."""
+        ...
+
+    def combine_across_shards(self, x: Array) -> Array:
+        """Complete the pending cross-mesh reduction (identity when replicated)."""
+        ...
+
+
+@dataclass
+class Replicated[P: HasPositionsAndSystemIndex](Decomposition[P]):
+    """Whole-graph / single-device baseline: both operations are the identity (the default placement)."""
+
+    @override
+    def owned_only(self, particles: Table[ParticleId, P], x: Array) -> Array:
+        return x
+
+    @override
+    def combine_across_shards(self, x: Array) -> Array:
+        return x
+
+
 @dataclass
 class PointCloud(Generic[Part, Sys]):
     """Indexed particles and systems, the base for all graph representations.
@@ -69,14 +111,28 @@ class PointCloud(Generic[Part, Sys]):
     Attributes:
         particles: Indexed particle data with positions and system assignment.
         systems: Indexed system data with cell information.
+        decomposition: Placement policy for per-node reductions (``Replicated`` by default).
     """
 
     particles: Table[ParticleId, Part]
     systems: Table[SystemId, Sys]
+    decomposition: Decomposition[Part] = field(default_factory=Replicated, kw_only=True)
 
     @property
     def batch_size(self) -> int:
         return self.particles.data.system.num_labels
+
+    def reduce_nodes_to_systems(self, node_value: Array) -> Table[SystemId, Array]:
+        """Reduce a per-node quantity to per-system totals, counting owned rows only.
+
+        A plain per-system ``segment_sum`` under ``Replicated``; see ``Decomposition`` for
+        how the sharded policy makes the result a per-device partial. A caller that needs
+        the *global* value inline (e.g. the Ewald structure factor) completes it via
+        ``self.decomposition.combine_across_shards``.
+        """
+        return self.particles.data.system.sum_over(
+            self.decomposition.owned_only(self.particles, node_value)
+        )
 
 
 @dataclass
@@ -105,6 +161,22 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
     @property
     def edge_batch_mask(self) -> Index[SystemId]:
         return self.particles[self.edges.indices[:, 0]].system
+
+    def aggregate_edges_to_nodes(self, edge_value: Array) -> Array:
+        """Sum each edge's value onto its first participant node → per-node array (length N).
+
+        Degree-agnostic: an edge of any degree is attributed to ``edges.indices[:, 0]``.
+        """
+        return self.edges.indices[:, 0].sum_over(edge_value).data
+
+    def reduce_edges_to_systems(self, edge_value: Array) -> Table[SystemId, Array]:
+        """Reduce a per-edge quantity to per-system totals through its first-node attribution.
+
+        Composes ``aggregate_edges_to_nodes`` with ``reduce_nodes_to_systems``, so the
+        reduction counts owned rows only under decomposition. Any multiplicity (the
+        symmetric pairwise ``/2``) stays an explicit factor at the call site.
+        """
+        return self.reduce_nodes_to_systems(self.aggregate_edges_to_nodes(edge_value))
 
     @overload
     def sorted_by_system(
@@ -159,7 +231,12 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
                 indices=remapped_indices[edge_order],
                 shifts=sorted_edges.shifts[edge_order],
             )
-        result = HyperGraph(sorted_particles, self.systems, sorted_edges)
+        result = HyperGraph(
+            sorted_particles,
+            self.systems,
+            sorted_edges,
+            decomposition=self.decomposition,
+        )
         if return_sort_order:
             return result, sort_order
         return result

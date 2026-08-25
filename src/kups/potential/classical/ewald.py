@@ -303,22 +303,16 @@ def ewald_self_interaction_energy(
 
     Math: ``E_self = -alpha / sqrt(pi) * sum_i q_i^2 * TO_STANDARD_UNITS``.
 
-    Summed per system via segment_sum. Positions in Ang, charges in e,
-    energy in eV.
+    Computed per atom and reduced with ``reduce_nodes_to_systems`` so the
+    reduction counts owned rows only under decomposition. Positions in Ang,
+    charges in e, energy in eV.
     """
-    sys_idx = inp.graph.systems.index
-    energies = (
-        -segment_sum(
-            inp.graph.particles.data.charges**2,
-            inp.graph.particles.data.system.indices,
-            inp.graph.batch_size,
-            mode="drop",
-        )
-        * inp.parameters.alpha[sys_idx]
-        / jnp.sqrt(jnp.pi)
+    particles = inp.graph.particles.data
+    alpha_per_atom = inp.parameters.alpha[particles.system]
+    per_atom = (
+        -(particles.charges**2) * alpha_per_atom / jnp.sqrt(jnp.pi) * TO_STANDARD_UNITS
     )
-    energies *= TO_STANDARD_UNITS
-    return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
+    return WithPatch(inp.graph.reduce_nodes_to_systems(per_atom), IdPatch[Any]())
 
 
 def ewald_short_range_energy(
@@ -340,7 +334,7 @@ def ewald_short_range_energy(
     energies = qij * erfc / dists
     mask = dists < inp.parameters.cutoff[edge_systems]
     energies *= mask
-    total = inp.graph.edge_batch_mask.sum_over(energies) / 2 * TO_STANDARD_UNITS
+    total = inp.graph.reduce_edges_to_systems(energies) / 2 * TO_STANDARD_UNITS
     return WithPatch(total, IdPatch[Any]())
 
 

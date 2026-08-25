@@ -159,7 +159,7 @@ def morse_bond_energy(
     alpha = inp.parameters.alpha[edg_species[:, 0], edg_species[:, 1]]
     r = jnp.linalg.norm(graph.edge_shifts[:, 0], axis=-1)
     edge_energy = D * (1 - jnp.exp(-alpha * (r - r0))) ** 2
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy)
+    total_energies = graph.reduce_edges_to_systems(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 
