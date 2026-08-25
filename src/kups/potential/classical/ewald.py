@@ -358,11 +358,23 @@ def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy
     )
 
 
+def reciprocal_prefactor(k_squared: Array, volume: Array, alpha: Array) -> Array:
+    """``P(k) = 2*pi/V * exp(-k^2 / (4*alpha^2)) / k^2`` for k != 0, zero at k = 0.
+
+    ``volume`` and ``alpha`` must be broadcastable against ``k_squared`` (any
+    k-grid shape). Shared by direct Ewald and PME so both sample the same
+    influence function.
+    """
+    mask = k_squared > 0
+    k_squared = jnp.where(mask, k_squared, 1)
+    result = (2 * jnp.pi) / volume * jnp.exp(-k_squared / (4 * alpha**2)) / k_squared
+    return jnp.where(mask, result, 0.0)
+
+
 def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
     """Reciprocal-space prefactor for each k-vector.
 
-    Math: ``P(k) = 2*pi/V * exp(-k^2 / (4*alpha^2)) / k^2`` for k != 0,
-    zero for k = 0. The ``(2 - leading_zero)`` factor accounts for the
+    ``reciprocal_prefactor`` with the ``(2 - leading_zero)`` factor for the
     Hermitian symmetry optimization: only half the k-vectors are stored
     (k and -k give conjugate contributions).
 
@@ -376,17 +388,9 @@ def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
     k_squared = einops.einsum(
         kv, kv, "batch_size kvecs dim, batch_size kvecs dim -> batch_size kvecs"
     )
-    mask = k_squared > 0
-    k_squared = jnp.where(mask, k_squared, 1)
-    result = (
-        (2 * jnp.pi)
-        / inp.volume[:, None]
-        * jnp.exp(-k_squared / (4 * alpha[:, None] ** 2))
-        / k_squared
-    )
+    result = reciprocal_prefactor(k_squared, inp.volume[:, None], alpha[:, None])
     leading_zero = rls[..., 0] == 0
-    result = (2 - leading_zero) * result  # correct for half the k-vectors being dropped
-    return jnp.where(mask, result, 0.0)
+    return (2 - leading_zero) * result  # correct for half the k-vectors being dropped
 
 
 def _frequency_response(
@@ -609,6 +613,20 @@ def ewald_net_charge_energy(inp: EwaldLongRangeInput[Any]) -> Table[SystemId, En
     return Table.arange(energies, label=SystemId)
 
 
+def reciprocal_total_energy(
+    inp: EwaldLongRangeInput[Any], energy: Array
+) -> Table[SystemId, Energy]:
+    """Scale a per-system reciprocal-space ``energy`` (atomic units) to standard
+    units and add the neutralizing-background term for the omitted ``k = 0`` mode
+    (``ewald_net_charge_energy``). Shared tail of direct Ewald and PME."""
+    assert energy.shape == (inp.point_cloud.batch_size,), (
+        f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
+    )
+    return ewald_net_charge_energy(inp).map_data(
+        lambda e_net: e_net + energy * TO_STANDARD_UNITS
+    )
+
+
 def ewald_long_range_energy[State](
     inp: EwaldLongRangeInput[State],
 ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
@@ -623,12 +641,7 @@ def ewald_long_range_energy[State](
     """
     structure_out, patch = structure_factor(inp)
     energy = long_range(inp, structure_out.total)
-    assert energy.shape == (inp.point_cloud.batch_size,), (
-        f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
-    )
-    energy = energy * TO_STANDARD_UNITS
-    total = ewald_net_charge_energy(inp).map_data(lambda e_net: e_net + energy)
-    return WithPatch(total, patch)
+    return WithPatch(reciprocal_total_energy(inp, energy), patch)
 
 
 @dataclass
@@ -770,10 +783,17 @@ def make_ewald_long_range_potential[
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
+    energy_fn: EnergyFunction[
+        State, EwaldLongRangeInput[State]
+    ] = ewald_long_range_energy,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
-    """Create the Ewald reciprocal-space (long-range) potential."""
+    """Create the Ewald reciprocal-space (long-range) potential.
+
+    ``energy_fn`` swaps the reciprocal-space term (e.g. PME) without duplicating
+    the composer and lens wiring.
+    """
     return PotentialFromEnergy(
-        energy_fn=ewald_long_range_energy,
+        energy_fn=energy_fn,
         composer=EwaldLongRangeComposer(
             particles=particles_view,
             systems=systems_view,

@@ -37,11 +37,9 @@ from kups.potential.common.graph import PointCloud
 from .test_ewald import _make_particle_data, _make_systems
 
 ORDER = 8
-"""B-spline order used throughout: above the default (6) so the interpolation
-error stays well below the tight tolerances these tests pin, which are chosen
-to expose convention bugs (transposed lattices, missing background terms)
-rather than to measure spline accuracy. At order 6 the energy/force tests fail
-at these tolerances."""
+"""Above the default (6) so spline interpolation error sits well below the pinned
+tolerances, which are tight to catch convention bugs rather than to measure
+spline accuracy; order 6 fails them."""
 
 
 def _pme_settings(cell_vectors: Array, spacing: float) -> PMESettings:
@@ -218,24 +216,14 @@ class TestPMEvsEwald:
         # size the shared mesh from the batched cell (per-axis max over systems)
         settings = PMESettings(pme_mesh_for_cell(cell2, spacing=0.5), ORDER)
         assert settings.mesh == _pme_settings(cellv, spacing=0.5).mesh
+
+        def tile2(t: Table) -> Table:
+            return Table((SystemId(0), SystemId(1)), jnp.concatenate([t.data, t.data]))
+
         params2 = EwaldParameters(
-            alpha=Table(
-                (SystemId(0), SystemId(1)),
-                jnp.concatenate([params.alpha.data, params.alpha.data]),
-            ),
-            cutoff=Table(
-                (SystemId(0), SystemId(1)),
-                jnp.concatenate([params.cutoff.data, params.cutoff.data]),
-            ),
-            reciprocal_lattice_shifts=Table(
-                (SystemId(0), SystemId(1)),
-                jnp.concatenate(
-                    [
-                        params.reciprocal_lattice_shifts.data,
-                        params.reciprocal_lattice_shifts.data,
-                    ]
-                ),
-            ),
+            alpha=tile2(params.alpha),
+            cutoff=tile2(params.cutoff),
+            reciprocal_lattice_shifts=tile2(params.reciprocal_lattice_shifts),
         )
         particles = Table.arange(
             _make_particle_data(pos2, q2, n_systems=2, system_ids=sys_ids),

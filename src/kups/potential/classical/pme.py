@@ -8,18 +8,15 @@ An ``O(N log N)`` FFT-based replacement for the direct-Ewald reciprocal term
 runs out of memory at large ``N``. It is a drop-in at the long-range seam, so
 forces and the NPT stress still come from autodiff.
 
-Convention matches ``ewald.py`` so PME converges to the same number::
+The influence function ``P(k)`` (``reciprocal_prefactor``), the neutralizing
+background (``reciprocal_total_energy``), and ``alpha`` / the real-space cutoff
+are shared with ``ewald.py``, so the short-range / self / exclusion terms are
+unchanged, the splitting is consistent, and PME converges to the same number::
 
-    P(k) = (2*pi/V) * exp(-k^2 / (4*alpha^2)) / k^2 ,   k = 2*pi * inverse_vectors @ n
     E_recip = sum_{k != 0} P(k) * B(m) * |FFT(Q)(m)|^2 * TO_STANDARD_UNITS
 
 where ``Q`` is the order-``p`` cardinal B-spline charge mesh and ``B(m)`` is the
-Euler exponential-spline aliasing correction (Essmann et al. 1995). ``alpha`` and
-the real-space cutoff are reused verbatim from ``EwaldParameters`` so the
-short-range / self / exclusion terms are unchanged and the splitting is
-consistent. The FFT mesh dimensions are static (chosen once at construction);
-under NPT the box fluctuates but the mesh stays fixed, as in standard PME.
-
+Euler exponential-spline aliasing correction (Essmann et al. 1995).
 """
 
 from __future__ import annotations
@@ -34,20 +31,20 @@ from jax.typing import DTypeLike
 
 from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Table, WithIndices
-from kups.core.lens import Lens, View, lens
+from kups.core.lens import Lens, View
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import EMPTY_LENS, Energy, Potential, PotentialOut
 from kups.core.typing import HasCell, ParticleId, SystemId
+from kups.core.utils.math import triangular_3x3_matmul
 from kups.potential.classical.ewald import (
-    TO_STANDARD_UNITS,
     EwaldCache,
-    EwaldLongRangeComposer,
     EwaldLongRangeInput,
     EwaldParameters,
     IsEwaldPointData,
-    ewald_net_charge_energy,
+    make_ewald_long_range_potential,
+    reciprocal_prefactor,
+    reciprocal_total_energy,
 )
-from kups.potential.common.energy import PotentialFromEnergy
 from kups.potential.common.graph import PointCloud
 
 DEFAULT_SPLINE_ORDER = 6
@@ -62,12 +59,9 @@ class PMESettings:
     those ``None`` keeps the direct-Ewald reciprocal sum.
 
     Attributes:
-        mesh: Static FFT grid dimensions. Settings rather than state because FFT
-            shapes must be known at trace time, and shared by all systems in a
-            batch — one FFT over a ``(n_sys, *mesh)`` charge grid
-            (`pme_mesh_for_cell` sizes the mesh for the largest cell per axis).
-            Held fixed across a trajectory even as an NPT box fluctuates, as in
-            standard PME codes.
+        mesh: FFT grid dimensions, shared by every system in a batch and held
+            fixed across a trajectory (size with `pme_mesh_for_cell`). Settings
+            rather than traced state because FFT shapes must be static.
         order: Cardinal B-spline order.
     """
 
@@ -80,17 +74,15 @@ def pme_mesh_for_cell(
 ) -> tuple[int, int, int]:
     """Pick static PME mesh dimensions for a reference cell (~``spacing`` Angstrom).
 
-    Resolution is measured across opposing faces (``cell.perpendicular_lengths``),
-    not along the lattice vectors, so the spacing holds for sheared cells too. A
-    batched cell is reduced with a per-axis max, sizing the shared mesh for the
-    largest system. Dims are rounded up to a multiple of ``multiple_of`` (cheaper
-    FFTs). Runs on the host and returns Python ints because FFT shapes must be
-    static: call it at setup time with the *initial* cell; the mesh is then held
-    fixed across an NPT trajectory.
+    Resolution is measured across opposing faces (``cell.perpendicular_lengths``)
+    so the spacing holds for sheared cells; a batched cell is reduced with a
+    per-axis max. Dims are rounded up to a multiple of ``multiple_of`` (cheaper
+    FFTs). Host-side by construction — FFT shapes must be static — so call it at
+    setup time with the initial cell.
 
-    Note the heuristic is purely geometric: the resolution PME actually needs also
-    grows with the Ewald splitting parameter ``alpha``, so verify the accuracy of a
-    chosen mesh against direct Ewald rather than trusting ``spacing`` alone.
+    The heuristic is purely geometric: the resolution PME needs also grows with
+    the splitting parameter ``alpha``, so verify a chosen mesh against direct
+    Ewald rather than trusting ``spacing`` alone.
     """
     lengths = np.asarray(cell.perpendicular_lengths).reshape(-1, 3).max(axis=0)
     dims: list[int] = []
@@ -112,12 +104,11 @@ def _bspline_weights(frac: Array, order: int) -> Array:
     """
     j = jnp.arange(order)
     x = frac[..., None] + j  # M_n evaluated at f, f+1, ..., f+(p-1)
-    # M_1 is the indicator of [0, 1), so at this point only j = 0 is nonzero; each
-    # Cox-de Boor pass below widens the support by one grid point, so after the
-    # p - 1 passes all p offsets carry weight.
-    w = jnp.where((x >= 0) & (x < 1), 1.0, 0.0)  # M_1
+    w = jnp.where((x >= 0) & (x < 1), 1.0, 0.0)  # M_1 = indicator of [0, 1)
     for k in range(2, order + 1):
-        # M_k(x) = x/(k-1) M_{k-1}(x) + (k-x)/(k-1) M_{k-1}(x-1); shift gives M_{k-1}(x-1)
+        # Cox-de Boor: M_k(x) = [x M_{k-1}(x) + (k-x) M_{k-1}(x-1)] / (k-1); the
+        # shift gives M_{k-1}(x-1). Each pass widens the support by one point, so
+        # only j = 0 is nonzero above but all p offsets carry weight at the end.
         w_shift = jnp.concatenate([jnp.zeros_like(w[..., :1]), w[..., :-1]], axis=-1)
         w = (x * w + (k - x) * w_shift) / (k - 1)
     return w
@@ -142,26 +133,22 @@ def _euler_modulus_sq(m_size: int, order: int, dtype: DTypeLike) -> Array:
 def _pme_reciprocal_energy(
     inp: EwaldLongRangeInput[Any], settings: PMESettings
 ) -> Array:
-    """Per-system smooth-PME reciprocal energy, shape ``(n_sys,)``, in atomic
-    units (the caller scales by ``TO_STANDARD_UNITS``)."""
+    """Per-system smooth-PME reciprocal energy, shape ``(n_sys,)``, atomic units."""
     pc = inp.point_cloud
     positions = pc.particles.data.positions
     charges = pc.particles.data.charges
     sys_idx = pc.particles.data.system.indices
     n_sys = pc.batch_size
     cell = pc.systems.data.cell
-    # Key-based lookup (as in `prefactor`), not raw .data: the parameter and
-    # system tables need not be keyed in the same order.
     alpha = inp.parameters.alpha[pc.systems.index]
     order = settings.order
     dtype = positions.dtype
     Mx, My, Mz = settings.mesh
-    Mvec = jnp.asarray(settings.mesh, dtype=dtype)
 
     # Fractional coords in each particle's own cell, folded into [0, 1).
     cell_p = cell[sys_idx]
     frac, _ = cell_p.fold(cell_p.frame.to_fractional(positions))  # (N, 3)
-    u = frac * Mvec
+    u = frac * jnp.asarray(settings.mesh, dtype=dtype)
     base = jnp.floor(u).astype(jnp.int32)
     f = u - base
 
@@ -179,46 +166,36 @@ def _pme_reciprocal_energy(
         * wx[:, :, None, None]
         * wy[:, None, :, None]
         * wz[:, None, None, :]
-    )
-    flat = (
-        sys_idx[:, None, None, None] * (Mx * My * Mz)
-        + gx[:, :, None, None] * (My * Mz)
-        + gy[:, None, :, None] * Mz
-        + gz[:, None, None, :]
     )  # (N, p, p, p)
     Q = (
-        jnp.zeros((n_sys * Mx * My * Mz,), dtype=dtype)
-        .at[flat.reshape(-1)]
-        .add(w3.reshape(-1))
+        jnp.zeros((n_sys, Mx, My, Mz), dtype=dtype)
+        .at[
+            sys_idx[:, None, None, None],
+            gx[:, :, None, None],
+            gy[:, None, :, None],
+            gz[:, None, None, :],
+        ]
+        .add(w3)
     )
-    Q = Q.reshape(n_sys, Mx, My, Mz)
     Fq = jnp.fft.fftn(Q, axes=(1, 2, 3))  # (n_sys, Mx, My, Mz) complex
 
-    # Per-system k-vectors, matching EwaldLongRangeInput.kvecs.
-    nx = jnp.fft.fftfreq(Mx) * Mx
-    ny = jnp.fft.fftfreq(My) * My
-    nz = jnp.fft.fftfreq(Mz) * Mz
-    nX, nY, nZ = jnp.meshgrid(nx, ny, nz, indexing="ij")
-    n_idx = jnp.stack([nX, nY, nZ], axis=-1).astype(dtype)  # (Mx,My,Mz,3)
-    kvec = 2.0 * jnp.pi * jnp.einsum("sab,xyzb->sxyza", cell.inverse_vectors, n_idx)
-    k2 = jnp.sum(kvec**2, axis=-1)  # (n_sys, Mx, My, Mz)
+    # Per-system k-vectors on the FFT frequency grid, as in EwaldLongRangeInput.kvecs.
+    n_axes = [jnp.fft.fftfreq(m) * m for m in settings.mesh]  # integer mode numbers
+    n_idx = jnp.stack(jnp.meshgrid(*n_axes, indexing="ij"), axis=-1).astype(dtype)
+    kvec = triangular_3x3_matmul(
+        cell.inverse_vectors.mT[:, None] * 2 * jnp.pi, n_idx.reshape(-1, 3), lower=False
+    )
+    k2 = jnp.sum(kvec**2, axis=-1).reshape(n_sys, Mx, My, Mz)
 
     bsq = (
         _euler_modulus_sq(Mx, order, dtype)[:, None, None]
         * _euler_modulus_sq(My, order, dtype)[None, :, None]
         * _euler_modulus_sq(Mz, order, dtype)[None, None, :]
     )  # (Mx,My,Mz)
-
-    nonzero = k2 > 0
-    k2_safe = jnp.where(nonzero, k2, 1.0)
-    pref = (
-        (2.0 * jnp.pi)
-        / inp.volume[:, None, None, None]
-        * jnp.exp(-k2_safe / (4.0 * alpha[:, None, None, None] ** 2))
-        / k2_safe
+    pref = reciprocal_prefactor(
+        k2, inp.volume[:, None, None, None], alpha[:, None, None, None]
     )
-    influence = jnp.where(nonzero, pref * bsq[None], 0.0)
-    return jnp.sum(influence * (jnp.abs(Fq) ** 2), axis=(1, 2, 3))  # (n_sys,)
+    return jnp.sum(pref * bsq * jnp.abs(Fq) ** 2, axis=(1, 2, 3))  # (n_sys,)
 
 
 def make_pme_long_range_energy(settings: PMESettings):
@@ -228,15 +205,7 @@ def make_pme_long_range_energy(settings: PMESettings):
         inp: EwaldLongRangeInput[State],
     ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
         """Reciprocal-space (long-range) PME energy. Drop-in for ``ewald_long_range_energy``."""
-        n_sys = inp.point_cloud.batch_size
-        energy = _pme_reciprocal_energy(inp, settings)
-        assert energy.shape == (n_sys,), (
-            f"Expected energy shape {(n_sys,)} but got {energy.shape}."
-        )
-        energy = energy * TO_STANDARD_UNITS
-        # The mesh sum omits k = 0 just as the direct-Ewald sum does, so it needs the
-        # same neutralizing-background term to stay correct for a net-charged system.
-        total = ewald_net_charge_energy(inp).map_data(lambda e_net: e_net + energy)
+        total = reciprocal_total_energy(inp, _pme_reciprocal_energy(inp, settings))
         return WithPatch(total, IdPatch())
 
     return pme_long_range_energy
@@ -264,26 +233,21 @@ def make_pme_long_range_potential[
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the PME reciprocal-space (long-range) potential.
 
-    Mirrors ``make_ewald_long_range_potential`` exactly (same composer, same
-    point-cloud gradient lens) so forces and NPT stress come from autodiff.
-
-    ``cache_lens`` is accepted for signature parity with
-    ``make_ewald_long_range_potential`` but must be ``None``: PME needs no
-    structure-factor cache, and ``PotentialFromEnergy`` emits an ``IdPatch``.
+    ``make_ewald_long_range_potential`` with the PME energy fn, so forces and NPT
+    stress come from autodiff through the same composer. ``cache_lens`` is
+    accepted for signature parity but must be ``None``: one moved particle still
+    changes the whole FFT, so there is no incremental structure-factor cache.
     """
     assert cache_lens is None, "PME has no structure-factor cache to update."
-    return PotentialFromEnergy(
-        energy_fn=make_pme_long_range_energy(settings),
-        composer=EwaldLongRangeComposer(
-            particles=particles_view,
-            systems=systems_view,
-            probe=probe,
-            parameters=parameter_lens,
-            cache=None,
-        ),
-        gradient_lens=lens(lambda x: x.point_cloud).nest(gradient_lens),
-        hessian_lens=hessian_lens,
+    return make_ewald_long_range_potential(
+        particles_view=particles_view,
+        systems_view=systems_view,
+        parameter_lens=parameter_lens,
         cache_lens=None,
+        probe=probe,
+        gradient_lens=gradient_lens,
+        hessian_lens=hessian_lens,
         hessian_idx_view=hessian_idx_view,
         patch_idx_view=patch_idx_view,
+        energy_fn=make_pme_long_range_energy(settings),
     )
