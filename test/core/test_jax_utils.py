@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from kups.core.data.table import Table
 from kups.core.utils.jax import (
     NotJaxCompatibleError,
     dataclass,
@@ -678,3 +679,66 @@ class TestSkipIfDisabled:
         # Restored after context
         with pytest.raises(ValueError, match="non-negative"):
             Validated(x=-1)
+
+
+@dataclass
+class _Strict:
+    values: jax.Array
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        assert isinstance(self.values, jax.Array) or hasattr(self.values, "dtype")
+        assert self.values.ndim == 1, "values must be 1-D"
+
+
+@dataclass
+class _StrictOuter:
+    inner: _Strict
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        assert self.inner.values.ndim == 1, "inner values must be 1-D"
+
+
+class TestPlaceholderUnflatten:
+    """Unflatten skips validation for placeholder payloads, never for real data.
+
+    jax's pytree contract allows unflattening with placeholder leaves
+    (``device_put``/``shard_map`` sentinel round-trips, flax.nnx ``None``
+    erasure); the detection lives in the dataclass ``_unflatten`` itself so no
+    caller has to know which library round-trips with dummies.
+    """
+
+    def test_object_sentinels_skip_validation(self):
+        _, treedef = jax.tree.flatten(_Strict(jnp.arange(3.0)))
+        rebuilt = jax.tree.unflatten(treedef, [object()])
+        assert not isinstance(rebuilt.values, jax.Array)
+
+    def test_none_erasure_skips_validation(self):
+        _, treedef = jax.tree.flatten(_Strict(jnp.arange(3.0)))
+        rebuilt = jax.tree.unflatten(treedef, [None])
+        assert rebuilt.values is None
+
+    def test_real_leaves_still_validate(self):
+        _, treedef = jax.tree.flatten(_Strict(jnp.arange(3.0)))
+        with pytest.raises(AssertionError, match="1-D"):
+            jax.tree.unflatten(treedef, [jnp.zeros((2, 2))])
+        ok = jax.tree.unflatten(treedef, [jnp.arange(5.0)])
+        assert ok.values.shape == (5,)
+
+    def test_nested_placeholders_skip_outer_validation(self):
+        # Placeholder-ness must be seen through sub-nodes: the outer node's
+        # direct child is a real ``_Strict`` instance whose leaves are dummies.
+        _, treedef = jax.tree.flatten(_StrictOuter(_Strict(jnp.arange(3.0))))
+        rebuilt = jax.tree.unflatten(treedef, [object()])
+        assert not isinstance(rebuilt.inner.values, jax.Array)
+
+    def test_table_sentinel_roundtrip(self):
+        # The real-world case: jax<=0.7 device_put round-trips pytrees through
+        # a sentinel unflatten before moving the actual arrays.
+        table = Table((0, 1, 2), jnp.arange(3.0))
+        leaves, treedef = jax.tree.flatten(table)
+        rebuilt = jax.tree.unflatten(treedef, [object()] * len(leaves))
+        assert rebuilt.keys == table.keys
+        restored = jax.tree.unflatten(treedef, leaves)
+        npt.assert_array_equal(restored.data, table.data)

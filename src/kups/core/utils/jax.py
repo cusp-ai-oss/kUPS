@@ -764,8 +764,24 @@ def dataclass[T](
             _meta: tuple[str, ...] = meta_fields,
             _init_meta: frozenset[str] = frozenset(init_meta_fields),
         ) -> T:
+            data = tuple(data)
             kwargs = dict(zip(_data, data))
             kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
+            # jax's pytree contract lets callers unflatten with placeholder
+            # leaves (device_put/shard_map sentinels, flax.nnx ``None``
+            # erasure, string name trees); validating those is meaningless.
+            # Placeholders are detected from the payload itself — leaves that
+            # are not data — so every such boundary is covered here, at the
+            # one point all unflattens pass through, instead of by per-caller
+            # suppression. Real-leaf unflattens validate exactly as before.
+            # The ambient check comes first: inside a ``no_post_init`` region
+            # validation is skipped anyway, and lens traversal proxies must
+            # not see the ``hasattr`` probes (they record attribute access).
+            if _data and not getattr(_no_post_init, "active", False):
+                leaves = jax.tree_util.tree_leaves(data)
+                if not leaves or any(not _is_data_leaf(x) for x in leaves):
+                    with no_post_init():
+                        return _cls(**kwargs)
             return _cls(**kwargs)
 
         jax.tree_util.register_pytree_with_keys(dcls, _flatten_with_keys, _unflatten)
@@ -774,6 +790,17 @@ def dataclass[T](
     if cls is None:
         return make_dataclass
     return make_dataclass(cls)
+
+
+def _is_data_leaf(leaf: object) -> bool:
+    """Whether jax could trace this leaf: array-like or a scalar.
+
+    Dynamic fields hold traceable data by construction, so anything else in
+    leaf position is an unflatten placeholder.
+    """
+    return isinstance(leaf, (bool, int, float, complex)) or (
+        hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+    )
 
 
 _no_post_init = threading.local()
@@ -801,11 +828,13 @@ def skip_post_init_if_disabled(post_init: Callable[..., None]):
     """Skip ``__post_init__`` validation when inside a :func:`no_post_init` context.
 
     JAX dataclass containers like ``Table`` and ``Buffered`` validate
-    invariants (unique keys, matching dimensions, …) in ``__post_init__``.
-    During deserialization or lens-based structural updates the intermediate
-    objects may temporarily violate those invariants, so validation is
-    suppressed via the :func:`no_post_init` context manager.  Decorate a
-    ``__post_init__`` with this function to opt into that suppression.
+    invariants (unique keys, matching dimensions, …) in ``__post_init__``;
+    this decorator opts a ``__post_init__`` into suppression. Validation is
+    skipped in three situations: placeholder unflattens (detected
+    automatically in ``_unflatten``), host-side re-validation of jitted
+    outputs (the :func:`jit` wrapper), and construction sites that build
+    temporarily inconsistent objects and wrap themselves in
+    :func:`no_post_init`.
     """
 
     def wrapper(self: object, *args: Any, **kwargs: Any):
