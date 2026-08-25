@@ -42,6 +42,7 @@ from kups.potential.classical.ewald import (
     make_ewald_potential,
     pointcloud_geometry,
 )
+from kups.potential.classical.pme import PMESettings
 from kups.potential.common.geometry import (
     Geometry,
     PositionsAndCell,
@@ -80,6 +81,7 @@ def make_ewald_from_state[State](
     parameters: None = None,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
@@ -94,6 +96,7 @@ def make_ewald_from_state[State](
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
@@ -110,6 +113,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: None = None,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
     ] = ...,
@@ -129,6 +133,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]]
     ] = ...,
@@ -143,6 +148,7 @@ def make_ewald_from_state[State](
     parameters: EwaldParameters,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
@@ -155,6 +161,7 @@ def make_ewald_from_state[State](
     parameters: EwaldParameters,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
@@ -167,6 +174,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: EwaldParameters,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[
         IsCachedEwaldGraphState[EwaldCache[EmptyType, EmptyType]]
     ] = ...,
@@ -183,6 +191,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: EwaldParameters,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[
         IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
     ] = ...,
@@ -196,6 +205,7 @@ def make_ewald_from_state(
     parameters: EwaldParameters | None = None,
     gradient: Lens[Geometry, Any] | None = None,
     include_exclusion_mask: bool = False,
+    pme: PMESettings | None = None,
     neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
@@ -220,6 +230,9 @@ def make_ewald_from_state(
             gradients.
         include_exclusion_mask: Whether to include the exclusion
             correction term in the returned potential.
+        pme: When given, evaluate the reciprocal term with FFT-based PME instead
+            of the direct Ewald sum. See
+            [`PMESettings`][kups.potential.classical.pme.PMESettings].
 
     Returns:
         An ``EwaldPotential`` combining short-range, long-range,
@@ -263,4 +276,5 @@ def make_ewald_from_state(
         EMPTY_LENS,
         patch_idx_view=patch_idx_view,
         include_exclusion_mask=include_exclusion_mask,
+        pme=pme,
     )
