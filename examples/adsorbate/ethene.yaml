@@ -7,4 +7,6 @@ positions:
 symbols:
   - "CH2"
   - "CH2"
+atomic_numbers: [6, 6] # carbon backbones of the united atoms
+masses: [14.027, 14.027] # united-atom masses (C + 2 H) — not derivable from Z
 charges: [0.0, 0.0]
