@@ -28,6 +28,7 @@ from kups.potential.classical.ewald import (
     kvecs_from_kmax,
 )
 from kups.potential.classical.pme import (
+    PMESettings,
     make_pme_long_range_energy,
     pme_mesh_for_cell,
 )
@@ -36,6 +37,29 @@ from kups.potential.common.graph import PointCloud
 from .test_ewald import _make_particle_data, _make_systems
 
 ORDER = 8
+"""B-spline order used throughout: above the default (6) so the interpolation
+error stays well below the tight tolerances these tests pin, which are chosen
+to expose convention bugs (transposed lattices, missing background terms)
+rather than to measure spline accuracy. At order 6 the energy/force tests fail
+at these tolerances."""
+
+
+def _pme_settings(cell_vectors: Array, spacing: float) -> PMESettings:
+    """PMESettings with a mesh sized for ``cell_vectors`` at ``spacing`` Angstrom."""
+    cell = PeriodicCell(TriclinicFrame.from_matrix(cell_vectors))
+    return PMESettings(pme_mesh_for_cell(cell, spacing=spacing), ORDER)
+
+
+def _single_system_params(charges: Array, cell: PeriodicCell, eps: float):
+    """Estimated single-system ``EwaldParameters`` keyed by ``SystemId(0)``."""
+    est = estimate_ewald_parameters(charges, cell, epsilon_total=eps)
+    return EwaldParameters(
+        alpha=Table((SystemId(0),), jnp.asarray([est.alpha])),
+        cutoff=Table((SystemId(0),), jnp.asarray([est.real_cutoff])),
+        reciprocal_lattice_shifts=Table(
+            (SystemId(0),), kvecs_from_kmax(cell, est.k_max)[None]
+        ),
+    )
 
 
 def _nacl(repeats: int = 5, eps: float = 5e-5, jitter: float = 0.3):
@@ -68,15 +92,7 @@ def _nacl(repeats: int = 5, eps: float = 5e-5, jitter: float = 0.3):
         positions = positions + jitter * jax.random.normal(
             jax.random.key(7), positions.shape
         )
-    est = estimate_ewald_parameters(charges, cell, epsilon_total=eps)
-    params = EwaldParameters(
-        alpha=Table((SystemId(0),), jnp.asarray([est.alpha])),
-        cutoff=Table((SystemId(0),), jnp.asarray([est.real_cutoff])),
-        reciprocal_lattice_shifts=Table(
-            (SystemId(0),), kvecs_from_kmax(cell, est.k_max)[None]
-        ),
-    )
-    return positions, charges, cell, params
+    return positions, charges, cell, _single_system_params(charges, cell, eps)
 
 
 def _lr_input(positions: Array, cell_vectors: Array, charges: Array, params, cutoff):
@@ -95,16 +111,16 @@ class TestPMEvsEwald:
     def test_recip_energy_matches_ewald(self):
         positions, charges, cell, params = _nacl()
         cellv = cell.vectors  # (3,3)
-        mesh = pme_mesh_for_cell(np.asarray(cellv), spacing=0.5)
+        settings = _pme_settings(cellv, spacing=0.5)
         inp = _lr_input(positions, cellv, charges, params, params.cutoff.data)
         e_ewald = float(ewald_long_range_energy(inp).data.data[0])
-        e_pme = float(make_pme_long_range_energy(mesh, ORDER)(inp).data.data[0])
+        e_pme = float(make_pme_long_range_energy(settings)(inp).data.data[0])
         npt.assert_allclose(e_pme, e_ewald, rtol=1e-5)
 
     def test_forces_match_ewald(self):
         positions, charges, cell, params = _nacl()
         cellv = cell.vectors
-        mesh = pme_mesh_for_cell(np.asarray(cellv), spacing=0.5)
+        settings = _pme_settings(cellv, spacing=0.5)
 
         def e_ewald(p):
             return ewald_long_range_energy(
@@ -112,12 +128,39 @@ class TestPMEvsEwald:
             ).data.data.sum()
 
         def e_pme(p):
-            return make_pme_long_range_energy(mesh, ORDER)(
+            return make_pme_long_range_energy(settings)(
                 _lr_input(p, cellv, charges, params, params.cutoff.data)
             ).data.data.sum()
 
         f_ewald = jax.grad(e_ewald)(positions)
         f_pme = jax.grad(e_pme)(positions)
+        npt.assert_allclose(f_pme, f_ewald, atol=3e-4)
+
+    def test_random_disordered_system_matches_ewald(self):
+        """Uniform-random positions and random (neutralized) charges: no lattice
+        symmetry left to mask a convention error, unlike the NaCl fixtures."""
+        key_r, key_q = jax.random.split(jax.random.key(11))
+        n, box = 200, 12.0
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * box))
+        positions = box * jax.random.uniform(key_r, (n, 3), dtype=float)
+        charges = jax.random.normal(key_q, (n,), dtype=float)
+        charges = charges - charges.mean()  # neutral; net charge covered elsewhere
+        params = _single_system_params(charges, cell, eps=5e-5)
+        cellv = cell.vectors
+        settings = _pme_settings(cellv, spacing=0.5)
+
+        def total_energy(energy_fn, p):
+            return energy_fn(
+                _lr_input(p, cellv, charges, params, params.cutoff.data)
+            ).data.data.sum()
+
+        e_ewald, f_ewald = jax.value_and_grad(
+            lambda p: total_energy(ewald_long_range_energy, p)
+        )(positions)
+        e_pme, f_pme = jax.value_and_grad(
+            lambda p: total_energy(make_pme_long_range_energy(settings), p)
+        )(positions)
+        npt.assert_allclose(float(e_pme), float(e_ewald), rtol=1e-5)
         npt.assert_allclose(f_pme, f_ewald, atol=3e-4)
 
     @pytest.mark.parametrize("shear", [0.0, 0.5])
@@ -132,10 +175,10 @@ class TestPMEvsEwald:
         """
         positions, charges, cell, params = _nacl()
         cellv = cell.vectors.at[1, 0].add(shear * float(cell.vectors[0, 0]))
-        mesh = pme_mesh_for_cell(np.asarray(cellv), spacing=0.4)
+        settings = _pme_settings(cellv, spacing=0.4)
         inp = _lr_input(positions, cellv, charges, params, params.cutoff.data)
         e_ewald = float(ewald_long_range_energy(inp).data.data[0])
-        e_pme = float(make_pme_long_range_energy(mesh, ORDER)(inp).data.data[0])
+        e_pme = float(make_pme_long_range_energy(settings)(inp).data.data[0])
         npt.assert_allclose(e_pme, e_ewald, rtol=1e-3)
 
     def test_full_cell_gradient_matches_ewald(self):
@@ -144,7 +187,7 @@ class TestPMEvsEwald:
         transposed fractional transform corrupts exactly those."""
         positions, charges, cell, params = _nacl()
         cellv = cell.vectors
-        mesh = pme_mesh_for_cell(np.asarray(cellv), spacing=0.4)
+        settings = _pme_settings(cellv, spacing=0.4)
 
         def grad_cell(energy_fn):
             return np.asarray(
@@ -156,7 +199,7 @@ class TestPMEvsEwald:
             )
 
         g_ewald = grad_cell(ewald_long_range_energy)
-        g_pme = grad_cell(make_pme_long_range_energy(mesh, ORDER))
+        g_pme = grad_cell(make_pme_long_range_energy(settings))
         scale = float(np.abs(g_ewald).max())
         npt.assert_allclose(g_pme, g_ewald, rtol=1e-3, atol=1e-3 * scale)
 
@@ -164,7 +207,6 @@ class TestPMEvsEwald:
         """A 2-system batch returns correct per-SystemId energies (flat batch_idx)."""
         positions, charges, cell, params = _nacl()
         cellv = cell.vectors
-        mesh = pme_mesh_for_cell(np.asarray(cellv), spacing=0.5)
 
         # tile two identical replicas onto one SystemId axis
         pos2 = jnp.concatenate([positions, positions])
@@ -173,6 +215,9 @@ class TestPMEvsEwald:
         sys_ids = jnp.concatenate([jnp.zeros(n, int), jnp.ones(n, int)])
         cell2 = cell[None]
         cell2 = jax.tree.map(lambda a: jnp.concatenate([a, a]), cell2)
+        # size the shared mesh from the batched cell (per-axis max over systems)
+        settings = PMESettings(pme_mesh_for_cell(cell2, spacing=0.5), ORDER)
+        assert settings.mesh == _pme_settings(cellv, spacing=0.5).mesh
         params2 = EwaldParameters(
             alpha=Table(
                 (SystemId(0), SystemId(1)),
@@ -198,7 +243,7 @@ class TestPMEvsEwald:
         )
         systems = _make_systems(cell2, params2.cutoff.data)
         inp = EwaldLongRangeInput(PointCloud(particles, systems), params2, None)
-        e_pme = np.asarray(make_pme_long_range_energy(mesh, ORDER)(inp).data.data)
+        e_pme = np.asarray(make_pme_long_range_energy(settings)(inp).data.data)
         e_ewald = np.asarray(ewald_long_range_energy(inp).data.data)
         assert e_pme.shape == (2,)
         npt.assert_allclose(e_pme[0], e_pme[1], rtol=1e-10)  # identical replicas
@@ -211,8 +256,8 @@ class TestPMEvsEwald:
         charges = charges.at[0].set(charges[0] + 1.0)  # break neutrality
         assert abs(float(jnp.sum(charges))) > 0.5
         cellv = cell.vectors
-        mesh = pme_mesh_for_cell(np.asarray(cellv), spacing=0.5)
+        settings = _pme_settings(cellv, spacing=0.5)
         inp = _lr_input(positions, cellv, charges, params, params.cutoff.data)
         e_ewald = float(ewald_long_range_energy(inp).data.data[0])
-        e_pme = float(make_pme_long_range_energy(mesh, ORDER)(inp).data.data[0])
+        e_pme = float(make_pme_long_range_energy(settings)(inp).data.data[0])
         npt.assert_allclose(e_pme, e_ewald, rtol=1e-4)
