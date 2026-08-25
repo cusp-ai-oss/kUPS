@@ -87,6 +87,36 @@ def partition_equal_counts(n_particles: int, n_devices: int) -> Index[OriginDevi
     )
 
 
+@dataclass
+class MeshMaxCapacity[Value](Capacity[Value]):
+    """Capacity whose recorded requirement is the max across the DD mesh.
+
+    A buffer shared by every device must cover the worst device, and taking
+    the ``pmax`` inside ``generate_assertion`` keeps the assertion value
+    device-invariant, so it can leave a ``shard_map`` through the default
+    replicated assertion context (a per-device requirement would trip the
+    replication check). Wrap the neighbor-list capacities of a
+    domain-decomposed run with this; resizing semantics come from the wrapped
+    capacity.
+    """
+
+    capacity: Capacity[Value] = field(static=True)
+
+    @property
+    @override
+    def size(self) -> Value:
+        return self.capacity.size
+
+    @override
+    def generate_assertion(self, required_capacity: Array) -> Capacity[Value]:
+        required = jax.lax.pmax(required_capacity, shard_axis(OriginDeviceId))
+        return MeshMaxCapacity(self.capacity.generate_assertion(required))
+
+    @override
+    def multiply(self, factor: int) -> Capacity[Value]:
+        return MeshMaxCapacity(self.capacity.multiply(factor))
+
+
 def owned_subset[P: IsDecomposedParticle](
     particles: Table[ParticleId, P], device_id: Array | int, cap_owned: Capacity[int]
 ) -> Index[ParticleId]:
