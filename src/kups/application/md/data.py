@@ -266,7 +266,7 @@ class MdParameters(BaseModel):
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
 
 
-def md_state_from_particles(
+def md_state_from_particles_and_cell(
     particles: Table[ParticleId, Particles],
     cell: Cell[AnyPeriodicity],
     config: MdParameters,
@@ -375,7 +375,7 @@ def md_state_from_ase(
         Tuple of (particles, systems) ready for use with MD integrators.
     """
     particles, cell, _ = particles_from_ase(atoms)
-    return md_state_from_particles(particles, cell, config, key=key)
+    return md_state_from_particles_and_cell(particles, cell, config, key=key)
 
 
 def _gao_barostat_mass(
@@ -479,6 +479,6 @@ __all__ = [
     "CSVRNPTParams",
     "BAOABNPTLangevinParams",
     "IntegratorParams",
-    "md_state_from_particles",
+    "md_state_from_particles_and_cell",
     "md_state_from_ase",
 ]

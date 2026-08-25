@@ -27,7 +27,7 @@ from kups.application.md.data import (
     MDSystems,
     VerletParams,
     md_state_from_ase,
-    md_state_from_particles,
+    md_state_from_particles_and_cell,
 )
 from kups.application.utils.particles import Particles, particles_from_arrays
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
@@ -111,7 +111,7 @@ def _assert_tree_allclose(actual: object, expected: object) -> None:
 
 def test_public_builder_signature_and_export() -> None:
     """Public signature, keyword-only key, and module export."""
-    signature = inspect.signature(md_state_from_particles)
+    signature = inspect.signature(md_state_from_particles_and_cell)
 
     assert tuple(signature.parameters) == (
         "particles",
@@ -121,7 +121,7 @@ def test_public_builder_signature_and_export() -> None:
     )
     assert signature.parameters["key"].kind is inspect.Parameter.KEYWORD_ONLY
     assert signature.parameters["key"].default is None
-    assert "md_state_from_particles" in md_data.__all__
+    assert "md_state_from_particles_and_cell" in md_data.__all__
 
 
 def test_builder_preserves_identity_and_geometry(md_config: MdParameters) -> None:
@@ -134,7 +134,7 @@ def test_builder_preserves_identity_and_geometry(md_config: MdParameters) -> Non
     )
     cell = _cell()
 
-    md_particles, systems = md_state_from_particles(particles, cell, md_config)
+    md_particles, systems = md_state_from_particles_and_cell(particles, cell, md_config)
 
     assert md_particles.keys == particle_keys
     assert md_particles.data.system.keys == (system_key,)
@@ -159,7 +159,7 @@ def test_empty_particles_are_rejected(md_config: MdParameters) -> None:
     )
 
     with pytest.raises(ValueError, match="particles.*at least one"):
-        md_state_from_particles(particles, _cell(), md_config)
+        md_state_from_particles_and_cell(particles, _cell(), md_config)
 
 
 def test_multiple_system_keys_are_rejected(md_config: MdParameters) -> None:
@@ -169,7 +169,7 @@ def test_multiple_system_keys_are_rejected(md_config: MdParameters) -> None:
     )
 
     with pytest.raises(ValueError, match="particles.*exactly one system"):
-        md_state_from_particles(particles, _cell(), md_config)
+        md_state_from_particles_and_cell(particles, _cell(), md_config)
 
 
 def test_invalid_reference_into_single_system_key_is_rejected(
@@ -181,7 +181,7 @@ def test_invalid_reference_into_single_system_key_is_rejected(
     )
 
     with pytest.raises(ValueError, match="particles.*sole SystemId"):
-        md_state_from_particles(particles, _cell(), md_config)
+        md_state_from_particles_and_cell(particles, _cell(), md_config)
 
 
 def test_column_vector_system_indices_are_rejected(md_config: MdParameters) -> None:
@@ -193,7 +193,7 @@ def test_column_vector_system_indices_are_rejected(md_config: MdParameters) -> N
     with pytest.raises(
         ValueError, match=r"particles.*one system reference per particle"
     ):
-        md_state_from_particles(particles, _cell(), md_config)
+        md_state_from_particles_and_cell(particles, _cell(), md_config)
 
 
 def test_batched_cell_is_rejected(md_config: MdParameters) -> None:
@@ -203,7 +203,7 @@ def test_batched_cell_is_rejected(md_config: MdParameters) -> None:
     )
 
     with pytest.raises(ValueError, match=r"cell\.vectors.*\(3, 3\)"):
-        md_state_from_particles(particles, _cell()[None], md_config)
+        md_state_from_particles_and_cell(particles, _cell()[None], md_config)
 
 
 def test_ase_wrapper_delegates_to_source_neutral_builder(
@@ -224,7 +224,7 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
         calls.append(("adapter", atoms))
         return particles, cell, object()
 
-    def fake_md_state_from_particles(
+    def fake_md_state_from_particles_and_cell(
         actual_particles: Table[ParticleId, Particles],
         actual_cell: Cell[AnyPeriodicity],
         actual_config: MdParameters,
@@ -236,7 +236,7 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
 
     monkeypatch.setattr(md_data, "particles_from_ase", fake_particles_from_ase)
     monkeypatch.setattr(
-        md_data, "md_state_from_particles", fake_md_state_from_particles
+        md_data, "md_state_from_particles_and_cell", fake_md_state_from_particles_and_cell
     )
 
     actual = md_state_from_ase("input.cif", md_config, key=key)
@@ -313,7 +313,7 @@ def test_array_builder_matches_ase_for_skewed_cell(
         charges=charges,
         labels=labels,
     )
-    actual_particles, actual_systems = md_state_from_particles(
+    actual_particles, actual_systems = md_state_from_particles_and_cell(
         array_particles,
         array_cell,
         md_config,
@@ -352,7 +352,7 @@ def test_canonical_array_outputs_support_table_union(
             charges=jnp.array([0.75, -0.75]),
             labels=["Na", "Cl"],
         )
-        outputs.append(md_state_from_particles(particles, cell, md_config))
+        outputs.append(md_state_from_particles_and_cell(particles, cell, md_config))
 
     merged_particles, merged_systems = Table.union(
         [outputs[0][0], outputs[1][0]],
@@ -379,7 +379,7 @@ def test_key_alone_controls_momentum_initialization(
         Index((SystemId(4),), jnp.zeros(3, dtype=int)),
     )
     initialize_config = md_config.model_copy(update={"initialize_momenta": True})
-    zero_particles, _ = md_state_from_particles(
+    zero_particles, _ = md_state_from_particles_and_cell(
         particles,
         _cell(),
         initialize_config,
@@ -390,7 +390,7 @@ def test_key_alone_controls_momentum_initialization(
 
     key = jax.random.key(41)
     no_initialize_config = md_config.model_copy(update={"initialize_momenta": False})
-    sampled_particles, _ = md_state_from_particles(
+    sampled_particles, _ = md_state_from_particles_and_cell(
         particles,
         _cell(),
         no_initialize_config,
@@ -425,7 +425,7 @@ def test_builder_initial_zero_state_and_pytree_contract(
     )
     cell = _cell()
 
-    md_particles, systems = md_state_from_particles(
+    md_particles, systems = md_state_from_particles_and_cell(
         particles,
         cell,
         md_config,
@@ -520,7 +520,7 @@ def test_integrator_parameters_and_unit_conversions(
         Index((SystemId(4),), jnp.zeros(3, dtype=int)),
     )
 
-    _, systems = md_state_from_particles(particles, _cell(), config)
+    _, systems = md_state_from_particles_and_cell(particles, _cell(), config)
     params = systems.data.integrator_params
 
     assert type(params) is expected_type
