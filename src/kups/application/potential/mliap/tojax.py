@@ -53,42 +53,42 @@ class IsTojaxedState(IsTojaxedGraphState, Protocol):
 
 
 @overload
-def make_tojaxed_from_state[State](
-    state: Lens[State, IsTojaxedState],
+def make_tojaxed_from_state[State, Focus: IsTojaxedState](
+    state: Lens[State, Focus],
     *,
     parameters: None = None,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_tojaxed_from_state[State](
-    state: Lens[State, IsTojaxedState],
+def make_tojaxed_from_state[State, Focus: IsTojaxedState](
+    state: Lens[State, Focus],
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsTojaxedState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_tojaxed_from_state[State](
-    state: Lens[State, IsTojaxedGraphState],
+def make_tojaxed_from_state[State, Focus: IsTojaxedGraphState](
+    state: Lens[State, Focus],
     *,
     parameters: TojaxedMliap,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsTojaxedGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_tojaxed_from_state[State](
-    state: Lens[State, IsTojaxedGraphState],
+def make_tojaxed_from_state[State, Focus: IsTojaxedGraphState](
+    state: Lens[State, Focus],
     *,
     parameters: TojaxedMliap,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsTojaxedGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 

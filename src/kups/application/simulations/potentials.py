@@ -32,6 +32,7 @@ from kups.application.potential.mliap.tojax import (
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import Lens
+from kups.core.neighborlist import AdaptiveNeighborList, NeighborListFactory
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import SystemId
@@ -63,10 +64,13 @@ class LjPotentialConfig(BaseModel):
     parameters: dict[str, tuple[float | None, float | None]]
     mixing_rule: MixingRule
 
-    def build[State](
+    def build[State, Focus: IsLJGraphState](
         self,
-        state_lens: Lens[State, IsLJGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
+        neighborlist_factory: NeighborListFactory[
+            Focus
+        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the LJ potential with its parameters bound in."""
         params = LennardJonesParameters.from_dict(
@@ -75,7 +79,10 @@ class LjPotentialConfig(BaseModel):
             mixing_rule=self.mixing_rule,
         )
         potential = make_lennard_jones_from_state(
-            state_lens, parameters=params, gradient=gradient
+            state_lens,
+            parameters=params,
+            gradient=gradient,
+            neighborlist_factory=neighborlist_factory,
         )
         return potential, params.cutoff
 
@@ -86,15 +93,21 @@ class TojaxPotentialConfig(BaseModel):
     backend: Literal["tojax"] = "tojax"
     model_path: str | Path
 
-    def build[State](
+    def build[State, Focus: IsTojaxedGraphState](
         self,
-        state_lens: Lens[State, IsTojaxedGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
+        neighborlist_factory: NeighborListFactory[
+            Focus
+        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the jaxified potential from the exported model."""
         model = TojaxedMliap.from_zip_file(get_model_path(self.model_path))
         potential = make_tojaxed_from_state(
-            state_lens, parameters=model, gradient=gradient
+            state_lens,
+            parameters=model,
+            gradient=gradient,
+            neighborlist_factory=neighborlist_factory,
         )
         return potential, model.cutoff
 
@@ -107,10 +120,13 @@ class MaceConfig(BaseModel):
     device: Literal["cpu", "cuda"] = "cuda"
     dtype: Literal["float32", "float64"] = "float32"
 
-    def build[State](
+    def build[State, Focus: IsTorchMliapGraphState](
         self,
-        state_lens: Lens[State, IsTorchMliapGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
+        neighborlist_factory: NeighborListFactory[
+            Focus
+        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Load the MACE checkpoint and build the potential (lazy torch import)."""
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
@@ -123,7 +139,10 @@ class MaceConfig(BaseModel):
             compute_cell_gradients=True,
         )
         potential = make_torch_mliap_from_state(
-            state_lens, parameters=model, gradient=gradient
+            state_lens,
+            parameters=model,
+            gradient=gradient,
+            neighborlist_factory=neighborlist_factory,
         )
         return potential, model.cutoff
 
@@ -137,10 +156,13 @@ class UmaConfig(BaseModel):
     task_name: UMATaskName = "omat"
     inference_settings: UMAInferenceSettings = "default"
 
-    def build[State](
+    def build[State, Focus: IsTorchMliapGraphState](
         self,
-        state_lens: Lens[State, IsTorchMliapGraphState],
+        state_lens: Lens[State, Focus],
         gradient: Lens[Geometry, PositionsAndCell],
+        neighborlist_factory: NeighborListFactory[
+            Focus
+        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Load the UMA checkpoint and build the potential (lazy torch import)."""
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
@@ -154,7 +176,10 @@ class UmaConfig(BaseModel):
             inference_settings=self.inference_settings,
         )
         potential = make_torch_mliap_from_state(
-            state_lens, parameters=model, gradient=gradient
+            state_lens,
+            parameters=model,
+            gradient=gradient,
+            neighborlist_factory=neighborlist_factory,
         )
         return potential, model.cutoff
 
