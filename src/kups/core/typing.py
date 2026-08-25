@@ -55,6 +55,18 @@ class Label(str):
     """Sentinel type for species/molecule string labels."""
 
 
+class OriginDeviceId(int):
+    """Sentinel type for the device that owns a particle under domain decomposition."""
+
+
+@runtime_checkable
+class HasOrigin(Protocol):
+    """Entity that carries its owner-device label (domain decomposition)."""
+
+    @property
+    def origin(self) -> Index[OriginDeviceId]: ...
+
+
 @runtime_checkable
 class SupportsDType(Protocol):
     @property

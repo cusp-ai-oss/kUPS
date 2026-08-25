@@ -35,9 +35,11 @@ from kups.core.data.index import Index
 from kups.core.lens import Lens, View, bind, const_lens
 from kups.core.patch import ComposedPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.propagator import Propagator
+from kups.core.sharding import shard_axis
 from kups.core.typing import (
     HasParticles,
     HasPositionsAndSystemIndex,
+    OriginDeviceId,
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, tree_map
@@ -717,3 +719,95 @@ class PotentialAsPropagator[State, Gradients, Hessians, StatePatch: Patch[Any]](
             state, energies.set_data(jnp.ones(len(energies), dtype=bool))
         )
         return patch_result
+
+
+@dataclass
+class ShardedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
+    Potential[State, Gradients, Hessians, StatePatch]
+):
+    """Combine a domain-decomposed potential's per-device output across the mesh.
+
+    Each device evaluates ``potential`` on its owned shard, yielding a per-device
+    partial per-system energy; combining across the mesh makes the returned total
+    the global value, replicated. Only the energy is combined: gradients w.r.t.
+    the replicated positions/cell are already mesh-summed by ``shard_map``'s
+    transpose, and summing them again would multiply forces by the device count.
+    Valid only inside ``shard_map`` over the ``OriginDeviceId`` axis.
+
+    The per-device outputs are compensated accumulators
+    ([KahanSummand][kups.core.utils.kahan.KahanSummand]), whose compensations do
+    not combine as a naive mesh sum: each device's compensation carries the
+    low-order bits its own value dropped, while the cross-device additions drop
+    bits of their own that a plain ``psum`` would lose. The accumulators are
+    therefore all-gathered and folded in mesh order with the same exact-2Sum
+    ``KahanSummand.__add__`` that ``SummedPotential`` uses to combine summands
+    on one device. Every device folds the same gathered rows, so the fold is
+    device-invariant; the closing ``pmax`` of identical values only re-types it
+    as replicated for the varying-manual-axes check.
+
+    The wrapped potential must not cache its own output (``cache_lens=None``):
+    a state patch produced below this wrapper would write the pre-combine
+    per-device partial into the state. Wrap in ``CachedPotential`` above this
+    combiner instead, so the cached value is the global one.
+
+    Attributes:
+        potential: Domain-decomposed base potential returning per-device
+            partial energies.
+    """
+
+    potential: Potential[State, Gradients, Hessians, StatePatch] = field(static=True)
+
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[False] = False,
+    ) -> PotentialResult[State, Gradients, Hessians]: ...
+    @overload
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: Literal[True],
+    ) -> CompensatedPotentialResult[State, Gradients, Hessians]: ...
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None = None,
+        *,
+        include_compensate: bool = False,
+    ) -> (
+        PotentialResult[State, Gradients, Hessians]
+        | CompensatedPotentialResult[State, Gradients, Hessians]
+    ):
+        """Evaluate the shard's partial and combine the energy across the mesh.
+
+        Args:
+            state: Current simulation state
+            patch: Optional state patch for incremental updates
+            include_compensate: Return the accumulator rather than its
+                compensated total
+
+        Returns:
+            Globally combined potential output with the shard's patch
+        """
+        out = self.potential(state, patch, include_compensate=True)
+        summand = out.data
+        axis = shard_axis(OriginDeviceId)
+        # (n_devices, n_systems)
+        values = jax.lax.all_gather(summand.value.total_energies.data, axis)
+        errors = jax.lax.all_gather(summand.compensate.total_energies.data, axis)
+        total = KahanSummand(values[0], errors[0])
+        for device in range(1, values.shape[0]):
+            total = total + KahanSummand(values[device], errors[device])
+        total = tree_map(lambda x: jax.lax.pmax(x, axis), total)
+        combined = bind(
+            summand,
+            lambda s: (s.value.total_energies.data, s.compensate.total_energies.data),
+        ).set((total.value, total.compensate))
+        if include_compensate:
+            return WithPatch(combined, out.patch)
+        return WithPatch(combined.total, out.patch)
