@@ -44,13 +44,65 @@ def log_factorial_ratio(N: Array, M: Array) -> Array:
     return jax.lax.lgamma(N + 1.0) - jax.lax.lgamma(M + 1.0)
 
 
+@jax.custom_jvp
+def _cubic_roots_core(coefficients: Array) -> Array:
+    """Companion-matrix eigvals solver for a single cubic polynomial."""
+    a, b, c, d = coefficients
+    C = jnp.array([[0, 0, -d / a], [1, 0, -c / a], [0, 1, -b / a]], dtype=float)
+    return jnp.linalg.eigvals(C)
+
+
+@_cubic_roots_core.defjvp
+def _cubic_roots_core_jvp(  # pyright: ignore[reportUnusedFunction]
+    primals: tuple[Array], tangents: tuple[Array]
+) -> tuple[Array, Array]:
+    r"""Implicit-function-theorem JVP for the cubic roots.
+
+    For each root $z$ of $F(z; a, b, c, d) = az^3 + bz^2 + cz + d = 0$,
+
+    $$\frac{\partial z}{\partial p} = -\frac{\partial F / \partial p}
+                                          {\partial F / \partial z}.$$
+
+    At a repeated root $\partial F / \partial z = 0$ and the true sensitivity
+    is unbounded (a perturbed triple root moves like $\varepsilon^{1/3}$);
+    the computed roots there also carry $O(\mathrm{eps}^{1/3})$ error, so any
+    denominator below $O(\mathrm{eps}^{2/3})$ is numerical noise. The modulus
+    of the denominator is therefore clamped from below at that scale (phase
+    preserved), keeping tangents finite — if large — instead of NaN/inf.
+
+    Forward uses :func:`jax.numpy.linalg.eigvals` (unchanged numerics);
+    backward bypasses its pathological gradient.
+
+    Registered via the :func:`jax.custom_jvp` decorator — Pylance cannot see
+    that side-effect, hence the ``reportUnusedFunction`` suppression.
+    """
+    (coefficients,) = primals
+    (coefficients_dot,) = tangents
+    roots = _cubic_roots_core(coefficients)
+    a, b, c, _ = coefficients
+    da, db, dc, dd = coefficients_dot
+    dF_dz = 3 * a * roots**2 + 2 * b * roots + c
+    dF_from_coeffs = roots**3 * da + roots**2 * db + roots * dc + dd
+    finfo = jnp.finfo(roots.real.dtype)
+    r = jnp.abs(roots)
+    term_scale = 3 * jnp.abs(a) * r**2 + 2 * jnp.abs(b) * r + jnp.abs(c)
+    tol = finfo.eps ** (2 / 3) * term_scale + finfo.tiny
+    mod = jnp.abs(dF_dz)
+    phase = jnp.where(mod > 0, dF_dz / jnp.where(mod > 0, mod, 1.0), 1.0 + 0.0j)
+    safe_dF_dz = phase * jnp.maximum(mod, tol)
+    return roots, -dF_from_coeffs / safe_dF_dz
+
+
 @jit
 @vectorize(signature="(4)->(3)")
 def cubic_roots(coefficients: Array) -> Array:
     """Find all roots of a cubic polynomial using the companion matrix method.
 
     Solves `ax³ + bx² + cx + d = 0` by computing eigenvalues of the companion
-    matrix. Returns all three roots (real or complex).
+    matrix. Returns all three roots (real or complex). Autodiff-safe in JAX:
+    forward values use :func:`jax.numpy.linalg.eigvals`; the JVP is
+    implicit-function differentiation of the cubic, bypassing
+    ``eigvals``'s gradient (which returns NaN on many physical inputs).
 
     Args:
         coefficients: Array of shape `(..., 4)` containing `[a, b, c, d]` for each
@@ -70,10 +122,7 @@ def cubic_roots(coefficients: Array) -> Array:
         This method is numerically stable and handles multiple polynomials in
         parallel via vectorization.
     """
-    a, b, c, d = coefficients
-    C = jnp.array([[0, 0, -d / a], [1, 0, -c / a], [0, 1, -b / a]], dtype=jnp.float_)
-    solutions = jnp.linalg.eigvals(C)
-    return solutions
+    return _cubic_roots_core(coefficients)
 
 
 @jit
