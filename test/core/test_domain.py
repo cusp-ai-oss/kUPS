@@ -5,7 +5,7 @@
 
 The contract (see ``kups.potential.common.graph.Decomposition``): every device
 builds its owned-incident edge shard and tags the graph ``Sharded``; the
-UNCHANGED energy functions then reduce owned-only, per-device energies are
+unchanged energy functions then reduce owned-only, per-device energies are
 per-system partials whose ``psum`` is the global value, and gradients of the
 replicated inputs are already mesh-summed by ``shard_map``'s transpose. Pinned
 here: the ``Sharded`` mask/combine algebra, single-step LJ energy+forces
@@ -206,7 +206,7 @@ def test_sharded_owned_only_broadcasts_over_trailing_axes() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ShardedPotential: psum the energy, pass gradients through UNTOUCHED.
+# ShardedPotential: psum the energy, pass gradients through untouched.
 # --------------------------------------------------------------------------- #
 @dataclass
 class _PartialEnergyPotential:
@@ -287,7 +287,7 @@ def test_sharded_potential_combines_kahan_summands_exactly() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Owned-buffer overflow must RAISE under the assertion interpreter.
+# Owned-buffer overflow must raise under the assertion interpreter.
 # --------------------------------------------------------------------------- #
 def test_owned_buffer_overflow_raises() -> None:
     """An undersized ``cap_owned`` must fail the assertion interpreter, not
@@ -348,7 +348,7 @@ def test_sharded_lj_matches_single_device_energy_and_forces(cap_slack: int) -> N
 
     e_ref, grad_ref = jax.value_and_grad(energy_ref)(pos0)
 
-    # Domain-decomposed: owned-incident shard + the SAME stock energy.
+    # Domain-decomposed: owned-incident shard + the same stock energy.
     cap = FixedCapacity(
         int(np.bincount(np.asarray(state.particles.data.origin.indices)).max())
         + cap_slack
@@ -370,7 +370,7 @@ def test_sharded_lj_matches_single_device_energy_and_forces(cap_slack: int) -> N
             )
             return jnp.sum(lennard_jones_energy(GraphPotentialInput(lj, g)).data.data)
 
-        # `energy` is this device's owned partial: psum the ENERGY output;
+        # `energy` is this device's owned partial: psum the energy output;
         # forces (gradients w.r.t. the replicated positions) are mesh-summed by
         # the transpose — do not psum them.
         e, grad = jax.value_and_grad(energy)(s.particles.data.positions)
@@ -389,8 +389,8 @@ def test_sharded_lj_matches_single_device_energy_and_forces(cap_slack: int) -> N
 
 
 # --------------------------------------------------------------------------- #
-# Ewald reciprocal term with NET CHARGE: the owned partial structure factor
-# must be combined across the mesh BEFORE squaring, and the per-atom
+# Ewald reciprocal term with a net charge: the owned partial structure factor
+# must be combined across the mesh before squaring, and the per-atom
 # net-charge correction must reduce to a per-device partial (a closed-form
 # E_net would be counted once per device).
 # --------------------------------------------------------------------------- #
@@ -406,7 +406,7 @@ def test_sharded_ewald_reciprocal_matches_single_device() -> None:
         np.meshgrid(*[np.arange(n_per_axis)] * 3, indexing="ij"), -1
     ).reshape(-1, 3) * (box / n_per_axis)
     pos = jnp.asarray((grid + rng.uniform(-0.2, 0.2, size=grid.shape)) % box)
-    # Deliberately NON-neutral so ewald_net_charge_energy contributes.
+    # Deliberately non-neutral so ewald_net_charge_energy contributes.
     q = rng.uniform(-1.0, 1.0, size=n) + 0.2
     particles = Table.arange(
         _ChargedParticle(

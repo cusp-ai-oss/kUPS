@@ -5,11 +5,11 @@
 
 Replicate-all model: every device stores all N particles (cheap, no comms) and
 ``origin: Index[OriginDeviceId]`` marks the owner. Each device builds only the
-edges incident on its OWNED atoms by passing them as the neighbor list's
+edges incident on the atoms it owns by passing them as the neighbor list's
 ``queried_keys`` — only owned atoms drive the cell-list stencil, so the costly
 candidate/distance work is O(N/D) while the key side is just cheap-hashed.
 There is no ghost table: the owned-incident edges (global ids + image shifts)
-ARE the device's graph. How the stock energy functions then reduce owned-only
+are themselves the device's graph. How the stock energy functions reduce owned-only
 and combine across the mesh is the ``Decomposition`` seam — see
 ``kups.potential.common.graph.Decomposition``; ``Sharded`` here is its
 domain-decomposed implementation.
@@ -43,7 +43,6 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field
-from kups.core.utils.segment import segment_sum
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.potential.common.graph import Decomposition, HyperGraph
 
@@ -66,7 +65,7 @@ class Sharded[P: IsDecomposedParticle](Decomposition[P]):
         owned = particles.data.origin.indices == jax.lax.axis_index(
             shard_axis(OriginDeviceId)
         )
-        return jnp.where(owned.reshape(owned.shape + (1,) * (x.ndim - 1)), x, 0.0)
+        return jnp.where(owned.reshape(owned.shape + (1,) * (x.ndim - 1)), x, 0)
 
     @override
     def combine_across_shards(self, x: Array) -> Array:
@@ -102,7 +101,7 @@ class MortonPartitioner:
     particles get adjacent keys) -> sort -> cut the sorted order into
     ``n_devices`` equal-count contiguous chunks, one per device. Coherent
     (compact domains), balanced (counts differ by <=1), deterministic and
-    shape-static. Re-applying as positions drift IS migration. (Distinct from
+    shape-static. Re-applying it as positions drift is exactly migration. (Distinct from
     the cell-list ``_cell_hash``, a row-major bin for neighbor search rather
     than a load-balancing curve.)
     """
@@ -144,17 +143,14 @@ def owned_subset[P: IsDecomposedParticle](
     gathers/queries drop them. Overflowing ``cap_owned`` would silently lose
     owned atoms, so the required size is recorded as a runtime assertion (it
     raises under the assertion interpreter; see ``kups.core.result``). The
-    recorded requirement is the max owned count over ALL devices — the shared
-    capacity must cover every device, and computing it from the replicated
+    recorded requirement is the max owned count over every device — the shared
+    capacity must cover them all, and computing it from the replicated
     ``origin`` labels keeps the assertion device-invariant, so it can leave a
     ``shard_map`` through a replicated assertion context.
     """
     n = len(particles)
     origin = particles.data.origin
-    counts = segment_sum(
-        jnp.ones(n, dtype=jnp.int32), origin.indices, origin.num_labels, mode="drop"
-    )
-    cap_owned = cap_owned.generate_assertion(counts.max())
+    cap_owned = cap_owned.generate_assertion(origin.counts.data.max())
     owned_idx = jnp.where(
         origin.indices == device_id, size=cap_owned.size, fill_value=n
     )[0]
@@ -235,7 +231,7 @@ class ShardedRadiusGraphConstructor[
     """Build the calling device's owned-incident shard of the radius graph.
 
     A ``GraphConstructor``-shaped callable for full rebuilds: returns a
-    ``HyperGraph`` over the GLOBAL particle table whose edges are this device's
+    ``HyperGraph`` over the global particle table whose edges are this device's
     owned-incident shard (``sharded_local_edges``), tagged ``Sharded`` so the
     stock energy functions reduce owned-only with no DD code of their own. The
     device id is read from ``jax.lax.axis_index`` — valid only inside
@@ -259,7 +255,7 @@ class ShardedRadiusGraphConstructor[
         particles = self.particles(state)
         systems = self.systems(state)
         axis = shard_axis(OriginDeviceId)
-        # An origin label outside the mesh would be owned by NO device and its
+        # An origin label outside the mesh would be owned by no device and its
         # atoms silently dropped from every reduction; psum(1) is the static
         # mesh axis size.
         n_devices = jax.lax.psum(1, axis)

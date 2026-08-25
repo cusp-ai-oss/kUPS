@@ -56,7 +56,7 @@ class Label(str):
 
 
 class OriginDeviceId(int):
-    """Sentinel type for the device that OWNS a particle under domain decomposition."""
+    """Sentinel type for the device that owns a particle under domain decomposition."""
 
 
 @runtime_checkable

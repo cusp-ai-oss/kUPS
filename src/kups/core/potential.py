@@ -727,18 +727,17 @@ class ShardedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
 ):
     """Combine a domain-decomposed potential's per-device output across the mesh.
 
-    Each device evaluates ``potential`` on its owned shard, yielding a
-    per-device PARTIAL per-system energy; combining across the mesh makes the
-    returned total the global value, replicated. ONLY the energy is combined —
-    gradients w.r.t. the replicated positions/cell are already mesh-summed by
-    ``shard_map``'s transpose, and summing them again would multiply forces by
-    the device count. Valid only inside ``shard_map`` over the
-    ``OriginDeviceId`` axis.
+    Each device evaluates ``potential`` on its owned shard, yielding a per-device
+    partial per-system energy; combining across the mesh makes the returned total
+    the global value, replicated. Only the energy is combined: gradients w.r.t.
+    the replicated positions/cell are already mesh-summed by ``shard_map``'s
+    transpose, and summing them again would multiply forces by the device count.
+    Valid only inside ``shard_map`` over the ``OriginDeviceId`` axis.
 
     The per-device outputs are compensated accumulators
-    ([KahanSummand][kups.core.utils.kahan.KahanSummand]), and a compensation
-    does NOT combine as a naive mesh sum: each device's compensation carries the
-    low-order bits ITS OWN value dropped, while the cross-device additions drop
+    ([KahanSummand][kups.core.utils.kahan.KahanSummand]), whose compensations do
+    not combine as a naive mesh sum: each device's compensation carries the
+    low-order bits its own value dropped, while the cross-device additions drop
     bits of their own that a plain ``psum`` would lose. The accumulators are
     therefore all-gathered and folded in mesh order with the same exact-2Sum
     ``KahanSummand.__add__`` that ``SummedPotential`` uses to combine summands
@@ -748,7 +747,7 @@ class ShardedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
 
     The wrapped potential must not cache its own output (``cache_lens=None``):
     a state patch produced below this wrapper would write the pre-combine
-    per-device partial into the state. Wrap in ``CachedPotential`` ABOVE this
+    per-device partial into the state. Wrap in ``CachedPotential`` above this
     combiner instead, so the cached value is the global one.
 
     Attributes:
@@ -797,26 +796,21 @@ class ShardedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
         """
         out = self.potential(state, patch, include_compensate=True)
         summand = out.data
-        energies = summand.value.total_energies
-        compensations = summand.compensate.total_energies
         axis = shard_axis(OriginDeviceId)
-        values = jax.lax.all_gather(energies.data, axis)  # (n_devices, n_systems)
-        errors = jax.lax.all_gather(compensations.data, axis)
+        # (n_devices, n_systems)
+        values = jax.lax.all_gather(summand.value.total_energies.data, axis)
+        errors = jax.lax.all_gather(summand.compensate.total_energies.data, axis)
         total = KahanSummand(values[0], errors[0])
         for device in range(1, values.shape[0]):
             total = total + KahanSummand(values[device], errors[device])
         total = tree_map(lambda x: jax.lax.pmax(x, axis), total)
-        combined = KahanSummand(
-            PotentialOut(
-                energies.set_data(total.value),
-                summand.value.gradients,
-                summand.value.hessians,
-            ),
-            PotentialOut(
-                compensations.set_data(total.compensate),
-                summand.compensate.gradients,
-                summand.compensate.hessians,
-            ),
+        combined = (
+            bind(summand).focus(lambda s: s.value.total_energies.data).set(total.value)
+        )
+        combined = (
+            bind(combined)
+            .focus(lambda s: s.compensate.total_energies.data)
+            .set(total.compensate)
         )
         if include_compensate:
             return WithPatch(combined, out.patch)
