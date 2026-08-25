@@ -4,9 +4,7 @@
 """End-to-end smoke test for the Lennard-Jones relaxation entry point."""
 
 import dataclasses
-import tempfile
 
-import ase.build
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -31,46 +29,7 @@ from kups.observables.stress import stress_via_virial_theorem, total_lattice_gra
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 
-
-def _ar_cif(rattle: float) -> str:
-    """Write a rattled fcc-argon supercell as a P1 CIF with uniform ``Ar`` labels.
-
-    The rattle gives the optimizer nonzero forces to act on; uniform labels
-    keep them matching the LJ parameter table (ASE's writer would uniquify).
-    """
-    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
-    atoms.rattle(rattle, seed=1)
-    a, b, c, al, be, ga = atoms.cell.cellpar()
-    rows = "\n".join(
-        f"Ar Ar {x:.6f} {y:.6f} {z:.6f}" for x, y, z in atoms.get_scaled_positions()
-    )
-    cif = f"""data_ar
-_cell_length_a {a:.6f}
-_cell_length_b {b:.6f}
-_cell_length_c {c:.6f}
-_cell_angle_alpha {al:.6f}
-_cell_angle_beta {be:.6f}
-_cell_angle_gamma {ga:.6f}
-_symmetry_space_group_name_H-M 'P 1'
-_symmetry_Int_Tables_number 1
-loop_
-_atom_site_label
-_atom_site_type_symbol
-_atom_site_fract_x
-_atom_site_fract_y
-_atom_site_fract_z
-{rows}
-"""
-    f = tempfile.NamedTemporaryFile(suffix=".cif", delete=False, mode="w")
-    f.write(cif)
-    f.close()
-    return f.name
-
-
-def _tmp_h5() -> str:
-    f = tempfile.NamedTemporaryFile(suffix=".h5", delete=False)
-    f.close()
-    return f.name
+from ._builders import LBFGS_OPTIMIZER, ar_cif, tmp_h5
 
 
 def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Config:
@@ -80,11 +39,7 @@ def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Con
             max_steps=5,
             seed=42,
             force_tolerance=0.5,
-            optimizer=[
-                {"transform": "scale_by_ase_lbfgs", "memory_size": 10, "alpha": 70},
-                {"transform": "max_step_size", "max_step_size": 0.2},
-                {"transform": "scale", "step_size": -1},
-            ],
+            optimizer=LBFGS_OPTIMIZER,
             optimize_cell=optimize_cell,
         ),
         potential=LjPotentialConfig(
@@ -101,8 +56,8 @@ class TestRun:
 
     @pytest.fixture(scope="class")
     def out_file(self) -> str:
-        out = _tmp_h5()
-        run(_config(out, _ar_cif(rattle=0.1)))
+        out = tmp_h5()
+        run(_config(out, ar_cif(rattle=0.1)))
         return out
 
     def test_analyzer_reads_back_physical_outputs(self, out_file: str):
@@ -116,7 +71,7 @@ class TestRun:
 
 def _build_propagator(optimize_cell: bool):
     """Build an LJ relaxation propagator and its initial state."""
-    config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
+    config = _config(tmp_h5(), ar_cif(rattle=0.1), optimize_cell=optimize_cell)
     assert isinstance(config.potential, LjPotentialConfig)
     lj = LennardJonesParameters.from_dict(
         cutoff=config.potential.cutoff,

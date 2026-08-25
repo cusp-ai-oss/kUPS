@@ -22,6 +22,7 @@ from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
+from kups.core.neighborlist import IsVerletState, VerletSkinPropagator
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
@@ -86,10 +87,17 @@ def potential_map(
     )
 
 
-def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
+class IsVerletMdState(IsMdState, IsVerletState, Protocol):
+    """MD state that can also carry the Verlet-skin neighbor-list group."""
+
+
+def make_md_propagator[State: IsVerletMdState, Grad: IsMdGradients](
     state_lens: Lens[State, State],
     integrator: Integrator,
     potential: Potential[State, Grad, EmptyType, Any],
+    *,
+    verlet_skin: float = 0.0,
+    cutoffs: Table[SystemId, Array] | None = None,
 ) -> Propagator[State]:
     """Build a single MD propagator step with error recovery and step counting.
 
@@ -97,6 +105,13 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         state_lens: Lens focusing on the MD sub-state within the full state.
         integrator: Integration algorithm for equations of motion.
         potential: Potential energy function providing forces and gradients.
+        verlet_skin: Neighbor-list skin width (Å). ``0`` (default) leaves the
+            potential's own neighbor-list construction untouched. ``> 0`` wraps
+            the MD step in a
+            [`VerletSkinPropagator`][kups.core.neighborlist.verlet.VerletSkinPropagator],
+            whose docstring states the contract on the potential, the state and
+            the error recovery.
+        cutoffs: True per-system cutoffs; required when ``verlet_skin > 0``.
 
     Returns:
         Propagator that advances the state by one MD step.
@@ -123,14 +138,16 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
             ),
         )
     )
-    md_propagator = make_md_step_from_state(
+    md_propagator: Propagator[State] = make_md_step_from_state(
         state_lens, derivative_computation, integrator
     )
+    if verlet_skin > 0:
+        assert cutoffs is not None, "verlet_skin > 0 requires cutoffs."
+        md_propagator = VerletSkinPropagator(md_propagator, cutoffs, verlet_skin)
     step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
-    propagator = ResetOnErrorPropagator(
+    return ResetOnErrorPropagator(
         SequentialPropagator((md_propagator, step_count_propagator))
     )
-    return propagator
 
 
 def run_md[State: IsMdState](

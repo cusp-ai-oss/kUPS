@@ -22,7 +22,7 @@ from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import UniversalNeighborlistParameters, VerletSkinState
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.relaxation.config import TransformationConfig
@@ -76,6 +76,10 @@ class RelaxState:
 
     The potential is built with its parameters at construction time (via the
     adapters' ``parameters=``), so no force-field field lives on the state.
+
+    ``verlet_skin`` (see [kups.core.neighborlist.verlet][]) stays ``None``
+    unless ``RelaxRunConfig.verlet_skin > 0``; it is seeded once before the
+    run, so it never flips mid-run and retriggers compilation.
     """
 
     particles: Table[ParticleId, RelaxParticles]
@@ -83,6 +87,7 @@ class RelaxState:
     neighborlist_params: UniversalNeighborlistParameters
     opt_state: optax.OptState
     step: Array
+    verlet_skin: VerletSkinState | None = None
 
 
 class RelaxRunConfig(BaseModel):
@@ -100,6 +105,11 @@ class RelaxRunConfig(BaseModel):
     """List of Optax transform specifications passed to `make_optimizer`."""
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
+    verlet_skin: float = 0.0
+    """Neighbor-list skin width (Å); ~1.0 is a reasonable start. 0 rebuilds every
+    step; > 0 builds once at ``cutoff + verlet_skin`` and reuses the list until
+    atom motion or cell strain could let a pair enter the cutoff (see
+    [kups.core.neighborlist.verlet][])."""
 
 
 def relax_state_from_ase(
