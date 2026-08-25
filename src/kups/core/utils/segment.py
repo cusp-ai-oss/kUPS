@@ -24,6 +24,8 @@ from jax.extend.mlir.dialects import stablehlo
 from jax.interpreters import ad, batching, mlir, xla
 from jax.typing import ArrayLike, DTypeLike
 
+from kups.core.utils.vma import insert_pvary, out_aval
+
 type Zero = ad.Zero
 type Undefined = ad.UndefinedPrimal
 type Mode = jax.lax.GatherScatterMode
@@ -225,8 +227,9 @@ def _segment_sum_abstract_eval(
     data: ShapedArray, segment_ids: ShapedArray, *, num_segments: int
 ) -> ShapedArray:
     """Bins of `data`'s dtype; the wide accumulator never reaches an aval."""
-    del segment_ids
-    return ShapedArray((num_segments, *data.shape[1:]), data.dtype)
+    return out_aval(
+        "kups_segment_sum", (num_segments, *data.shape[1:]), data, segment_ids
+    )
 
 
 @segment_take_p.def_abstract_eval
@@ -234,7 +237,27 @@ def _segment_take_abstract_eval(
     data: ShapedArray, segment_ids: ShapedArray
 ) -> ShapedArray:
     """One gathered row per id."""
-    return ShapedArray((*segment_ids.shape, *data.shape[1:]), data.dtype)
+    return out_aval(
+        "kups_segment_take", (*segment_ids.shape, *data.shape[1:]), data, segment_ids
+    )
+
+
+def _bind_segment_sum(data: Array, segment_ids: Array, num_segments: int) -> Array:
+    """Bind the sum with the operands' varying manual axes unified.
+
+    ``insert_pvary`` broadcasts each operand to the union of the varying axes,
+    so the abstract eval sees consistent inputs; its transpose is the matching
+    mesh reduction, which keeps cotangent types aligned with the original
+    operands. A no-op outside ``shard_map`` or with ``check_vma=False``.
+    """
+    data, segment_ids = insert_pvary(data, segment_ids)
+    return segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
+
+
+def _bind_segment_take(data: Array, segment_ids: Array) -> Array:
+    """Bind the gather with the operands' varying manual axes unified (see ``_bind_segment_sum``)."""
+    data, segment_ids = insert_pvary(data, segment_ids)
+    return segment_take_p.bind(data, segment_ids)
 
 
 segment_sum_p.def_impl(partial(xla.apply_primitive, segment_sum_p))
@@ -318,7 +341,7 @@ def _segment_sum_jvp(
         Tangent of the bin sums.
     """
     del data
-    return segment_sum_p.bind(tangent, segment_ids, num_segments=num_segments)
+    return _bind_segment_sum(tangent, segment_ids, num_segments=num_segments)
 
 
 def _segment_sum_transpose(
@@ -344,7 +367,7 @@ def _segment_sum_transpose(
         return [None, None]
     if isinstance(cotangent, ad.Zero):
         return [ad.Zero(data.aval), None]
-    return [segment_take_p.bind(cotangent, segment_ids), None]
+    return [_bind_segment_take(cotangent, segment_ids), None]
 
 
 def _segment_take_jvp(tangent: Array, data: Array, segment_ids: Array) -> Array:
@@ -359,7 +382,7 @@ def _segment_take_jvp(tangent: Array, data: Array, segment_ids: Array) -> Array:
         Tangent of the gathered rows.
     """
     del data
-    return segment_take_p.bind(tangent, segment_ids)
+    return _bind_segment_take(tangent, segment_ids)
 
 
 def _segment_take_transpose(
@@ -380,7 +403,7 @@ def _segment_take_transpose(
     if isinstance(cotangent, ad.Zero):
         return [ad.Zero(data.aval), None]
     return [
-        segment_sum_p.bind(cotangent, segment_ids, num_segments=data.aval.shape[0]),
+        _bind_segment_sum(cotangent, segment_ids, num_segments=data.aval.shape[0]),
         None,
     ]
 
@@ -406,12 +429,12 @@ def _segment_sum_batcher(
     if ids_dim is None:
         assert data_dim is not None
         data = jnp.moveaxis(data, data_dim, data.ndim - 1)
-        out = segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
+        out = _bind_segment_sum(data, segment_ids, num_segments=num_segments)
         return out, out.ndim - 1
     flat_data, flat_ids, size, features = _flatten_batch(
         data, segment_ids, data_dim, ids_dim, num_segments
     )
-    out = segment_sum_p.bind(flat_data, flat_ids, num_segments=size * num_segments)
+    out = _bind_segment_sum(flat_data, flat_ids, num_segments=size * num_segments)
     return out.reshape(size, num_segments, *features), 0
 
 
@@ -432,18 +455,18 @@ def _segment_take_batcher(
     if ids_dim is None:
         assert data_dim is not None
         data = jnp.moveaxis(data, data_dim, data.ndim - 1)
-        out = segment_take_p.bind(data, segment_ids)
+        out = _bind_segment_take(data, segment_ids)
         return out, out.ndim - 1
     if data_dim is None:
         size = segment_ids.shape[ids_dim]
         ids = batching.bdim_at_front(segment_ids, ids_dim, size)
-        out = segment_take_p.bind(data, ids.reshape(-1))
+        out = _bind_segment_take(data, ids.reshape(-1))
         return out.reshape(size, ids.shape[1], *data.shape[1:]), 0
     rows = data.shape[1] if data_dim == 0 else data.shape[0]
     flat_data, flat_ids, size, features = _flatten_batch(
         data, segment_ids, data_dim, ids_dim, rows
     )
-    out = segment_take_p.bind(flat_data, flat_ids)
+    out = _bind_segment_take(flat_data, flat_ids)
     return out.reshape(size, flat_ids.shape[0] // size, *features), 0
 
 
@@ -531,7 +554,7 @@ def segment_sum(
         segment_ids = segment_ids.reshape(-1)
     if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
         return jax.ops.segment_sum(data, segment_ids, num_segments, mode="drop")
-    return segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
+    return _bind_segment_sum(data, segment_ids, num_segments=num_segments)
 
 
 def segment_take(
@@ -608,7 +631,7 @@ def segment_take(
     if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
         rows = _gather(data, segment_ids)
     else:
-        flat = segment_take_p.bind(data, segment_ids.reshape(-1))
+        flat = _bind_segment_take(data, segment_ids.reshape(-1))
         rows = flat.reshape(*segment_ids.shape, *data.shape[1:])
     # Clamped ids leave nothing out of range, so only the default mode fills.
     if clipped or (known_fill is not None and not known_fill.any()):
