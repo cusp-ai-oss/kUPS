@@ -26,13 +26,12 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.domain import (
-    MortonPartitioner,
     Sharded,
-    make_repartitioner_from_state,
     owned_subset,
+    partition_equal_counts,
     sharded_local_edges,
 )
-from kups.core.lens import bind, lens
+from kups.core.lens import bind
 from kups.core.neighborlist import CellListNeighborList
 from kups.core.patch import IdPatch, WithPatch
 from kups.core.potential import EMPTY, PotentialOut, ShardedPotential
@@ -140,8 +139,8 @@ def _make_state(n_per_axis: int, box: float, cutoff: float, n_devices: int) -> _
             cutoffs=Table((SystemId(0),), jnp.array([cutoff])),
         ),
     )
-    sl = lens(lambda s: s, cls=_DDState)
-    return make_repartitioner_from_state(sl, MortonPartitioner(), n_devices)(state)
+    origin = partition_equal_counts(n, n_devices)
+    return bind(state).focus(lambda s: s.particles.data.origin).set(origin)
 
 
 # --------------------------------------------------------------------------- #
@@ -349,10 +348,7 @@ def test_sharded_lj_matches_single_device_energy_and_forces(cap_slack: int) -> N
     e_ref, grad_ref = jax.value_and_grad(energy_ref)(pos0)
 
     # Domain-decomposed: owned-incident shard + the same stock energy.
-    cap = FixedCapacity(
-        int(np.bincount(np.asarray(state.particles.data.origin.indices)).max())
-        + cap_slack
-    )
+    cap = FixedCapacity(int(state.particles.data.origin.counts.data.max()) + cap_slack)
     state_r = device_put_replicated(state, _mesh())
 
     def per_device(s: _DDState) -> tuple[jax.Array, jax.Array]:
@@ -424,7 +420,7 @@ def test_sharded_ewald_reciprocal_matches_single_device() -> None:
         (SystemId(0),),
         _System(PeriodicCell(TriclinicFrame.from_matrix(box * jnp.eye(3)[None]))),
     )
-    origin = MortonPartitioner()(particles, systems, n_devices)
+    origin = partition_equal_counts(n, n_devices)
     particles = bind(particles).focus(lambda t: t.data.origin).set(origin)
     est = estimate_ewald_parameters(jnp.asarray(q), cell, epsilon_total=1e-4)
     params = EwaldParameters(

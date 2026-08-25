@@ -804,14 +804,10 @@ class ShardedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
         for device in range(1, values.shape[0]):
             total = total + KahanSummand(values[device], errors[device])
         total = tree_map(lambda x: jax.lax.pmax(x, axis), total)
-        combined = (
-            bind(summand).focus(lambda s: s.value.total_energies.data).set(total.value)
-        )
-        combined = (
-            bind(combined)
-            .focus(lambda s: s.compensate.total_energies.data)
-            .set(total.compensate)
-        )
+        combined = bind(
+            summand,
+            lambda s: (s.value.total_energies.data, s.compensate.total_energies.data),
+        ).set((total.value, total.compensate))
         if include_compensate:
             return WithPatch(combined, out.patch)
         return WithPatch(combined.total, out.patch)

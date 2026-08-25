@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol, override, runtime_checkable
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from kups.core.capacity import Capacity
@@ -36,14 +37,13 @@ from kups.core.sharding import shard_axis
 from kups.core.typing import (
     HasCell,
     HasOrigin,
-    HasPositionsAndSystemIndex,
     IsState,
     OriginDeviceId,
     ParticleId,
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field
-from kups.core.utils.math import triangular_3x3_matmul
+from kups.core.utils.ops import where_broadcast_last
 from kups.potential.common.graph import Decomposition, HyperGraph
 
 
@@ -65,73 +65,26 @@ class Sharded[P: IsDecomposedParticle](Decomposition[P]):
         owned = particles.data.origin.indices == jax.lax.axis_index(
             shard_axis(OriginDeviceId)
         )
-        return jnp.where(owned.reshape(owned.shape + (1,) * (x.ndim - 1)), x, 0)
+        return where_broadcast_last(owned, x, 0)
 
     @override
     def combine_across_shards(self, x: Array) -> Array:
         return jax.lax.psum(x, shard_axis(OriginDeviceId))
 
 
-class Partitioner[P: HasPositionsAndSystemIndex, S: HasCell[AnyPeriodicity]](Protocol):
-    """Assigns each particle an owner device (any strategy)."""
+def partition_equal_counts(n_particles: int, n_devices: int) -> Index[OriginDeviceId]:
+    """Assign owners as equal-count contiguous chunks in table order.
 
-    def __call__(
-        self,
-        particles: Table[ParticleId, P],
-        systems: Table[SystemId, S],
-        n_devices: int,
-    ) -> Index[OriginDeviceId]: ...
-
-
-def _morton_key(quantised: Array, bits: int) -> Array:
-    """Interleave bits of integer coords ``(N, 3)`` into one Z-order key ``(N,)``."""
-    key = jnp.zeros(quantised.shape[0], dtype=jnp.int32)
-    for b in range(bits):
-        for axis in range(3):
-            key |= ((quantised[:, axis] >> b) & 1) << (3 * b + axis)
-    return key
-
-
-@dataclass
-class MortonPartitioner:
-    """Assign owners along a Z-order (Morton) space-filling curve, cut into equal chunks.
-
-    Steps: positions -> fractional coords -> quantise each axis to ``bits``
-    bins -> interleave the per-axis bits into one Morton key (so spatially-near
-    particles get adjacent keys) -> sort -> cut the sorted order into
-    ``n_devices`` equal-count contiguous chunks, one per device. Coherent
-    (compact domains), balanced (counts differ by <=1), deterministic and
-    shape-static. Re-applying it as positions drift is exactly migration. (Distinct from
-    the cell-list ``_cell_hash``, a row-major bin for neighbor search rather
-    than a load-balancing curve.)
+    Ownership never affects correctness, only the locality of the per-device
+    cell-list queries, and table order is typically already coherent; a
+    space-filling-curve partitioner is the upgrade path if that ever shows
+    up in profiles.
     """
-
-    bits: int = field(static=True, default=10)
-
-    def __call__(
-        self,
-        particles: Table[ParticleId, HasPositionsAndSystemIndex],
-        systems: Table[SystemId, HasCell[AnyPeriodicity]],
-        n_devices: int,
-    ) -> Index[OriginDeviceId]:
-        # 3 * bits interleaved bits must fit the int32 Morton key.
-        assert 3 * self.bits <= 31, f"bits={self.bits} overflows the int32 Morton key"
-        # Per-particle cell (gather each particle's own system cell, as the
-        # neighbor-list pipeline does) so multi-system states fold correctly;
-        # for one system this is N identical copies.
-        cell = systems[particles.data.system].cell
-        # Real -> fractional in [0, 1), then quantise each axis to `bits` bins.
-        frac, _ = cell.fold(
-            triangular_3x3_matmul(cell.inverse_vectors, particles.data.positions)
-        )
-        q = jnp.clip(
-            (frac * (1 << self.bits)).astype(jnp.int32), 0, (1 << self.bits) - 1
-        )
-        # Position along the Z-order curve, cut into equal-count chunks.
-        rank = jnp.argsort(jnp.argsort(_morton_key(q, self.bits)))
-        return Index.integer(
-            (rank * n_devices) // len(particles), n=n_devices, label=OriginDeviceId
-        )
+    return Index.integer(
+        np.arange(n_particles) * n_devices // n_particles,
+        n=n_devices,
+        label=OriginDeviceId,
+    )
 
 
 def owned_subset[P: IsDecomposedParticle](
@@ -184,42 +137,6 @@ def sharded_local_edges[P: IsDecomposedParticle, S: HasCell[AnyPeriodicity]](
     """
     owned = owned_subset(particles, device_id, cap_owned)
     return nl(particles, systems, queried_keys=owned)
-
-
-@dataclass
-class Repartitioner[State, P: HasPositionsAndSystemIndex, S: HasCell[AnyPeriodicity]]:
-    """Migration: run a partitioner and write ``origin`` back into the state."""
-
-    particles: View[State, Table[ParticleId, P]] = field(static=True)
-    systems: View[State, Table[SystemId, S]] = field(static=True)
-    origin: Lens[State, Index[OriginDeviceId]] = field(static=True)
-    partitioner: Partitioner[P, S] = field(static=True)
-    n_devices: int = field(static=True)
-
-    def __call__(self, state: State) -> State:
-        origin = self.partitioner(
-            self.particles(state), self.systems(state), self.n_devices
-        )
-        return self.origin.set(state, origin)
-
-
-def make_repartitioner_from_state[
-    State,
-    P: IsDecomposedParticle,
-    S: HasCell[AnyPeriodicity],
-](
-    state_lens: Lens[State, IsState[P, S]],
-    partitioner: Partitioner[P, S],
-    n_devices: int,
-) -> Repartitioner[State, P, S]:
-    """Wire a ``Repartitioner`` from a single state lens (the kUPS ``*_from_state`` shorthand)."""
-    return Repartitioner(
-        state_lens.focus(lambda s: s.particles),
-        state_lens.focus(lambda s: s.systems),
-        state_lens.focus(lambda s: s.particles).focus(lambda p: p.data.origin),
-        partitioner,
-        n_devices,
-    )
 
 
 @dataclass
