@@ -236,7 +236,9 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
 
     monkeypatch.setattr(md_data, "particles_from_ase", fake_particles_from_ase)
     monkeypatch.setattr(
-        md_data, "md_state_from_particles_and_cell", fake_md_state_from_particles_and_cell
+        md_data,
+        "md_state_from_particles_and_cell",
+        fake_md_state_from_particles_and_cell,
     )
 
     actual = md_state_from_ase("input.cif", md_config, key=key)
