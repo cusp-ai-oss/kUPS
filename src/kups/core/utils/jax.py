@@ -283,11 +283,6 @@ def shard_map[C: Callable[..., Any]](
         Requires understanding of JAX's sharding model and mesh configuration.
         For an introduction to sharded data, refer to JAX's sharded computation
         documentation at https://docs.jax.dev/en/latest/notebooks/shard_map.html.
-
-        Table/Index ``__post_init__`` validation is disabled while ``jax.shard_map``
-        builds its in/out specs (it round-trips pytrees through sentinel unflattens
-        that would fail validation) and re-enabled inside the manual region, so user
-        code still validates every container it constructs.
     """
     # Build kwargs, handling defaults
     shard_kwargs: dict[str, Any] = {"out_specs": out_specs}
@@ -300,17 +295,11 @@ def shard_map[C: Callable[..., Any]](
     if not check_vma:
         shard_kwargs["check_vma"] = check_vma
 
-    @functools.wraps(f)
-    def _validated(*args: Any, **kwargs: Any):
-        with enable_post_init():
-            return f(*args, **kwargs)
-
-    sharded_f = jax.shard_map(_validated, **shard_kwargs)  # type: ignore
+    sharded_f = jax.shard_map(f, **shard_kwargs)  # type: ignore
 
     @functools.wraps(f)
     def wrapper(*args: Any, **kwargs: Any):
-        with no_post_init():
-            return sharded_f(*args, **kwargs)
+        return sharded_f(*args, **kwargs)
 
     return wrapper  # type: ignore
 
