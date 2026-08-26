@@ -102,6 +102,94 @@ class RelaxRunConfig(BaseModel):
     """Whether to also relax lattice vectors."""
 
 
+def relax_state_from_particles_and_cell(
+    particles: Table[ParticleId, Particles],
+    cell: Cell[AnyPeriodicity],
+) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
+    """Build one-system relaxation data from source-neutral particles and a cell.
+
+    The supplied particles and cell must already describe the same system in the
+    same kUPS coordinate frame. This builder does not transform geometry; it adds
+    the system axis and an identity ``MatrixLogFrame`` deformation around the
+    input frame, preserving the input's initial physical cell vectors.
+
+    Args:
+        particles: Non-empty particle table for exactly one complete system.
+        cell: Unbatched cell with vectors of shape ``(3, 3)`` and an undeformed
+            outer frame (not a :class:`DeformedFrame`).
+
+    Returns:
+        Relaxation particle and system tables preserving the input particle keys
+        and referenced ``SystemId``.
+
+    Raises:
+        ValueError: If ``particles`` is empty, does not reference exactly one
+            system with one reference per particle selecting that system, if
+            ``cell.vectors`` is not shape ``(3, 3)``, or if ``cell.frame`` is a
+            :class:`DeformedFrame`.
+    """
+    p = particles.data
+    n_particles = len(particles)
+    if n_particles == 0:
+        raise ValueError("particles must contain at least one particle.")
+    if len(p.system.keys) != 1:
+        raise ValueError(
+            "particles must reference exactly one system; "
+            f"got {len(p.system.keys)} system keys."
+        )
+    if p.system.indices.shape != (n_particles,):
+        raise ValueError(
+            "particles must contain one system reference per particle; "
+            f"got shape {p.system.indices.shape} for {n_particles} particles."
+        )
+    if bool(jnp.any(p.system.indices != 0)):
+        raise ValueError(
+            "particles system references must all select the sole SystemId."
+        )
+    if cell.vectors.shape != (3, 3):
+        raise ValueError(
+            f"cell.vectors must have shape (3, 3); got {cell.vectors.shape}."
+        )
+    if isinstance(cell.frame, DeformedFrame):
+        raise ValueError(
+            "cell.frame must be an undeformed frame, not a DeformedFrame; "
+            "restart and rebasing semantics are out of scope."
+        )
+
+    relax_particles = particles.set_data(
+        RelaxParticles(
+            positions=p.positions,
+            masses=p.masses,
+            atomic_numbers=p.atomic_numbers,
+            charges=p.charges,
+            labels=p.labels,
+            system=p.system,
+            position_gradients=jnp.zeros_like(p.positions),
+        ),
+    )
+    # cell_factor = per-system atom count (ASE's exp_cell_factor) balances the
+    # extensive cell-virial gradient against the per-atom forces in the joint
+    # optimiser. bincount over the system index gives one count per system.
+    n_systems = p.system.num_labels
+    cell_factor = jnp.bincount(p.system.indices, length=n_systems).astype(
+        p.positions.dtype
+    )
+    deformed_cell = bind(cell[None], lambda x: x.frame).apply(
+        lambda f: DeformedFrame.from_frame(
+            f, cell_factor=cell_factor, deformation=MatrixLogFrame
+        )
+    )
+    systems = Table(
+        (p.system.keys[0],),
+        RelaxSystems(
+            cell=deformed_cell,
+            cell_gradients=tree_zeros_like(deformed_cell),
+            potential_energy=jnp.zeros(n_systems),
+        ),
+    )
+    return relax_particles, systems
+
+
 def relax_state_from_ase(
     atoms: ase.Atoms | str | Path,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
@@ -114,36 +202,5 @@ def relax_state_from_ase(
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
     """
-    p, cell, _ = particles_from_ase(atoms)
-    particles = p.set_data(
-        RelaxParticles(
-            positions=p.data.positions,
-            masses=p.data.masses,
-            atomic_numbers=p.data.atomic_numbers,
-            charges=p.data.charges,
-            labels=p.data.labels,
-            system=p.data.system,
-            position_gradients=jnp.zeros_like(p.data.positions),
-        ),
-    )
-    # cell_factor = per-system atom count (ASE's exp_cell_factor) balances the
-    # extensive cell-virial gradient against the per-atom forces in the joint
-    # optimiser. bincount over the system index gives one count per system.
-    n_systems = p.data.system.num_labels
-    cell_factor = jnp.bincount(p.data.system.indices, length=n_systems).astype(
-        p.data.positions.dtype
-    )
-    cell = bind(cell[None], lambda x: x.frame).apply(
-        lambda f: DeformedFrame.from_frame(
-            f, cell_factor=cell_factor, deformation=MatrixLogFrame
-        )
-    )
-    systems = Table.arange(
-        RelaxSystems(
-            cell=cell,
-            cell_gradients=tree_zeros_like(cell),
-            potential_energy=jnp.zeros(n_systems),
-        ),
-        label=SystemId,
-    )
-    return particles, systems
+    particles, cell, _ = particles_from_ase(atoms)
+    return relax_state_from_particles_and_cell(particles, cell)
