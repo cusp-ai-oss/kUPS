@@ -63,9 +63,10 @@ class RelaxSystems:
     """Cell geometry, batched with shape (1,)."""
     cell_gradients: Cell[AnyPeriodicity]
     """Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the relaxation filter's output),
-    stored on :attr:`cell`'s frame (the lower-triangular log-deformation entries
-    under ``cell_filter``). The ASE-fmax convergence quantity for the cell; the
-    atoms-ride-the-cell coupling is already folded in by the filter pullback."""
+    a matching-structure copy of :attr:`cell` (wrapper, periodicity, and frame
+    leaves, including the ``MatrixLogFrame`` deformation). The ASE-fmax cell
+    quantity; the atoms-ride-the-cell coupling is already folded in by the
+    filter pullback."""
     potential_energy: Array
     """Potential energy per system, shape (1,)."""
 

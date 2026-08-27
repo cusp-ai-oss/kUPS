@@ -129,6 +129,11 @@ def test_builder_preserves_identity_and_geometry() -> None:
         jnp.zeros(2, dtype=int),
     )
     assert systems.keys == (system_key,)
+    assert relax_particles.data.labels.keys == particles.data.labels.keys
+    npt.assert_array_equal(
+        relax_particles.data.labels.indices,
+        particles.data.labels.indices,
+    )
     npt.assert_array_equal(relax_particles.data.positions, particles.data.positions)
     assert systems.data.cell.vectors.shape == (1, 3, 3)
     npt.assert_allclose(systems.data.cell.vectors[0], cell.vectors, atol=1e-12)
@@ -400,6 +405,16 @@ def test_builder_initial_zero_state_and_pytree_contract() -> None:
         assert actual.shape == expected.shape
         assert actual.dtype == expected.dtype
         npt.assert_array_equal(actual, expected)
+    assert relax_particles.data.labels.keys == particles.data.labels.keys
+    npt.assert_array_equal(
+        relax_particles.data.labels.indices,
+        particles.data.labels.indices,
+    )
+    assert relax_particles.data.system.keys == particles.data.system.keys
+    npt.assert_array_equal(
+        relax_particles.data.system.indices,
+        particles.data.system.indices,
+    )
 
     assert relax_particles.data.position_gradients.shape == (3, 3)
     assert (
@@ -464,7 +479,6 @@ def test_cell_factor_equals_particle_count_and_ase_parity(n_particles: int) -> N
 
     assert factor.shape == (1,)
     npt.assert_array_equal(factor, [float(n_particles)])
-    assert factor.dtype == particles.data.positions.dtype
 
     atoms = ase.Atoms(
         f"Ar{n_particles}",
@@ -474,6 +488,48 @@ def test_cell_factor_equals_particle_count_and_ase_parity(n_particles: int) -> N
     )
     _, ase_systems = relax_state_from_ase(atoms)
     npt.assert_array_equal(_deformation_factor(ase_systems), factor)
+
+
+def test_cell_factor_value_survives_mixed_input_dtypes() -> None:
+    """Deformation factor value is the particle count when dtypes differ.
+
+    Asserts the actual builder-input dtypes. JAX may collapse an explicit
+    float64 request to float32 when x64 is off; that is a skip, not coverage.
+    """
+    n_particles = 2
+    positions = jnp.arange(n_particles * 3, dtype=jnp.float32).reshape(n_particles, 3)
+    cell_vectors = jnp.array(
+        [[4.0, 0.0, 0.0], [0.5, 5.0, 0.0], [0.25, 0.75, 6.0]],
+        dtype=jnp.float64,
+    )
+    particles = Table(
+        tuple(ParticleId(i) for i in range(n_particles)),
+        Particles(
+            positions=positions,
+            masses=jnp.arange(1, n_particles + 1, dtype=jnp.float32),
+            atomic_numbers=jnp.full(n_particles, 18, dtype=int),
+            charges=jnp.zeros(n_particles, dtype=jnp.float32),
+            labels=Index(
+                (Label("Ar"),),
+                jnp.zeros(n_particles, dtype=int),
+                _cls=Label,
+            ),
+            system=Index((SystemId(0),), jnp.zeros(n_particles, dtype=int)),
+        ),
+        _cls=ParticleId,
+    )
+    cell = Cell.from_pbc(TriclinicFrame.from_matrix(cell_vectors), (True, True, True))
+    if particles.data.positions.dtype != jnp.dtype(
+        jnp.float32
+    ) or cell.vectors.dtype != jnp.dtype(jnp.float64):
+        pytest.skip(
+            "JAX did not keep the requested mixed dtypes "
+            f"(positions={particles.data.positions.dtype}, cell={cell.vectors.dtype})"
+        )
+
+    _, systems = relax_state_from_particles_and_cell(particles, cell)
+
+    npt.assert_array_equal(_deformation_factor(systems), [float(n_particles)])
 
 
 @pytest.mark.parametrize(
@@ -496,6 +552,7 @@ def test_undeformed_frames_are_accepted_without_transform(frame: object) -> None
     _, systems = relax_state_from_particles_and_cell(particles, cell)
 
     assert isinstance(systems.data.cell.frame, DeformedFrame)
+    assert type(systems.data.cell.frame.base) is type(frame)
     npt.assert_allclose(systems.data.cell.vectors[0], cell.vectors, atol=1e-12)
 
 
@@ -549,6 +606,33 @@ def test_source_log_frame_factor_preserved_in_reference_base(
 
     frame = systems.data.cell.frame
     assert isinstance(frame, DeformedFrame)
+    npt.assert_allclose(systems.data.cell.vectors[0], cell.vectors, atol=1e-12)
+    npt.assert_array_equal(np.unique(np.asarray(frame.base.cell_factor)), [7.0])
+    npt.assert_array_equal(_deformation_factor(systems), [3.0])
+    assert type(frame.base) is type(cell.frame)
+
+
+def test_non_triangular_matrix_log_frame_vectors_are_preserved() -> None:
+    """A full-matrix MatrixLogFrame source keeps its vectors and frame type."""
+    vecs = jnp.array(
+        [
+            [2.0, 0.3, -0.1],
+            [0.4, 3.0, 0.2],
+            [-0.2, 0.5, 4.0],
+        ]
+    )
+    assert not jnp.allclose(vecs, jnp.tril(vecs))
+    cell = Cell.from_pbc(
+        MatrixLogFrame.from_matrix(vecs, cell_factor=7.0),
+        (True, True, True),
+    )
+    particles = _particles(Index((SystemId(0),), jnp.zeros(3, dtype=int)))
+
+    _, systems = relax_state_from_particles_and_cell(particles, cell)
+
+    frame = systems.data.cell.frame
+    assert isinstance(frame, DeformedFrame)
+    assert type(frame.base) is MatrixLogFrame
     npt.assert_allclose(systems.data.cell.vectors[0], cell.vectors, atol=1e-12)
     npt.assert_array_equal(np.unique(np.asarray(frame.base.cell_factor)), [7.0])
     npt.assert_array_equal(_deformation_factor(systems), [3.0])
