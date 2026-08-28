@@ -15,7 +15,11 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.utils.jax import dataclass, kahan_summation
+from kups.core.utils.jax import (
+    dataclass,
+    drop_nonfinite_compensation,
+    kahan_summation,
+)
 
 
 @dataclass
@@ -30,10 +34,13 @@ class KahanSummand[T]:
     Values may be arbitrary PyTrees, mirroring
     [kahan_summation][kups.core.utils.jax.kahan_summation].
 
+    An infinite value carries a zero compensation, so an infinite total stays
+    infinite rather than becoming NaN.
+
     Attributes:
         value: Current running sum as a PyTree.
         compensate: Accumulated rounding error; the best estimate of the true
-            sum is ``value - compensate``.
+            sum is ``value - compensate``; zero where `value` is not finite.
 
     Example:
         ```python
@@ -125,7 +132,7 @@ class KahanSummand[T]:
             other.compensate,
             jax.tree.map(excess, value, self.value, other.value),
         )
-        return KahanSummand(value, compensate)
+        return KahanSummand(value, drop_nonfinite_compensation(compensate))
 
     def __radd__(self, other: KahanSummand[T] | T) -> KahanSummand[T]:
         """Accumulate from the left so `sum` and `other + summand` work.
