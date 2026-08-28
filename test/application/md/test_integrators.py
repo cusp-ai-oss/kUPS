@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
+import pytest
 from jax import Array
 
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
@@ -686,27 +687,43 @@ class TestNVTPhysics:
 
 
 class TestCSVRNPTPhysics:
-    _integrator = None
-    _deriv = None
+    _integrators = {}
 
     @classmethod
-    def _get_integrator(cls):
-        if cls._integrator is None:
-            cls._deriv = create_npt_derivative_computation()
-            cls._integrator = make_csvr_npt_step(
+    def _get_integrator(cls, refresh_after_barostat: bool = True):
+        if refresh_after_barostat not in cls._integrators:
+            cls._integrators[refresh_after_barostat] = make_csvr_npt_step(
                 particles=NPTState.particles,
                 systems=NPTState.systems,
-                derivative_computation=cls._deriv,
+                derivative_computation=create_npt_derivative_computation(),
                 flow=euclidean_flow,
+                refresh_after_barostat=refresh_after_barostat,
             )
-        return cls._integrator
+        return cls._integrators[refresh_after_barostat]
 
-    def test_temperature_control_with_barostat(self):
+    def test_refresh_after_barostat_halves_derivative_evals(self):
+        deriv = create_npt_derivative_computation()
+
+        def n_derivative_evals(refresh_after_barostat: bool) -> int:
+            step = make_csvr_npt_step(
+                particles=NPTState.particles,
+                systems=NPTState.systems,
+                derivative_computation=deriv,
+                flow=euclidean_flow,
+                refresh_after_barostat=refresh_after_barostat,
+            )
+            return sum(p is deriv for p in step.propagators)
+
+        assert n_derivative_evals(refresh_after_barostat=True) == 2
+        assert n_derivative_evals(refresh_after_barostat=False) == 1
+
+    @pytest.mark.parametrize("refresh_after_barostat", [True, False])
+    def test_temperature_control_with_barostat(self, refresh_after_barostat: bool):
         n_particles, kT_target = 5, 1.2
         state = create_npt_system(
             n_particles=n_particles, box_size=5.0, kT=kT_target, tau_t=0.1, tau_p=2.0
         )
-        integrator = self._get_integrator()
+        integrator = self._get_integrator(refresh_after_barostat)
 
         _, temps = run_simulation(
             integrator,
@@ -718,11 +735,12 @@ class TestCSVRNPTPhysics:
         )
         assert_temperature(jnp.mean(temps), kT_target, 0.15, "NPT ")
 
-    def test_volume_fluctuations(self):
+    @pytest.mark.parametrize("refresh_after_barostat", [True, False])
+    def test_volume_fluctuations(self, refresh_after_barostat: bool):
         state = create_npt_system(
             n_particles=5, box_size=5.0, kT=1.0, tau_t=0.1, tau_p=1.0
         )
-        integrator = self._get_integrator()
+        integrator = self._get_integrator(refresh_after_barostat)
 
         _, volumes = run_simulation(
             integrator,
