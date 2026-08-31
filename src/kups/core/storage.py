@@ -615,8 +615,7 @@ class GroupReader[Storage]:
         structure — and yields the dataset name(s) for the focused field, so a
         field read touches only those datasets.
         """
-        with no_post_init():
-            return self.tree_def.unflatten(self.paths)  # type: ignore - string leaves stand in for arrays
+        return self.tree_def.unflatten(self.paths)  # type: ignore - string leaves stand in for arrays
 
     def _read_leaves(
         self, leaves: list[str], treedef: PyTreeDef[Any], index: Index

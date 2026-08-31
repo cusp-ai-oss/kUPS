@@ -392,7 +392,10 @@ class Table(Batched, Generic[TKey, TData]):
 
     def __iter__(self):
         def data_slice(i: int) -> TData:
-            return tree_map(lambda x: x[i], self.data)
+            # Row slices of nested containers (Batched, Index) lose the
+            # shared leading dimension their validation asserts over.
+            with no_post_init():
+                return tree_map(lambda x: x[i], self.data)
 
         yield from ((key, data_slice(i)) for i, key in enumerate(self.keys))
 
