@@ -11,6 +11,8 @@ isolation, ``queried_keys`` self-graph updates, and agreement with a brute-force
 reference.
 """
 
+import importlib.util
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -25,10 +27,23 @@ from kups.core.neighborlist import (
     AllDenseNearestNeighborList,
     CellListNeighborList,
     DenseNearestNeighborList,
+    NvalchemiCellListNeighborList,
+    NvalchemiNaiveNeighborList,
 )
 from kups.core.result import as_result_function
 
 from .._builders import make_lh, make_rh, make_systems, systems_from_lvecs
+
+# The nvalchemi lists need the real CUDA/Warp toolkit; their fixture params are
+# skipped unless it is importable on a GPU backend (no mock stand-in here).
+_HAS_REAL_NVALCHEMI = (
+    importlib.util.find_spec("nvalchemiops") is not None
+    and jax.default_backend() == "gpu"
+)
+real_nvalchemi = pytest.mark.skipif(
+    not _HAS_REAL_NVALCHEMI,
+    reason="requires a CUDA device with nvalchemiops installed",
+)
 
 
 class TestNearestNeighborListImplementations:
@@ -81,6 +96,44 @@ class TestNearestNeighborListImplementations:
                 ),
                 "name": "all_to_all",
             },
+            pytest.param(
+                {
+                    "instance_factory": (
+                        lambda candidates, edges, cutoffs, image_candidates=None, **kwargs: (
+                            NvalchemiNaiveNeighborList(
+                                cutoff=float(jnp.max(cutoffs.data)),
+                                max_neighbors=FixedCapacity(
+                                    image_candidates or candidates
+                                ),
+                                avg_edges=FixedCapacity(edges),
+                                max_shifts=FixedCapacity(256),
+                            )
+                        )
+                    ),
+                    "name": "nvalchemi_naive",
+                },
+                marks=real_nvalchemi,
+                id="nvalchemi_naive",
+            ),
+            pytest.param(
+                {
+                    "instance_factory": (
+                        lambda candidates, edges, cutoffs, image_candidates=None, **kwargs: (
+                            NvalchemiCellListNeighborList(
+                                cutoff=float(jnp.max(cutoffs.data)),
+                                max_neighbors=FixedCapacity(
+                                    image_candidates or candidates
+                                ),
+                                max_total_cells=FixedCapacity(4096),
+                                avg_edges=FixedCapacity(edges),
+                            )
+                        )
+                    ),
+                    "name": "nvalchemi_cell_list",
+                },
+                marks=real_nvalchemi,
+                id="nvalchemi_cell_list",
+            ),
         ]
     )
     def neighbor_list_impl(self, request):
@@ -679,6 +732,8 @@ class TestNearestNeighborListImplementations:
 
     def test_batched_systems_different_cell_sizes(self, neighbor_list_impl):
         """Test batched systems where some need images and others don't."""
+        if neighbor_list_impl["name"] == "nvalchemi_cell_list":
+            pytest.skip("nvalchemi cell_list rejects boxes with cutoff > perp/4")
         positions = jnp.array(
             [
                 [0.0, 0.0, 0.0],
@@ -729,6 +784,8 @@ class TestNearestNeighborListImplementations:
         Verifies that ``_get_candidate_images`` does not require sorted
         candidates: shuffling particles across systems yields the same edge set.
         """
+        if neighbor_list_impl["name"] == "nvalchemi_cell_list":
+            pytest.skip("nvalchemi cell_list rejects boxes with cutoff > perp/4")
         positions = jnp.array(
             [
                 [0.1, 0.0, 0.0],
@@ -868,6 +925,8 @@ class TestNearestNeighborListImplementations:
 
     def test_no_replication_with_infinite_cutoff(self, neighbor_list_impl):
         """Verify no periodic images are generated when cutoff is infinite."""
+        if neighbor_list_impl["name"].startswith("nvalchemi"):
+            pytest.skip("nvalchemi needs a finite static cutoff for grid/shift sizing")
         positions = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]])
         batch_mask = jnp.array([0, 0])
 

@@ -70,12 +70,21 @@ class UniversalNeighborlistParameters:
             periodic-image replication (equals ``avg_candidates`` when every cutoff
             stays within the minimum-image regime).
         cells: Maximum number of spatial hash cells across all systems.
+        max_neighbors: Maximum neighbors per atom (per-row width of the nvalchemi
+            toolkit's neighbor matrix, counting each periodic image separately).
+        max_shifts: Maximum per-system periodic-shift count (nvalchemi naive
+            kernel launch dimension).
+        max_total_cells: Maximum cell-grid buffer across systems (nvalchemi
+            cell-list kernel).
     """
 
     avg_edges: int = field(static=True)
     avg_candidates: int = field(static=True)
     avg_image_candidates: int = field(static=True)
     cells: int = field(static=True)
+    max_neighbors: int = field(static=True, default=0)
+    max_shifts: int = field(static=True, default=0)
+    max_total_cells: int = field(static=True, default=0)
 
     @classmethod
     @no_jax_tracing
@@ -110,6 +119,7 @@ class UniversalNeighborlistParameters:
 
         sys = Table.join(systems, particles_per_system, cutoffs)
         total_candidates = total_image_candidates = total_edges = max_cells = 0
+        max_neighbors = max_shifts = 0
         with no_post_init():
             for _, (s, n_p, c) in sys:
                 n_bins = num_cells(s, c).prod()
@@ -119,16 +129,27 @@ class UniversalNeighborlistParameters:
                 # system keeps the estimate tight for heterogeneous cutoffs instead
                 # of assuming every system replicates at the maximum rate.
                 images = candidate_image_counts(s.cell, c).prod()
+                image_candidates = _next_power(candidates) * images
                 total_candidates += candidates
-                total_image_candidates += _next_power(candidates) * images
-                total_edges += _estimate_avg_num_edges(
-                    n_p, s.cell.volume, c, base, multiplier
-                )
+                total_image_candidates += image_candidates
+                edges = _estimate_avg_num_edges(n_p, s.cell.volume, c, base, multiplier)
+                total_edges += edges
                 max_cells = max(n_bins, max_cells)
+                max_neighbors = max(edges, max_neighbors)
+                # nvalchemi naive shift count: prod(2 * ceil(cutoff/perp) * pbc + 1).
+                periodic = jnp.asarray(s.cell.periodic)
+                shift_range = jnp.where(
+                    periodic, jnp.ceil(c[..., None] / s.cell.perpendicular_lengths), 0
+                ).astype(int)
+                max_shifts = max(int(jnp.prod(2 * shift_range + 1)), max_shifts)
 
         return UniversalNeighborlistParameters(
             avg_edges=int(total_edges // sys.size),
             avg_candidates=_next_power(total_candidates / sys.size),
             avg_image_candidates=_next_power(total_image_candidates / sys.size),
             cells=int(max_cells),
+            max_neighbors=int(max_neighbors),
+            max_shifts=max_shifts,
+            # Multi-system cell_list buffers prod(cells) per system across systems.
+            max_total_cells=int(max_cells) * sys.size,
         )

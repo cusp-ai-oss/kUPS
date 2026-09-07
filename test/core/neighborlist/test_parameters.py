@@ -85,6 +85,22 @@ class TestUniversalNeighborlistParametersEstimate:
         # avg_candidates * max_images = 128 * 8 -> 1024.
         assert params.avg_image_candidates == 256
 
+    def test_max_neighbors_tracks_edges_not_candidates(self):
+        # max_neighbors holds the actual neighbors per atom (edges), not the much
+        # larger cell-occupancy candidate count.
+        ppc, systems, cutoffs = self._single_system()
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        assert params.max_neighbors == params.avg_edges == 4
+        assert params.max_neighbors < params.avg_candidates
+
+    def test_max_neighbors_omits_image_factor(self):
+        # The edge-density estimate already spans periodic images via cutoff³, so
+        # max_neighbors carries no extra image replication unlike image candidates.
+        ppc, systems, cutoffs = self._single_system(n_particles=200, cutoff=6.0)
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        assert params.max_neighbors == params.avg_edges == 256
+        assert params.avg_image_candidates == 2048
+
     def test_all_fields_positive_powers_of_two(self):
         ppc, systems, cutoffs = self._single_system(n_particles=512)
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
