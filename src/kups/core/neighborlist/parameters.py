@@ -120,7 +120,10 @@ class UniversalNeighborlistParameters:
                 # of assuming every system replicates at the maximum rate.
                 images = candidate_image_counts(s.cell, c).prod()
                 total_candidates += candidates
-                total_image_candidates += _next_power(candidates) * images
+                # Apply headroom and rounding once, just as for candidates. In
+                # the minimum-image regime both capacities must stay equal;
+                # spare image capacity would select the replication pipeline.
+                total_image_candidates += candidates * images
                 total_edges += _estimate_avg_num_edges(
                     n_p, s.cell.volume, c, base, multiplier
                 )
