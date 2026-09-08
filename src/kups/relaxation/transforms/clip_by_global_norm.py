@@ -25,11 +25,11 @@ import jax.numpy as jnp
 from kups.core.data.index import Index
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_norm,
 )
+from kups.relaxation.optimizer import Optimizer, SupportsReset, SystemMask
 
 
 @dataclass
@@ -46,7 +46,10 @@ class ClipByGlobalNormState:
 
 
 @dataclass
-class ClipByGlobalNorm[Params](Optimizer[Params, ClipByGlobalNormState]):
+class ClipByGlobalNorm[Params](
+    Optimizer[Params, ClipByGlobalNormState],
+    SupportsReset[Params, ClipByGlobalNormState],
+):
     """Clip the per-system L2 norm of updates to ``max_norm``.
 
     With ``index_prefix=None`` this reduces to the standard
@@ -64,6 +67,16 @@ class ClipByGlobalNorm[Params](Optimizer[Params, ClipByGlobalNormState]):
     ) -> ClipByGlobalNormState:
         del parameters
         return ClipByGlobalNormState(index_prefix=tree_copy(index_prefix))
+
+    @override
+    def reset(
+        self,
+        state: ClipByGlobalNormState,
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> ClipByGlobalNormState:
+        return state
 
     @override
     def update(

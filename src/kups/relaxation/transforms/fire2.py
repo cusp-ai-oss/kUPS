@@ -51,16 +51,17 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import bind
 from kups.core.typing import PyTree
-from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.jax import dataclass, field, tree_copy, tree_where_broadcast_last
+from kups.core.utils.segmented_tree import (
     tree_clip_per_row,
     tree_scale_per_row,
     tree_segment_max,
     tree_vdot,
     tree_where_per_row,
 )
+from kups.relaxation.optimizer import Optimizer, SupportsReset, SystemMask
 
 
 @dataclass
@@ -74,8 +75,8 @@ class ScaleByFire2State:
         n_pos: Per-system count of consecutive positive-power steps
             (LAMMPS ``ntimestep - last_negative``; also the ABC-FIRE bias
             exponent).
-        n_total: Scalar — total update steps taken so far (drives
-            ``delaystep_start``).
+        n_total: Per-system count of update steps taken so far (drives
+            ``delaystep_start``); restarts when a system is reset.
         index_prefix: Tree prefix of the parameter pytree whose leaves are
             ``Index[K]`` objects, captured at init time.
     """
@@ -84,12 +85,14 @@ class ScaleByFire2State:
     dt: Table[SupportsSorting, Array]
     alpha: Table[SupportsSorting, Array]
     n_pos: Table[SupportsSorting, Array]
-    n_total: Array
+    n_total: Table[SupportsSorting, Array]
     index_prefix: PyTree
 
 
 @dataclass
-class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
+class ScaleByFire2[Params](
+    Optimizer[Params, ScaleByFire2State], SupportsReset[Params, ScaleByFire2State]
+):
     """FIRE 2.0 (with optional ABC-FIRE) with per-system block-diagonal state.
 
     Per-system port of the LAMMPS-style FIRE 2.0 integrator described in
@@ -168,8 +171,33 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             dt=Table(keys, jnp.full((n,), self.dt_start)),
             alpha=Table(keys, jnp.full((n,), self.alpha_start)),
             n_pos=Table(keys, jnp.zeros((n,), dtype=jnp.int32)),
-            n_total=jnp.asarray(0, dtype=jnp.int32),
+            n_total=Table(keys, jnp.zeros((n,), dtype=jnp.int32)),
             index_prefix=tree_copy(index_prefix),
+        )
+
+    @override
+    def reset(
+        self,
+        state: ScaleByFire2State,
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> ScaleByFire2State:
+        fresh = self.init(parameters, index_prefix)
+        return (
+            bind(state)
+            .focus(lambda s: (s.velocity, s.dt, s.alpha, s.n_pos, s.n_total))
+            .set(
+                (
+                    tree_where_per_row(
+                        mask, fresh.velocity, state.velocity, state.index_prefix
+                    ),
+                    tree_where_broadcast_last(mask.data, fresh.dt, state.dt),
+                    tree_where_broadcast_last(mask.data, fresh.alpha, state.alpha),
+                    tree_where_broadcast_last(mask.data, fresh.n_pos, state.n_pos),
+                    tree_where_broadcast_last(mask.data, fresh.n_total, state.n_total),
+                )
+            )
         )
 
     @override
@@ -186,7 +214,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         dt_data = state.dt.data
         alpha_data = state.alpha.data
         float_dtype = dt_data.dtype
-        n_total = state.n_total + 1
+        n_total = state.n_total.data + 1
 
         # ``updates`` IS the force F = -∇L (optax convention); see module
         # docstring. P = v_old · F per system (LAMMPS: vdotfall).
@@ -318,6 +346,6 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             dt=state.dt.set_data(new_dt),
             alpha=state.alpha.set_data(new_alpha),
             n_pos=state.n_pos.set_data(new_n_pos),
-            n_total=n_total,
+            n_total=state.n_total.set_data(n_total),
             index_prefix=idx,
         )

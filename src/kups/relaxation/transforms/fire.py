@@ -50,14 +50,16 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import bind
 from kups.core.typing import PyTree
-from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.jax import dataclass, field, tree_copy, tree_where_broadcast_last
+from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_norm,
     tree_vdot,
+    tree_where_per_row,
 )
+from kups.relaxation.optimizer import Optimizer, SupportsReset, SystemMask
 
 
 @dataclass
@@ -81,7 +83,9 @@ class ScaleByFireState:
 
 
 @dataclass
-class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
+class ScaleByFire[Params](
+    Optimizer[Params, ScaleByFireState], SupportsReset[Params, ScaleByFireState]
+):
     """FIRE (Fast Inertial Relaxation Engine) optimizer with per-system state.
 
     Implements Bitzek et al. *Phys. Rev. Lett.* **97**, 170201 (2006), but
@@ -163,6 +167,30 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
             alpha=Table(keys, jnp.full((n,), self.alpha_start)),
             n_pos=Table(keys, jnp.zeros((n,), dtype=jnp.int32)),
             index_prefix=tree_copy(index_prefix),
+        )
+
+    @override
+    def reset(
+        self,
+        state: ScaleByFireState,
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> ScaleByFireState:
+        fresh = self.init(parameters, index_prefix)
+        return (
+            bind(state)
+            .focus(lambda s: (s.velocity, s.dt, s.alpha, s.n_pos))
+            .set(
+                (
+                    tree_where_per_row(
+                        mask, fresh.velocity, state.velocity, state.index_prefix
+                    ),
+                    tree_where_broadcast_last(mask.data, fresh.dt, state.dt),
+                    tree_where_broadcast_last(mask.data, fresh.alpha, state.alpha),
+                    tree_where_broadcast_last(mask.data, fresh.n_pos, state.n_pos),
+                )
+            )
         )
 
     @override

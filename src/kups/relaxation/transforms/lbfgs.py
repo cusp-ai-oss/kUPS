@@ -24,6 +24,7 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import bind
 from kups.core.typing import PyTree
 from kups.core.utils.jax import (
     PyTreeDef,
@@ -32,12 +33,13 @@ from kups.core.utils.jax import (
     tree_copy,
     tree_structure,
 )
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     _layout_and_leaves,
     tree_scale_per_row,
     tree_vdot,
+    tree_where_per_row,
 )
+from kups.relaxation.optimizer import Optimizer, SupportsReset, SystemMask
 
 
 @dataclass
@@ -50,7 +52,11 @@ class ScaleByAseLbfgsState[Params]:
     ``Table`` validation. ``treedef`` reconstructs the parameter pytree on exit.
 
     Attributes:
-        count: Total update steps taken so far (scalar int32).
+        count: Total update steps taken so far (scalar int32); selects the ring
+            slot written on each update.
+        steps: Per-system number of updates since that system was (re)initialised,
+            ``Table[K, Array]`` of shape ``(n_systems,)``; a system's first update
+            after a reset contributes an inert ``(0, 0, rho=0)`` pair.
         params: Last seen parameter leaves (flat list of arrays).
         updates: Last seen gradient/update leaves (flat list of arrays).
         diff_params_memory: Per leaf, stacked past parameter differences of
@@ -67,6 +73,7 @@ class ScaleByAseLbfgsState[Params]:
     """
 
     count: Array
+    steps: Table[SupportsSorting, Array]
     params: list[Array]
     updates: list[Array]
     diff_params_memory: list[Array]
@@ -77,7 +84,10 @@ class ScaleByAseLbfgsState[Params]:
 
 
 @dataclass
-class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
+class ScaleByAseLbfgs[Params](
+    Optimizer[Params, ScaleByAseLbfgsState[Params]],
+    SupportsReset[Params, ScaleByAseLbfgsState[Params]],
+):
     """L-BFGS preconditioner with per-system block-diagonal Hessian.
 
     With a trivial ``index_prefix`` (one system) this reduces to the same
@@ -125,6 +135,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
         ]
         return ScaleByAseLbfgsState(
             count=jnp.asarray(0, dtype=jnp.int32),
+            steps=Table(keys, jnp.zeros((n_systems,), dtype=jnp.int32)),
             params=zeros,
             updates=[jnp.zeros_like(x) for x in param_leaves],
             diff_params_memory=stacked,
@@ -162,7 +173,9 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
         sy = tree_vdot(diff_updates, diff_params, idx).data  # (s·y) per system
         weight = jnp.where(sy == 0.0, 0.0, 1.0 / sy)
 
-        is_first = state.count == 0
+        # Per system: is this the first update since (re)initialisation?
+        is_first = state.steps.data == 0
+        first = Table(keys, is_first)
 
         # Per-system initial inverse-Hessian scale γ.
         if self.adaptive_scale:
@@ -175,9 +188,10 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
             )
         gamma = Table(keys, gamma_data)
 
-        # Differences are undefined at the very first iteration; stay zero.
-        diff_params = [jnp.where(is_first, jnp.zeros_like(x), x) for x in diff_params]
-        diff_updates = [jnp.where(is_first, jnp.zeros_like(x), x) for x in diff_updates]
+        # Differences are undefined at a system's first iteration; stay zero.
+        zeros = [jnp.zeros_like(x) for x in diff_params]
+        diff_params = tree_where_per_row(first, zeros, diff_params, idx)
+        diff_updates = tree_where_per_row(first, zeros, diff_updates, idx)
         weight = jnp.where(is_first, jnp.zeros_like(weight), weight)
 
         diff_params_memory = [
@@ -204,6 +218,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
         precond = state.treedef.unflatten(precond_leaves)
         return precond, ScaleByAseLbfgsState(
             count=state.count + 1,
+            steps=state.steps.set_data(state.steps.data + 1),
             params=param_leaves,
             updates=update_leaves,
             diff_params_memory=diff_params_memory,
@@ -211,6 +226,64 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
             weights_memory=state.weights_memory.set_data(weights_data),
             index_prefix=state.index_prefix,
             treedef=state.treedef,
+        )
+
+    @override
+    def reset(
+        self,
+        state: ScaleByAseLbfgsState[Params],
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> ScaleByAseLbfgsState[Params]:
+        """Forget the history of the masked systems.
+
+        Their last-seen parameters become ``parameters`` and their last-seen
+        updates, history pairs and weights are zeroed, so the pair written on
+        their next update is ``(0, y, rho=0)`` and every dead history slot
+        contributes exactly zero in the two-loop recursion. The global ring
+        pointer ``count`` is shared and left untouched: it only decides which
+        slot is written, and the cyclic order of a system's own pairs is the
+        same as in a fresh run.
+        """
+        idx, (param_leaves,) = _layout_and_leaves(state.index_prefix, parameters)
+        zeros = [jnp.zeros_like(x) for x in param_leaves]
+
+        def blank_memory(mem: Array, index: Index[SupportsSorting]) -> Array:
+            rows = mask[index]
+            rows = rows.reshape((1,) + rows.shape + (1,) * (mem.ndim - 1 - rows.ndim))
+            return jnp.where(rows, jnp.zeros_like(mem), mem)
+
+        return (
+            bind(state)
+            .focus(
+                lambda s: (
+                    s.steps,
+                    s.params,
+                    s.updates,
+                    s.diff_params_memory,
+                    s.diff_updates_memory,
+                    s.weights_memory,
+                )
+            )
+            .set(
+                (
+                    state.steps.set_data(jnp.where(mask.data, 0, state.steps.data)),
+                    tree_where_per_row(mask, param_leaves, state.params, idx),
+                    tree_where_per_row(mask, zeros, state.updates, idx),
+                    [
+                        blank_memory(m, i)
+                        for m, i in zip(state.diff_params_memory, idx, strict=True)
+                    ],
+                    [
+                        blank_memory(m, i)
+                        for m, i in zip(state.diff_updates_memory, idx, strict=True)
+                    ],
+                    state.weights_memory.set_data(
+                        jnp.where(mask.data[:, None], 0.0, state.weights_memory.data)
+                    ),
+                )
+            )
         )
 
 

@@ -66,10 +66,11 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import bind
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import tree_scale_per_row, tree_vdot
+from kups.core.utils.segmented_tree import tree_scale_per_row, tree_vdot
+from kups.relaxation.optimizer import Optimizer, SupportsReset, SystemMask
 
 type ValueAndGradFn = Callable[[PyTree], tuple[Table[SupportsSorting, Array], PyTree]]
 """Maps trial params to ``(per-system energies, gradient pytree)``."""
@@ -447,7 +448,9 @@ def _more_thuente(
 
 
 @dataclass
-class ScaleByBacktrackingLinesearch[Params](Optimizer[Params, LineSearchState]):
+class ScaleByBacktrackingLinesearch[Params](
+    Optimizer[Params, LineSearchState], SupportsReset[Params, LineSearchState]
+):
     """Per-system Armijo backtracking line search — ASE ``LineSearchArmijo``.
 
     Rescales the incoming descent direction by a per-system step ``t``: it shrinks
@@ -481,6 +484,20 @@ class ScaleByBacktrackingLinesearch[Params](Optimizer[Params, LineSearchState]):
         return _init_state(parameters, index_prefix)
 
     @override
+    def reset(
+        self,
+        state: LineSearchState,
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> LineSearchState:
+        return (
+            bind(state)
+            .focus(lambda s: s.prev_phi0)
+            .apply(lambda previous: jnp.where(mask.data, jnp.nan, previous))
+        )
+
+    @override
     def update(
         self,
         updates: Params,
@@ -511,7 +528,9 @@ class ScaleByBacktrackingLinesearch[Params](Optimizer[Params, LineSearchState]):
 
 
 @dataclass
-class ScaleByMoreThuenteLinesearch[Params](Optimizer[Params, LineSearchState]):
+class ScaleByMoreThuenteLinesearch[Params](
+    Optimizer[Params, LineSearchState], SupportsReset[Params, LineSearchState]
+):
     """Per-system More–Thuente line search — ASE ``LineSearch``.
 
     Brackets and refines a step meeting the strong Wolfe conditions via the
@@ -547,6 +566,20 @@ class ScaleByMoreThuenteLinesearch[Params](Optimizer[Params, LineSearchState]):
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> LineSearchState:
         return _init_state(parameters, index_prefix)
+
+    @override
+    def reset(
+        self,
+        state: LineSearchState,
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> LineSearchState:
+        return (
+            bind(state)
+            .focus(lambda s: s.prev_phi0)
+            .apply(lambda previous: jnp.where(mask.data, jnp.nan, previous))
+        )
 
     @override
     def update(

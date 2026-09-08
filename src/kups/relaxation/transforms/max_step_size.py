@@ -21,11 +21,11 @@ import jax.numpy as jnp
 from kups.core.data.index import Index
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_max,
 )
+from kups.relaxation.optimizer import Optimizer, SupportsReset, SystemMask
 
 
 @dataclass
@@ -42,7 +42,9 @@ class MaxStepSizeState:
 
 
 @dataclass
-class MaxStepSize[Params](Optimizer[Params, MaxStepSizeState]):
+class MaxStepSize[Params](
+    Optimizer[Params, MaxStepSizeState], SupportsReset[Params, MaxStepSizeState]
+):
     """Clip updates so no element of any system moves more than ``max_step_size``.
 
     Per-element norms are computed along the last axis. For every system, the
@@ -63,6 +65,16 @@ class MaxStepSize[Params](Optimizer[Params, MaxStepSizeState]):
     ) -> MaxStepSizeState:
         del parameters
         return MaxStepSizeState(index_prefix=tree_copy(index_prefix))
+
+    @override
+    def reset(
+        self,
+        state: MaxStepSizeState,
+        parameters: Params,
+        index_prefix: PyTree,
+        mask: SystemMask,
+    ) -> MaxStepSizeState:
+        return state
 
     @override
     def update(
