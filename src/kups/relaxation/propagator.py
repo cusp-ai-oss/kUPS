@@ -15,9 +15,12 @@ from typing import Any
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.lens import Lens
+from kups.core.data.table import Table
+from kups.core.lens import Lens, View
+from kups.core.patch import IndexLensPatch
 from kups.core.potential import Potential
 from kups.core.propagator import Propagator
+from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, field
 from kups.relaxation.optimizer import Optimizer, apply_updates
 
@@ -48,6 +51,11 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         property: Lens to get/set the property being optimized
         opt_state: Lens to get/set the optimizer state
         optimizer: Gradient transformation
+        accept: Optional per-system update mask, read after evaluating the
+            potential and applying its patch.
+        mask_idx: Explicit index prefix for masking parameter updates. Required
+            when accept is supplied. Optimizer state still advances; a reused
+            slot must be reset before its next update.
 
     Example:
         ```python
@@ -84,6 +92,10 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
     property: Lens[State, PyTree] = field(static=True)
     opt_state: Lens[State, OptState] = field(static=True)
     optimizer: Optimizer[PyTree, OptState] = field(static=True)
+    accept: View[State, Table[SystemId, Array]] | None = field(
+        static=True, default=None
+    )
+    mask_idx: View[State, object] | None = field(static=True, default=None)
 
     def __call__(self, key: Array, state: State) -> State:
         del key
@@ -116,6 +128,13 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         )
 
         new_params = apply_updates(params, updates)
-        state = self.property.set(state, new_params)
+        if self.accept is None:
+            state = self.property.set(state, new_params)
+        else:
+            if self.mask_idx is None:
+                raise ValueError("Masked optimization requires an explicit index view.")
+            state = IndexLensPatch(new_params, self.mask_idx(state), self.property)(
+                state, self.accept(state)
+            )
         state = self.opt_state.set(state, new_opt_state)
         return state
