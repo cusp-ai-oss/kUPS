@@ -128,6 +128,9 @@ convergence. As in fixed-batch relaxation, choose appropriate optimizer controls
 
 The [streaming integration test](https://github.com/cusp-ai-oss/kUPS/blob/main/test/application/test_relax_streaming.py)
 shows a complete source, collector, and refill callback.
+`benchmarks/bench_relax_streaming.py` compares fixed batches and streaming on the
+same heterogeneous-convergence workload, with an equal-work control. Measure
+completed structures per second, not just latency of a fixed number of updates.
 
 ## Grand-Canonical Monte Carlo (GCMC)
 
