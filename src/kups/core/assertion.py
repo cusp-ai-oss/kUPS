@@ -449,7 +449,8 @@ def assertion_handler(
     # Convert static_info back from hashable format
     static_info = dict(static_info_hashable)
 
-    pred = invals[0]
+    # Jaxpr literals may arrive as Python scalars or array-like wrappers.
+    pred = jnp.asarray(invals[0])
     num_fmt_args = len(fmt_arg_names)
     fmt_arg_values = invals[1 : 1 + num_fmt_args]
 
