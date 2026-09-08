@@ -22,14 +22,15 @@ from kups.application.relaxation.data import (
     RelaxState,
     relax_state_from_ase,
 )
-from kups.application.relaxation.simulation import make_relax_propagator
+from kups.application.relaxation.simulation import make_relax_propagator, run_relax
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
-from kups.core.lens import identity_lens
+from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
+from kups.relaxation.optimizer import ChainOptState
 
 
 def _ar_cif(rattle: float) -> str:
@@ -123,7 +124,7 @@ def _build_propagator(optimize_cell: bool):
         parameters=config.potential.parameters,
         mixing_rule=config.potential.mixing_rule,
     )
-    state_lens = identity_lens(RelaxState)
+    state_lens = identity_lens(RelaxState[ChainOptState])
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if optimize_cell else POSITIONS_ONLY
     potential = make_lennard_jones_from_state(
@@ -139,6 +140,18 @@ def _build_propagator(optimize_cell: bool):
     opt_state = opt_init(particles, systems)
     state = RelaxState(particles, systems, nlp, opt_state, jnp.array([0]))
     return propagator, state
+
+
+def test_nonfinite_gradients_abort_run() -> None:
+    _, state = _build_propagator(optimize_cell=False)
+    state = (
+        bind(state)
+        .focus(lambda s: s.particles.data.position_gradients)
+        .apply(lambda gradients: jnp.full_like(gradients, jnp.nan))
+    )
+    config = _config(_tmp_h5(), "unused").run
+    with pytest.raises(AssertionError, match="Non-finite relaxation gradients"):
+        run_relax(jax.random.key(0), lambda key, s: s, state, config)
 
 
 class TestCellRelaxation:
