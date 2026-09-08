@@ -15,15 +15,30 @@ from typing import Any
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.lens import Lens
+from kups.core.data.table import Table
+from kups.core.lens import Lens, View
+from kups.core.patch import IndexLensPatch
 from kups.core.potential import Potential
 from kups.core.propagator import Propagator
+from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, field
 from kups.relaxation.optimizer import Optimizer, apply_updates
 
 
+@dataclass(kw_only=True)
+class UpdateMask[State, Indices]:
+    """Per-system acceptance and the matching parameter-index view.
+
+    Both views read the state after the potential's patch has been applied.
+    ``system_index`` returns an index prefix of the optimized parameters.
+    """
+
+    accept: View[State, Table[SystemId, Array]] = field(static=True)
+    system_index: View[State, Indices] = field(static=True)
+
+
 @dataclass
-class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
+class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
     """Unified propagator for gradient-based optimization.
 
     Uses a Potential to compute energy and gradients. Supports standard optax
@@ -41,13 +56,18 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
 
     Type Parameters:
         State: The simulation state type
-        PyTree: The type of the property being optimized (must match Potential's gradient type)
+        Params: Optimized parameters (must match the potential's gradient type).
+        OptState: Optimizer state preserved through initialization and updates.
+        Indices: Index prefix returned by the optional update mask.
 
     Attributes:
-        potential: Potential that computes energy and gradients of type PyTree
+        potential: Potential that computes energy and gradients of type Params
         property: Lens to get/set the property being optimized
         opt_state: Lens to get/set the optimizer state
         optimizer: Gradient transformation
+        mask: Optional acceptance and parameter-index views, read after evaluating
+            the potential and applying its patch. Optimizer state still advances;
+            a reused slot must be reset before its next update.
 
     Example:
         ```python
@@ -80,16 +100,17 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         ```
     """
 
-    potential: Potential[State, PyTree, Any, Any] = field(static=True)
-    property: Lens[State, PyTree] = field(static=True)
+    potential: Potential[State, Params, Any, Any] = field(static=True)
+    property: Lens[State, Params] = field(static=True)
     opt_state: Lens[State, OptState] = field(static=True)
-    optimizer: Optimizer[PyTree, OptState] = field(static=True)
+    optimizer: Optimizer[Params, OptState] = field(static=True)
+    mask: UpdateMask[State, Indices] | None = field(static=True, default=None)
 
     def __call__(self, key: Array, state: State) -> State:
         del key
         params = self.property.get(state)
 
-        def value_and_grad_fn(p: PyTree) -> tuple[Any, PyTree]:
+        def value_and_grad_fn(p: Params) -> tuple[Table[SystemId, Array], Params]:
             out = self.potential(self.property.set(state, p)).data
             return out.total_energies, out.gradients
 
@@ -116,6 +137,11 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         )
 
         new_params = apply_updates(params, updates)
-        state = self.property.set(state, new_params)
+        if self.mask is None:
+            state = self.property.set(state, new_params)
+        else:
+            state = IndexLensPatch(
+                new_params, self.mask.system_index(state), self.property
+            )(state, self.mask.accept(state))
         state = self.opt_state.set(state, new_opt_state)
         return state
