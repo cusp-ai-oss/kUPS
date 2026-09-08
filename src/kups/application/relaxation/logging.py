@@ -5,18 +5,21 @@
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
 from jax import Array
 
-from kups.application.relaxation.data import RelaxParticles, RelaxSystems
+from kups.application.relaxation.data import (
+    IsRelaxData,
+    RelaxParticles,
+    RelaxSystems,
+    relax_gradients,
+    relax_index_prefix,
+)
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
-from kups.core.typing import IsState, ParticleId, SystemId
+from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import stress_via_virial_theorem
-
-type HasRelaxData = IsState[RelaxParticles, RelaxSystems]
+from kups.relaxation.convergence import max_dof_per_system
 
 
 @dataclass
@@ -32,7 +35,7 @@ class RelaxInitData:
     systems: Table[SystemId, RelaxSystems]
 
     @staticmethod
-    def from_state(state: HasRelaxData) -> RelaxInitData:
+    def from_state(state: IsRelaxData) -> RelaxInitData:
         """Extract initial snapshot from a relaxation state."""
         return RelaxInitData(atoms=state.particles, systems=state.systems)
 
@@ -54,19 +57,17 @@ class RelaxStepData:
     stress_tensor: Array
 
     @staticmethod
-    def from_state(state: HasRelaxData) -> RelaxStepData:
+    def from_state(state: IsRelaxData) -> RelaxStepData:
         """Extract per-step logging data from a relaxation state."""
-        forces = state.particles.data.forces
-        force_norms = jnp.linalg.norm(forces, axis=-1)
-        max_force = jax.ops.segment_max(
-            force_norms,
-            state.particles.data.system.indices,
-            state.particles.data.system.num_labels,
+        max_force = max_dof_per_system(
+            relax_gradients(state),
+            relax_index_prefix(state.particles, state.systems),
+            include_cell=False,
         )
         return RelaxStepData(
             atoms=state.particles,
             potential_energy=state.systems.data.potential_energy,
-            max_force=max_force,
+            max_force=max_force.data,
             stress_tensor=stress_via_virial_theorem(
                 state.particles, state.systems
             ).data,
@@ -77,9 +78,9 @@ class RelaxStepData:
 class RelaxLoggedData:
     """HDF5 writer configuration for relaxation simulations."""
 
-    init: WriterGroupConfig[HasRelaxData, RelaxInitData] = WriterGroupConfig(
+    init: WriterGroupConfig[IsRelaxData, RelaxInitData] = WriterGroupConfig(
         RelaxInitData.from_state, Once()
     )
-    step: WriterGroupConfig[HasRelaxData, RelaxStepData] = WriterGroupConfig(
+    step: WriterGroupConfig[IsRelaxData, RelaxStepData] = WriterGroupConfig(
         RelaxStepData.from_state, EveryNStep(1)
     )
