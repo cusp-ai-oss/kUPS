@@ -66,10 +66,11 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import tree_scale_per_row, tree_vdot
+from kups.core.utils.segmented_tree import tree_scale_per_row, tree_vdot
+from kups.relaxation.optimizer import Optimizer, ResetLayout
 
 type ValueAndGradFn = Callable[[PyTree], tuple[Table[SupportsSorting, Array], PyTree]]
 """Maps trial params to ``(per-system energies, gradient pytree)``."""
@@ -100,6 +101,21 @@ def _init_state(parameters: PyTree, index_prefix: PyTree | None) -> LineSearchSt
     return LineSearchState(
         index_prefix=tree_copy(index_prefix), prev_phi0=jnp.full(len(keys), jnp.nan)
     )
+
+
+def linesearch_reset_layout() -> ResetLayout[
+    LineSearchState, Array, Index[SupportsSorting]
+]:
+    """Previous energies, indexed by system; shared by both line searches."""
+
+    def indices(state: LineSearchState) -> Index[SupportsSorting]:
+        leaves = jax.tree.leaves(
+            state.index_prefix, is_leaf=lambda x: isinstance(x, Index)
+        )
+        keys = next(leaf for leaf in leaves if isinstance(leaf, Index)).keys
+        return Table(keys, state.prev_phi0).index
+
+    return ResetLayout(fields=lens(lambda s: s.prev_phi0), system_index=indices)
 
 
 def _setup(
