@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-segment tree operations for system-aware Optax transforms.
+"""Per-segment tree operations over pytrees partitioned by an ``Index``.
 
 When several independent systems are flattened into one
 [Table[ParticleId, ...]][kups.core.data.table.Table], the tree-global
@@ -13,14 +13,14 @@ This module provides three system-aware helpers that the kUPS-native
 transforms need to operate per-segment instead, all built directly on
 existing relational primitives:
 
-* [tree_vdot][kups.relaxation.transforms._segmented_tree.tree_vdot] —
+* [tree_vdot][kups.core.utils.segmented_tree.tree_vdot] —
   per-segment inner product, summed across pytree leaves.
-* [tree_segment_max][kups.relaxation.transforms._segmented_tree.tree_segment_max]
+* [tree_segment_max][kups.core.utils.segmented_tree.tree_segment_max]
   — per-segment row-wise maximum, taken across pytree leaves.
-* [tree_segment_norm][kups.relaxation.transforms._segmented_tree.tree_segment_norm]
+* [tree_segment_norm][kups.core.utils.segmented_tree.tree_segment_norm]
   — per-segment L2 norm across pytree leaves (sqrt of the per-segment
   inner product with itself).
-* [tree_scale_per_row][kups.relaxation.transforms._segmented_tree.tree_scale_per_row]
+* [tree_scale_per_row][kups.core.utils.segmented_tree.tree_scale_per_row]
   — multiply each row of every leaf by its segment's entry in a
   ``Table[K, Array]``.
 
@@ -39,7 +39,6 @@ how each leaf's leading axis partitions into segments.
 from __future__ import annotations
 
 import functools
-from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -52,7 +51,7 @@ from kups.core.typing import PyTree
 from kups.core.utils.jax import tree_structure
 
 
-def _is_index(x: Any) -> bool:
+def _is_index(x: object) -> bool:
     return isinstance(x, Index)
 
 
