@@ -51,6 +51,13 @@ The chapters are organized in five pairs. Tables and Lenses are prerequisite voc
 
 MD, MC, relaxation, GCMC, and ML-potential dynamics are all assembled from these ten pieces. A GCMC step, for example, runs translation, rotation, and exchange as propagators (ch. 4) that construct patches (ch. 6) scored by a cached potential (ch. 8) over a fixed-capacity buffered table (ch. 1), with per-system acceptance and step-width tuning handled by the Monte Carlo machinery (ch. 9). Same primitives, different composition.
 
+[Streaming relaxation](simulations.md#streaming-batches-as-a-library) uses the
+same boundary for host work: a `RefillPropagator` requests service through a runtime
+assertion, its fix replaces selected slots, and the existing retry driver resumes
+the numerical step. Slot ownership is an explicit index; optimizer transforms
+define their own reset semantics. Input sources and result writers remain
+application concerns.
+
 ## A worked example: `md`
 
 [kups.application.simulations.md][kups.application.simulations.md] (CLI: `kups_md`) is the shortest complete simulation in the repo: about a hundred lines, with a ten-line `run`. A discriminated `potential` config selects the force field, so one state and one driver serve Lennard-Jones and every MLFF backend.

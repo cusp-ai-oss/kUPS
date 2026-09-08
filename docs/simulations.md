@@ -54,6 +54,81 @@ kups_relax relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 
 Relaxation converges when the maximum force on any atom drops below a configurable tolerance.
 
+### Streaming batches as a library
+
+Streaming is assembled from the same propagators and runtime assertions as other
+simulations. `SlotLayout` reserves a fixed number of particle rows per system;
+`make_streaming_relax_propagator` returns the numerical step, optimizer initializer,
+and per-system reset function. `make_streaming_relax_state` creates idle slots
+requesting their first refill.
+
+The application supplies a host refill function. It reads completed structures
+through `slot_payload_lens`, packs replacements with `payload_from_structures`,
+and calls `replace_slots`. The replacement payload has one row per slot; only
+requested rows are installed. At end of input, supply `idle_payload` rows with
+ordinal `-1`. Replacement resets the selected optimizer state and clears the
+serviced requests, preserving other slots.
+
+```python
+import jax.numpy as jnp
+from jax import Array
+
+from kups.application.relaxation.streaming import StreamingRelaxState
+from kups.application.utils.propagate import make_cycle_function
+from kups.core.propagator import LoopPropagator, SequentialPropagator, propagate_and_fix
+from kups.core.stream import RefillPropagator
+
+# numerical_step comes from make_streaming_relax_propagator.
+# refill(state, requested) is the application's input/output adapter.
+def repetitions(state: StreamingRelaxState) -> Array:
+    run = ~state.finished.data.any() & (state.slot_ordinal >= 0).any()
+    return jnp.where(run, 8, 0)
+
+cycle = make_cycle_function(SequentialPropagator((
+    RefillPropagator(lambda state: state.finished, refill),
+    LoopPropagator(numerical_step, repetitions),
+)))
+
+state = propagate_and_fix(cycle, key, state)
+```
+
+The refill gate runs **before** the numerical step's error-recovery wrapper.
+When refill is requested, the numerical step cannot commit; the host applies the
+fix and retries. The zero repetition count avoids evaluating the potential on
+repair-only attempts or after input is exhausted. Completed payloads remain in
+state, rather than travelling in
+`fix_args`, which compiled loops reduce by an elementwise maximum.
+
+Run one such cycle per host iteration. Refill happens on the host, not inside an
+uninterrupted device loop; using the bounded repair loop to consume an entire
+stream would exhaust its retry budget. Input/output adapters should not retain
+references to donated state arrays: extract completed results before replacing
+slots. The stream ends when all slot ordinals are `-1` after servicing refill.
+
+Bounded device blocks amortize host synchronization. Completed structures stay
+frozen until the block ends; eight steps is an example, not a universal optimum.
+Smaller blocks refill sooner, while larger blocks reduce dispatch overhead.
+Both the block and slot count should be measured on the intended workload.
+
+Refill is a performance boundary: prepare payloads in bounded batches and JIT a
+closure around the pure `replace_slots` operation, not the host callback itself.
+Transfer request masks to the host once per refill rather than reading GPU
+scalars in a Python loop. The integration test below demonstrates correctness;
+throughput also depends on packing, result collection, and host synchronization.
+
+`max_steps` counts parameter updates. One final evaluation records consistent
+energy and gradients even when a structure exhausts that budget. FIRE, FIRE2,
+L-BFGS, line searches, and stateless Optax transforms support slot reset.
+Stateful Optax transforms require an explicit per-system reset adapter.
+Custom optimizers advertise that capability through `SupportsReset`; ordinary
+fixed-batch optimization only requires the existing `Optimizer` interface.
+Non-finite active gradients fail a runtime assertion instead of counting as
+convergence. As in fixed-batch relaxation, choose appropriate optimizer controls
+(for example, `MaxStepSize`) for strongly distorted structures.
+
+The [streaming integration test](https://github.com/cusp-ai-oss/kUPS/blob/main/test/application/test_relax_streaming.py)
+shows a complete source, collector, and refill callback.
+
 ## Grand-Canonical Monte Carlo (GCMC)
 
 Simulate adsorption of rigid molecules in a host framework at constant chemical potential, volume, and temperature (μVT ensemble).
