@@ -24,6 +24,7 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import (
     PyTreeDef,
@@ -32,12 +33,13 @@ from kups.core.utils.jax import (
     tree_copy,
     tree_structure,
 )
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     _layout_and_leaves,
     tree_scale_per_row,
     tree_vdot,
+    tree_where_per_row,
 )
+from kups.relaxation.optimizer import Optimizer, ResetLayout
 
 
 @dataclass
@@ -50,7 +52,11 @@ class ScaleByAseLbfgsState[Params]:
     ``Table`` validation. ``treedef`` reconstructs the parameter pytree on exit.
 
     Attributes:
-        count: Total update steps taken so far (scalar int32).
+        count: Total update steps taken so far (scalar int32); selects the ring
+            slot written on each update.
+        steps: Per-system number of updates since that system was (re)initialised,
+            ``Table[K, Array]`` of shape ``(n_systems,)``; a system's first update
+            after a reset contributes an inert ``(0, 0, rho=0)`` pair.
         params: Last seen parameter leaves (flat list of arrays).
         updates: Last seen gradient/update leaves (flat list of arrays).
         diff_params_memory: Per leaf, stacked past parameter differences of
@@ -67,6 +73,7 @@ class ScaleByAseLbfgsState[Params]:
     """
 
     count: Array
+    steps: Table[SupportsSorting, Array]
     params: list[Array]
     updates: list[Array]
     diff_params_memory: list[Array]
@@ -74,6 +81,66 @@ class ScaleByAseLbfgsState[Params]:
     weights_memory: Table[SupportsSorting, Array]
     index_prefix: PyTree
     treedef: PyTreeDef[Params] = field(static=True)
+
+
+@dataclass(kw_only=True)
+class LbfgsReset[PerSystem, PerLeaf]:
+    """Resettable L-BFGS fields, carrying either values or their index prefix.
+
+    ``PerSystem`` is a table or system index; ``PerLeaf`` is a list of arrays or
+    matching indices. History indices broadcast over the leading memory axis.
+    Field meanings match :class:`ScaleByAseLbfgsState`; the shared ring cursor
+    ``count`` is deliberately excluded.
+    """
+
+    steps: PerSystem
+    weights_memory: PerSystem
+    params: PerLeaf
+    updates: PerLeaf
+    diff_params_memory: PerLeaf
+    diff_updates_memory: PerLeaf
+
+
+type LbfgsResetIndices = LbfgsReset[
+    Index[SupportsSorting], list[Index[SupportsSorting]]
+]
+
+
+def lbfgs_reset_layout[Params]() -> ResetLayout[
+    ScaleByAseLbfgsState[Params],
+    LbfgsReset[Table[SupportsSorting, Array], list[Array]],
+    LbfgsResetIndices,
+]:
+    """Mutable history fields and their row indices; preserve the shared ring cursor.
+
+    Copying initialization blanks the selected history. The first update after
+    reset contributes an inert pair, independently of the preserved ring phase.
+    """
+    fields = lens(
+        lambda s: LbfgsReset(
+            steps=s.steps,
+            weights_memory=s.weights_memory,
+            params=s.params,
+            updates=s.updates,
+            diff_params_memory=s.diff_params_memory,
+            diff_updates_memory=s.diff_updates_memory,
+        ),
+        cls=ScaleByAseLbfgsState[Params],
+    )
+
+    def indices(s: ScaleByAseLbfgsState[Params]) -> LbfgsResetIndices:
+        idx, _ = _layout_and_leaves(s.index_prefix, s.treedef.unflatten(s.params))
+        history_idx = [i[None] for i in idx]  # Broadcast over the history axis.
+        return LbfgsReset(
+            steps=s.steps.index,
+            weights_memory=s.steps.index,
+            params=idx,
+            updates=idx,
+            diff_params_memory=history_idx,
+            diff_updates_memory=history_idx,
+        )
+
+    return ResetLayout(fields=fields, system_index=indices)
 
 
 @dataclass
@@ -125,6 +192,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
         ]
         return ScaleByAseLbfgsState(
             count=jnp.asarray(0, dtype=jnp.int32),
+            steps=Table(keys, jnp.zeros((n_systems,), dtype=jnp.int32)),
             params=zeros,
             updates=[jnp.zeros_like(x) for x in param_leaves],
             diff_params_memory=stacked,
@@ -162,7 +230,9 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
         sy = tree_vdot(diff_updates, diff_params, idx).data  # (s·y) per system
         weight = jnp.where(sy == 0.0, 0.0, 1.0 / sy)
 
-        is_first = state.count == 0
+        # Per system: is this the first update since (re)initialisation?
+        is_first = state.steps.data == 0
+        first = Table(keys, is_first)
 
         # Per-system initial inverse-Hessian scale γ.
         if self.adaptive_scale:
@@ -175,9 +245,10 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
             )
         gamma = Table(keys, gamma_data)
 
-        # Differences are undefined at the very first iteration; stay zero.
-        diff_params = [jnp.where(is_first, jnp.zeros_like(x), x) for x in diff_params]
-        diff_updates = [jnp.where(is_first, jnp.zeros_like(x), x) for x in diff_updates]
+        # Differences are undefined at a system's first iteration; stay zero.
+        zeros = [jnp.zeros_like(x) for x in diff_params]
+        diff_params = tree_where_per_row(first, zeros, diff_params, idx)
+        diff_updates = tree_where_per_row(first, zeros, diff_updates, idx)
         weight = jnp.where(is_first, jnp.zeros_like(weight), weight)
 
         diff_params_memory = [
@@ -204,6 +275,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
         precond = state.treedef.unflatten(precond_leaves)
         return precond, ScaleByAseLbfgsState(
             count=state.count + 1,
+            steps=state.steps.set_data(state.steps.data + 1),
             params=param_leaves,
             updates=update_leaves,
             diff_params_memory=diff_params_memory,

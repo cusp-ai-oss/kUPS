@@ -62,7 +62,7 @@ def _single_sys_state(
         dt=Table(keys, jnp.asarray([dt], dtype=jnp.float32)),
         alpha=Table(keys, jnp.asarray([alpha], dtype=jnp.float32)),
         n_pos=Table(keys, jnp.asarray([n_pos], dtype=jnp.int32)),
-        n_total=jnp.asarray(n_total, dtype=jnp.int32),
+        n_total=Table(keys, jnp.asarray([n_total], dtype=jnp.int32)),
         index_prefix=_system_index([0] * velocity.shape[0], 1),
     )
 
@@ -79,7 +79,7 @@ class TestScaleByFire2GlobalFallback:
         npt.assert_allclose(state.dt.data, jnp.array([0.1]))
         npt.assert_allclose(state.alpha.data, jnp.array([0.25]))
         assert int(state.n_pos.data[0]) == 0
-        assert int(state.n_total) == 0
+        assert int(state.n_total.data[0]) == 0
 
     def test_init_pytree(self):
         opt = ScaleByFire2()
@@ -96,7 +96,7 @@ class TestScaleByFire2GlobalFallback:
         force = jnp.array([1.0])  # F = -∇L for ∇L = -1.0
         for i in range(4):
             _, state = opt.update(force, state, params)
-            assert int(state.n_total) == i + 1
+            assert int(state.n_total.data[0]) == i + 1
 
     def test_positive_power_increases_n_pos(self):
         opt = ScaleByFire2(dt_start=0.1, n_min=2, delaystep_start=False)
@@ -149,7 +149,7 @@ class TestScaleByFire2GlobalFallback:
                 dt=float(state.dt.data[0]),
                 alpha=float(state.alpha.data[0]),
                 n_pos=int(state.n_pos.data[0]),
-                n_total=int(state.n_total),
+                n_total=int(state.n_total.data[0]),
             )
         assert float(state.dt.data[0]) >= 0.01 - 1e-6
 
@@ -403,7 +403,7 @@ class TestScaleByFire2PerSystem:
             dt=Table(keys, jnp.array([1.0, 1.0])),
             alpha=Table(keys, jnp.array([0.25, 0.25])),
             n_pos=Table(keys, jnp.array([10, 10], dtype=jnp.int32)),
-            n_total=jnp.asarray(20, dtype=jnp.int32),
+            n_total=Table(keys, jnp.array([20, 20], dtype=jnp.int32)),
             index_prefix=idx,
         )
         params = jnp.array([0.0, 0.0, 0.0, 0.0])
