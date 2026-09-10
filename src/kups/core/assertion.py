@@ -503,13 +503,15 @@ def cond_handler(
     branches = bind_params["branches"]
     assert len(branches) > 0, "cond must have at least one branch"
 
-    branch_fns = [reinterpret(jaxpr_as_fun(jaxpr), interpreter) for jaxpr in branches]
+    branch_fns = [
+        jax.jit(reinterpret(jaxpr_as_fun(jaxpr), interpreter)) for jaxpr in branches
+    ]
 
     # Dry-run trace each branch to learn the assertions it appends; the abstract
     # leaves (shape/dtype) are used to build placeholders for the other branches.
     n_in = len(ctx.assertions)
     suffix_templates = [
-        jax.jit(fn).trace(ctx.push(), *invals[1:]).out_info[1].assertions[n_in:]
+        fn.trace(ctx.push(), *invals[1:]).out_info[1].assertions[n_in:]
         for fn in branch_fns
     ]
 
@@ -526,7 +528,8 @@ def cond_handler(
         index: int, fn: Callable[..., tuple[Any, AssertionContext]]
     ) -> Callable[..., tuple[Any, AssertionContext]]:
         def wrapped(ctx: AssertionContext, *args: Any) -> tuple[Any, AssertionContext]:
-            outvals, ctx_out = fn(ctx, *args)
+            with jax.disable_jit(False):
+                outvals, ctx_out = fn(ctx, *args)
             merged = list(ctx_out.assertions[:n_in])
             for i, templates in enumerate(suffix_templates):
                 merged.extend(

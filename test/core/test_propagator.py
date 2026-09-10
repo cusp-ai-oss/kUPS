@@ -3,6 +3,8 @@
 
 """Tests for propagator functionality."""
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -340,6 +342,133 @@ class TestMCMCPropagator:
         key = jax.random.key(12345)
         result2 = propagator2(key, simple_state)
         npt.assert_array_equal(result1.value, result2.value)
+
+    @pytest.mark.parametrize("log_ratio", [0.0, -jnp.inf])
+    def test_noop_skips_evaluation_but_updates_acceptance(
+        self, simple_state, parameter_scheduler, log_ratio
+    ):
+        calls = []
+
+        def changes(key, state, /):
+            return state.array_data[0], Table.arange(
+                jnp.full(2, log_ratio), label=SystemId
+            )
+
+        def patch(key, state, increment):
+            jax.debug.callback(lambda: calls.append("patch"), ordered=True)
+            return ExamplePatch(increment)
+
+        def density(state, patch):
+            jax.debug.callback(lambda: calls.append("density"), ordered=True)
+            return WithPatch(Table.arange(jnp.zeros(2), label=SystemId), IdPatch())
+
+        propagator = MCMCPropagator(
+            patch,
+            (changes,),
+            density,
+            (parameter_scheduler,),
+            is_noop=lambda state, increment: increment == 0,
+        )
+        step = jax.jit(propagator)
+        empty = replace(simple_state, array_data=jnp.zeros(3))
+        result = step(jax.random.key(0), empty)
+        jax.block_until_ready(result)
+        jax.effects_barrier()
+        assert calls == []
+        npt.assert_array_equal(result.value, empty.value)
+        npt.assert_array_equal(result.scheduler_params.data.history.index, [1, 1])
+        npt.assert_array_equal(
+            result.scheduler_params.data.history.values[:, 0], log_ratio == 0
+        )
+
+        # Reuse the compiled function with a real change; both stages must run.
+        result = step(jax.random.key(0), simple_state)
+        jax.block_until_ready(result)
+        jax.effects_barrier()
+        assert calls == ["patch", "density"]
+        npt.assert_array_equal(result.value, simple_state.value + (log_ratio == 0))
+
+    def test_noop_preserves_mixed_move_trajectory(
+        self, simple_state, parameter_scheduler
+    ):
+        def sparse_changes(key, state, /):
+            increment = jax.random.randint(key, (), 0, 2).astype(float) * 0.25
+            return increment, Table.arange(jnp.array([-0.7, -1.3]), label=SystemId)
+
+        def fixed_changes(key, state, /):
+            return jnp.array(0.5), Table.arange(jnp.zeros(2), label=SystemId)
+
+        def patch(key, state, increment):
+            # A random patch makes changes to the patch-key stream observable.
+            return ExamplePatch(increment * jax.random.uniform(key))
+
+        def density(state, patch):
+            return WithPatch(
+                Table.arange(jnp.full(2, -jnp.abs(patch.increment)), label=SystemId),
+                IdPatch(),
+            )
+
+        def second_scheduler(state, accept):
+            return replace(state, step=state.step + 1)
+
+        baseline = MCMCPropagator(
+            patch,
+            (sparse_changes, fixed_changes),
+            density,
+            (parameter_scheduler, second_scheduler),
+            weights=(0.7, 0.3),
+        )
+        guarded = replace(baseline, is_noop=lambda state, increment: increment == 0)
+        reference = candidate = simple_state
+        original_step, guarded_step = jax.jit(baseline), jax.jit(guarded)
+        for key in jax.random.split(jax.random.key(32), 48):
+            reference = original_step(key, reference)
+            candidate = guarded_step(key, candidate)
+            for left, right in zip(
+                jax.tree.leaves(reference), jax.tree.leaves(candidate), strict=True
+            ):
+                npt.assert_array_equal(left, right)
+        assert candidate.value != simple_state.value
+        assert 0 < candidate.step < 48
+
+    def test_noop_keeps_proposal_and_active_branch_assertions(
+        self, simple_state, parameter_scheduler
+    ):
+        def changes(key, state, /):
+            runtime_assert(state.step >= 0, "invalid proposal")
+            return state.array_data[0], Table.arange(jnp.zeros(2), label=SystemId)
+
+        def patch(key, state, increment):
+            runtime_assert(increment != 0, "empty patch evaluated")
+            return ExamplePatch(increment)
+
+        def density(state, patch):
+            runtime_assert(patch.increment < 2, "invalid density")
+            return WithPatch(Table.arange(jnp.zeros(2), label=SystemId), IdPatch())
+
+        propagator = MCMCPropagator(
+            patch,
+            (changes,),
+            density,
+            (parameter_scheduler,),
+            is_noop=lambda state, increment: increment == 0,
+        )
+        step = jax.jit(as_result_function(ResetOnErrorPropagator(propagator)))
+        empty = replace(simple_state, array_data=jnp.zeros(3))
+        result = step(jax.random.key(0), empty)
+        result.raise_assertion()
+        assert result.value.scheduler_params.data.history.index[0] == 1
+        invalid = replace(empty, step=jnp.array(-1))
+        result = step(jax.random.key(0), invalid)
+        with pytest.raises(AssertionError, match="invalid proposal"):
+            result.raise_assertion()
+        npt.assert_array_equal(result.value.scheduler_params.data.history.index, [0, 0])
+        result = step(
+            jax.random.key(0), replace(simple_state, array_data=jnp.full(3, 2.0))
+        )
+        with pytest.raises(AssertionError, match="invalid density"):
+            result.raise_assertion()
+        npt.assert_array_equal(result.value.value, simple_state.value)
 
 
 class TestPropagatorIntegration:
