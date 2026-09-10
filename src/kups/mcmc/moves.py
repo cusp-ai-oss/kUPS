@@ -532,6 +532,20 @@ class ExchangeChanges:
     particles: WithIndices[ParticleId, Buffered[ParticleId, ExchangeParticleData]]
     groups: WithIndices[GroupId, Buffered[GroupId, ExchangeGroupData]]
 
+    def is_noop(self, groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
+        """Whether no particle is targeted and group metadata stays unchanged.
+
+        Displacements can re-assert an existing group even when no molecule
+        was selected. Group-only changes must still be evaluated.
+        """
+        current = groups[self.groups.indices]
+        proposed = self.groups.data.data
+        same_group = ~self.groups.indices.valid_mask | (
+            (current.system.indices == proposed.system.indices)
+            & (current.motif.indices == proposed.motif.indices)
+        )
+        return ~jnp.any(self.particles.indices.valid_mask) & jnp.all(same_group)
+
 
 def exchange_changes_from_position_changes(
     changes: ParticlePositionChanges,
@@ -1100,7 +1114,7 @@ def make_exchange_mcmc_propagator[State, Move: Patch[Any]](
     patch_fn: PatchFn[State, ExchangeChanges, Move],
     probability_fn: LogProbabilityRatioFn[State, Move],
 ) -> MCMCPropagator[State, ExchangeChanges, Move]:
-    """Build an MCMC propagator for grand-canonical insertion/deletion moves."""
+    """Build insertion/deletion MCMC, skipping evaluation of empty proposals."""
     move = ExchangeMove(
         positions=state.focus(lambda x: x.particles),
         groups=state.focus(lambda x: x.groups),
@@ -1113,6 +1127,7 @@ def make_exchange_mcmc_propagator[State, Move: Patch[Any]](
         (move,),
         probability_fn,
         (_scheduler(state.focus(lambda x: x.exchange_params)),),
+        is_noop=lambda s, changes: changes.is_noop(state(s).groups),
     )
 
 
@@ -1131,7 +1146,8 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
     Randomly picks translation, rotation, reinsertion, or exchange (insert/delete)
     at each step. Displacement proposals are lifted to ``ExchangeChanges`` via
     ``exchange_changes_from_position_changes`` so all four branches share the
-    same Changes type.
+    same Changes type. Empty proposals bypass patch and energy evaluation while
+    retaining acceptance and scheduler updates, for either potential backend.
 
     Args:
         state: Lens into the sub-state satisfying ``IsGCMCState``.
@@ -1285,4 +1301,5 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
         probability_fn,
         tuple(schedulers),
         weights=tuple(wts),
+        is_noop=lambda s, changes: changes.is_noop(state(s).groups),
     )
