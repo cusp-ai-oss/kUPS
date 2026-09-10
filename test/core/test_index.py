@@ -19,6 +19,24 @@ from kups.core.utils.jax import dataclass
 
 
 class TestNew:
+    def test_reused_keys_still_validate_new_keys_and_index_dtype(self):
+        keys = ("a", "b")
+        Index(keys, jnp.array([0, 1]))
+        Index(keys, jnp.array([1, 0]))
+        with pytest.raises(AssertionError):
+            Index(keys, jnp.array([0.0, 1.0]))
+        for invalid in (("b", "a"), ("a", "a")):
+            with pytest.raises(ValueError, match="Keys must be unique and sorted"):
+                Index(invalid, jnp.array([0, 1]))
+
+    def test_unhashable_keys_are_validated_without_caching(self):
+        keys = ([0], [1])
+        index = Index(keys, jnp.array([0, 1]))
+        assert index.keys == keys
+        keys[0][0] = 2
+        with pytest.raises(ValueError, match="Keys must be unique and sorted"):
+            Index(keys, jnp.array([0, 1]))
+
     def test_new(self):
         sa = Index.new(["C", "H", "O", "H", "C"])
         assert sa.keys == ("C", "H", "O")
@@ -295,6 +313,26 @@ class TestConcatenate:
 
 
 class TestSelectPerLabel:
+    @pytest.mark.parametrize("n_labels", [1, 4, 128])
+    def test_buffered_shuffled_labels(self, n_labels: int):
+        rng = np.random.default_rng(31)
+        # Unequal populations, absent labels, and out-of-bounds buffer entries.
+        labels = rng.integers(n_labels + 1, size=5 * n_labels)
+        relative = rng.integers(-100, 100, size=n_labels)
+        index = Index.integer(labels, n=n_labels)
+        expected: list[int] = []
+        for label, k in enumerate(relative):
+            positions = np.flatnonzero(labels == label)
+            expected.append(
+                int(positions[k % len(positions)]) if len(positions) else len(labels)
+            )
+        actual = jax.jit(lambda x, k: x.select_per_label(k))(index, jnp.array(relative))
+        npt.assert_array_equal(actual, expected)
+
+    def test_empty_index(self):
+        index = Index(("A", "B"), jnp.array([], dtype=int))
+        npt.assert_array_equal(index.select_per_label(jnp.array([0, 7])), [0, 0])
+
     def test_select_per_label(self):
         sa = Index.new(["H", "O", "H", "H", "O"])
         npt.assert_array_equal(sa.select_per_label(jnp.array([0, 1])), [0, 4])
@@ -453,6 +491,16 @@ _jit_subselect = jax.jit(
 
 
 class TestWhereAndSubselect:
+    def test_rectangular_repeated_missing_and_sentinel_targets(self):
+        source = Index(("A", "B", "C", "D"), jnp.array([2, 4, 0, 2, 4, 1, 2]))
+        target = Index(source.keys, jnp.array([2, 0, 3, 2, 4]))
+        result = _jit_where_rect(source, target, max_count=2)
+        npt.assert_array_equal(result, [[0, 3], [2, 7], [7, 7], [0, 3], [1, 4]])
+        empty = Index(source.keys, jnp.array([], dtype=int))
+        npt.assert_array_equal(
+            _jit_where_rect(empty, target, max_count=2), np.zeros((5, 2))
+        )
+
     def test_where_and_subselect(self):
         # where_rectangular (jitted to avoid eager per-op dispatch overhead)
         sa = Index.new(["H", "O", "H", "O", "H"])
