@@ -35,7 +35,7 @@ from jax import Array
 from kups.core.assertion import check_assertions
 from kups.core.data.table import Table
 from kups.core.lens import Lens, Update, View
-from kups.core.patch import Addable, Patch, WithPatch
+from kups.core.patch import Accept, Addable, Patch, Probe, WithPatch
 from kups.core.result import Result, as_result_function
 from kups.core.schedule import IncrementSchedule, Schedule, Scheduler
 from kups.core.typing import SystemId
@@ -289,6 +289,14 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
         log_probability_ratio_fn: Computes target density ratio (e.g., Boltzmann).
         parameter_schedulers: One scheduler per propose_fn, updated selectively.
         weights: Selection probabilities per move (unnormalized). None for uniform.
+        is_noop: Optional scalar predicate over ``(state, changes)``. True
+            certifies that both patches leave the entire state unchanged and
+            the target log probability ratio is zero. Their evaluation is then
+            skipped; proposal acceptance and scheduling still run. Proposal log
+            ratios must cover every acceptance system when using this option.
+
+    The predicate applies to the whole batch. Under an outer ``vmap``, JAX may
+    evaluate both conditional branches, so this does not guarantee a speedup.
     """
 
     patch_fn: PatchFn[State, Changes, Move] = field(static=True)
@@ -298,6 +306,7 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
         static=True
     )
     weights: tuple[float, ...] | None = field(static=True, default=None)
+    is_noop: Probe[State, Changes, Array] | None = field(static=True, default=None)
 
     @jit
     def __call__(self, key: Array, state: State) -> State:
@@ -316,17 +325,31 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
             changes, move_log_ratio, which = propose_mixed(
                 next(chain), state, self.propose_fns, self.weights
             )
-            patch = self.patch_fn(next(chain), state, changes)
+            patch_key = next(chain)
+            accept_key = next(chain)
 
-            # Acceptance
-            density = self.log_probability_ratio_fn(state, patch)
-            log_p_ratio = move_log_ratio + density.data
-            n_sys = len(log_p_ratio)
-            accept = log_p_ratio > jnp.log(jax.random.uniform(next(chain), (n_sys,)))
+            def accept_ratio(log_ratio: LogProbabilityRatio) -> Accept:
+                return log_ratio > jnp.log(
+                    jax.random.uniform(accept_key, (len(log_ratio),))
+                )
 
-            # Apply patches
-            new_state = patch(state, accept)
-            new_state = density.patch(new_state, accept)
+            def evaluate(current: State) -> tuple[State, Accept]:
+                patch = self.patch_fn(patch_key, current, changes)
+                density = self.log_probability_ratio_fn(current, patch)
+                accept = accept_ratio(move_log_ratio + density.data)
+                updated = patch(current, accept)
+                return density.patch(updated, accept), accept
+
+            if self.is_noop is None:
+                new_state, accept = evaluate(state)
+            else:
+                # Preserve random choices and scheduler updates for empty moves.
+                new_state, accept = jax.lax.cond(
+                    self.is_noop(state, changes),
+                    lambda current: (current, accept_ratio(move_log_ratio)),
+                    evaluate,
+                    state,
+                )
 
             # Selectively update only the chosen scheduler
             candidates = tuple(
