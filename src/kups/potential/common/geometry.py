@@ -37,16 +37,20 @@ class Geometry(NamedTuple):
     systems: Table[SystemId, Cell[AnyPeriodicity]]
 
 
-class PositionsAndCell(NamedTuple):
-    """Optimizer DOFs / gradient payload of the standard cell filters.
+class PositionCellTree[P, C](NamedTuple):
+    """Shared pytree structure for coordinate, gradient, and index views."""
 
-    ``positions`` is a per-particle table of DOF coordinates (``∂E/∂r`` when this
-    carries a gradient); ``cell`` is a per-system table of the cell (its frame
-    parameters carrying ``∂E/∂h`` for a gradient).
-    """
+    positions: P
+    cell: C
 
-    positions: Table[ParticleId, Array]
-    cell: Table[SystemId, Cell[AnyPeriodicity]]
+
+PositionsAndCell = PositionCellTree[
+    Table[ParticleId, Array], Table[SystemId, Cell[AnyPeriodicity]]
+]
+"""Optimizer coordinates or gradients of the standard cell filters."""
+
+PositionsAndCellIndex = PositionCellTree[Index[SystemId], Index[SystemId]]
+"""System assignment for the two branches of a positions-and-cell pytree."""
 
 
 type IsStateWithParticlesAndCell = IsState[
@@ -54,10 +58,10 @@ type IsStateWithParticlesAndCell = IsState[
 ]
 
 
-@no_type_check
+@no_type_check  # Potential caches use heterogeneous index prefixes, not value trees.
 def position_and_cell_idx_view(
     state: IsStateWithParticlesAndCell,
-) -> PotentialOut[PositionsAndCell, EmptyType]:
+) -> PotentialOut[PositionsAndCellIndex, EmptyType]:
     """Patch index structure matching the ``PositionsAndCell`` filter codomain.
 
     The per-particle system index masks the position rows and the systems index
@@ -65,6 +69,6 @@ def position_and_cell_idx_view(
     """
     return PotentialOut(
         empty_patch_idx_view(state).total_energies,
-        PositionsAndCell(state.particles.data.system, state.systems.index),
+        PositionsAndCellIndex(state.particles.data.system, state.systems.index),
         EMPTY,
     )

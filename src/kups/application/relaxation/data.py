@@ -9,7 +9,6 @@ from pathlib import Path
 
 import ase
 import jax.numpy as jnp
-import optax
 from jax import Array
 from pydantic import BaseModel
 
@@ -23,8 +22,9 @@ from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
-from kups.core.typing import ExclusionId, ParticleId, SystemId
+from kups.core.typing import ExclusionId, IsState, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
+from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
 from kups.relaxation.config import TransformationConfig
 
 
@@ -71,7 +71,7 @@ class RelaxSystems:
 
 
 @dataclass
-class RelaxState:
+class RelaxState[OptState]:
     """Force-field-agnostic relaxation state.
 
     The potential is built with its parameters at construction time (via the
@@ -81,8 +81,37 @@ class RelaxState:
     particles: Table[ParticleId, RelaxParticles]
     systems: Table[SystemId, RelaxSystems]
     neighborlist_params: UniversalNeighborlistParameters
-    opt_state: optax.OptState
+    opt_state: OptState
     step: Array
+
+
+type IsRelaxData = IsState[RelaxParticles, RelaxSystems]
+
+
+def relax_parameters(
+    particles: Table[ParticleId, RelaxParticles],
+    systems: Table[SystemId, RelaxSystems],
+) -> PositionsAndCell:
+    """The optimizer DOF carrier ``(positions, cell)`` of a relaxation batch."""
+    return PositionsAndCell(
+        particles.map_data(lambda p: p.positions), systems.map_data(lambda s: s.cell)
+    )
+
+
+def relax_index_prefix(
+    particles: Table[ParticleId, RelaxParticles],
+    systems: Table[SystemId, RelaxSystems],
+) -> PositionsAndCellIndex:
+    """Index prefix mapping every DOF to its system (per-particle and per-cell)."""
+    return PositionsAndCellIndex(particles.data.system, systems.index)
+
+
+def relax_gradients(state: IsRelaxData) -> PositionsAndCell:
+    """The cached DOF gradients ``∂E/∂u`` held in a relaxation state."""
+    return PositionsAndCell(
+        state.particles.map_data(lambda p: p.position_gradients),
+        state.systems.map_data(lambda s: s.cell_gradients),
+    )
 
 
 class RelaxRunConfig(BaseModel):
@@ -102,6 +131,92 @@ class RelaxRunConfig(BaseModel):
     """Whether to also relax lattice vectors."""
 
 
+def relax_cell(cell: Cell[AnyPeriodicity], n_atoms: Array) -> Cell[AnyPeriodicity]:
+    """Wrap unbatched cells in the relaxation's log-deformation frame.
+
+    ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
+    cell-virial gradient against the per-atom forces in the joint optimiser.
+
+    Args:
+        cell: Cell(s) with a plain frame; a leading batch axis is added if the
+            frame is unbatched.
+        n_atoms: Atom count per system, shape ``(n_systems,)``.
+    """
+    if cell.vectors.ndim == 2:
+        cell = cell[None]
+    # An empty system (a streaming slot without work) keeps a finite factor.
+    cell_factor = jnp.maximum(n_atoms, 1)
+    return bind(cell, lambda x: x.frame).apply(
+        lambda f: DeformedFrame.from_frame(
+            f, cell_factor=cell_factor, deformation=MatrixLogFrame
+        )
+    )
+
+
+def relax_systems(cell: Cell[AnyPeriodicity]) -> RelaxSystems:
+    """System rows with zeroed caches for a batched relaxation cell."""
+    return RelaxSystems(
+        cell=cell,
+        cell_gradients=tree_zeros_like(cell),
+        potential_energy=jnp.zeros(cell.vectors.shape[0], cell.vectors.dtype),
+    )
+
+
+def relax_particles(
+    particles: Particles,
+    *,
+    position_gradients: Array | None = None,
+    exclusion: Index[ExclusionId] | None = None,
+) -> RelaxParticles:
+    """Relaxation particle rows from plain particles, gradients zeroed by default."""
+    return RelaxParticles(
+        positions=particles.positions,
+        masses=particles.masses,
+        atomic_numbers=particles.atomic_numbers,
+        charges=particles.charges,
+        labels=particles.labels,
+        system=particles.system,
+        position_gradients=(
+            jnp.zeros_like(particles.positions)
+            if position_gradients is None
+            else position_gradients
+        ),
+        exclusion=(
+            default_exclusion(len(particles.positions))
+            if exclusion is None
+            else exclusion
+        ),
+    )
+
+
+def relax_state_from_particles(
+    particles: Table[ParticleId, Particles], cell: Cell[AnyPeriodicity]
+) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
+    """Build relaxation particle and system tables from plain particles and a cell.
+
+    Args:
+        particles: Particles of one or more systems. Keys are preserved;
+            out-of-bounds system references denote padding.
+        cell: Their cells in system-key order, unbatched for a single system.
+
+    Returns:
+        Tuple of ``(particles, systems)`` ready for relaxation propagators.
+    """
+    system = particles.data.system
+    if system.indices.shape != (len(particles),):
+        raise ValueError("Expected one system reference per particle.")
+    expected_shape = (system.num_labels, 3, 3)
+    if cell.vectors.shape != expected_shape and not (
+        system.num_labels == 1 and cell.vectors.shape == (3, 3)
+    ):
+        raise ValueError(f"Expected cell vectors with shape {expected_shape}.")
+    n_atoms = system.counts.data.astype(particles.data.positions.dtype)
+    return (
+        particles.map_data(relax_particles),
+        Table(system.keys, relax_systems(relax_cell(cell, n_atoms)), _cls=SystemId),
+    )
+
+
 def relax_state_from_ase(
     atoms: ase.Atoms | str | Path,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
@@ -115,35 +230,4 @@ def relax_state_from_ase(
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
     """
     p, cell, _ = particles_from_ase(atoms)
-    particles = p.set_data(
-        RelaxParticles(
-            positions=p.data.positions,
-            masses=p.data.masses,
-            atomic_numbers=p.data.atomic_numbers,
-            charges=p.data.charges,
-            labels=p.data.labels,
-            system=p.data.system,
-            position_gradients=jnp.zeros_like(p.data.positions),
-        ),
-    )
-    # cell_factor = per-system atom count (ASE's exp_cell_factor) balances the
-    # extensive cell-virial gradient against the per-atom forces in the joint
-    # optimiser. bincount over the system index gives one count per system.
-    n_systems = p.data.system.num_labels
-    cell_factor = jnp.bincount(p.data.system.indices, length=n_systems).astype(
-        p.data.positions.dtype
-    )
-    cell = bind(cell[None], lambda x: x.frame).apply(
-        lambda f: DeformedFrame.from_frame(
-            f, cell_factor=cell_factor, deformation=MatrixLogFrame
-        )
-    )
-    systems = Table.arange(
-        RelaxSystems(
-            cell=cell,
-            cell_gradients=tree_zeros_like(cell),
-            potential_energy=jnp.zeros(n_systems),
-        ),
-        label=SystemId,
-    )
-    return particles, systems
+    return relax_state_from_particles(p, cell)
