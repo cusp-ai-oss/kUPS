@@ -51,16 +51,18 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     tree_clip_per_row,
     tree_scale_per_row,
     tree_segment_max,
     tree_vdot,
     tree_where_per_row,
 )
+from kups.relaxation.optimizer import Optimizer, ResetLayout
+from kups.relaxation.transforms.fire import FireReset
 
 
 @dataclass
@@ -74,8 +76,8 @@ class ScaleByFire2State:
         n_pos: Per-system count of consecutive positive-power steps
             (LAMMPS ``ntimestep - last_negative``; also the ABC-FIRE bias
             exponent).
-        n_total: Scalar — total update steps taken so far (drives
-            ``delaystep_start``).
+        n_total: Per-system count of update steps taken so far (drives
+            ``delaystep_start``); restarts when a system is reset.
         index_prefix: Tree prefix of the parameter pytree whose leaves are
             ``Index[K]`` objects, captured at init time.
     """
@@ -84,8 +86,41 @@ class ScaleByFire2State:
     dt: Table[SupportsSorting, Array]
     alpha: Table[SupportsSorting, Array]
     n_pos: Table[SupportsSorting, Array]
-    n_total: Array
+    n_total: Table[SupportsSorting, Array]
     index_prefix: PyTree
+
+
+@dataclass(kw_only=True)
+class Fire2Reset[Velocity, PerSystem](FireReset[Velocity, PerSystem]):
+    """FIRE reset fields plus the per-system warmup counter ``n_total``."""
+
+    n_total: PerSystem
+
+
+def fire2_reset_layout() -> ResetLayout[
+    ScaleByFire2State,
+    Fire2Reset[PyTree, Table[SupportsSorting, Array]],
+    Fire2Reset[PyTree, Index[SupportsSorting]],
+]:
+    """Mutable FIRE2 fields, including the per-system warmup counter."""
+    return ResetLayout(
+        fields=lens(
+            lambda s: Fire2Reset(
+                velocity=s.velocity,
+                dt=s.dt,
+                alpha=s.alpha,
+                n_pos=s.n_pos,
+                n_total=s.n_total,
+            )
+        ),
+        system_index=lambda s: Fire2Reset(
+            velocity=s.index_prefix,
+            dt=s.dt.index,
+            alpha=s.dt.index,
+            n_pos=s.dt.index,
+            n_total=s.dt.index,
+        ),
+    )
 
 
 @dataclass
@@ -168,7 +203,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             dt=Table(keys, jnp.full((n,), self.dt_start)),
             alpha=Table(keys, jnp.full((n,), self.alpha_start)),
             n_pos=Table(keys, jnp.zeros((n,), dtype=jnp.int32)),
-            n_total=jnp.asarray(0, dtype=jnp.int32),
+            n_total=Table(keys, jnp.zeros((n,), dtype=jnp.int32)),
             index_prefix=tree_copy(index_prefix),
         )
 
@@ -186,7 +221,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         dt_data = state.dt.data
         alpha_data = state.alpha.data
         float_dtype = dt_data.dtype
-        n_total = state.n_total + 1
+        n_total = state.n_total.data + 1
 
         # ``updates`` IS the force F = -∇L (optax convention); see module
         # docstring. P = v_old · F per system (LAMMPS: vdotfall).
@@ -318,6 +353,6 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             dt=state.dt.set_data(new_dt),
             alpha=state.alpha.set_data(new_alpha),
             n_pos=state.n_pos.set_data(new_n_pos),
-            n_total=n_total,
+            n_total=state.n_total.set_data(n_total),
             index_prefix=idx,
         )
