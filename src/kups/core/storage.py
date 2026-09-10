@@ -34,7 +34,6 @@ from typing import Any, Literal, Protocol, Self, cast, overload, override
 import h5py
 import hdf5plugin  # registers the zstd (and other) HDF5 filters on import
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from kups.core.lens import View
@@ -493,10 +492,9 @@ class Hdf5ObjWriter[Storage]:
             self.datasets[0].file.flush()
 
 
-@jit
-def _stack_leaves(states: list[Any]) -> list[jax.Array]:
-    leaves = [jax.tree.leaves(s) for s in states]
-    return [jnp.stack([step[j] for step in leaves]) for j in range(len(leaves[0]))]
+def _stack_leaves(states: list[Any]) -> list[np.ndarray]:
+    leaves = jax.device_get([jax.tree.leaves(s) for s in states])
+    return [np.stack([step[j] for step in leaves]) for j in range(len(leaves[0]))]
 
 
 @dataclass

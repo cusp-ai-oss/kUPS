@@ -9,6 +9,7 @@ import h5py
 import hdf5plugin
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -22,6 +23,7 @@ from kups.core.storage import (
     HDF5StorageWriter,
     Once,
     WriterGroupConfig,
+    _stack_leaves,
 )
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass
@@ -51,6 +53,27 @@ class SystemData:
 class MetaData:
     step: int
     time: float
+
+
+def test_stacking_does_not_reconstruct_frames():
+    initialized = []
+
+    @dataclass
+    class Frame:
+        values: jax.Array
+        step: int
+
+        def __post_init__(self):
+            initialized.append(self.step)
+
+    frames = [Frame(jnp.arange(3.0) + i, i) for i in range(4)]
+    initialized.clear()
+    values, steps = _stack_leaves(frames)
+    assert initialized == []
+    assert isinstance(values, np.ndarray)
+    assert isinstance(steps, np.ndarray)
+    npt.assert_array_equal(values, np.arange(3.0)[None] + np.arange(4)[:, None])
+    npt.assert_array_equal(steps, np.arange(4))
 
 
 @pytest.fixture
@@ -457,24 +480,40 @@ class TestAutoBatching:
 
     def test_auto_batched_roundtrip_multiblock(self, temp_file: str):
         """Large frames force a small auto batch -> multiple blocks + a partial tail."""
-        n = 60_000  # frame is a big fraction of the 1 MiB target -> batch < num_steps
+        n = 60_000  # float64 frame -> batch of eight at the 4 MiB target
         state = SimpleState(
-            position=jnp.zeros((n,)), velocity=jnp.zeros((1,)), energy=0.0
+            position=jnp.zeros((n,), dtype=jnp.float64),
+            velocity=jnp.zeros((1,), dtype=jnp.bool_),
+            energy=0.0,
         )
         config = WriterGroupConfig(
-            view=view(lambda s: {"pos": s.position}),
+            view=view(
+                lambda s: {"pos": s.position, "metadata": (s.velocity, s.energy)}
+            ),
             logging_frequency=EveryNStep(1),
         )
         writer = HDF5StorageWriter(temp_file, config, state, total_steps=10)
         with writer:
+            assert writer._group_writers[0].batch_size == 8
             for i in range(10):
-                writer.log(SimpleState(state.position + i, state.velocity, 0.0), i)
+                writer.log(
+                    SimpleState(
+                        state.position + i, state.velocity | (i % 2 == 0), float(i)
+                    ),
+                    i,
+                )
 
         with HDF5StorageReader(temp_file) as reader:
-            pos = reader.focus_group("group")[:]["pos"]
+            stored = reader.focus_group("group")[:]
+            pos = stored["pos"]
             assert pos.shape == (10, n)
+            assert pos.dtype == jnp.float64
             for i in (0, 4, 9):
                 npt.assert_array_equal(pos[i], state.position + i)
+            flags, energy = stored["metadata"]
+            assert flags.dtype == jnp.bool_
+            npt.assert_array_equal(flags[:, 0], jnp.arange(10) % 2 == 0)
+            npt.assert_array_equal(energy, jnp.arange(10))
 
     def test_auto_handles_mixed_once_and_every_n(self, temp_file: str):
         """Auto batching coexists with a Once group (single Ellipsis-indexed write)."""
