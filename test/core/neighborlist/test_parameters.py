@@ -4,6 +4,7 @@
 """Unit tests for ``kups.core.neighborlist.parameters``."""
 
 import jax.numpy as jnp
+import pytest
 
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.table import Table
@@ -34,7 +35,9 @@ class TestEstimateAvgNumEdges:
 
 
 class TestUniversalNeighborlistParametersEstimate:
-    def _single_system(self, n_particles=100, cutoff=2.0, box=10.0):
+    def _single_system(
+        self, n_particles: int = 100, cutoff: float = 2.0, box: float = 10.0
+    ):
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
         systems, _ = make_systems(cell, jnp.array([cutoff]))
         particles_per_system = Table((SystemId(0),), jnp.array([n_particles]))
@@ -63,8 +66,7 @@ class TestUniversalNeighborlistParametersEstimate:
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
         # 1 bin/axis -> candidates capped at n_particles=200 -> 256.
         assert params.avg_candidates == 256
-        # the rounded candidate buffer is what gets replicated 8x:
-        # 256 * 8 = 2048 -> next power of two = 2048.
+        # 200 candidates * 8 images = 1600 -> 2048.
         assert params.avg_image_candidates == 2048
 
     def test_heterogeneous_cutoffs_sum_per_system(self):
@@ -80,10 +82,30 @@ class TestUniversalNeighborlistParametersEstimate:
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
         # mean candidates = (216 + 10) / 2 = 113 -> 128.
         assert params.avg_candidates == 128
-        # each system's rounded candidate buffer replicates by its own image
-        # count: (256*1 + 16*8) / 2 = 192 -> 256, well below the pessimistic
+        # Each system's candidate estimate replicates by its own image
+        # count: (216*1 + 10*8) / 2 = 148 -> 256, well below the pessimistic
         # avg_candidates * max_images = 128 * 8 -> 1024.
         assert params.avg_image_candidates == 256
+
+    @pytest.mark.parametrize("multiplier", [0.5, 1.0, 1.5, 2.0])
+    def test_minimum_image_capacity_matches_candidates(self, multiplier: float):
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, axis=0) * 10.0)
+        )
+        systems, cutoffs = make_systems(cell, jnp.array([2.0, 2.0]))
+        ppc = Table((SystemId(0), SystemId(1)), jnp.array([100, 300]))
+        params = UniversalNeighborlistParameters.estimate(
+            ppc, systems, cutoffs, multiplier=multiplier
+        )
+        assert params.avg_image_candidates == params.avg_candidates
+
+    @pytest.mark.parametrize("multiplier", [0.5, 1.0, 1.5, 2.0])
+    def test_image_headroom_applied_once(self, multiplier: float):
+        ppc, systems, cutoffs = self._single_system(n_particles=200, cutoff=6.0)
+        params = UniversalNeighborlistParameters.estimate(
+            ppc, systems, cutoffs, multiplier=multiplier
+        )
+        assert params.avg_image_candidates == 8 * params.avg_candidates
 
     def test_all_fields_positive_powers_of_two(self):
         ppc, systems, cutoffs = self._single_system(n_particles=512)
