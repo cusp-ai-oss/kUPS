@@ -637,6 +637,25 @@ class TestAssertionValidation:
         result, _ = test_fn(jnp.array(-1.0))
         assert not result
 
+    @pytest.mark.parametrize("predicate", [False, True])
+    @pytest.mark.parametrize("compiled", [False, True])
+    def test_literal_predicates_are_normalized(
+        self, predicate: bool, compiled: bool
+    ) -> None:
+        @with_runtime_assertions
+        def checked(x: Array) -> Array:
+            runtime_assert(jnp.array(predicate), "constant predicate")
+            runtime_assert(x > 0, "dynamic predicate")
+            return check_assertions(x)
+
+        fn = jax.jit(checked) if compiled else checked
+        for value in (-1.0, 1.0):
+            passed, assertions = fn(jnp.array(value))
+            assert bool(passed) == (predicate and value > 0)
+            assert len(assertions) == 2
+            assert isinstance(assertions[0].predicate, Array)
+            assert bool(assertions[0].predicate) == predicate
+
     def test_check_assertions_under_jit_and_scan(self):
         """Test that check_assertions is traceable by jit and scan."""
         assert jax.jit(lambda x: (check_assertions(x), x + 1)[1])(
