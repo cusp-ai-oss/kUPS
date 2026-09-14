@@ -42,12 +42,13 @@ from kups.potential.classical.ewald import (
 )
 from kups.potential.common.energy import (
     EnergyFunction,
+    FullSumComposer,
     IdentityComposer,
     PotentialFromEnergy,
 )
 from kups.potential.common.graph import (
-    FullGraphSumComposer,
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     HyperGraph,
     IsRadiusGraphPoints,
@@ -217,14 +218,16 @@ def evaluate_radius_graph_potential[
     )
     potential = PotentialFromEnergy(
         energy_fn,
-        FullGraphSumComposer(
-            graph_constructor=GraphConstructor(
-                particles=constant(point_cloud.particles),
-                systems=constant(point_cloud.systems),
-                neighborlist=lambda s: neighborlist_factory(s, cutoffs),
-                probe=None,
-            ),
-            parameter_view=constant(parameters),
+        FullSumComposer(
+            GraphInputConstructor(
+                graph_constructor=GraphConstructor(
+                    particles=constant(point_cloud.particles),
+                    systems=constant(point_cloud.systems),
+                    neighborlist=lambda s: neighborlist_factory(s, cutoffs),
+                    probe=None,
+                ),
+                parameter_view=constant(parameters),
+            )
         ),
         gradient_lens=gradient_lens,
         hessian_lens=hessian_lens,

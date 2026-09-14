@@ -22,12 +22,12 @@ from kups.core.neighborlist import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
+from kups.potential.common.energy import FullSumComposer, LocalSumComposer
 from kups.potential.common.graph import (
-    FullGraphSumComposer,
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     HyperGraph,
-    LocalGraphSumComposer,
     PointCloud,
 )
 
@@ -471,15 +471,15 @@ class TestGraphPotentialInput:
         assert isinstance(inp, tuple)
 
 
-class TestLocalGraphSumComposer:
-    def _make_composer(self):
+class TestGraphInputConstructor:
+    def _make_constructor(self):
         constructor = GraphConstructor(
             particles=view(lambda x: x["particles"]),
             systems=view(lambda x: x["systems"]),
             neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
-        return LocalGraphSumComposer(
+        return GraphInputConstructor(
             graph_constructor=constructor,
             parameter_view=view(lambda x: x["params"]),
         )
@@ -496,48 +496,16 @@ class TestLocalGraphSumComposer:
             "params": {"sigma": 1.0},
         }
 
-    def test_no_patch(self):
-        composer = self._make_composer()
+    @pytest.mark.parametrize("composer_type", [LocalSumComposer, FullSumComposer])
+    def test_no_patch(self, composer_type):
+        composer = composer_type(self._make_constructor())
         state = self._make_state()
         result = composer(state, None)
         assert len(result) == 1
+        assert result.add_previous_total is False
         assert result[0].weight == 1
         assert isinstance(result[0].inp, GraphPotentialInput)
         assert result[0].inp.parameters == {"sigma": 1.0}
-
-
-class TestFullGraphSumComposer:
-    def _make_composer(self):
-        constructor = GraphConstructor(
-            particles=view(lambda x: x["particles"]),
-            systems=view(lambda x: x["systems"]),
-            neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
-            probe=None,
-        )
-        return FullGraphSumComposer(
-            graph_constructor=constructor,
-            parameter_view=view(lambda x: x["params"]),
-        )
-
-    def _make_state(self):
-        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-        particles = _make_particles(positions, jnp.array([1, 2]), jnp.array([0, 0]))
-        systems = _make_systems(jnp.eye(3)[None] * 5.0, jnp.array([1.5]))
-        edges = _make_edges(particles, jnp.array([[0, 1]]), jnp.array([[[0, 0, 0]]]))
-        return {
-            "particles": particles,
-            "systems": systems,
-            "edges": edges,
-            "params": {"epsilon": 0.5},
-        }
-
-    def test_no_patch(self):
-        composer = self._make_composer()
-        state = self._make_state()
-        result = composer(state, None)
-        assert len(result) == 1
-        assert result[0].weight == 1
-        assert result[0].inp.parameters == {"epsilon": 0.5}
 
 
 # --- Patch / incremental update tests ---
@@ -902,7 +870,7 @@ class TestGraphConstructorRadiusWithPatch:
         npt.assert_allclose(graph.particles.data.positions, positions)
 
 
-class TestLocalGraphSumComposerWithPatch:
+class TestGraphInputConstructorWithProbe:
     def test_with_patch(self):
         """patch + probe → old_graph(-1) + new_graph(+1) with add_previous_total."""
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -918,9 +886,11 @@ class TestLocalGraphSumComposerWithPatch:
             neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
             probe=_point_cloud_probe(probe_result),
         )
-        composer = LocalGraphSumComposer(
-            graph_constructor=constructor,
-            parameter_view=view(lambda x: x["params"]),
+        composer = LocalSumComposer(
+            GraphInputConstructor(
+                graph_constructor=constructor,
+                parameter_view=view(lambda x: x["params"]),
+            )
         )
 
         result = composer(state, _SimplePatch(state))
@@ -936,8 +906,10 @@ class TestLocalGraphSumComposerWithPatch:
         )
 
 
-class TestFullGraphSumComposerWithPatch:
-    def test_with_patch(self):
+class TestGraphInputConstructorWithoutProbe:
+    @pytest.mark.parametrize("composer_type", [LocalSumComposer, FullSumComposer])
+    @pytest.mark.parametrize("old_input", [False, True])
+    def test_with_patch(self, old_input, composer_type):
         """patch → applies patch to state, then builds single full graph."""
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         new_positions = jnp.array([[9.0, 9.0, 9.0], [8.0, 8.0, 8.0]])
@@ -958,7 +930,7 @@ class TestFullGraphSumComposerWithPatch:
             "particles": new_particles,
             "systems": systems,
             "edges": edges,
-            "params": {"epsilon": 0.5},
+            "params": {"epsilon": 0.75},
         }
 
         constructor = GraphConstructor(
@@ -967,12 +939,31 @@ class TestFullGraphSumComposerWithPatch:
             neighborlist=lambda x: FixedEdgesNeighborList(x["edges"].indices),
             probe=None,
         )
-        composer = FullGraphSumComposer(
+        input_constructor = GraphInputConstructor(
             graph_constructor=constructor,
             parameter_view=view(lambda x: x["params"]),
         )
+        patch = _SimplePatch(new_state)
+        inp = input_constructor(state, patch, old_input=old_input)
+        expected_state = state if old_input else new_state
+        assert inp.parameters == expected_state["params"]
+        npt.assert_allclose(
+            inp.graph.particles.data.positions,
+            expected_state["particles"].data.positions,
+        )
 
-        result = composer(state, _SimplePatch(new_state))
-        assert len(result) == 1
-        assert result.add_previous_total is False
-        npt.assert_allclose(result[0].inp.graph.particles.data.positions, new_positions)
+        result = composer_type(input_constructor)(state, patch)
+        if composer_type is LocalSumComposer:
+            assert len(result) == 2
+            assert result.add_previous_total is True
+            assert result[0].weight == -1
+            assert result[0].inp.parameters == state["params"]
+            npt.assert_allclose(result[0].inp.graph.particles.data.positions, positions)
+        else:
+            assert len(result) == 1
+            assert result.add_previous_total is False
+        assert result[-1].weight == 1
+        assert result[-1].inp.parameters == new_state["params"]
+        npt.assert_allclose(
+            result[-1].inp.graph.particles.data.positions, new_positions
+        )

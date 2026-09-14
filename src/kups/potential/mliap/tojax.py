@@ -29,10 +29,10 @@ from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.msgpack import deserialize as msgpack_deserialize
-from kups.potential.common.energy import PotentialFromEnergy
+from kups.potential.common.energy import FullSumComposer, PotentialFromEnergy
 from kups.potential.common.graph import (
-    FullGraphSumComposer,
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     IsRadiusGraphPoints,
 )
@@ -209,7 +209,7 @@ def make_tojaxed_potential[State, Gradients, Hessians](
         neighborlist=neighborlist_view,
         probe=None,
     )
-    composer = FullGraphSumComposer(radius_graph_fn, model_view)
+    composer = FullSumComposer(GraphInputConstructor(radius_graph_fn, model_view))
     return PotentialFromEnergy(
         composer=composer,
         energy_fn=tojaxed_energy,
