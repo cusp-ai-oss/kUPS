@@ -99,6 +99,39 @@ class TestDataclass:
         leaves, _ = jax.tree_util.tree_flatten(TestClass(42))
         assert 42 in leaves
 
+    def test_distinct_types_keep_distinct_tree_structures(self):
+        @dataclass
+        class A:
+            value: float
+
+        @dataclass
+        class B:
+            value: float
+
+        a, b = A(1.0), B(1.0)
+        assert jax.tree.structure(a) != jax.tree.structure(b)
+        with pytest.raises(TypeError, match="pytree structure"):
+            jax.lax.cond(True, lambda: a, lambda: b)
+
+    def test_keyed_and_unkeyed_flattening_agree(self):
+        @dataclass
+        class Data:
+            points: list[_Point]
+            name: str = field(static=True, default="points")
+
+        value = Data([_Point(1.0, 2.0), _Point(3.0, 4.0)])
+        leaves, tree = jax.tree.flatten(value)
+        paths_and_leaves, keyed_tree = jax.tree.flatten_with_path(value)
+        assert tree == keyed_tree
+        assert leaves == [leaf for _, leaf in paths_and_leaves] == [1.0, 2.0, 3.0, 4.0]
+        assert [jax.tree_util.keystr(path) for path, _ in paths_and_leaves] == [
+            ".points[0].x",
+            ".points[0].y",
+            ".points[1].x",
+            ".points[1].y",
+        ]
+        assert jax.tree.unflatten(tree, leaves) == value
+
     def test_dataclass_fields_and_defaults(self):
         """Test default values, custom field, optional fields."""
 
