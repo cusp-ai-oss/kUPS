@@ -1,19 +1,22 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ewald summation for long-range electrostatics in periodic systems.
+"""Ewald electrostatics with cached, incremental reciprocal-space updates.
 
-Splits the Coulomb potential into short-range (real-space), long-range
-(reciprocal-space), and self-interaction terms. Supports incremental
-updates via cached structure factors for efficient Monte Carlo.
+``parameters`` prepares cutoffs and lattice shifts, ``reciprocal`` implements
+the numerical kernels, and ``potential`` composes energies and cache updates.
 """
 
 from .parameters import (
+    RECIPROCAL_GRID_BACKENDS,
     EwaldParameterEstimates,
     EwaldParameters,
     IsEwaldPointData,
+    ReciprocalGridBound,
     estimate_ewald_parameters,
     kvecs_from_kmax,
+    reciprocal_grid_bound,
+    reciprocal_grid_shifts,
 )
 from .potential import (
     TO_STANDARD_UNITS,
@@ -36,25 +39,17 @@ from .potential import (
     prefactor,
     structure_factor,
 )
-from .potential import (
-    _structure_factor_update as _structure_factor_update,
-)
-from .potential import (
-    _structure_factor_update_jvp as _structure_factor_update_jvp,
-)
-from .reciprocal import (
-    _frequency_response as _frequency_response,
-)
-from .reciprocal import (
-    _structure_factor_full as _structure_factor_full,
-)
 
 __all__ = [
+    "RECIPROCAL_GRID_BACKENDS",
+    "ReciprocalGridBound",
+    "EwaldParameterEstimates",
     "EwaldParameters",
     "IsEwaldPointData",
-    "EwaldParameterEstimates",
     "estimate_ewald_parameters",
     "kvecs_from_kmax",
+    "reciprocal_grid_bound",
+    "reciprocal_grid_shifts",
     "TO_STANDARD_UNITS",
     "EwaldCache",
     "EwaldCachePatch",
