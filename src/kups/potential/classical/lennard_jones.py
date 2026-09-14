@@ -26,6 +26,7 @@ from typing import (
     runtime_checkable,
 )
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -228,6 +229,20 @@ class GlobalTailCorrectedLennardJonesParameters(LennardJonesParameters):
 
     tail_corrected: Array  # (n_species, n_species) bool
 
+    @property
+    def tail_coefficients(self) -> tuple[Array, Array]:
+        """Two cutoff-independent coefficient matrices over species pairs."""
+        sigma6 = self.sigma**6
+        base = self.tail_corrected * self.epsilon
+        return base * sigma6, base * sigma6**2
+
+    @property
+    def tail_weights(self) -> Array:
+        """Current pair weights, shaped ``(2, n_systems, n_species, n_species)``."""
+        term1 = (self.sigma / self.cutoff.data[:, None, None]) ** 3
+        base = self.tail_corrected * self.epsilon * self.sigma**3
+        return jnp.stack([base * term1, base * term1**3])
+
     @classmethod
     @override
     def from_dict(
@@ -272,8 +287,16 @@ type GlobalTailCorrectedLennardJonesInput = GraphPotentialInput[
 
 def _global_tail_correction_common(
     inp: GlobalTailCorrectedLennardJonesInput,
-) -> tuple[Array, Array, Array, Array, Array, int]:
-    """Extract shared quantities for global LJ tail correction energy/pressure."""
+) -> tuple[Array, Array, Array, int]:
+    """Shared quantities for the global LJ tail correction energy/pressure.
+
+    Contracts the species counts with the pair weight matrices as bilinear
+    forms, ``q_i = n^T W_i n``, instead of materializing the density matrix.
+
+    Returns:
+        ``(q1 / V, q2 / V, V, n_graphs)`` with
+        ``W1 = mask*eps*sigma^3*(sigma/r_c)^3`` and ``W2 = mask*eps*sigma^3*(sigma/r_c)^9``.
+    """
     n_species = inp.parameters.sigma.shape[0]
     assert inp.parameters.sigma.shape == (n_species, n_species)
     assert inp.parameters.epsilon.shape == (n_species, n_species)
@@ -282,17 +305,28 @@ def _global_tail_correction_common(
     system_ids = inp.graph.particles.data.system.indices
     species_ids = inp.graph.particles.data.labels.indices_in(inp.parameters.labels)
     counts = (
-        jnp.zeros((n_graphs, n_species), dtype=int)
+        jnp.zeros((n_graphs, n_species), dtype=inp.parameters.sigma.dtype)
         .at[system_ids, species_ids]
         .add(1, mode="drop")
     )
-    volume = inp.graph.systems.data.cell.volume[:, None, None]
-    density = (counts[:, :, None] * counts[:, None, :]) / volume
-    sigma = inp.parameters.sigma
-    cutoff = inp.parameters.cutoff.data[:, None, None]
-    term1 = (sigma / cutoff) ** 3
-    term2 = term1**3
-    return density, volume, term1, term2, inp.parameters.tail_corrected, n_graphs
+    volume = inp.graph.systems.data.cell.volume
+    if (
+        jax.default_backend() in {"gpu", "cuda", "rocm"}
+        and n_graphs * n_species**2 <= 65_536
+    ):
+        # The expanded contraction is faster for small GPU workloads.
+        w1, w2 = inp.parameters.tail_weights
+        q1 = jnp.einsum("gs,gst,gt->g", counts, w1, counts) / volume
+        q2 = jnp.einsum("gs,gst,gt->g", counts, w2, counts) / volume
+    else:
+        # Factor out cutoffs to share the species matrices across systems.
+        w1, w2 = inp.parameters.tail_coefficients
+        cutoff3 = inp.parameters.cutoff.data**3
+        q1 = jnp.einsum("gs,st,gt->g", counts, w1, counts)
+        q2 = jnp.einsum("gs,st,gt->g", counts, w2, counts)
+        q1 /= volume * cutoff3
+        q2 /= volume * cutoff3**3
+    return q1, q2, volume, n_graphs
 
 
 @jit
@@ -300,14 +334,9 @@ def global_lennard_jones_tail_correction_energy(
     inp: GlobalTailCorrectedLennardJonesInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute analytical long-range tail correction energy."""
-    density, _volume, term1, term2, tail_mask, n_graphs = (
-        _global_tail_correction_common(inp)
-    )
-    sigma = inp.parameters.sigma
-    epsilon = inp.parameters.epsilon
-    result = (8 / 3) * jnp.pi * density * epsilon * sigma**3 * (term2 / 3 - term1)
-    result *= tail_mask
-    total_energies = Table.arange(result.sum(axis=(1, 2)), label=SystemId)
+    q1, q2, _volume, n_graphs = _global_tail_correction_common(inp)
+    result = (8 / 3) * jnp.pi * (q2 / 3 - q1)
+    total_energies = Table.arange(result, label=SystemId)
     assert len(total_energies) == n_graphs
     return WithPatch(total_energies, IdPatch[Any]())
 
@@ -317,22 +346,9 @@ def global_lennard_jones_tail_correction_pressure(
     inp: GlobalTailCorrectedLennardJonesInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute analytical long-range tail correction for pressure."""
-    density, volume, term1, term2, tail_mask, n_graphs = _global_tail_correction_common(
-        inp
-    )
-    sigma = inp.parameters.sigma
-    epsilon = inp.parameters.epsilon
-    result = (
-        (16 / 3)
-        * jnp.pi
-        * density
-        / volume
-        * epsilon
-        * sigma**3
-        * (term2 / 3 * 2 - term1)
-    )
-    result *= tail_mask
-    total_pressure = Table.arange(result.sum(axis=(1, 2)), label=SystemId)
+    q1, q2, volume, n_graphs = _global_tail_correction_common(inp)
+    result = (16 / 3) * jnp.pi / volume * (q2 / 3 * 2 - q1)
+    total_pressure = Table.arange(result, label=SystemId)
     assert len(total_pressure) == n_graphs
     return WithPatch(total_pressure, IdPatch[Any]())
 

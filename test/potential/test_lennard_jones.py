@@ -1,9 +1,12 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
@@ -425,6 +428,86 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
         ).sum()
         assert result.data.data.shape == (1,)
         npt.assert_allclose(result.data.data, target, rtol=1e-6)
+
+    def test_prepared_parameters_follow_changes(self):
+        parameters = GlobalTailCorrectedLennardJonesParameters.from_dict(
+            cutoff=12.0,
+            parameters={"A": (1.0, 1.0), "B": (1.2, 0.8)},
+            mixing_rule="lorentz_berthelot",
+        )
+
+        def energy(scale):
+            scaled = replace(parameters, epsilon=parameters.epsilon * scale)
+            return global_lennard_jones_tail_correction_energy(
+                GraphPotentialInput(scaled, self.graph)
+            ).data.data.sum()
+
+        reference = energy(1.0)
+        value, derivative = jax.jit(jax.value_and_grad(energy))(2.0)
+        npt.assert_allclose(value, 2 * reference)
+        npt.assert_allclose(derivative, reference)
+
+        disabled = replace(
+            parameters, tail_corrected=jnp.zeros_like(parameters.tail_corrected)
+        )
+        result = _jit_global_tail_energy(GraphPotentialInput(disabled, self.graph))
+        npt.assert_array_equal(result.data.data, 0)
+
+    @pytest.mark.parametrize("backend", ["cpu", "gpu"])
+    def test_heterogeneous_tail_cutoffs_and_parameter_derivatives(
+        self, monkeypatch, backend
+    ):
+        # The backend choice is made during tracing; exercise both branches
+        # even when these parameterizations run on the same physical device.
+        jax.clear_caches()
+        monkeypatch.setattr(jax, "default_backend", lambda: backend)
+        graph = _make_point_cloud_graph(
+            positions=jnp.zeros((6, 3)),
+            species=["A", "A", "B", "B", "B", "A"],
+            system_ids=jnp.array([0, 0, 0, 1, 1, 2]),
+            lattice_vectors=jnp.eye(3)[None]
+            * jnp.array([10.0, 12.0, 15.0])[:, None, None],
+            cutoff=jnp.array([3.0, 4.0, 5.0]),
+        )
+        counts = jnp.array([[2.0, 1.0], [0.0, 2.0], [1.0, 0.0]])
+        mask = jnp.array([[True, False], [True, True]])
+
+        def actual(sigma, epsilon, cutoff):
+            params = replace(
+                self.parameters,
+                sigma=sigma,
+                epsilon=epsilon,
+                tail_corrected=mask,
+                cutoff=Table.arange(cutoff, label=SystemId),
+            )
+            inp = GraphPotentialInput(params, graph)
+            return jnp.stack(
+                [
+                    global_lennard_jones_tail_correction_energy(inp).data.data,
+                    global_lennard_jones_tail_correction_pressure(inp).data.data,
+                ]
+            )
+
+        def reference(sigma, epsilon, cutoff):
+            volume = graph.systems.data.cell.volume
+            density = counts[:, :, None] * counts[:, None, :] / volume[:, None, None]
+            base = density * mask * epsilon * sigma**3
+            ratio = (sigma / cutoff[:, None, None]) ** 3
+            energy = (8 / 3) * jnp.pi * (base * (ratio**3 / 3 - ratio)).sum((1, 2))
+            pressure = (
+                (16 / 3)
+                * jnp.pi
+                / volume
+                * (base * (2 * ratio**3 / 3 - ratio)).sum((1, 2))
+            )
+            return jnp.stack([energy, pressure])
+
+        args = (self.sigma, self.epsilon, jnp.array([3.0, 4.0, 5.0]))
+        npt.assert_allclose(jax.jit(actual)(*args), reference(*args), rtol=1e-12)
+        derivatives = jax.jit(jax.jacrev(actual, argnums=(0, 1, 2)))(*args)
+        expected = jax.jacrev(reference, argnums=(0, 1, 2))(*args)
+        for derivative, target in zip(derivatives, expected, strict=True):
+            npt.assert_allclose(derivative, target, rtol=1e-11, atol=1e-14)
 
 
 class TestGlobalTailCorrectionPressure:
