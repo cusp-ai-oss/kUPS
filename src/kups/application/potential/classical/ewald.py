@@ -40,14 +40,13 @@ from kups.potential.classical.ewald import (
     EwaldPotential,
     IsEwaldPointData,
     make_ewald_potential,
-    pointcloud_geometry,
 )
 from kups.potential.common.geometry import (
     Geometry,
     PositionsAndCell,
     position_and_cell_idx_view,
 )
-from kups.potential.common.graph import IsGraphProbe
+from kups.potential.common.graph import POINTCLOUD_GEOMETRY, IsGraphProbe
 
 
 class IsEwaldGraphState(
@@ -228,7 +227,7 @@ def make_ewald_from_state(
     gradient_lens: Any = EMPTY_LENS
     patch_idx_view = empty_patch_idx_view
     if gradient is not None:
-        gradient_lens = pointcloud_geometry.nest(gradient)
+        gradient_lens = POINTCLOUD_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
     if parameters is not None:
         param_view = const_lens(parameters)

@@ -46,14 +46,15 @@ from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     EnergyFunction,
+    LocalSumComposer,
     PotentialFromEnergy,
 )
 from kups.potential.common.graph import (
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     IsGraphProbe,
     IsRadiusGraphPoints,
-    LocalGraphSumComposer,
 )
 
 
@@ -311,9 +312,11 @@ def make_dihedral_potential[
         ),
         probe=probe,
     )
-    composer = LocalGraphSumComposer(
-        graph_constructor=graph_fn,
-        parameter_view=parameter_view,
+    composer = LocalSumComposer(
+        GraphInputConstructor(
+            graph_constructor=graph_fn,
+            parameter_view=parameter_view,
+        )
     )
     potential = PotentialFromEnergy(
         composer=composer,

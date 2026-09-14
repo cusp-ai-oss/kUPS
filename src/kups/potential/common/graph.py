@@ -14,8 +14,7 @@ Key components:
 - **[PointCloud][kups.potential.common.graph.PointCloud]**: Indexed particles and systems
 - **[HyperGraph][kups.potential.common.graph.HyperGraph]**: Point cloud with typed edges
 - **[GraphConstructor][kups.potential.common.graph.GraphConstructor]**: Builds graphs from a degree-parametrized neighbor list
-- **[LocalGraphSumComposer][kups.potential.common.graph.LocalGraphSumComposer]**: Incremental energy update plans
-- **[FullGraphSumComposer][kups.potential.common.graph.FullGraphSumComposer]**: Full recomputation plans
+- **[GraphInputConstructor][kups.potential.common.graph.GraphInputConstructor]**: Full or incremental potential inputs
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, jit
-from kups.potential.common.energy import Sum, SumComposer, Summand
+from kups.potential.common.energy import InputConstructor
 from kups.potential.common.geometry import Geometry, PositionsAndSystemIndex
 
 Params = TypeVar("Params", covariant=True)
@@ -257,79 +256,61 @@ class IsGraphInput(Protocol):
     ) -> PointCloud[HasPositionsAndSystemIndex, HasCell[AnyPeriodicity]]: ...
 
 
-def _graph_geometry(inp: IsGraphInput) -> Geometry:
+def _pointcloud_geometry(
+    cloud: PointCloud[HasPositionsAndSystemIndex, HasCell[AnyPeriodicity]],
+) -> Geometry:
     return Geometry(
-        inp.graph.particles.map_data(
+        cloud.particles.map_data(
             lambda p: PositionsAndSystemIndex(p.positions, p.system)
         ),
-        inp.graph.systems.map_data(lambda s: s.cell),
+        cloud.systems.map_data(lambda s: s.cell),
     )
 
 
-GRAPH_GEOMETRY: Lens[IsGraphInput, Geometry] = lens(_graph_geometry)
+POINTCLOUD_GEOMETRY: Lens[Any, Geometry] = lens(_pointcloud_geometry)
+"""Geometry adapter shared by graph, fused, and reciprocal-space inputs."""
+
+
+GRAPH_GEOMETRY: Lens[IsGraphInput, Geometry] = lens(lambda inp: inp.graph).nest(
+    POINTCLOUD_GEOMETRY
+)
 """Adapter from a graph-bearing potential input to ``Geometry``."""
 
 
 @dataclass
-class LocalGraphSumComposer[
+class GraphInputConstructor[
     State,
     Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
     S: HasCell[AnyPeriodicity],
     Degree: int,
     Params,
-](SumComposer[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):
-    """Composer for local potentials with incremental updates.
+](InputConstructor[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):
+    """Construct full or affected graph inputs for the shared sum composers.
 
-    Without a patch, returns a single full-graph summand. With a patch,
-    returns ``old_graph`` (weight −1) + ``new_graph`` (weight +1) with
-    ``add_previous_total=True``, enabling O(k) energy updates.
+    A graph probe restricts proposals to affected interactions, keeping
+    parameters from the current state. Without a probe, apply the patch to
+    the full state before reading parameters and constructing the graph.
+    ``old_input`` selects the current state in either case.
     """
 
     graph_constructor: GraphConstructor[State, Ptch, P, S, Degree] = field(static=True)
     parameter_view: View[State, Params] = field(static=True)
 
     def __call__(
-        self, state: State, patch: Ptch | None
-    ) -> Sum[GraphPotentialInput[Params, P, S, Degree]]:
-        params = self.parameter_view(state)
-
-        if patch is None:
-            graph = self.graph_constructor(state, None)
-            return Sum(Summand(GraphPotentialInput(params, graph)))
-
-        old_graph = self.graph_constructor(state, patch, old_graph=True)
-        new_graph = self.graph_constructor(state, patch, old_graph=False)
-        return Sum(
-            Summand(GraphPotentialInput(params, old_graph), -1),
-            Summand(GraphPotentialInput(params, new_graph), 1),
-            add_previous_total=True,
+        self,
+        state: State,
+        patch: Ptch | None,
+        old_input: bool = False,
+    ) -> GraphPotentialInput[Params, P, S, Degree]:
+        if patch is not None and self.graph_constructor.probe is None:
+            if not old_input:
+                systems = self.graph_constructor.systems(state)
+                state = patch(
+                    state, systems.set_data(jnp.ones(len(systems), dtype=jnp.bool_))
+                )
+            patch = None
+        return GraphPotentialInput(
+            self.parameter_view(state),
+            self.graph_constructor(state, patch, old_graph=old_input),
         )
-
-
-@dataclass
-class FullGraphSumComposer[
-    State,
-    Ptch: Patch[Any],
-    P: IsRadiusGraphPoints,
-    S: HasCell[AnyPeriodicity],
-    Degree: int,
-    Params,
-](SumComposer[State, GraphPotentialInput[Params, P, S, Degree], Ptch]):
-    """Composer for global potentials requiring full recomputation.
-
-    Always applies the patch (if any) to the state and then builds a single
-    full graph.
-    """
-
-    graph_constructor: GraphConstructor[State, Ptch, P, S, Degree] = field(static=True)
-    parameter_view: View[State, Params] = field(static=True)
-
-    def __call__(
-        self, state: State, patch: Ptch | None
-    ) -> Sum[GraphPotentialInput[Params, P, S, Degree]]:
-        if patch is not None:
-            state = patch(state, Table((SystemId(0),), jnp.ones((1,), dtype=jnp.bool_)))
-        params = self.parameter_view(state)
-        graph = self.graph_constructor(state, None)
-        return Sum(Summand(GraphPotentialInput(params, graph)))

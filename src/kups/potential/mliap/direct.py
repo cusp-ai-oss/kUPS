@@ -47,10 +47,11 @@ from kups.core.typing import (
 )
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.direct import DirectPotential
+from kups.potential.common.energy import FullSumComposer
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.common.graph import (
-    FullGraphSumComposer,
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     IsRadiusGraphPoints,
 )
@@ -158,14 +159,16 @@ def make_direct_mliap_potential[
     Returns:
         Configured kUPS ``Potential`` backed by ``DirectPotential``.
     """
-    composer = FullGraphSumComposer(
-        GraphConstructor(
-            particles=particles_view,
-            systems=systems_view,
-            neighborlist=neighborlist_view,
-            probe=None,
-        ),
-        model_view,
+    composer = FullSumComposer(
+        GraphInputConstructor(
+            GraphConstructor(
+                particles=particles_view,
+                systems=systems_view,
+                neighborlist=neighborlist_view,
+                probe=None,
+            ),
+            model_view,
+        )
     )
     return DirectPotential(
         direct_potential_fn=model_fn,

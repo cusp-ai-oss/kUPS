@@ -33,7 +33,6 @@ from .potential import (
     make_ewald_potential,
     make_ewald_self_interaction_potential,
     make_ewald_short_range_potential,
-    pointcloud_geometry,
     prefactor,
     structure_factor,
 )
@@ -57,7 +56,6 @@ __all__ = [
     "estimate_ewald_parameters",
     "kvecs_from_kmax",
     "TO_STANDARD_UNITS",
-    "pointcloud_geometry",
     "EwaldCache",
     "EwaldCachePatch",
     "EwaldShortRangeInput",
