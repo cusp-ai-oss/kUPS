@@ -18,6 +18,8 @@ from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.common import (
     Candidates,
+    cell_hash,
+    cell_stencil,
     lift_query_candidates,
     num_cells,
     replicate_for_images,
@@ -57,24 +59,6 @@ class IsCellListParams(Protocol):
     def avg_image_candidates(self) -> int: ...
 
 
-def _cell_hash(coordinate: Array, num_cells: Array) -> Array:
-    """Hash folded fractional coordinates into row-major cell bins.
-
-    Boundary values are clamped into the valid bin range for each axis.
-    """
-    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
-    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
-    return (bin_idx * factor).sum(axis=-1)
-
-
-def _cell_stencil(dim: int) -> Array:
-    with jax.ensure_compile_time_eval():
-        return jnp.stack(
-            jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),
-            axis=-1,
-        ).reshape(-1, dim)
-
-
 def _cell_list_subselect(
     keys: Table[ParticleId, NeighborListPoints],
     queries: Table[ParticleId, NeighborListPoints],
@@ -106,7 +90,7 @@ def _cell_list_subselect(
     query_system_ids = queries.data.system.indices
 
     key_hashes = (
-        _cell_hash(key_positions, bins[keys.data.system])
+        cell_hash(key_positions, bins[keys.data.system])
         + key_system_ids * max_num_cells.size
     )
 
@@ -120,7 +104,7 @@ def _cell_list_subselect(
         query_original = Index(queries.keys, jnp.arange(len(queries)))
     else:
         # Expand neighborhood around query points: for each query, tile across stencil
-        stencil = _cell_stencil(dim)
+        stencil = cell_stencil(dim)
         raw_shifted = jax.vmap(
             lambda s: query_positions + s[None] / bins[queries.data.system]
         )(stencil).reshape(-1, dim)
@@ -131,7 +115,7 @@ def _cell_list_subselect(
 
     shifted, in_cell = cell.fold(raw_shifted)
     hashes = (
-        _cell_hash(shifted, bins[query_system])
+        cell_hash(shifted, bins[query_system])
         + query_system_ids[query_original.indices] * max_num_cells.size
     )
     # Stencil offsets that left the box on a non-periodic axis route to

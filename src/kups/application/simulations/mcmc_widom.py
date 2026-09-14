@@ -25,9 +25,6 @@ from kups.application.mcmc.analysis import analyze_widom_file
 from kups.application.mcmc.data import (
     AdsorbateConfig,
     HostConfig,
-    MCMCGroup,
-    MCMCParticles,
-    MCMCSystems,
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import IsWidomState, make_widom_logged_data
@@ -46,6 +43,7 @@ from kups.application.simulations.mcmc_rigid import (
     LJConfig,
     MCMCState,
     MCMCStateUpdate,
+    init_cell_tables,
 )
 from kups.application.utils.propagate import (
     make_cycle_function,
@@ -78,7 +76,7 @@ from kups.core.propagator import (
 )
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
-from kups.core.typing import GroupId, ParticleId, SystemId
+from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
@@ -154,19 +152,18 @@ def _probe(state: WidomState, update: MCMCStateUpdate) -> MCMCStateUpdate:
 def init_state(key: Array, config: Config) -> WidomState:
     """Build the batched Widom state via one ``mcmc_state_from_config`` call per host."""
     chain = key_chain(key)
-    ps: list[Table[ParticleId, MCMCParticles]] = []
-    gs: list[Table[GroupId, MCMCGroup]] = []
-    ss: list[Table[SystemId, MCMCSystems]] = []
-    motifs = None
-    for host in config.hosts:
-        p, g, s, m = mcmc_state_from_config(next(chain), host, config.adsorbates)
-        ps.append(p)
-        gs.append(g)
-        ss.append(s)
-        motifs = m
-    assert motifs is not None, "At least one host must be provided."
-
-    particles, groups, system = Table.union(ps, gs, ss)
+    host_states = [
+        mcmc_state_from_config(next(chain), host, config.adsorbates)
+        for host in config.hosts
+    ]
+    if not host_states:
+        raise ValueError("At least one host must be provided.")
+    motifs = host_states[-1][3]
+    particles, groups, system = Table.union(
+        [s[0] for s in host_states],
+        [s[1] for s in host_states],
+        [s[2] for s in host_states],
+    )
     n_sys = len(system)
 
     lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
@@ -213,6 +210,7 @@ def init_state(key: Array, config: Config) -> WidomState:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
     min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
 
+    cell_tables = init_cell_tables(particles, motifs, system, lj_params, ewald_params)
     return WidomState(
         particles=particles,
         groups=groups,
@@ -244,6 +242,7 @@ def init_state(key: Array, config: Config) -> WidomState:
             ParameterSchedulerState.create(n_sys), label=SystemId
         ),
         widom_statistics=Table.arange(WidomStatistics.zeros(n_sys), label=SystemId),
+        cell_tables=cell_tables,
     )
 
 

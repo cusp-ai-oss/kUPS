@@ -717,8 +717,7 @@ class Index[Key: SupportsSorting]:
 
         if not shift_keys:
             new_keys = _merge_keys(*[i.keys for i in indices])
-            parts = [i.indices_in(new_keys) if i.keys else i.indices for i in indices]
-            new_indices = jnp.concatenate(parts) if parts else jnp.zeros(0, dtype=int)
+            new_indices = jnp.concatenate([i.indices_in(new_keys) for i in indices])
             mc = 0
             for i in indices:
                 if i.max_count is None:

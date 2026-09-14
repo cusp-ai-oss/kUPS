@@ -140,8 +140,9 @@ class CandidateBatch[D: int]:
     def query_idx(self) -> Index[ParticleId]:
         """Pair-specific: query-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
         return Index(
-            self.query_keys or self.edges.indices.keys,
+            self.edges.indices.keys if self.query_keys is None else self.query_keys,
             self.edges.indices.indices[:, 1],
+            _cls=self.edges.indices.cls,
         )
 
 
