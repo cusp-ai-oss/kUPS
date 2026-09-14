@@ -33,6 +33,7 @@ from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive, jaxpr_as_fu
 from jax.interpreters import ad, batching, mlir
 from slub.handlers import (
     ScanSemantics,
+    default_checkpoint_handler,
     default_jit_handler,
     default_primitive_handler,
     default_scan_handler,
@@ -799,6 +800,7 @@ def with_runtime_assertions[**P, R](
             "assertion": assertion_handler,
             "check_assertion": check_assertion_handler,
             "jit": default_jit_handler,
+            "remat2": default_checkpoint_handler,
             "scan": scan_handler,
             "while": while_handler,
             "cond": cond_handler,
