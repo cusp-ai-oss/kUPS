@@ -154,6 +154,7 @@ def _build_state() -> MCMCState:
         EwaldParameters(
             alpha=Table((SystemId(0),), jnp.array([0.0])),
             cutoff=Table((SystemId(0),), jnp.array([0.0])),  # disabled
+            k_max=Table((SystemId(0),), jnp.zeros(1)),
             reciprocal_lattice_shifts=Table(
                 (SystemId(0),), jnp.zeros((1, 1, 3), dtype=int)
             ),
