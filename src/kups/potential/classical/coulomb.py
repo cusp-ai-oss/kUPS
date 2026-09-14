@@ -36,14 +36,15 @@ from kups.core.typing import (
 )
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
+    LocalSumComposer,
     PotentialFromEnergy,
 )
 from kups.potential.common.graph import (
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     IsGraphProbe,
     IsRadiusGraphPoints,
-    LocalGraphSumComposer,
 )
 
 TO_STANDARD_UNITS = HARTREE * BOHR
@@ -138,9 +139,11 @@ def make_coulomb_vacuum_potential[
         neighborlist=neighborlist_view,
         probe=probe,
     )
-    composer = LocalGraphSumComposer(
-        graph_constructor=radius_graph_fn,
-        parameter_view=lambda _: None,
+    composer = LocalSumComposer(
+        GraphInputConstructor(
+            graph_constructor=radius_graph_fn,
+            parameter_view=lambda _: None,
+        )
     )
     potential = PotentialFromEnergy(
         composer=composer,

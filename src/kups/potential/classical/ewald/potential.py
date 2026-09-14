@@ -63,21 +63,18 @@ from kups.core.utils.segment import segment_sum
 from kups.potential.classical.coulomb import _pairwise_coulomb_energy
 from kups.potential.common.energy import (
     EnergyFunction,
+    FullSumComposer,
+    LocalSumComposer,
     PotentialFromEnergy,
     Sum,
     SumComposer,
     Summand,
 )
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndSystemIndex,
-)
 from kups.potential.common.graph import (
-    FullGraphSumComposer,
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     IsGraphProbe,
-    LocalGraphSumComposer,
     PointCloud,
 )
 
@@ -86,14 +83,6 @@ from .reciprocal import _frequency_response, _structure_factor_full
 
 TO_STANDARD_UNITS = HARTREE * BOHR
 """Conversion factor from atomic units to standard energy units."""
-
-pointcloud_geometry: Lens[Any, Geometry] = lens(
-    lambda pc: Geometry(
-        pc.particles.map_data(lambda p: PositionsAndSystemIndex(p.positions, p.system)),
-        pc.systems.map_data(lambda s: s.cell),
-    )
-)
-"""Adapter bridging the Ewald ``PointCloud`` sub-input to ``Geometry``."""
 
 
 @dataclass
@@ -605,14 +594,16 @@ def make_ewald_short_range_potential[
 
     return PotentialFromEnergy(
         energy_fn=ewald_short_range_energy,
-        composer=LocalGraphSumComposer(
-            graph_constructor=GraphConstructor(
-                particles=particles_view,
-                systems=systems_view,
-                neighborlist=neighborlist_view,
-                probe=probe,
-            ),
-            parameter_view=parameter_view,
+        composer=LocalSumComposer(
+            GraphInputConstructor(
+                graph_constructor=GraphConstructor(
+                    particles=particles_view,
+                    systems=systems_view,
+                    neighborlist=neighborlist_view,
+                    probe=probe,
+                ),
+                parameter_view=parameter_view,
+            )
         ),
         gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
@@ -686,14 +677,16 @@ def make_ewald_self_interaction_potential[
     """
     return PotentialFromEnergy(
         energy_fn=ewald_self_interaction_energy,
-        composer=FullGraphSumComposer(
-            graph_constructor=GraphConstructor(
-                particles=particles_view,
-                systems=systems_view,
-                neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-                probe=None,
-            ),
-            parameter_view=parameter_view,
+        composer=FullSumComposer(
+            GraphInputConstructor(
+                graph_constructor=GraphConstructor(
+                    particles=particles_view,
+                    systems=systems_view,
+                    neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+                    probe=None,
+                ),
+                parameter_view=parameter_view,
+            )
         ),
         gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
@@ -899,7 +892,7 @@ def make_ewald_potential[
     )
     exclusion_correction = PotentialFromEnergy(
         energy_fn=_pairwise_coulomb_energy,
-        composer=LocalGraphSumComposer(excl_rg, lambda x: None),
+        composer=LocalSumComposer(GraphInputConstructor(excl_rg, lambda x: None)),
         gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens.focus(lambda x: x.exclusion) if cache_lens else None,
