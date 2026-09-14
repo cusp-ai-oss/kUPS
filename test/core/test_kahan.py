@@ -87,6 +87,18 @@ class TestKahanSummand:
         npt.assert_array_equal(s.total - big, 1.0)
         npt.assert_array_equal(naive - big, 0.0)
 
+    def test_infinite_value_keeps_infinite_total(self):
+        """An infinite addend leaves the total infinite instead of NaN."""
+        finite = KahanSummand.init(jnp.array(1.0)) + jnp.array(0.5)
+        blocked = finite + jnp.array(jnp.inf)
+        npt.assert_array_equal(blocked.compensate, 0.0)
+        npt.assert_array_equal(blocked.total, jnp.inf)
+        npt.assert_array_equal((blocked + jnp.array(-5.0)).total, jnp.inf)
+        npt.assert_array_equal(blocked.difference(finite), jnp.inf)
+        npt.assert_array_equal(finite.difference(blocked), -jnp.inf)
+        infinite = KahanSummand.init(jnp.array(jnp.inf))
+        npt.assert_array_equal((finite + infinite).total, jnp.inf)
+
     def test_total(self):
         """`total` reports the compensated sum for scalars and PyTrees."""
         s = KahanSummand(jnp.array(4.0), jnp.array(0.25))

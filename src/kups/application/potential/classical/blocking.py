@@ -114,8 +114,8 @@ def make_blocking_spheres_from_state(
         state: Lens into the sub-state providing particles, groups, systems, and
             neighbor list (plus ``blocking_spheres_parameters`` when
             ``parameters`` is not given).
-        probe: Probe returning a IsBlockingSpheresProbe; ``None`` for full
-            recomputation.
+        probe: Probe returning a IsBlockingSpheresProbe; ``None`` evaluates a
+            patched state over every particle.
         parameters: Constant blocking sphere parameters. When given they are
             bound with a constant lens and the state need not carry
             ``blocking_spheres_parameters``.

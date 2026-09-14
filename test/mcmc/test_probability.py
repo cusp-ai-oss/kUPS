@@ -225,6 +225,32 @@ class TestNVTProbabilityRatio:
         )
         npt.assert_allclose(result.data.data, expected, rtol=1e-10)
 
+    def test_infinite_energy_is_certain_accept_or_reject(self):
+        """A blocked state (inf energy) escapes with certainty; entering rejects."""
+        blocked = MockState(
+            temperature=self.temperature,
+            last_potential_out=KahanSummand.init(
+                PotentialOut(
+                    total_energies=Table.arange(
+                        jnp.full(self.n_systems, jnp.inf), label=SystemId
+                    ),
+                    gradients=(),
+                    hessians=(),
+                )
+            ),
+        )
+        escape = BoltzmannLogProbabilityRatio(
+            temperature=self.temperature_view,
+            potential=self.create_mock_potential(self.old_energies),
+        )(blocked, self.test_patch)
+        npt.assert_array_equal(escape.data.data, jnp.inf)
+
+        enter = BoltzmannLogProbabilityRatio(
+            temperature=self.temperature_view,
+            potential=self.create_mock_potential(jnp.full(self.n_systems, jnp.inf)),
+        )(self.state, self.test_patch)
+        npt.assert_array_equal(enter.data.data, -jnp.inf)
+
     def test_temperature_dependence_exact(self):
         """Test exact temperature dependence of probability ratio."""
         energy_increase = 5.0

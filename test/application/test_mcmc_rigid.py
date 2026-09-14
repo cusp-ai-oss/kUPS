@@ -21,6 +21,9 @@ from kups.application.mcmc.data import (
     MotifParticles,
     RunConfig,
 )
+from kups.application.potential.classical.blocking import (
+    make_blocking_spheres_from_state,
+)
 from kups.application.potential.classical.ewald import make_ewald_from_state
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
@@ -687,6 +690,64 @@ def test_reinsertion_onto_colliding_particle_matches_full(state: MCMCState):
     e_full = pot(new_state).data.total_energies.data
     assert float(e_full[0]) > 1.0, "reinserted molecule must contact particle 0"
     npt.assert_allclose(out.data.total_energies.data, e_full, rtol=1e-6, atol=1e-6)
+
+
+class TestBlockingSpheresPatch:
+    """A proposed move must be evaluated against the blocking spheres.
+
+    ``movement_update_pid0`` moves particle 0 from ``[2, 2, 2]`` onto the sphere
+    centre, so the patched configuration is blocked while the current one is not.
+    """
+
+    @staticmethod
+    def _with_sphere(state: MCMCState) -> MCMCState:
+        return bind(state, lambda x: x.blocking_spheres_parameters).set(
+            BlockingSpheresParameters(
+                radii=jnp.array([1.0]),
+                positions=jnp.array([[3.0, 3.0, 3.0]]),
+                system=Index.new([SystemId(0)]).populate_max_count(),
+                motif=Index.new([MotifId(0)]).populate_max_count(),
+            )
+        )
+
+    def test_probed_move_into_sphere_is_blocked(
+        self, state: MCMCState, movement_update_pid0: MCMCStateUpdate
+    ):
+        pot = make_blocking_spheres_from_state(identity_lens(MCMCState), _probe)
+        blocked = self._with_sphere(state)
+        assert pot(blocked).data.total_energies.data[0] == 0.0
+        assert jnp.isinf(pot(blocked, movement_update_pid0).data.total_energies.data[0])
+
+    def test_probed_move_outside_sphere_is_free(
+        self,
+        state: MCMCState,
+        movement_update_newpos: tuple[MCMCStateUpdate, jax.Array],
+    ):
+        pot = make_blocking_spheres_from_state(identity_lens(MCMCState), _probe)
+        update, _ = movement_update_newpos
+        assert pot(self._with_sphere(state), update).data.total_energies.data[0] == 0.0
+
+    def test_probe_narrows_the_query(
+        self, state: MCMCState, movement_update_pid0: MCMCStateUpdate
+    ):
+        """The probed plan carries only the moved particle, not the whole table."""
+        blocked = self._with_sphere(state)
+        sl = identity_lens(MCMCState)
+        ((probed, _),) = make_blocking_spheres_from_state(sl, _probe).composer(
+            blocked, movement_update_pid0
+        )
+        ((full, _),) = make_blocking_spheres_from_state(sl).composer(
+            blocked, movement_update_pid0
+        )
+        assert len(probed.particles) == 1
+        assert len(full.particles) == len(state.particles)
+
+    def test_unprobed_move_into_sphere_is_blocked(
+        self, state: MCMCState, movement_update_pid0: MCMCStateUpdate
+    ):
+        pot = make_blocking_spheres_from_state(identity_lens(MCMCState))
+        blocked = self._with_sphere(state)
+        assert jnp.isinf(pot(blocked, movement_update_pid0).data.total_energies.data[0])
 
 
 class TestRunNVT:

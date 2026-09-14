@@ -909,6 +909,27 @@ def isin(a: Array, b: Array, max_item: int) -> Array:
     )
 
 
+def drop_nonfinite_compensation[T](compensate: T) -> T:
+    """Zero the compensation terms that are not finite.
+
+    Once a running sum reaches an infinity the compensation update yields NaN or
+    an infinity, which would poison later additions. Exact dtypes pass through.
+
+    Args:
+        compensate: Compensation PyTree from a compensated-summation step.
+
+    Returns:
+        The compensation with every non-finite entry replaced by zero.
+    """
+
+    def drop(c: Any) -> Any:
+        if not jnp.issubdtype(jnp.result_type(c), jnp.inexact):
+            return c
+        return jnp.where(jnp.isfinite(c), c, jnp.zeros_like(c))
+
+    return tree_map(drop, compensate)
+
+
 def kahan_summation[T](*summands: T, compensate: T | None = None) -> tuple[T, T]:
     """Numerically stable summation using Kahan's compensated algorithm.
 
@@ -918,6 +939,9 @@ def kahan_summation[T](*summands: T, compensate: T | None = None) -> tuple[T, T]
 
     The algorithm maintains an error compensation term that captures lost
     precision, significantly reducing numerical drift in iterative computations.
+
+    A step whose compensation is not finite drops it, so an infinite sum stays
+    infinite instead of becoming NaN.
 
     Args:
         *summands: One or more PyTrees to sum together.
@@ -954,7 +978,7 @@ def kahan_summation[T](*summands: T, compensate: T | None = None) -> tuple[T, T]
     for summand in summands[1:]:
         y = sub(summand, compensate)
         t = add(result, y)
-        compensate = sub(sub(t, result), y)
+        compensate = drop_nonfinite_compensation(sub(sub(t, result), y))
         result = t
     return result, compensate
 

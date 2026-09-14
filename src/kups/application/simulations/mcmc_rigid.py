@@ -363,7 +363,7 @@ def make_propagator(
         logging.info("Charged particles detected: including Ewald potential.")
     # If we have any blocking spheres, we include the blocking spheres potential
     if state.has_blocking_spheres:
-        potentials.append(make_blocking_spheres_from_state(state_lens))
+        potentials.append(make_blocking_spheres_from_state(state_lens, _probe))
         logging.info("Blocking spheres detected: including blocking spheres potential.")
     potential = sum_potentials(*potentials)
     potential, probability_ratio = make_muvt_probability_ratio(state_lens, potential)
