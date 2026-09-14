@@ -756,6 +756,12 @@ def dataclass[T](
             aux = tuple(getattr(x, n) for n in _meta)
             return children, aux
 
+        def _flatten(x: T):
+            return (
+                tuple(getattr(x, n) for n in data_fields),
+                tuple(getattr(x, n) for n in meta_fields),
+            )
+
         def _unflatten(
             meta: tuple[object, ...],
             data: Iterable[Any],
@@ -768,7 +774,9 @@ def dataclass[T](
             kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
             return _cls(**kwargs)
 
-        jax.tree_util.register_pytree_with_keys(dcls, _flatten_with_keys, _unflatten)
+        jax.tree_util.register_pytree_with_keys(
+            dcls, _flatten_with_keys, _unflatten, flatten_func=_flatten
+        )
         return dcls
 
     if cls is None:
