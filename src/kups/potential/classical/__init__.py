@@ -29,7 +29,7 @@ from .cosine_angle import (
     make_cosine_angle_potential,
 )
 from .dihedral import DihedralParameters, make_dihedral_potential
-from .ewald import EwaldParameters, make_ewald_potential
+from .ewald import EwaldParameters, ewald_short_range_pair, make_ewald_potential
 from .harmonic import (
     HarmonicAngleParameters,
     HarmonicBondParameters,
@@ -45,6 +45,7 @@ from .lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
     LennardJonesParameters,
     PairTailCorrectedLennardJonesParameters,
+    lennard_jones_pair,
     make_global_lennard_jones_tail_correction_potential,
     make_lennard_jones_potential,
     make_pair_tail_corrected_lennard_jones_potential,
@@ -55,6 +56,8 @@ __all__ = [
     "make_cosine_angle_potential",
     "make_dihedral_potential",
     "make_ewald_potential",
+    "ewald_short_range_pair",
+    "lennard_jones_pair",
     "make_harmonic_angle_potential",
     "make_harmonic_bond_potential",
     "make_inversion_potential",

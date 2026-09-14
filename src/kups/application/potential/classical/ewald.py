@@ -46,7 +46,7 @@ from kups.potential.common.geometry import (
     PositionsAndCell,
     position_and_cell_idx_view,
 )
-from kups.potential.common.graph import POINTCLOUD_GEOMETRY, IsGraphProbe
+from kups.potential.common.graph import POINTCLOUD_GEOMETRY, IsParticleProbe
 
 
 class IsEwaldGraphState(
@@ -104,7 +104,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
         State, IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
     ],
-    probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsEwaldPointData]],
     *,
     parameters: None = None,
     gradient: None = None,
@@ -123,7 +123,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
             HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]
         ],
     ],
-    probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsEwaldPointData]],
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
@@ -161,7 +161,7 @@ def make_ewald_from_state[State](
 @overload
 def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[State, IsCachedEwaldGraphState[EwaldCache[EmptyType, EmptyType]]],
-    probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsEwaldPointData]],
     *,
     parameters: EwaldParameters,
     gradient: None = None,
@@ -177,7 +177,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
         State, IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
     ],
-    probe: Probe[State, P, IsGraphProbe[IsEwaldPointData, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsEwaldPointData]],
     *,
     parameters: EwaldParameters,
     gradient: Lens[Geometry, PositionsAndCell],

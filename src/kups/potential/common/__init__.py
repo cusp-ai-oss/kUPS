@@ -13,6 +13,8 @@ patterns for efficient incremental updates.
 - **[energy][kups.potential.common.energy]**: Energy computation patterns with incremental updates
 - **[direct][kups.potential.common.direct]**: Direct potential for models providing precomputed gradients
 - **[evaluation][kups.potential.common.evaluation]**: One-shot potential evaluation with assertion retry logic
+- **[fused][kups.potential.common.fused]**: Fused pair-potential evaluation on a cell table (no materialized edges)
+- **[pair][kups.potential.common.pair]**: Additive pair terms with independent features, cutoffs, and masks
 
 These utilities enable efficient neighbor list construction, batched graph representations,
 and optimized energy evaluations that avoid redundant calculations during Monte Carlo moves.

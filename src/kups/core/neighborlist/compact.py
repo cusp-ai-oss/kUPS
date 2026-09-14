@@ -47,6 +47,19 @@ class ReduceCompactor[D: int](Compactor[D]):
     ) -> Edges[D]:
         oob = max(ctx.keys.size, ctx.edge_query_table.size)
         max_edges = self.avg_edges.generate_assertion(keep.sum())
+        if keep.size == 0:
+            # JAX cannot gather a padded output from an empty source array.
+            return Edges(
+                Index(
+                    batch.edges.indices.keys,
+                    jnp.full((max_edges.size, *batch.edges.indices.shape[1:]), oob),
+                    _cls=batch.edges.indices.cls,
+                ),
+                jnp.zeros(
+                    (max_edges.size, *batch.edges.shifts.shape[1:]),
+                    dtype=batch.edges.shifts.dtype,
+                ),
+            )
         sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
         shifts = batch.edges.shifts.at[sort_idxs].get(
             mode="fill", fill_value=0, indices_are_sorted=True
@@ -55,7 +68,10 @@ class ReduceCompactor[D: int](Compactor[D]):
         indices = batch.edges.indices.indices.at[sort_idxs].get(
             mode="fill", fill_value=oob, indices_are_sorted=True
         )
-        return Edges(Index(batch.edges.indices.keys, indices), shifts)
+        return Edges(
+            Index(batch.edges.indices.keys, indices, _cls=batch.edges.indices.cls),
+            shifts,
+        )
 
 
 @dataclass
@@ -76,4 +92,7 @@ class MaskOnlyCompactor[D: int](Compactor[D]):
         indices_in = batch.edges.indices.indices
         indices = where_broadcast_last(keep, indices_in, oob)
         shifts = where_broadcast_last(keep, batch.edges.shifts, 0)
-        return Edges(Index(batch.edges.indices.keys, indices), shifts)
+        return Edges(
+            Index(batch.edges.indices.keys, indices, _cls=batch.edges.indices.cls),
+            shifts,
+        )

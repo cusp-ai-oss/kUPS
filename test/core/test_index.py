@@ -230,6 +230,16 @@ class TestMatchIndices:
 
 
 class TestConcatenate:
+    def test_empty_vocabulary_stays_inactive(self):
+        inactive = Index((), jnp.zeros(2, int), max_count=0, _cls=str)
+        active = Index(("X",), jnp.array([0, 1]), max_count=1)
+        result = Index.concatenate(inactive, active)
+        assert result.keys == ("X",)
+        assert result.cls is str
+        assert result.max_count == 1
+        npt.assert_array_equal(result.indices, [1, 1, 0, 1])
+        npt.assert_array_equal(result.valid_mask, [False, False, True, False])
+
     def test_same_disjoint_overlapping(self):
         a = Index(("H", "O"), jnp.array([0, 1, 0]))
         b = Index(("H", "O"), jnp.array([1, 1]))

@@ -26,10 +26,12 @@ from kups.potential.common.energy import FullSumComposer, LocalSumComposer
 from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,
+    GraphPairEnergy,
     GraphPotentialInput,
     HyperGraph,
     PointCloud,
 )
+from kups.potential.common.pair import PairEnergy
 
 
 @dataclass
@@ -88,6 +90,57 @@ def _make_edges(
         indices=Index(particles.keys, indices),
         shifts=shifts,
     )
+
+
+class TestGraphPairEnergy:
+    def test_features_cutoffs_images_and_padding(self):
+        particles = _make_particles(
+            jnp.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+            ),
+            jnp.array([2.0, 3.0, 4.0, 5.0]),
+            jnp.array([0, 0, 1, 1]),
+        )
+        systems = _make_systems(
+            jnp.tile(jnp.eye(3) * 4.0, (3, 1, 1)), jnp.array([4.5, 1.5, 4.5])
+        )
+        edges = Edges[Literal[2]](
+            Index(
+                particles.keys,
+                jnp.array(
+                    [
+                        [0, 1],
+                        [1, 0],
+                        [2, 3],
+                        [3, 2],
+                        [0, 0],
+                        [0, 0],
+                        [0, 1],
+                        [4, 4],
+                        [0, 2],
+                    ]
+                ),
+            ),
+            jnp.zeros((9, 1, 3)).at[4:7, 0, 0].set(jnp.array([1.0, -1.0, 1.0])),
+        )
+        pair = PairEnergy[Table[SystemId, jax.Array], _PointData, jax.Array](
+            kernel=lambda params, left, right, rij, r2, system: left * right * r2,
+            # Features are computed on particle rows before gathering edge endpoints.
+            features=lambda p: p.species + p.positions[:, 0],
+            cutoffs=lambda p: p,
+        )
+        energy = GraphPairEnergy(pair)
+        parameters = _system_cutoffs(systems)
+        inp = GraphPotentialInput(parameters, HyperGraph(particles, systems, edges))
+        # System 1 is outside its cutoff; system 2 has no particles. Nonzero
+        # self images remain, while padding and cross-system edges contribute zero.
+        npt.assert_allclose(
+            jax.jit(energy.edge_energies)(inp),
+            [8.0, 8.0, 0.0, 0.0, 64.0, 64.0, 0.0, 0.0, 0.0],
+        )
+        result = jax.jit(energy)(inp)
+        assert result.data.keys == systems.keys
+        npt.assert_allclose(result.data.data, [72.0, 0.0, 0.0])
 
 
 class TestPointCloud:
@@ -538,11 +591,9 @@ class _SimplePatch:
 
 @dataclass
 class _PointCloudGraphProbe:
-    """Graph probe for a point cloud: particle updates, no neighbour lists."""
+    """Particle-only probe for graph construction."""
 
     particles: object
-    neighborlist_after: object = EmptyNeighborList[Literal[0]]()
-    neighborlist_before: object = EmptyNeighborList[Literal[0]]()
 
 
 def _point_cloud_probe(probe_result):

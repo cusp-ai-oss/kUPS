@@ -21,7 +21,6 @@ from typing import (
     Literal,
     Protocol,
     assert_never,
-    cast,
     override,
     runtime_checkable,
 )
@@ -31,7 +30,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity
-from kups.core.data import Table
+from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     EmptyNeighborList,
@@ -66,15 +65,23 @@ from kups.potential.common.energy import (
 from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,
+    GraphPairEnergy,
     GraphPotentialInput,
-    IsGraphProbe,
+    IsParticleProbe,
 )
+from kups.potential.common.pair import PairEnergy
 
 type MixingRule = Literal["lorentz_berthelot"]
 
 
 @runtime_checkable
 class IsLennardJonesParticles(HasPositions, HasLabels, HasSystemIndex, Protocol): ...
+
+
+@runtime_checkable
+class IsLJGraphParticles(
+    IsLennardJonesParticles, HasInclusionIndex, HasExclusionIndex, Protocol
+): ...
 
 
 @dataclass
@@ -139,41 +146,57 @@ class LennardJonesParameters:
         return cls(tuple(map(Label, labels)), sigma_matrix, epsilon_matrix, cutoff)
 
 
+@jit
+def lennard_jones_pair_kernel(
+    parameters: LennardJonesParameters,
+    labels_i: Index[Label],
+    labels_j: Index[Label],
+    rij: Array,
+    r2: Array,
+    system: Index[SystemId],
+    /,
+) -> Array:
+    """Lennard-Jones pair kernel shared by graph and fused evaluation.
+
+    Callers apply the cutoff; pair inputs broadcast to a common shape.
+
+    Args:
+        parameters: LJ mixing tables.
+        labels_i: Species labels of the left atoms.
+        labels_j: Species labels of the right atoms.
+        rij: Difference vectors (unused).
+        r2: Squared distances.
+        system: Left-side system ids (unused).
+
+    Returns:
+        Pair energies.
+    """
+    del rij, system
+    species_i = labels_i.indices_in(parameters.labels)
+    species_j = labels_j.indices_in(parameters.labels)
+    epsilon = parameters.epsilon[species_i, species_j]
+    sigma = parameters.sigma[species_i, species_j]
+    c6 = (sigma**2 / r2) ** 3
+    return 4 * epsilon * (c6**2 - c6)
+
+
+lennard_jones_pair = PairEnergy[
+    LennardJonesParameters, IsLennardJonesParticles, Index[Label]
+](
+    kernel=lennard_jones_pair_kernel,
+    features=lambda p: p.labels,
+    cutoffs=lambda p: p.cutoff,
+)
+"""LJ pair term; add terms before constructing a fused evaluator."""
+
+
 type LennardJonesInput = GraphPotentialInput[
     LennardJonesParameters, IsLennardJonesParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 
-@jit
-def lennard_jones_edge_energy(inp: LennardJonesInput) -> Array:
-    """Compute Lennard-Jones energy per edge."""
-    graph = inp.graph
-    assert graph.edges.indices.shape[1] == 2
-    sigma = inp.parameters.sigma
-    epsilon = inp.parameters.epsilon
-    assert sigma.ndim == 2 and sigma.shape[0] == sigma.shape[1]
-    assert epsilon.ndim == 2 and epsilon.shape[0] == epsilon.shape[1]
-    edg_species = graph.particles[graph.edges.indices].labels.indices_in(
-        inp.parameters.labels
-    )
-    epsilon = epsilon[edg_species[:, 0], edg_species[:, 1]]
-    sigma = sigma[edg_species[:, 0], edg_species[:, 1]]
-    r2 = jnp.sum(graph.edge_shifts[:, 0] ** 2, axis=-1)
-    c6 = (sigma**2 / r2) ** 3
-    edge_energy = 4 * epsilon * (c6**2 - c6)
-    batch = graph.edge_batch_mask.indices
-    mask = r2 < jnp.pow(inp.parameters.cutoff.data, 2)[batch]
-    return edge_energy * mask
-
-
-def lennard_jones_energy(
-    inp: LennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
-    """Compute total Lennard-Jones energy per system."""
-    graph = inp.graph
-    edge_energy = lennard_jones_edge_energy(inp)
-    total_energies = graph.edge_batch_mask.sum_over(edge_energy) / 2
-    return WithPatch(total_energies, IdPatch[Any]())
+lennard_jones_energy = GraphPairEnergy(lennard_jones_pair)
+"""Lennard-Jones graph evaluator derived from the shared pair term."""
 
 
 @dataclass
@@ -202,7 +225,7 @@ def pair_tail_corrected_lennard_jones_energy(
     """Compute Lennard-Jones energy with smooth pairwise tail correction."""
     graph = inp.graph
     r: Array = jnp.linalg.norm(graph.edge_shifts, axis=(-2, -1))
-    edge_energy = lennard_jones_edge_energy(cast(LennardJonesInput, inp))
+    edge_energy = lennard_jones_energy.edge_energies(inp)
 
     batch = graph.edge_batch_mask
     r_tr = inp.parameters.truncation_radius[batch]
@@ -354,13 +377,6 @@ def global_lennard_jones_tail_correction_pressure(
     return WithPatch(total_pressure, IdPatch[Any]())
 
 
-# --- Factory functions ---
-@runtime_checkable
-class IsLJGraphParticles(
-    IsLennardJonesParticles, HasInclusionIndex, HasExclusionIndex, Protocol
-): ...
-
-
 type LJRadiusInp = GraphPotentialInput[
     LennardJonesParameters, IsLJGraphParticles, HasCell[AnyPeriodicity], Literal[2]
 ]
@@ -376,7 +392,7 @@ def make_lennard_jones_potential[
     systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, LennardJonesParameters],
-    probe: Probe[State, Ptch, IsGraphProbe[IsLJGraphParticles, Literal[2]]] | None,
+    probe: Probe[State, Ptch, IsParticleProbe[IsLJGraphParticles]] | None,
     gradient_lens: Lens[LJRadiusInp, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -426,7 +442,7 @@ def make_pair_tail_corrected_lennard_jones_potential[
     systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, PairTailCorrectedLennardJonesParameters],
-    probe: Probe[State, Ptch, IsGraphProbe[IsLJGraphParticles, Literal[2]]] | None,
+    probe: Probe[State, Ptch, IsParticleProbe[IsLJGraphParticles]] | None,
     gradient_lens: Lens[PCLJInp, Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
