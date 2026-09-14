@@ -5,6 +5,8 @@
 
 Contains:
 
+- ``cell_hash``, ``cell_stencil`` — spatial binning primitives shared by
+  cell lists and persistent cell tables.
 - ``num_cells`` — per-axis spatial bin counts (used by the cell-list
   selector and by ``parameters.estimate``).
 - ``Candidates`` — private intermediate struct used inside individual
@@ -47,6 +49,32 @@ from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 
 
+def cell_hash(coordinate: Array, num_cells: Array) -> Array:
+    """Hash folded fractional coordinates into row-major cell bins.
+
+    Boundary values are clamped into the valid bin range for each axis.
+
+    Args:
+        coordinate: Fractional coordinates in ``[0, 1)``, ``(..., dim)``.
+        num_cells: Per-axis bin counts broadcastable to ``coordinate``.
+
+    Returns:
+        Row-major bin ids of shape ``(...,)``.
+    """
+    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
+    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
+    return (bin_idx * factor).sum(axis=-1)
+
+
+def cell_stencil(dim: int) -> Array:
+    """All ``3**dim`` neighbor-cell offsets in ``{-1, 0, 1}**dim``, ``(3**dim, dim)``."""
+    with jax.ensure_compile_time_eval():
+        return jnp.stack(
+            jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),
+            axis=-1,
+        ).reshape(-1, dim)
+
+
 def num_cells(
     systems: NeighborListSystems,
     cutoff: Array,
@@ -81,7 +109,8 @@ def lift_query_candidates(candidates: Candidates, ctx: PipelineContext) -> Candi
         mode="fill", fill_value=oob
     )
     return Candidates(
-        key_idx=candidates.key_idx, query_idx=Index(ctx.keys.keys, query_idx)
+        key_idx=candidates.key_idx,
+        query_idx=Index(ctx.keys.keys, query_idx, _cls=ctx.keys.cls),
     )
 
 
@@ -295,7 +324,7 @@ def candidates_to_batch(
         [candidates.key_idx.indices, candidates.query_idx.indices], axis=-1
     )
     edges: Edges[Literal[2]] = Edges(
-        Index(candidates.key_idx.keys, indices_2d),
+        Index(candidates.key_idx.keys, indices_2d, _cls=candidates.key_idx.cls),
         jnp.expand_dims(shifts, axis=-2),
     )
     return CandidateBatch(

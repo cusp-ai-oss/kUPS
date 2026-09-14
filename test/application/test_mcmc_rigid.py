@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import tempfile
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -35,7 +36,9 @@ from kups.application.simulations.mcmc_rigid import (
     LJConfig,
     MCMCState,
     MCMCStateUpdate,
+    _make_potential,
     _probe,
+    init_cell_tables,
     init_state,
     make_guest_stress,
     make_propagator,
@@ -195,6 +198,9 @@ def _build_state() -> MCMCState:
             index=jnp.zeros((1,), dtype=int),
         ),
     )
+    cell_tables = init_cell_tables(
+        particles, motifs, systems, lj_params.data, ewald_params.data
+    )
     return MCMCState(
         particles=particles,
         groups=groups,
@@ -224,6 +230,7 @@ def _build_state() -> MCMCState:
         rotation_params=Table.arange(move_params, label=SystemId),
         reinsertion_params=Table.arange(move_params, label=SystemId),
         exchange_params=Table.arange(move_params, label=SystemId),
+        cell_tables=cell_tables,
     )
 
 
@@ -336,22 +343,6 @@ class TestPatchFn:
 
     def test_group_changes_single(self, movement_update_pid0):
         assert movement_update_pid0.groups.indices.indices.shape == (1,)
-
-    def test_edges_have_valid_indices(self, movement_update_pid0):
-        after_idx = movement_update_pid0.edges_after.indices.indices
-        before_idx = movement_update_pid0.edges_before.indices.indices
-        assert after_idx.shape[-1] == 2
-        assert before_idx.shape[-1] == 2
-
-    def test_neighborlists_return_correct_type(self, movement_update_pid0):
-        from kups.core.neighborlist import RefineMaskNeighborList
-
-        assert isinstance(
-            movement_update_pid0.neighborlist_after, RefineMaskNeighborList
-        )
-        assert isinstance(
-            movement_update_pid0.neighborlist_before, RefineMaskNeighborList
-        )
 
 
 class TestExchPatchFn:
@@ -669,11 +660,9 @@ class TestExchangeEnergyConsistency:
 
 
 def test_reinsertion_onto_colliding_particle_matches_full(state: MCMCState):
-    """A moved molecule must still interact with a particle sharing its id.
+    """Reinsertion must include newly formed close-contact pairs.
 
-    ``_self_excluding`` numbers the moved molecule's groups from 0, so
-    without a disjoint offset it collides with particle 0's self-exclusion
-    group. Molecule 1 (isolated at ``[9, 9, 9]``) is reinserted next to
+    Molecule 1 (isolated at ``[9, 9, 9]``) is reinserted next to
     particle 0 (at ``[2, 2, 2]``); dropping that close-contact pair would
     make the incremental delta disagree with a full evaluation.
     """
@@ -784,3 +773,107 @@ class TestRunGCMC:
     def test_analyzer_reads_back_physical_outputs(self, run_result):
         _, out_file = run_result
         _assert_readable(out_file)
+
+
+class TestFusedPairIntegration:
+    def test_empty_and_occupied_systems_match_without_noop_guard(self):
+        from kups.core.propagator import propagate_and_fix
+        from kups.core.result import as_result_function
+
+        config = _batched_config(n_hosts=2, init_adsorbates=(1,))
+        config = config.model_copy(
+            update={
+                "hosts": (
+                    config.hosts[0].model_copy(update={"init_adsorbates": (0,)}),
+                    config.hosts[1],
+                )
+            }
+        )
+        state = init_state(jax.random.key(81), config)
+        initializer, guarded = make_propagator(
+            state, config.run.model_copy(update={"min_cycle_length": 4})
+        )
+        mc = guarded.propagator.propagator
+        assert mc.is_noop is not None
+        baseline = replace(
+            guarded,
+            propagator=replace(
+                guarded.propagator, propagator=replace(mc, is_noop=None)
+            ),
+        )
+        state = propagate_and_fix(
+            jax.jit(as_result_function(initializer)), jax.random.key(82), state
+        )
+        npt.assert_array_equal(state.groups.data.system.counts.data, [0, 1])
+        reference = candidate = state
+        baseline_step = jax.jit(as_result_function(baseline))
+        guarded_step = jax.jit(as_result_function(guarded))
+        for key in jax.random.split(jax.random.key(83), 8):
+            reference = propagate_and_fix(baseline_step, key, reference)
+            candidate = propagate_and_fix(guarded_step, key, candidate)
+            npt.assert_array_equal(
+                candidate.particles.occupation, reference.particles.occupation
+            )
+            npt.assert_array_equal(
+                candidate.groups.occupation, reference.groups.occupation
+            )
+            npt.assert_allclose(
+                candidate.particles.data.positions,
+                reference.particles.data.positions,
+                rtol=0,
+                atol=1e-10,
+            )
+            npt.assert_allclose(
+                candidate.systems.data.potential_energy.total,
+                reference.systems.data.potential_energy.total,
+                rtol=1e-9,
+                atol=1e-10,
+            )
+            for name in ("translation", "rotation", "reinsertion", "exchange"):
+                left = getattr(candidate, name + "_params")
+                right = getattr(reference, name + "_params")
+                for a, b in zip(
+                    jax.tree.leaves(left), jax.tree.leaves(right), strict=True
+                ):
+                    npt.assert_array_equal(a, b)
+
+    @pytest.mark.parametrize("charged", [False, True])
+    @pytest.mark.parametrize("cutoff", [5.0, 8.0])
+    def test_cycles_match_full_recomputation(self, charged, cutoff):
+        from kups.core.propagator import propagate_and_fix
+        from kups.core.result import as_result_function
+
+        config = _config(exchange_prob=0.5, init_adsorbates=(2,))
+        config = config.model_copy(
+            update={
+                "lj": config.lj.model_copy(update={"cutoff": cutoff}),
+                "ewald": config.ewald.model_copy(update={"real_cutoff": cutoff}),
+            }
+        )
+        if not charged:
+            adsorbate = config.adsorbates[0].model_copy(
+                update={"charges": (0.0, 0.0, 0.0)}
+            )
+            config = config.model_copy(update={"adsorbates": (adsorbate,)})
+        state = init_state(jax.random.key(71), config)
+        initialize, cycle = make_propagator(state, config.run)
+        reference = _make_potential(state)
+
+        def apply(propagator, key, state):
+            return propagate_and_fix(as_result_function(propagator), key, state)
+
+        state = apply(initialize, jax.random.key(72), state)
+        for key in jax.random.split(jax.random.key(73), 3):
+            npt.assert_allclose(
+                state.systems.data.potential_energy.total,
+                reference(state).data.total_energies.data,
+                rtol=1e-9,
+                atol=1e-10,
+            )
+            state = apply(cycle, key, state)
+        npt.assert_allclose(
+            state.systems.data.potential_energy.total,
+            reference(state).data.total_energies.data,
+            rtol=1e-9,
+            atol=1e-10,
+        )

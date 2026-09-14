@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from operator import itemgetter
 from typing import Any, Literal
 
 import jax
@@ -50,16 +51,12 @@ from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
-from kups.core.data.index import Index, unify_keys_by_cls
+from kups.core.data.index import unify_keys_by_cls
 from kups.core.lens import bind, identity_lens, lens
 from kups.core.neighborlist import (
-    AdaptiveNeighborList,
     DenseNearestNeighborList,
-    Edges,
     NeighborList,
-    RefineMaskNeighborList,
     UniversalNeighborlistParameters,
-    neighborlist_changes,
 )
 from kups.core.parameter_scheduler import ParameterSchedulerState
 from kups.core.patch import Accept
@@ -105,12 +102,17 @@ from kups.potential.classical.blocking import (
 from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldParameters,
+    ewald_short_range_pair,
 )
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
     MixingRule,
+    lennard_jones_pair,
 )
+from kups.potential.common.fused import FusedPotentialCache, fuse_pair_potentials
 from kups.potential.common.geometry import PositionsAndCell
+from kups.potential.common.graph import PointCloud
+from kups.potential.common.pair import PairData, PairEnergySum, PairTerm
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -156,7 +158,7 @@ class MCMCState:
 
     Holds buffered particle/group arrays, motif templates, system
     thermodynamic data, neighbor lists, potential parameters with
-    caches, and per-move adaptive step-size schedulers.
+    caches, per-move adaptive step-size schedulers, and the shared pair table.
     """
 
     particles: Buffered[ParticleId, MCMCParticles]
@@ -175,17 +177,7 @@ class MCMCState:
     rotation_params: Table[SystemId, ParameterSchedulerState]
     reinsertion_params: Table[SystemId, ParameterSchedulerState]
     exchange_params: Table[SystemId, ParameterSchedulerState]
-
-    @property
-    def max_cutoff(self) -> Table[SystemId, Array]:
-        """Per-system maximum cutoff across LJ and Ewald potentials."""
-        return Table(
-            self.systems.keys,
-            jnp.maximum(
-                self.lj_parameters.data.cutoff.data,
-                self.ewald_parameters.data.cutoff.data,
-            ),
-        )
+    cell_tables: FusedPotentialCache[tuple[PairData, ...]]
 
     @property
     def move_capacity(self) -> Capacity[int]:
@@ -206,12 +198,8 @@ class MCMCState:
         )
 
     @property
-    @no_jax_tracing
     def is_charged(self) -> bool:
-        return (
-            jnp.abs(self.particles.data.charges).sum().item() > 0
-            or jnp.abs(self.motifs.data.charges).sum().item() > 0
-        )
+        return _is_charged(self.particles, self.motifs)
 
     @property
     def has_blocking_spheres(self) -> bool:
@@ -221,47 +209,15 @@ class MCMCState:
         )
 
 
-def _self_excluding(
-    particles: Table[ParticleId, MCMCParticles],
-    offset: int = 0,
-) -> Table[ParticleId, MCMCParticles]:
-    """Give every particle a unique exclusion group.
-
-    Used so a neighbor-list query keeps all geometric pairs (real exclusions are
-    applied later during refinement). ``offset`` shifts the group ids so the
-    proposed particles' groups stay disjoint from the current particles' groups
-    when both are combined in a single ``neighborlist_changes`` query; otherwise
-    a proposed atom and the current particle sharing the same group id would be
-    wrongly excluded.
-
-    Args:
-        particles: Particles to re-group.
-        offset: First group id to assign (default ``0``).
-
-    Returns:
-        The particles with each assigned its own exclusion group.
-    """
-    n = particles.size
-    self_group = Index.integer(jnp.arange(n) + offset, n=n + offset, label=GroupId)
-    return bind(particles, lambda p: p.data.group).set(self_group)
-
-
 @dataclass
 class MCMCStateUpdate:
-    """Proposed MCMC state change with pre-computed neighbor lists.
-
-    Stores the proposed particle and group modifications together with
-    neighbor-list edges computed *before* and *after* the change, so
-    that energy differences can be evaluated without rebuilding the
-    full neighbor list.
+    """Proposed particle and group changes for an MCMC move.
 
     Calling an instance applies the update conditionally on ``accept``.
     """
 
     _particles: WithIndices[ParticleId, Buffered[ParticleId, MCMCParticles]]
     groups: WithIndices[GroupId, Buffered[GroupId, MCMCGroup]]
-    edges_after: Edges[Literal[2]]
-    edges_before: Edges[Literal[2]]
 
     @staticmethod
     def from_changes(
@@ -269,7 +225,7 @@ class MCMCStateUpdate:
         state: MCMCState,
         proposal: ExchangeChanges,
     ) -> MCMCStateUpdate:
-        """Build an update from exchange changes."""
+        """Build particle and group updates from exchange changes."""
         p_data = proposal.particles.data.data
         g_data = proposal.groups.data.data
 
@@ -296,23 +252,7 @@ class MCMCStateUpdate:
         particle_changes = WithIndices(proposal.particles.indices, new_particles)
         group_changes = WithIndices(proposal.groups.indices, new_groups)
 
-        # We don't want to exclude edges based on the group here and leave that for the refinement happening later.
-        result = neighborlist_changes(
-            AdaptiveNeighborList.from_state(state, state.max_cutoff),
-            _self_excluding(state.particles),
-            WithIndices(
-                particle_changes.indices,
-                _self_excluding(new_particles, offset=state.particles.size),
-            ),
-            state.systems,
-            compaction=1.0,
-        )
-        return MCMCStateUpdate(
-            _particles=particle_changes,
-            groups=group_changes,
-            edges_after=result.added,
-            edges_before=result.removed,
-        )
+        return MCMCStateUpdate(particle_changes, group_changes)
 
     def __call__(self, state: MCMCState, accept: Accept) -> MCMCState:
         """Apply the update to ``state``, conditional on ``accept``."""
@@ -332,40 +272,78 @@ class MCMCStateUpdate:
         """Proposed particle data (without the buffer wrapper)."""
         return self._particles.map_data(lambda x: x.data)
 
-    @property
-    def neighborlist_before(self) -> RefineMaskNeighborList:
-        """Neighbor list for the *current* (pre-move) configuration."""
-        return RefineMaskNeighborList(self.edges_before)
-
-    @property
-    def neighborlist_after(self) -> RefineMaskNeighborList:
-        """Neighbor list for the *proposed* (post-move) configuration."""
-        return RefineMaskNeighborList(self.edges_after)
-
 
 def _probe(state: MCMCState, update: MCMCStateUpdate) -> MCMCStateUpdate:
     return update
 
 
-def make_propagator(
-    state: MCMCState, config: RunConfig
-) -> tuple[Propagator[MCMCState], Propagator[MCMCState]]:
+def _make_potential(
+    state: MCMCState,
+) -> Potential[MCMCState, EmptyType, EmptyType, MCMCStateUpdate]:
+    """Compose the physical terms before combining their pair evaluations."""
     state_lens = identity_lens(MCMCState)
     potentials: list[Potential[MCMCState, EmptyType, EmptyType, MCMCStateUpdate]] = [
         make_lennard_jones_from_state(state_lens, _probe),
         make_lennard_jones_tail_correction_from_state(state_lens),
     ]
-    # If we have any charged particles, we include the Ewald potential
     if state.is_charged:
         potentials.append(
             make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True)
         )
         logging.info("Charged particles detected: including Ewald potential.")
-    # If we have any blocking spheres, we include the blocking spheres potential
     if state.has_blocking_spheres:
         potentials.append(make_blocking_spheres_from_state(state_lens, _probe))
         logging.info("Blocking spheres detected: including blocking spheres potential.")
-    potential = sum_potentials(*potentials)
+    return sum_potentials(*potentials)
+
+
+@no_jax_tracing
+def _is_charged(
+    particles: Table[ParticleId, MCMCParticles],
+    motifs: Table[MotifParticleId, MotifParticles],
+) -> bool:
+    return (
+        jnp.abs(particles.data.charges).sum().item() > 0
+        or jnp.abs(motifs.data.charges).sum().item() > 0
+    )
+
+
+def init_cell_tables(
+    particles: Table[ParticleId, MCMCParticles],
+    motifs: Table[MotifParticleId, MotifParticles],
+    systems: Table[SystemId, MCMCSystems],
+    lj_parameters: GlobalTailCorrectedLennardJonesParameters,
+    ewald_parameters: EwaldParameters,
+) -> FusedPotentialCache[tuple[PairData, ...]]:
+    """Initialize the shared pair cache from the simulation's input data."""
+    terms: list[PairTerm[tuple[PairData, ...], MCMCParticles, PairData]] = [
+        lennard_jones_pair.packed().with_parameters(itemgetter(0))
+    ]
+    parameters: tuple[PairData, ...] = (PairData.pack(lj_parameters),)
+    if _is_charged(particles, motifs):
+        terms.append(ewald_short_range_pair.packed().with_parameters(itemgetter(1)))
+        parameters += (PairData.pack(ewald_parameters),)
+    return FusedPotentialCache.create(
+        PairEnergySum(tuple(terms)), parameters, PointCloud(particles, systems)
+    )
+
+
+def make_propagator(
+    state: MCMCState,
+    config: RunConfig,
+) -> tuple[Propagator[MCMCState], Propagator[MCMCState]]:
+    """Build MCMC initialization and cycles."""
+    state_lens = identity_lens(MCMCState)
+
+    potential = fuse_pair_potentials(
+        _make_potential(state),
+        state,
+        lambda s: s.particles,
+        lambda s: s.systems,
+        state_lens.focus(lambda s: s.cell_tables),
+        probe=lambda s, p: p.particles,
+        max_queries_per_system=state.motifs.data.motif.max_count,
+    )
     potential, probability_ratio = make_muvt_probability_ratio(state_lens, potential)
     propagator = make_gcmc_mcmc_propagator(
         state_lens,
@@ -389,19 +367,18 @@ def make_propagator(
 def init_state(key: Array, config: Config) -> MCMCState:
     """Initialize the full MCMC state from configuration."""
     chain = key_chain(key)
-    ps: list[Table[ParticleId, MCMCParticles]] = []
-    gs: list[Table[GroupId, MCMCGroup]] = []
-    ss: list[Table[SystemId, MCMCSystems]] = []
-    motifs: Table[MotifParticleId, MotifParticles] | None = None
-    for host in config.hosts:
-        particles, groups, system, motifs = mcmc_state_from_config(
-            next(chain), host, config.adsorbates
-        )
-        ps.append(particles)
-        gs.append(groups)
-        ss.append(system)
-    assert motifs is not None, "At least one host must be provided."
-    particles, groups, system = Table.union(ps, gs, ss)
+    host_states = [
+        mcmc_state_from_config(next(chain), host, config.adsorbates)
+        for host in config.hosts
+    ]
+    if not host_states:
+        raise ValueError("At least one host must be provided.")
+    motifs = host_states[-1][3]
+    particles, groups, system = Table.union(
+        [s[0] for s in host_states],
+        [s[1] for s in host_states],
+        [s[2] for s in host_states],
+    )
     logging.info(
         f"Initialized state with {len(particles)} particles, "
         f"{len(groups)} molecules, across {len(system)} systems."
@@ -453,6 +430,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
     logging.info(f"Estimated neighbor list parameters: {neighborlist_params}")
     min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
+    cell_tables = init_cell_tables(particles, motifs, system, lj_params, ewald_params)
     return MCMCState(
         particles=particles,
         groups=groups,
@@ -483,6 +461,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
         exchange_params=Table.arange(
             ParameterSchedulerState.create(n_sys), label=SystemId
         ),
+        cell_tables=cell_tables,
     )
 
 

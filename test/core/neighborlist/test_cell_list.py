@@ -11,46 +11,45 @@ from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
-    _cell_hash,
     _cell_list_subselect,
-    _cell_stencil,
 )
+from kups.core.neighborlist.common import cell_hash, cell_stencil
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
 from ._builders import EvalState, cutoff_table, make_lh, make_systems
 
 
 class TestCellHashClampsAtBoundary:
-    """``_cell_hash`` keeps per-axis bins inside ``[0, num_cells - 1]``."""
+    """``cell_hash`` keeps per-axis bins inside ``[0, num_cells - 1]``."""
 
     def test_interior_coord_with_unit_grid_hashes_to_zero(self):
-        h = _cell_hash(jnp.array([0.0, 0.0, 0.0]), jnp.array([1, 1, 1]))
+        h = cell_hash(jnp.array([0.0, 0.0, 0.0]), jnp.array([1, 1, 1]))
         assert int(h) == 0
-        h = _cell_hash(jnp.array([0.5, 0.99, 0.0]), jnp.array([1, 1, 1]))
+        h = cell_hash(jnp.array([0.5, 0.99, 0.0]), jnp.array([1, 1, 1]))
         assert int(h) == 0
 
     def test_fold_overshoot_at_one_clamps_with_unit_grid(self):
-        h = _cell_hash(jnp.array([1.0, 1.0, 1.0]), jnp.array([1, 1, 1]))
+        h = cell_hash(jnp.array([1.0, 1.0, 1.0]), jnp.array([1, 1, 1]))
         assert int(h) == 0
 
     def test_fold_overshoot_at_one_clamps_with_nontrivial_grid(self):
         num_cells = jnp.array([2, 3, 5])
-        h = _cell_hash(jnp.array([1.0, 1.0, 1.0]), num_cells)
+        h = cell_hash(jnp.array([1.0, 1.0, 1.0]), num_cells)
         assert int(h) == 1 + 2 * 2 + 4 * 6
-        h = _cell_hash(jnp.array([0.25, 0.5, 0.5]), num_cells)
+        h = cell_hash(jnp.array([0.25, 0.5, 0.5]), num_cells)
         assert int(h) == 0 + 1 * 2 + 2 * 6
 
     def test_realistic_fold_path_does_not_escape_range(self):
         cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
         bad_frac = jnp.array([-1.49e-8, 0.0, 0.0])
         folded, _ = cell.fold(bad_frac)
-        h = _cell_hash(folded, jnp.array([1, 1, 1]))
+        h = cell_hash(folded, jnp.array([1, 1, 1]))
         assert int(h) == 0
 
 
 class TestCellStencil:
     def test_3d_stencil_is_27_centered_offsets(self):
-        stencil = _cell_stencil(3)
+        stencil = cell_stencil(3)
         assert stencil.shape == (27, 3)
         assert set(np.unique(np.asarray(stencil)).tolist()) == {-1, 0, 1}
         rows = {tuple(r) for r in np.asarray(stencil).tolist()}
@@ -58,7 +57,7 @@ class TestCellStencil:
         assert (1, -1, 0) in rows
 
     def test_2d_stencil_is_9_offsets(self):
-        assert _cell_stencil(2).shape == (9, 2)
+        assert cell_stencil(2).shape == (9, 2)
 
 
 class TestCellListSubselect:
