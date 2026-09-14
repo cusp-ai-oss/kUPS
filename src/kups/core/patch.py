@@ -48,17 +48,17 @@ class Patch[State](Protocol):
     def __call__(self, state: State, accept: Accept, /) -> State: ...
 
 
-class Probe[State, P: Patch[Any], R](Protocol):
-    """Protocol for functions that extract information from state and patches.
+class Probe[State, P, R](Protocol):
+    """Protocol for querying state together with a proposal or patch.
 
-    Probes are used to query simulation state and patch information, typically
-    for observables, energy calculations, or other diagnostics. They provide
-    a typed interface for extracting data during simulation runs.
+    The payload can be raw changes inspected before constructing a patch, or
+    a patch queried for observables, energy calculations and other diagnostics.
+    Consumers that require an applicable patch constrain ``P`` to ``Patch``.
 
-    When called, takes (state, patch) and returns extracted information of type R.
+    When called, takes (state, payload) and returns information of type R.
     """
 
-    def __call__(self, state: State, patch: P, /) -> R: ...
+    def __call__(self, state: State, payload: P, /) -> R: ...
 
 
 @dataclass

@@ -377,6 +377,40 @@ class TestAssertionTracing:
         out, assertions = cond_fn(jnp.array(6.0))
         assert all(bool(a.predicate) for a in assertions)
 
+    def test_nested_cond_interprets_each_assertion_once(self, monkeypatch):
+        import kups.core.assertion as assertion_module
+
+        interpreted = []
+        original = assertion_module.assertion_handler
+
+        def counted(interpreter, ctx, eqn, invals):
+            interpreted.append(eqn.params["message"])
+            return original(interpreter, ctx, eqn, invals)
+
+        monkeypatch.setattr(assertion_module, "assertion_handler", counted)
+
+        def branch(x, depth):
+            runtime_assert(x > 0, f"positive at depth {depth}")
+            if depth == 0:
+                return x**2
+            return jax.lax.cond(
+                x < depth,
+                lambda y: branch(y, depth - 1),
+                lambda y: -y,
+                x,
+            )
+
+        run = jax.jit(with_runtime_assertions(lambda x: branch(x, 4)))
+        value, assertions = run(jnp.array(0.5))
+        assert value == 0.25
+        assert len(interpreted) == 5
+        assert len(set(interpreted)) == 5
+        assert all(bool(a.predicate) for a in assertions)
+        _, failures = run(jnp.array(-0.5))
+        assert all(not bool(a.predicate) for a in failures)
+        assert len(interpreted) == 5
+        assert jax.grad(lambda x: run(x)[0])(jnp.array(0.5)) == 1.0
+
     def test_traceback_present_in_message(self):
         """Test that assertion messages include the creation-site traceback."""
 
