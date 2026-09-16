@@ -14,22 +14,13 @@ from kups.core.capacity import CapacityError, FixedCapacity
 from kups.core.cell import Cell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.lens import lens
-from kups.core.neighborlist.cell_table import (
-    CellTableNeighborList,
-    CellTableParameters,
-    CellTableSelector,
-    CellTableUpdatePatch,
-    build_cell_table,
+from kups.core.neighborlist.cell_list import CellListNeighborList
+from kups.core.neighborlist.cell_list_cache import (
+    CellListCacheParameters,
+    CellListCacheUpdatePatch,
+    build_cell_list_cache,
 )
-from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.dense import DenseNearestNeighborList
-from kups.core.neighborlist.masks import (
-    DistanceCutoffMask,
-    ExclusionMask,
-    InBoundsMask,
-    InclusionMatchMask,
-)
-from kups.core.neighborlist.pipeline import Pipeline
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId
 
@@ -50,14 +41,27 @@ def _edge_rows(edges, n_keys, n_queries):
     )
 
 
-class TestCellTableNeighborList:
+def _neighborlist(cache, cutoffs, layout, avg_edges):
+    width = layout.stencil_width * layout.cell_capacity
+    return CellListNeighborList(
+        avg_candidates=FixedCapacity(width),
+        avg_edges=FixedCapacity(avg_edges),
+        cells=FixedCapacity(layout.max_cells_per_system),
+        avg_image_candidates=FixedCapacity(width * layout.max_images_per_pair),
+        cutoffs=cutoffs,
+        cache=cache,
+    )
+
+
+class TestCachedCellList:
+    @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries"])
     @pytest.mark.parametrize("cutoff", [1.4, 5.4])
     @pytest.mark.parametrize(
         "periodic", [(True, True, True), (False, True, True), (False, False, False)]
     )
     def test_matches_dense_with_images_and_original_particle_ids(
-        self, mode, cutoff, periodic
+        self, mode, cutoff, periodic, cached
     ):
         matrices = jnp.array(
             [
@@ -99,10 +103,9 @@ class TestCellTableNeighborList:
                 inclusion=points.data.inclusion.apply_mask(jnp.arange(10) < 8),
             ),
         )
-        layout = CellTableParameters.estimate(
+        layout = CellListCacheParameters.estimate(
             points, systems, cutoffs, chunk_size=4, occupancy_headroom=1
         )
-        neighborlist = CellTableNeighborList(FixedCapacity(256), cutoffs, layout)
         dense = DenseNearestNeighborList(
             FixedCapacity(16), FixedCapacity(256), FixedCapacity(16 * 27), cutoffs
         )
@@ -131,6 +134,8 @@ class TestCellTableNeighborList:
             )
             kwargs[mode] = query
             n_queries = query.size
+        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
+        neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 256)
         actual = jax.jit(as_result_function(neighborlist))(points, systems, **kwargs)
         expected = jax.jit(as_result_function(dense))(points, systems, **kwargs)
         actual.raise_assertion()
@@ -140,15 +145,17 @@ class TestCellTableNeighborList:
             expected.value, points.size, n_queries
         )
 
+    @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries", "empty_keys"])
-    def test_empty_query(self, mode):
+    def test_empty_query(self, mode, cached):
         points = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, int))
         queries = points
         if mode in ("full", "empty_keys"):
             points = points.subset(Index(points.keys, jnp.zeros(0, int)))
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 4, jnp.array([2.5]))
-        layout = CellTableParameters.estimate(points, systems, cutoffs)
-        neighborlist = CellTableNeighborList(FixedCapacity(8), cutoffs, layout)
+        layout = CellListCacheParameters.estimate(points, systems, cutoffs)
+        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
+        neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 8)
         empty = Index(points.keys, jnp.zeros(0, int), _cls=ParticleId)
         kwargs = {}
         if mode == "queried_keys":
@@ -167,33 +174,22 @@ class TestCellTableNeighborList:
             jnp.zeros(3, int),
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12, jnp.array([3.2]))
-        layout = CellTableParameters.estimate(
+        layout = CellListCacheParameters.estimate(
             points, systems, cutoffs, occupancy_factor=1, occupancy_headroom=1
         )
-        table = build_cell_table(points, systems, cutoffs, (), layout)
+        table = build_cell_list_cache(points, systems, cutoffs, (), layout)
         moved = points.map_data(
             lambda p: replace(p, positions=p.positions.at[2].set(jnp.array([2, 1, 1])))
         )
         index = Index(points.keys, jnp.array([2]))
         rows = table.bin_rows(moved.subset(index), systems, ())
-        patch = CellTableUpdatePatch(
+        patch = CellListCacheUpdatePatch(
             table.slot_of_row[index.indices], rows.system, rows, lens(lambda t: t)
         )
         updated = as_result_function(patch)(table, systems.set_data(jnp.array([True])))
         updated.raise_assertion()
-        pipeline = Pipeline(
-            selector=CellTableSelector(
-                updated.value, cutoffs, layout.max_images_per_pair
-            ),
-            masks=(
-                InBoundsMask(),
-                InclusionMatchMask(),
-                DistanceCutoffMask(cutoffs),
-                ExclusionMask(),
-            ),
-            compactor=ReduceCompactor(FixedCapacity(6)),
-        )
-        result = jax.jit(as_result_function(pipeline))(moved, systems)
+        neighborlist = _neighborlist(updated.value, cutoffs, layout, 6)
+        result = jax.jit(as_result_function(neighborlist))(moved, systems)
         result.raise_assertion()
         assert _edge_rows(result.value, 3, 3) == Counter(
             (i, j, 0, 0, 0) for i in range(3) for j in range(3) if i != j
@@ -204,8 +200,9 @@ class TestCellTableNeighborList:
             jnp.array([[0.1, 0.1, 0.1], [0.2, 0.1, 0.1]]), jnp.zeros(2, int)
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 4, jnp.array([5.0]))
-        layout = CellTableParameters.estimate(points, systems, cutoffs)
-        neighborlist = CellTableNeighborList(FixedCapacity(1), cutoffs, layout)
+        layout = CellListCacheParameters.estimate(points, systems, cutoffs)
+        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
+        neighborlist = _neighborlist(cache, cutoffs, layout, 1)
         result = jax.jit(as_result_function(neighborlist))(points, systems)
         with pytest.raises(CapacityError):
             result.raise_assertion()
@@ -213,7 +210,7 @@ class TestCellTableNeighborList:
             neighborlist(points, systems, queries=points, queried_keys=points.index)
 
 
-class TestCellTable:
+class TestCellListCache:
     @pytest.mark.parametrize(
         "counts,expected_layout",
         [((83,) + (52,) * 7, "slots"), ((142,) * 8, "cells")],
@@ -225,7 +222,7 @@ class TestCellTable:
             jnp.zeros(sum(counts), int),
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12.0, jnp.array([6.0]))
-        parameters = CellTableParameters.estimate(
+        parameters = CellListCacheParameters.estimate(
             particles,
             systems,
             cutoffs,
@@ -256,7 +253,7 @@ class TestCellTable:
         systems, cutoffs = make_systems(
             Cell(frame, periodic=periodic), jnp.full(n_systems, 6.0)
         )
-        parameters = CellTableParameters.estimate(
+        parameters = CellListCacheParameters.estimate(
             particles,
             systems,
             cutoffs,
@@ -271,10 +268,12 @@ class TestCellTable:
             jnp.zeros(3, int),
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12.0, jnp.array([3.0]))
-        parameters = CellTableParameters(
+        parameters = CellListCacheParameters(
             chunk_size=8, max_cells_per_system=64, cell_capacity=2
         )
-        table = build_cell_table(particles, systems, cutoffs, jnp.zeros(3), parameters)
+        table = build_cell_list_cache(
+            particles, systems, cutoffs, jnp.zeros(3), parameters
+        )
         index = Index(particles.keys, jnp.array([2]))
         slot = table.slot_of_row[index.indices]
 
@@ -287,7 +286,7 @@ class TestCellTable:
         @jax.jit
         @as_result_function
         def update(rows, accepted):
-            patch = CellTableUpdatePatch(slot, rows.system, rows, lens(lambda t: t))
+            patch = CellListCacheUpdatePatch(slot, rows.system, rows, lens(lambda t: t))
             return patch(table, systems.set_data(accepted))
 
         # A rejected relocation into a full cell must leave the entire table intact

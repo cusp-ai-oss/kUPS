@@ -21,7 +21,7 @@ into ``keys``.
 - **[Edges][kups.core.neighborlist.Edges]**: Represents connections between particles with periodic shifts
 - **[NeighborList][kups.core.neighborlist.NeighborList]**: Protocol for neighbor search implementations
 - **[Pipeline][kups.core.neighborlist.Pipeline]**: Selector → mask sequence → compactor → postprocessors
-- **[CellTable][kups.core.neighborlist.CellTable]**: Persistent spatial bins for consuming candidate chunks without materializing edges
+- **[CellListCache][kups.core.neighborlist.CellListCache]**: Persistent spatial bins for consuming candidate chunks without materializing edges
 
 ## Neighbor List Implementations
 
@@ -41,11 +41,10 @@ into ``keys``.
     - Only for single-system simulations or testing
     - Crosses system boundaries (use with caution!)
 
-**[CellTableNeighborList][kups.core.neighborlist.CellTableNeighborList]** uses
-dense per-cell storage shared with fused pair evaluation. It supports the same
-full, affected-particle, and bipartite calls, with static cell capacities from
-``CellTableParameters``. ``CellTableSelector`` also adapts an existing current
-table to a custom pipeline.
+A ``CellListCache`` retains the same grid's occupant slots and neighbor-cell
+stencil for incremental updates. Pass it as ``CellListNeighborList.cache`` to
+reuse its lookup; image replication, masks and compaction are shared with
+uncached cell lists. Fused local pair evaluation consumes its candidate chunks.
 
 ### Refinement Implementations
 
@@ -99,14 +98,12 @@ from kups.core.neighborlist.cell_list import (
     CellListSelector,
     IsCellListParams,
 )
-from kups.core.neighborlist.cell_table import (
+from kups.core.neighborlist.cell_list_cache import (
+    CellListCache,
+    CellListCacheParameters,
+    CellListCacheUpdatePatch,
     CellRows,
-    CellTable,
-    CellTableNeighborList,
-    CellTableParameters,
-    CellTableSelector,
-    CellTableUpdatePatch,
-    build_cell_table,
+    build_cell_list_cache,
     cell_candidates,
     cell_rows,
 )
@@ -166,11 +163,9 @@ __all__ = [
     "CellListNeighborList",
     "CellListSelector",
     "CellRows",
-    "CellTable",
-    "CellTableNeighborList",
-    "CellTableParameters",
-    "CellTableSelector",
-    "CellTableUpdatePatch",
+    "CellListCache",
+    "CellListCacheParameters",
+    "CellListCacheUpdatePatch",
     "Compactor",
     "DenseNearestNeighborList",
     "DenseSelector",
@@ -210,7 +205,7 @@ __all__ = [
     "UniversalNeighborlistParameters",
     "all_connected_neighborlist",
     "all_dense_cost",
-    "build_cell_table",
+    "build_cell_list_cache",
     "cell_candidates",
     "cell_list_cost",
     "cell_rows",

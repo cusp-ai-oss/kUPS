@@ -1,21 +1,21 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dense cell tables for neighbor lists and fused pair evaluation.
+"""Persistent occupancy storage for the cell-list algorithm.
 
-A [`CellTable`][kups.core.neighborlist.cell_table.CellTable] bins the active
+A [`CellListCache`][kups.core.neighborlist.cell_list_cache.CellListCache] bins the active
 particles of every system into spatial cells sized from the cutoff and
 stores, per cell, the slots of its occupants together with a deduplicated
 stencil of neighbor cells. The candidate neighbors of any point are the
 occupants of its stencil cells, read as a fixed-width lane array
 (``stencil_width * cell_capacity``). Fused potentials consume these chunks
-directly. [`CellTableNeighborList`][kups.core.neighborlist.cell_table.CellTableNeighborList]
-uses the same table with the standard selector, mask, compaction, and
-postprocessing pipeline to return [`Edges`][kups.core.neighborlist.edges.Edges].
+directly. ``CellListNeighborList(cache=...)`` uses these occupants through its
+normal selector, mask, compaction, and postprocessing pipeline. ``CellListGrid``
+defines binning and neighboring cells for both cached and uncached lookups.
 
 Slots are sorted by ``(system, cell)`` at build time so consecutive slots are
 spatially local, and a
-[`CellTableUpdatePatch`][kups.core.neighborlist.cell_table.CellTableUpdatePatch]
+[`CellListCacheUpdatePatch`][kups.core.neighborlist.cell_list_cache.CellListCacheUpdatePatch]
 moves the slots of accepted Monte Carlo proposals between touched cells, so a
 table persists across a simulation instead of being rebuilt per step. Slot
 storage is not re-sorted as particles move.
@@ -28,51 +28,37 @@ guarded by ``runtime_assert`` rather than the adaptive
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple, Self, overload
+from typing import Literal, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.assertion import runtime_assert
-from kups.core.capacity import Capacity, FixedCapacity
+from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens
+from kups.core.neighborlist.cell_list import CellListGrid
 from kups.core.neighborlist.common import (
     Candidates,
     candidate_image_counts,
-    cell_hash,
-    cell_stencil,
-    lift_query_candidates,
     make_batch_with_mic,
     num_cells,
     replicate_for_images,
 )
-from kups.core.neighborlist.compact import ReduceCompactor
-from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.masks import (
-    DistanceCutoffMask,
-    ExclusionMask,
-    InBoundsMask,
-    InclusionMatchMask,
-    QueriedKeysDedupMask,
-)
-from kups.core.neighborlist.pipeline import Pipeline
-from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.types import (
     CandidateBatch,
     NeighborListPoints,
-    NeighborListSystems,
     PipelineContext,
 )
 from kups.core.patch import Accept, Patch
 from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing, tree_map
+from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_map
 
 
 @dataclass
-class CellTableParameters:
+class CellListCacheParameters:
     """Static shapes of a cell table.
 
     Attributes:
@@ -137,7 +123,7 @@ class CellTableParameters:
         Sizes ``cell_capacity`` from the exact per-cell occupancy of the
         active particles with multiplicative and additive headroom to absorb
         density growth (e.g. GCMC insertions); violations at runtime fail the
-        assertions in [`build_cell_table`][kups.core.neighborlist.cell_table.build_cell_table].
+        assertions in [`build_cell_list_cache`][kups.core.neighborlist.cell_list_cache.build_cell_list_cache].
 
         Args:
             particles: Current (possibly buffered) particle table.
@@ -162,7 +148,8 @@ class CellTableParameters:
         images = candidate_image_counts(systems.data.cell, cutoff)
         max_cells = int(jnp.prod(bins, axis=-1).max())
         n_cells = systems.size * max_cells
-        cell = cell_rows(particles, systems, bins, max_cells, ()).cell
+        grid = CellListGrid(bins, max_cells, systems.data.cell.periodic)
+        cell = cell_rows(particles, systems, grid, ()).cell
         max_occupancy = int(jnp.bincount(cell, length=n_cells + 1)[:n_cells].max())
         stencil_width = int(jnp.prod(jnp.minimum(bins, 3), axis=-1).max())
         cell_chunk_size = max(32, -(-max_occupancy // 32) * 32)
@@ -257,8 +244,7 @@ class CellRows[Data](NamedTuple):
 def cell_rows[Data](
     particles: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    bins: Array,
-    max_cells: int,
+    grid: CellListGrid,
     data: Data,
 ) -> CellRows[Data]:
     """Fold and bin particles into global cells ``system * max_cells + local``.
@@ -270,8 +256,7 @@ def cell_rows[Data](
     Args:
         particles: Particle table (positions, system, inclusion, exclusion).
         systems: System table with cells.
-        bins: Per-system bin counts, ``(n_systems, 3)``.
-        max_cells: Cell capacity per system.
+        grid: The cell-list grid shared with uncached neighbor searches.
         data: Per-particle payload carried along.
 
     Returns:
@@ -286,10 +271,8 @@ def cell_rows[Data](
     frac = frames[system].to_fractional(
         jnp.where(active[:, None], points.positions, 0.0)
     )
-    frac, in_cell = systems.data.cell.fold(frac)
-    active &= in_cell
-    cell = cell_hash(frac, bins[system.indices]) + system.indices * max_cells
-    cell = jnp.where(active, cell, bins.shape[0] * max_cells)
+    frac, cell = grid.assign(frac, system.indices, active, systems.data.cell)
+    active = cell < grid.sentinel_cell
     inclusion = Index(
         points.inclusion.keys,
         jnp.where(active, points.inclusion.indices, points.inclusion.num_labels),
@@ -297,7 +280,7 @@ def cell_rows[Data](
     return CellRows(frac, system, inclusion, points.exclusion, data, cell)
 
 
-class CellTable[Data](NamedTuple):
+class CellListCache[Data](NamedTuple):
     """Slot-sorted particle rows with per-cell occupancy and stencil tables.
 
     Slots ``0 .. n-1`` hold the particles, slots up to ``n_pad`` are padding,
@@ -311,14 +294,14 @@ class CellTable[Data](NamedTuple):
             filled; the last row is the always-empty sentinel cell.
         stencil: Neighbor cell ids per cell, ``(n_cells + 1, stencil_width)``,
             invalid entries routed to the sentinel cell.
-        bins: Per-system bin counts, ``(n_systems, 3)``.
+        grid: Spatial bins and boundary rules shared with the cell-list selector.
     """
 
     rows: CellRows[Data]
     slot_of_row: Array
     cells: Array
     stencil: Array
-    bins: Array
+    grid: CellListGrid
 
     @property
     def sentinel_slot(self) -> int:
@@ -333,6 +316,34 @@ class CellTable[Data](NamedTuple):
         return self.cells[self.stencil[cell]].reshape(
             *cell.shape,
             self.stencil.shape[1] * self.cells.shape[1],
+        )
+
+    def select(self, ctx: PipelineContext) -> Candidates:
+        """Look up occupants for ``CellListSelector`` using the stored grid.
+
+        The cache must correspond to ``ctx.keys`` in original row order.
+        Candidate ids are mapped back to those rows; the shared selector uses
+        original coordinates when computing periodic shifts.
+        """
+        query = ctx.query_table
+        _, cell = self.grid.assign(
+            query.data.positions,
+            query.data.system.indices_in(ctx.systems.keys),
+            query.data.inclusion.valid_mask,
+            ctx.systems.data.cell,
+        )
+        slots = (
+            self.candidates(cell) if ctx.keys.size else jnp.zeros((query.size, 0), int)
+        )
+        row_of_slot = jnp.full(self.sentinel_slot + 1, ctx.keys.size, dtype=int)
+        row_of_slot = row_of_slot.at[self.slot_of_row].set(jnp.arange(ctx.keys.size))
+        return Candidates(
+            Index(ctx.keys.keys, row_of_slot[slots].ravel(), _cls=ctx.keys.cls),
+            Index(
+                query.keys,
+                jnp.repeat(jnp.arange(query.size), slots.shape[1]),
+                _cls=query.cls,
+            ),
         )
 
     def candidate_chunks(self, cell: Array, chunk_size: int) -> Array:
@@ -366,8 +377,7 @@ class CellTable[Data](NamedTuple):
         data: D,
     ) -> CellRows[D]:
         """Bin further particles (e.g. proposal queries) into this table's cells."""
-        max_cells = self.sentinel_cell // self.bins.shape[0]
-        return cell_rows(particles, systems, self.bins, max_cells, data)
+        return cell_rows(particles, systems, self.grid, data)
 
 
 def cell_candidates[Data](
@@ -403,45 +413,13 @@ def cell_candidates[Data](
     ), ctx
 
 
-def _stencil(bins: Array, periodic: Array, max_cells: int, width: int) -> Array:
-    """Deduplicated neighbor-cell table ``(n_cells + 1, width)``.
-
-    Stencil offsets that wrap onto the same cell (fewer than three bins along
-    a periodic axis) or leave the box on a non-periodic axis are routed to the
-    sentinel cell, sorted to the end of each row, and sliced off down to
-    ``width`` (asserted lossless).
-    """
-    n_cells = bins.shape[0] * max_cells
-    ids = jnp.arange(n_cells)
-    sys_ids, local = ids // max_cells, ids % max_cells
-    b = bins[sys_ids]
-    factor = jnp.cumprod(b, axis=-1) // b
-    coords = (local[:, None] // factor) % b
-    neighbor = coords[:, None, :] + cell_stencil(3)[None]
-    wrapped = jnp.where(periodic, neighbor % b[:, None, :], neighbor)
-    in_box = ((wrapped >= 0) & (wrapped < b[:, None, :])).all(axis=-1)
-    valid = in_box & (local < b.prod(axis=-1))[:, None]
-    neighbor = (wrapped * factor[:, None, :]).sum(axis=-1) + (sys_ids * max_cells)[
-        :, None
-    ]
-    neighbor = jnp.sort(jnp.where(valid, neighbor, n_cells), axis=-1)
-    duplicate = jnp.pad(neighbor[:, 1:] == neighbor[:, :-1], ((0, 0), (1, 0)))
-    neighbor = jnp.sort(jnp.where(duplicate, n_cells, neighbor), axis=-1)
-    runtime_assert(
-        (neighbor[:, width:] == n_cells).all(),
-        "stencil_width too small for the spatial bin counts; increase "
-        "CellTableParameters.stencil_width (27 is always valid).",
-    )
-    return jnp.concatenate([neighbor[:, :width], jnp.full((1, width), n_cells)])
-
-
-def build_cell_table[Data](
+def build_cell_list_cache[Data](
     particles: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
     cutoffs: Table[SystemId, Array],
     data: Data,
-    parameters: CellTableParameters,
-) -> CellTable[Data]:
+    parameters: CellListCacheParameters,
+) -> CellListCache[Data]:
     """Bin, sort, and tabulate the particles of a point cloud.
 
     Args:
@@ -459,28 +437,28 @@ def build_cell_table[Data](
     max_cells = parameters.max_cells_per_system
     n_cells = systems.size * max_cells
     cutoff = Table.broadcast_to(cutoffs, systems).data
-    periodic = jnp.array(systems.data.cell.periodic)
     runtime_assert(
         (
             candidate_image_counts(systems.data.cell, cutoff).prod(axis=-1)
             <= parameters.max_images_per_pair
         ).all(),
-        "max_images_per_pair exceeded; re-estimate CellTableParameters for "
+        "max_images_per_pair exceeded; re-estimate CellListCacheParameters for "
         "the current cutoffs and cells.",
     )
     bins = num_cells(systems.data, cutoff)
     runtime_assert(
         (jnp.prod(bins, axis=-1) <= max_cells).all(),
-        "max_cells_per_system exceeded; increase CellTableParameters.max_cells_per_system.",
+        "max_cells_per_system exceeded; increase CellListCacheParameters.max_cells_per_system.",
     )
 
-    rows = cell_rows(particles, systems, bins, max_cells, data)
+    grid = CellListGrid(bins, max_cells, systems.data.cell.periodic)
+    rows = cell_rows(particles, systems, grid, data)
     order = jnp.argsort(rows.cell)
     sorted_cell = rows.cell[order]
     rank = jnp.arange(n) - jnp.searchsorted(sorted_cell, sorted_cell, side="left")
     runtime_assert(
         ((rank < parameters.cell_capacity) | (sorted_cell == n_cells)).all(),
-        "cell_capacity exceeded; increase CellTableParameters.cell_capacity.",
+        "cell_capacity exceeded; increase CellListCacheParameters.cell_capacity.",
     )
     cells = (
         jnp.full((n_cells + 1, parameters.cell_capacity), n_pad, dtype=int)
@@ -493,17 +471,17 @@ def build_cell_table[Data](
 
     sorted_rows: CellRows[Data] = jax.tree.map(lambda x: x[order], rows)
     padded_rows = sorted_rows.pad(n_pad + 1 - n, sentinel_cell=n_cells)
-    return CellTable(
+    return CellListCache(
         rows=padded_rows,
         slot_of_row=jnp.zeros(n, dtype=order.dtype).at[order].set(jnp.arange(n)),
         cells=cells,
-        stencil=_stencil(bins, periodic, max_cells, parameters.stencil_width),
-        bins=bins,
+        stencil=grid.neighbors(jnp.arange(n_cells + 1), width=parameters.stencil_width),
+        grid=grid,
     )
 
 
 @dataclass
-class CellTableUpdatePatch[State, Data](Patch[State]):
+class CellListCacheUpdatePatch[State, Data](Patch[State]):
     """Accept-conditional update of a persistent cell table.
 
     Accepted rows refresh their coordinates and payload. Only rows changing
@@ -523,13 +501,15 @@ class CellTableUpdatePatch[State, Data](Patch[State]):
     slots: Array
     system_idx: Index[SystemId]
     new: CellRows[Data]
-    lens: Lens[State, CellTable[Data]] = field(static=True)
+    lens: Lens[State, CellListCache[Data]] = field(static=True)
 
     def __call__(self, state: State, accept: Accept) -> State:
         table = self.lens.get(state)
         n_pad, n_cells = table.sentinel_slot, table.sentinel_cell
         old_cell = table.rows.cell[self.slots]
-        accept = Table.broadcast_to(accept, Table(table.rows.system.keys, table.bins))
+        accept = Table.broadcast_to(
+            accept, Table(table.rows.system.keys, table.grid.bins)
+        )
         old_accept = accept.at(
             table.rows.system[self.slots], args={"mode": "fill", "fill_value": False}
         ).get()
@@ -540,7 +520,7 @@ class CellTableUpdatePatch[State, Data](Patch[State]):
         # Match Table.update_if's acceptance over the old/new system indices.
         ok = (self.slots < n_pad) & (((old_cell != n_cells) & old_accept) | new_accept)
 
-        def apply(table: CellTable[Data]) -> CellTable[Data]:
+        def apply(table: CellListCache[Data]) -> CellListCache[Data]:
             # Insertion/deletion also changes the cell via the inactive sentinel.
             relocate = ok & (old_cell != self.new.cell)
 
@@ -563,7 +543,7 @@ class CellTableUpdatePatch[State, Data](Patch[State]):
                 position = jnp.argmax(free_count == (rank + 1)[:, None], axis=-1)
                 runtime_assert(
                     ((free_count[:, -1] > rank) | ~insert).all(),
-                    "cell_capacity exceeded during cell table update; increase CellTableParameters.cell_capacity.",
+                    "cell_capacity exceeded during cell table update; increase CellListCacheParameters.cell_capacity.",
                 )
                 position = jnp.where(insert, position, cells.shape[1])
                 return cells.at[target, position].set(self.slots, mode="drop")
@@ -583,135 +563,3 @@ class CellTableUpdatePatch[State, Data](Patch[State]):
 
         table = jax.lax.cond(jnp.any(ok), apply, lambda table: table, table)
         return self.lens.set(state, table)
-
-
-@dataclass
-class CellTableSelector[Data]:
-    """Adapt a current cell table to the standard neighbor pipeline.
-
-    The table must correspond to ``ctx.keys`` in their original row order
-    and cover the requested cutoffs. Its payload is unused. Slot indices are
-    mapped back to particle rows before masks and compaction see candidates.
-    Shifts use the pipeline's original fractional positions, so folded table
-    coordinates do not change the returned image convention.
-    """
-
-    table: CellTable[Data]
-    cutoffs: Table[SystemId, Array]
-    max_images_per_pair: int = field(static=True, default=1)
-
-    def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
-        query = ctx.query_table
-        active = query.data.inclusion.valid_mask
-        system = jnp.where(active, query.data.system.indices_in(ctx.systems.keys), 0)
-        frac, in_cell = ctx.systems.data.cell.fold(
-            jnp.where(active[:, None], query.data.positions, 0.0)
-        )
-        max_cells = self.table.sentinel_cell // self.table.bins.shape[0]
-        cell = cell_hash(frac, self.table.bins[system]) + system * max_cells
-        cell = jnp.where(active & in_cell, cell, self.table.sentinel_cell)
-        slots = (
-            self.table.candidates(cell)
-            if ctx.keys.size
-            else jnp.zeros((query.size, 0), dtype=int)
-        )
-        row_of_slot = (
-            jnp.full(self.table.sentinel_slot + 1, ctx.keys.size, dtype=int)
-            .at[self.table.slot_of_row]
-            .set(jnp.arange(ctx.keys.size))
-        )
-        candidates = Candidates(
-            Index(ctx.keys.keys, row_of_slot[slots].ravel(), _cls=ctx.keys.cls),
-            Index(
-                query.keys,
-                jnp.repeat(jnp.arange(query.size), slots.shape[1]),
-                _cls=query.cls,
-            ),
-        )
-        return replicate_for_images(
-            lift_query_candidates(candidates, ctx),
-            ctx.keys,
-            ctx.edge_query_table,
-            ctx.systems,
-            self.cutoffs,
-            FixedCapacity(slots.size * self.max_images_per_pair),
-        )
-
-
-@dataclass
-class CellTableNeighborList:
-    """Standard neighbor list backed by a dense cell table.
-
-    Each call builds a table from the supplied particles and returns compacted
-    edges. Supports full self-graphs, ``queried_keys`` updates, and bipartite
-    ``queries`` with the same masks and periodic-image rules as cell lists.
-    ``layout`` bounds spatial storage; ``avg_edges`` bounds edges per query
-    before mirroring affected self-graph pairs.
-
-    For a persistent table, use ``CellTableSelector`` in a ``Pipeline`` after
-    applying accepted ``CellTableUpdatePatch`` updates to the table.
-
-    Example:
-        ```python
-        layout = CellTableParameters.estimate(particles, systems, cutoffs)
-        neighborlist = CellTableNeighborList(FixedCapacity(64), cutoffs, layout)
-        edges = neighborlist(particles, systems)
-        ```
-    """
-
-    avg_edges: Capacity[int]
-    cutoffs: Table[SystemId, Array]
-    layout: CellTableParameters = field(static=True)
-
-    @overload
-    def __call__(
-        self,
-        keys: Table[ParticleId, NeighborListPoints],
-        systems: Table[SystemId, NeighborListSystems],
-        *,
-        queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
-
-    @overload
-    def __call__(
-        self,
-        keys: Table[ParticleId, NeighborListPoints],
-        systems: Table[SystemId, NeighborListSystems],
-        *,
-        queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
-
-    @jit
-    def __call__(
-        self,
-        keys: Table[ParticleId, NeighborListPoints],
-        systems: Table[SystemId, NeighborListSystems],
-        *,
-        queries: Table[ParticleId, NeighborListPoints] | None = None,
-        queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
-        assert queries is None or queried_keys is None, (
-            "Neighbor-list calls cannot combine queries with queried_keys."
-        )
-        query_size = (
-            queried_keys.size
-            if queried_keys is not None
-            else (queries.size if queries is not None else keys.size)
-        )
-        cutoffs = Table.broadcast_to(self.cutoffs, systems)
-        table = build_cell_table(keys, systems, cutoffs, (), self.layout)
-        pipeline = Pipeline[Literal[2]](
-            selector=CellTableSelector(table, cutoffs, self.layout.max_images_per_pair),
-            masks=(
-                InBoundsMask(),
-                InclusionMatchMask(),
-                QueriedKeysDedupMask(),
-                DistanceCutoffMask(cutoffs),
-                ExclusionMask(),
-            ),
-            compactor=ReduceCompactor(self.avg_edges.multiply(query_size)),
-            postprocessors=(MirrorPairEdges(),),
-        )
-        if queries is not None:
-            return pipeline(keys, systems, queries=queries)
-        return pipeline(keys, systems, queried_keys=queried_keys)

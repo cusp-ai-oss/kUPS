@@ -26,12 +26,12 @@ from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, lens
 from kups.core.neighborlist.adaptive import AdaptiveNeighborList
-from kups.core.neighborlist.cell_table import (
+from kups.core.neighborlist.cell_list_cache import (
+    CellListCache,
+    CellListCacheParameters,
+    CellListCacheUpdatePatch,
     CellRows,
-    CellTable,
-    CellTableParameters,
-    CellTableUpdatePatch,
-    build_cell_table,
+    build_cell_list_cache,
     cell_candidates,
 )
 from kups.core.neighborlist.types import (
@@ -156,7 +156,7 @@ class FusedLocalInput[Params, Part: IsRadiusGraphPoints, Feat](
 
     queries: tuple[Table[ParticleId, Part], ...]
     removed: Index[ParticleId]
-    cell_table: CellTable[Feat]
+    cell_table: CellListCache[Feat]
 
     def __post_init__(self) -> None:
         if len(self.queries) not in (1, 2):
@@ -194,8 +194,8 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     """
 
     pair: PairTerm[Params, Part, Feat] = field(static=True)
-    layout: CellTableParameters = field(static=True)
-    cell_table_lens: Lens[State, CellTable[Feat]] | None = field(
+    layout: CellListCacheParameters = field(static=True)
+    cell_table_lens: Lens[State, CellListCache[Feat]] | None = field(
         static=True, default=None
     )
     max_queries_per_system: int | None = field(static=True, default=None, kw_only=True)
@@ -205,12 +205,12 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
             raise ValueError("max_queries_per_system must be positive")
 
     @jit
-    def build_cell_table(
+    def build_cell_list_cache(
         self,
         parameters: Params,
         cloud: PointCloud[Part, HasCell[AnyPeriodicity]],
-    ) -> CellTable[Feat]:
-        return build_cell_table(
+    ) -> CellListCache[Feat]:
+        return build_cell_list_cache(
             cloud.particles,
             cloud.systems,
             self.pair.cutoffs(parameters),
@@ -259,7 +259,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     def _sum_keys(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-        table: CellTable[Feat],
+        table: CellListCache[Feat],
         rows: CellRows[Feat],
         excluded: Array,
     ) -> Array:
@@ -295,7 +295,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     def _sum_environment(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-        table: CellTable[Feat],
+        table: CellListCache[Feat],
         rows: CellRows[Feat],
         excluded: Array,
         weights: Array,
@@ -350,7 +350,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     def _local(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-        table: CellTable[Feat],
+        table: CellListCache[Feat],
     ) -> tuple[Array, CellRows[Feat], Array]:
         queries = inp.queries
         parts = [
@@ -426,7 +426,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
         patch: Patch[State] = IdPatch[State]()
         values, rows, slots = self._local(inp, table)
         if self.cell_table_lens is not None:
-            patch = CellTableUpdatePatch(
+            patch = CellListCacheUpdatePatch(
                 slots,
                 inp.queries[-1].data.system,
                 rows,
@@ -457,7 +457,7 @@ class FusedInputConstructor[
     parameter_view: View[State, Params] = field(static=True)
     pair: PairTerm[Params, P, Feat] = field(static=True)
     probe: Probe[State, Ptch, WithIndices[ParticleId, P]] | None = field(static=True)
-    cell_table: View[State, CellTable[Feat]] = field(static=True)
+    cell_table: View[State, CellListCache[Feat]] = field(static=True)
 
     def __call__(
         self,
@@ -549,8 +549,8 @@ def make_fused_potential[
     if probe is not None and cache_lens is None:
         raise ValueError("A particle probe requires an initialized potential cache")
 
-    def build_table(state: State) -> CellTable[Feat]:
-        return engine.build_cell_table(
+    def build_table(state: State) -> CellListCache[Feat]:
+        return engine.build_cell_list_cache(
             parameter_view(state),
             PointCloud(particles_view(state), systems_view(state)),
         )
@@ -586,9 +586,9 @@ def make_fused_potential[
 class FusedPotentialCache[Feat]:
     """Persistent neighbor table, combined energy, and the layout used to build it."""
 
-    table: CellTable[Feat]
+    table: CellListCache[Feat]
     energy: KahanSummand[PotentialOut[EmptyType, EmptyType]]
-    layout: CellTableParameters = field(static=True)
+    layout: CellListCacheParameters = field(static=True)
 
     @classmethod
     def create[Params, Part: IsRadiusGraphPoints](
@@ -596,14 +596,14 @@ class FusedPotentialCache[Feat]:
         pair: PairTerm[Params, Part, Feat],
         parameters: Params,
         cloud: PointCloud[Part, HasCell[AnyPeriodicity]],
-        layout: CellTableParameters | None = None,
+        layout: CellListCacheParameters | None = None,
     ) -> Self:
         """Build a shared table and empty energy cache before creating a state."""
         if layout is None:
             backend = jax.default_backend()
             on_cpu = backend == "cpu"
             on_gpu = backend in {"gpu", "cuda", "rocm"}
-            layout = CellTableParameters.estimate(
+            layout = CellListCacheParameters.estimate(
                 cloud.particles,
                 cloud.systems,
                 pair.cutoffs(parameters),
@@ -626,7 +626,9 @@ class FusedPotentialCache[Feat]:
                     max(1, 524_288 // width),
                 )
                 layout = replace(layout, chunk_size=1 << (limit.bit_length() - 1))
-        table = FusedNeighborEnergy(pair, layout).build_cell_table(parameters, cloud)
+        table = FusedNeighborEnergy(pair, layout).build_cell_list_cache(
+            parameters, cloud
+        )
         energy = KahanSummand.init(
             PotentialOut(
                 cloud.systems.set_data(jnp.zeros(cloud.systems.size)), EMPTY, EMPTY

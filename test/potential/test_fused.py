@@ -17,7 +17,10 @@ from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, identity_lens, lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.neighborlist.cell_list import CellListNeighborList
-from kups.core.neighborlist.cell_table import CellTable, CellTableParameters
+from kups.core.neighborlist.cell_list_cache import (
+    CellListCache,
+    CellListCacheParameters,
+)
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.patch import Accept, Probe
 from kups.core.potential import (
@@ -78,7 +81,9 @@ from kups.potential.common.pair import (
 )
 
 _LABELS = (Label("A"), Label("B"))
-_PARAMS = CellTableParameters(chunk_size=8, max_cells_per_system=64, cell_capacity=16)
+_PARAMS = CellListCacheParameters(
+    chunk_size=8, max_cells_per_system=64, cell_capacity=16
+)
 
 
 @dataclass
@@ -109,7 +114,7 @@ class _MiniState:
 
 @dataclass
 class _CachedState[Feat](_MiniState):
-    cell_table: CellTable[Feat]
+    cell_table: CellListCache[Feat]
 
 
 class _Parameters(Protocol):
@@ -467,7 +472,7 @@ class TestFullEvaluation:
             parameter_view=lambda s: s.particles.data.positions.sum(),
             pair=_LJ_PAIR.with_parameters(lambda _: _lj_params(1, 3.0)),
             probe=None,
-            cell_table=lambda s: _LJ.build_cell_table(
+            cell_table=lambda s: _LJ.build_cell_list_cache(
                 _lj_params(s.systems.size, 3.0), PointCloud(s.particles, s.systems)
             ),
         )
@@ -522,7 +527,7 @@ class TestFullEvaluation:
         # double-count pairs; also exercises the estimated stencil width.
         state = _make_state(jax.random.PRNGKey(3), (12,), (5.0,))
         params = _lj_params(1, 2.4)
-        estimated = CellTableParameters.estimate(
+        estimated = CellListCacheParameters.estimate(
             state.particles, state.systems, params.cutoff
         )
         assert estimated.stencil_width == 8
@@ -569,7 +574,7 @@ class TestPeriodicImages:
         pair: PairEnergySum[_PairParameters, _Points] = _LJ_PAIR.with_parameters(
             lambda p: p[0]
         ) + (_EWALD_PAIR.with_parameters(lambda p: p[1]))
-        layout = CellTableParameters.estimate(
+        layout = CellListCacheParameters.estimate(
             state.particles,
             state.systems,
             pair.cutoffs(params),
@@ -641,7 +646,7 @@ class TestPeriodicImages:
         def evaluate[Params: _Parameters, Feat](
             parameters: Params, pair: PairTerm[Params, _Points, Feat]
         ) -> jax.Array:
-            layout = CellTableParameters.estimate(
+            layout = CellListCacheParameters.estimate(
                 state.particles, state.systems, parameters.cutoff
             )
             engine = FusedNeighborEnergy(pair, layout)
@@ -692,7 +697,9 @@ class TestPeriodicImages:
         state = _with_cache(
             state,
             initial.value,
-            engine.build_cell_table(params, PointCloud(state.particles, state.systems)),
+            engine.build_cell_list_cache(
+                params, PointCloud(state.particles, state.systems)
+            ),
         )
         potential = _potential(
             engine,
@@ -804,7 +811,7 @@ class TestPeriodicImages:
             engine,
             layout=dataclasses.replace(engine.layout, max_images_per_pair=1),
         )
-        result = jax.jit(as_result_function(engine.build_cell_table))(
+        result = jax.jit(as_result_function(engine.build_cell_list_cache))(
             params, PointCloud(state.particles, state.systems)
         )
         with pytest.raises(AssertionError, match="max_images_per_pair exceeded"):
@@ -838,12 +845,12 @@ def _move(
 
 @overload
 def _with_cache[Feat](
-    state: _MiniState, energies: jax.Array, table: CellTable[Feat]
+    state: _MiniState, energies: jax.Array, table: CellListCache[Feat]
 ) -> _CachedState[Feat]: ...
 @overload
 def _with_cache(state: _MiniState, energies: jax.Array) -> _MiniState: ...
 def _with_cache[Feat](
-    state: _MiniState, energies: jax.Array, table: CellTable[Feat] | None = None
+    state: _MiniState, energies: jax.Array, table: CellListCache[Feat] | None = None
 ) -> _MiniState:
     cache = KahanSummand.init(
         PotentialOut(Table.arange(energies, label=SystemId), EMPTY, EMPTY)
@@ -943,7 +950,7 @@ class TestDeltaEvaluation:
         )
 
 
-class TestPersistentCellTable:
+class TestPersistentCellListCache:
     """Multi-move chain through a persistent table with mixed accept/reject: after
     applying each composed patch (cache + table) and the move, the committed cache
     must equal a graph full recomputation of the committed particles."""
@@ -953,7 +960,7 @@ class TestPersistentCellTable:
         state = _make_state(jax.random.key(31), (16,), (6.0,))
         params = _lj_params(1, 3.0)
         engine = FusedNeighborEnergy(_LJ_PAIR, _PARAMS, lens(lambda s: s.cell_table))
-        table = engine.build_cell_table(
+        table = engine.build_cell_list_cache(
             params, PointCloud(state.particles, state.systems)
         )
         state = _with_cache(
@@ -1007,7 +1014,7 @@ class TestPersistentCellTable:
             lens(lambda s: s.cell_table),
         )
         engine = dataclasses.replace(engine, max_queries_per_system=3)
-        table = engine.build_cell_table(
+        table = engine.build_cell_list_cache(
             params, PointCloud(state.particles, state.systems)
         )
         state = _with_cache(
@@ -1078,7 +1085,7 @@ class TestAdditivePairEnergy:
 
     @staticmethod
     def _engine[State: _MiniState](
-        table_lens: Lens[State, CellTable[tuple[PairData, ...]]] | None = None,
+        table_lens: Lens[State, CellListCache[tuple[PairData, ...]]] | None = None,
     ) -> FusedNeighborEnergy[State, _PairParameters, _Points, tuple[PairData, ...]]:
         pair: PairEnergySum[_PairParameters, _Points] = _LJ_PAIR.with_parameters(
             lambda p: p[0]
@@ -1143,7 +1150,7 @@ class TestAdditivePairEnergy:
             cloud,
             (state.particles.subset(move.indices),),
             move.indices,
-            engine.build_cell_table(params, cloud),
+            engine.build_cell_list_cache(params, cloud),
         )
         with pytest.raises(AssertionError, match="max_queries_per_system"):
             as_result_function(lambda: too_small(inp))().raise_assertion()
@@ -1275,7 +1282,9 @@ class TestAdditivePairEnergy:
         state = _with_cache(
             state,
             self._reference(state, params),
-            engine.build_cell_table(params, PointCloud(state.particles, state.systems)),
+            engine.build_cell_list_cache(
+                params, PointCloud(state.particles, state.systems)
+            ),
         )
         potential = _potential(
             engine,
@@ -1462,7 +1471,7 @@ class TestAdditivePairEnergy:
                 PointCloud(state.particles, state.systems),
                 (old, new),
                 removed,
-                _EWALD.build_cell_table(
+                _EWALD.build_cell_list_cache(
                     params, PointCloud(state.particles, state.systems)
                 ),
             )
@@ -1484,7 +1493,9 @@ class TestAdditivePairEnergy:
         state = _with_cache(
             state,
             self._reference(state, params),
-            engine.build_cell_table(params, PointCloud(state.particles, state.systems)),
+            engine.build_cell_list_cache(
+                params, PointCloud(state.particles, state.systems)
+            ),
         )
         potential = _potential(
             engine,

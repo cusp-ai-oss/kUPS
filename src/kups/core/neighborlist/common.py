@@ -222,7 +222,7 @@ def _get_candidate_images(
     total_cand = jnp.vdot(cand_per_sys, images_per_sys)
     out_size = out_size.generate_assertion(total_cand)
     num_cands = candidates.key_idx.size
-    if out_size.size <= num_cands:
+    if num_cands == 0 or out_size.size <= num_cands:
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         return jnp.arange(num_cands), offset
 
