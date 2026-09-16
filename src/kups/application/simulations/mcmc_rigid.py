@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal
+from typing import Literal, Self
 
 import jax
 import jax.numpy as jnp
@@ -153,12 +153,12 @@ class Config(BaseModel):
 
 
 @dataclass
-class MCMCState:
-    """Full state for a rigid-body grand-canonical MCMC simulation.
+class MCMCStateBase:
+    """Shared state for rigid-body MCMC and Widom simulations.
 
     Holds buffered particle/group arrays, motif templates, system
     thermodynamic data, neighbor lists, potential parameters with
-    caches, per-move adaptive step-size schedulers, and the shared pair table.
+    caches, and per-move adaptive step-size schedulers.
     """
 
     particles: Buffered[ParticleId, MCMCParticles]
@@ -177,7 +177,6 @@ class MCMCState:
     rotation_params: Table[SystemId, ParameterSchedulerState]
     reinsertion_params: Table[SystemId, ParameterSchedulerState]
     exchange_params: Table[SystemId, ParameterSchedulerState]
-    cell_tables: FusedPotentialCache[tuple[Index[Label] | Array, ...]]
 
     @property
     def move_capacity(self) -> Capacity[int]:
@@ -187,7 +186,7 @@ class MCMCState:
         return FixedCapacity(motif_size * len(self.systems))
 
     @property
-    def guest_only(self) -> MCMCState:
+    def guest_only(self) -> Self:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
 
     def blocking_spheres_neighborlist(
@@ -210,6 +209,13 @@ class MCMCState:
 
 
 @dataclass
+class MCMCState(MCMCStateBase):
+    """Rigid-body MCMC state with an initialized persistent pair cache."""
+
+    cell_tables: FusedPotentialCache[tuple[Index[Label] | Array, ...]]
+
+
+@dataclass
 class MCMCStateUpdate:
     """Proposed particle and group changes for an MCMC move.
 
@@ -222,7 +228,7 @@ class MCMCStateUpdate:
     @staticmethod
     def from_changes(
         key: Array,
-        state: MCMCState,
+        state: MCMCStateBase,
         proposal: ExchangeChanges,
     ) -> MCMCStateUpdate:
         """Build particle and group updates from exchange changes."""
@@ -254,7 +260,7 @@ class MCMCStateUpdate:
 
         return MCMCStateUpdate(particle_changes, group_changes)
 
-    def __call__(self, state: MCMCState, accept: Accept) -> MCMCState:
+    def __call__[State: MCMCStateBase](self, state: State, accept: Accept) -> State:
         """Apply the update to ``state``, conditional on ``accept``."""
         acc = Table.broadcast_to(accept, state.systems)
         new_groups = state.groups.update_if(

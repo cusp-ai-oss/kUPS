@@ -259,10 +259,11 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     def _sum_keys(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-        table: CellListCache[Feat],
         rows: CellRows[Feat],
         excluded: Array,
     ) -> Array:
+        table = inp.cell_table
+
         def consume(index: Array) -> Array:
             return self._energies(
                 inp, rows, table.rows, index, lambda b: ~excluded[b.key_idx.indices]
@@ -295,7 +296,6 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     def _sum_environment(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-        table: CellListCache[Feat],
         rows: CellRows[Feat],
         excluded: Array,
         weights: Array,
@@ -303,7 +303,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     ) -> Array:
         def consume(chunk: tuple[CellRows[Feat], Array]) -> Array:
             rows, weights = chunk
-            energies = self._sum_keys(inp, table, rows, excluded)
+            energies = self._sum_keys(inp, rows, excluded)
             return jax.ops.segment_sum(
                 energies * weights,
                 rows.system.indices,
@@ -318,7 +318,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
         )
         padding = -n % chunk_size
         if padding:
-            rows = rows.pad(padding, sentinel_cell=table.sentinel_cell)
+            rows = rows.pad(padding, sentinel_cell=inp.cell_table.sentinel_cell)
             weights = jnp.pad(weights, (0, padding))
         return sum_chunks(
             consume,
@@ -350,8 +350,8 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
     def _local(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-        table: CellListCache[Feat],
     ) -> tuple[Array, CellRows[Feat], Array]:
+        table = inp.cell_table
         queries = inp.queries
         parts = [
             table.bin_rows(q, inp.cloud.systems, self.pair.features(q.data))
@@ -373,7 +373,6 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
         n = rows.frac.shape[0]
         environment = self._sum_environment(
             inp,
-            table,
             rows,
             removed,
             weights,
@@ -422,9 +421,8 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
             return WithPatch(Table(keys, self._full(inp)), IdPatch[State]())
         if not isinstance(inp, FusedLocalInput):
             raise TypeError("Construct a FusedFullInput or FusedLocalInput")
-        table = inp.cell_table
         patch: Patch[State] = IdPatch[State]()
-        values, rows, slots = self._local(inp, table)
+        values, rows, slots = self._local(inp)
         if self.cell_table_lens is not None:
             patch = CellListCacheUpdatePatch(
                 slots,

@@ -41,9 +41,8 @@ from kups.application.potential.classical.lennard_jones import (
 from kups.application.simulations.mcmc_rigid import (
     EwaldConfig,
     LJConfig,
-    MCMCState,
+    MCMCStateBase,
     MCMCStateUpdate,
-    init_cell_tables,
 )
 from kups.application.utils.propagate import (
     make_cycle_function,
@@ -130,11 +129,11 @@ class Config(BaseModel):
 
 
 @dataclass
-class WidomState(MCMCState):
+class WidomState(MCMCStateBase):
     """State for the Widom test-particle simulation.
 
-    Inherits all [MCMCState][kups.application.simulations.mcmc_rigid.MCMCState]
-    fields and adds one accumulator.
+    Extends [MCMCStateBase][kups.application.simulations.mcmc_rigid.MCMCStateBase]
+    with one accumulator.
 
     Attributes:
         widom_statistics: Running sums for the Widom averages
@@ -210,7 +209,6 @@ def init_state(key: Array, config: Config) -> WidomState:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
     min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
 
-    cell_tables = init_cell_tables(particles, motifs, system, lj_params, ewald_params)
     return WidomState(
         particles=particles,
         groups=groups,
@@ -242,7 +240,6 @@ def init_state(key: Array, config: Config) -> WidomState:
             ParameterSchedulerState.create(n_sys), label=SystemId
         ),
         widom_statistics=Table.arange(WidomStatistics.zeros(n_sys), label=SystemId),
-        cell_tables=cell_tables,
     )
 
 
