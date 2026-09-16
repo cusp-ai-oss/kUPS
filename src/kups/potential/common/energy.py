@@ -282,6 +282,16 @@ class PotentialFromEnergy[
         for inp, weight in dp_plan:
             # Prepare inputs
             g_inp = self.gradient_lens.get(inp)
+            if not jax.tree.leaves(g_inp):
+                # No differentiation targets: evaluate the energy directly and
+                # skip the linearize/VJP scaffolding entirely.
+                energy_result = self.energy_fn(inp)
+                out = PotentialOut(
+                    energy_result.data, g_inp, self.hessian_lens.get(g_inp)
+                )
+                outs.append(weight * out)
+                patches.append(energy_result.patch)
+                continue
             h_inp = self.hessian_lens.get(g_inp)
             h_tree = tree_structure(h_inp)
             h_inp_list = h_tree.flatten_up_to(h_inp)
