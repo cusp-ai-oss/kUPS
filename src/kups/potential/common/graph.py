@@ -37,16 +37,12 @@ from jax import Array
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind, lens
-from kups.core.neighborlist import Edges, NeighborList
+from kups.core.neighborlist import Edges, NeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import Energy
 from kups.core.typing import (
     HasCell,
-    HasExclusionIndex,
-    HasInclusionIndex,
-    HasPositions,
     HasPositionsAndSystemIndex,
-    HasSystemIndex,
     ParticleId,
     SystemId,
 )
@@ -167,17 +163,7 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
         return result
 
 
-@runtime_checkable
-class IsRadiusGraphPoints(
-    HasPositions,
-    HasSystemIndex,
-    HasInclusionIndex,
-    HasExclusionIndex,
-    Protocol,
-): ...
-
-
-class IsParticleProbe[P: IsRadiusGraphPoints](Protocol):
+class IsParticleProbe[P: NeighborListPoints](Protocol):
     """Probe result identifying changed particles."""
 
     @property
@@ -185,7 +171,7 @@ class IsParticleProbe[P: IsRadiusGraphPoints](Protocol):
 
 
 @runtime_checkable
-class IsGraphProbe[P: IsRadiusGraphPoints, Degree: int](IsParticleProbe[P], Protocol):
+class IsGraphProbe[P: NeighborListPoints, Degree: int](IsParticleProbe[P], Protocol):
     """Particle probe supplying neighbor lists for incremental graph construction."""
 
     @property
@@ -198,7 +184,7 @@ class IsGraphProbe[P: IsRadiusGraphPoints, Degree: int](IsParticleProbe[P], Prot
 class GraphConstructor[
     State,
     Ptch: Patch[Any],
-    P: IsRadiusGraphPoints,
+    P: NeighborListPoints,
     S: HasCell[AnyPeriodicity],
     Degree: int,
 ]:
@@ -357,7 +343,7 @@ GRAPH_GEOMETRY: Lens[IsGraphInput, Geometry] = lens(lambda inp: inp.graph).nest(
 class GraphInputConstructor[
     State,
     Ptch: Patch[Any],
-    P: IsRadiusGraphPoints,
+    P: NeighborListPoints,
     S: HasCell[AnyPeriodicity],
     Degree: int,
     Params,

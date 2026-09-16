@@ -22,6 +22,7 @@ from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     NeighborList,
+    NeighborListPoints,
 )
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Energy, PotentialOut
@@ -34,7 +35,6 @@ from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,
     GraphPotentialInput,
-    IsRadiusGraphPoints,
 )
 
 
@@ -58,7 +58,7 @@ class EnergyFn(Protocol):
     def call(self, params: list[Array], data: AtomGraphInput) -> Array: ...
 
 
-class IsTojaxedParticles(IsRadiusGraphPoints, HasAtomicNumbers, Protocol): ...
+class IsTojaxedParticles(NeighborListPoints, HasAtomicNumbers, Protocol): ...
 
 
 @dataclass

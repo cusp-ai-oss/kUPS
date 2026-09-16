@@ -36,7 +36,7 @@ from jax import Array
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, View
-from kups.core.neighborlist import NeighborList
+from kups.core.neighborlist import NeighborList, NeighborListPoints
 from kups.core.patch import Patch, WithPatch
 from kups.core.potential import Potential, PotentialOut
 from kups.core.typing import (
@@ -53,7 +53,6 @@ from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,
     GraphPotentialInput,
-    IsRadiusGraphPoints,
 )
 
 
@@ -130,7 +129,7 @@ def make_direct_mliap_potential[
     State,
     Gradients,
     Hessians,
-    P: IsRadiusGraphPoints,
+    P: NeighborListPoints,
     S: HasCell[AnyPeriodicity],
     Ptch: Patch[Any],
 ](

@@ -19,7 +19,7 @@ from jax import Array
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
-from kups.core.neighborlist import FixedEdgesNeighborList
+from kups.core.neighborlist import FixedEdgesNeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     Energy,
@@ -45,12 +45,11 @@ from kups.potential.common.graph import (
     GraphInputConstructor,
     GraphPotentialInput,
     IsGraphProbe,
-    IsRadiusGraphPoints,
 )
 
 
 @runtime_checkable
-class IsBondedParticles(HasPositionsAndLabels, IsRadiusGraphPoints, Protocol):
+class IsBondedParticles(HasPositionsAndLabels, NeighborListPoints, Protocol):
     """Particle data with positions, labels, and system index."""
 
     ...

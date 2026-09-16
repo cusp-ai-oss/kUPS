@@ -18,10 +18,10 @@ from scipy.special import erfc
 
 from kups.core.cell import AnyPeriodicity, Cell, Periodic3D
 from kups.core.data import Table
+from kups.core.neighborlist import NeighborListPoints
 from kups.core.typing import HasCell, HasCharges, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, no_jax_tracing
 from kups.core.utils.math import triangular_3x3_matmul
-from kups.potential.common.graph import IsRadiusGraphPoints
 
 type ReciprocalGridBound = tuple[int, int, int]
 
@@ -39,7 +39,7 @@ def _default_reciprocal_particle_chunk() -> int:
     return _DEFAULT_RECIPROCAL_PARTICLE_CHUNK
 
 
-class IsEwaldPointData(HasCharges, IsRadiusGraphPoints, Protocol):
+class IsEwaldPointData(HasCharges, NeighborListPoints, Protocol):
     """Particle data required by Ewald: charges, positions, system/inclusion/exclusion indices."""
 
 

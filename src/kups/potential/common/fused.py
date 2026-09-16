@@ -38,6 +38,7 @@ from kups.core.neighborlist.types import (
     CandidateBatch,
     IsNeighborListState,
     IsUniversalNeighborlistParams,
+    NeighborListPoints,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -65,7 +66,6 @@ from kups.potential.common.graph import (
     GraphInputConstructor,
     GraphPairEnergy,
     HyperGraph,
-    IsRadiusGraphPoints,
     PointCloud,
     graph_pair_energies,
 )
@@ -127,7 +127,7 @@ def sum_chunks[Rows](
 
 
 @dataclass
-class FusedPotentialInput[Params, Part: IsRadiusGraphPoints, Feat]:
+class FusedPotentialInput[Params, Part: NeighborListPoints, Feat]:
     """Shared parameters and geometry of initialized full/local pair inputs."""
 
     parameters: Params
@@ -135,7 +135,7 @@ class FusedPotentialInput[Params, Part: IsRadiusGraphPoints, Feat]:
 
 
 @dataclass
-class FusedFullInput[Params, Part: IsRadiusGraphPoints, Feat](
+class FusedFullInput[Params, Part: NeighborListPoints, Feat](
     FusedPotentialInput[Params, Part, Feat]
 ):
     """Neighbors with the term's shared group masks applied before autodiff."""
@@ -144,7 +144,7 @@ class FusedFullInput[Params, Part: IsRadiusGraphPoints, Feat](
 
 
 @dataclass
-class FusedLocalInput[Params, Part: IsRadiusGraphPoints, Feat](
+class FusedLocalInput[Params, Part: NeighborListPoints, Feat](
     FusedPotentialInput[Params, Part, Feat]
 ):
     """Incident pairs against an initialized table, excluding ``removed``.
@@ -163,7 +163,7 @@ class FusedLocalInput[Params, Part: IsRadiusGraphPoints, Feat](
             raise ValueError("Local evaluation requires one query or an old/new pair")
 
 
-def _local_difference[Params, Part: IsRadiusGraphPoints, Feat](
+def _local_difference[Params, Part: NeighborListPoints, Feat](
     previous: FusedPotentialInput[Params, Part, Feat],
     proposed: FusedPotentialInput[Params, Part, Feat],
 ) -> FusedLocalInput[Params, Part, Feat]:
@@ -179,7 +179,7 @@ FUSED_GEOMETRY = lens(lambda inp: inp.cloud, cls=FusedPotentialInput).nest(
 
 
 @dataclass
-class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
+class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     """Evaluate shared pair terms over a full graph or local spatial chunks.
 
     ``pair`` defines the interaction and ``layout`` configures cell storage
@@ -437,7 +437,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
 class FusedInputConstructor[
     State: IsNeighborListState[IsUniversalNeighborlistParams],
     Ptch: Patch[Any],
-    P: IsRadiusGraphPoints,
+    P: NeighborListPoints,
     S: HasCell[AnyPeriodicity],
     Params,
     Feat,
@@ -505,7 +505,7 @@ class FusedInputConstructor[
 def make_fused_potential[
     State: IsNeighborListState[IsUniversalNeighborlistParams],
     Ptch: Patch[Any],
-    P: IsRadiusGraphPoints,
+    P: NeighborListPoints,
     Params,
     Feat,
     Gradients,
@@ -589,7 +589,7 @@ class FusedPotentialCache[Feat]:
     layout: CellListCacheParameters = field(static=True)
 
     @staticmethod
-    def create[Params, Part: IsRadiusGraphPoints, Data](
+    def create[Params, Part: NeighborListPoints, Data](
         pair: PairTerm[Params, Part, Data],
         parameters: Params,
         cloud: PointCloud[Part, HasCell[AnyPeriodicity]],
@@ -636,7 +636,7 @@ class FusedPotentialCache[Feat]:
 
 def fuse_pair_potentials[
     State: IsNeighborListState[IsUniversalNeighborlistParams],
-    Part: IsRadiusGraphPoints,
+    Part: NeighborListPoints,
     Ptch: Patch[Any],
     Feat,
 ](

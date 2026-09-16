@@ -20,6 +20,7 @@ from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     NeighborList,
+    NeighborListPoints,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -44,14 +45,13 @@ from kups.potential.common.graph import (
     GraphInputConstructor,
     GraphPotentialInput,
     IsGraphProbe,
-    IsRadiusGraphPoints,
 )
 
 TO_STANDARD_UNITS = HARTREE * BOHR
 
 
 class IsCoulombGraphParticles(
-    HasPositionsAndSystemIndex, HasCharges, IsRadiusGraphPoints, Protocol
+    HasPositionsAndSystemIndex, HasCharges, NeighborListPoints, Protocol
 ): ...
 
 

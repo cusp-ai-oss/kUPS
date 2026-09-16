@@ -41,6 +41,7 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
 
 
+@runtime_checkable
 class NeighborListPoints(
     HasPositions,
     HasSystemIndex,
