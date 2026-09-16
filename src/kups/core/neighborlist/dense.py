@@ -63,8 +63,8 @@ def _dense_subselect(
         num_segments=systems.size,
     )
     return Candidates(
-        key_idx=Index(keys.keys, selection_result.scatter_idxs),
-        query_idx=Index(queries.keys, selection_result.gather_idxs),
+        key_idx=Index(keys.keys, selection_result.scatter_idxs, _cls=keys.cls),
+        query_idx=Index(queries.keys, selection_result.gather_idxs, _cls=queries.cls),
     )
 
 
@@ -158,6 +158,16 @@ class DenseNearestNeighborList:
     ) -> DenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    def selector(
+        self, query_size: int, systems: Table[SystemId, NeighborListSystems]
+    ) -> DenseSelector:
+        """Build the candidate selector shared by graph and pair evaluation."""
+        return DenseSelector(
+            cutoffs=Table.broadcast_to(self.cutoffs, systems),
+            max_candidates=self.avg_candidates.multiply(query_size),
+            max_image_candidates=self.avg_image_candidates.multiply(query_size),
+        )
+
     @overload
     def __call__(
         self,
@@ -189,11 +199,7 @@ class DenseNearestNeighborList:
         )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
-            selector=DenseSelector(
-                cutoffs=cutoffs,
-                max_candidates=self.avg_candidates.multiply(query_size),
-                max_image_candidates=self.avg_image_candidates.multiply(query_size),
-            ),
+            selector=self.selector(query_size, systems),
             masks=(
                 InBoundsMask(),
                 InclusionMatchMask(),

@@ -15,6 +15,23 @@ from ._builders import make_batch, make_lh, make_pipeline_ctx
 
 
 class TestReduceCompactor:
+    def test_preserves_image_flags_with_padding(self):
+        lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
+        ctx = make_pipeline_ctx(lh)
+        batch = make_batch(
+            lh.keys,
+            jnp.array([0, 1, 2]),
+            jnp.array([1, 2, 0]),
+            is_minimum_image=jnp.array([False, False, True]),
+        )
+        compacted = ReduceCompactor(FixedCapacity(4)).compact_batch(
+            jnp.array([True, False, True]), batch, ctx
+        )
+        npt.assert_array_equal(
+            compacted.edges.indices.indices, [[0, 1], [2, 0], [3, 3], [3, 3]]
+        )
+        npt.assert_array_equal(compacted.is_minimum_image, [False, True, False, False])
+
     def test_compacts_to_capacity_size(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         ctx = make_pipeline_ctx(lh)

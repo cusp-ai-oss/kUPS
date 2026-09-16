@@ -45,32 +45,40 @@ class ReduceCompactor[D: int](Compactor[D]):
         batch: CandidateBatch[D],
         ctx: PipelineContext,
     ) -> Edges[D]:
+        return self.compact_batch(keep, batch, ctx).edges
+
+    def compact_batch(
+        self,
+        keep: Array,
+        batch: CandidateBatch[D],
+        ctx: PipelineContext,
+    ) -> CandidateBatch[D]:
+        """Compact edges together with the image flags needed by pair kernels."""
         oob = max(ctx.keys.size, ctx.edge_query_table.size)
         max_edges = self.avg_edges.generate_assertion(keep.sum())
-        if keep.size == 0:
-            # JAX cannot gather a padded output from an empty source array.
-            return Edges(
+        sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
+
+        def gather(values: Array, fill_value: int = 0) -> Array:
+            if keep.size == 0:
+                # JAX cannot gather a padded output from an empty source array.
+                return jnp.full(
+                    (max_edges.size, *values.shape[1:]), fill_value, dtype=values.dtype
+                )
+            return values.at[sort_idxs].get(
+                mode="fill", fill_value=fill_value, indices_are_sorted=True
+            )
+
+        return CandidateBatch(
+            Edges(
                 Index(
                     batch.edges.indices.keys,
-                    jnp.full((max_edges.size, *batch.edges.indices.shape[1:]), oob),
+                    gather(batch.edges.indices.indices, oob),
                     _cls=batch.edges.indices.cls,
                 ),
-                jnp.zeros(
-                    (max_edges.size, *batch.edges.shifts.shape[1:]),
-                    dtype=batch.edges.shifts.dtype,
-                ),
-            )
-        sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
-        shifts = batch.edges.shifts.at[sort_idxs].get(
-            mode="fill", fill_value=0, indices_are_sorted=True
-        )
-
-        indices = batch.edges.indices.indices.at[sort_idxs].get(
-            mode="fill", fill_value=oob, indices_are_sorted=True
-        )
-        return Edges(
-            Index(batch.edges.indices.keys, indices, _cls=batch.edges.indices.cls),
-            shifts,
+                gather(batch.edges.shifts),
+            ),
+            gather(batch.is_minimum_image),
+            batch.query_keys,
         )
 
 

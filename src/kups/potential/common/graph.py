@@ -30,6 +30,7 @@ from typing import (
     runtime_checkable,
 )
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -52,7 +53,7 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field, jit, tree_map
 from kups.potential.common.energy import InputConstructor
 from kups.potential.common.geometry import Geometry, PositionsAndSystemIndex
-from kups.potential.common.pair import PairBatch, PairEnergy
+from kups.potential.common.pair import PairBatch, PairEnergy, PairTerm
 
 Params = TypeVar("Params", covariant=True)
 Part = TypeVar("Part", covariant=True, bound=HasPositionsAndSystemIndex)
@@ -257,6 +258,34 @@ class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
     graph: HyperGraph[Part, Sys, Degree]
 
 
+def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
+    pair: PairTerm[Params, Part, Feat],
+    parameters: Params,
+    graph: HyperGraph[Part, HasCell[AnyPeriodicity], Literal[2]],
+    inclusion: Array,
+    exclusion: Array,
+) -> Array:
+    """Evaluate pair terms on compacted edges with their remaining group masks."""
+    particles = graph.particles[graph.edges.indices]
+    system = particles.system[:, 0]
+    valid = (
+        graph.edges.indices.indices_in(graph.particles.keys) < graph.particles.size
+    ).all(-1)
+    valid &= system.valid_mask & (system.indices == particles.system[:, 1].indices)
+    rij = jnp.where(valid[:, None], graph.edge_shifts[:, 0], 0.0)
+    # Combining periodic geometry with pair algebra can crash the CUDA MLIR
+    # fusion compiler in CSE. Preserve this boundary without changing autodiff.
+    rij, r2 = jax.lax.optimization_barrier((rij, (rij**2).sum(-1)))
+    pairs = PairBatch(rij, r2, system, valid, inclusion, exclusion)
+    features = graph.particles.map_data(pair.features)[graph.edges.indices]
+    return pair.evaluate(
+        parameters,
+        tree_map(lambda x: x[:, 0], features),
+        tree_map(lambda x: x[:, 1], features),
+        pairs,
+    )
+
+
 @dataclass
 class GraphPairEnergy[
     Params,
@@ -268,7 +297,8 @@ class GraphPairEnergy[
     Graph edges already encode inclusion, exclusion and periodic-image rules.
     The pair term supplies the features, cutoff and kernel. Directed edges
     contribute half their energy to each system's total. ``fuse_pair_potentials``
-    can collect the same term for evaluation without materializing edges.
+    can collect the same term to share geometry and neighbor traversal with
+    other pair terms.
     """
 
     pair: PairEnergy[Params, Part, Feat] = field(static=True)
@@ -279,23 +309,8 @@ class GraphPairEnergy[
         inp: GraphPotentialInput[Params, Part, HasCell[AnyPeriodicity], Literal[2]],
     ) -> Array:
         """Evaluate the pair term on each directed edge, ignoring padded edges."""
-        graph = inp.graph
-        particles = graph.particles[graph.edges.indices]
-        system = particles.system[:, 0]
-        valid = (
-            graph.edges.indices.indices_in(graph.particles.keys) < graph.particles.size
-        ).all(-1)
-        valid &= system.valid_mask & (system.indices == particles.system[:, 1].indices)
-        rij = jnp.where(valid[:, None], graph.edge_shifts[:, 0], 0.0)
-        keep = jnp.ones_like(valid)
-        pairs = PairBatch(rij, (rij**2).sum(-1), system, valid, keep, keep)
-        features = graph.particles.map_data(self.pair.features)[graph.edges.indices]
-        return self.pair.evaluate(
-            inp.parameters,
-            tree_map(lambda x: x[:, 0], features),
-            tree_map(lambda x: x[:, 1], features),
-            pairs,
-        )
+        keep = jnp.ones(len(inp.graph.edges), dtype=bool)
+        return graph_pair_energies(self.pair, inp.parameters, inp.graph, keep, keep)
 
     def __call__[State](
         self,

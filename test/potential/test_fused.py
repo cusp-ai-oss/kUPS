@@ -59,11 +59,11 @@ from kups.potential.common.energy import (
 )
 from kups.potential.common.fused import (
     FUSED_GEOMETRY,
+    FusedFullInput,
     FusedInputConstructor,
     FusedLocalInput,
     FusedNeighborEnergy,
     FusedPotentialCache,
-    FusedPotentialInput,
     fuse_pair_potentials,
     make_fused_potential,
     sum_chunks,
@@ -104,7 +104,7 @@ class _MiniState:
 
     @property
     def neighborlist_params(self) -> UniversalNeighborlistParameters:
-        return UniversalNeighborlistParameters(768, 384, 128, 768)
+        return UniversalNeighborlistParameters(768, 384, 768, 768)
 
 
 @dataclass
@@ -255,6 +255,37 @@ def _graph_full[Params: _Parameters](
     return energy_fn(GraphPotentialInput(params, graph)).data.data
 
 
+def _full_input[State, Params, Feat](
+    engine: FusedNeighborEnergy[State, Params, _Points, Feat],
+    params: Params,
+    cloud: PointCloud[_Points, HasCell[AnyPeriodicity]],
+) -> FusedFullInput[Params, _Points, Feat]:
+    from kups.core.neighborlist.adaptive import (
+        AdaptiveNeighborList,
+        NeighborListCandidate,
+        dense_cost,
+    )
+
+    n = max(1, cloud.particles.size)
+    neighbors = DenseNearestNeighborList(
+        avg_candidates=FixedCapacity(n),
+        avg_edges=FixedCapacity(n * engine.layout.max_images_per_pair),
+        avg_image_candidates=FixedCapacity(n * engine.layout.max_images_per_pair),
+        cutoffs=engine.pair.cutoffs(params),
+    )
+    adaptive = AdaptiveNeighborList((NeighborListCandidate(neighbors, dense_cost),))
+    return FusedFullInput(
+        params,
+        cloud,
+        adaptive.pair_candidates(
+            cloud.particles,
+            cloud.systems,
+            inclusion=engine.pair.inclusion,
+            exclusion=engine.pair.exclusion,
+        ),
+    )
+
+
 def _with_points[State: _MiniState](
     state: State, **changes: Unpack[_PointChanges]
 ) -> State:
@@ -322,11 +353,6 @@ class TestPotentialFusion:
         monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
         cache = FusedPotentialCache.create(_LJ_PAIR, params, cloud)
         assert cache.table.rows.frac.shape[0] < 2 * state.particles.size
-        result = FusedNeighborEnergy(_LJ_PAIR, cache.layout)(
-            FusedPotentialInput(params, cloud)
-        )
-        reference = _graph_full(state, params, lennard_jones_energy)
-        npt.assert_allclose(result.data.data, reference, rtol=1e-10)
 
     def test_nested_sum_and_remaining_terms_with_mixed_acceptance(self):
         from kups.application.potential.classical.lennard_jones import (
@@ -439,6 +465,7 @@ class TestFullEvaluation:
             particles=lambda s: s.particles,
             systems=lambda s: s.systems,
             parameter_view=lambda s: s.particles.data.positions.sum(),
+            pair=_LJ_PAIR.with_parameters(lambda _: _lj_params(1, 3.0)),
             probe=None,
             cell_table=lambda s: _LJ.build_cell_table(
                 _lj_params(s.systems.size, 3.0), PointCloud(s.particles, s.systems)
@@ -482,9 +509,7 @@ class TestFullEvaluation:
             ).data.data.sum()
 
         def fused_energy(positions: jax.Array) -> jax.Array:
-            inp = FusedPotentialInput(
-                params, PointCloud(moved(positions), state.systems)
-            )
+            inp = _full_input(_LJ, params, PointCloud(moved(positions), state.systems))
             return _LJ(inp).data.data.sum()
 
         x = state.particles.data.positions
@@ -585,23 +610,18 @@ class TestPeriodicImages:
         )
 
     @pytest.mark.parametrize("periodic", [(True, True, True), (False, True, True)])
-    @pytest.mark.parametrize(
-        "key_layout,key_chunk_size", [("cells", None), ("cells", 2), ("slots", 4)]
-    )
     def test_full_mixed_image_counts_and_exclusions(
         self,
         periodic: AnyPeriodicity,
-        key_layout: _KeyLayout,
-        key_chunk_size: int | None,
     ):
-        state, params, engine = self._setup(periodic, key_layout, key_chunk_size)
+        state, params, engine = self._setup(periodic)
         assert engine.layout.max_images_per_pair > 1
 
         @jax.jit
         @as_result_function
         def compare(state: _MiniState):
             actual = engine(
-                FusedPotentialInput(params, PointCloud(state.particles, state.systems))
+                _full_input(engine, params, PointCloud(state.particles, state.systems))
             ).data.data
             expected = self._reference(state, params, engine.layout.max_images_per_pair)
             return actual, expected
@@ -624,9 +644,12 @@ class TestPeriodicImages:
             layout = CellTableParameters.estimate(
                 state.particles, state.systems, parameters.cutoff
             )
-            result = jax.jit(as_result_function(FusedNeighborEnergy(pair, layout)))(
-                FusedPotentialInput(
-                    parameters, PointCloud(state.particles, state.systems)
+            engine = FusedNeighborEnergy(pair, layout)
+            result = jax.jit(as_result_function(engine))(
+                _full_input(
+                    engine,
+                    parameters,
+                    PointCloud(state.particles, state.systems),
                 )
             )
             result.raise_assertion()
@@ -753,8 +776,8 @@ class TestPeriodicImages:
             )
             if fused:
                 values = engine(
-                    FusedPotentialInput(
-                        params, PointCloud(moved.particles, moved.systems)
+                    _full_input(
+                        engine, params, PointCloud(moved.particles, moved.systems)
                     )
                 ).data.data
             else:
@@ -781,8 +804,8 @@ class TestPeriodicImages:
             engine,
             layout=dataclasses.replace(engine.layout, max_images_per_pair=1),
         )
-        result = jax.jit(as_result_function(engine))(
-            FusedPotentialInput(params, PointCloud(state.particles, state.systems))
+        result = jax.jit(as_result_function(engine.build_cell_table))(
+            params, PointCloud(state.particles, state.systems)
         )
         with pytest.raises(AssertionError, match="max_images_per_pair exceeded"):
             result.raise_assertion()
@@ -1043,6 +1066,16 @@ class TestPersistentCellTable:
 
 
 class TestAdditivePairEnergy:
+    def test_sum_with_shared_group_masks(self):
+        state = _make_state(jax.random.key(84), (12, 9), (10.0, 12.0), n_inactive=2)
+        params = _lj_params(2, 3.0)
+        engine: FusedNeighborEnergy[
+            _MiniState, LennardJonesParameters, _Points, tuple[PairData, ...]
+        ] = FusedNeighborEnergy(_LJ_PAIR + _LJ_PAIR, _PARAMS)
+        actual = _potential(engine, params)(state).data.total_energies.data
+        expected = 2 * _graph_full(state, params, lennard_jones_energy)
+        npt.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+
     @staticmethod
     def _engine[State: _MiniState](
         table_lens: Lens[State, CellTable[tuple[PairData, ...]]] | None = None,
@@ -1209,7 +1242,7 @@ class TestAdditivePairEnergy:
             )
             if fused:
                 return engine(
-                    FusedPotentialInput(params, PointCloud(moved.particles, systems))
+                    _full_input(engine, params, PointCloud(moved.particles, systems))
                 ).data.data.sum()
             lj = lennard_jones_energy(
                 GraphPotentialInput(
@@ -1435,11 +1468,11 @@ class TestAdditivePairEnergy:
             )
         ).data.data
         before = _EWALD(
-            FusedPotentialInput(params, PointCloud(state.particles, state.systems))
+            _full_input(_EWALD, params, PointCloud(state.particles, state.systems))
         ).data.data
         after = _EWALD(
-            FusedPotentialInput(
-                params, PointCloud(proposal.particles, proposal.systems)
+            _full_input(
+                _EWALD, params, PointCloud(proposal.particles, proposal.systems)
             )
         ).data.data
         npt.assert_allclose(result + before, after, rtol=1e-10, atol=1e-12)

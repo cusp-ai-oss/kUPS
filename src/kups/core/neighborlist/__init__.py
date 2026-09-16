@@ -154,6 +154,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
     Postprocessor,
+    SelectableNeighborList,
 )
 
 __all__ = [
@@ -202,6 +203,7 @@ __all__ = [
     "Postprocessor",
     "PrecomputedEdgesSelector",
     "ReduceCompactor",
+    "SelectableNeighborList",
     "RefineCutoffNeighborList",
     "RefineMaskNeighborList",
     "QueriedKeysDedupMask",

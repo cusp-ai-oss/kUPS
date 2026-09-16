@@ -20,6 +20,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import bind
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import (
+    CandidateBatch,
     CandidateSelector,
     Compactor,
     Mask,
@@ -73,15 +74,40 @@ class Pipeline[D: int]:
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[D]:
-        ctx = _prepare(keys, queries, systems, queried_keys)
-        batch = self.selector(ctx)
-        keep = jnp.ones((len(batch.edges),), dtype=bool)
-        for mask in self.masks:
-            keep &= mask(batch, ctx)
+        batch, keep, ctx = select_candidates(
+            keys,
+            systems,
+            self.selector,
+            self.masks,
+            queries=queries,
+            queried_keys=queried_keys,
+        )
         edges = self.compactor(keep, batch, ctx)
         for postprocessor in self.postprocessors:
             edges = postprocessor(edges, ctx)
         return edges
+
+
+def select_candidates[D: int](
+    keys: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    selector: CandidateSelector[D],
+    masks: tuple[Mask[D], ...],
+    *,
+    queries: Table[ParticleId, NeighborListPoints] | None = None,
+    queried_keys: Index[ParticleId] | None = None,
+) -> tuple[CandidateBatch[D], Array, PipelineContext]:
+    """Prepare and mask candidates, returning the batch, keep mask and context.
+
+    Both graph pipelines and pair evaluators use this selection phase; the
+    latter retain image flags when compacting the result.
+    """
+    ctx = _prepare(keys, queries, systems, queried_keys)
+    batch = selector(ctx)
+    keep = jnp.ones((len(batch.edges),), dtype=bool)
+    for mask in masks:
+        keep &= mask(batch, ctx)
+    return batch, keep, ctx
 
 
 def _prepare(

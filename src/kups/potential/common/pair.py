@@ -52,10 +52,17 @@ class PairBatch(NamedTuple):
 
         ``query_lanes`` declares a regular block of candidates for each query, in
         query-table order. This shares one cell matrix across a whole lane block
-        instead of gathering and multiplying a matrix for every candidate.
+        and broadcasts query coordinates so their gradients reduce along lanes.
         """
         keys = ctx.keys[batch.key_idx]
-        queries = ctx.edge_query_table[batch.query_idx]
+        queries = (
+            ctx.edge_query_table[batch.query_idx]
+            if query_lanes is None
+            else jax.tree.map(
+                lambda x: jnp.repeat(x, query_lanes, axis=0),
+                ctx.edge_query_table.data,
+            )
+        )
         key_system, query_system = Index.match(keys.system, queries.system)
         valid = InBoundsMask()(batch, ctx) & (key_system == query_system)
         delta = keys.positions - queries.positions - batch.edges.shifts[:, 0]
@@ -144,11 +151,13 @@ class PairTerm[Params, Part, Feat](Protocol):
     candidate pairs with its own cutoff and mask policy. ``PairEnergy`` implements
     this interface for one ``PairKernel``. ``PairEnergySum`` combines terms: its
     search cutoff is their maximum, while evaluation retains each term's cutoff.
+    Its inclusion/exclusion flags describe masks required by every contribution,
+    allowing neighbor selection to apply those shared masks before compaction.
 
     The evaluator constructs neighbors and periodic geometry, gathers endpoint
     features, and reduces the returned pair energies into system totals.
     ``GraphPairEnergy`` derives a graph evaluator from a ``PairEnergy``;
-    ``FusedNeighborEnergy`` accepts any ``PairTerm`` for chunked evaluation.
+    ``FusedNeighborEnergy`` accepts any ``PairTerm`` for shared full/local evaluation.
 
     Type Parameters:
         Params: Parameters supplied to the term's cutoff and energy functions.
@@ -168,6 +177,16 @@ class PairTerm[Params, Part, Feat](Protocol):
     @property
     def cutoffs(self) -> View[Params, Table[SystemId, Array]]:
         """Select per-system search radii; a singleton table applies to all systems."""
+        ...
+
+    @property
+    def inclusion(self) -> bool:
+        """Whether every contribution requires matching inclusion groups."""
+        ...
+
+    @property
+    def exclusion(self) -> bool:
+        """Whether every contribution excludes same-group closest images."""
         ...
 
     def evaluate(
@@ -228,6 +247,14 @@ class _PackedPairTerm[Params, Part, Feat]:
     @property
     def cutoffs(self) -> View[Params, Table[SystemId, Array]]:
         return self.term.cutoffs
+
+    @property
+    def inclusion(self) -> bool:
+        return self.term.inclusion
+
+    @property
+    def exclusion(self) -> bool:
+        return self.term.exclusion
 
     def evaluate(
         self, parameters: Params, left: PairData, right: PairData, pairs: PairBatch
@@ -394,6 +421,14 @@ class PairEnergySum[Params, Part]:
 
     def features(self, particles: Part, /) -> tuple[PairData, ...]:
         return tuple(term.features(particles) for term in self.terms)
+
+    @property
+    def inclusion(self) -> bool:
+        return all(term.inclusion for term in self.terms)
+
+    @property
+    def exclusion(self) -> bool:
+        return all(term.exclusion for term in self.terms)
 
     def cutoffs(self, parameters: Params, /) -> Table[SystemId, Array]:
         tables = [term.cutoffs(parameters) for term in self.terms]

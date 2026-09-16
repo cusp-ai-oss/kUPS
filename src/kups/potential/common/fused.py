@@ -1,21 +1,21 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Chunked pair evaluation using the neighbor pipeline and standard sum composers.
+"""Shared pair evaluation using the neighbor pipeline and standard sum composers.
 
 Add ``PairEnergy`` terms before constructing ``FusedNeighborEnergy``. The sum
-shares one spatial table and geometry pass, while each term retains its own
-cutoff and inclusion/exclusion policy. ``PotentialFromEnergy`` provides the
-same differentiation, compensated caching, and patches as graph potentials.
-Periodic images expand within each chunk using the neighbor-list image and
-exclusion rules.
+shares one neighbor search and geometry pass, while each term retains its own
+cutoff and inclusion/exclusion policy. Full evaluations compact an adaptive
+graph before differentiation. Local proposals consume a persistent cell table
+in chunks. Both retain periodic images and use ``PotentialFromEnergy`` for
+differentiation, compensated caching, and patches.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from operator import itemgetter
-from typing import Any, Callable, Self
+from typing import Any, Callable, Literal, Self
 
 import jax
 import jax.numpy as jnp
@@ -25,6 +25,7 @@ from kups.core.assertion import runtime_assert
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, lens
+from kups.core.neighborlist.adaptive import AdaptiveNeighborList
 from kups.core.neighborlist.cell_table import (
     CellRows,
     CellTable,
@@ -32,6 +33,11 @@ from kups.core.neighborlist.cell_table import (
     CellTableUpdatePatch,
     build_cell_table,
     cell_candidates,
+)
+from kups.core.neighborlist.types import (
+    CandidateBatch,
+    IsNeighborListState,
+    IsUniversalNeighborlistParams,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -58,8 +64,10 @@ from kups.potential.common.graph import (
     POINTCLOUD_GEOMETRY,
     GraphInputConstructor,
     GraphPairEnergy,
+    HyperGraph,
     IsRadiusGraphPoints,
     PointCloud,
+    graph_pair_energies,
 )
 from kups.potential.common.pair import PairBatch, PairData, PairEnergySum, PairTerm
 
@@ -120,10 +128,19 @@ def sum_chunks[Rows](
 
 @dataclass
 class FusedPotentialInput[Params, Part: IsRadiusGraphPoints, Feat]:
-    """Parameters and geometry for a full fused evaluation."""
+    """Shared parameters and geometry of initialized full/local pair inputs."""
 
     parameters: Params
     cloud: PointCloud[Part, HasCell[AnyPeriodicity]]
+
+
+@dataclass
+class FusedFullInput[Params, Part: IsRadiusGraphPoints, Feat](
+    FusedPotentialInput[Params, Part, Feat]
+):
+    """Neighbors with the term's shared group masks applied before autodiff."""
+
+    batch: CandidateBatch[Literal[2]]
 
 
 @dataclass
@@ -163,12 +180,12 @@ FUSED_GEOMETRY = lens(lambda inp: inp.cloud, cls=FusedPotentialInput).nest(
 
 @dataclass
 class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
-    """Evaluate a pair term or additive sum over spatially sorted chunks.
+    """Evaluate shared pair terms over a full graph or local spatial chunks.
 
     ``pair`` defines the interaction and ``layout`` configures cell storage
     and traversal. A persistent ``cell_table_lens``
-    enables acceptance-conditional updates for local proposals. Full calls
-    rebuild from the current cloud so positions and cell remain differentiable.
+    enables acceptance-conditional updates for local proposals. Full calls use
+    preselected graph edges; only the compacted interactions are differentiated.
 
     ``max_queries_per_system`` bounds active rows in each old/new local query
     (asserted). It keeps query-pair storage proportional to the batch size.
@@ -203,12 +220,11 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
 
     def _energies(
         self,
-        inp: FusedPotentialInput[Params, Part, Feat],
+        inp: FusedLocalInput[Params, Part, Feat],
         rows: CellRows[Feat],
-        slots: Array,
         keys: CellRows[Feat],
         index: Array,
-        excluded: Array,
+        mask: View[CandidateBatch[Literal[2]], Array],
     ) -> Array:
         batch, ctx = cell_candidates(
             keys,
@@ -218,47 +234,44 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
             self.pair.cutoffs(inp.parameters),
             self.layout.max_images_per_pair,
         )
-        if self.layout.max_images_per_pair > 1:
-            pairs = PairBatch.from_candidates(batch, ctx)
+        multiple_images = self.layout.max_images_per_pair > 1
+        pairs = PairBatch.from_candidates(
+            batch, ctx, query_lanes=None if multiple_images else index.shape[1]
+        )
+        pairs = pairs._replace(valid=pairs.valid & mask(batch))
+        if multiple_images:
             key_index = batch.key_idx.indices
             query_index = batch.query_idx.indices
-            keep = pairs.valid & (
-                (key_index != slots[query_index]) | ~batch.is_minimum_image
-            )
-            keep &= ~excluded[key_index]
             energies = self.pair.evaluate(
                 inp.parameters,
                 tree_map(itemgetter(query_index), rows.data),
                 tree_map(itemgetter(key_index), keys.data),
-                pairs._replace(valid=keep),
+                pairs,
             )
             return jax.ops.segment_sum(
                 energies, query_index, num_segments=rows.frac.shape[0]
             )
-        pairs = PairBatch.from_candidates(batch, ctx, query_lanes=index.shape[1])
         pairs = tree_map(lambda x: x.reshape(*index.shape, *x.shape[1:]), pairs)
-        keep = pairs.valid & (index != slots[:, None])
-        keep &= ~excluded[index]
-        pairs = pairs._replace(valid=keep)
         left = tree_map(lambda x: x[:, None], rows.data)
         right = tree_map(lambda x: x[index], keys.data)
         return self.pair.evaluate(inp.parameters, left, right, pairs).sum(-1)
 
     def _sum_keys(
         self,
-        inp: FusedPotentialInput[Params, Part, Feat],
+        inp: FusedLocalInput[Params, Part, Feat],
         table: CellTable[Feat],
         rows: CellRows[Feat],
-        slots: Array,
         excluded: Array,
     ) -> Array:
         def consume(index: Array) -> Array:
-            return self._energies(inp, rows, slots, table.rows, index, excluded)
+            return self._energies(
+                inp, rows, table.rows, index, lambda b: ~excluded[b.key_idx.indices]
+            )
 
         chunk_size = self.layout.key_chunk_size
         if self.layout.key_layout == "slots":
             n = table.sentinel_slot
-            chunk_size = chunk_size or max(n, 1)
+            chunk_size = min(chunk_size or n, n) or 1
             index = jnp.minimum(jnp.arange(-(-n // chunk_size) * chunk_size), n)
             return sum_chunks(
                 lambda keys: consume(
@@ -281,17 +294,16 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
 
     def _sum_environment(
         self,
-        inp: FusedPotentialInput[Params, Part, Feat],
+        inp: FusedLocalInput[Params, Part, Feat],
         table: CellTable[Feat],
         rows: CellRows[Feat],
-        slots: Array,
         excluded: Array,
         weights: Array,
         query_chunk_size: int,
     ) -> Array:
-        def consume(chunk: tuple[CellRows[Feat], Array, Array]) -> Array:
-            rows, slots, weights = chunk
-            energies = self._sum_keys(inp, table, rows, slots, excluded)
+        def consume(chunk: tuple[CellRows[Feat], Array]) -> Array:
+            rows, weights = chunk
+            energies = self._sum_keys(inp, table, rows, excluded)
             return jax.ops.segment_sum(
                 energies * weights,
                 rows.system.indices,
@@ -307,31 +319,33 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
         padding = -n % chunk_size
         if padding:
             rows = rows.pad(padding, sentinel_cell=table.sentinel_cell)
-            slots = jnp.pad(slots, (0, padding), constant_values=table.sentinel_slot)
             weights = jnp.pad(weights, (0, padding))
         return sum_chunks(
             consume,
-            (rows, slots, weights),
+            (rows, weights),
             chunk_size,
             active=lambda chunk: jnp.any(chunk[0].inclusion.valid_mask),
         )
 
-    def _full(self, inp: FusedPotentialInput[Params, Part, Feat]) -> Array:
-        table = self.build_cell_table(inp.parameters, inp.cloud)
-        n = table.sentinel_slot
-        rows = jax.tree.map(lambda x: x[:n], table.rows)
-        return (
-            self._sum_environment(
-                inp,
-                table,
-                rows,
-                jnp.arange(n),
-                jnp.zeros(n + 1, bool),
-                jnp.ones(n, dtype=jnp.int8),
-                self.layout.chunk_size,
+    def _full(self, inp: FusedFullInput[Params, Part, Feat]) -> Array:
+        graph = HyperGraph(inp.cloud.particles, inp.cloud.systems, inp.batch.edges)
+        particles = graph.particles[graph.edges.indices]
+        inclusion = exclusion = jnp.ones(len(graph.edges), dtype=bool)
+        if not self.pair.inclusion:
+            inclusion = (
+                particles.inclusion.indices[:, 0] == particles.inclusion.indices[:, 1]
             )
-            / 2
+        if not self.pair.exclusion:
+            exclusion = (
+                particles.exclusion.indices[:, 0] != particles.exclusion.indices[:, 1]
+            ) | ~inp.batch.is_minimum_image
+        energies = graph_pair_energies(
+            self.pair, inp.parameters, graph, inclusion, exclusion
         )
+        system = graph.edge_batch_mask.update_labels(graph.systems.keys).to_cls(
+            graph.systems.cls
+        )
+        return system.sum_over(energies).data / 2
 
     def _local(
         self,
@@ -361,7 +375,6 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
             inp,
             table,
             rows,
-            jnp.full((n,), table.sentinel_slot),
             removed,
             weights,
             # Separate halves let CPU skip empty work; GPU favors larger chunks.
@@ -388,10 +401,9 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
         pairs = self._energies(
             inp,
             rows,
-            jnp.arange(n),
             rows,
             query_index,
-            jnp.zeros(n + 1, bool),
+            lambda b: (b.key_idx.indices != b.query_idx.indices) | ~b.is_minimum_image,
         )
         values = environment + jax.ops.segment_sum(
             pairs * weights / 2,
@@ -406,8 +418,10 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
         inp: FusedPotentialInput[Params, Part, Feat],
     ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
         keys = inp.cloud.systems.keys
-        if not isinstance(inp, FusedLocalInput):
+        if isinstance(inp, FusedFullInput):
             return WithPatch(Table(keys, self._full(inp)), IdPatch[State]())
+        if not isinstance(inp, FusedLocalInput):
+            raise TypeError("Construct a FusedFullInput or FusedLocalInput")
         table = inp.cell_table
         patch: Patch[State] = IdPatch[State]()
         values, rows, slots = self._local(inp, table)
@@ -423,7 +437,7 @@ class FusedNeighborEnergy[State, Params, Part: IsRadiusGraphPoints, Feat]:
 
 @dataclass
 class FusedInputConstructor[
-    State,
+    State: IsNeighborListState[IsUniversalNeighborlistParams],
     Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
     S: HasCell[AnyPeriodicity],
@@ -432,15 +446,16 @@ class FusedInputConstructor[
 ](InputConstructor[State, FusedPotentialInput[Params, P, Feat], Ptch]):
     """Construct inputs for the same full/local sum plans used by graph potentials.
 
-    With no probe, apply a proposal and rebuild the full cloud. With a probe,
-    restrict to its incident pairs and let ``LocalSumComposer`` handle old/new
-    weights and the cached total. ``old_input`` selects the current state
-    in either case.
+    Full inputs contain compacted geometric neighbors selected before autodiff.
+    With a probe, restrict to its incident pairs against an initialized cell
+    table and let ``LocalSumComposer`` handle old/new weights and the cached
+    total. ``old_input`` selects the current state in either case.
     """
 
     particles: View[State, Table[ParticleId, P]] = field(static=True)
     systems: View[State, Table[SystemId, S]] = field(static=True)
     parameter_view: View[State, Params] = field(static=True)
+    pair: PairTerm[Params, P, Feat] = field(static=True)
     probe: Probe[State, Ptch, WithIndices[ParticleId, P]] | None = field(static=True)
     cell_table: View[State, CellTable[Feat]] = field(static=True)
 
@@ -459,7 +474,19 @@ class FusedInputConstructor[
         particles = self.particles(state)
         cloud = PointCloud(particles, self.systems(state))
         if patch is None:
-            return FusedPotentialInput(params, cloud)
+            neighbors = AdaptiveNeighborList.from_state(
+                state, self.pair.cutoffs(params)
+            )
+            return FusedFullInput(
+                params,
+                cloud,
+                neighbors.pair_candidates(
+                    particles,
+                    cloud.systems,
+                    inclusion=self.pair.inclusion,
+                    exclusion=self.pair.exclusion,
+                ),
+            )
         assert self.probe is not None
         update = self.probe(state, patch)
         old = particles.subset(update.indices)
@@ -478,7 +505,7 @@ class FusedInputConstructor[
 
 
 def make_fused_potential[
-    State,
+    State: IsNeighborListState[IsUniversalNeighborlistParams],
     Ptch: Patch[Any],
     P: IsRadiusGraphPoints,
     Params,
@@ -532,6 +559,7 @@ def make_fused_potential[
         particles=particles_view,
         systems=systems_view,
         parameter_view=parameter_view,
+        pair=engine.pair,
         probe=probe,
         cell_table=engine.cell_table_lens or build_table,
     )
@@ -607,7 +635,11 @@ class FusedPotentialCache[Feat]:
         return cls(table, energy, layout)
 
 
-def fuse_pair_potentials[State, Part: IsRadiusGraphPoints, Ptch: Patch[Any]](
+def fuse_pair_potentials[
+    State: IsNeighborListState[IsUniversalNeighborlistParams],
+    Part: IsRadiusGraphPoints,
+    Ptch: Patch[Any],
+](
     potential: Potential[State, EmptyType, EmptyType, Ptch],
     state: State,
     particles: View[State, Table[ParticleId, Part]],

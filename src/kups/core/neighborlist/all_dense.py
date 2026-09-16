@@ -57,8 +57,8 @@ def _all_subselect(
 ) -> Candidates:
     key_indices, queried_keys = jnp.indices((len(keys), len(queries))).reshape(2, -1)
     return Candidates(
-        key_idx=Index(keys.keys, key_indices),
-        query_idx=Index(queries.keys, queried_keys),
+        key_idx=Index(keys.keys, key_indices, _cls=keys.cls),
+        query_idx=Index(queries.keys, queried_keys, _cls=queries.cls),
     )
 
 
@@ -143,6 +143,15 @@ class AllDenseNearestNeighborList:
     ) -> AllDenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    def selector(
+        self, query_size: int, systems: Table[SystemId, NeighborListSystems]
+    ) -> AllDenseSelector:
+        """Build the candidate selector shared by graph and pair evaluation."""
+        return AllDenseSelector(
+            cutoffs=Table.broadcast_to(self.cutoffs, systems),
+            max_image_candidates=self.avg_image_candidates.multiply(query_size),
+        )
+
     @overload
     def __call__(
         self,
@@ -181,10 +190,7 @@ class AllDenseNearestNeighborList:
         )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
-            selector=AllDenseSelector(
-                cutoffs=cutoffs,
-                max_image_candidates=self.avg_image_candidates.multiply(query_size),
-            ),
+            selector=self.selector(query_size, systems),
             masks=(
                 InBoundsMask(),
                 InclusionMatchMask(),

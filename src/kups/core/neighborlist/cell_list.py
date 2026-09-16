@@ -101,7 +101,7 @@ def _cell_list_subselect(
 
     if is_single_cell:
         raw_shifted = query_positions
-        query_original = Index(queries.keys, jnp.arange(len(queries)))
+        query_original = Index(queries.keys, jnp.arange(len(queries)), _cls=queries.cls)
     else:
         # Expand neighborhood around query points: for each query, tile across stencil
         stencil = cell_stencil(dim)
@@ -109,7 +109,9 @@ def _cell_list_subselect(
             lambda s: query_positions + s[None] / bins[queries.data.system]
         )(stencil).reshape(-1, dim)
         query_original = Index(
-            queries.keys, jnp.tile(jnp.arange(len(queries)), len(stencil))
+            queries.keys,
+            jnp.tile(jnp.arange(len(queries)), len(stencil)),
+            _cls=queries.cls,
         )
     query_system = queries.data.system[query_original.indices]
 
@@ -143,7 +145,7 @@ def _cell_list_subselect(
             fill_value=jnp.array([cell_oob, len(queries)]),
         )
         query_neighborhood_hashes = unique_queries[:, 0]
-        query_original = Index(queries.keys, unique_queries[:, 1])
+        query_original = Index(queries.keys, unique_queries[:, 1], _cls=queries.cls)
 
     selection_result = subselect(
         key_hashes,
@@ -152,12 +154,13 @@ def _cell_list_subselect(
         num_segments=cell_oob,
         is_sorted=not is_single_cell and not promise_unique_cells,
     )
-    key_idx = Index(keys.keys, selection_result.scatter_idxs)
+    key_idx = Index(keys.keys, selection_result.scatter_idxs, _cls=keys.cls)
     query_idx = Index(
         query_original.keys,
         query_original.indices.at[selection_result.gather_idxs].get(
             **query_original.scatter_args
         ),
+        _cls=queries.cls,
     )
     return Candidates(key_idx=key_idx, query_idx=query_idx)
 
@@ -286,6 +289,17 @@ class CellListNeighborList:
     ) -> CellListNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    def selector(
+        self, query_size: int, systems: Table[SystemId, NeighborListSystems]
+    ) -> CellListSelector:
+        """Build the candidate selector shared by graph and pair evaluation."""
+        return CellListSelector(
+            cutoffs=Table.broadcast_to(self.cutoffs, systems),
+            max_cells=self.cells,
+            max_candidates=self.avg_candidates.multiply(query_size),
+            max_image_candidates=self.avg_image_candidates.multiply(query_size),
+        )
+
     @overload
     def __call__(
         self,
@@ -318,12 +332,7 @@ class CellListNeighborList:
         )
         cutoffs = Table.broadcast_to(self.cutoffs, systems)
         pipeline = Pipeline[Literal[2]](
-            selector=CellListSelector(
-                cutoffs=cutoffs,
-                max_cells=self.cells,
-                max_candidates=self.avg_candidates.multiply(query_size),
-                max_image_candidates=self.avg_image_candidates.multiply(query_size),
-            ),
+            selector=self.selector(query_size, systems),
             masks=(
                 InBoundsMask(),
                 InclusionMatchMask(),

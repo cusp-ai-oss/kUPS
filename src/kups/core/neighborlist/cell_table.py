@@ -76,7 +76,7 @@ class CellTableParameters:
     """Static shapes of a cell table.
 
     Attributes:
-        chunk_size: Rows processed per scan step in full and local evaluations; the
+        chunk_size: Query rows processed per local scan step; the
             padded slot count is a multiple of it.
         max_cells_per_system: Capacity for spatial bins per system
             (``prod(bins) <= max_cells_per_system`` is asserted).
@@ -143,7 +143,7 @@ class CellTableParameters:
             particles: Current (possibly buffered) particle table.
             systems: System table with cells.
             cutoffs: Per-system cutoff radii.
-            chunk_size: Rows per scan step in full and local evaluations.
+            chunk_size: Query rows per local scan step.
             occupancy_factor: Multiplier on the observed maximum occupancy.
             occupancy_headroom: Additive slack on top of the scaled occupancy.
             key_chunk_size: Keys per block, or ``"auto"`` to round cell occupancy
