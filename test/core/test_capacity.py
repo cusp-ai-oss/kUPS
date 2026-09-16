@@ -50,6 +50,12 @@ def make_dict_capacity(
 
 
 class TestMultipliedCapacity:
+    def test_repair_reaches_exact_power_of_two(self):
+        # CUDA's floating-point power can round 2**11 just below 2048.
+        capacity = make_base_capacity(1024).multiply(2048)
+        repaired = capacity.generate_assertion(jnp.array(2048**2))
+        assert repaired.size >= 2048**2
+
     def test_multiplied_capacity(self):
         """Merged: size, nested, assertion_scales, assertion_resize."""
         base = make_base_capacity(100)
