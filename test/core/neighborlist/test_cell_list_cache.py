@@ -106,6 +106,8 @@ class TestCachedCellList:
         layout = CellListCacheParameters.estimate(
             points, systems, cutoffs, chunk_size=4, occupancy_headroom=1
         )
+        # The allocated stride can exceed every system's actual bin count.
+        layout = replace(layout, max_cells_per_system=layout.max_cells_per_system + 1)
         dense = DenseNearestNeighborList(
             FixedCapacity(16), FixedCapacity(256), FixedCapacity(16 * 27), cutoffs
         )

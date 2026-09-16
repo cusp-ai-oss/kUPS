@@ -10,8 +10,8 @@ stencil of neighbor cells. The candidate neighbors of any point are the
 occupants of its stencil cells, read as a fixed-width lane array
 (``stencil_width * cell_capacity``). Fused potentials consume these chunks
 directly. ``CellListNeighborList(cache=...)`` uses these occupants through its
-normal selector, mask, compaction, and postprocessing pipeline. ``CellListGrid``
-defines binning and neighboring cells for both cached and uncached lookups.
+normal selector, mask, compaction, and postprocessing pipeline. Both lookup paths
+share the binning and neighboring-cell functions in ``cell_list``.
 
 Slots are sorted by ``(system, cell)`` at build time so consecutive slots are
 spatially local, and a
@@ -39,7 +39,7 @@ from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens
-from kups.core.neighborlist.cell_list import CellListGrid
+from kups.core.neighborlist.cell_list import assign_cells, neighbor_cells
 from kups.core.neighborlist.common import (
     Candidates,
     candidate_image_counts,
@@ -148,8 +148,7 @@ class CellListCacheParameters:
         images = candidate_image_counts(systems.data.cell, cutoff)
         max_cells = int(jnp.prod(bins, axis=-1).max())
         n_cells = systems.size * max_cells
-        grid = CellListGrid(bins, max_cells, systems.data.cell.periodic)
-        cell = cell_rows(particles, systems, grid, ()).cell
+        cell = cell_rows(particles, systems, bins, max_cells, ()).cell
         max_occupancy = int(jnp.bincount(cell, length=n_cells + 1)[:n_cells].max())
         stencil_width = int(jnp.prod(jnp.minimum(bins, 3), axis=-1).max())
         cell_chunk_size = max(32, -(-max_occupancy // 32) * 32)
@@ -244,7 +243,8 @@ class CellRows[Data](NamedTuple):
 def cell_rows[Data](
     particles: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    grid: CellListGrid,
+    bins: Array,
+    max_cells: int,
     data: Data,
 ) -> CellRows[Data]:
     """Fold and bin particles into global cells ``system * max_cells + local``.
@@ -256,7 +256,8 @@ def cell_rows[Data](
     Args:
         particles: Particle table (positions, system, inclusion, exclusion).
         systems: System table with cells.
-        grid: The cell-list grid shared with uncached neighbor searches.
+        bins: Per-system bin counts, ``(n_systems, 3)``.
+        max_cells: Allocated cell capacity per system.
         data: Per-particle payload carried along.
 
     Returns:
@@ -271,8 +272,10 @@ def cell_rows[Data](
     frac = frames[system].to_fractional(
         jnp.where(active[:, None], points.positions, 0.0)
     )
-    frac, cell = grid.assign(frac, system.indices, active, systems.data.cell)
-    active = cell < grid.sentinel_cell
+    frac, cell = assign_cells(
+        frac, system.indices, active, bins, max_cells, systems.data.cell
+    )
+    active = cell < bins.shape[0] * max_cells
     inclusion = Index(
         points.inclusion.keys,
         jnp.where(active, points.inclusion.indices, points.inclusion.num_labels),
@@ -294,14 +297,14 @@ class CellListCache[Data](NamedTuple):
             filled; the last row is the always-empty sentinel cell.
         stencil: Neighbor cell ids per cell, ``(n_cells + 1, stencil_width)``,
             invalid entries routed to the sentinel cell.
-        grid: Spatial bins and boundary rules shared with the cell-list selector.
+        bins: Per-system bin counts, ``(n_systems, 3)``.
     """
 
     rows: CellRows[Data]
     slot_of_row: Array
     cells: Array
     stencil: Array
-    grid: CellListGrid
+    bins: Array
 
     @property
     def sentinel_slot(self) -> int:
@@ -310,6 +313,11 @@ class CellListCache[Data](NamedTuple):
     @property
     def sentinel_cell(self) -> int:
         return self.stencil.shape[0] - 1
+
+    @property
+    def max_cells_per_system(self) -> int:
+        """Allocated capacity, derived from the stored array shapes."""
+        return self.sentinel_cell // self.bins.shape[0]
 
     def candidates(self, cell: Array) -> Array:
         """Candidate slots of the given cells, ``(..., stencil_width * cell_capacity)``."""
@@ -326,10 +334,12 @@ class CellListCache[Data](NamedTuple):
         original coordinates when computing periodic shifts.
         """
         query = ctx.query_table
-        _, cell = self.grid.assign(
+        _, cell = assign_cells(
             query.data.positions,
             query.data.system.indices_in(ctx.systems.keys),
             query.data.inclusion.valid_mask,
+            self.bins,
+            self.max_cells_per_system,
             ctx.systems.data.cell,
         )
         slots = (
@@ -377,7 +387,7 @@ class CellListCache[Data](NamedTuple):
         data: D,
     ) -> CellRows[D]:
         """Bin further particles (e.g. proposal queries) into this table's cells."""
-        return cell_rows(particles, systems, self.grid, data)
+        return cell_rows(particles, systems, self.bins, self.max_cells_per_system, data)
 
 
 def cell_candidates[Data](
@@ -451,8 +461,7 @@ def build_cell_list_cache[Data](
         "max_cells_per_system exceeded; increase CellListCacheParameters.max_cells_per_system.",
     )
 
-    grid = CellListGrid(bins, max_cells, systems.data.cell.periodic)
-    rows = cell_rows(particles, systems, grid, data)
+    rows = cell_rows(particles, systems, bins, max_cells, data)
     order = jnp.argsort(rows.cell)
     sorted_cell = rows.cell[order]
     rank = jnp.arange(n) - jnp.searchsorted(sorted_cell, sorted_cell, side="left")
@@ -475,8 +484,14 @@ def build_cell_list_cache[Data](
         rows=padded_rows,
         slot_of_row=jnp.zeros(n, dtype=order.dtype).at[order].set(jnp.arange(n)),
         cells=cells,
-        stencil=grid.neighbors(jnp.arange(n_cells + 1), width=parameters.stencil_width),
-        grid=grid,
+        stencil=neighbor_cells(
+            jnp.arange(n_cells + 1),
+            bins,
+            max_cells,
+            systems.data.cell,
+            width=parameters.stencil_width,
+        ),
+        bins=bins,
     )
 
 
@@ -507,9 +522,7 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
         table = self.lens.get(state)
         n_pad, n_cells = table.sentinel_slot, table.sentinel_cell
         old_cell = table.rows.cell[self.slots]
-        accept = Table.broadcast_to(
-            accept, Table(table.rows.system.keys, table.grid.bins)
-        )
+        accept = Table.broadcast_to(accept, Table(table.rows.system.keys, table.bins))
         old_accept = accept.at(
             table.rows.system[self.slots], args={"mode": "fill", "fill_value": False}
         ).get()

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol, overload
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -17,8 +18,6 @@ from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.common import (
     Candidates,
-    cell_hash,
-    cell_stencil,
     lift_query_candidates,
     num_cells,
     replicate_for_images,
@@ -45,72 +44,99 @@ from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
 
 
-@dataclass
-class CellListGrid:
-    """Cell-list binning and neighboring-cell lookup, reusable across calls.
+def cell_hash(coordinate: Array, num_cells: Array) -> Array:
+    """Hash folded fractional coordinates into row-major cell bins.
 
-    The hash-join selector uses this grid directly. A ``CellListCache`` stores
-    its occupant slots and precomputes the same neighboring-cell lookup.
+    Boundary values are clamped into the valid bin range for each axis.
+
+    Args:
+        coordinate: Fractional coordinates in ``[0, 1)``, ``(..., dim)``.
+        num_cells: Per-axis bin counts broadcastable to ``coordinate``.
+
+    Returns:
+        Row-major bin ids of shape ``(...,)``.
     """
+    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
+    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
+    return (bin_idx * factor).sum(axis=-1)
 
-    bins: Array
-    max_cells: int = field(static=True)
-    periodic: tuple[bool, ...] = field(static=True)
 
-    @property
-    def sentinel_cell(self) -> int:
-        return self.bins.shape[0] * self.max_cells
+def cell_stencil(dim: int) -> Array:
+    """All ``3**dim`` neighbor-cell offsets in ``{-1, 0, 1}**dim``, ``(3**dim, dim)``."""
+    with jax.ensure_compile_time_eval():
+        return jnp.stack(
+            jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),
+            axis=-1,
+        ).reshape(-1, dim)
 
-    def assign(
-        self, positions: Array, system: Array, active: Array, cell: Cell[AnyPeriodicity]
-    ) -> tuple[Array, Array]:
-        """Fold fractional positions and assign active rows to global cell ids."""
-        active = active & (system >= 0) & (system < self.bins.shape[0])
-        system = jnp.where(active, system, 0)
-        frac, in_cell = cell.fold(jnp.where(active[:, None], positions, 0.0))
-        ids = cell_hash(frac, self.bins[system]) + system * self.max_cells
-        return frac, jnp.where(active & in_cell, ids, self.sentinel_cell)
 
-    def neighbors(
-        self, cells: Array, *, width: int = 27, promise_unique: bool = False
-    ) -> Array:
-        """Distinct neighboring cells; invalid or duplicate entries are sentinel-filled."""
-        if self.max_cells == 1:
-            return jnp.pad(
-                cells[:, None],
-                ((0, 0), (0, width - 1)),
-                constant_values=self.sentinel_cell,
-            )
-        system, local = cells // self.max_cells, cells % self.max_cells
-        bins = self.bins[jnp.minimum(system, self.bins.shape[0] - 1)]
-        factor = jnp.cumprod(bins, axis=-1) // bins
-        coords = (local[:, None] // factor) % bins
-        neighbor = coords[:, None, :] + cell_stencil(self.bins.shape[-1])[None]
-        wrapped = jnp.where(
-            jnp.asarray(self.periodic), neighbor % bins[:, None], neighbor
+def assign_cells(
+    positions: Array,
+    system: Array,
+    active: Array,
+    bins: Array,
+    max_cells: int,
+    cell: Cell[AnyPeriodicity],
+) -> tuple[Array, Array]:
+    """Fold fractional positions and assign active rows to global cell ids.
+
+    ``max_cells`` is the allocated cell capacity per system, which may exceed
+    its bin count. Inactive rows use the sentinel ``len(bins) * max_cells``.
+    """
+    active = active & (system >= 0) & (system < bins.shape[0])
+    system = jnp.where(active, system, 0)
+    frac, in_cell = cell.fold(jnp.where(active[:, None], positions, 0.0))
+    ids = cell_hash(frac, bins[system]) + system * max_cells
+    return frac, jnp.where(active & in_cell, ids, bins.shape[0] * max_cells)
+
+
+def neighbor_cells(
+    cells: Array,
+    bins: Array,
+    max_cells: int,
+    cell: Cell[AnyPeriodicity],
+    *,
+    width: int = 27,
+    promise_unique: bool = False,
+) -> Array:
+    """Distinct neighboring cells using the unit cell's boundary rules.
+
+    ``max_cells`` is the allocated capacity per system. Invalid or duplicate
+    entries use the sentinel ``len(bins) * max_cells``.
+    """
+    sentinel_cell = bins.shape[0] * max_cells
+    if max_cells == 1:
+        return jnp.pad(
+            cells[:, None],
+            ((0, 0), (0, width - 1)),
+            constant_values=sentinel_cell,
         )
-        valid = ((wrapped >= 0) & (wrapped < bins[:, None])).all(axis=-1)
-        valid &= ((cells < self.sentinel_cell) & (local < bins.prod(axis=-1)))[:, None]
-        neighbor = (wrapped * factor[:, None]).sum(-1) + (system * self.max_cells)[
-            :, None
-        ]
-        neighbor = jnp.where(valid, neighbor, self.sentinel_cell)
-        if promise_unique:
-            runtime_assert(
-                ((self.bins >= 3) | ~jnp.asarray(self.periodic)).all(),
-                "promise_unique_cells requires at least three cells along every periodic axis",
-            )
-        else:
-            neighbor = jnp.sort(neighbor, axis=-1)
-            duplicate = jnp.pad(neighbor[:, 1:] == neighbor[:, :-1], ((0, 0), (1, 0)))
-            neighbor = jnp.sort(
-                jnp.where(duplicate, self.sentinel_cell, neighbor), axis=-1
-            )
+    system, local = cells // max_cells, cells % max_cells
+    cell_bins = bins[jnp.minimum(system, bins.shape[0] - 1)]
+    factor = jnp.cumprod(cell_bins, axis=-1) // cell_bins
+    coords = (local[:, None] // factor) % cell_bins
+    neighbor = coords[:, None, :] + cell_stencil(bins.shape[-1])[None]
+    wrapped = jnp.where(
+        jnp.asarray(cell.periodic), neighbor % cell_bins[:, None], neighbor
+    )
+    valid = ((wrapped >= 0) & (wrapped < cell_bins[:, None])).all(axis=-1)
+    valid &= ((cells < sentinel_cell) & (local < cell_bins.prod(axis=-1)))[:, None]
+    neighbor = (wrapped * factor[:, None]).sum(-1) + (system * max_cells)[:, None]
+    neighbor = jnp.where(valid, neighbor, sentinel_cell)
+    if promise_unique:
         runtime_assert(
-            (neighbor[:, width:] == self.sentinel_cell).all(),
-            "stencil_width too small for the spatial bin counts",
+            ((bins >= 3) | ~jnp.asarray(cell.periodic)).all(),
+            "promise_unique_cells requires at least three cells along every periodic axis",
         )
-        return neighbor[:, :width]
+    else:
+        neighbor = jnp.sort(neighbor, axis=-1)
+        duplicate = jnp.pad(neighbor[:, 1:] == neighbor[:, :-1], ((0, 0), (1, 0)))
+        neighbor = jnp.sort(jnp.where(duplicate, sentinel_cell, neighbor), axis=-1)
+    runtime_assert(
+        (neighbor[:, width:] == sentinel_cell).all(),
+        "stencil_width too small for the spatial bin counts",
+    )
+    return neighbor[:, :width]
 
 
 class CellListLookup(Protocol):
@@ -148,19 +174,23 @@ def _cell_list_subselect(
         )
     bins = num_cells(systems.data, cutoffs)
     max_num_cells = max_num_cells.generate_assertion(bins.prod(axis=-1).max())
-    grid = CellListGrid(bins, max_num_cells.size, systems.data.cell.periodic)
 
     def assign(points: NeighborListPoints) -> Array:
-        return grid.assign(
+        return assign_cells(
             points.positions,
             points.system.indices_in(systems.keys),
             points.inclusion.valid_mask,
+            bins,
+            max_num_cells.size,
             systems.data.cell,
         )[1]
 
     key_hashes = assign(keys.data)
-    query_cells = grid.neighbors(
+    query_cells = neighbor_cells(
         assign(queries.data),
+        bins,
+        max_num_cells.size,
+        systems.data.cell,
         width=1 if max_num_cells.size == 1 else 3 ** bins.shape[-1],
         promise_unique=promise_unique_cells,
     )
@@ -169,7 +199,7 @@ def _cell_list_subselect(
         key_hashes,
         query_cells.ravel(),
         output_buffer_size=max_num_candidates,
-        num_segments=grid.sentinel_cell,
+        num_segments=bins.shape[0] * max_num_cells.size,
     )
     key_idx = Index(keys.keys, selection_result.scatter_idxs, _cls=keys.cls)
     query_idx = Index(

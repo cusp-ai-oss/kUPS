@@ -12,8 +12,9 @@ from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
     _cell_list_subselect,
+    cell_hash,
+    cell_stencil,
 )
-from kups.core.neighborlist.common import cell_hash, cell_stencil
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
 from ._builders import EvalState, cutoff_table, make_lh, make_systems
