@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from operator import itemgetter
-from typing import Any, Literal
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -51,7 +50,7 @@ from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
-from kups.core.data.index import unify_keys_by_cls
+from kups.core.data.index import Index, unify_keys_by_cls
 from kups.core.lens import bind, identity_lens, lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
@@ -59,7 +58,7 @@ from kups.core.neighborlist import (
     UniversalNeighborlistParameters,
 )
 from kups.core.parameter_scheduler import ParameterSchedulerState
-from kups.core.patch import Accept
+from kups.core.patch import Accept, Patch
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
@@ -79,6 +78,7 @@ from kups.core.propagator import (
 from kups.core.result import as_result_function
 from kups.core.typing import (
     GroupId,
+    Label,
     MotifParticleId,
     ParticleId,
     SystemId,
@@ -112,7 +112,7 @@ from kups.potential.classical.lennard_jones import (
 from kups.potential.common.fused import FusedPotentialCache, fuse_pair_potentials
 from kups.potential.common.geometry import PositionsAndCell
 from kups.potential.common.graph import PointCloud
-from kups.potential.common.pair import PairData, PairEnergySum, PairTerm
+from kups.potential.common.pair import PairEnergy, PairEnergySum
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -177,7 +177,7 @@ class MCMCState:
     rotation_params: Table[SystemId, ParameterSchedulerState]
     reinsertion_params: Table[SystemId, ParameterSchedulerState]
     exchange_params: Table[SystemId, ParameterSchedulerState]
-    cell_tables: FusedPotentialCache[tuple[PairData, ...]]
+    cell_tables: FusedPotentialCache[tuple[Index[Label] | Array, ...]]
 
     @property
     def move_capacity(self) -> Capacity[int]:
@@ -314,18 +314,25 @@ def init_cell_tables(
     systems: Table[SystemId, MCMCSystems],
     lj_parameters: GlobalTailCorrectedLennardJonesParameters,
     ewald_parameters: EwaldParameters,
-) -> FusedPotentialCache[tuple[PairData, ...]]:
+) -> FusedPotentialCache[tuple[Index[Label] | Array, ...]]:
     """Initialize the shared pair cache from the simulation's input data."""
-    terms: list[PairTerm[tuple[PairData, ...], MCMCParticles, PairData]] = [
-        lennard_jones_pair.packed().with_parameters(itemgetter(0))
-    ]
-    parameters: tuple[PairData, ...] = (PairData.pack(lj_parameters),)
+    lj: PairEnergy[
+        tuple[GlobalTailCorrectedLennardJonesParameters, EwaldParameters],
+        MCMCParticles,
+        Index[Label],
+    ] = lennard_jones_pair.with_particles(lambda p: p).with_parameters(lambda p: p[0])
+    parameters = (lj_parameters, ewald_parameters)
+    cloud = PointCloud(particles, systems)
     if _is_charged(particles, motifs):
-        terms.append(ewald_short_range_pair.packed().with_parameters(itemgetter(1)))
-        parameters += (PairData.pack(ewald_parameters),)
-    return FusedPotentialCache.create(
-        PairEnergySum(tuple(terms)), parameters, PointCloud(particles, systems)
-    )
+        return FusedPotentialCache.create(
+            lj
+            + ewald_short_range_pair.with_particles(lambda p: p).with_parameters(
+                lambda p: p[1]
+            ),
+            parameters,
+            cloud,
+        )
+    return FusedPotentialCache.create(PairEnergySum.from_term(lj), parameters, cloud)
 
 
 def make_propagator(
@@ -474,7 +481,9 @@ def make_guest_stress(
     # depends on the cell through the volume, so ``dU_tail/dh`` would add
     # ``(U_tail / V) * I`` to the configurational stress on top of the
     # closed-form ``p_tail`` added below, double-counting it.
-    potentials: list[Potential[MCMCState, PositionsAndCell, EmptyType, Any]] = [
+    potentials: list[
+        Potential[MCMCState, PositionsAndCell, EmptyType, Patch[MCMCState]]
+    ] = [
         make_lennard_jones_from_state(state_lens, gradient=POSITIONS_AND_CELL),
     ]
     if state.is_charged:

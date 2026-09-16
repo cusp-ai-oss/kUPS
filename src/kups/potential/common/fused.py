@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from operator import itemgetter
-from typing import Any, Callable, Literal, Self
+from typing import Any, Callable, Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -69,7 +69,7 @@ from kups.potential.common.graph import (
     PointCloud,
     graph_pair_energies,
 )
-from kups.potential.common.pair import PairBatch, PairData, PairEnergySum, PairTerm
+from kups.potential.common.pair import PairBatch, PairEnergy, PairEnergySum, PairTerm
 
 
 def sum_chunks[Rows](
@@ -590,14 +590,13 @@ class FusedPotentialCache[Feat]:
     energy: KahanSummand[PotentialOut[EmptyType, EmptyType]]
     layout: CellListCacheParameters = field(static=True)
 
-    @classmethod
-    def create[Params, Part: IsRadiusGraphPoints](
-        cls,
-        pair: PairTerm[Params, Part, Feat],
+    @staticmethod
+    def create[Params, Part: IsRadiusGraphPoints, Data](
+        pair: PairTerm[Params, Part, Data],
         parameters: Params,
         cloud: PointCloud[Part, HasCell[AnyPeriodicity]],
         layout: CellListCacheParameters | None = None,
-    ) -> Self:
+    ) -> FusedPotentialCache[Data]:
         """Build a shared table and empty energy cache before creating a state."""
         if layout is None:
             backend = jax.default_backend()
@@ -634,19 +633,20 @@ class FusedPotentialCache[Feat]:
                 cloud.systems.set_data(jnp.zeros(cloud.systems.size)), EMPTY, EMPTY
             )
         )
-        return cls(table, energy, layout)
+        return FusedPotentialCache(table, energy, layout)
 
 
 def fuse_pair_potentials[
     State: IsNeighborListState[IsUniversalNeighborlistParams],
     Part: IsRadiusGraphPoints,
     Ptch: Patch[Any],
+    Feat,
 ](
     potential: Potential[State, EmptyType, EmptyType, Ptch],
     state: State,
     particles: View[State, Table[ParticleId, Part]],
     systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
-    cache: Lens[State, FusedPotentialCache[tuple[PairData, ...]]],
+    cache: Lens[State, FusedPotentialCache[tuple[Feat, ...]]],
     probe: Probe[State, Ptch, WithIndices[ParticleId, Part]] | None = None,
     *,
     max_queries_per_system: int | None = None,
@@ -662,8 +662,8 @@ def fuse_pair_potentials[
     and table are reused by the returned potential. ``probe`` selects changed
     particles for incremental updates; without one, proposals recompute in full.
     """
-    terms: list[PairTerm[tuple[PairData, ...], Part, PairData]] = []
-    parameters: list[View[State, PairData]] = []
+    terms: list[PairTerm[tuple[object, ...], Part, Feat]] = []
+    parameters: list[View[State, object]] = []
     remainder: list[Potential[State, EmptyType, EmptyType, Ptch]] = []
 
     def collect(component: Potential[State, EmptyType, EmptyType, Ptch]) -> None:
@@ -678,22 +678,32 @@ def fuse_pair_potentials[
                 not isinstance(composer.constructor, GraphInputConstructor)
             ):
                 raise ValueError("Pair fusion requires a graph input constructor")
-            terms.append(
-                component.energy_fn.pair.packed().with_parameters(
-                    itemgetter(len(terms))
+            if not isinstance(component.energy_fn.pair, PairEnergy):
+                raise TypeError(
+                    f"Graph pair term {len(terms)} must be a PairEnergy for fusion; "
+                    f"got {type(component.energy_fn.pair).__name__}"
                 )
-            )
-            parameter_view = composer.constructor.parameter_view
-            parameters.append(lambda s, view=parameter_view: PairData.pack(view(s)))
+            pair = cast(PairEnergy[object, Part, Feat], component.energy_fn.pair)
+            terms.append(pair.with_parameters(itemgetter(len(terms))))
+            parameters.append(composer.constructor.parameter_view)
         else:
             remainder.append(component)
 
     collect(potential)
     if not terms:
         raise ValueError("No graph pair energies found in the potential")
+    pair_sum = PairEnergySum(tuple(terms))
+    initial_cache = cache(state)
+    if jax.tree.structure(pair_sum.features(particles(state).data)) != (
+        jax.tree.structure(initial_cache.table.rows.data)
+    ):
+        raise ValueError(
+            "Fused cache feature structure does not match the graph pair terms; "
+            "initialize FusedPotentialCache with the same terms in collection order"
+        )
     engine = FusedNeighborEnergy(
-        PairEnergySum(tuple(terms)),
-        cache(state).layout,
+        pair_sum,
+        initial_cache.layout,
         cache.focus(lambda x: x.table),
         max_queries_per_system=max_queries_per_system,
     )

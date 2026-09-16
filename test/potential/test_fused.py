@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+from operator import add
 from typing import Literal, Protocol, TypedDict, Unpack, overload
 
 import jax
@@ -74,7 +75,6 @@ from kups.potential.common.fused import (
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 from kups.potential.common.pair import (
     PairBatch,
-    PairData,
     PairEnergy,
     PairEnergySum,
     PairTerm,
@@ -351,6 +351,60 @@ def _patch_indices(state: _MiniState) -> PotentialOut[EmptyType, EmptyType]:
 
 
 class TestPotentialFusion:
+    @pytest.mark.parametrize(
+        "invalid,error,message",
+        [
+            ("pair", TypeError, "Graph pair term 0 must be a PairEnergy.*got str"),
+            ("cache_count", ValueError, "Fused cache feature structure"),
+            ("cache_features", ValueError, "Fused cache feature structure"),
+        ],
+    )
+    def test_invalid_inputs_rejected_at_construction(
+        self,
+        invalid: Literal["pair", "cache_count", "cache_features"],
+        error: type[Exception],
+        message: str,
+    ):
+        from kups.application.potential.classical.lennard_jones import (
+            make_lennard_jones_from_state,
+        )
+
+        state = _make_state(jax.random.key(33), (4,), (12.0,))
+        params = _lj_params(1, 3.0)
+        potential = make_lennard_jones_from_state(
+            identity_lens(_MiniState),
+            parameters=params,
+            neighborlist_factory=lambda state, cutoffs: _neighborlist(params),
+        )
+        cache = FusedPotentialCache.create(
+            PairEnergySum.from_term(_LJ_PAIR),
+            params,
+            PointCloud(state.particles, state.systems),
+            _PARAMS,
+        )
+        if invalid == "pair":
+            assert isinstance(potential, PotentialFromEnergy)
+            potential = dataclasses.replace(
+                potential,
+                energy_fn=dataclasses.replace(potential.energy_fn, pair="invalid"),
+            )
+        else:
+            features = () if invalid == "cache_count" else (cache.table.rows.frac,)
+            cache = dataclasses.replace(
+                cache,
+                table=cache.table._replace(
+                    rows=cache.table.rows._replace(data=features)
+                ),
+            )
+        with pytest.raises(error, match=message):
+            fuse_pair_potentials(
+                potential,
+                state,
+                lambda s: s.particles,
+                lambda s: s.systems,
+                lens(lambda _: cache),
+            )
+
     def test_automatic_gpu_layout_limits_padding(self, monkeypatch):
         state = _make_state(jax.random.key(32), (8, 6), (12.0, 10.0))
         params = _lj_params(2, 3.0)
@@ -375,7 +429,7 @@ class TestPotentialFusion:
 
         def make(parameters: LennardJonesParameters):
             return make_lennard_jones_from_state(
-                identity_lens(_CachedState[tuple[PairData, ...]]),
+                identity_lens(_CachedState[tuple[Index[Label], ...]]),
                 parameters=parameters,
                 neighborlist_factory=lambda state, cutoffs: _neighborlist(parameters),
             )
@@ -391,7 +445,7 @@ class TestPotentialFusion:
         )
         original = sum_potentials(first, sum_potentials(retained, second))
         pair: PairEnergySum[
-            tuple[LennardJonesParameters, LennardJonesParameters], _Points
+            tuple[LennardJonesParameters, LennardJonesParameters], _Points, Index[Label]
         ] = _LJ_PAIR.with_parameters(lambda p: p[0]) + _LJ_PAIR.with_parameters(
             lambda p: p[1]
         )
@@ -571,9 +625,10 @@ class TestPeriodicImages:
         ew = _ewald_params(2, 5.7)
         ew = dataclasses.replace(ew, cutoff=ew.cutoff.set_data(jnp.array([3.0, 5.7])))
         params = (lj, ew)
-        pair: PairEnergySum[_PairParameters, _Points] = _LJ_PAIR.with_parameters(
-            lambda p: p[0]
-        ) + (_EWALD_PAIR.with_parameters(lambda p: p[1]))
+        pair: PairEnergySum[_PairParameters, _Points, Index[Label] | jax.Array] = (
+            _LJ_PAIR.with_parameters(lambda p: p[0])
+            + (_EWALD_PAIR.with_parameters(lambda p: p[1]))
+        )
         layout = CellListCacheParameters.estimate(
             state.particles,
             state.systems,
@@ -1073,11 +1128,27 @@ class TestPersistentCellListCache:
 
 
 class TestAdditivePairEnergy:
+    @pytest.mark.parametrize("summed", [False, True])
+    def test_addition_rejects_invalid_operand(self, summed: bool):
+        pair = PairEnergySum.from_term(_LJ_PAIR) if summed else _LJ_PAIR
+        with pytest.raises(TypeError, match="Cannot add str.*expected HasPairTerms"):
+            add(pair, "invalid")
+
+    def test_sum_rejects_invalid_term(self):
+        pair = PairEnergySum.from_term(_LJ_PAIR)
+        with pytest.raises(TypeError, match="term 1 must implement PairTerm; got str"):
+            dataclasses.replace(pair, terms=(_LJ_PAIR, "invalid"))
+
+    def test_sum_accepts_structural_pair_term(self):
+        term = _LJ_PAIR + _LJ_PAIR
+        nested = PairEnergySum.from_term(term) + _LJ_PAIR
+        assert nested.terms == (term, _LJ_PAIR)
+
     def test_sum_with_shared_group_masks(self):
         state = _make_state(jax.random.key(84), (12, 9), (10.0, 12.0), n_inactive=2)
         params = _lj_params(2, 3.0)
         engine: FusedNeighborEnergy[
-            _MiniState, LennardJonesParameters, _Points, tuple[PairData, ...]
+            _MiniState, LennardJonesParameters, _Points, tuple[Index[Label], ...]
         ] = FusedNeighborEnergy(_LJ_PAIR + _LJ_PAIR, _PARAMS)
         actual = _potential(engine, params)(state).data.total_energies.data
         expected = 2 * _graph_full(state, params, lennard_jones_energy)
@@ -1085,11 +1156,15 @@ class TestAdditivePairEnergy:
 
     @staticmethod
     def _engine[State: _MiniState](
-        table_lens: Lens[State, CellListCache[tuple[PairData, ...]]] | None = None,
-    ) -> FusedNeighborEnergy[State, _PairParameters, _Points, tuple[PairData, ...]]:
-        pair: PairEnergySum[_PairParameters, _Points] = _LJ_PAIR.with_parameters(
-            lambda p: p[0]
-        ) + _EWALD_PAIR.with_parameters(lambda p: p[1])
+        table_lens: Lens[State, CellListCache[tuple[Index[Label] | jax.Array, ...]]]
+        | None = None,
+    ) -> FusedNeighborEnergy[
+        State, _PairParameters, _Points, tuple[Index[Label] | jax.Array, ...]
+    ]:
+        pair: PairEnergySum[_PairParameters, _Points, Index[Label] | jax.Array] = (
+            _LJ_PAIR.with_parameters(lambda p: p[0])
+            + _EWALD_PAIR.with_parameters(lambda p: p[1])
+        )
         return FusedNeighborEnergy(pair, _PARAMS, table_lens)
 
     @staticmethod
@@ -1204,7 +1279,7 @@ class TestAdditivePairEnergy:
         )
         # Composition remains flat when appending additional terms.
         assert isinstance(engine.pair, PairEnergySum)
-        triple = engine.pair + engine.pair.terms[0]
+        triple = engine.pair + PairEnergySum.from_term(engine.pair.terms[0])
         assert len(triple.terms) == 3
         doubled_lj = dataclasses.replace(engine, pair=triple)
         npt.assert_allclose(

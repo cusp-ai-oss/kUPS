@@ -9,8 +9,7 @@ gathers, geometry, and reduction. Each term keeps its own cutoff and masks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass as plain_dataclass
-from typing import Literal, NamedTuple, Protocol, Self, cast
+from typing import Literal, NamedTuple, Protocol, Self, cast, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -144,6 +143,7 @@ class PairKernel[Params, Feat](Protocol):
         ...
 
 
+@runtime_checkable
 class PairTerm[Params, Part, Feat](Protocol):
     """Complete pair interaction interface consumed by neighbor evaluators.
 
@@ -207,71 +207,25 @@ class PairTerm[Params, Part, Feat](Protocol):
         ...
 
 
-@jax.tree_util.register_pytree_node_class
-@plain_dataclass(frozen=True)
-class PairData:
-    """Array leaves and their structure at the heterogeneous pair-sum boundary.
-
-    Kernels retain their concrete parameter and feature types. Packing lets a
-    dynamic sum store them uniformly without discarding index vocabularies or
-    other static pytree metadata. The pytree registration exposes the original
-    structure so tree operations can still align and concatenate Index nodes.
-    """
-
-    arrays: tuple[Array, ...]
-    structure: jax.tree_util.PyTreeDef
-
-    @classmethod
-    def pack[Data](cls, data: Data) -> Self:
-        arrays, structure = jax.tree.flatten(data)
-        return cls(tuple(arrays), structure)
-
-    def unpack(self) -> object:
-        return jax.tree.unflatten(self.structure, self.arrays)
-
-    def tree_flatten(self) -> tuple[tuple[object], None]:
-        return (self.unpack(),), None
-
-    @classmethod
-    def tree_unflatten(cls, auxiliary: None, children: tuple[object]) -> Self:
-        return cls.pack(children[0])
-
-
-@dataclass
-class _PackedPairTerm[Params, Part, Feat]:
-    term: PairTerm[Params, Part, Feat] = field(static=True)
-
-    def features(self, particles: Part, /) -> PairData:
-        return PairData.pack(self.term.features(particles))
+@runtime_checkable
+class HasPairTerms[Params, Part, Feat](Protocol):
+    """Flat terms exposed by a single pair energy or a sum for composition."""
 
     @property
-    def cutoffs(self) -> View[Params, Table[SystemId, Array]]:
-        return self.term.cutoffs
-
-    @property
-    def inclusion(self) -> bool:
-        return self.term.inclusion
-
-    @property
-    def exclusion(self) -> bool:
-        return self.term.exclusion
-
-    def evaluate(
-        self, parameters: Params, left: PairData, right: PairData, pairs: PairBatch
-    ) -> Array:
-        # These trees were produced by this term's feature selector above.
-        return self.term.evaluate(
-            parameters, cast(Feat, left.unpack()), cast(Feat, right.unpack()), pairs
-        )
+    def terms(self) -> tuple[PairTerm[Params, Part, Feat], ...]: ...
 
 
 def _add[Params, Part, Left, Right](
-    a: PairTerm[Params, Part, Left],
-    b: PairTerm[Params, Part, Right],
-) -> PairEnergySum[Params, Part]:
-    left = a.terms if isinstance(a, PairEnergySum) else (_PackedPairTerm(a),)
-    right = b.terms if isinstance(b, PairEnergySum) else (_PackedPairTerm(b),)
-    return PairEnergySum((*left, *right))
+    a: HasPairTerms[Params, Part, Left],
+    b: HasPairTerms[Params, Part, Right],
+) -> PairEnergySum[Params, Part, Left | Right]:
+    if not isinstance(b, HasPairTerms) or not isinstance(b.terms, tuple):
+        raise TypeError(
+            f"Cannot add {type(b).__name__} to a pair energy: expected "
+            "HasPairTerms with a tuple of PairTerm entries"
+        )
+    terms = cast(tuple[PairTerm[Params, Part, Left | Right], ...], (*a.terms, *b.terms))
+    return PairEnergySum(terms)
 
 
 @dataclass
@@ -297,10 +251,15 @@ class PairEnergy[Params, Part, Feat]:
     inclusion: bool = field(static=True, default=True)
     exclusion: bool = field(static=True, default=True)
 
+    @property
+    def terms(self) -> tuple[PairTerm[Params, Part, Feat]]:
+        """Expose this energy as one term for flat composition."""
+        return (self,)
+
     def __add__[Other](
         self,
-        other: PairTerm[Params, Part, Other],
-    ) -> PairEnergySum[Params, Part]:
+        other: HasPairTerms[Params, Part, Other],
+    ) -> PairEnergySum[Params, Part, Feat | Other]:
         return _add(self, other)
 
     def evaluate(
@@ -369,57 +328,41 @@ class PairEnergy[Params, Part, Feat]:
             self.exclusion,
         )
 
-    def packed(self) -> PairEnergy[PairData, Part, PairData]:
-        """Adapt concrete parameters and features for dynamic potential fusion."""
-
-        def kernel(
-            parameters: PairData,
-            left: PairData,
-            right: PairData,
-            rij: Array,
-            r2: Array,
-            system: Index[SystemId],
-            /,
-        ) -> Array:
-            return self.kernel(
-                cast(Params, parameters.unpack()),
-                cast(Feat, left.unpack()),
-                cast(Feat, right.unpack()),
-                rij,
-                r2,
-                system,
-            )
-
-        return PairEnergy(
-            kernel,
-            lambda p: PairData.pack(self.features(p)),
-            lambda p: self.cutoffs(cast(Params, p.unpack())),
-            self.inclusion,
-            self.exclusion,
-        )
-
 
 @dataclass
-class PairEnergySum[Params, Part]:
+class PairEnergySum[Params, Part, Feat]:
     """A flat sum of pair terms evaluated on the same candidate batch.
 
-    Use ``+`` to pack distinct feature types into the shared ``PairData``
-    representation automatically.
+    Use ``+`` to combine terms with distinct feature types. Each entry in the
+    feature tuple comes from, and is passed back to, the term at the same
+    position. ``Feat`` retains the union of the terms' concrete feature types.
+    ``from_term`` starts a sum from any implementation of ``PairTerm``.
     """
 
-    terms: tuple[PairTerm[Params, Part, PairData], ...] = field(static=True)
+    terms: tuple[PairTerm[Params, Part, Feat], ...] = field(static=True)
 
     def __post_init__(self) -> None:
         if not self.terms:
             raise ValueError("At least one pair energy is required")
+        for i, term in enumerate(self.terms):
+            if not isinstance(term, PairTerm):
+                raise TypeError(
+                    f"PairEnergySum term {i} must implement PairTerm; "
+                    f"got {type(term).__name__}"
+                )
+
+    @classmethod
+    def from_term(cls, term: PairTerm[Params, Part, Feat]) -> Self:
+        """Start a sum with the term's concrete feature type."""
+        return cls((term,))
 
     def __add__[Other](
         self,
-        other: PairTerm[Params, Part, Other],
-    ) -> PairEnergySum[Params, Part]:
+        other: HasPairTerms[Params, Part, Other],
+    ) -> PairEnergySum[Params, Part, Feat | Other]:
         return _add(self, other)
 
-    def features(self, particles: Part, /) -> tuple[PairData, ...]:
+    def features(self, particles: Part, /) -> tuple[Feat, ...]:
         return tuple(term.features(particles) for term in self.terms)
 
     @property
@@ -441,8 +384,8 @@ class PairEnergySum[Params, Part]:
     def evaluate(
         self,
         parameters: Params,
-        left: tuple[PairData, ...],
-        right: tuple[PairData, ...],
+        left: tuple[Feat, ...],
+        right: tuple[Feat, ...],
         pairs: PairBatch,
     ) -> Array:
         values = [

@@ -38,6 +38,7 @@ from kups.core.assertion import runtime_assert
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
+from kups.core.data.index import SupportsSorting
 from kups.core.lens import Lens
 from kups.core.neighborlist.cell_list import assign_cells, neighbor_cells
 from kups.core.neighborlist.common import (
@@ -208,7 +209,9 @@ class CellRows[Data](NamedTuple):
     def concatenate[D](*parts: CellRows[D]) -> CellRows[D]:
         """Join rows, aligning index vocabularies and preserving count bounds."""
 
-        def concatenate(*leaves: object) -> object:
+        def concatenate[Key: SupportsSorting](
+            *leaves: Array | Index[Key],
+        ) -> Array | Index[Key]:
             if isinstance(leaves[0], Index):
                 indices = [x for x in leaves if isinstance(x, Index)]
                 if len(indices) != len(leaves):
