@@ -278,6 +278,30 @@ class TestAssertionTracing:
         assert isinstance(assertions[0], RuntimeAssertion)
         assert not assertions[0].predicate  # Should fail since 20 >= 10
 
+    def test_checkpoint_tracing(self):
+        """Test assertion tracing through a jax.checkpoint body inside scan."""
+
+        @with_runtime_assertions
+        def f(x: Array):
+            @jax.checkpoint
+            def body(acc: Array, xi: Array):
+                runtime_assert(
+                    predicate=xi > 0,
+                    message="Assertion failed: {a} > 0",
+                    fmt_args={"a": xi},
+                )
+                return acc + xi**2, None
+
+            return jax.lax.scan(body, jnp.zeros(()), x)[0]
+
+        x = jnp.array([1.0, -2.0, 3.0])
+        out, assertions = jax.jit(f)(x)
+        assert out == 14.0
+        assert len(assertions) == 1
+        assert not assertions[0].predicate
+        assert assertions[0].fmt_args["a"] == -2.0
+        assert jnp.allclose(jax.grad(lambda x: f(x)[0])(x), 2 * x)
+
     def test_while_loop_tracing(self):
         """Test assertion tracing through jax.lax.while_loop."""
 
