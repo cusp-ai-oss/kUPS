@@ -412,9 +412,9 @@ def triangular_3x3_matmul(
 ) -> Array:
     """Optimized matrix-vector multiplication for triangular 3×3 matrices.
 
-    Specialized implementation that exploits triangular structure to avoid
-    computing with known-zero elements. On CPU, uses unrolled loops for better
-    performance than einsum.
+    Exploits triangular structure to avoid computing with known-zero elements
+    and supports broadcasting over leading dimensions. CPU uses scalar products;
+    accelerators retain vectorized dot products.
 
     Args:
         L: Array of shape `(..., 3, 3)` containing triangular matrices.
@@ -432,41 +432,34 @@ def triangular_3x3_matmul(
         L = jnp.array([[1, 0, 0], [2, 3, 0], [4, 5, 6]])
         x = jnp.array([1.0, 2.0, 3.0])
         result = triangular_3x3_matmul(L, x, lower=True, side="right")
-        # Computes L @ x efficiently
+        # Computes x @ L efficiently
         ```
-
-    Note:
-        Automatically selects between einsum (GPU) and unrolled loops (CPU) for
-        optimal performance.
     """
     side = MatmulSide(side)
-    cuda = jax.devices()[0].device_kind == "cuda"
+    if side is MatmulSide.LEFT:
+        L = jnp.swapaxes(L, -1, -2)
+        lower = not lower
+    if jax.default_backend() == "cpu":
+        # Avoid small batched-dot temporaries on CPU.
+        return jnp.stack(
+            [
+                sum(
+                    L[..., j, i] * x[..., j]
+                    for j in (range(i, 3) if lower else range(i + 1))
+                )
+                for i in range(3)
+            ],
+            axis=-1,
+        )
 
     @vectorize(signature="(3,3),(3)->(3)")
     def inner(L: Array, x: Array) -> Array:
-        if cuda:
-            if side is MatmulSide.RIGHT:
-                return jnp.einsum("ji,j->i", L, x)
-            else:
-                return jnp.einsum("ij,j->i", L, x)
-        # The following unrolled implementation is faster on CPU for small matrices
-        if side is MatmulSide.RIGHT:
-            if lower:
-                L_0, L_1, L_2 = L[:, 0], L[1:, 1], L[2:, 2]
-                x_0, x_1, x_2 = x, x[1:], x[2:]
-            else:
-                L_0, L_1, L_2 = L[:1, 0], L[:2, 1], L[:3, 2]
-                x_0, x_1, x_2 = x[:1], x[:2], x
-        elif side is MatmulSide.LEFT:
-            if lower:
-                L_0, L_1, L_2 = L[0, :1], L[1, :2], L[2, :3]
-                x_0, x_1, x_2 = x[:1], x[:2], x
-            else:
-                L_0, L_1, L_2 = L[0, :], L[1, 1:], L[2, 2:]
-                x_0, x_1, x_2 = x, x[1:], x[2:]
-        else:
-            raise ValueError(f"Invalid side argument: {side}")
-        return jnp.stack([L_0 @ x_0, L_1 @ x_1, L_2 @ x_2])
+        return jnp.stack(
+            [
+                L[i:, i] @ x[i:] if lower else L[: i + 1, i] @ x[: i + 1]
+                for i in range(3)
+            ]
+        )
 
     return inner(L, x)
 

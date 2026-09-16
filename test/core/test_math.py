@@ -330,6 +330,28 @@ class TestTriangular3x3Matmul:
         with pytest.raises(ValueError, match="is not a valid MatmulSide"):
             triangular_3x3_matmul(jnp.tril(A), x, lower=True, side="invalid")
 
+    @pytest.mark.parametrize("lower", [True, False])
+    @pytest.mark.parametrize("side", [MatmulSide.LEFT, MatmulSide.RIGHT])
+    def test_broadcast_gradients(self, lower: bool, side: MatmulSide):
+        matrix = jax.random.normal(jax.random.key(12), (2, 1, 3, 3))
+        vectors = jax.random.normal(jax.random.key(13), (1, 5, 3))
+
+        def reference(matrix: jax.Array, vectors: jax.Array) -> jax.Array:
+            matrix = jnp.tril(matrix) if lower else jnp.triu(matrix)
+            if side is MatmulSide.LEFT:
+                matrix = jnp.swapaxes(matrix, -1, -2)
+            return jnp.sum(jnp.einsum("...ji,...j->...i", matrix, vectors) ** 2)
+
+        def actual(matrix: jax.Array, vectors: jax.Array) -> jax.Array:
+            return jnp.sum(
+                triangular_3x3_matmul(matrix, vectors, lower=lower, side=side) ** 2
+            )
+
+        expected = jax.grad(reference, (0, 1))(matrix, vectors)
+        gradients = jax.jit(jax.grad(actual, (0, 1)))(matrix, vectors)
+        for left, right in zip(gradients, expected):
+            npt.assert_allclose(left, right, rtol=1e-10, atol=1e-12)
+
 
 class TestLogm:
     def test_logm(self):
