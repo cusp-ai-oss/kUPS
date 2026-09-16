@@ -1,6 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import replace
 from typing import Any
 
 import jax
@@ -23,6 +24,7 @@ from kups.core.utils.jax import dataclass, key_chain
 from kups.core.utils.position import center_of_mass, to_relative_positions
 from kups.mcmc.moves import (
     ExchangeChanges,
+    ExchangeGroupData,
     ExchangeMove,
     delete_random_motif,
     insert_random_motif,
@@ -1320,6 +1322,7 @@ class TestInsertRandomMotif:
         # Non-empty indices
         assert result.particles.indices.indices.shape[0] > 0
         assert result.groups.indices.indices.shape[0] > 0
+        assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
 
 
 class TestDeleteRandomMotif:
@@ -1340,3 +1343,52 @@ class TestDeleteRandomMotif:
         # Occupation all false for deletion
         assert not result.particles.data.occupation.any()
         assert not result.groups.data.occupation.any()
+        # Deletion is a real change even though its proposed occupancy is false.
+        assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
+
+
+def test_empty_exchange_changes_preserve_group_only_updates():
+    particles, groups, motifs, _ = _exchange_state()
+    cap = LensCapacity(1, lens(lambda x: x, cls=int))
+    deletion = jax.jit(delete_random_motif, static_argnums=4)(
+        jax.random.key(0), motifs, particles, groups, cap
+    )
+    no_particles = replace(
+        deletion,
+        particles=replace(
+            deletion.particles,
+            indices=deletion.particles.indices.apply_mask(jnp.array([False])),
+        ),
+    )
+    is_noop = jax.jit(ExchangeChanges.is_noop)
+    # Removing group metadata is not empty merely because no atom is targeted.
+    assert not is_noop(no_particles, groups)
+
+    current = groups[deletion.groups.indices]
+    same_groups = Buffered.arange(
+        ExchangeGroupData(current.motif, current.system), label=GroupId
+    )
+    reasserted = replace(
+        no_particles, groups=replace(no_particles.groups, data=same_groups)
+    )
+    assert is_noop(reasserted, groups)
+    # Compare logical keys: equal row numbers can denote different motifs,
+    # and the same motif can use different row numbers in a smaller vocabulary.
+    for motif, expected in (
+        (Index((MotifId(99),), jnp.array([0])), False),
+        (Index((MotifId(-1), MotifId(0)), jnp.array([1])), True),
+    ):
+        payload = Buffered.arange(
+            ExchangeGroupData(motif, current.system), label=GroupId
+        )
+        proposal = replace(reasserted, groups=replace(reasserted.groups, data=payload))
+        assert bool(is_noop(proposal, groups)) == expected
+    # Out-of-bounds group targets are ignored regardless of their payload.
+    untargeted = replace(
+        no_particles,
+        groups=replace(
+            no_particles.groups,
+            indices=no_particles.groups.indices.apply_mask(jnp.array([False])),
+        ),
+    )
+    assert is_noop(untargeted, groups)
