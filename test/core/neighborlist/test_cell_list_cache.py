@@ -55,6 +55,22 @@ def _neighborlist(cache, cutoffs, layout, avg_edges):
 
 class TestCachedCellList:
     @pytest.mark.parametrize("cached", [False, True])
+    def test_roundoff_at_periodic_boundary_preserves_neighbors(self, cached: bool):
+        tiny = jnp.finfo(jnp.float64).eps / 4
+        points = make_lh(
+            jnp.array([[-tiny, 0.0, 0.0], [0.1, 0.0, 0.0]]), jnp.zeros(2, int)
+        )
+        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None], jnp.array([0.25]))
+        layout = CellListCacheParameters.estimate(points, systems, cutoffs)
+        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
+        neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 2)
+        result = jax.jit(as_result_function(neighborlist))(points, systems)
+        result.raise_assertion()
+        assert _edge_rows(result.value, 2, 2) == Counter(
+            [(0, 1, 0, 0, 0), (1, 0, 0, 0, 0)]
+        )
+
+    @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries"])
     @pytest.mark.parametrize("cutoff", [1.4, 5.4])
     @pytest.mark.parametrize(
