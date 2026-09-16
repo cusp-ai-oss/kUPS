@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from functools import cached_property
+from functools import cached_property, lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -35,7 +35,7 @@ from kups.core.utils.jax import (
     skip_post_init_if_disabled,
 )
 from kups.core.utils.segment import segment_sum
-from kups.core.utils.subselect import subselect
+from kups.core.utils.subselect import offsets_from_counts, subselect
 
 type PyTree = Any
 
@@ -52,6 +52,18 @@ class SupportsDunderGT(Protocol):
 
 
 type SupportsSorting = SupportsDunderLT | SupportsDunderGT
+
+
+@lru_cache(maxsize=128)
+def _check_index_keys(keys: tuple[SupportsSorting, ...]) -> None:
+    # A vocabulary is immutable and shared by many columns and traced
+    # intermediates. Validate it once instead of repeatedly sorting it on the
+    # host. This has a small trace-time benefit.
+    data = np.empty(len(keys), dtype=object)
+    data[:] = keys
+    unique = np.unique(data)
+    if len(unique) != len(data) or (unique != data).any():
+        raise ValueError("Keys must be unique and sorted.")
 
 
 @dataclass
@@ -107,11 +119,10 @@ class Index[Key: SupportsSorting]:
         if not isinstance(self.indices, Array):
             return
         assert jnp.issubdtype(self.indices.dtype, jnp.integer)
-        np_data = np.empty(len(self.keys), dtype=object)
-        np_data[:] = self.keys
-        np_sorted, order = np.unique(np_data, return_inverse=True)
-        if (np_sorted != np_data).any():
-            raise ValueError("Keys must be unique and sorted.")
+        try:
+            _check_index_keys(self.keys)
+        except TypeError:
+            _check_index_keys.__wrapped__(self.keys)
         object.__setattr__(self, "_cls", self.cls)
 
     @classmethod
@@ -315,11 +326,20 @@ class Index[Key: SupportsSorting]:
         """
         label_counts = self.counts.data
         indices = indices % jnp.maximum(label_counts, 1)
-        sorted_indices = jnp.argsort(self.indices, stable=True)
-        offsets = jnp.cumulative_sum(label_counts, include_initial=True)[:-1]
-        result = sorted_indices.at[offsets + indices].get(
-            mode="fill", fill_value=len(self)
-        )
+        if self.size == 0:
+            return jnp.zeros(len(self.keys), dtype=int)
+        if len(self.keys) == 1:
+            # One label needs only a linear scan, including over buffered rows.
+            valid = self.indices == 0
+            rank = jnp.cumsum(valid) - 1
+            result = jnp.argmax(valid & (rank == indices[0]))[None]
+        else:
+            # Stable grouping preserves occurrence order without a rows x keys
+            # one-hot array, which grows quadratically for batched systems.
+            order = jnp.argsort(self.indices, stable=True)
+            result = order.at[offsets_from_counts(label_counts) + indices].get(
+                mode="fill", fill_value=len(self)
+            )
         return jnp.where(label_counts == 0, len(self), result)
 
     def where_rectangular(self, target: Index[Key], max_count: int) -> Array:
@@ -334,14 +354,16 @@ class Index[Key: SupportsSorting]:
             for each target key. Excess entries filled with ``len(self)`` (OOB).
         """
         target_ids = target.indices_in(self.keys)
-
-        @jax.vmap
-        def _find(label: Array) -> Array:
-            return jnp.where(
-                self.indices == label, size=max_count, fill_value=len(self)
-            )[0]
-
-        return _find(target_ids)
+        # Include the OOB label to preserve matching of explicit sentinel rows.
+        counts = jnp.bincount(self.indices, length=len(self.keys) + 1)
+        starts = offsets_from_counts(counts)
+        lanes = jnp.arange(max_count)
+        positions = starts[target_ids, None] + lanes
+        order = jnp.argsort(self.indices, stable=True)
+        if self.size == 0:
+            return jnp.full(positions.shape, len(self), dtype=int)
+        found = order.at[positions].get(mode="fill", fill_value=len(self))
+        return jnp.where(lanes < counts[target_ids, None], found, len(self))
 
     def where_flat(
         self, target: Index[Key], /, capacity: Capacity[int] | None = None
