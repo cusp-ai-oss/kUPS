@@ -18,7 +18,7 @@ differences rather than full recomputation (e.g., subtract old particle contribu
 add new particle contribution, reuse rest).
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, overload
 
 import jax
@@ -106,6 +106,56 @@ class SumComposer[State, Input, StatePatch: Patch[Any]](Protocol):
             Sum of weighted configurations to evaluate
         """
         ...
+
+
+class InputConstructor[State, Input, StatePatch: Patch[Any]](Protocol):
+    """Construct a full input, or an old/new input affected by a proposal."""
+
+    def __call__(
+        self,
+        state: State,
+        patch: StatePatch | None,
+        old_input: bool = False,
+    ) -> Input: ...
+
+
+@dataclass
+class LocalSumComposer[State, Input, StatePatch: Patch[Any]]:
+    """Shared full/old/new plan for local energies, regardless of representation.
+
+    ``difference`` can combine previous and proposed inputs into one input
+    whose energy is proposed minus previous, sharing a single evaluator call.
+    """
+
+    constructor: InputConstructor[State, Input, StatePatch] = field(static=True)
+    difference: Callable[[Input, Input], Input] | None = field(
+        static=True, default=None, kw_only=True
+    )
+
+    def __call__(self, state: State, patch: StatePatch | None) -> Sum[Input]:
+        if patch is None:
+            return Sum(Summand(self.constructor(state, None)))
+        previous = self.constructor(state, patch, old_input=True)
+        proposed = self.constructor(state, patch)
+        if self.difference is not None:
+            return Sum(
+                Summand(self.difference(previous, proposed)), add_previous_total=True
+            )
+        return Sum(
+            Summand(previous, -1),
+            Summand(proposed, 1),
+            add_previous_total=True,
+        )
+
+
+@dataclass
+class FullSumComposer[State, Input, StatePatch: Patch[Any]]:
+    """Construct one full input for the proposed state."""
+
+    constructor: InputConstructor[State, Input, StatePatch] = field(static=True)
+
+    def __call__(self, state: State, patch: StatePatch | None) -> Sum[Input]:
+        return Sum(Summand(self.constructor(state, patch)))
 
 
 @dataclass

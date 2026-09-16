@@ -59,14 +59,15 @@ from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     EnergyFunction,
+    FullSumComposer,
+    LocalSumComposer,
     PotentialFromEnergy,
 )
 from kups.potential.common.graph import (
-    FullGraphSumComposer,
     GraphConstructor,
+    GraphInputConstructor,
     GraphPotentialInput,
     IsGraphProbe,
-    LocalGraphSumComposer,
 )
 
 type MixingRule = Literal["lorentz_berthelot"]
@@ -390,9 +391,11 @@ def make_lennard_jones_potential[
         neighborlist=neighborlist_view,
         probe=probe,
     )
-    composer = LocalGraphSumComposer(
-        graph_constructor=graph_fn,
-        parameter_view=parameter_view,
+    composer = LocalSumComposer(
+        GraphInputConstructor(
+            graph_constructor=graph_fn,
+            parameter_view=parameter_view,
+        )
     )
     return PotentialFromEnergy(
         composer=composer,
@@ -438,9 +441,11 @@ def make_pair_tail_corrected_lennard_jones_potential[
         neighborlist=neighborlist_view,
         probe=probe,
     )
-    composer = LocalGraphSumComposer(
-        graph_constructor=radius_graph_fn,
-        parameter_view=parameter_view,
+    composer = LocalSumComposer(
+        GraphInputConstructor(
+            graph_constructor=radius_graph_fn,
+            parameter_view=parameter_view,
+        )
     )
     return PotentialFromEnergy(
         composer=composer,
@@ -475,14 +480,16 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
     """Create analytical long-range tail correction for Lennard-Jones potential."""
     return PotentialFromEnergy(
         energy_fn=global_lennard_jones_tail_correction_energy,
-        composer=FullGraphSumComposer(
-            GraphConstructor(
-                particles=particles_view,
-                systems=systems_view,
-                neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-                probe=None,
-            ),
-            parameter_view=parameter_view,
+        composer=FullSumComposer(
+            GraphInputConstructor(
+                GraphConstructor(
+                    particles=particles_view,
+                    systems=systems_view,
+                    neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+                    probe=None,
+                ),
+                parameter_view=parameter_view,
+            )
         ),
         gradient_lens=gradient_lens,
         hessian_lens=hessian_lens,
