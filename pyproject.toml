@@ -1,6 +1,6 @@
 [project]
 name = "kups"
-version = "1.0.5"
+version = "1.0.6"
 description = "A toolkit for building high-performance molecular simulations on JAX."
 readme = "README.md"
 authors = [
