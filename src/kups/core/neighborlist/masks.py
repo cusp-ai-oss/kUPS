@@ -42,7 +42,9 @@ class InBoundsMask:
             edge_in = key_inclusions.data.at[idx].get(mode="fill", fill_value=False)
             return edge_in.all(axis=-1)
 
-        query_inclusions = ctx.queries.map_data(lambda d: d.inclusion.indices < ngraphs)
+        query_inclusions = ctx.queries.map_data(
+            lambda d: d.inclusion.indices < d.inclusion.num_labels
+        )
         key_idx = batch.key_idx.indices_in(key_inclusions.keys)
         query_idx = batch.query_idx.indices_in(query_inclusions.keys)
         key_in = key_inclusions.data.at[key_idx].get(mode="fill", fill_value=False)

@@ -53,7 +53,7 @@ from kups.potential.common.geometry import (
     PositionsAndCell,
     position_and_cell_idx_view,
 )
-from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
+from kups.potential.common.graph import GRAPH_GEOMETRY, IsParticleProbe
 
 
 class HasLJParticlesAndSystems(
@@ -115,7 +115,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
             ]
         ],
     ],
-    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsLJGraphParticles]],
     *,
     parameters: None = None,
     gradient: None = None,
@@ -134,7 +134,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
             ]
         ],
     ],
-    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsLJGraphParticles]],
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
@@ -169,7 +169,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State, IsCachedLJGraphState[KahanSummand[PotentialOut[EmptyType, EmptyType]]]
     ],
-    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsLJGraphParticles]],
     *,
     parameters: LennardJonesParameters,
     gradient: None = None,
@@ -183,7 +183,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
         State,
         IsCachedLJGraphState[KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]],
     ],
-    probe: Probe[State, P, IsGraphProbe[IsLJGraphParticles, Literal[2]]],
+    probe: Probe[State, P, IsParticleProbe[IsLJGraphParticles]],
     *,
     parameters: LennardJonesParameters,
     gradient: Lens[Geometry, PositionsAndCell],

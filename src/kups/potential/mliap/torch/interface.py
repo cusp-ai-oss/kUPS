@@ -41,6 +41,7 @@ from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
     NeighborList,
+    NeighborListPoints,
 )
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
@@ -58,7 +59,6 @@ from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.common.graph import (
     GRAPH_GEOMETRY,
     GraphPotentialInput,
-    IsRadiusGraphPoints,
 )
 from kups.potential.mliap.direct import (
     filter_pullback,
@@ -184,7 +184,7 @@ class TorchMliapForward(Protocol):
     def __call__(self, input: AtomGraphInput) -> dict[str, Array]: ...
 
 
-class IsTorchMliapParticles(IsRadiusGraphPoints, HasAtomicNumbers, Protocol):
+class IsTorchMliapParticles(NeighborListPoints, HasAtomicNumbers, Protocol):
     """Particle protocol for torch MLFF models."""
 
     ...

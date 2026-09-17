@@ -10,17 +10,17 @@ include every current particle.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import einops
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Periodic3D
+from kups.core.cell import AnyPeriodicity, Periodic3D
 from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
-from kups.core.lens import Lens, View, lens
+from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist import (
     EmptyNeighborList,
     NeighborList,
@@ -67,10 +67,12 @@ from kups.potential.common.energy import (
 from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,
+    GraphPairEnergy,
     GraphPotentialInput,
-    IsGraphProbe,
+    IsParticleProbe,
     PointCloud,
 )
+from kups.potential.common.pair import PairEnergy
 
 from .parameters import EwaldParameters, IsEwaldPointData, ReciprocalGridBound
 from .reciprocal import _structure_factor_full, _use_grid_response
@@ -149,7 +151,7 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
 
 
 type EwaldShortRangeInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasCell[Periodic3D], Literal[2]
+    EwaldParameters, IsEwaldPointData, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 type EwaldSelfInput = GraphPotentialInput[
@@ -212,27 +214,50 @@ def ewald_self_interaction_energy(
     return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
 
 
-def ewald_short_range_energy(
-    inp: EwaldShortRangeInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
-    """Real-space (short-range) screened Coulomb energy.
+def ewald_short_range_pair_kernel(
+    parameters: EwaldParameters,
+    charges_i: Array,
+    charges_j: Array,
+    rij: Array,
+    r2: Array,
+    system: Index[SystemId],
+    /,
+) -> Array:
+    """Screened Coulomb pair kernel shared by graph and fused evaluation.
 
-    Math: ``E_sr = 1/2 * TO_STANDARD_UNITS * sum_{i<j} q_i*q_j * erfc(alpha*r_ij) / r_ij``.
+    Callers apply the cutoff; pair inputs broadcast to a common shape.
 
-    The ``erfc(alpha*r)`` damping ensures convergence within the cutoff.
-    Factor 1/2 corrects for double-counted pairs from the radius graph edges.
-    Positions in Ang, charges in e, energy in eV.
+    Args:
+        parameters: Per-system screening parameters.
+        charges_i: Left-particle charges in e.
+        charges_j: Right-particle charges in e.
+        rij: Pair displacement vectors; unused by this radial kernel.
+        r2: Squared pair distances in Å².
+        system: Left-particle system indices.
+
+    Returns:
+        Pair energies in eV.
     """
-    edg = inp.graph.particles[inp.graph.edges.indices]
-    qij = edg.charges[:, 0] * edg.charges[:, 1]
-    dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
-    edge_systems = inp.graph.edge_batch_mask
-    erfc = jax.scipy.special.erfc(inp.parameters.alpha[edge_systems] * dists)
-    energies = qij * erfc / dists
-    mask = dists < inp.parameters.cutoff[edge_systems]
-    energies *= mask
-    total = inp.graph.edge_batch_mask.sum_over(energies) / 2 * TO_STANDARD_UNITS
-    return WithPatch(total, IdPatch[Any]())
+    del rij
+    dists = jnp.sqrt(r2)
+    # Direct erfc here triggers an XLA GPU compiler crash; use 1 - erf.
+    alpha = parameters.alpha
+    alpha_values = alpha.data[0] if alpha.size == 1 else alpha[system]
+    erfc_term = 1.0 - jax.lax.erf(alpha_values * dists)
+    return TO_STANDARD_UNITS * charges_i * charges_j * erfc_term / dists
+
+
+ewald_short_range_pair = PairEnergy[EwaldParameters, IsEwaldPointData, Array](
+    kernel=ewald_short_range_pair_kernel,
+    features=lambda p: p.charges,
+    cutoffs=lambda p: p.cutoff,
+    inclusion=False,
+    exclusion=False,
+)
+
+
+ewald_short_range_energy = GraphPairEnergy(ewald_short_range_pair)
+"""Ewald short-range graph evaluator derived from the shared pair term."""
 
 
 def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy:
@@ -587,7 +612,7 @@ def make_ewald_short_range_potential[
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_view: View[State, EwaldParameters],
-    probe: Probe[State, Ptch, IsGraphProbe[IsEwaldPointData, Literal[2]]] | None,
+    probe: Probe[State, Ptch, IsParticleProbe[IsEwaldPointData]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
@@ -595,7 +620,23 @@ def make_ewald_short_range_potential[
     cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
     | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
-    """Create the Ewald real-space (short-range) potential."""
+    """Create the Ewald real-space (short-range) potential.
+
+    Args:
+        particles_view: View of the particle table.
+        systems_view: View of the system table and periodic cells.
+        neighborlist_view: View of the real-space pair neighbor list.
+        parameter_view: View of Ewald parameters.
+        probe: Optional probe returning changed particles.
+        gradient_lens: Lens selecting point-cloud variables to differentiate.
+        hessian_lens: Lens selecting gradient entries to differentiate again.
+        hessian_idx_view: View supplying Hessian row and column indices.
+        patch_idx_view: Optional view supplying indices for output-cache updates.
+        cache_lens: Optional lens to the compensated short-range output cache.
+
+    Returns:
+        Real-space potential using the pair-graph evaluator.
+    """
 
     return PotentialFromEnergy(
         energy_fn=ewald_short_range_energy,
@@ -723,6 +764,74 @@ def make_ewald_self_interaction_potential[
     )
 
 
+@dataclass
+class _EwaldAtomicParticles:
+    """Particle view with inclusion groups and per-particle self-exclusion."""
+
+    positions: Array
+    charges: Array
+    system: Index[SystemId]
+    inclusion: Index[InclusionId]
+    exclusion: Index[ExclusionId]
+
+
+def _ewald_particle_data(
+    data: IsEwaldPointData,
+    exclusion: Index[ExclusionId],
+    *,
+    excluded_pairs: bool = False,
+) -> _EwaldAtomicParticles:
+    inclusion = data.exclusion if excluded_pairs else data.system
+    return _EwaldAtomicParticles(
+        data.positions,
+        data.charges,
+        data.system,
+        inclusion.to_cls(InclusionId),
+        exclusion,
+    )
+
+
+def _ewald_particle_table(
+    indexed: Table[ParticleId, IsEwaldPointData], *, excluded_pairs: bool = False
+) -> Table[ParticleId, _EwaldAtomicParticles]:
+    return indexed.set_data(
+        _ewald_particle_data(
+            indexed.data,
+            Index.arange(len(indexed), label=ExclusionId),
+            excluded_pairs=excluded_pairs,
+        )
+    )
+
+
+@dataclass
+class _EwaldProbeResult:
+    particles: WithIndices[ParticleId, _EwaldAtomicParticles]
+
+
+def _ewald_probe[State, Ptch](
+    probe: Probe[State, Ptch, IsParticleProbe[IsEwaldPointData]] | None,
+    *,
+    excluded_pairs: bool = False,
+) -> Probe[State, Ptch, _EwaldProbeResult] | None:
+    """Apply the same inclusion and self-exclusion rules to proposed particles."""
+    if probe is None:
+        return None
+
+    def converted(state: State, patch: Ptch) -> _EwaldProbeResult:
+        result = probe(state, patch)
+        particles = result.particles
+        data = _ewald_particle_data(
+            particles.data,
+            bind(particles.indices, lambda idx: idx.max_count)
+            .set(None)
+            .to_cls(ExclusionId),
+            excluded_pairs=excluded_pairs,
+        )
+        return _EwaldProbeResult(WithIndices(particles.indices, data))
+
+    return converted
+
+
 def make_ewald_potential[
     State,
     Ptch: Patch[Any],
@@ -734,139 +843,43 @@ def make_ewald_potential[
     neighborlist_view: View[State, NeighborList[Literal[2]]],
     parameter_lens: Lens[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache[Gradients, Hessians]] | None,
-    probe: Probe[State, Ptch, IsGraphProbe[IsEwaldPointData, Literal[2]]] | None,
+    probe: Probe[State, Ptch, IsParticleProbe[IsEwaldPointData]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     include_exclusion_mask: bool = False,
 ) -> EwaldPotential[State, Gradients, Hessians, Ptch]:
-    """Create the complete Ewald potential combining all component terms.
+    """Combine real-space, reciprocal-space and self-interaction energies.
 
-    Implements the Ewald decomposition:
-    ``E_total = E_sr + E_lr - E_self - E_excl``
-    where each term is computed independently and cached for incremental
-    MC updates. Short-range and exclusion use radius graphs (real-space
-    pairs), long-range uses point clouds (reciprocal space), and
-    self-interaction is per-particle.
-
-    Internally converts ``_ParticleData`` adding ``inclusion`` and
-    ``exclusion`` fields for the neighbor list:
-
-    - sr/lr/self: ``inclusion=system`` (all particles in same system
-      interact), ``exclusion=particle_id`` (self-exclusion).
-    - exclusion correction: ``inclusion=group`` (only same-molecule
-      pairs), ``exclusion=particle_id``.
+    Compute all same-system interactions before subtracting optional molecular
+    exclusions.
 
     Args:
-        particles_view: Indexed particle data (positions, charges, system index).
-        systems_view: Indexed system data (cell).
-        neighborlist_view: Cutoff-bound neighbor list.
-        parameter_lens: Lens to EwaldParameters.
-        cache_lens: Lens to EwaldCache, or ``None``.
-        probe: Probe for incremental updates, or ``None``.
-        gradient_lens: Specifies gradients to compute.
-        hessian_lens: Specifies Hessians to compute.
-        hessian_idx_view: Hessian index structure.
-        patch_idx_view: Cached output index structure (optional).
-        include_exclusion_mask: Whether to include the exclusion correction.
+        particles_view: View of particles with charges and inclusion/exclusion groups.
+        systems_view: View of the system table and periodic cells.
+        neighborlist_view: View of the real-space pair neighbor list.
+        parameter_lens: Lens to Ewald parameters.
+        cache_lens: Optional lens to structure-factor and component-output caches.
+        probe: Optional probe returning changed particles.
+        gradient_lens: Lens selecting point-cloud variables to differentiate.
+        hessian_lens: Lens selecting gradient entries to differentiate again.
+        hessian_idx_view: View supplying Hessian row and column indices.
+        patch_idx_view: Optional view supplying indices for output-cache updates.
+        include_exclusion_mask: Whether to subtract molecular-exclusion pair energies.
 
     Returns:
-        Complete Ewald potential (sum of three or four components).
+        Combined Ewald potential with three components, or four with exclusions.
     """
-    # The definition of the ewald potential is only correct when computing the total
-    # energy. One cannot directly exclude energy terms, thus, we compute the total coulomb
-    # energy and subtract the excluded interactions later.
-
-    @dataclass
-    class _ParticleData:
-        positions: Array
-        charges: Array
-        system: Index[SystemId]
-        inclusion: Index[InclusionId]
-        exclusion: Index[ExclusionId]
-
-    def _convert_particles(
-        indexed: Table[ParticleId, IsEwaldPointData],
-        inclusion_fn: Callable[[IsEwaldPointData], Index[InclusionId]],
-    ) -> Table[ParticleId, _ParticleData]:
-        """Convert particles, deriving inclusion from `inclusion_fn`."""
-        p = indexed.data
-        excl = Index.arange(len(indexed), label=ExclusionId)
-        return Table(
-            indexed.keys,
-            _ParticleData(
-                p.positions,
-                p.charges,
-                p.system,
-                inclusion=inclusion_fn(p),
-                exclusion=excl,
-            ),
-        )
-
-    def _make_probe(
-        inclusion_fn: Callable[[IsEwaldPointData], Index[InclusionId]],
-        neighborlist_override: NeighborList[Literal[2]] | None = None,
-    ) -> Probe[State, Ptch, IsGraphProbe[_ParticleData, Literal[2]]] | None:
-        """Wrap `probe` to convert particle data with `inclusion_fn`.
-
-        Args:
-            inclusion_fn: Extracts the inclusion Index from particle data.
-            neighborlist_override: If set, replaces the probe's neighbor lists
-                (e.g., ``AllConnectedNeighborList`` for exclusion correction).
-        """
-        if probe is None:
-            return None
-        _p = probe
-
-        @dataclass
-        class _ProbeResult:
-            particles: WithIndices[ParticleId, _ParticleData]
-            neighborlist_after: NeighborList[Literal[2]]
-            neighborlist_before: NeighborList[Literal[2]]
-
-        def _wrapper(state: State, patch: Ptch) -> _ProbeResult:
-            result = _p(state, patch)
-            p = result.particles
-            d = p.data
-            excl = Index(p.indices.keys, p.indices.indices, _cls=p.indices.cls)
-            data = _ParticleData(
-                d.positions,
-                d.charges,
-                d.system,
-                inclusion=inclusion_fn(d).to_cls(InclusionId),
-                exclusion=excl.to_cls(ExclusionId),
-            )
-            nn_after = neighborlist_override or result.neighborlist_after
-            nn_before = neighborlist_override or result.neighborlist_before
-            return _ProbeResult(WithIndices(p.indices, data), nn_after, nn_before)
-
-        return _wrapper
-
-    def _make_particles_probe(
-        inclusion_fn: Callable[[IsEwaldPointData], Index[InclusionId]],
-    ) -> Probe[State, Ptch, WithIndices[ParticleId, _ParticleData]] | None:
-        """Wrap `probe` returning only WithIndices (no neighborlists)."""
-        full = _make_probe(inclusion_fn)
-        if full is None:
-            return None
-
-        def _wrapper(
-            state: State, patch: Ptch
-        ) -> WithIndices[ParticleId, _ParticleData]:
-            return full(state, patch).particles
-
-        return _wrapper
-
-    # Atomic view: inclusion = system
-    def _system_inclusion(d: IsEwaldPointData) -> Index[InclusionId]:
-        return d.system.to_cls(InclusionId)
-
-    atomic_view = pipe(
-        particles_view, lambda p: _convert_particles(p, _system_inclusion)
+    atomic_view = pipe(particles_view, _ewald_particle_table)
+    atomic_probe = _ewald_probe(probe)
+    atomic_particles_probe: (
+        Probe[State, Ptch, WithIndices[ParticleId, _EwaldAtomicParticles]] | None
+    ) = (
+        (lambda state, patch: atomic_probe(state, patch).particles)
+        if atomic_probe is not None
+        else None
     )
-    atomic_probe = _make_probe(_system_inclusion)
-    atomic_particles_probe = _make_particles_probe(_system_inclusion)
 
     sr_potential = make_ewald_short_range_potential(
         particles_view=atomic_view,
@@ -904,13 +917,13 @@ def make_ewald_potential[
         else None,
     )
 
-    # Exclusion view: inclusion = exclusion group
-    def _excl_inclusion(d: IsEwaldPointData) -> Index[InclusionId]:
-        return d.exclusion.to_cls(InclusionId)
+    if not include_exclusion_mask:
+        return EwaldPotential((sr_potential, lr_potential, self_potential))
 
-    excl_view = pipe(particles_view, lambda p: _convert_particles(p, _excl_inclusion))
-    excl_probe = _make_probe(_excl_inclusion, all_connected_neighborlist)
-
+    excl_view = pipe(
+        particles_view, functools.partial(_ewald_particle_table, excluded_pairs=True)
+    )
+    excl_probe = _ewald_probe(probe, excluded_pairs=True)
     excl_rg = GraphConstructor(
         particles=excl_view,
         systems=systems_view,
@@ -926,12 +939,14 @@ def make_ewald_potential[
         hessian_idx_view=hessian_idx_view,
         patch_idx_view=patch_idx_view,
     )
-    exclusion_correction = ScaledPotential(exclusion_correction, -1)
-    if include_exclusion_mask:
-        return EwaldPotential(
-            (sr_potential, lr_potential, self_potential, exclusion_correction)
+    return EwaldPotential(
+        (
+            sr_potential,
+            lr_potential,
+            self_potential,
+            ScaledPotential(exclusion_correction, -1),
         )
-    return EwaldPotential((sr_potential, lr_potential, self_potential))
+    )
 
 
 if TYPE_CHECKING:

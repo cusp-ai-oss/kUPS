@@ -25,9 +25,6 @@ from kups.application.mcmc.analysis import analyze_widom_file
 from kups.application.mcmc.data import (
     AdsorbateConfig,
     HostConfig,
-    MCMCGroup,
-    MCMCParticles,
-    MCMCSystems,
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import IsWidomState, make_widom_logged_data
@@ -44,7 +41,7 @@ from kups.application.potential.classical.lennard_jones import (
 from kups.application.simulations.mcmc_rigid import (
     EwaldConfig,
     LJConfig,
-    MCMCState,
+    MCMCStateBase,
     MCMCStateUpdate,
 )
 from kups.application.utils.propagate import (
@@ -78,7 +75,7 @@ from kups.core.propagator import (
 )
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
-from kups.core.typing import GroupId, ParticleId, SystemId
+from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
@@ -132,11 +129,11 @@ class Config(BaseModel):
 
 
 @dataclass
-class WidomState(MCMCState):
+class WidomState(MCMCStateBase):
     """State for the Widom test-particle simulation.
 
-    Inherits all [MCMCState][kups.application.simulations.mcmc_rigid.MCMCState]
-    fields and adds one accumulator.
+    Extends [MCMCStateBase][kups.application.simulations.mcmc_rigid.MCMCStateBase]
+    with one accumulator.
 
     Attributes:
         widom_statistics: Running sums for the Widom averages
@@ -154,19 +151,18 @@ def _probe(state: WidomState, update: MCMCStateUpdate) -> MCMCStateUpdate:
 def init_state(key: Array, config: Config) -> WidomState:
     """Build the batched Widom state via one ``mcmc_state_from_config`` call per host."""
     chain = key_chain(key)
-    ps: list[Table[ParticleId, MCMCParticles]] = []
-    gs: list[Table[GroupId, MCMCGroup]] = []
-    ss: list[Table[SystemId, MCMCSystems]] = []
-    motifs = None
-    for host in config.hosts:
-        p, g, s, m = mcmc_state_from_config(next(chain), host, config.adsorbates)
-        ps.append(p)
-        gs.append(g)
-        ss.append(s)
-        motifs = m
-    assert motifs is not None, "At least one host must be provided."
-
-    particles, groups, system = Table.union(ps, gs, ss)
+    host_states = [
+        mcmc_state_from_config(next(chain), host, config.adsorbates)
+        for host in config.hosts
+    ]
+    if not host_states:
+        raise ValueError("At least one host must be provided.")
+    motifs = host_states[-1][3]
+    particles, groups, system = Table.union(
+        [s[0] for s in host_states],
+        [s[1] for s in host_states],
+        [s[2] for s in host_states],
+    )
     n_sys = len(system)
 
     lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(

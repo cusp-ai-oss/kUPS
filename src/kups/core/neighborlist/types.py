@@ -21,10 +21,11 @@ protocol used by the ``from_state`` constructors.
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, overload
+from typing import Literal, Protocol, overload, runtime_checkable
 
 from jax import Array
 
+from kups.core.capacity import Capacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.neighborlist.edges import Edges
@@ -40,6 +41,7 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
 
 
+@runtime_checkable
 class NeighborListPoints(
     HasPositions,
     HasSystemIndex,
@@ -140,8 +142,9 @@ class CandidateBatch[D: int]:
     def query_idx(self) -> Index[ParticleId]:
         """Pair-specific: query-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
         return Index(
-            self.query_keys or self.edges.indices.keys,
+            self.edges.indices.keys if self.query_keys is None else self.query_keys,
             self.edges.indices.indices[:, 1],
+            _cls=self.edges.indices.cls,
         )
 
 
@@ -204,6 +207,26 @@ class CandidateSelector[D: int](Protocol):
     """
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[D]: ...
+
+
+@runtime_checkable
+class SelectableNeighborList[D: int](NeighborList[D], Protocol):
+    """Neighbor list whose selector can be reused with different pipeline masks.
+
+    This additional capability lets pair evaluators retain image metadata and
+    defer group masks that differ between terms. Ordinary ``NeighborList``
+    implementations need only provide their existing edge-producing call.
+    """
+
+    @property
+    def cutoffs(self) -> Table[SystemId, Array]: ...
+
+    @property
+    def avg_edges(self) -> Capacity[int]: ...
+
+    def selector(
+        self, query_size: int, systems: Table[SystemId, NeighborListSystems]
+    ) -> CandidateSelector[D]: ...
 
 
 class Mask[D: int](Protocol):

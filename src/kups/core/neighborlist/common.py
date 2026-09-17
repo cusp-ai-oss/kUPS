@@ -81,7 +81,8 @@ def lift_query_candidates(candidates: Candidates, ctx: PipelineContext) -> Candi
         mode="fill", fill_value=oob
     )
     return Candidates(
-        key_idx=candidates.key_idx, query_idx=Index(ctx.keys.keys, query_idx)
+        key_idx=candidates.key_idx,
+        query_idx=Index(ctx.keys.keys, query_idx, _cls=ctx.keys.cls),
     )
 
 
@@ -193,7 +194,7 @@ def _get_candidate_images(
     total_cand = jnp.vdot(cand_per_sys, images_per_sys)
     out_size = out_size.generate_assertion(total_cand)
     num_cands = candidates.key_idx.size
-    if out_size.size <= num_cands:
+    if num_cands == 0 or out_size.size <= num_cands:
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         return jnp.arange(num_cands), offset
 
@@ -295,7 +296,7 @@ def candidates_to_batch(
         [candidates.key_idx.indices, candidates.query_idx.indices], axis=-1
     )
     edges: Edges[Literal[2]] = Edges(
-        Index(candidates.key_idx.keys, indices_2d),
+        Index(candidates.key_idx.keys, indices_2d, _cls=candidates.key_idx.cls),
         jnp.expand_dims(shifts, axis=-2),
     )
     return CandidateBatch(

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Literal, Protocol, overload
 
 import jax
@@ -14,6 +13,7 @@ from jax import Array
 
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.common import (
@@ -22,17 +22,8 @@ from kups.core.neighborlist.common import (
     num_cells,
     replicate_for_images,
 )
-from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.masks import (
-    DistanceCutoffMask,
-    ExclusionMask,
-    InBoundsMask,
-    InclusionMatchMask,
-    QueriedKeysDedupMask,
-)
-from kups.core.neighborlist.pipeline import Pipeline
-from kups.core.neighborlist.postprocess import MirrorPairEdges
+from kups.core.neighborlist.pipeline import build_radius_graph
 from kups.core.neighborlist.types import (
     CandidateBatch,
     IsNeighborListState,
@@ -42,6 +33,109 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
+
+
+def cell_hash(coordinate: Array, num_cells: Array) -> Array:
+    """Hash folded fractional coordinates into row-major cell bins.
+
+    Coordinates outside nonperiodic faces are assigned to the boundary bins.
+
+    Args:
+        coordinate: Fractional coordinates, folded on periodic axes, ``(..., dim)``.
+        num_cells: Per-axis bin counts broadcastable to ``coordinate``.
+
+    Returns:
+        Row-major bin ids of shape ``(...,)``.
+    """
+    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
+    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
+    return (bin_idx * factor).sum(axis=-1)
+
+
+def cell_stencil(dim: int) -> Array:
+    """All ``3**dim`` neighbor-cell offsets in ``{-1, 0, 1}**dim``, ``(3**dim, dim)``."""
+    with jax.ensure_compile_time_eval():
+        return jnp.stack(
+            jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),
+            axis=-1,
+        ).reshape(-1, dim)
+
+
+def assign_cells(
+    positions: Array,
+    system: Array,
+    active: Array,
+    bins: Array,
+    max_cells: int,
+    cell: Cell[AnyPeriodicity],
+) -> tuple[Array, Array]:
+    """Fold fractional positions and assign active rows to global cell ids.
+
+    ``max_cells`` is the allocated cell capacity per system, which may exceed
+    its bin count. Inactive rows use the sentinel ``len(bins) * max_cells``.
+    Open-boundary outliers share the edge bins; their unfolded coordinates
+    remain available for exact distance filtering.
+    """
+    active = active & (system >= 0) & (system < bins.shape[0])
+    system = jnp.where(active, system, 0)
+    frac, _ = cell.fold(jnp.where(active[:, None], positions, 0.0))
+    ids = cell_hash(frac, bins[system]) + system * max_cells
+    return frac, jnp.where(active, ids, bins.shape[0] * max_cells)
+
+
+def neighbor_cells(
+    cells: Array,
+    bins: Array,
+    max_cells: int,
+    cell: Cell[AnyPeriodicity],
+    *,
+    width: int = 27,
+    promise_unique: bool = False,
+) -> Array:
+    """Distinct neighboring cells using the unit cell's boundary rules.
+
+    ``max_cells`` is the allocated capacity per system. Invalid or duplicate
+    entries use the sentinel ``len(bins) * max_cells``.
+    """
+    sentinel_cell = bins.shape[0] * max_cells
+    if max_cells == 1:
+        return jnp.pad(
+            cells[:, None],
+            ((0, 0), (0, width - 1)),
+            constant_values=sentinel_cell,
+        )
+    system, local = cells // max_cells, cells % max_cells
+    cell_bins = bins[jnp.minimum(system, bins.shape[0] - 1)]
+    factor = jnp.cumprod(cell_bins, axis=-1) // cell_bins
+    coords = (local[:, None] // factor) % cell_bins
+    neighbor = coords[:, None, :] + cell_stencil(bins.shape[-1])[None]
+    wrapped = jnp.where(
+        jnp.asarray(cell.periodic), neighbor % cell_bins[:, None], neighbor
+    )
+    valid = ((wrapped >= 0) & (wrapped < cell_bins[:, None])).all(axis=-1)
+    valid &= ((cells < sentinel_cell) & (local < cell_bins.prod(axis=-1)))[:, None]
+    neighbor = (wrapped * factor[:, None]).sum(-1) + (system * max_cells)[:, None]
+    neighbor = jnp.where(valid, neighbor, sentinel_cell)
+    if promise_unique:
+        runtime_assert(
+            ((bins >= 3) | ~jnp.asarray(cell.periodic)).all(),
+            "promise_unique_cells requires at least three cells along every periodic axis",
+        )
+    else:
+        neighbor = jnp.sort(neighbor, axis=-1)
+        duplicate = jnp.pad(neighbor[:, 1:] == neighbor[:, :-1], ((0, 0), (1, 0)))
+        neighbor = jnp.sort(jnp.where(duplicate, sentinel_cell, neighbor), axis=-1)
+    runtime_assert(
+        (neighbor[:, width:] == sentinel_cell).all(),
+        "stencil_width too small for the spatial bin counts",
+    )
+    return neighbor[:, :width]
+
+
+class CellListLookup(Protocol):
+    """Cached occupant lookup, independent of any per-particle payload type."""
+
+    def select(self, ctx: PipelineContext) -> Candidates: ...
 
 
 class IsCellListParams(Protocol):
@@ -57,24 +151,6 @@ class IsCellListParams(Protocol):
     def avg_image_candidates(self) -> int: ...
 
 
-def _cell_hash(coordinate: Array, num_cells: Array) -> Array:
-    """Hash folded fractional coordinates into row-major cell bins.
-
-    Boundary values are clamped into the valid bin range for each axis.
-    """
-    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
-    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
-    return (bin_idx * factor).sum(axis=-1)
-
-
-def _cell_stencil(dim: int) -> Array:
-    with jax.ensure_compile_time_eval():
-        return jnp.stack(
-            jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),
-            axis=-1,
-        ).reshape(-1, dim)
-
-
 def _cell_list_subselect(
     keys: Table[ParticleId, NeighborListPoints],
     queries: Table[ParticleId, NeighborListPoints],
@@ -84,96 +160,45 @@ def _cell_list_subselect(
     max_num_candidates: Capacity[int],
     promise_unique_cells: bool = False,
 ) -> Candidates:
-    cell = systems.data.cell
-    key_positions, _ = cell.fold(keys.data.positions)
-    query_positions, _ = cell.fold(queries.data.positions)
-
-    bins = systems.map_data(partial(num_cells, cutoff=cutoffs))
-    max_num_cells = max_num_cells.generate_assertion(
-        jnp.max(jnp.prod(bins.data, axis=-1))
-    )
-    num_systems = systems.size
-    cell_oob = max_num_cells.size * num_systems
-
-    dim = key_positions.shape[-1]
-    assert query_positions.shape[-1] == dim, (
-        f"Queries must have the same dimensionality as keys, "
-        f"got {query_positions.shape[-1]} != {dim}"
-    )
-
-    # Raw system IDs for hash offset computation
-    key_system_ids = keys.data.system.indices
-    query_system_ids = queries.data.system.indices
-
-    key_hashes = (
-        _cell_hash(key_positions, bins[keys.data.system])
-        + key_system_ids * max_num_cells.size
-    )
-
-    # With a single cell per system the only reachable cell is "self", so a unit
-    # stencil suffices and every query maps to one cell -- the neighborhood dedup
-    # is a no-op and is skipped (subselect re-sorts via is_sorted=False).
-    is_single_cell = max_num_cells.size == 1
-
-    if is_single_cell:
-        raw_shifted = query_positions
-        query_original = Index(queries.keys, jnp.arange(len(queries)))
-    else:
-        # Expand neighborhood around query points: for each query, tile across stencil
-        stencil = _cell_stencil(dim)
-        raw_shifted = jax.vmap(
-            lambda s: query_positions + s[None] / bins[queries.data.system]
-        )(stencil).reshape(-1, dim)
-        query_original = Index(
-            queries.keys, jnp.tile(jnp.arange(len(queries)), len(stencil))
+    if keys.size == 0 or queries.size == 0:
+        return Candidates(
+            Index(keys.keys, jnp.zeros(0, int), _cls=keys.cls),
+            Index(queries.keys, jnp.zeros(0, int), _cls=queries.cls),
         )
-    query_system = queries.data.system[query_original.indices]
+    bins = num_cells(systems.data, cutoffs)
+    max_num_cells = max_num_cells.generate_assertion(bins.prod(axis=-1).max())
 
-    shifted, in_cell = cell.fold(raw_shifted)
-    hashes = (
-        _cell_hash(shifted, bins[query_system])
-        + query_system_ids[query_original.indices] * max_num_cells.size
+    def assign(points: NeighborListPoints) -> Array:
+        return assign_cells(
+            points.positions,
+            points.system.indices_in(systems.keys),
+            points.inclusion.valid_mask,
+            bins,
+            max_num_cells.size,
+            systems.data.cell,
+        )[1]
+
+    key_hashes = assign(keys.data)
+    query_cells = neighbor_cells(
+        assign(queries.data),
+        bins,
+        max_num_cells.size,
+        systems.data.cell,
+        width=1 if max_num_cells.size == 1 else 3 ** bins.shape[-1],
+        promise_unique=promise_unique_cells,
     )
-    # Stencil offsets that left the box on a non-periodic axis route to
-    # cell_oob so they produce no key matches (cross-boundary candidates
-    # are excluded). For fully-periodic cells fold guarantees in_cell is
-    # all-True, making the where a no-op.
-    query_neighborhood_hashes = jnp.where(in_cell, hashes, cell_oob)
-
-    if not is_single_cell and promise_unique_cells:
-        # The promise only breaks through periodic wrap-around: with fewer
-        # than three cells along a periodic axis, distinct stencil offsets
-        # fold onto the same cell and emit duplicate candidates.
-        runtime_assert(
-            ((bins.data >= 3) | ~jnp.array(cell.periodic)).all(),
-            "promise_unique_cells requires at least three cells along every "
-            "periodic axis, got a minimum of {min_bins} per axis.",
-            fmt_args=dict(min_bins=jnp.min(bins.data, axis=0)),
-        )
-
-    if not is_single_cell and not promise_unique_cells:
-        unique_queries = jnp.unique(
-            jnp.stack([query_neighborhood_hashes, query_original.indices], axis=-1),
-            axis=0,
-            size=len(query_original),
-            fill_value=jnp.array([cell_oob, len(queries)]),
-        )
-        query_neighborhood_hashes = unique_queries[:, 0]
-        query_original = Index(queries.keys, unique_queries[:, 1])
 
     selection_result = subselect(
         key_hashes,
-        query_neighborhood_hashes,
+        query_cells.ravel(),
         output_buffer_size=max_num_candidates,
-        num_segments=cell_oob,
-        is_sorted=not is_single_cell and not promise_unique_cells,
+        num_segments=bins.shape[0] * max_num_cells.size,
     )
-    key_idx = Index(keys.keys, selection_result.scatter_idxs)
+    key_idx = Index(keys.keys, selection_result.scatter_idxs, _cls=keys.cls)
     query_idx = Index(
-        query_original.keys,
-        query_original.indices.at[selection_result.gather_idxs].get(
-            **query_original.scatter_args
-        ),
+        queries.keys,
+        selection_result.gather_idxs // query_cells.shape[1],
+        _cls=queries.cls,
     )
     return Candidates(key_idx=key_idx, query_idx=query_idx)
 
@@ -182,12 +207,12 @@ def _cell_list_subselect(
 class CellListSelector:
     """Selector for the cell-list algorithm.
 
-    Calls the raw spatial-hash candidate emission, then replicates per image
-    multiplicity when ``max(cutoff/perp) > 0.5``. Set ``promise_unique_cells``
-    when the caller guarantees at least three cells along every periodic axis,
+    Joins cell hashes, or reads occupants from an optional initialized cache,
+    then replicates per image multiplicity when ``max(cutoff/perp) > 0.5``.
+    Set ``promise_unique_cells`` when the caller guarantees at least three cells
+    along every periodic axis,
     so each query's stencil cells are already distinct; this skips the
-    query-cell deduplication, replacing the multi-key unique sort with a
-    single-key hash sort.
+    per-query cell deduplication in the uncached lookup.
     """
 
     cutoffs: Table[SystemId, Array]
@@ -195,17 +220,22 @@ class CellListSelector:
     max_candidates: Capacity[int]
     max_image_candidates: Capacity[int]
     promise_unique_cells: bool = field(default=False, static=True)
+    cache: CellListLookup | None = field(default=None, kw_only=True)
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         query = ctx.query_table
-        candidates = _cell_list_subselect(
-            ctx.keys,
-            query,
-            ctx.systems,
-            cutoffs=self.cutoffs.data,
-            max_num_cells=self.max_cells,
-            max_num_candidates=self.max_candidates,
-            promise_unique_cells=self.promise_unique_cells,
+        candidates = (
+            self.cache.select(ctx)
+            if self.cache is not None
+            else _cell_list_subselect(
+                ctx.keys,
+                query,
+                ctx.systems,
+                cutoffs=self.cutoffs.data,
+                max_num_cells=self.max_cells,
+                max_num_candidates=self.max_candidates,
+                promise_unique_cells=self.promise_unique_cells,
+            )
         )
         candidates = lift_query_candidates(candidates, ctx)
         return replicate_for_images(
@@ -220,19 +250,24 @@ class CellListSelector:
 
 @dataclass
 class CellListNeighborList:
-    """Efficient O(N) neighbor list using spatial hashing with cell lists.
+    """Neighbor list using spatial hashing with cell lists.
 
     This is the recommended implementation when the cutoff is much smaller than
     the box size. It divides space into a grid of cells and only checks pairs in
-    neighboring cells, achieving linear scaling with system size.
+    neighboring cells.
 
     Honors the cell's per-axis ``periodic`` mask: stencil offsets that cross a
     non-periodic face are routed to an out-of-bounds bin (no key matches), and
-    minimum-image shifts are zero on non-periodic axes. The fully-periodic path
-    is byte-identical to the original (gated at trace time on ``all(periodic)``)
-    so PBC kernels see no overhead.
+    minimum-image shifts are zero on non-periodic axes.
 
-    Complexity: O(N) for well-distributed particles where cutoff << box size.
+    ``cache`` optionally supplies an initialized ``CellListCache`` for the
+    current particles and cutoff. It retains occupant slots and neighboring
+    cells between calls; accepted moves must update it along with the particles.
+    Rebuild it when the cell, cutoff, or particle row layout changes.
+    Without a cache, the same grid algorithm joins particle and query cell hashes.
+
+    Candidate storage is O(N) for well-distributed particles at fixed density
+    and cutoff. Uncached lookup sorts cell hashes; cached lookup gathers slots.
     Efficiency improves as cutoff/box ratio decreases.
 
     Attributes:
@@ -241,6 +276,7 @@ class CellListNeighborList:
         cells: Capacity for cell hash table (grows with box_size³/cutoff³).
         avg_image_candidates: Capacity for image candidate pairs.
         cutoffs: Per-system cutoff distances used by this neighbor list.
+        cache: Current cell occupants, or ``None`` to rebuild the hash lookup.
 
     Algorithm:
         1. Partition space into grid cells of size ~cutoff
@@ -251,9 +287,8 @@ class CellListNeighborList:
     When to use:
         - When cutoff/box_size << 1 (cutoff much smaller than box)
         - Typically cutoff/box < 0.3 for good efficiency
-        - On non-periodic axes positions must lie inside ``[0, L)`` in real
-          coordinates (the caller's invariant; out-of-range positions are
-          silently routed to the OOB bin)
+        - Nonperiodic outliers remain searchable in boundary bins; many outliers
+          can increase the candidate count.
 
     Example:
         ```python
@@ -272,6 +307,7 @@ class CellListNeighborList:
     cells: Capacity[int]
     avg_image_candidates: Capacity[int]
     cutoffs: Table[SystemId, Array]
+    cache: CellListLookup | None = field(default=None, kw_only=True)
 
     @classmethod
     def new[S](
@@ -302,6 +338,18 @@ class CellListNeighborList:
     ) -> CellListNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    def selector(
+        self, query_size: int, systems: Table[SystemId, NeighborListSystems]
+    ) -> CellListSelector:
+        """Build the candidate selector shared by graph and pair evaluation."""
+        return CellListSelector(
+            cutoffs=Table.broadcast_to(self.cutoffs, systems),
+            max_cells=self.cells,
+            max_candidates=self.avg_candidates.multiply(query_size),
+            max_image_candidates=self.avg_image_candidates.multiply(query_size),
+            cache=self.cache,
+        )
+
     @overload
     def __call__(
         self,
@@ -327,29 +375,6 @@ class CellListNeighborList:
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        query_size = (
-            queried_keys.size
-            if queried_keys is not None
-            else (queries.size if queries is not None else keys.size)
+        return build_radius_graph(
+            self, keys, systems, queries=queries, queried_keys=queried_keys
         )
-        cutoffs = Table.broadcast_to(self.cutoffs, systems)
-        pipeline = Pipeline[Literal[2]](
-            selector=CellListSelector(
-                cutoffs=cutoffs,
-                max_cells=self.cells,
-                max_candidates=self.avg_candidates.multiply(query_size),
-                max_image_candidates=self.avg_image_candidates.multiply(query_size),
-            ),
-            masks=(
-                InBoundsMask(),
-                InclusionMatchMask(),
-                QueriedKeysDedupMask(),
-                DistanceCutoffMask(cutoffs=cutoffs),
-                ExclusionMask(),
-            ),
-            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
-            postprocessors=(MirrorPairEdges(),),
-        )
-        if queries is not None:
-            return pipeline(keys, systems, queries=queries)
-        return pipeline(keys, systems, queried_keys=queried_keys)

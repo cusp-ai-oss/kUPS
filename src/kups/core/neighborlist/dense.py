@@ -17,17 +17,8 @@ from kups.core.neighborlist.common import (
     lift_query_candidates,
     replicate_for_images,
 )
-from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.masks import (
-    DistanceCutoffMask,
-    ExclusionMask,
-    InBoundsMask,
-    InclusionMatchMask,
-    QueriedKeysDedupMask,
-)
-from kups.core.neighborlist.pipeline import Pipeline
-from kups.core.neighborlist.postprocess import MirrorPairEdges
+from kups.core.neighborlist.pipeline import build_radius_graph
 from kups.core.neighborlist.types import (
     CandidateBatch,
     IsNeighborListState,
@@ -63,8 +54,8 @@ def _dense_subselect(
         num_segments=systems.size,
     )
     return Candidates(
-        key_idx=Index(keys.keys, selection_result.scatter_idxs),
-        query_idx=Index(queries.keys, selection_result.gather_idxs),
+        key_idx=Index(keys.keys, selection_result.scatter_idxs, _cls=keys.cls),
+        query_idx=Index(queries.keys, selection_result.gather_idxs, _cls=queries.cls),
     )
 
 
@@ -158,6 +149,16 @@ class DenseNearestNeighborList:
     ) -> DenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 
+    def selector(
+        self, query_size: int, systems: Table[SystemId, NeighborListSystems]
+    ) -> DenseSelector:
+        """Build the candidate selector shared by graph and pair evaluation."""
+        return DenseSelector(
+            cutoffs=Table.broadcast_to(self.cutoffs, systems),
+            max_candidates=self.avg_candidates.multiply(query_size),
+            max_image_candidates=self.avg_image_candidates.multiply(query_size),
+        )
+
     @overload
     def __call__(
         self,
@@ -182,28 +183,6 @@ class DenseNearestNeighborList:
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
     ) -> Edges[Literal[2]]:
-        query_size = (
-            queried_keys.size
-            if queried_keys is not None
-            else (queries.size if queries is not None else keys.size)
+        return build_radius_graph(
+            self, keys, systems, queries=queries, queried_keys=queried_keys
         )
-        cutoffs = Table.broadcast_to(self.cutoffs, systems)
-        pipeline = Pipeline[Literal[2]](
-            selector=DenseSelector(
-                cutoffs=cutoffs,
-                max_candidates=self.avg_candidates.multiply(query_size),
-                max_image_candidates=self.avg_image_candidates.multiply(query_size),
-            ),
-            masks=(
-                InBoundsMask(),
-                InclusionMatchMask(),
-                QueriedKeysDedupMask(),
-                DistanceCutoffMask(cutoffs=cutoffs),
-                ExclusionMask(),
-            ),
-            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
-            postprocessors=(MirrorPairEdges(),),
-        )
-        if queries is not None:
-            return pipeline(keys, systems, queries=queries)
-        return pipeline(keys, systems, queried_keys=queried_keys)

@@ -3,7 +3,7 @@
 
 """Tests for Frame and Cell types."""
 
-from typing import Callable, cast, override
+from typing import Callable, Literal, cast, override
 
 import jax
 import jax.numpy as jnp
@@ -338,6 +338,31 @@ class TestVacuumWrap:
         c = VacuumCell(TriclinicFrame.from_matrix(jnp.eye(3) * 5.0))
         r = jnp.array([[15.0, -3.0, 25.0], [-50.0, 100.0, 0.5]])
         npt.assert_allclose(c.wrap(r), r, atol=1e-6)
+
+
+class TestCellFold:
+    @pytest.mark.parametrize("dtype", ["float32", "float64"])
+    @pytest.mark.parametrize(
+        "periodic", [(True, True, True), (True, False, True), (False, False, False)]
+    )
+    def test_roundoff_at_periodic_boundaries(
+        self, dtype: Literal["float32", "float64"], periodic: tuple[bool, bool, bool]
+    ):
+        cell = Cell(OrthogonalFrame(jnp.ones(3, dtype=dtype)), periodic=periodic)
+        tiny = jnp.finfo(dtype).eps / 4
+        positions = jnp.array(
+            [[-tiny, 0.5, 0.0], [0.5, 1.0, 0.0], [0.5, 0.5, -tiny]], dtype=dtype
+        )
+        expected = jnp.where(
+            jnp.array(periodic),
+            jnp.array([[0.0, 0.5, 0.0], [0.5, 0.0, 0.0], [0.5, 0.5, 0.0]]),
+            positions,
+        )
+        folded, in_cell = jax.jit(cell.fold)(positions)
+        npt.assert_array_equal(folded, expected)
+        npt.assert_array_equal(in_cell, periodic)
+        gradient = jax.jit(jax.grad(lambda p: cell.fold(p)[0].sum()))(positions)
+        npt.assert_array_equal(gradient, jnp.ones_like(positions))
 
 
 class TestCellSlicing:

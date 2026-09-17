@@ -24,6 +24,7 @@ from kups.core.neighborlist import (
     AdaptiveNeighborList,
     Edges,
     NeighborListFactory,
+    NeighborListPoints,
     UniversalNeighborlistParameters,
 )
 from kups.core.patch import Patch, WithPatch
@@ -51,7 +52,6 @@ from kups.potential.common.graph import (
     GraphInputConstructor,
     GraphPotentialInput,
     HyperGraph,
-    IsRadiusGraphPoints,
     PointCloud,
 )
 
@@ -168,7 +168,7 @@ def evaluate_radius_graph_potential[
     Parameters,
     Gradients,
     Hessians,
-    P: IsRadiusGraphPoints,
+    P: NeighborListPoints,
     S: HasCell[AnyPeriodicity],
 ](
     point_cloud: PointCloud[P, S],

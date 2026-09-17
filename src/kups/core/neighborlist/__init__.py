@@ -1,73 +1,10 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Neighbor list construction and edge representations for molecular systems.
+"""Neighbor lists, periodic edges, and composable search pipelines.
 
-This module provides multiple neighbor list algorithms for finding interacting
-pairs of particles within cutoff distances, with different performance and
-accuracy trade-offs.
-
-## Call Contract
-
-Neighbor lists are called as ``neighborlist(keys, systems, *, queries=None,
-queried_keys=None)``. ``keys`` is the self-graph/output table. Use keyword-only
-``queries`` only for true bipartite queries. Use keyword-only ``queried_keys``
-only for self-graph updates; it is mutually exclusive with ``queries`` and names
-affected ``keys`` ids after the caller has already written updated particle data
-into ``keys``.
-
-## Core Components
-
-- **[Edges][kups.core.neighborlist.Edges]**: Represents connections between particles with periodic shifts
-- **[NeighborList][kups.core.neighborlist.NeighborList]**: Protocol for neighbor search implementations
-- **[Pipeline][kups.core.neighborlist.Pipeline]**: Selector → mask sequence → compactor → postprocessors
-
-## Neighbor List Implementations
-
-### Primary Implementations
-
-1. **[CellListNeighborList][kups.core.neighborlist.CellListNeighborList]** (Recommended when cutoff << box size)
-    - O(N) complexity using spatial hashing
-    - Best when cutoff / box_size < 0.3 (cutoff much smaller than box)
-    - Honors the cell's per-axis ``periodic`` mask (bulk and bounded non-periodic)
-
-2. **[DenseNearestNeighborList][kups.core.neighborlist.DenseNearestNeighborList]**
-    - O(N²/K) complexity (K = number of systems)
-    - Best when cutoff / box_size ~ 1 (cutoff comparable to box)
-
-3. **[AllDenseNearestNeighborList][kups.core.neighborlist.AllDenseNearestNeighborList]**
-    - O(N²) complexity across all systems
-    - Only for single-system simulations or testing
-    - Crosses system boundaries (use with caution!)
-
-### Refinement Implementations
-
-These let one expensive base neighbor list be shared across multiple potentials.
-
-4. **[RefineMaskNeighborList][kups.core.neighborlist.RefineMaskNeighborList]**:
-   apply different inclusion/exclusion masks to precomputed edges.
-5. **[RefineCutoffNeighborList][kups.core.neighborlist.RefineCutoffNeighborList]**:
-   refine precomputed edges with new cutoff distances.
-
-### Cutoff-Free Implementations
-
-These cover non-cutoff cases under the same `NeighborList[D]` protocol.
-
-6. **[EmptyNeighborList][kups.core.neighborlist.EmptyNeighborList]**: emits a
-   zero-row ``Edges[D]`` for point-cloud constructions.
-7. **[FixedEdgesNeighborList][kups.core.neighborlist.FixedEdgesNeighborList]**:
-   stores fixed edge topology for bonded edge sets supplied by the state and
-   computes current periodic shifts during calls. Affected self-graph calls use
-   ``queried_keys`` and return only rows touched by those affected ``keys`` ids.
-
-## Pipeline Primitives
-
-Every neighbor list above is a [`Pipeline`][kups.core.neighborlist.Pipeline]
-of a [`CandidateSelector`][kups.core.neighborlist.CandidateSelector], a
-``tuple`` of [`Mask`][kups.core.neighborlist.Mask] criteria, a
-[`Compactor`][kups.core.neighborlist.Compactor], and zero or more
-[`Postprocessor`][kups.core.neighborlist.Postprocessor] transforms. Users
-wanting custom behavior can compose their own pipeline directly.
+Dense and cell-list searches share masks and compaction. ``CellListCache``
+retains cell occupants for neighbor searches and incremental pair evaluation.
 """
 
 from kups.core.neighborlist.adaptive import (
@@ -91,6 +28,15 @@ from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
     CellListSelector,
     IsCellListParams,
+)
+from kups.core.neighborlist.cell_list_cache import (
+    CellListCache,
+    CellListCacheParameters,
+    CellListCacheUpdatePatch,
+    CellRows,
+    build_cell_list_cache,
+    cell_candidates,
+    cell_rows,
 )
 from kups.core.neighborlist.changes import (
     NeighborListChangesResult,
@@ -136,6 +82,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
     Postprocessor,
+    SelectableNeighborList,
 )
 
 __all__ = [
@@ -146,6 +93,10 @@ __all__ = [
     "CandidateSelector",
     "CellListNeighborList",
     "CellListSelector",
+    "CellRows",
+    "CellListCache",
+    "CellListCacheParameters",
+    "CellListCacheUpdatePatch",
     "Compactor",
     "DenseNearestNeighborList",
     "DenseSelector",
@@ -178,13 +129,17 @@ __all__ = [
     "Postprocessor",
     "PrecomputedEdgesSelector",
     "ReduceCompactor",
+    "SelectableNeighborList",
     "RefineCutoffNeighborList",
     "RefineMaskNeighborList",
     "QueriedKeysDedupMask",
     "UniversalNeighborlistParameters",
     "all_connected_neighborlist",
     "all_dense_cost",
+    "build_cell_list_cache",
+    "cell_candidates",
     "cell_list_cost",
+    "cell_rows",
     "dense_cost",
     "neighborlist_changes",
 ]

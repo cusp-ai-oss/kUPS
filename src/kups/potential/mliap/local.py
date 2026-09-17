@@ -54,6 +54,7 @@ from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
     Edges,
     NeighborList,
+    NeighborListPoints,
 )
 from kups.core.patch import Accept, Patch, Probe, WithPatch
 from kups.core.potential import Energy, Potential, PotentialOut
@@ -76,7 +77,6 @@ from kups.potential.common.energy import (
 from kups.potential.common.graph import (
     GraphConstructor,
     IsGraphProbe,
-    IsRadiusGraphPoints,
     PointCloud,
 )
 
@@ -139,7 +139,7 @@ class IsLocalMLIAPParticleData(HasPositionsAndAtomicNumbers, HasSystemIndex, Pro
 
 
 class IsLocalMLIAPGraphParticles(
-    IsLocalMLIAPParticleData, IsRadiusGraphPoints, Protocol
+    IsLocalMLIAPParticleData, NeighborListPoints, Protocol
 ):
     """Combined protocol for local MLIAP particles in radius graph context."""
 

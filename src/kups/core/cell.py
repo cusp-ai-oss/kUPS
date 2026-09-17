@@ -1117,7 +1117,11 @@ class Cell(Sliceable, Generic[_P]):
         [`wrap`][kups.core.cell.Cell.wrap] which uses the ``[-0.5, 0.5)``
         convention.
         """
-        folded = jnp.where(jnp.array(self.periodic), r_frac % 1, r_frac)
+        wrapped = r_frac % 1
+        # Tiny negative values can round to 1. Subtracting that integer shift
+        # keeps the result in [0, 1) and preserves the coordinate derivative.
+        wrapped -= wrapped == 1
+        folded = jnp.where(jnp.array(self.periodic), wrapped, r_frac)
         in_cell = jnp.all((folded >= 0) & (folded < 1), axis=-1)
         return folded, in_cell
 

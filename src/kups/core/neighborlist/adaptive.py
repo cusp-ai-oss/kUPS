@@ -34,14 +34,25 @@ from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
+from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+)
+from kups.core.neighborlist.pipeline import select_candidates
 from kups.core.neighborlist.types import (
+    CandidateBatch,
     IsNeighborListState,
     IsUniversalNeighborlistParams,
+    Mask,
     NeighborList,
     NeighborListPoints,
     NeighborListSystems,
+    SelectableNeighborList,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field
@@ -164,6 +175,45 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
             self.implementations,
             key=lambda candidate: candidate.cost(num_particles, num_systems),
         ).neighborlist
+
+    def pair_candidates(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        inclusion: bool,
+        exclusion: bool,
+    ) -> CandidateBatch[Literal[2]]:
+        """Full neighbors with shared group masks and retained image flags.
+
+        Apply group masks shared by every pair term before compaction. Terms
+        with differing policies apply their remaining masks during evaluation.
+        Uses the same selectors and capacity repair as normal graph construction.
+        The selected implementation must satisfy ``SelectableNeighborList``.
+        """
+        selected = self._choose(keys.size, systems.size)
+        if not isinstance(selected, SelectableNeighborList):
+            raise TypeError("Pair candidates require a SelectableNeighborList")
+        masks: list[Mask[Literal[2]]] = [InBoundsMask()]
+        if inclusion:
+            masks.append(InclusionMatchMask())
+        if exclusion:
+            masks.append(ExclusionMask())
+        else:
+            # Always exclude a particle's zero-shift interaction with itself.
+            masks.append(
+                lambda batch, ctx: (
+                    (batch.key_idx.indices != batch.query_idx.indices)
+                    | ~batch.is_minimum_image
+                )
+            )
+        masks.append(DistanceCutoffMask(selected.cutoffs))
+        batch, keep, ctx = select_candidates(
+            keys, systems, selected.selector(keys.size, systems), tuple(masks)
+        )
+        return ReduceCompactor(selected.avg_edges.multiply(keys.size)).compact_batch(
+            keep, batch, ctx
+        )
 
     @overload
     def __call__(

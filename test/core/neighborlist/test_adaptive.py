@@ -4,22 +4,29 @@
 """Unit tests for the adaptive cost functions and per-call dispatch."""
 
 import math
+from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
+from kups.core.cell import OrthogonalFrame, PeriodicCell
+from kups.core.data import Index
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     AllDenseNearestNeighborList,
     CellListNeighborList,
     DenseNearestNeighborList,
     NeighborListCandidate,
+    SelectableNeighborList,
     all_dense_cost,
     cell_list_cost,
     dense_cost,
 )
+from kups.core.result import as_result_function
 
-from ._builders import cutoff_table, make_adaptive_state
+from ._builders import cutoff_table, make_adaptive_state, make_lh, make_systems
 
 
 def _always_cheapest(num_particles: int, num_systems: int) -> float:
@@ -99,3 +106,90 @@ class TestAdaptiveNeighborList:
                 | AllDenseNearestNeighborList,
             )
             npt.assert_array_equal(impl.cutoffs.data, jnp.array([2.0]))
+
+    @pytest.mark.parametrize("implementation", [0, 1, 2, 3])
+    @pytest.mark.parametrize("inclusion", [False, True])
+    @pytest.mark.parametrize("exclusion", [False, True])
+    def test_pair_candidates_retain_group_pairs_and_self_images(
+        self, implementation: int, inclusion: bool, exclusion: bool
+    ):
+        # Different inclusion groups, one shared exclusion group. Pair terms
+        # must decide which interactions to include after geometric selection.
+        state = make_adaptive_state(2, 1)
+        state = replace(
+            state,
+            neighborlist_params=replace(
+                state.neighborlist_params, avg_edges=32, avg_image_candidates=256
+            ),
+        )
+        particles = make_lh(
+            jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            jnp.zeros(2, dtype=int),
+            jnp.zeros(2, dtype=int),
+        ).map_data(lambda p: replace(p, inclusion=Index.integer(jnp.arange(2))))
+        systems, cutoffs = make_systems(
+            PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
+        )
+        neighbors = AdaptiveNeighborList.from_state(state, cutoffs)
+        candidate = neighbors.implementations[implementation % 3]
+        if implementation == 3:
+            base = candidate.neighborlist
+            assert isinstance(base, SelectableNeighborList)
+
+            # Structural delegation: this class inherits no built-in selector.
+            class CustomNeighborList:
+                cutoffs = base.cutoffs
+                avg_edges = base.avg_edges
+                selector = staticmethod(base.selector)
+                __call__ = staticmethod(base)
+
+            candidate = replace(candidate, neighborlist=CustomNeighborList())
+        neighbors = replace(neighbors, implementations=(candidate,))
+        result = jax.jit(
+            as_result_function(
+                lambda p, s: neighbors.pair_candidates(
+                    p, s, inclusion=inclusion, exclusion=exclusion
+                )
+            )
+        )(particles, systems)
+        result.raise_assertion()
+        batch = result.value
+        edges = batch.edges.indices.indices
+        valid = (edges < 2).all(-1)
+        same_particle = edges[:, 0] == edges[:, 1]
+        # Each atom has six self images; the zero-shift self edge is absent.
+        assert int((valid & same_particle).sum()) == 12
+        assert not bool((valid & same_particle & batch.is_minimum_image).any())
+        # Group policies apply before compaction, preserving nonminimum images.
+        assert int((valid & ~same_particle & batch.is_minimum_image).sum()) == (
+            0 if inclusion or exclusion else 2
+        )
+        assert int((valid & ~same_particle & ~batch.is_minimum_image).sum()) == (
+            0 if inclusion else 10
+        )
+        if inclusion and exclusion:
+            normal = neighbors(particles, systems)
+            npt.assert_array_equal(edges, normal.indices.indices)
+            npt.assert_array_equal(batch.edges.shifts, normal.shifts)
+
+    @pytest.mark.parametrize("implementation", [0, 1, 2])
+    def test_pair_candidates_empty(self, implementation: int):
+        particles = make_lh(jnp.zeros((1, 3)), jnp.zeros(1, dtype=int))
+        particles = particles.subset(Index(particles.keys, jnp.empty(0, dtype=int)))
+        systems, cutoffs = make_systems(
+            PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([2.0])
+        )
+        neighbors = AdaptiveNeighborList.from_state(make_adaptive_state(1, 1), cutoffs)
+        neighbors = replace(
+            neighbors, implementations=(neighbors.implementations[implementation],)
+        )
+        result = jax.jit(
+            as_result_function(
+                lambda: neighbors.pair_candidates(
+                    particles, systems, inclusion=True, exclusion=True
+                )
+            )
+        )()
+        result.raise_assertion()
+        assert result.value.edges.indices.shape == (0, 2)
+        assert result.value.is_minimum_image.shape == (0,)
