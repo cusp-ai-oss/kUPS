@@ -212,10 +212,7 @@ class LensCapacity[State, Value]:
         ) and size.shape[-1] == 1:
             required_capacity = required_capacity[..., None]
 
-        # Device power/log rounding must not leave a repair below its request.
-        new_capacity = jnp.maximum(
-            required_capacity, next_higher_power(required_capacity, self.base)
-        )
+        new_capacity = next_higher_power(required_capacity, self.base)
         new_capacity = jnp.where(required_capacity <= size, size, new_capacity)
 
         max_fn = functools.partial(

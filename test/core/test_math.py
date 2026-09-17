@@ -480,6 +480,15 @@ class TestTriangular3x3Expm:
 
 
 class TestNextHigherPower:
+    @pytest.mark.parametrize("base", [1.0, 1.5, 2.0, 3.0])
+    def test_rounding_never_undershoots_request(self, base: float):
+        requested = jnp.array([0.0, 1.1, 16, 64, 256, 1024, 2048, 4096, 8192])
+        for evaluate in (next_higher_power, jax.jit(next_higher_power)):
+            result = evaluate(requested, base)
+            assert jnp.all(result >= jnp.ceil(requested))
+            if base in (1.0, 2.0):
+                npt.assert_array_equal(result[2:], requested[2:])
+
     def test_next_higher_power(self):
         """Merged: powers_of_two, exact_power, base_three."""
         npt.assert_array_equal(
