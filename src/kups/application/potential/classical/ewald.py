@@ -38,6 +38,7 @@ from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldParameters,
     EwaldPotential,
+    IsChargedTemplate,
     IsEwaldPointData,
     make_ewald_potential,
 )
@@ -47,6 +48,7 @@ from kups.potential.common.geometry import (
     position_and_cell_idx_view,
 )
 from kups.potential.common.graph import POINTCLOUD_GEOMETRY, IsParticleProbe
+from kups.potential.common.rigid_body_composition import RigidBodyComposition
 
 
 class IsEwaldGraphState(
@@ -79,6 +81,7 @@ def make_ewald_from_state[State](
     parameters: None = None,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
@@ -93,6 +96,7 @@ def make_ewald_from_state[State](
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
@@ -109,6 +113,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: None = None,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
     ] = ...,
@@ -128,6 +133,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]]
     ] = ...,
@@ -142,6 +148,7 @@ def make_ewald_from_state[State](
     parameters: EwaldParameters,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
@@ -154,6 +161,7 @@ def make_ewald_from_state[State](
     parameters: EwaldParameters,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
@@ -166,6 +174,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: EwaldParameters,
     gradient: None = None,
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsCachedEwaldGraphState[EwaldCache[EmptyType, EmptyType]]
     ] = ...,
@@ -182,6 +191,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     parameters: EwaldParameters,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
     ] = ...,
@@ -195,6 +205,7 @@ def make_ewald_from_state(
     parameters: EwaldParameters | None = None,
     gradient: Lens[Geometry, Any] | None = None,
     include_exclusion_mask: bool = False,
+    composition: RigidBodyComposition[Any, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
@@ -219,6 +230,8 @@ def make_ewald_from_state(
             gradients.
         include_exclusion_mask: Whether to include the exclusion
             correction term in the returned potential.
+        composition: Optional rigid-body templates and counts for
+            energy-only self and exclusion terms.
 
     Returns:
         An ``EwaldPotential`` combining short-range, long-range,
@@ -262,4 +275,5 @@ def make_ewald_from_state(
         EMPTY_LENS,
         patch_idx_view=patch_idx_view,
         include_exclusion_mask=include_exclusion_mask,
+        composition=composition,
     )

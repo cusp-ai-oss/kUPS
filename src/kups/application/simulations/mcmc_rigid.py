@@ -318,7 +318,9 @@ def _make_potential(
     ]
     if state.is_charged:
         potentials.append(
-            make_ewald_from_state(state_lens, _probe, include_exclusion_mask=True)
+            make_ewald_from_state(
+                state_lens, _probe, include_exclusion_mask=True, composition=composition
+            )
         )
         logging.info("Charged particles detected: including Ewald potential.")
     if state.has_blocking_spheres:
