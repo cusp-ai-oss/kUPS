@@ -16,7 +16,7 @@ constant parameters, the cache is read from a conventional ``lj_cache`` attribut
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, cast, overload
+from typing import Any, Literal, Protocol, overload
 
 from jax import Array
 
@@ -38,7 +38,14 @@ from kups.core.potential import (
     PotentialOut,
     empty_patch_idx_view,
 )
-from kups.core.typing import HasCache, HasCell, IsState, MaybeCached, SystemId
+from kups.core.typing import (
+    HasCache,
+    HasCell,
+    HasLabels,
+    IsState,
+    MaybeCached,
+    SystemId,
+)
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -54,6 +61,7 @@ from kups.potential.common.geometry import (
     position_and_cell_idx_view,
 )
 from kups.potential.common.graph import GRAPH_GEOMETRY, IsParticleProbe
+from kups.potential.common.rigid_body_composition import RigidBodyComposition
 
 
 class HasLJParticlesAndSystems(
@@ -274,6 +282,7 @@ def make_lennard_jones_tail_correction_from_state[
     *,
     parameters: None = None,
     gradient: None = None,
+    composition: RigidBodyComposition[InState, HasLabels] | None = None,
 ) -> Potential[InState, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -286,6 +295,7 @@ def make_lennard_jones_tail_correction_from_state[
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
+    composition: RigidBodyComposition[InState, HasLabels] | None = None,
 ) -> Potential[InState, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -295,6 +305,7 @@ def make_lennard_jones_tail_correction_from_state[State](
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters,
     gradient: None = None,
+    composition: RigidBodyComposition[State, HasLabels] | None = None,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -304,6 +315,7 @@ def make_lennard_jones_tail_correction_from_state[State](
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters,
     gradient: Lens[Geometry, PositionsAndCell],
+    composition: RigidBodyComposition[State, HasLabels] | None = None,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -312,6 +324,7 @@ def make_lennard_jones_tail_correction_from_state(
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    composition: RigidBodyComposition[Any, HasLabels] | None = None,
 ) -> Any:
     """Create a global tail-corrected LJ potential from a typed state.
 
@@ -323,6 +336,8 @@ def make_lennard_jones_tail_correction_from_state(
         gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
             optimizer DOFs. ``None`` computes no gradients (the default). Composed with
             ``GRAPH_GEOMETRY`` into the potential's gradient lens.
+        composition: Optional rigid-body templates and counts. Requires
+            fixed parameters and cells, and ``gradient=None``.
 
     Returns:
         Configured tail-corrected Lennard-Jones potential.
@@ -343,10 +358,11 @@ def make_lennard_jones_tail_correction_from_state(
     return make_global_lennard_jones_tail_correction_potential(
         state.focus(lambda x: x.particles),
         state.focus(lambda x: x.systems),
-        cast(Any, param_view),
+        param_view,
         gradient_lens,
         EMPTY_LENS,
         EMPTY_LENS,
+        composition=composition,
     )
 
 
@@ -375,5 +391,5 @@ def global_lennard_jones_tail_correction_pressure_from_state(
     return make_global_lennard_jones_tail_correction_pressure(
         state_lens.focus(lambda x: x.particles),
         state_lens.focus(lambda x: x.systems),
-        cast(Any, param_view),
+        param_view,
     )(key, state)

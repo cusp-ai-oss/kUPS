@@ -70,6 +70,7 @@ from kups.potential.common.graph import (
     IsParticleProbe,
 )
 from kups.potential.common.pair import PairEnergy
+from kups.potential.common.rigid_body_composition import RigidBodyComposition
 
 type MixingRule = Literal["lorentz_berthelot"]
 
@@ -353,13 +354,18 @@ def _global_tail_correction_common(
     return q1, q2, volume, n_graphs
 
 
+def _tail_energy(q1: Array, q2: Array) -> Array:
+    """Convert the two integrated LJ contributions to energy."""
+    return (8 / 3) * jnp.pi * (q2 / 3 - q1)
+
+
 @jit
 def global_lennard_jones_tail_correction_energy(
     inp: GlobalTailCorrectedLennardJonesInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute analytical long-range tail correction energy."""
     q1, q2, _volume, n_graphs = _global_tail_correction_common(inp)
-    result = (8 / 3) * jnp.pi * (q2 / 3 - q1)
+    result = _tail_energy(q1, q2)
     total_energies = Table.arange(result, label=SystemId)
     assert len(total_energies) == n_graphs
     return WithPatch(total_energies, IdPatch[Any]())
@@ -482,6 +488,25 @@ type GCLJInp = GraphPotentialInput[
 ]
 
 
+def _molecular_tail_coefficients[State](
+    composition: RigidBodyComposition[State, HasLabels],
+    particles: HasLabels,
+    parameters: GlobalTailCorrectedLennardJonesParameters,
+    volume: Array,
+) -> Array:
+    """Project the ordinary LJ tail energy onto background and template counts."""
+    labels = parameters.labels
+    basis = composition.sum_particles(
+        jax.nn.one_hot(particles.labels.indices_in(labels), len(labels)),
+        jax.nn.one_hot(composition.templates.labels.indices_in(labels), len(labels)),
+    )
+    w1, w2 = parameters.tail_weights
+    return _tail_energy(
+        jnp.einsum("gmi,gij,gnj->gmn", basis, w1, basis) / volume[:, None, None],
+        jnp.einsum("gmi,gij,gnj->gmn", basis, w2, basis) / volume[:, None, None],
+    )
+
+
 def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessians](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
@@ -492,21 +517,41 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     out_cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
     | None = None,
+    *,
+    composition: RigidBodyComposition[State, HasLabels] | None = None,
 ) -> Potential[State, Gradients, Hessians, Patch[State]]:
-    """Create analytical long-range tail correction for Lennard-Jones potential."""
+    """Create the LJ tail correction, optionally prepared for rigid bodies.
+
+    ``composition`` projects the same tail formula onto rigid-body counts once
+    at construction. It requires fixed parameters and cells and no derivatives.
+    """
+    constructor = GraphInputConstructor(
+        GraphConstructor(
+            particles=particles_view,
+            systems=systems_view,
+            neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+            probe=None,
+        ),
+        parameter_view=parameter_view,
+    )
+    if composition is not None:
+        initial = composition.initial_state
+        coefficients = _molecular_tail_coefficients(
+            composition,
+            particles_view(initial).data,
+            parameter_view(initial),
+            systems_view(initial).data.cell.volume,
+        )
+        return composition.potential(
+            coefficients,
+            gradient_lens(constructor(initial, None)),
+            hessian_lens,
+            out_cache_lens,
+            patch_idx_view,
+        )
     return PotentialFromEnergy(
         energy_fn=global_lennard_jones_tail_correction_energy,
-        composer=FullSumComposer(
-            GraphInputConstructor(
-                GraphConstructor(
-                    particles=particles_view,
-                    systems=systems_view,
-                    neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
-                    probe=None,
-                ),
-                parameter_view=parameter_view,
-            )
-        ),
+        composer=FullSumComposer(constructor),
         gradient_lens=gradient_lens,
         hessian_lens=hessian_lens,
         hessian_idx_view=hessian_idx_view,

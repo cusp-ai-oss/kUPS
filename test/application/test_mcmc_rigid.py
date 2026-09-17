@@ -22,6 +22,7 @@ from kups.application.mcmc.data import (
     MotifParticles,
     RunConfig,
 )
+from kups.application.mcmc.rigid_body_composition import make_rigid_body_composition
 from kups.application.potential.classical.blocking import (
     make_blocking_spheres_from_state,
 )
@@ -78,12 +79,16 @@ from kups.mcmc.moves import (
     delete_random_motif,
     exchange_changes_from_position_changes,
     insert_random_motif,
+    propose_group_rotation,
+    propose_group_translation,
+    propose_reinsertion,
 )
 from kups.potential.classical.blocking import BlockingSpheresParameters
 from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
 )
+from kups.potential.common.graph import PointCloud
 
 L = 15.0  # box side (Ang)
 N_MAX = 3  # max molecules (2 real + 1 empty slot for exchange)
@@ -585,6 +590,140 @@ class TestRequiredLJTypes:
         )
         with pytest.raises(ValueError, match="Missing Lennard-Jones parameters.*O_co2"):
             init_state(jax.random.key(92), config)
+
+
+class TestRigidCorrections:
+    @pytest.fixture(scope="class")
+    def mixture(self) -> MCMCState:
+        config = _batched_config(2, (1, 2))
+        second = _co2().model_copy(
+            update={
+                "symbols": ("C_alt", "O_alt", "O_alt"),
+            }
+        )
+        config = config.model_copy(
+            update={
+                "adsorbates": (_co2(), second),
+                "hosts": tuple(
+                    host.model_copy(
+                        update={
+                            "adsorbate_composition": (0.5, 0.5),
+                            "adsorbate_interaction": ((0.0, 0.0), (0.0, 0.0)),
+                            "blocking_spheres": ((), ()),
+                        }
+                    )
+                    for host in config.hosts
+                ),
+                "lj": config.lj.model_copy(
+                    update={
+                        "parameters": {
+                            **config.lj.parameters,
+                            "X1": (2.0, 0.01),
+                            "C_alt": (3.0, 0.004),
+                            "O_alt": (2.5, 0.008),
+                        }
+                    }
+                ),
+            }
+        )
+        state = init_state(jax.random.key(93), config)
+        state = bind(state, lambda s: s.systems.data.cell).set(
+            PeriodicCell(
+                TriclinicFrame.from_matrix(
+                    state.systems.data.cell.vectors.at[1].multiply(1.2)
+                )
+            )
+        )
+        return state
+
+    @staticmethod
+    def _potentials(state: MCMCState):
+        sl = identity_lens(MCMCState)
+        composition = make_rigid_body_composition(
+            state,
+            PointCloud(state.particles, state.systems),
+            state.motifs,
+            sl.focus(lambda s: s.groups),
+        )
+        actual = make_lennard_jones_tail_correction_from_state(
+            sl, composition=composition
+        )
+        reference = make_lennard_jones_tail_correction_from_state(sl)
+        return (jax.jit(actual),), (jax.jit(reference),)
+
+    def test_composition_rejects_derivatives(self, mixture: MCMCState):
+        """Fixed coefficients must never silently replace forces or cell derivatives."""
+        from kups.application.potential.filter import POSITIONS_AND_CELL
+
+        sl = identity_lens(MCMCState)
+        composition = make_rigid_body_composition(
+            mixture,
+            PointCloud(mixture.particles, mixture.systems),
+            mixture.motifs,
+            sl.focus(lambda s: s.groups),
+        )
+        with pytest.raises(ValueError, match="energy-only"):
+            make_lennard_jones_tail_correction_from_state(
+                sl, gradient=POSITIONS_AND_CELL, composition=composition
+            )
+
+    @pytest.mark.parametrize("move", ["translation", "rotation", "reinsertion"])
+    def test_rigid_moves_leave_corrections_unchanged(
+        self, mixture: MCMCState, move: str
+    ):
+        actual, reference = self._potentials(mixture)
+        args = (jax.random.key(94), mixture.particles, mixture.groups, mixture.systems)
+        if move == "reinsertion":
+            changes = propose_reinsertion(*args, mixture.move_capacity)
+        else:
+            propose = (
+                propose_group_translation
+                if move == "translation"
+                else propose_group_rotation
+            )
+            changes = propose(
+                *args, mixture.systems.set_data(jnp.ones(2)), mixture.move_capacity
+            )
+        update = _movement_patch(jax.random.key(95), mixture, changes)
+        moved = update(mixture, mixture.systems.set_data(jnp.array([True, True])))
+        for candidate, full in zip(actual, reference, strict=True):
+            old = candidate(mixture).data.total_energies.data
+            proposed = candidate(mixture, update).data.total_energies.data
+            npt.assert_array_equal(proposed, old)
+            npt.assert_allclose(
+                proposed, full(moved).data.total_energies.data, rtol=1e-12, atol=1e-12
+            )
+
+    def test_exchange_and_rejection_match_full_recomputation(self, mixture: MCMCState):
+        actual, reference = self._potentials(mixture)
+        state = mixture
+        for candidate in actual:
+            state = PotentialAsPropagator(candidate)(jax.random.key(96), state)
+        for i in range(10):
+            key = jax.random.key(100 + i)
+            args = (key, state.motifs, state.particles, state.groups)
+            proposal = (
+                insert_random_motif(
+                    *args, state.systems.map_data(lambda s: s.cell), state.move_capacity
+                )
+                if i < 3
+                else delete_random_motif(*args, state.move_capacity)
+            )
+            update = MCMCStateUpdate.from_changes(key, state, proposal)
+            proposed = update(state, state.systems.set_data(jnp.array([True, True])))
+            accept = state.systems.set_data(jnp.array([True, i % 2 == 0]))
+            outputs = [candidate(state, update) for candidate in actual]
+            for out, full in zip(outputs, reference, strict=True):
+                npt.assert_allclose(
+                    out.data.total_energies.data,
+                    full(proposed).data.total_energies.data,
+                    rtol=1e-12,
+                    atol=1e-12,
+                )
+            state = update(state, accept)
+            for out in outputs:
+                state = out.patch(state, accept)
+        assert int(state.groups.data.system.counts.data[0]) == 0
 
 
 class TestInitStateBlockingSpheres:
