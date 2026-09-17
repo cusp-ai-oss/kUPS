@@ -9,8 +9,10 @@ import h5py
 import hdf5plugin
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
+from numpy.typing import NDArray
 
 from kups.core.data import Table
 from kups.core.lens import view
@@ -117,6 +119,30 @@ class TestLoggingFrequencies:
 
 
 class TestHDF5StorageWriter:
+    def test_precomputed_host_samples_avoid_device_round_trip(
+        self, temp_file: str, monkeypatch: pytest.MonkeyPatch
+    ):
+        def host_view(sample: NDArray[np.float64]) -> NDArray[np.float64]:
+            assert isinstance(sample, np.ndarray), "view must not be traced"
+            return sample
+
+        def unexpected_stack(states: list[NDArray[np.float64]]) -> None:
+            pytest.fail("Host samples must not use the JAX stacking function")
+
+        monkeypatch.setattr("kups.core.storage._stack_leaves", unexpected_stack)
+        initial = np.arange(3, dtype=np.float64)
+        config = WriterGroupConfig(host_view, EveryNStep(1))
+        with HDF5StorageWriter(
+            temp_file, config, initial, total_steps=5, compile_views=False
+        ) as writer:
+            for i in range(5):
+                writer.log(initial + i, i)
+        with HDF5StorageReader(temp_file) as reader:
+            npt.assert_array_equal(
+                reader.focus_group("group")[:],
+                initial + np.arange(5)[:, None],
+            )
+
     def test_write_every_and_every_n_and_once(self, simple_state, temp_file):
         """Test writing every step, every N steps, and once in a single workflow."""
         config = {
