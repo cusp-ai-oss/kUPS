@@ -8,7 +8,6 @@ Full evaluations use adaptive graphs; local updates reuse cached cell lists.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from operator import itemgetter
 from typing import Any, Callable, Literal, cast
 
@@ -19,7 +18,7 @@ from jax import Array
 from kups.core.assertion import runtime_assert
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
-from kups.core.lens import Lens, View, lens
+from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist.adaptive import AdaptiveNeighborList
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
@@ -72,6 +71,7 @@ from kups.potential.common.graph import (
 from kups.potential.common.pair import PairBatch, PairEnergy, PairEnergySum, PairTerm
 
 
+@jax.disable_jit(False)
 def sum_chunks[Rows](
     consume: Callable[[Rows], Array],
     rows: Rows,
@@ -83,6 +83,7 @@ def sum_chunks[Rows](
 
     Only the reduced output crosses chunk boundaries; reverse mode recomputes
     each chunk instead of retaining its intermediates.
+    Keep the scan staged even when MCMC disables jit for patch composition.
 
     If ``active`` returns False for a whole chunk, its contribution is zero
     and the consumer is skipped. It must return a scalar boolean.
@@ -98,17 +99,15 @@ def sum_chunks[Rows](
     sample = jax.tree.map(
         lambda x: jax.ShapeDtypeStruct((chunk_size, *x.shape[1:]), x.dtype), rows
     )
-    with jax.disable_jit(False):
-        output = jax.eval_shape(consume, sample)
+    output = jax.eval_shape(consume, sample)
     initial = jnp.zeros(output.shape, output.dtype)
     if jax.tree.leaves(rows)[0].shape[0] == 0:
         return initial
 
     def evaluate(chunk: Rows) -> Array:
-        with jax.disable_jit(False):
-            if active is None:
-                return consume(chunk)
-            return jax.lax.cond(active(chunk), consume, lambda _: initial, chunk)
+        if active is None:
+            return consume(chunk)
+        return jax.lax.cond(active(chunk), consume, lambda _: initial, chunk)
 
     if jax.tree.leaves(rows)[0].shape[0] == chunk_size:
         return evaluate(rows)
@@ -117,12 +116,7 @@ def sum_chunks[Rows](
     def body(total: Array, chunk: Rows) -> tuple[Array, None]:
         return total + evaluate(chunk), None
 
-    # MCMC temporarily disables jit to preserve identities when composing
-    # patches. That also makes scan expand into a Python loop during tracing,
-    # duplicating the pair kernel for every chunk. Keep this traversal rolled
-    # regardless of the caller's identity-preserving context.
-    with jax.disable_jit(False):
-        total, _ = jax.lax.scan(body, initial, chunks)
+    total, _ = jax.lax.scan(body, initial, chunks)
     return total
 
 
@@ -169,7 +163,7 @@ def _local_difference[Params, Part: NeighborListPoints, Feat](
 ) -> FusedLocalInput[Params, Part, Feat]:
     assert isinstance(previous, FusedLocalInput)
     assert isinstance(proposed, FusedLocalInput)
-    return replace(proposed, queries=previous.queries + proposed.queries)
+    return bind(proposed, lambda x: x.queries).set(previous.queries + proposed.queries)
 
 
 FUSED_GEOMETRY = lens(lambda inp: inp.cloud, cls=FusedPotentialInput).nest(
@@ -627,9 +621,8 @@ class FusedPotentialCache[Feat]:
                 key_layout="auto" if on_cpu else "cells",
             )
             if on_gpu:
-                layout = replace(
-                    layout,
-                    chunk_size=_gpu_query_chunk_size(layout, cloud.particles.size),
+                layout = bind(layout, lambda x: x.chunk_size).set(
+                    _gpu_query_chunk_size(layout, cloud.particles.size)
                 )
         table = FusedNeighborEnergy(pair, layout).build_cell_list_cache(
             parameters, cloud

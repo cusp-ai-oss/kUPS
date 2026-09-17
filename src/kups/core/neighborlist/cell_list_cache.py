@@ -19,7 +19,7 @@ from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.data.index import SupportsSorting
-from kups.core.lens import Lens
+from kups.core.lens import Lens, bind
 from kups.core.neighborlist.cell_list import assign_cells, neighbor_cells
 from kups.core.neighborlist.common import (
     Candidates,
@@ -36,6 +36,7 @@ from kups.core.neighborlist.types import (
 from kups.core.patch import Accept, Patch
 from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_map
+from kups.core.utils.ops import where_broadcast_last
 
 
 @dataclass
@@ -258,11 +259,7 @@ def cell_rows[Data](
     frac, cell = assign_cells(
         frac, system.indices, active, bins, max_cells, systems.data.cell
     )
-    active = cell < bins.shape[0] * max_cells
-    inclusion = Index(
-        points.inclusion.keys,
-        jnp.where(active, points.inclusion.indices, points.inclusion.num_labels),
-    )
+    inclusion = points.inclusion.apply_mask(cell < bins.shape[0] * max_cells)
     return CellRows(frac, system, inclusion, points.exclusion, data, cell)
 
 
@@ -549,13 +546,26 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                 jnp.any(relocate), move_cells, lambda cells: cells, table.cells
             )
 
-            def rewrite(current: Array, new: Array) -> Array:
-                mask = ok.reshape(ok.shape + (1,) * (new.ndim - 1))
+            def write(current: Array, new: Array) -> Array:
                 return current.at[self.slots].set(
-                    jnp.where(mask, new, current[self.slots])
+                    where_broadcast_last(ok, new, current[self.slots])
                 )
 
-            rows: CellRows[Data] = jax.tree.map(rewrite, table.rows, self.new)
+            def rewrite[Key: SupportsSorting](
+                current: Array | Index[Key], new: Array | Index[Key]
+            ) -> Array | Index[Key]:
+                if isinstance(current, Index):
+                    assert isinstance(new, Index), "Expected matching Index leaves"
+                    # Retain the cache's static vocabulary and count bound.
+                    return bind(current, lambda x: x.indices).set(
+                        write(current.indices, new.indices_in(current.keys))
+                    )
+                assert isinstance(new, Array), "Expected matching array leaves"
+                return write(current, new)
+
+            rows: CellRows[Data] = jax.tree.map(
+                rewrite, table.rows, self.new, is_leaf=lambda x: isinstance(x, Index)
+            )
             return table._replace(rows=rows, cells=cells)
 
         table = jax.lax.cond(jnp.any(ok), apply, lambda table: table, table)

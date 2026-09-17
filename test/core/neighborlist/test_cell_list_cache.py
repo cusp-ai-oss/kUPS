@@ -13,7 +13,7 @@ import pytest
 from kups.core.capacity import CapacityError, FixedCapacity
 from kups.core.cell import Cell, TriclinicFrame
 from kups.core.data import Index, Table
-from kups.core.lens import lens
+from kups.core.lens import bind, lens
 from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_list_cache import (
     CellListCacheParameters,
@@ -22,7 +22,7 @@ from kups.core.neighborlist.cell_list_cache import (
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.result import as_result_function
-from kups.core.typing import ParticleId
+from kups.core.typing import Label, ParticleId
 
 from ._builders import make_lh, make_systems, systems_from_lvecs
 
@@ -258,6 +258,39 @@ class TestCachedCellList:
 
 
 class TestCellListCache:
+    @pytest.mark.parametrize("max_count", [None, 2])
+    def test_updates_align_index_vocabularies_and_preserve_bounds(
+        self, max_count: int | None
+    ):
+        particles = make_lh(
+            jnp.array([[1.0, 1.0, 1.0], [4.0, 1.0, 1.0]]), jnp.zeros(2, int)
+        )
+        particles = bind(particles, lambda p: p.data.inclusion.max_count).set(max_count)
+        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12, jnp.array([3.0]))
+        features = Index(
+            (Label("A"), Label("B")), jnp.array([0, 1]), max_count=max_count
+        )
+        table = build_cell_list_cache(
+            particles, systems, cutoffs, features, CellListCacheParameters()
+        )
+        query = particles.subset(Index(particles.keys, jnp.array([0])))
+        query = bind(query, lambda p: p.data.inclusion.max_count).set(1)
+        rows = table.bin_rows(
+            query, systems, Index((Label("B"),), jnp.array([0]), max_count=1)
+        )
+        patch = CellListCacheUpdatePatch(
+            table.slot_of_row[:1], rows.system, rows, lens(lambda t: t)
+        )
+        result = jax.jit(as_result_function(patch))(
+            table, systems.set_data(jnp.ones(1, bool))
+        )
+        result.raise_assertion()
+        updated = result.value.rows
+        assert updated.inclusion.max_count == max_count
+        assert updated.data.keys == features.keys
+        assert updated.data.max_count == max_count
+        npt.assert_array_equal(updated.data.indices[table.slot_of_row], [1, 1])
+
     @pytest.mark.parametrize(
         "counts,expected_layout",
         [((83,) + (52,) * 7, "slots"), ((142,) * 8, "cells")],

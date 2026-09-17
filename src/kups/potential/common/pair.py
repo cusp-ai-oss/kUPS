@@ -16,6 +16,7 @@ from kups.core.lens import View
 from kups.core.neighborlist.masks import ExclusionMask, InBoundsMask, InclusionMatchMask
 from kups.core.neighborlist.types import CandidateBatch, PipelineContext
 from kups.core.typing import SystemId
+from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field
 
 
@@ -293,7 +294,7 @@ class PairEnergy[Params, Part, Feat]:
         """Select this term's particle interface from a shared particle type."""
         return PairEnergy(
             self.kernel,
-            lambda p: self.features(view(p)),
+            pipe(view, self.features),
             self.cutoffs,
             self.inclusion,
             self.exclusion,
@@ -305,21 +306,12 @@ class PairEnergy[Params, Part, Feat]:
     ) -> PairEnergy[Outer, Part, Feat]:
         """Read this term's parameters from a shared parameter bundle."""
 
-        def kernel(
-            parameters: Outer,
-            left: Feat,
-            right: Feat,
-            rij: Array,
-            r2: Array,
-            system: Index[SystemId],
-            /,
-        ) -> Array:
-            return self.kernel(view(parameters), left, right, rij, r2, system)
-
         return PairEnergy(
-            kernel,
+            lambda parameters, left, right, rij, r2, system: self.kernel(
+                view(parameters), left, right, rij, r2, system
+            ),
             self.features,
-            lambda p: self.cutoffs(view(p)),
+            pipe(view, self.cutoffs),
             self.inclusion,
             self.exclusion,
         )
