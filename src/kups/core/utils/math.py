@@ -728,7 +728,9 @@ def next_higher_power(value: Array, base: Array | float = 2.0) -> Array:
     exponents = jnp.ceil(jnp.log(value) / log_base)
     result = jnp.power(base, exponents)
     # Linear growth for base <= 1
-    return jnp.where(base <= 1, value, result).astype(int)
+    rounded = jnp.where(base <= 1, value, result).astype(int)
+    # Device power/log rounding can put exact powers just below their request.
+    return jnp.maximum(value, rounded)
 
 
 if TYPE_CHECKING:
