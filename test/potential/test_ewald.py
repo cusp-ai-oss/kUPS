@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import jax
 import jax.numpy as jnp
@@ -657,7 +657,14 @@ class TestReciprocalReduction:
     """Uneven batches, bounded tiles, and the full-energy derivative of a cache."""
 
     @pytest.mark.parametrize("grid", [False, True])
-    def test_incremental_probe_with_subset_vocabulary(self, grid):
+    @pytest.mark.parametrize(
+        "previous_systems", ["original", "relabelled", "negative_inactive"]
+    )
+    def test_incremental_probe_with_subset_vocabulary(
+        self,
+        grid: bool,
+        previous_systems: Literal["original", "relabelled", "negative_inactive"],
+    ):
         proposal = self._proposal(self._input(grid=grid))
         previous = proposal.changes_from_prev
         assert previous is not None
@@ -666,8 +673,19 @@ class TestReciprocalReduction:
             tuple(keys[i] for i in (0, 2, 3, 5, 18)),
             jnp.array([0, 1, 2, 3, 4, 5, 5]),
         )
+        old = previous.data
+        if previous_systems != "original":
+            # Preserve inactive rows while changing the system vocabulary.
+            system = old.system.apply_mask(old.system.indices >= 0).update_labels(
+                (SystemId(-1), *old.system.keys)
+            )
+            if previous_systems == "negative_inactive":
+                system = bind(system, lambda idx: idx.indices).set(
+                    jnp.where(old.system.indices >= 0, system.indices, -1)
+                )
+            old = bind(old, lambda p: p.system).set(system)
         proposal = bind(proposal, lambda p: p.changes_from_prev).set(
-            WithIndices(subset, previous.data)
+            WithIndices(subset, old)
         )
         actual, _ = structure_factor(proposal)
         expected, _ = structure_factor(

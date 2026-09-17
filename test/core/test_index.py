@@ -126,11 +126,12 @@ class TestIndicesIn:
         sa = Index(("A", "B"), jnp.array([0, 2, 1]))
         npt.assert_array_equal(sa.indices_in(("B", "A")), [1, 2, 0])
 
-    def test_allow_missing_maps_missing_to_zero(self):
-        idx = Index.new(["A", "B", "C"])
+    def test_allow_missing_preserves_inactive_rows(self):
+        idx = Index(("A", "B", "C"), jnp.array([0, 1, 2, 3]))
         result = idx.indices_in(("A", "C"), allow_missing=True)
-        # A->0, C->1, B is missing -> argmax fallback to 0
-        npt.assert_array_equal(result, [0, 0, 1])
+        npt.assert_array_equal(result, [0, 2, 1, 2])
+        remapped = idx.update_labels(("A", "C"), allow_missing=True)
+        npt.assert_array_equal(remapped.valid_mask, [True, False, True, False])
 
     def test_allow_missing_empty_tokens(self):
         idx = Index.new(["A", "B"])
