@@ -143,6 +143,60 @@ def _max_ulp_error(out: ArrayLike, exact: np.ndarray) -> float:
 
 
 class TestSegmentSum:
+    @pytest.mark.parametrize(
+        ("dtype", "addends"), [(jnp.float16, 4), (jnp.bfloat16, 32)]
+    )
+    def test_single_segment_retains_native_half_precision_accumulation(
+        self, dtype: DTypeLike, addends: int
+    ) -> None:
+        data = jnp.asarray([4096.0, *[1.0] * addends, -4096.0], dtype)
+        ids = jnp.zeros(len(data), jnp.int32)
+        actual = jax.jit(partial(segment_sum, num_segments=1))(data, ids)
+        assert actual.dtype == dtype
+        npt.assert_array_equal(actual, [addends])
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_single_segment_masks_values_and_derivatives(self, mode: str) -> None:
+        ids = jnp.array([0, -1, 1, 0, -7, 99, 0], jnp.int32)
+        valid = jnp.ones(7, dtype=bool) if mode == "clip" else ids == 0
+        data = jnp.arange(14, dtype=jnp.float32).reshape(7, 2)
+        if mode == "drop":
+            data = jnp.where(valid[:, None], data, jnp.nan)
+        summed = partial(segment_sum, num_segments=1, mode=mode)
+        expected = np.asarray(data)[np.asarray(valid)].sum(0, keepdims=True)
+        npt.assert_array_equal(jax.jit(summed)(data, ids), expected)
+        npt.assert_array_equal(
+            jax.jvp(lambda x: summed(x, ids), (data,), (jnp.ones_like(data),))[1],
+            jnp.full((1, 2), valid.sum()),
+        )
+
+        def loss(x: Array) -> Array:
+            return jnp.sum(summed(x, ids) ** 2)
+
+        npt.assert_array_equal(
+            jax.jit(jax.grad(loss))(data),
+            jnp.where(valid[:, None], 2 * expected, 0),
+        )
+        npt.assert_array_equal(
+            jax.jit(_hvp(loss, jnp.ones_like(data)))(data),
+            jnp.broadcast_to(jnp.where(valid, 2 * valid.sum(), 0)[:, None], data.shape),
+        )
+        mapped_ids = jnp.stack([ids, jnp.ones_like(ids)])
+        actual = jax.jit(jax.vmap(summed, in_axes=(None, 0)))(data, mapped_ids)
+        npt.assert_array_equal(actual[0], expected)
+        npt.assert_array_equal(actual[1], expected if mode == "clip" else 0)
+
+    @pytest.mark.parametrize("dtype", [jnp.int32, jnp.float32, jnp.complex64])
+    @pytest.mark.parametrize("n", [0, 5])
+    def test_single_segment_keeps_shape_and_dtype(
+        self, dtype: DTypeLike, n: int
+    ) -> None:
+        data = jnp.arange(n * 6).reshape(n, 2, 3).astype(dtype)
+        ids = jnp.zeros(n, jnp.int32)
+        actual = jax.jit(partial(segment_sum, num_segments=1))(data, ids)
+        assert actual.dtype == dtype
+        npt.assert_array_equal(actual, np.asarray(data).sum(0, keepdims=True))
+
     @pytest.mark.parametrize("features", [(), (3,), (2, 2)])
     def test_matches_float64_reference(self, features: tuple[int, ...]) -> None:
         """Rounds the float64 sum once, identically eager and under `jit`."""
@@ -190,9 +244,9 @@ class TestSegmentSum:
         """A cancelling spike leaves the addends that `data`'s own dtype rounds away."""
         data = jnp.asarray([spike, *[1.0] * addends, -spike], dtype)
         ids = jnp.zeros(addends + 2, jnp.int32)
-        out = segment_sum(data, ids, 1)
+        out = segment_sum(data, ids, 2)
         assert out.dtype == dtype
-        npt.assert_array_equal(out, jnp.asarray([addends], dtype))
+        npt.assert_array_equal(out, jnp.asarray([addends, 0], dtype))
         # Accumulating in `dtype` rounds the addends away against the spike; how much
         # of them survives is a backend detail, but none of it is the exact sum.
         assert np.asarray(jax.ops.segment_sum(data, ids, 1))[0] != addends
@@ -397,13 +451,21 @@ class TestSegmentSum:
             jax.config.update("jax_enable_x64", False)
         assert "i64" not in jaxpr
 
-    def test_lowering_scatters_in_the_wide_accumulator(self) -> None:
-        """The emitted scatter runs in f64 even though x64 is off."""
+    @pytest.mark.parametrize(("segments", "operation"), [(1, "reduce"), (4, "scatter")])
+    def test_lowering_uses_native_sum_or_wide_scatter(
+        self, segments: int, operation: str
+    ) -> None:
+        """A single segment reduces in float32; multiple segments scatter in float64."""
         data = jnp.arange(1.0, 8.0, dtype=jnp.float32)
-        traced = jax.jit(partial(segment_sum, num_segments=4)).trace(data, POISON)
+        traced = jax.jit(partial(segment_sum, num_segments=segments)).trace(
+            data, POISON
+        )
         text = traced.lower(lowering_platforms=("cpu",)).as_text()
-        assert "scatter" in text
-        assert re.search(r"\bf64\b", text)
+        assert f"stablehlo.{operation}" in text
+        if segments == 1:
+            assert "stablehlo.scatter" not in text
+            assert "stablehlo.select" in text
+        assert bool(re.search(r"\bf64\b", text)) == (segments != 1)
 
     def test_rejects_bad_arguments(self) -> None:
         """Bad shapes or id dtypes, unsupported modes, and a fill value raise."""
@@ -493,7 +555,7 @@ class TestSegmentTake:
         npt.assert_array_equal(clipped(table, fill_value=jnp.float32(0.0)), clamped)
 
     def test_grad_is_the_wide_sum(self) -> None:
-        """Reverse mode is `segment_sum` bit for bit, keeping its accuracy."""
+        """The gather's adjoint retains its wide accumulator, even for one row."""
         data = jnp.asarray([1e8, *[1.0] * 8, -1e8], jnp.float32)
         ids = jnp.zeros(10, jnp.int32)
 
@@ -501,7 +563,6 @@ class TestSegmentTake:
             return jnp.sum(segment_take(table, ids) * data)
 
         grad = jax.grad(loss)(jnp.zeros(1, jnp.float32))
-        npt.assert_array_equal(grad, segment_sum(data, ids, 1))
         npt.assert_array_equal(grad, [8.0])
 
     @pytest.mark.parametrize("mode", MODES)
