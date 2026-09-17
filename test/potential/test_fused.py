@@ -16,7 +16,17 @@ from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, identity_lens, lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import (
+    EmptyNeighborList,
+    NeighborList,
+    SelectableNeighborList,
+    UniversalNeighborlistParameters,
+)
+from kups.core.neighborlist.adaptive import (
+    AdaptiveNeighborList,
+    NeighborListCandidate,
+    dense_cost,
+)
 from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_list_cache import (
     CellListCache,
@@ -357,11 +367,35 @@ class TestPotentialFusion:
             ("pair", TypeError, "Graph pair term 0 must be a PairEnergy.*got str"),
             ("cache_count", ValueError, "Fused cache feature structure"),
             ("cache_features", ValueError, "Fused cache feature structure"),
+            (
+                "topology",
+                TypeError,
+                "Pair fusion requires.*radius neighbor list.*EmptyNeighborList",
+            ),
+            (
+                "adaptive_topology",
+                TypeError,
+                "Pair fusion requires.*radius neighbor list.*EmptyNeighborList",
+            ),
+            (
+                "custom_topology",
+                TypeError,
+                "Pair fusion requires.*radius neighbor list.*CustomCellList",
+            ),
+            ("cutoff", ValueError, "Neighbor-list cutoffs must cover the pair cutoffs"),
         ],
     )
     def test_invalid_inputs_rejected_at_construction(
         self,
-        invalid: Literal["pair", "cache_count", "cache_features"],
+        invalid: Literal[
+            "pair",
+            "cache_count",
+            "cache_features",
+            "topology",
+            "adaptive_topology",
+            "custom_topology",
+            "cutoff",
+        ],
         error: type[Exception],
         message: str,
     ):
@@ -371,10 +405,35 @@ class TestPotentialFusion:
 
         state = _make_state(jax.random.key(33), (4,), (12.0,))
         params = _lj_params(1, 3.0)
+        neighbors: NeighborList[Literal[2]] = _neighborlist(params)
+        if invalid in ("topology", "adaptive_topology"):
+            neighbors = EmptyNeighborList(degree=2)
+            if invalid == "adaptive_topology":
+                neighbors = AdaptiveNeighborList(
+                    (NeighborListCandidate(neighbors, dense_cost),)
+                )
+        elif invalid == "custom_topology":
+
+            class CustomCellList(CellListNeighborList):
+                pass
+
+            base = _neighborlist(params)
+            neighbors = CustomCellList(
+                base.avg_candidates,
+                base.avg_edges,
+                base.cells,
+                base.avg_image_candidates,
+                base.cutoffs,
+            )
+            assert isinstance(neighbors, SelectableNeighborList)
+        elif invalid == "cutoff":
+            neighbors = _neighborlist(
+                dataclasses.replace(params, cutoff=params.cutoff * 0.5)
+            )
         potential = make_lennard_jones_from_state(
             identity_lens(_MiniState),
             parameters=params,
-            neighborlist_factory=lambda state, cutoffs: _neighborlist(params),
+            neighborlist_factory=lambda state, cutoffs: neighbors,
         )
         cache = FusedPotentialCache.create(
             PairEnergySum.from_term(_LJ_PAIR),
@@ -388,7 +447,7 @@ class TestPotentialFusion:
                 potential,
                 energy_fn=dataclasses.replace(potential.energy_fn, pair="invalid"),
             )
-        else:
+        elif invalid in ("cache_count", "cache_features"):
             features = () if invalid == "cache_count" else (cache.table.rows.frac,)
             cache = dataclasses.replace(
                 cache,
@@ -413,7 +472,10 @@ class TestPotentialFusion:
         cache = FusedPotentialCache.create(_LJ_PAIR, params, cloud)
         assert cache.table.rows.frac.shape[0] < 2 * state.particles.size
 
-    def test_nested_sum_and_remaining_terms_with_mixed_acceptance(self):
+    @pytest.mark.parametrize("neighbor_cutoff_scale", [1.0, 1.25])
+    def test_nested_sum_and_remaining_terms_with_mixed_acceptance(
+        self, neighbor_cutoff_scale: float
+    ):
         from kups.application.potential.classical.lennard_jones import (
             make_lennard_jones_from_state,
         )
@@ -431,7 +493,11 @@ class TestPotentialFusion:
             return make_lennard_jones_from_state(
                 identity_lens(_CachedState[tuple[Index[Label], ...]]),
                 parameters=parameters,
-                neighborlist_factory=lambda state, cutoffs: _neighborlist(parameters),
+                neighborlist_factory=lambda state, cutoffs: _neighborlist(
+                    dataclasses.replace(
+                        parameters, cutoff=parameters.cutoff * neighbor_cutoff_scale
+                    )
+                ),
             )
 
         first, second = make(params), make(other)

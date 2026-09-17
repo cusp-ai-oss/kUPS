@@ -26,6 +26,8 @@ from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, lens
 from kups.core.neighborlist.adaptive import AdaptiveNeighborList
+from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
+from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_list_cache import (
     CellListCache,
     CellListCacheParameters,
@@ -34,11 +36,14 @@ from kups.core.neighborlist.cell_list_cache import (
     build_cell_list_cache,
     cell_candidates,
 )
+from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.types import (
     CandidateBatch,
     IsNeighborListState,
     IsUniversalNeighborlistParams,
+    NeighborList,
     NeighborListPoints,
+    SelectableNeighborList,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -634,6 +639,29 @@ class FusedPotentialCache[Feat]:
         return FusedPotentialCache(table, energy, layout)
 
 
+def _check_pair_neighborlist(
+    neighbors: NeighborList[Literal[2]], cutoffs: Table[SystemId, Array]
+) -> None:
+    """Check the radius-graph semantics required when replacing a traversal."""
+    if type(neighbors) is AdaptiveNeighborList:
+        for candidate in neighbors.implementations:
+            _check_pair_neighborlist(candidate.neighborlist, cutoffs)
+        return
+    # Selector access alone does not guarantee a complete radius graph: custom
+    # implementations may filter edges or change their multiplicities.
+    if not isinstance(neighbors, SelectableNeighborList) or type(neighbors) not in (
+        AllDenseNearestNeighborList,
+        CellListNeighborList,
+        DenseNearestNeighborList,
+    ):
+        raise TypeError(
+            "Pair fusion requires a library radius neighbor list; "
+            f"got {type(neighbors).__name__}. Custom graph topology cannot be fused."
+        )
+    if not jnp.all(Table.broadcast_to(neighbors.cutoffs, cutoffs).data >= cutoffs.data):
+        raise ValueError("Neighbor-list cutoffs must cover the pair cutoffs for fusion")
+
+
 def fuse_pair_potentials[
     State: IsNeighborListState[IsUniversalNeighborlistParams],
     Part: NeighborListPoints,
@@ -654,6 +682,10 @@ def fuse_pair_potentials[
     Collects ``GraphPairEnergy`` terms recursively from summed potentials;
     each keeps its own parameters, cutoff and group masks. Other terms,
     including scaled exclusion corrections, retain their evaluators and caches.
+    Graphs must use the library's dense or cell-list radius neighbors (possibly
+    through adaptive dispatch), with cutoffs covering the pair term. Custom
+    topologies are rejected. Particle views and the supplied probe must preserve
+    the original terms' geometry, features and group-mask semantics.
 
     ``cache`` must select a ``FusedPotentialCache`` initialized with the same
     pair terms, in collection order, before creating ``state``. Its layout
@@ -682,6 +714,13 @@ def fuse_pair_potentials[
                     f"got {type(component.energy_fn.pair).__name__}"
                 )
             pair = cast(PairEnergy[object, Part, Feat], component.energy_fn.pair)
+            _check_pair_neighborlist(
+                composer.constructor.graph_constructor.neighborlist(state),
+                Table.broadcast_to(
+                    pair.cutoffs(composer.constructor.parameter_view(state)),
+                    systems(state),
+                ),
+            )
             terms.append(pair.with_parameters(itemgetter(len(terms))))
             parameters.append(composer.constructor.parameter_view)
         else:
