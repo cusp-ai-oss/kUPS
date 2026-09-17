@@ -1010,6 +1010,72 @@ class TestPersistentCellListCache:
     applying each composed patch (cache + table) and the move, the committed cache
     must equal a graph full recomputation of the committed particles."""
 
+    @pytest.mark.parametrize("key_layout", ["cells", "slots"])
+    def test_open_boundary_move_chain(self, key_layout: _KeyLayout):
+        # One two-particle system for each open face, with no molecular exclusions.
+        state = _make_state(jax.random.key(41), (2,) * 6, (10.0,) * 6, molecule_size=1)
+        positions = np.full((6, 2, 3), 5.0)
+        for system in range(6):
+            positions[system, :, system // 2] = (
+                [0.2, 1.2] if system % 2 == 0 else [9.8, 8.8]
+            )
+        state = _with_points(state, positions=jnp.array(positions.reshape(-1, 3)))
+        state = dataclasses.replace(
+            state,
+            systems=state.systems.set_data(
+                _System(Cell(state.systems.data.cell.frame, (False, False, False)))
+            ),
+        )
+        params = _lj_params(6, 3.0)
+        params = dataclasses.replace(params, sigma=params.sigma * 0.2)
+        dense = DenseNearestNeighborList(
+            FixedCapacity(12), FixedCapacity(12), FixedCapacity(12), params.cutoff
+        )
+
+        def full(current: _MiniState) -> jax.Array:
+            graph = HyperGraph(
+                current.particles,
+                current.systems,
+                dense(current.particles, current.systems),
+            )
+            return lennard_jones_energy(GraphPotentialInput(params, graph)).data.data
+
+        engine = FusedNeighborEnergy(
+            _LJ_PAIR,
+            dataclasses.replace(_PARAMS, key_layout=key_layout),
+            lens(lambda s: s.cell_table),
+        )
+        table = engine.build_cell_list_cache(
+            params, PointCloud(state.particles, state.systems)
+        )
+        state = _with_cache(state, full(state), table)
+        potential = _potential(
+            engine,
+            params,
+            _probe,
+            patch_idx_view=_patch_indices,
+            cache_lens=lens(lambda s: s.cache),
+        )
+        evaluate = jax.jit(as_result_function(potential))
+        rows = jnp.arange(0, 12, 2)
+        direction = (
+            jnp.repeat(jnp.eye(3), 2, axis=0) * jnp.tile(jnp.array([-1, 1]), 3)[:, None]
+        )
+        accept = state.systems.set_data(jnp.ones(6, bool))
+        for distance in (0.3, 0.2, -0.8):
+            move = _move(
+                state, rows, state.particles.data.positions[rows] + distance * direction
+            )
+            result = evaluate(state, move)
+            result.raise_assertion()
+            state = move(result.value.patch(state, accept), accept)
+            npt.assert_allclose(
+                state.cache.total.total_energies.data,
+                full(state),
+                rtol=1e-10,
+                atol=1e-12,
+            )
+
     @pytest.mark.parametrize("valid_target", [False, True])
     def test_padded_proposal_targets_ignore_active_payload(self, valid_target):
         state = _make_state(jax.random.key(31), (16,), (6.0,))

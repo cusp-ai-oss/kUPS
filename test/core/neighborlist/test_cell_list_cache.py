@@ -55,6 +55,28 @@ def _neighborlist(cache, cutoffs, layout, avg_edges):
 
 class TestCachedCellList:
     @pytest.mark.parametrize("cached", [False, True])
+    @pytest.mark.parametrize("periodic", [(False, False, False), (False, True, True)])
+    def test_open_boundaries_match_dense(self, cached, periodic):
+        # Include neighbors inside/outside both faces and entirely outside the box.
+        x = jnp.array([-21.0, -20.0, -0.5, 0.5, 9.5, 10.5, 20.0, 21.0])
+        points = make_lh(jnp.stack((x, x * 0, x * 0), -1), jnp.zeros(len(x), int))
+        systems, cutoffs = make_systems(
+            Cell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10), periodic),
+            jnp.array([2.0]),
+        )
+        layout = CellListCacheParameters.estimate(points, systems, cutoffs)
+        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
+        neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 8)
+        dense = DenseNearestNeighborList(
+            FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
+        )
+        actual = jax.jit(as_result_function(neighborlist))(points, systems)
+        expected = jax.jit(as_result_function(dense))(points, systems)
+        actual.raise_assertion()
+        expected.raise_assertion()
+        assert _edge_rows(actual.value, 8, 8) == _edge_rows(expected.value, 8, 8)
+
+    @pytest.mark.parametrize("cached", [False, True])
     def test_roundoff_at_periodic_boundary_preserves_neighbors(self, cached: bool):
         tiny = jnp.finfo(jnp.float64).eps / 4
         points = make_lh(
@@ -182,7 +204,14 @@ class TestCachedCellList:
             kwargs[mode] = points.subset(empty)
         elif mode == "empty_keys":
             kwargs["queries"] = queries
-        result = jax.jit(as_result_function(neighborlist))(points, systems, **kwargs)
+        # Empty queries must compile with the optimizations used in production.
+        result = jax.jit(
+            as_result_function(neighborlist),
+            compiler_options={
+                "xla_backend_optimization_level": 3,
+                "xla_llvm_disable_expensive_passes": False,
+            },
+        )(points, systems, **kwargs)
         result.raise_assertion()
         assert not _edge_rows(result.value, points.size, queries.size)
 

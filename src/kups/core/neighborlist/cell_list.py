@@ -47,10 +47,10 @@ from kups.core.utils.jax import dataclass, field, jit
 def cell_hash(coordinate: Array, num_cells: Array) -> Array:
     """Hash folded fractional coordinates into row-major cell bins.
 
-    Boundary values are clamped into the valid bin range for each axis.
+    Coordinates outside nonperiodic faces are assigned to the boundary bins.
 
     Args:
-        coordinate: Fractional coordinates in ``[0, 1)``, ``(..., dim)``.
+        coordinate: Fractional coordinates, folded on periodic axes, ``(..., dim)``.
         num_cells: Per-axis bin counts broadcastable to ``coordinate``.
 
     Returns:
@@ -82,12 +82,14 @@ def assign_cells(
 
     ``max_cells`` is the allocated cell capacity per system, which may exceed
     its bin count. Inactive rows use the sentinel ``len(bins) * max_cells``.
+    Open-boundary outliers share the edge bins; their unfolded coordinates
+    remain available for exact distance filtering.
     """
     active = active & (system >= 0) & (system < bins.shape[0])
     system = jnp.where(active, system, 0)
-    frac, in_cell = cell.fold(jnp.where(active[:, None], positions, 0.0))
+    frac, _ = cell.fold(jnp.where(active[:, None], positions, 0.0))
     ids = cell_hash(frac, bins[system]) + system * max_cells
-    return frac, jnp.where(active & in_cell, ids, bins.shape[0] * max_cells)
+    return frac, jnp.where(active, ids, bins.shape[0] * max_cells)
 
 
 def neighbor_cells(
@@ -167,7 +169,7 @@ def _cell_list_subselect(
     max_num_candidates: Capacity[int],
     promise_unique_cells: bool = False,
 ) -> Candidates:
-    if keys.size == 0:
+    if keys.size == 0 or queries.size == 0:
         return Candidates(
             Index(keys.keys, jnp.zeros(0, int), _cls=keys.cls),
             Index(queries.keys, jnp.zeros(0, int), _cls=queries.cls),
@@ -294,9 +296,8 @@ class CellListNeighborList:
     When to use:
         - When cutoff/box_size << 1 (cutoff much smaller than box)
         - Typically cutoff/box < 0.3 for good efficiency
-        - On non-periodic axes fractional positions must lie inside ``[0, 1)``
-          (the caller's invariant; out-of-range positions are
-          silently routed to the OOB bin)
+        - Nonperiodic outliers remain searchable in boundary bins; many outliers
+          can increase the candidate count.
 
     Example:
         ```python
