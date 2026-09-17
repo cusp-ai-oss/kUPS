@@ -78,6 +78,7 @@ from kups.potential.common.fused import (
     FusedLocalInput,
     FusedNeighborEnergy,
     FusedPotentialCache,
+    _gpu_query_chunk_size,
     fuse_pair_potentials,
     make_fused_potential,
     sum_chunks,
@@ -463,6 +464,37 @@ class TestPotentialFusion:
                 lambda s: s.systems,
                 lens(lambda _: cache),
             )
+
+    @pytest.mark.parametrize(
+        "particle_count,layout,expected",
+        [
+            pytest.param(0, _PARAMS, 1, id="empty"),
+            pytest.param(14, _PARAMS, 8, id="particle-count"),
+            pytest.param(4096, _PARAMS, 512, id="query-cap"),
+            pytest.param(
+                4096,
+                dataclasses.replace(_PARAMS, cell_capacity=1024),
+                16,
+                id="dense-cells",
+            ),
+            pytest.param(
+                4096,
+                dataclasses.replace(_PARAMS, cell_capacity=1024, key_chunk_size=16),
+                512,
+                id="key-blocks",
+            ),
+            pytest.param(
+                4096,
+                dataclasses.replace(_PARAMS, max_images_per_pair=27),
+                32,
+                id="periodic-images",
+            ),
+        ],
+    )
+    def test_gpu_query_chunk_size(
+        self, particle_count: int, layout: CellListCacheParameters, expected: int
+    ):
+        assert _gpu_query_chunk_size(layout, particle_count) == expected
 
     def test_automatic_gpu_layout_limits_padding(self, monkeypatch):
         state = _make_state(jax.random.key(32), (8, 6), (12.0, 10.0))

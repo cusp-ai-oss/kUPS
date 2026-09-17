@@ -1,14 +1,9 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared pair evaluation using the neighbor pipeline and standard sum composers.
+"""Pair evaluation sharing neighbor selection across energy terms.
 
-Add ``PairEnergy`` terms before constructing ``FusedNeighborEnergy``. The sum
-shares one neighbor search and geometry pass, while each term retains its own
-cutoff and inclusion/exclusion policy. Full evaluations compact an adaptive
-graph before differentiation. Local proposals consume a persistent cell table
-in chunks. Both retain periodic images and use ``PotentialFromEnergy`` for
-differentiation, compensated caching, and patches.
+Full evaluations use adaptive graphs; local updates reuse cached cell lists.
 """
 
 from __future__ import annotations
@@ -585,6 +580,29 @@ def make_fused_potential[
     )
 
 
+def _gpu_query_chunk_size(layout: CellListCacheParameters, particle_count: int) -> int:
+    """Amortize GPU kernel launches while limiting padding and temporary storage.
+
+    Larger query batches reduce launches in the chunked pair traversal. Cap
+    batches at 512 queries and target at most 2**19 candidate pairs including
+    periodic images. Dense cells and larger image windows thus use fewer queries.
+    These are workspace heuristics, not hardware limits. Round down to a power
+    of two within the particle count to avoid padding small systems excessively,
+    with a minimum chunk size of one even for empty inputs.
+    """
+    candidate_images_per_query = (
+        layout.stencil_width
+        * min(layout.cell_capacity, layout.key_chunk_size or layout.cell_capacity)
+        * layout.max_images_per_pair
+    )
+    limit = min(
+        512,
+        max(1, particle_count),
+        max(1, 524_288 // candidate_images_per_query),
+    )
+    return 1 << (limit.bit_length() - 1)
+
+
 @dataclass
 class FusedPotentialCache[Feat]:
     """Persistent neighbor table, combined energy, and the layout used to build it."""
@@ -613,21 +631,10 @@ class FusedPotentialCache[Feat]:
                 key_layout="auto" if on_cpu else "cells",
             )
             if on_gpu:
-                # Increase work per GPU launch within the candidate-image budget.
-                width = (
-                    layout.stencil_width
-                    * min(
-                        layout.cell_capacity,
-                        layout.key_chunk_size or layout.cell_capacity,
-                    )
-                    * layout.max_images_per_pair
+                layout = replace(
+                    layout,
+                    chunk_size=_gpu_query_chunk_size(layout, cloud.particles.size),
                 )
-                limit = min(
-                    512,
-                    max(1, cloud.particles.size),
-                    max(1, 524_288 // width),
-                )
-                layout = replace(layout, chunk_size=1 << (limit.bit_length() - 1))
         table = FusedNeighborEnergy(pair, layout).build_cell_list_cache(
             parameters, cloud
         )

@@ -1,11 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Composable pair energies, independent of neighbor traversal.
-
-Add terms before constructing an evaluator to share candidates, feature
-gathers, geometry, and reduction. Each term keeps its own cutoff and masks.
-"""
+"""Composable pair energies with independent features, cutoffs, and masks."""
 
 from __future__ import annotations
 

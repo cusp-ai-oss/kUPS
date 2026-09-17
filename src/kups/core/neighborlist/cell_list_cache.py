@@ -1,29 +1,9 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persistent occupancy storage for the cell-list algorithm.
+"""Persistent cell occupants shared by neighbor lists and fused pair evaluation.
 
-A [`CellListCache`][kups.core.neighborlist.cell_list_cache.CellListCache] bins the active
-particles of every system into spatial cells sized from the cutoff and
-stores, per cell, the slots of its occupants together with a deduplicated
-stencil of neighbor cells. The candidate neighbors of any point are the
-occupants of its stencil cells, read as a fixed-width lane array
-(``stencil_width * cell_capacity``). Fused potentials consume these chunks
-directly. ``CellListNeighborList(cache=...)`` uses these occupants through its
-normal selector, mask, compaction, and postprocessing pipeline. Both lookup paths
-share the binning and neighboring-cell functions in ``cell_list``.
-
-Slots are sorted by ``(system, cell)`` at build time so consecutive slots are
-spatially local, and a
-[`CellListCacheUpdatePatch`][kups.core.neighborlist.cell_list_cache.CellListCacheUpdatePatch]
-moves the slots of accepted Monte Carlo proposals between touched cells, so a
-table persists across a simulation instead of being rebuilt per step. Slot
-storage is not re-sorted as particles move.
-
-Candidate chunks include all periodic images within the cutoff, using the same
-image windows and exclusion rules as the neighbor lists. Static capacities are
-guarded by ``runtime_assert`` rather than the adaptive
-[`Capacity`][kups.core.capacity.Capacity] machinery.
+Reuses cell-list binning and updates occupants after accepted particle moves.
 """
 
 from __future__ import annotations
