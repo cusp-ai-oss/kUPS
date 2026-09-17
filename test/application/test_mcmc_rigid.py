@@ -540,6 +540,53 @@ def _batched_config(n_hosts: int, init_adsorbates: tuple[int, ...]) -> Config:
     return base.model_copy(update={"hosts": tuple(host for _ in range(n_hosts))})
 
 
+class TestRequiredLJTypes:
+    def test_keeps_empty_guest_templates_and_drops_unused_types(self):
+        config = _config(exchange_prob=0.5, init_adsorbates=(0,))
+        config = config.model_copy(
+            update={
+                "lj": config.lj.model_copy(
+                    update={
+                        "parameters": {**config.lj.parameters, "unused": (100.0, 200.0)}
+                    }
+                )
+            }
+        )
+        state = init_state(jax.random.key(91), config)
+        parameters = state.lj_parameters.data
+        assert set(parameters.labels) == {"X1", "C_co2", "O_co2"}
+        assert int(state.groups.num_occupied) == 0
+        reference = GlobalTailCorrectedLennardJonesParameters.from_dict(
+            config.lj.cutoff, config.lj.parameters, config.lj.mixing_rule
+        )
+        indices = jnp.array(
+            [reference.labels.index(label) for label in parameters.labels]
+        )
+        for actual, full in (
+            (parameters.sigma, reference.sigma),
+            (parameters.epsilon, reference.epsilon),
+        ):
+            npt.assert_array_equal(actual, full[indices[:, None], indices])
+
+    def test_missing_guest_parameters_fail_at_initialization(self):
+        config = _config(exchange_prob=0.5, init_adsorbates=(0,))
+        config = config.model_copy(
+            update={
+                "lj": config.lj.model_copy(
+                    update={
+                        "parameters": {
+                            label: value
+                            for label, value in config.lj.parameters.items()
+                            if label != "O_co2"
+                        }
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="Missing Lennard-Jones parameters.*O_co2"):
+            init_state(jax.random.key(92), config)
+
+
 class TestInitStateBlockingSpheres:
     """Sizing the blocking-sphere neighbor list must cover sphere-free systems too."""
 
