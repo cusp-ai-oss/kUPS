@@ -358,12 +358,11 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             for q in queries
         ]
         rows = CellRows.concatenate(*parts)
-        weights = jnp.concatenate(
-            [
-                jnp.full(q.size, -1 if len(queries) == 2 and i == 0 else 1, jnp.int8)
-                for i, q in enumerate(queries)
-            ]
+        # The same phase labels determine energy signs and exclude old-new pairs.
+        phase = jnp.concatenate(
+            [jnp.full(q.size, i, dtype=int) for i, q in enumerate(queries)]
         )
+        weights = jnp.where((len(queries) == 2) & (phase == 0), -1, 1)
         removed_rows = inp.removed.indices_in(inp.cloud.particles.keys)
         slots = table.slot_of_row.at[removed_rows].get(
             mode="fill",
@@ -382,9 +381,6 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             else max(q.size for q in queries),
         )
         # Keep old and new query pairs separate: no old-new cross interactions.
-        phase = jnp.concatenate(
-            [jnp.full(q.size, i, dtype=int) for i, q in enumerate(queries)]
-        )
         n_systems = inp.cloud.systems.size
         system = Index(
             tuple(range(len(queries) * n_systems)),

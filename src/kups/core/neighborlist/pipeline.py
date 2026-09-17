@@ -11,14 +11,23 @@ a ``Pipeline`` internally inside their ``__call__``.
 
 from __future__ import annotations
 
-from typing import overload
+from typing import Literal, overload
 
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.data import Index, Table
 from kups.core.lens import bind
+from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.masks import (
+    DistanceCutoffMask,
+    ExclusionMask,
+    InBoundsMask,
+    InclusionMatchMask,
+    QueriedKeysDedupMask,
+)
+from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.types import (
     CandidateBatch,
     CandidateSelector,
@@ -28,6 +37,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
     Postprocessor,
+    SelectableNeighborList,
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field
@@ -86,6 +96,41 @@ class Pipeline[D: int]:
         for postprocessor in self.postprocessors:
             edges = postprocessor(edges, ctx)
         return edges
+
+
+def build_radius_graph(
+    neighborlist: SelectableNeighborList[Literal[2]],
+    keys: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    *,
+    queries: Table[ParticleId, NeighborListPoints] | None,
+    queried_keys: Index[ParticleId] | None,
+) -> Edges[Literal[2]]:
+    """Share cutoff, group masks and update symmetry across radius selectors."""
+    assert queries is None or queried_keys is None, (
+        "Neighbor-list calls cannot combine queries with queried_keys. "
+        "Use queried_keys for self-graph updates, or queries for bipartite queries."
+    )
+    query_size = (
+        queried_keys.size
+        if queried_keys is not None
+        else (queries.size if queries is not None else keys.size)
+    )
+    pipeline = Pipeline[Literal[2]](
+        selector=neighborlist.selector(query_size, systems),
+        masks=(
+            InBoundsMask(),
+            InclusionMatchMask(),
+            QueriedKeysDedupMask(),
+            DistanceCutoffMask(neighborlist.cutoffs),
+            ExclusionMask(),
+        ),
+        compactor=ReduceCompactor(neighborlist.avg_edges.multiply(query_size)),
+        postprocessors=(MirrorPairEdges(),),
+    )
+    if queries is not None:
+        return pipeline(keys, systems, queries=queries)
+    return pipeline(keys, systems, queried_keys=queried_keys)
 
 
 def select_candidates[D: int](

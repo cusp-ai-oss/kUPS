@@ -3,21 +3,30 @@
 
 """Unit tests for the ``Pipeline`` runner and ``_prepare``."""
 
-from typing import Literal
+from typing import Callable, Literal
 
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
+from jax import Array
 
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
+from kups.core.data.table import Table
+from kups.core.neighborlist import (
+    AllDenseNearestNeighborList,
+    CellListNeighborList,
+    DenseNearestNeighborList,
+    NeighborList,
+)
 from kups.core.neighborlist.compact import MaskOnlyCompactor, ReduceCompactor
 from kups.core.neighborlist.masks import DistanceCutoffMask
 from kups.core.neighborlist.pipeline import Pipeline, _prepare
 from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.refine import PrecomputedEdgesSelector
+from kups.core.typing import SystemId
 
 from ._builders import make_edges, make_lh, make_systems, systems_from_lvecs
 
@@ -53,6 +62,35 @@ class TestPrepare:
 
 
 class TestPipelineComposition:
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda cutoffs: DenseNearestNeighborList(
+                FixedCapacity(16), FixedCapacity(16), FixedCapacity(16), cutoffs
+            ),
+            lambda cutoffs: CellListNeighborList(
+                FixedCapacity(16),
+                FixedCapacity(16),
+                FixedCapacity(256),
+                FixedCapacity(16),
+                cutoffs,
+            ),
+            lambda cutoffs: AllDenseNearestNeighborList(
+                FixedCapacity(16), FixedCapacity(16), cutoffs
+            ),
+        ],
+        ids=["dense", "cells", "all_dense"],
+    )
+    def test_radius_neighbors_reject_conflicting_queries(
+        self, factory: Callable[[Table[SystemId, Array]], NeighborList[Literal[2]]]
+    ):
+        points = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 10, jnp.array([1.5]))
+        with pytest.raises(
+            AssertionError, match="cannot combine queries with queried_keys"
+        ):
+            factory(cutoffs)(points, systems, queries=points, queried_keys=points.index)
+
     def test_distance_only_pipeline(self):
         # Candidates (0,1) and (0,2); only the close pair survives cutoff 1.5.
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])

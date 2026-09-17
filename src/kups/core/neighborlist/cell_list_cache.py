@@ -491,7 +491,8 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
 
     Attributes:
         slots: Slots of the changed rows, ``(k,)``.
-        system_idx: System of each changed row (for the accept gather).
+        system_idx: Original proposal system ids for acceptance; ``new.system``
+            maps inactive rows to zero for geometry and cannot replace these ids.
         new: Rows after the update, leaves ``(k, ...)``.
         lens: Lens to the cell table in the state.
     """

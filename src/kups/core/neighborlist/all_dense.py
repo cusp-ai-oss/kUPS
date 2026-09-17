@@ -19,17 +19,8 @@ from kups.core.neighborlist.common import (
     lift_query_candidates,
     replicate_for_images,
 )
-from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
-from kups.core.neighborlist.masks import (
-    DistanceCutoffMask,
-    ExclusionMask,
-    InBoundsMask,
-    InclusionMatchMask,
-    QueriedKeysDedupMask,
-)
-from kups.core.neighborlist.pipeline import Pipeline
-from kups.core.neighborlist.postprocess import MirrorPairEdges
+from kups.core.neighborlist.pipeline import build_radius_graph
 from kups.core.neighborlist.types import (
     CandidateBatch,
     IsNeighborListState,
@@ -183,24 +174,6 @@ class AllDenseNearestNeighborList:
                 "Performance may be degraded when using multiple systems. "
                 "Consider using DenseNearestNeighborList or CellListNeighborList instead."
             )
-        query_size = (
-            queried_keys.size
-            if queried_keys is not None
-            else (queries.size if queries is not None else keys.size)
+        return build_radius_graph(
+            self, keys, systems, queries=queries, queried_keys=queried_keys
         )
-        cutoffs = Table.broadcast_to(self.cutoffs, systems)
-        pipeline = Pipeline[Literal[2]](
-            selector=self.selector(query_size, systems),
-            masks=(
-                InBoundsMask(),
-                InclusionMatchMask(),
-                QueriedKeysDedupMask(),
-                DistanceCutoffMask(cutoffs=cutoffs),
-                ExclusionMask(),
-            ),
-            compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
-            postprocessors=(MirrorPairEdges(),),
-        )
-        if queries is not None:
-            return pipeline(keys, systems, queries=queries)
-        return pipeline(keys, systems, queried_keys=queried_keys)
