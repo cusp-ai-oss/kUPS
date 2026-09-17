@@ -304,10 +304,16 @@ def _changed_particle_rows(
         (charges.at[idx].get(mode="fill", fill_value=0), -previous.data.charges)
     )
     ns = batch_mask.num_labels
+    # Reciprocal inputs also use negative system ids for inactive particles.
+    previous_system = previous.data.system.apply_mask(previous.data.system.indices >= 0)
     system_ids = jnp.concatenate(
         (
             batch_mask.indices.at[idx].get(mode="fill", fill_value=ns),
-            jnp.where(valid, previous.data.system.indices, ns),
+            jnp.where(
+                valid,
+                previous_system.indices_in(batch_mask.keys, allow_missing=True),
+                ns,
+            ),
         )
     )
     return positions, charges, Index(batch_mask.keys, system_ids)

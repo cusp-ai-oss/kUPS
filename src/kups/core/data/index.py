@@ -426,7 +426,7 @@ class Index[Key: SupportsSorting]:
             return jnp.full_like(self.indices, fill_value=0)
         idx_map = jnp.asarray(
             np.fromiter(
-                (positions.get(key, 0) for key in self.keys),
+                (positions.get(key, len(tokens)) for key in self.keys),
                 dtype=int,
                 count=len(self.keys),
             )
