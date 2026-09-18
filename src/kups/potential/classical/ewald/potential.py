@@ -10,7 +10,7 @@ include every current particle.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import einops
 import jax
@@ -39,6 +39,8 @@ from kups.core.potential import (
 from kups.core.typing import (
     ExclusionId,
     HasCell,
+    HasCharges,
+    HasPositions,
     InclusionId,
     ParticleId,
     SystemId,
@@ -54,7 +56,10 @@ from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
 from kups.core.utils.segment import segment_sum
-from kups.potential.classical.coulomb import _pairwise_coulomb_energy
+from kups.potential.classical.coulomb import (
+    _pairwise_coulomb_energy,
+    coulomb_pair_energy,
+)
 from kups.potential.common.energy import (
     EnergyFunction,
     FullSumComposer,
@@ -73,6 +78,7 @@ from kups.potential.common.graph import (
     PointCloud,
 )
 from kups.potential.common.pair import PairEnergy
+from kups.potential.common.rigid_body_composition import RigidBodyComposition
 
 from .parameters import EwaldParameters, IsEwaldPointData, ReciprocalGridBound
 from .reciprocal import _structure_factor_full, _use_grid_response
@@ -188,6 +194,11 @@ class EwaldLongRangeInput[State]:
         )
 
 
+def _self_energy(charge_squares: Array, alpha: Array) -> Array:
+    """Self energy shared by particle sums and molecular coefficients."""
+    return -charge_squares * alpha / jnp.sqrt(jnp.pi) * TO_STANDARD_UNITS
+
+
 def ewald_self_interaction_energy(
     inp: EwaldSelfInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
@@ -200,17 +211,15 @@ def ewald_self_interaction_energy(
         Per-system self-interaction energies in eV and an identity patch.
     """
     sys_idx = inp.graph.systems.index
-    energies = (
-        -segment_sum(
+    energies = _self_energy(
+        segment_sum(
             inp.graph.particles.data.charges**2,
             inp.graph.particles.data.system.indices,
             inp.graph.batch_size,
             mode="drop",
-        )
-        * inp.parameters.alpha[sys_idx]
-        / jnp.sqrt(jnp.pi)
+        ),
+        inp.parameters.alpha[sys_idx],
     )
-    energies *= TO_STANDARD_UNITS
     return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
 
 
@@ -727,6 +736,8 @@ def make_ewald_self_interaction_potential[
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
     | None = None,
+    *,
+    composition: RigidBodyComposition[State, HasCharges] | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Recompute the inexpensive charge-only sum to avoid drift from cached deltas.
 
@@ -739,10 +750,25 @@ def make_ewald_self_interaction_potential[
         hessian_idx_view: View supplying Hessian row and column indices.
         patch_idx_view: Optional view supplying indices for output-cache updates.
         cache_lens: Optional lens to the compensated self-interaction output cache.
+        composition: Optional rigid-body input for an energy-only count sum.
 
     Returns:
         Self-interaction potential recomputed from all current charges.
     """
+    if composition is not None:
+        initial = composition.initial_state
+        particles, systems = particles_view(initial), systems_view(initial)
+        charge_squares = composition.sum_particles(
+            particles.data.charges**2, composition.templates.charges**2
+        )
+        alpha = parameter_view(initial).alpha[systems.index]
+        return composition.potential(
+            _self_energy(charge_squares, alpha[:, None]),
+            gradient_lens(PointCloud(particles, systems)),
+            hessian_lens,
+            cache_lens,
+            patch_idx_view,
+        )
     return PotentialFromEnergy(
         energy_fn=ewald_self_interaction_energy,
         composer=FullSumComposer(
@@ -832,6 +858,105 @@ def _ewald_probe[State, Ptch](
     return converted
 
 
+class IsChargedTemplate(HasPositions, HasCharges, Protocol):
+    """Properties needed to prepare intramolecular Coulomb energies."""
+
+
+def _molecular_exclusion_coefficients[State](
+    composition: RigidBodyComposition[State, IsChargedTemplate],
+    particles: IsEwaldPointData,
+    systems: Table[SystemId, HasCell[Periodic3D]],
+) -> Array | None:
+    """Prepare template energies when rigid moves preserve minimum-image distances."""
+    templates, motif = composition.templates, composition.template_motif
+    distance = jnp.linalg.norm(
+        templates.positions[:, None] - templates.positions[None, :], axis=-1
+    )
+    same_motif = motif.indices[:, None] == motif.indices[None, :]
+    diameter = jnp.where(same_motif, distance, 0).max(initial=0)
+    fixed_exclusions = (
+        composition.fixed_system.valid_mask & particles.exclusion.valid_mask
+    ).any()
+    half_height = float(systems.data.cell.perpendicular_lengths.min() / 2)
+    if float(diameter) >= half_height or bool(fixed_exclusions):
+        return None
+    mask = same_motif & ~jnp.eye(len(distance), dtype=bool)
+    pair_energy = jnp.where(
+        mask,
+        coulomb_pair_energy(
+            templates.charges[:, None], templates.charges, jnp.where(mask, distance, 1)
+        ),
+        0,
+    )
+    per_motif = motif.sum_over(pair_energy.sum(axis=1)).data / 2
+    return jnp.zeros((len(systems), 1 + motif.num_labels)).at[:, 1:].set(per_motif)
+
+
+def make_ewald_exclusion_correction_potential[
+    State,
+    Ptch: Patch[Any],
+    Gradients,
+    Hessians,
+](
+    particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
+    systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
+    probe: Probe[State, Ptch, IsParticleProbe[IsEwaldPointData]] | None,
+    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
+    hessian_lens: Lens[Gradients, Hessians],
+    hessian_idx_view: View[State, Hessians],
+    patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
+    cache_lens: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]]
+    | None = None,
+    *,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
+) -> Potential[State, Gradients, Hessians, Ptch]:
+    """Subtract intramolecular Coulomb interactions, with optional rigid templates.
+
+    The graph and template paths share the Coulomb pair kernel. Template energies
+    are linear in molecular counts. Large templates and excluded fixed particles
+    retain geometric evaluation to preserve minimum-image distances and topology.
+    The cache stores the unscaled Coulomb sum, as in the other Ewald components.
+    """
+    if composition is not None:
+        initial = composition.initial_state
+        particles, systems = particles_view(initial), systems_view(initial)
+        gradients = gradient_lens(PointCloud(particles, systems))
+        if jax.tree.leaves(gradients):
+            raise ValueError("Rigid-body composition requires energy-only evaluation")
+        coefficients = _molecular_exclusion_coefficients(
+            composition, particles.data, systems
+        )
+        if coefficients is not None:
+            prepared = composition.potential(
+                coefficients,
+                gradients,
+                hessian_lens,
+                cache_lens,
+                patch_idx_view,
+            )
+            return ScaledPotential(prepared, -1)
+    excl_view = pipe(
+        particles_view, functools.partial(_ewald_particle_table, excluded_pairs=True)
+    )
+    excl_probe = _ewald_probe(probe, excluded_pairs=True)
+    excl_rg = GraphConstructor(
+        particles=excl_view,
+        systems=systems_view,
+        neighborlist=lambda _: all_connected_neighborlist,
+        probe=excl_probe,
+    )
+    exclusion_correction = PotentialFromEnergy(
+        energy_fn=_pairwise_coulomb_energy,
+        composer=LocalSumComposer(GraphInputConstructor(excl_rg, lambda x: None)),
+        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+        hessian_lens=hessian_lens,
+        cache_lens=cache_lens,
+        hessian_idx_view=hessian_idx_view,
+        patch_idx_view=patch_idx_view,
+    )
+    return ScaledPotential(exclusion_correction, -1)
+
+
 def make_ewald_potential[
     State,
     Ptch: Patch[Any],
@@ -849,6 +974,8 @@ def make_ewald_potential[
     hessian_idx_view: View[State, Hessians],
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
     include_exclusion_mask: bool = False,
+    *,
+    composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
 ) -> EwaldPotential[State, Gradients, Hessians, Ptch]:
     """Combine real-space, reciprocal-space and self-interaction energies.
 
@@ -867,6 +994,8 @@ def make_ewald_potential[
         hessian_idx_view: View supplying Hessian row and column indices.
         patch_idx_view: Optional view supplying indices for output-cache updates.
         include_exclusion_mask: Whether to subtract molecular-exclusion pair energies.
+        composition: Optional rigid-body input for energy-only self and
+            exclusion terms. Large templates retain geometric exclusions.
 
     Returns:
         Combined Ewald potential with three components, or four with exclusions.
@@ -915,37 +1044,25 @@ def make_ewald_potential[
         cache_lens=cache_lens.focus(lambda x: x.self_interaction)
         if cache_lens
         else None,
+        composition=composition,
     )
 
     if not include_exclusion_mask:
         return EwaldPotential((sr_potential, lr_potential, self_potential))
 
-    excl_view = pipe(
-        particles_view, functools.partial(_ewald_particle_table, excluded_pairs=True)
-    )
-    excl_probe = _ewald_probe(probe, excluded_pairs=True)
-    excl_rg = GraphConstructor(
-        particles=excl_view,
-        systems=systems_view,
-        neighborlist=lambda _: all_connected_neighborlist,
-        probe=excl_probe,
-    )
-    exclusion_correction = PotentialFromEnergy(
-        energy_fn=_pairwise_coulomb_energy,
-        composer=LocalSumComposer(GraphInputConstructor(excl_rg, lambda x: None)),
-        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+    exclusion_correction = make_ewald_exclusion_correction_potential(
+        particles_view=particles_view,
+        systems_view=systems_view,
+        probe=probe,
+        gradient_lens=gradient_lens,
         hessian_lens=hessian_lens,
-        cache_lens=cache_lens.focus(lambda x: x.exclusion) if cache_lens else None,
         hessian_idx_view=hessian_idx_view,
         patch_idx_view=patch_idx_view,
+        cache_lens=cache_lens.focus(lambda x: x.exclusion) if cache_lens else None,
+        composition=composition,
     )
     return EwaldPotential(
-        (
-            sr_potential,
-            lr_potential,
-            self_potential,
-            ScaledPotential(exclusion_correction, -1),
-        )
+        (sr_potential, lr_potential, self_potential, exclusion_correction)
     )
 
 

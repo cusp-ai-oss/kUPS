@@ -60,6 +60,7 @@ from kups.core.potential import (
     EMPTY,
     PotentialAsPropagator,
     PotentialOut,
+    ScaledPotential,
     sum_potentials,
 )
 from kups.core.typing import (
@@ -599,6 +600,7 @@ class TestRigidCorrections:
         second = _co2().model_copy(
             update={
                 "symbols": ("C_alt", "O_alt", "O_alt"),
+                "charges": (0.5, -0.2, -0.2),
             }
         )
         config = config.model_copy(
@@ -634,7 +636,11 @@ class TestRigidCorrections:
                 )
             )
         )
-        return state
+        # A charged, interacting fixed host tests the constant and cross terms.
+        host = ~state.particles.data.group.valid_mask & state.particles.occupation
+        return bind(state, lambda s: s.particles.data.charges).apply(
+            lambda q: jnp.where(host, 0.3, q)
+        )
 
     @staticmethod
     def _potentials(state: MCMCState):
@@ -645,13 +651,24 @@ class TestRigidCorrections:
             state.motifs,
             sl.focus(lambda s: s.groups),
         )
-        actual = make_lennard_jones_tail_correction_from_state(
-            sl, composition=composition
+        prepared_ewald = make_ewald_from_state(
+            sl, _probe, include_exclusion_mask=True, composition=composition
         )
-        reference = make_lennard_jones_tail_correction_from_state(sl)
-        return (jax.jit(actual),), (jax.jit(reference),)
+        actual = (
+            make_lennard_jones_tail_correction_from_state(sl, composition=composition),
+            prepared_ewald.self_interaction,
+            ScaledPotential(prepared_ewald.exclusion_correction, -1),
+        )
+        ewald = make_ewald_from_state(sl, include_exclusion_mask=True)
+        reference = (
+            make_lennard_jones_tail_correction_from_state(sl),
+            ewald.self_interaction,
+            ScaledPotential(ewald.exclusion_correction, -1),
+        )
+        return tuple(map(jax.jit, actual)), tuple(map(jax.jit, reference))
 
-    def test_composition_rejects_derivatives(self, mixture: MCMCState):
+    @pytest.mark.parametrize("term", ["tail", "ewald"])
+    def test_composition_rejects_derivatives(self, mixture: MCMCState, term: str):
         """Fixed coefficients must never silently replace forces or cell derivatives."""
         from kups.application.potential.filter import POSITIONS_AND_CELL
 
@@ -662,10 +679,47 @@ class TestRigidCorrections:
             mixture.motifs,
             sl.focus(lambda s: s.groups),
         )
+        factory = (
+            make_lennard_jones_tail_correction_from_state
+            if term == "tail"
+            else make_ewald_from_state
+        )
         with pytest.raises(ValueError, match="energy-only"):
-            make_lennard_jones_tail_correction_from_state(
-                sl, gradient=POSITIONS_AND_CELL, composition=composition
+            factory(sl, gradient=POSITIONS_AND_CELL, composition=composition)
+
+    def test_fixed_excluded_molecules_retain_their_energy(self, mixture: MCMCState):
+        """A fixed molecule with exclusions needs the ordinary geometric term."""
+        sl = identity_lens(MCMCState)
+        composition = make_rigid_body_composition(
+            mixture,
+            PointCloud(mixture.particles, mixture.systems),
+            mixture.motifs,
+            sl.focus(lambda s: s.groups),
+        )
+
+        def fixed_counts(state, patch, old_input=False):
+            values = jnp.zeros(
+                (len(state.systems), 1 + state.motifs.data.motif.num_labels)
             )
+            return state.systems.set_data(values.at[:, 0].set(1))
+
+        composition = bind(composition, lambda c: (c.fixed_system, c.counts)).set(
+            (mixture.particles.data.system, fixed_counts)
+        )
+        actual = (
+            make_ewald_from_state(
+                sl, include_exclusion_mask=True, composition=composition
+            )
+            .exclusion_correction(mixture)
+            .data.total_energies.data
+        )
+        expected = (
+            make_ewald_from_state(sl, include_exclusion_mask=True)
+            .exclusion_correction(mixture)
+            .data.total_energies.data
+        )
+        assert jnp.any(jnp.abs(expected) > 0)
+        npt.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
 
     @pytest.mark.parametrize("move", ["translation", "rotation", "reinsertion"])
     def test_rigid_moves_leave_corrections_unchanged(
@@ -723,7 +777,61 @@ class TestRigidCorrections:
             state = update(state, accept)
             for out in outputs:
                 state = out.patch(state, accept)
+            npt.assert_allclose(
+                state.ewald_parameters.cache.self_interaction.total.total_energies.data,
+                reference[1](state).data.total_energies.data,
+                atol=1e-12,
+            )
+            npt.assert_allclose(
+                state.ewald_parameters.cache.exclusion.total.total_energies.data,
+                reference[2](state).data.total_energies.data,
+                atol=1e-12,
+            )
         assert int(state.groups.data.system.counts.data[0]) == 0
+
+    def test_large_template_retains_geometric_periodic_exclusions(self) -> None:
+        config = _config(exchange_prob=0.5, init_adsorbates=(1,))
+        template = _co2().model_copy(
+            update={"positions": ((0.0, 0.0, 0.0), (-5.0, 0.0, 0.0), (5.0, 0.0, 0.0))}
+        )
+        config = config.model_copy(update={"adsorbates": (template,)})
+        state = init_state(jax.random.key(120), config)
+        rows = jnp.flatnonzero(
+            state.particles.data.group.valid_mask & state.particles.occupation
+        )
+        positions = jnp.asarray(template.positions) + 7.0
+        state = (
+            bind(state, lambda s: s.particles.data.positions).at(rows).set(positions)
+        )
+        sl = identity_lens(MCMCState)
+        ewald = make_ewald_from_state(sl, include_exclusion_mask=True)
+        reference = jax.jit(
+            sum_potentials(
+                make_lennard_jones_from_state(sl),
+                make_lennard_jones_tail_correction_from_state(sl),
+                ewald,
+            )
+        )
+        candidate = jax.jit(_make_potential(state))
+        rotation = (
+            jnp.array([[1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 2.0**0.5]])
+            / 2.0**0.5
+        )
+        rotated = (
+            bind(state, lambda s: s.particles.data.positions)
+            .at(rows)
+            .set((positions - 7.0) @ rotation + 7.0)
+        )
+        old_exclusion = ewald.exclusion_correction(state).data.total_energies.data
+        new_exclusion = ewald.exclusion_correction(rotated).data.total_energies.data
+        assert float(jnp.abs(new_exclusion - old_exclusion).max()) > 0.1
+        for configuration in (state, rotated):
+            npt.assert_allclose(
+                candidate(configuration).data.total_energies.data,
+                reference(configuration).data.total_energies.data,
+                rtol=1e-12,
+                atol=1e-12,
+            )
 
 
 class TestInitStateBlockingSpheres:

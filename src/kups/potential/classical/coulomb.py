@@ -13,6 +13,7 @@ Potential: $U = \\frac{1}{4\\pi\\epsilon_0} \\sum_{i<j} \\frac{q_i q_j}{r_{ij}}$
 from typing import Any, Literal, Protocol
 
 import jax.numpy as jnp
+from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Vacuum
 from kups.core.constants import BOHR, HARTREE
@@ -67,13 +68,22 @@ type _PairwiseCoulombInput = GraphPotentialInput[
 ]
 
 
+def coulomb_pair_energy(charges_i: Array, charges_j: Array, distance: Array) -> Array:
+    """Coulomb energy in eV for pairs separated by ``distance`` in Å."""
+    return charges_i * charges_j / distance * TO_STANDARD_UNITS
+
+
 def _pairwise_coulomb_energy(
     inp: _PairwiseCoulombInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     edg = inp.graph.particles[inp.graph.edges.indices]
-    qij = edg.charges[:, 0] * edg.charges[:, 1]
     dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
-    energies = inp.graph.edge_batch_mask.sum_over(qij / dists) / 2 * TO_STANDARD_UNITS
+    energies = (
+        inp.graph.edge_batch_mask.sum_over(
+            coulomb_pair_energy(edg.charges[:, 0], edg.charges[:, 1], dists)
+        )
+        / 2
+    )
     assert len(energies) == inp.graph.batch_size
     return WithPatch(energies, IdPatch[Any]())
 
