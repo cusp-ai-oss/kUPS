@@ -45,6 +45,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.segment import bincount
 
 
 def num_cells(
@@ -190,7 +191,7 @@ def _get_candidate_images(
     images_per_sys = jnp.prod(images, axis=-1).astype(int)
 
     cand_sys_ids = keys.data.system.indices[candidates.key_idx.indices]
-    cand_per_sys = jnp.bincount(cand_sys_ids, length=systems.size)
+    cand_per_sys = bincount(cand_sys_ids, length=systems.size)
     total_cand = jnp.vdot(cand_per_sys, images_per_sys)
     out_size = out_size.generate_assertion(total_cand)
     num_cands = candidates.key_idx.size

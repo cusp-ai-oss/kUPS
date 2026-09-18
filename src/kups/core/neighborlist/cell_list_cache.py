@@ -37,6 +37,7 @@ from kups.core.patch import Accept, Patch
 from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_map
 from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.segment import bincount
 
 
 @dataclass
@@ -131,7 +132,7 @@ class CellListCacheParameters:
         max_cells = int(jnp.prod(bins, axis=-1).max())
         n_cells = systems.size * max_cells
         cell = cell_rows(particles, systems, bins, max_cells, ()).cell
-        max_occupancy = int(jnp.bincount(cell, length=n_cells + 1)[:n_cells].max())
+        max_occupancy = int(bincount(cell, length=n_cells + 1)[:n_cells].max())
         stencil_width = int(jnp.prod(jnp.minimum(bins, 3), axis=-1).max())
         cell_chunk_size = max(32, -(-max_occupancy // 32) * 32)
         occupancy = int((cell < n_cells).sum()) + occupancy_headroom

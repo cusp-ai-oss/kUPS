@@ -34,6 +34,16 @@ class TestOffsetsFromCounts:
 class TestSubselect:
     """Test cases for subselect."""
 
+    def test_single_segment_drops_padding(self) -> None:
+        result = subselect(
+            jnp.array([0]),
+            jnp.array([1, 0, 1, 0]),
+            output_buffer_size=LensCapacity(3, lens(lambda x: x)),
+            num_segments=1,
+        )
+        npt.assert_array_equal(result.gather_idxs, [1, 3, 4])
+        npt.assert_array_equal(result.scatter_idxs, [0, 0, 1])
+
     def test_basic(self):
         needle = jnp.array([1, 3])
         haystack = jnp.array([0, 1, 2, 1, 3, 2, 3])

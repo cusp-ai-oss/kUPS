@@ -25,6 +25,7 @@ from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
+from kups.core.utils.segment import bincount
 from kups.relaxation.config import TransformationConfig
 
 
@@ -130,7 +131,7 @@ def relax_state_from_ase(
     # extensive cell-virial gradient against the per-atom forces in the joint
     # optimiser. bincount over the system index gives one count per system.
     n_systems = p.data.system.num_labels
-    cell_factor = jnp.bincount(p.data.system.indices, length=n_systems).astype(
+    cell_factor = bincount(p.data.system.indices, length=n_systems).astype(
         p.data.positions.dtype
     )
     cell = bind(cell[None], lambda x: x.frame).apply(
