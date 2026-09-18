@@ -44,7 +44,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.functools import pipe
+from kups.core.utils.functools import constant, pipe
 from kups.core.utils.jax import (
     dataclass,
     field,
@@ -550,7 +550,7 @@ class EwaldLongRangeComposer[
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = field(
         static=True
     )
-    parameters: Lens[State, EwaldParameters] = field(static=True)
+    parameters: View[State, EwaldParameters] = field(static=True)
     cache: Lens[State, EwaldCache[Any, Any]] | None = field(static=True)
 
     def __call__(
@@ -673,7 +673,7 @@ def make_ewald_long_range_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
-    parameter_lens: Lens[State, EwaldParameters],
+    parameter_lens: View[State, EwaldParameters],
     cache_lens: Lens[State, EwaldCache[Gradients, Hessians]] | None,
     probe: Probe[State, Ptch, WithIndices[ParticleId, IsEwaldPointData]] | None = None,
     gradient_lens: Lens[
@@ -688,7 +688,7 @@ def make_ewald_long_range_potential[
     Args:
         particles_view: View of the particle table.
         systems_view: View of the system table and periodic cells.
-        parameter_lens: Lens to Ewald parameters.
+        parameter_lens: View of Ewald parameters.
         cache_lens: Optional lens to structure-factor and component-output caches.
         probe: Optional probe returning proposed particle updates.
         gradient_lens: Lens selecting point-cloud variables to differentiate.
@@ -991,8 +991,8 @@ def make_ewald_potential[
         hessian_idx_view: View supplying Hessian row and column indices.
         patch_idx_view: Optional view supplying indices for output-cache updates.
         include_exclusion_mask: Whether to subtract molecular-exclusion pair energies.
-        composition: Optional rigid-body input for energy-only self and
-            exclusion terms. Large templates retain geometric exclusions.
+        composition: Optional rigid-body input fixing cells and parameters for
+            energy-only evaluation. Large templates retain geometric exclusions.
 
     Returns:
         Combined Ewald potential with three components, or four with exclusions.
@@ -1019,10 +1019,17 @@ def make_ewald_potential[
         patch_idx_view=patch_idx_view,
         cache_lens=cache_lens.focus(lambda x: x.short_range) if cache_lens else None,
     )
+    lr_systems = systems_view
+    lr_parameters: View[State, EwaldParameters] = parameter_lens
+    if composition is not None:
+        initial = composition.initial_state
+        # State buffers may be donated before this potential is traced again.
+        lr_systems = constant(jax.tree.map(jnp.copy, systems_view(initial)))
+        lr_parameters = constant(jax.tree.map(jnp.copy, parameter_lens(initial)))
     lr_potential = make_ewald_long_range_potential(
         particles_view=atomic_view,
-        systems_view=systems_view,
-        parameter_lens=parameter_lens,
+        systems_view=lr_systems,
+        parameter_lens=lr_parameters,
         cache_lens=cache_lens,
         probe=atomic_particles_probe,
         gradient_lens=gradient_lens,

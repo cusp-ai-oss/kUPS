@@ -792,6 +792,94 @@ class TestRigidCorrections:
             )
         assert int(state.groups.data.system.counts.data[0]) == 0
 
+    @pytest.mark.parametrize("rescale", (False, True))
+    def test_prepared_reciprocal_exchange_and_rejection(
+        self, mixture: MCMCState, rescale: bool
+    ) -> None:
+        sl = identity_lens(MCMCState)
+        reference = jax.jit(make_ewald_from_state(sl).long_range)
+        initial_energy = reference(mixture).data.total_energies.data
+        if rescale:
+            # The generic potential must read changing cells and parameters;
+            # rigid preparation uses their values when the potential is built.
+            mixture = bind(mixture, lambda s: s.systems.data.cell).set(
+                PeriodicCell(
+                    TriclinicFrame.from_matrix(mixture.systems.data.cell.vectors * 1.1)
+                )
+            )
+            mixture = bind(mixture, lambda s: s.ewald_parameters.data.alpha).apply(
+                lambda alpha: alpha * 0.9
+            )
+            assert not jnp.allclose(
+                reference(mixture).data.total_energies.data, initial_energy
+            )
+        composition = make_rigid_body_composition(
+            mixture,
+            PointCloud(mixture.particles, mixture.systems),
+            mixture.motifs,
+            sl.focus(lambda s: s.groups),
+        )
+        candidate = jax.jit(
+            make_ewald_from_state(sl, _probe, composition=composition).long_range
+        )
+        state = PotentialAsPropagator(candidate)(jax.random.key(301), mixture)
+        for i in range(6):
+            key = jax.random.key(302 + i)
+            args = (key, state.motifs, state.particles, state.groups)
+            proposal = (
+                insert_random_motif(
+                    *args, state.systems.map_data(lambda s: s.cell), state.move_capacity
+                )
+                if i < 3
+                else delete_random_motif(*args, state.move_capacity)
+            )
+            update = MCMCStateUpdate.from_changes(key, state, proposal)
+            proposed = update(state, state.systems.set_data(jnp.array([True, True])))
+            result = candidate(state, update)
+            npt.assert_allclose(
+                result.data.total_energies.data,
+                reference(proposed).data.total_energies.data,
+                rtol=1e-12,
+                atol=1e-12,
+            )
+            accept = state.systems.set_data(jnp.array([True, i % 2 == 0]))
+            state = result.patch(update(state, accept), accept)
+            npt.assert_allclose(
+                state.ewald_parameters.cache.long_range.total.total_energies.data,
+                reference(state).data.total_energies.data,
+                rtol=1e-12,
+                atol=1e-12,
+            )
+
+    def test_prepared_reciprocal_recompiles_after_donation(
+        self, mixture: MCMCState
+    ) -> None:
+        state = jax.tree.map(jnp.copy, mixture)
+        sl = identity_lens(MCMCState)
+        composition = make_rigid_body_composition(
+            state,
+            PointCloud(state.particles, state.systems),
+            state.motifs,
+            sl.focus(lambda s: s.groups),
+        )
+        propagate = PotentialAsPropagator(
+            make_ewald_from_state(sl, _probe, composition=composition)
+        )
+
+        def evaluate(keys: jax.Array, current: MCMCState) -> MCMCState:
+            return propagate(keys[0], current)
+
+        compiled = jax.jit(evaluate, donate_argnums=(1,))
+        for size in (8, 3):
+            state = compiled(jax.random.split(jax.random.key(1), size), state)
+            jax.block_until_ready(state)
+        npt.assert_allclose(
+            state.ewald_parameters.cache.long_range.total.total_energies.data,
+            make_ewald_from_state(sl).long_range(state).data.total_energies.data,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
     def test_large_template_retains_geometric_periodic_exclusions(self) -> None:
         config = _config(exchange_prob=0.5, init_adsorbates=(1,))
         template = _co2().model_copy(
