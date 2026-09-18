@@ -34,6 +34,7 @@ from kups.application.mcmc.data import (
     mcmc_state_from_config,
 )
 from kups.application.mcmc.logging import make_mcmc_logged_data
+from kups.application.mcmc.rigid_body_composition import make_rigid_body_composition
 from kups.application.observables.stress import molecular_virial_stress_from_state
 from kups.application.potential.classical.blocking import (
     make_blocking_spheres_from_state,
@@ -303,9 +304,17 @@ def _make_potential(
 ) -> Potential[MCMCState, EmptyType, EmptyType, MCMCStateUpdate]:
     """Compose the physical terms before combining their pair evaluations."""
     state_lens = identity_lens(MCMCState)
+    composition = make_rigid_body_composition(
+        state,
+        PointCloud(state.particles, state.systems),
+        state.motifs,
+        state_lens.focus(lambda s: s.groups),
+    )
     potentials: list[Potential[MCMCState, EmptyType, EmptyType, MCMCStateUpdate]] = [
         make_lennard_jones_from_state(state_lens, _probe),
-        make_lennard_jones_tail_correction_from_state(state_lens),
+        make_lennard_jones_tail_correction_from_state(
+            state_lens, composition=composition
+        ),
     ]
     if state.is_charged:
         potentials.append(
