@@ -275,6 +275,10 @@ class HDF5StorageWriter[State, WriterConfig]:
     config: WriterConfig
     initial_state: State
     total_steps: int
+    compile_views: bool = field(default=True, kw_only=True)
+    """Compile views that compute observables from device state. Disable for samples
+    already on the host to avoid converting them back to device arrays at each log.
+    """
 
     # Private runtime state (set in __enter__)
     _file: h5py.File | None = field(init=False, default=None, repr=False)
@@ -298,7 +302,11 @@ class HDF5StorageWriter[State, WriterConfig]:
         """
         self._file = h5py.File(self.out_path, "w", libver="latest")
         self._group_writers = _init_group_writers(
-            self._file, self.config, self.initial_state, self.total_steps
+            self._file,
+            self.config,
+            self.initial_state,
+            self.total_steps,
+            compile_views=self.compile_views,
         )
         self._file.swmr_mode = True
         # Start background writer thread
@@ -369,6 +377,8 @@ def _init_group_writers[S, WC](
     config: WC,  # type: ignore
     state: S,
     total_steps: int,
+    *,
+    compile_views: bool = True,
 ) -> list[GroupWriters[S, Any]]:
     """Create one HDF5 group and its datasets per ``WriterGroupConfig`` leaf.
 
@@ -397,7 +407,7 @@ def _init_group_writers[S, WC](
     for path, group_config in confs_and_paths:
         group_name = "group" + "".join(map(str, path))
         group = hdf5_file.create_group(group_name)
-        view = jit(group_config.view)
+        view = jit(group_config.view) if compile_views else group_config.view
         leading_dims = group_config.logging_frequency.leading_shape(total_steps)
         writer = Hdf5ObjWriter.init(
             group, view(state), leading_dims, group_config.compression
@@ -442,9 +452,9 @@ class Hdf5ObjWriter[Storage]:
         datasets: list[h5py.Dataset] = []
         paths: list[str] = []
         for path, tensor in jax.tree.leaves_with_path(state):
-            if not isinstance(tensor, jax.Array):
+            if not isinstance(tensor, (jax.Array, np.ndarray)):
                 raise ValueError(
-                    f"All leaves of the storage must be jax arrays, got {type(tensor)} at path {path}"
+                    f"Storage leaves must be NumPy or JAX arrays, got {type(tensor)} at path {path}"
                 )
             name = "array" + "".join(map(str, path))
             dataset_shape = leading_dims + tensor.shape
@@ -486,7 +496,12 @@ class Hdf5ObjWriter[Storage]:
             start: Leading-axis index of the first state.
         """
         stop = start + len(states)
-        stacked = _stack_leaves(states)
+        if all(isinstance(x, np.ndarray) for x in jax.tree.leaves(states[0])):
+            # Samples already collected on the host must not make a GPU round trip.
+            leaves = [jax.tree.leaves(state) for state in states]
+            stacked = [np.stack(column) for column in zip(*leaves, strict=True)]
+        else:
+            stacked = _stack_leaves(states)
         for j, dataset in enumerate(self.datasets):
             dataset[start:stop] = np.asarray(stacked[j])
         if len(self.datasets) > 0:
