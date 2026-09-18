@@ -12,7 +12,6 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-import einops
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -249,10 +248,15 @@ def ewald_short_range_pair_kernel(
     """
     del rij
     dists = jnp.sqrt(r2)
-    # Direct erfc here triggers an XLA GPU compiler crash; use 1 - erf.
     alpha = parameters.alpha
     alpha_values = alpha.data[0] if alpha.size == 1 else alpha[system]
-    erfc_term = 1.0 - jax.lax.erf(alpha_values * dists)
+    argument = alpha_values * dists
+    # Direct erfc is faster on CPU but crashes the GPU fused kernel compiler.
+    erfc_term = (
+        jax.lax.erfc(argument)
+        if jax.default_backend() == "cpu"
+        else 1.0 - jax.lax.erf(argument)
+    )
     return TO_STANDARD_UNITS * charges_i * charges_j * erfc_term / dists
 
 
@@ -280,12 +284,7 @@ def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy
         Per-system reciprocal sums before ``TO_STANDARD_UNITS`` scaling,
         excluding the neutralizing-background correction.
     """
-    return einops.einsum(
-        prefactor(inp),
-        structure_factor,
-        structure_factor,
-        "batch_size kvecs, batch_size kvecs two, batch_size kvecs two -> batch_size",
-    )
+    return jnp.sum(prefactor(inp) * jnp.sum(structure_factor**2, axis=-1), axis=-1)
 
 
 def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
@@ -304,9 +303,7 @@ def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
     alpha = inp.parameters.alpha[sys_idx]
     shifts = inp.parameters.reciprocal_lattice_shifts[sys_idx]
     kv = inp.kvecs
-    k_squared = einops.einsum(
-        kv, kv, "batch_size kvecs dim, batch_size kvecs dim -> batch_size kvecs"
-    )
+    k_squared = jnp.sum(kv**2, axis=-1)
     mask = k_squared > 0
     mask &= k_squared <= inp.parameters.k_max[sys_idx][:, None] ** 2
     k_squared = jnp.where(mask, k_squared, 1)

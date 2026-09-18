@@ -77,11 +77,7 @@ class PairBatch(NamedTuple):
                 lambda x: x[:, None], frames[query_table.data.system]
             )
             rij = query_frames.to_real(delta).reshape(-1, 3)
-        # Unroll the short contraction to avoid a reduction over each pair's
-        # coordinates. XLA can still materialize distances before the energy sum.
-        r2 = rij[:, 0] ** 2
-        for axis in range(1, rij.shape[-1]):
-            r2 += rij[:, axis] ** 2
+        r2 = jnp.sum(rij**2, axis=-1)
         return cls(
             rij,
             r2,

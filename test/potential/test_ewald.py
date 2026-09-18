@@ -9,6 +9,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 from jax import Array, random
+from scipy.special import erfc
 
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
@@ -38,6 +39,7 @@ from kups.potential.classical.ewald import (
     ewald_net_charge_energy,
     ewald_self_interaction_energy,
     ewald_short_range_energy,
+    ewald_short_range_pair_kernel,
     prefactor,
     structure_factor,
 )
@@ -159,6 +161,41 @@ class TestEwald:
 
     Grouped into a single class to share JIT caches across tests.
     """
+
+    @pytest.mark.parametrize("singleton_alpha", [False, True])
+    def test_short_range_kernel_values_and_radial_derivative(
+        self, singleton_alpha: bool
+    ) -> None:
+        parameters = TestReciprocalReduction()._input().parameters
+        alpha = jnp.array([0.2]) if singleton_alpha else jnp.array([0.2, 0.3, 0.5, 0.4])
+        parameters = bind(parameters, lambda p: p.alpha).set(
+            Table.arange(alpha, label=SystemId)
+        )
+        system = Index.integer(jnp.array([[0], [2]]), n=4, label=SystemId)
+        distance = jnp.array([[0.02, 0.9, 2.3, 6.1], [0.1, 1.1, 3.3, 5.5]])
+        left = jnp.array([[0.4], [-0.6]])
+        right = jnp.array([-0.2, 0.7, 0.0, 0.3])
+
+        def energy(r2: Array) -> Array:
+            return ewald_short_range_pair_kernel(
+                parameters, left, right, jnp.zeros((*r2.shape, 3)), r2, system
+            )
+
+        a = np.asarray(alpha[0] if singleton_alpha else alpha[jnp.array([0, 2]), None])
+        r = np.asarray(distance)
+        qq = TO_STANDARD_UNITS * np.asarray(left * right)
+        screened = erfc(a * r)
+        expected = qq * screened / r
+        derivative = (
+            -qq
+            * (screened / r**2 + 2 * a / np.sqrt(np.pi) * np.exp(-((a * r) ** 2)) / r)
+            / (2 * r)
+        )
+        npt.assert_allclose(
+            jax.jit(energy)(distance**2), expected, rtol=2e-11, atol=1e-13
+        )
+        actual_derivative = jax.jit(jax.grad(lambda r2: energy(r2).sum()))(distance**2)
+        npt.assert_allclose(actual_derivative, derivative, rtol=2e-11, atol=1e-13)
 
     def test_exclusion_correction_connects_bonded_pairs(self):
         """Exclusion correction: negative vacuum Coulomb over exactly the bonded pairs.
