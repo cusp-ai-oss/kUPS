@@ -34,7 +34,7 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     skip_post_init_if_disabled,
 )
-from kups.core.utils.segment import segment_sum
+from kups.core.utils.segment import bincount, segment_sum
 from kups.core.utils.subselect import offsets_from_counts, subselect
 
 type PyTree = Any
@@ -288,7 +288,7 @@ class Index[Key: SupportsSorting]:
 
         return Table(
             self.keys,
-            jnp.bincount(self.indices.ravel(), length=len(self.keys)),
+            bincount(self.indices, length=len(self.keys)),
             _cls=self._cls,
         )
 
@@ -355,7 +355,7 @@ class Index[Key: SupportsSorting]:
         """
         target_ids = target.indices_in(self.keys)
         # Include the OOB label to preserve matching of explicit sentinel rows.
-        counts = jnp.bincount(self.indices, length=len(self.keys) + 1)
+        counts = bincount(self.indices, length=len(self.keys) + 1)
         starts = offsets_from_counts(counts)
         lanes = jnp.arange(max_count)
         positions = starts[target_ids, None] + lanes

@@ -8,6 +8,7 @@ from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.utils.jax import dataclass, jit
+from kups.core.utils.segment import bincount
 
 
 @dataclass
@@ -70,7 +71,7 @@ def subselect(
     Returns:
         SubselectResult containing scatter_idxs and gather_idxs for indexing operations.
     """
-    num_occurrences = jnp.bincount(segment_ids, length=num_segments)
+    num_occurrences = bincount(segment_ids, length=num_segments)
     target_num_occ = num_occurrences.at[target_ids].get(mode="fill", fill_value=0)
     total_occurrences = jnp.sum(target_num_occ)
     output_buffer_size = output_buffer_size.generate_assertion(total_occurrences)

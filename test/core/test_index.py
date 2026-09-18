@@ -77,6 +77,23 @@ class TestProperties:
         assert len(items) == 3 and all(isinstance(i, Index) for i in items)
 
 
+class TestCounts:
+    @pytest.mark.parametrize("shape", ((), (0,), (6,), (2, 3)))
+    def test_counts_preserve_table_metadata(self, shape: tuple[int, ...]) -> None:
+        values = jnp.array([0, 1, 0, 1, 0, 2])
+        values = values[: int(np.prod(shape))].reshape(shape)
+        index = Index(("a", "b"), values, _cls=str)
+        actual = index.counts
+        expected = [jnp.sum(values == key) for key in range(len(index.keys))]
+        npt.assert_array_equal(actual.data, expected)
+        assert actual.keys == index.keys
+        assert actual.cls is str
+
+    def test_unhashable_keys(self) -> None:
+        index = Index(([0], [1]), jnp.array([0, 1, 0, 2]))
+        npt.assert_array_equal(index.counts.data, [2, 1])
+
+
 class TestGetitem:
     def test_getitem(self):
         sa = Index.new(["A", "B", "C", "D"])

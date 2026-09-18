@@ -541,6 +541,17 @@ def segment_sum(
     return segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
 
 
+@partial(jax.jit, static_argnames=("length",))
+def bincount(x: Array, *, length: int) -> Array:
+    """Count flattened integer indices into a fixed number of bins.
+
+    As in ``jnp.bincount``, negative indices count in bin zero and indices at
+    or above `length` are dropped. Counts use JAX's default integer dtype.
+    Reuses ``segment_sum``'s reduction for a single bin.
+    """
+    return segment_sum(jnp.ones(x.size, dtype=int), jnp.maximum(x.ravel(), 0), length)
+
+
 def segment_take(
     data: Array,
     segment_ids: Array,

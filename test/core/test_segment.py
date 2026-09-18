@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import partial
 
 import jax
@@ -15,7 +16,7 @@ import pytest
 from jax import Array
 from jax.typing import ArrayLike, DTypeLike
 
-from kups.core.utils.segment import segment_sum, segment_take
+from kups.core.utils.segment import bincount, segment_sum, segment_take
 
 type Case = tuple[Array, Array, int]
 type Loss = Callable[[Array], Array]
@@ -42,6 +43,17 @@ BAD_MODES = {
     "one_hot": r"one_hot.*no gather lowering",
     "wrap": r'Unknown gather mode "wrap"',
 }
+
+
+@contextmanager
+def _x64(enabled: bool) -> Iterator[None]:
+    """Scoped x64 toggle; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +152,31 @@ def _max_ulp_error(out: ArrayLike, exact: np.ndarray) -> float:
         np.spacing(np.asarray(exact, np.float32)).astype(np.float64), 1e-38
     )
     return float(np.max(np.abs(np.asarray(out, np.float64) - exact) / ulp))
+
+
+class TestBincount:
+    @pytest.mark.parametrize("length", (0, 1, 3))
+    @pytest.mark.parametrize("shape", ((), (0,), (6,), (2, 3)))
+    @pytest.mark.parametrize(
+        ("dtype", "x64"), (("int32", False), ("int32", True), ("int64", True))
+    )
+    def test_matches_jax(
+        self, length: int, shape: tuple[int, ...], dtype: str, x64: bool
+    ) -> None:
+        with _x64(x64):
+            values = jnp.array([-2, -1, 0, 1, 2, 10], dtype=jnp.dtype(dtype))
+            values = values[: int(np.prod(shape))].reshape(shape)
+            actual = bincount(values, length=length)
+            expected = jnp.bincount(values.ravel(), length=length)
+            npt.assert_array_equal(actual, expected)
+            assert actual.dtype == expected.dtype
+
+    @pytest.mark.parametrize("length", (0, 1, 3))
+    def test_jit_and_vmap(self, length: int) -> None:
+        values = jnp.array([[0, -1, 1, 3], [2, 1, 0, 4]])
+        count = jax.jit(jax.vmap(partial(bincount, length=length)))
+        expected = jnp.stack([jnp.bincount(row, length=length) for row in values])
+        npt.assert_array_equal(count(values), expected)
 
 
 class TestSegmentSum:
