@@ -551,9 +551,8 @@ class Index[Key: SupportsSorting]:
     def sum_over(self, array: Array) -> Table[Key, Array]:
         """Sums ``array`` values grouped by this index via segment sum.
 
-        Accumulates in a float wider than ``array``, so a key taking ``k``
-        contributions rounds once rather than ``k`` times. Entries whose index
-        is the OOB sentinel contribute nothing.
+        Uses a native sum for one key and wider accumulation for multiple keys,
+        retaining ``array``'s dtype. Out-of-bounds entries contribute nothing.
 
         Args:
             array: Array whose leading dimensions match ``self.indices``.

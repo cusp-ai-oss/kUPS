@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Segment sums accumulated in a wider float, and their gather adjoint.
+"""Native single-segment sums, wider scatters, and their gather adjoint.
 
 Provides [segment_sum][kups.core.utils.segment.segment_sum], a drop-in
 ``jax.ops.segment_sum`` whose scatter accumulates in a wider float, and
@@ -464,15 +464,17 @@ def segment_sum(
     *,
     mode: Mode | str | None = None,
 ) -> Array:
-    """Sum `data` into `num_segments` bins, accumulating in a wider float.
+    """Sum into bins, using a native reduction for one bin and wider scatters otherwise.
 
     Drop-in replacement for ``jax.ops.segment_sum``: the same value in exact
-    arithmetic, closer to it in floating point, and the same `mode` for segment
-    ids outside ``[0, num_segments)``, dropped by default, negatives included.
-    The scatter accumulates one float wider than `data` and converts back once,
+    arithmetic and the same `mode` for segment ids outside ``[0, num_segments)``,
+    dropped by default, negatives included.
+    A single segment uses a masked ``jnp.sum`` with native accumulation precision
+    and retains `data`'s dtype; float32 is not promoted to float64. Otherwise,
+    the scatter accumulates one float wider than `data` and converts back once,
     f32 in f64 and f16 or bf16 in f32, so a bin taking ``k`` contributions rounds
-    once rather than ``k`` times. Integer data and empty inputs fall through to
-    the plain scatter, which is already exact. `segment_ids` may additionally
+    once rather than ``k`` times. With multiple segments, integer data and empty
+    inputs use the plain scatter. `segment_ids` may additionally
     cover several leading axes of `data` rather than only the first, which
     ``jax.ops.segment_sum`` rejects.
 
@@ -529,6 +531,11 @@ def segment_sum(
     if segment_ids.ndim > 1:
         data = data.reshape(-1, *data.shape[segment_ids.ndim :])
         segment_ids = segment_ids.reshape(-1)
+    if num_segments == 1:
+        valid = (segment_ids == 0).reshape(-1, *(1,) * (data.ndim - 1))
+        return jnp.sum(
+            jnp.where(valid, data, 0), axis=0, keepdims=True, promote_integers=False
+        )
     if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
         return jax.ops.segment_sum(data, segment_ids, num_segments, mode="drop")
     return segment_sum_p.bind(data, segment_ids, num_segments=num_segments)

@@ -16,6 +16,7 @@ import math
 import threading
 from contextlib import AbstractContextManager, contextmanager
 from copy import copy
+from itertools import count
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -477,17 +478,15 @@ def key_chain(rng: Array, shape: tuple[int, ...] = ()) -> Generator[Array, None,
         ```
     """
     size = math.prod(shape)
-    i = jnp.zeros((size,), dtype=int)
     key = jax.random.split(rng, size)
 
     @jit
-    @jax.vmap
-    def fold_keys(key: Array, i: Array) -> Array:
-        return jax.random.fold_in(key, i)
+    def fold_keys(key: Array, i: np.uint32) -> Array:
+        return jax.vmap(jax.random.fold_in, in_axes=(0, None))(key, i).reshape(shape)
 
-    while True:
-        yield fold_keys(key, i).reshape(shape)
-        i += 1
+    for i in count():
+        # fold_in consumes 32 bits; wrap on the host without a device increment.
+        yield fold_keys(key, np.uint32(i % 2**32))
 
 
 def field[T](

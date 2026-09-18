@@ -416,14 +416,15 @@ class TestSumOver:
             [[6.0, 8.0], [3.0, 4.0]],
         )
 
-    def test_accumulates_in_a_wider_float(self):
-        """A cancelling spike leaves the float32 addends the plain scatter rounds away."""
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_accumulation_precision(self, n: int) -> None:
+        """One key uses native precision; multiple keys retain wider accumulation."""
         data = jnp.asarray([1e8, *[1.0] * 8, -1e8], jnp.float32)
-        idx = Index.integer(jnp.zeros(10, int), n=1, label=SystemId)
+        idx = Index.integer(jnp.zeros(10, int), n=n, label=SystemId)
         summed = idx.sum_over(data)
         assert summed.data.dtype == jnp.float32
-        npt.assert_array_equal(summed.data, [8.0])
-        assert jax.ops.segment_sum(data, idx.indices, 1)[0] != 8.0
+        expected = jnp.sum(data, keepdims=True) if n == 1 else jnp.array([8.0, 0.0])
+        npt.assert_array_equal(summed.data, expected)
 
     def test_out_of_bounds_entries_are_dropped(self):
         """The OOB sentinel contributes to no key."""

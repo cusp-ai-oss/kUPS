@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+import kups.core.utils.jax as jax_utils
 from kups.core.utils.jax import (
     NotJaxCompatibleError,
     dataclass,
@@ -24,6 +25,30 @@ from kups.core.utils.jax import (
     tree_stack,
     tree_zeros_like,
 )
+
+
+@pytest.mark.parametrize("shape", [(), (3,), (2, 3), (0,)])
+def test_key_chain_preserves_counter_sequence(
+    shape: tuple[int, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    counters = (0, 1, 255, 256, 2**31 - 1, 2**31, 2**32 - 1, 2**32)
+    monkeypatch.setattr(jax_utils, "count", lambda: iter(counters))
+    previous_x64 = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", False)
+    try:
+        key = jax.random.key(42)
+        chain = jax_utils.key_chain(key, shape)
+        keys = jax.random.split(key, shape)
+        for counter in (*counters[:-1], 0):
+            actual = next(chain)
+            expected = jax.vmap(jax.random.fold_in, in_axes=(0, None))(
+                keys.reshape(-1), jnp.asarray(counter, jnp.uint32)
+            ).reshape(shape)
+            npt.assert_array_equal(
+                jax.random.key_data(actual), jax.random.key_data(expected)
+            )
+    finally:
+        jax.config.update("jax_enable_x64", previous_x64)
 
 
 @dataclass
