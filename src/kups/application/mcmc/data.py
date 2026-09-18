@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from kups.application.utils.particles import Particles, particles_from_ase
 from kups.core.cell import AnyPeriodicity, Cell, is_3d_periodic, make_supercell
@@ -206,6 +206,8 @@ class RunConfig(BaseModel):
     num_warmup_cycles: int
     """Number of warmup cycles (not written to output)."""
     min_cycle_length: int
+    cycles_per_call: int = Field(default=8, ge=1)
+    """Consecutive cycles per compiled call; every cycle is still saved."""
     translation_prob: float = 1 / 6
     rotation_prob: float = 1 / 6
     reinsertion_prob: float = 1 / 6

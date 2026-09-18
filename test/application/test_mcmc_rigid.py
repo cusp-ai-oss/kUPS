@@ -3,6 +3,7 @@
 
 import tempfile
 from dataclasses import replace
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +23,7 @@ from kups.application.mcmc.data import (
     MotifParticles,
     RunConfig,
 )
+from kups.application.mcmc.logging import MCMCLoggedData, MCMCStepData
 from kups.application.mcmc.rigid_body_composition import make_rigid_body_composition
 from kups.application.potential.classical.blocking import (
     make_blocking_spheres_from_state,
@@ -63,6 +65,7 @@ from kups.core.potential import (
     ScaledPotential,
     sum_potentials,
 )
+from kups.core.storage import HDF5StorageReader
 from kups.core.typing import (
     GroupId,
     Label,
@@ -1067,6 +1070,39 @@ class TestRunGCMC:
     def test_analyzer_reads_back_physical_outputs(self, run_result):
         _, out_file = run_result
         _assert_readable(out_file)
+
+
+@pytest.mark.parametrize("compute_stress", [False, True])
+def test_blocked_gcmc_preserves_every_saved_frame(
+    tmp_path: Path, compute_stress: bool
+) -> None:
+    config = _config(exchange_prob=0.5, init_adsorbates=(2,))
+    config = config.model_copy(update={"compute_stress": compute_stress})
+    frames: list[MCMCStepData] = []
+    for block_size in (1, 4):
+        output = tmp_path / f"cycles-{block_size}.h5"
+        blocked = config.model_copy(
+            update={
+                "run": config.run.model_copy(
+                    update={
+                        "out_file": output,
+                        "num_warmup_cycles": 3,
+                        "num_cycles": 11,
+                        "cycles_per_call": block_size,
+                    }
+                )
+            }
+        )
+        run(blocked)
+        with HDF5StorageReader[MCMCLoggedData[MCMCStepData]](output) as reader:
+            sample = reader.focus_group(lambda cfg: cfg.per_step)[:]
+            assert sample.systems.data.potential_energy.shape[0] == 11
+            assert reader.file.attrs["actual_steps"] == 11
+            frames.append(sample)
+    for expected, actual in zip(
+        jax.tree.leaves(frames[0]), jax.tree.leaves(frames[1]), strict=True
+    ):
+        npt.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
 
 
 class TestFusedPairIntegration:

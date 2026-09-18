@@ -1,26 +1,27 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for blocked stepping: ``make_cycle_function(LoopPropagator(propagator, K))``.
-
-``LoopPropagator`` fuses ``K`` steps into one device dispatch and returns only the
-block's final state, so the per-step and blocked paths share one interface. A blocked
-run therefore saves the last frame of each block; ``run_simulation_cycles`` is unchanged.
-"""
+"""Test cycle dispatch, sample retention and recovery from capacity failures."""
 
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
+import pytest
 from jax import Array
 
 from kups.application.utils.propagate import (
     make_cycle_function,
+    make_sampled_cycle_function,
+    run_sampled_cycles,
     run_simulation_cycles,
 )
+from kups.core.assertion import runtime_assert
+from kups.core.lens import bind
 from kups.core.propagator import LoopPropagator
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, field
 
 
 @dataclass
@@ -51,6 +52,8 @@ class _Log:
         return None
 
     def log(self, state: _State, step: int) -> None:
+        # Scalar samples must remain arrays, including after transfer to the host.
+        assert isinstance(state.value, (Array, np.ndarray))
         self.values.append(float(state.value))
 
 
@@ -98,3 +101,75 @@ def test_convergence_stops_early():
         convergence_fn=lambda s: bool(s.value >= 10.0),
     )
     npt.assert_array_equal(out.step, jnp.array([10]))  # stops after the 2nd block
+
+
+@pytest.mark.parametrize("block_size", [1, 4, 8])
+def test_sampled_blocks_preserve_random_keys_and_every_frame(block_size: int):
+    def stochastic(key: Array, state: _State) -> _State:
+        return _State(state.step + 1, state.value + jax.random.uniform(key))
+
+    key = jax.random.key(41)
+    expected_log, actual_log = _Log(), _Log()
+    expected = run_simulation_cycles(
+        key, make_cycle_function(stochastic), _state(), 11, expected_log
+    )
+    actual = run_sampled_cycles(
+        key,
+        make_sampled_cycle_function(stochastic, lambda s: s),
+        _state(),
+        11,
+        actual_log,
+        block_size,
+    )
+    npt.assert_array_equal(actual.step, expected.step)
+    npt.assert_array_equal(actual.value, expected.value)
+    npt.assert_array_equal(actual_log.values, expected_log.values)
+
+
+@dataclass
+class _CapacityState:
+    value: Array
+    capacity: int = field(static=True)
+
+
+def test_sampled_block_repair_rolls_back_successful_prefix_and_retries():
+    """A failure after two steps must not duplicate their samples or random draws."""
+
+    def repair(state: _CapacityState, _: Array) -> _CapacityState:
+        return bind(state, lambda s: s.capacity).set(20)
+
+    def step(key: Array, state: _CapacityState) -> _CapacityState:
+        del key
+        value = state.value + 1
+        runtime_assert(
+            value <= state.capacity, "capacity exceeded", fix_fn=repair, fix_args=value
+        )
+        return bind(state, lambda s: s.value).set(value)
+
+    log = _Log()
+    actual = run_sampled_cycles(
+        jax.random.key(42),
+        make_sampled_cycle_function(step, lambda s: _State(s.value, s.value)),
+        _CapacityState(jnp.array(0), 2),
+        11,
+        log,
+        8,
+    )
+    assert int(actual.value) == 11
+    assert actual.capacity == 20
+    npt.assert_array_equal(log.values, jnp.arange(1, 12))
+
+
+def test_sampled_cycles_do_not_dispatch_when_empty():
+    log = _Log()
+    state = _state()
+    result = run_sampled_cycles(
+        jax.random.key(43),
+        make_sampled_cycle_function(_stepper, lambda s: s),
+        state,
+        0,
+        log,
+        8,
+    )
+    assert result is state
+    assert log.values == []
