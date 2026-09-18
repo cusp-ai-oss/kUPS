@@ -133,6 +133,21 @@ class LJConfig(BaseModel):
     tail_correction: bool
     mixing_rule: MixingRule
 
+    def make_parameters(
+        self, labels: tuple[Label, ...]
+    ) -> GlobalTailCorrectedLennardJonesParameters:
+        """Mix only types present in hosts or insertable molecule templates."""
+        required = sorted(set(labels))
+        missing = set(required).difference(self.parameters)
+        if missing:
+            raise ValueError(f"Missing Lennard-Jones parameters for {sorted(missing)}")
+        return GlobalTailCorrectedLennardJonesParameters.from_dict(
+            cutoff=self.cutoff,
+            parameters={label: self.parameters[label] for label in required},
+            mixing_rule=self.mixing_rule,
+            tail_correction=self.tail_correction,
+        )
+
 
 class EwaldConfig(BaseModel):
     """Ewald summation configuration."""
@@ -398,11 +413,8 @@ def init_state(key: Array, config: Config) -> MCMCState:
     )
     max_adsorbates = estimate_max_adsorbates(particles, motifs, system)
     n_sys = len(system)
-    lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
-        cutoff=config.lj.cutoff,
-        parameters=config.lj.parameters,
-        mixing_rule=config.lj.mixing_rule,
-        tail_correction=config.lj.tail_correction,
+    lj_params = config.lj.make_parameters(
+        particles.data.labels.keys + motifs.data.labels.keys
     )
     blocking_spheres = BlockingSpheresParameters.from_data(
         [host.blocking_spheres for host in config.hosts]

@@ -94,9 +94,6 @@ from kups.potential.classical.ewald import (
     EwaldCache,
     EwaldParameters,
 )
-from kups.potential.classical.lennard_jones import (
-    GlobalTailCorrectedLennardJonesParameters,
-)
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -165,11 +162,8 @@ def init_state(key: Array, config: Config) -> WidomState:
     )
     n_sys = len(system)
 
-    lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
-        cutoff=config.lj.cutoff,
-        parameters=config.lj.parameters,
-        mixing_rule=config.lj.mixing_rule,
-        tail_correction=config.lj.tail_correction,
+    lj_params = config.lj.make_parameters(
+        particles.data.labels.keys + motifs.data.labels.keys
     )
     blocking_spheres = BlockingSpheresParameters.from_data(
         [host.blocking_spheres for host in config.hosts]
