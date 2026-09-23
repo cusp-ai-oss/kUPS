@@ -7,11 +7,12 @@ import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
+from jax.typing import ArrayLike
 
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import SystemId
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     tree_clip_per_row,
     tree_scale_per_row,
     tree_segment_max,
@@ -26,7 +27,9 @@ def _system_index(system_ids: list[int], num_systems: int) -> Index[SystemId]:
     return Index(keys, jnp.array(system_ids), _cls=SystemId)
 
 
-def _system_table(values, num_systems: int) -> Table[SystemId, jax.Array]:
+def _system_table(
+    values: ArrayLike | list[float] | list[bool], num_systems: int
+) -> Table[SystemId, jax.Array]:
     keys = tuple(SystemId(i) for i in range(num_systems))
     return Table(keys, jnp.asarray(values), _cls=SystemId)
 

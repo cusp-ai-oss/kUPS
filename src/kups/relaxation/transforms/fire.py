@@ -50,14 +50,15 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_norm,
     tree_vdot,
 )
+from kups.relaxation.optimizer import Optimizer, ResetLayout
 
 
 @dataclass
@@ -78,6 +79,39 @@ class ScaleByFireState:
     alpha: Table[SupportsSorting, Array]
     n_pos: Table[SupportsSorting, Array]
     index_prefix: PyTree
+
+
+@dataclass(kw_only=True)
+class FireReset[Velocity, PerSystem]:
+    """Resettable FIRE fields, carrying either values or their index prefix.
+
+    ``Velocity`` follows the parameter tree; ``PerSystem`` is a table of values
+    or an index mapping those values to systems. Field meanings match
+    :class:`ScaleByFireState`.
+    """
+
+    velocity: Velocity
+    dt: PerSystem
+    alpha: PerSystem
+    n_pos: PerSystem
+
+
+def fire_reset_layout() -> ResetLayout[
+    ScaleByFireState,
+    FireReset[PyTree, Table[SupportsSorting, Array]],
+    FireReset[PyTree, Index[SupportsSorting]],
+]:
+    """Mutable FIRE fields; initialization supplies the configured dt and alpha."""
+    return ResetLayout(
+        fields=lens(
+            lambda s: FireReset(
+                velocity=s.velocity, dt=s.dt, alpha=s.alpha, n_pos=s.n_pos
+            )
+        ),
+        system_index=lambda s: FireReset(
+            velocity=s.index_prefix, dt=s.dt.index, alpha=s.dt.index, n_pos=s.dt.index
+        ),
+    )
 
 
 @dataclass
