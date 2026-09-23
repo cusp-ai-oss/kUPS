@@ -47,9 +47,12 @@ def _dense_subselect(
     systems: Table[SystemId, NeighborListSystems],
     max_num_candidates: Capacity[int],
 ) -> Candidates:
+    # Bucket by system *key*, not by position in each Index's own key tuple: a query
+    # table whose system Index only spans a subset of the systems (e.g. blocking spheres
+    # present in some systems) would otherwise be paired with the wrong systems.
     selection_result = subselect(
-        keys.data.system.indices,
-        queries.data.system.indices,
+        keys.data.system.indices_in(systems.keys),
+        queries.data.system.indices_in(systems.keys),
         output_buffer_size=max_num_candidates,
         num_segments=systems.size,
     )

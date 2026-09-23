@@ -4,13 +4,24 @@
 """Unit tests for ``kups.core.neighborlist.dense`` selector and constructors."""
 
 import jax.numpy as jnp
+import pytest
 
 from kups.core.capacity import FixedCapacity, LensCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
+from kups.core.data import Index, Table
 from kups.core.neighborlist.dense import DenseNearestNeighborList, _dense_subselect
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
+from kups.core.typing import ParticleId, SystemId
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems
+from ._builders import (
+    EvalState,
+    SamplePoints,
+    cutoff_table,
+    make_lh,
+    make_systems,
+    systems_from_lvecs,
+    valid_edge_set,
+)
 
 
 class TestDenseSubselect:
@@ -67,3 +78,33 @@ class TestFromState:
         assert int(nl.avg_candidates.size) == 32
         assert int(nl.avg_edges.size) == 16
         assert float(nl.cutoffs.data[0]) == 2.5
+
+
+class TestBipartiteQueryKeys:
+    @pytest.mark.parametrize("query_system", [0, 1])
+    def test_query_meets_its_own_system(self, query_system: int) -> None:
+        """A query ``Index`` spanning only some systems is paired by key, not by position.
+
+        ``Index.new`` compacts keys to the systems that occur, so a lone query in system 1
+        carries ``keys == (1,)`` and ``indices == [0]``; by position it would meet system 0.
+        """
+        lh = make_lh(jnp.array([[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]), jnp.array([0, 1]))
+        systems, cutoffs = systems_from_lvecs(
+            jnp.eye(3)[None] * 20.0, jnp.array([2.0, 2.0])
+        )
+        system = Index.new([SystemId(query_system)])
+        queries = Table(
+            (ParticleId(0),),
+            SamplePoints(
+                positions=jnp.array([[5.0, 5.0, 5.0]]),
+                system=system,
+                inclusion=system,
+                exclusion=Index.integer(jnp.array([2])),
+            ),
+        )
+        nl = DenseNearestNeighborList(
+            FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
+        )
+        assert valid_edge_set(nl(lh, systems, queries=queries), 2) == {
+            (query_system, 0)
+        }

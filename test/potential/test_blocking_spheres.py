@@ -5,16 +5,20 @@
 
 import jax
 import jax.numpy as jnp
+import pytest
 
+from kups.core.capacity import FixedCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.neighborlist import Edges
+from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.typing import GroupId, MotifId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
     BlockingSpheresPotentialInput,
+    BlockingSpheresSumComposer,
     blocking_spheres_energy,
 )
 
@@ -455,3 +459,49 @@ class TestBlockingSpheresParametersFromData:
         assert params.system.indices.tolist() == [0, 0, 0, 1]
         assert params.motif.indices.tolist() == [0, 0, 1, 0]
         assert params.positions.shape == (4, 3)
+
+
+class TestBlockingSpheresSumComposer:
+    """The composer must block a sphere host that sits behind a sphere-free system."""
+
+    @dataclass
+    class _Sphere:
+        center: tuple[float, float, float]
+        radius: float
+
+    @dataclass
+    class _System:
+        cell: PeriodicCell
+
+    def _energies(self, sphere_system: int) -> jax.Array:
+        n_sys = 2
+        positions = jnp.array([[5.0, 5.0, 5.0]] * n_sys)
+        particles = _make_particles(positions, list(range(n_sys)), list(range(n_sys)))
+        groups = _make_groups([0] * n_sys)
+        cell = _make_cell(n_sys)
+        systems = cell.map_data(lambda c: self._System(cell=c))
+        data = [[[]] for _ in range(n_sys)]
+        data[sphere_system] = [[self._Sphere((5.0, 5.0, 5.0), 2.0)]]
+        parameters = BlockingSpheresParameters.from_data(data)
+
+        def neighborlist(cutoffs):
+            return DenseNearestNeighborList(
+                FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
+            )
+
+        composer = BlockingSpheresSumComposer(
+            particles_view=lambda s: particles,
+            groups_view=lambda s: groups,
+            systems_view=lambda s: systems,
+            parameters_view=lambda s: parameters,
+            neighborlist_view=lambda s: neighborlist,
+            probe=None,
+        )
+        (summand,) = composer(None, None)
+        return blocking_spheres_energy(summand.inp).data.data
+
+    @pytest.mark.parametrize("sphere_system", [0, 1])
+    def test_only_the_sphere_system_is_blocked(self, sphere_system: int) -> None:
+        energies = self._energies(sphere_system)
+        assert jnp.isinf(energies[sphere_system])
+        assert jnp.isfinite(energies[1 - sphere_system])
