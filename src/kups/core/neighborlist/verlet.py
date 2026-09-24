@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Callable, Literal
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
@@ -16,7 +17,11 @@ from kups.core.data import Index, Table
 from kups.core.lens import LambdaLens, Lens
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
-from kups.core.neighborlist.types import NeighborListPoints, NeighborListSystems
+from kups.core.neighborlist.types import (
+    NeighborList,
+    NeighborListPoints,
+    NeighborListSystems,
+)
 from kups.core.typing import (
     ExclusionId,
     HasPositionsAndSystemIndex,
@@ -277,3 +282,74 @@ SKIN_PARAMS: Lens[VerletSkinState, UniversalNeighborlistParameters] = LambdaLens
 )
 """Capacities of a skin cache. Setting different ones discards the build, which may
 have overflowed them."""
+
+
+def skin_covers(
+    cache: VerletSkinState,
+    particles: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    cutoffs: Table[SystemId, Array],
+) -> Array:
+    """Whether ``cache.edges`` hold every pair within ``cutoffs`` of this configuration.
+
+    Args:
+        cache: Skin cache.
+        particles: Current particles.
+        systems: Current systems.
+        cutoffs: Interaction cutoffs (Å).
+
+    Returns:
+        Scalar bool: the labels match the build and every system has headroom.
+    """
+    built, now = cache.reference.particles.data, particles.data
+    same_labels = (
+        (built.system.indices == now.system.indices).all()
+        & (built.inclusion.indices == now.inclusion.indices).all()
+        & (built.exclusion.indices == now.exclusion.indices).all()
+    )
+    margin = skin_margin(particles, systems, cache.reference, cache.radii, cutoffs)
+    return same_labels & (margin.data.headroom >= 0).all()
+
+
+def refresh_skin(
+    cache: VerletSkinState,
+    particles: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    cutoffs: Table[SystemId, Array],
+    skin: ArrayLike,
+    builder: Callable[[Table[SystemId, Array]], NeighborList[Literal[2]]],
+) -> VerletSkinState:
+    """Rebuild the cache at single-image radii once it stops covering the geometry.
+
+    Args:
+        cache: Skin cache.
+        particles: Current particles.
+        systems: Current systems.
+        cutoffs: Largest interaction cutoffs read through the cache (Å).
+        skin: Requested skin width (Å).
+        builder: Neighbor list bound to the given build radii, with
+            ``cache.params`` as its capacities.
+
+    Returns:
+        ``cache`` while it covers the geometry, otherwise a new build. A build
+        without skin budget in some system (zero skin, or a cutoff past the
+        single-image limit) could never cover another geometry, so it is not
+        stored.
+    """
+    c = Table.broadcast_to(cutoffs, systems).data
+    dtype = cache.radii.data.dtype
+    radii = Table(
+        systems.keys, effective_build_radii(c, skin, systems.data.cell).astype(dtype)
+    )
+    has_budget = (radii.data > c.astype(dtype)).all()
+
+    def rebuild() -> VerletSkinState:
+        return VerletSkinState(
+            cache.params,
+            builder(radii)(particles, systems),
+            SkinReference.new(particles, systems),
+            radii,
+        )
+
+    stale = ~skin_covers(cache, particles, systems, cutoffs)
+    return jax.lax.cond(stale & has_budget, rebuild, lambda: cache)

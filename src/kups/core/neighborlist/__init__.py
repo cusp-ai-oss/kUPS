@@ -91,6 +91,8 @@ from kups.core.neighborlist.verlet import (
     SkinReference,
     VerletSkinState,
     effective_build_radii,
+    refresh_skin,
+    skin_covers,
     skin_margin,
 )
 
@@ -157,5 +159,7 @@ __all__ = [
     "dense_cost",
     "effective_build_radii",
     "neighborlist_changes",
+    "refresh_skin",
+    "skin_covers",
     "skin_margin",
 ]
