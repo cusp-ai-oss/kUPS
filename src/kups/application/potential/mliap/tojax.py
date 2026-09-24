@@ -53,42 +53,42 @@ class IsTojaxedState(IsTojaxedGraphState, Protocol):
 
 
 @overload
-def make_tojaxed_from_state[State, Focus: IsTojaxedState](
-    state: Lens[State, Focus],
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedState],
     *,
     parameters: None = None,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[Focus] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_tojaxed_from_state[State, Focus: IsTojaxedState](
-    state: Lens[State, Focus],
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedState],
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[Focus] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_tojaxed_from_state[State, Focus: IsTojaxedGraphState](
-    state: Lens[State, Focus],
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedGraphState],
     *,
     parameters: TojaxedMliap,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[Focus] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_tojaxed_from_state[State, Focus: IsTojaxedGraphState](
-    state: Lens[State, Focus],
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedGraphState],
     *,
     parameters: TojaxedMliap,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[Focus] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -97,7 +97,7 @@ def make_tojaxed_from_state(
     *,
     parameters: TojaxedMliap | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create a jaxified potential from a typed state.
 
@@ -122,8 +122,10 @@ def make_tojaxed_from_state(
     else:
         model_view = state.focus(lambda x: x.jaxified_model)
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_view(s).cutoff)
+        return neighborlist_factory(s, neighborlist_params, model_view(s).cutoff)
 
     return make_tojaxed_potential(
         state.focus(lambda x: x.particles),

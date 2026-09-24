@@ -434,7 +434,7 @@ class TestPotentialFusion:
         potential = make_lennard_jones_from_state(
             identity_lens(_MiniState),
             parameters=params,
-            neighborlist_factory=lambda state, cutoffs: neighbors,
+            neighborlist_factory=lambda state, params_lens, cutoffs: neighbors,
         )
         cache = FusedPotentialCache.create(
             PairEnergySum.from_term(_LJ_PAIR),
@@ -525,7 +525,7 @@ class TestPotentialFusion:
             return make_lennard_jones_from_state(
                 identity_lens(_CachedState[tuple[Index[Label], ...]]),
                 parameters=parameters,
-                neighborlist_factory=lambda state, cutoffs: _neighborlist(
+                neighborlist_factory=lambda state, params_lens, cutoffs: _neighborlist(
                     dataclasses.replace(
                         parameters, cutoff=parameters.cutoff * neighbor_cutoff_scale
                     )
@@ -1678,7 +1678,9 @@ class TestAdditivePairEnergy:
         )(state).data
         graph = make_lennard_jones_from_state(
             identity_lens(_MiniState),
-            neighborlist_factory=lambda state, cutoffs: _neighborlist(params),
+            neighborlist_factory=lambda state, params_lens, cutoffs: _neighborlist(
+                params
+            ),
             parameters=params,
             gradient=POSITIONS_AND_CELL,
         )(state).data

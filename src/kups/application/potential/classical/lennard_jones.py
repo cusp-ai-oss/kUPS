@@ -98,7 +98,7 @@ def make_lennard_jones_from_state[State](
     *,
     parameters: None = None,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -109,7 +109,7 @@ def make_lennard_jones_from_state[State](
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -127,7 +127,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     *,
     parameters: None = None,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -146,7 +146,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
@@ -157,7 +157,7 @@ def make_lennard_jones_from_state[State](
     *,
     parameters: LennardJonesParameters,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -168,7 +168,7 @@ def make_lennard_jones_from_state[State](
     *,
     parameters: LennardJonesParameters,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -181,7 +181,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     *,
     parameters: LennardJonesParameters,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -195,7 +195,7 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
     *,
     parameters: LennardJonesParameters,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[Any] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
@@ -205,7 +205,7 @@ def make_lennard_jones_from_state(
     *,
     parameters: LennardJonesParameters | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create a LJ potential from a typed state, optionally with incremental updates.
 
@@ -248,8 +248,10 @@ def make_lennard_jones_from_state(
             cache_view = state.focus(lambda x: x.lj_cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), param_view(s).cutoff)
+        return neighborlist_factory(s, neighborlist_params, param_view(s).cutoff)
 
     return make_lennard_jones_potential(
         state.focus(lambda x: x.particles),

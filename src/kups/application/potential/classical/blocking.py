@@ -67,7 +67,7 @@ def make_blocking_spheres_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    neighborlist_factory: NeighborListFactory[IsBlockingSpheresState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -77,7 +77,7 @@ def make_blocking_spheres_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsBlockingSpheresProbe],
     *,
     parameters: None = None,
-    neighborlist_factory: NeighborListFactory[IsBlockingSpheresState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -87,7 +87,7 @@ def make_blocking_spheres_from_state[State](
     probe: None = None,
     *,
     parameters: BlockingSpheresParameters,
-    neighborlist_factory: NeighborListFactory[IsBlockingSpheresGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -97,7 +97,7 @@ def make_blocking_spheres_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsBlockingSpheresProbe],
     *,
     parameters: BlockingSpheresParameters,
-    neighborlist_factory: NeighborListFactory[IsBlockingSpheresGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -106,7 +106,7 @@ def make_blocking_spheres_from_state(
     probe: Any = None,
     *,
     parameters: BlockingSpheresParameters | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create a blocking spheres potential, optionally with incremental updates.
 
@@ -120,7 +120,7 @@ def make_blocking_spheres_from_state(
             bound with a constant lens and the state need not carry
             ``blocking_spheres_parameters``.
         neighborlist_factory: Builds a ``NeighborList[Literal[2]]`` from the
-            sub-state and per-system cutoffs.
+            state, a lens to its neighbor-list parameters, and per-system cutoffs.
 
     Returns:
         Configured blocking spheres Potential.
@@ -135,8 +135,10 @@ def make_blocking_spheres_from_state(
     else:
         param_view = state.focus(lambda x: x.blocking_spheres_parameters)
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     def neighborlist_view(s: Any) -> BlockingSpheresNeighborListFactory:
-        return lambda cutoffs: neighborlist_factory(state(s), cutoffs)
+        return lambda cutoffs: neighborlist_factory(s, neighborlist_params, cutoffs)
 
     return make_blocking_spheres_potential(
         state.focus(lambda x: x.particles),
