@@ -12,7 +12,7 @@ import ase
 import jax
 import jax.numpy as jnp
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kups.application.utils.particles import (
     Particles,
@@ -22,7 +22,7 @@ from kups.application.utils.particles import (
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import UniversalNeighborlistParameters, VerletSkinState
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
@@ -223,6 +223,7 @@ class MdState:
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
     step: Array
+    verlet_skin: VerletSkinState
 
 
 class MdRunConfig(BaseModel):
@@ -264,6 +265,8 @@ class MdParameters(BaseModel):
     """Integration algorithm to use."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
+    verlet_skin: float = Field(default=1.0, ge=0.0)
+    """Neighbor-list skin (Å); zero disables caching."""
 
 
 def md_state_from_particles_and_cell(

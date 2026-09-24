@@ -64,30 +64,48 @@ class MdState:
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
     step: Array
+    verlet_skin: VerletSkinState
 ```
 
-The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `neighborlist_params` is resized by the retry loop on overflow.
+The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `neighborlist_params` is resized by the retry loop on overflow. `verlet_skin` caches neighbor candidates built at `cutoff + skin`, together with the capacities of that build.
 
 **Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens and the gradient filter; factories fan the lens out to the fields they need.
 
 ```python
 state_lens = identity_lens(MdState)
-potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+cache = state_lens.focus(lambda s: s.verlet_skin)
+potential, cutoff = config.potential.build(
+    state_lens,
+    POSITIONS_AND_CELL,
+    neighborlist_factory=verlet_neighborlist_factory(cache),
+)
+propagator = ResetOnErrorPropagator(
+    SequentialPropagator(
+        (
+            make_skin_refresh_from_state(state_lens, cutoff, config.md.verlet_skin),
+            make_md_propagator(state_lens, config.md.integrator, potential),
+        )
+    )
+)
 ```
 
 For the LJ backend, `build` delegates to [make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state], wiring particles, systems, and the LJ parameters through the state lens and returning the cutoff used to size the neighbor list. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
+
+The neighbor list from [verlet_neighborlist_factory][kups.application.potential.verlet.verlet_neighborlist_factory] refines the cached candidates to the cutoff while they cover the current geometry and builds fresh otherwise, so every evaluation is exact. The refresh propagator is the only writer of the cache: before each step it rebuilds once motion, cell deformation, or label changes exhaust the skin.
 
 **State construction.** Read a standard file, build the two tables, pick initial capacities.
 
 ```python
 particles, systems = md_state_from_ase(config.inp_files[0], config.md, key=mb_key)
-neighborlist_params = UniversalNeighborlistParameters.estimate(
-    particles.data.system.counts, systems, cutoff
+counts = particles.data.system.counts
+neighborlist_params = UniversalNeighborlistParameters.estimate(counts, systems, cutoff)
+skin_params = UniversalNeighborlistParameters.estimate(
+    counts, systems, cutoff.map_data(lambda c: c + config.md.verlet_skin)
 )
+verlet_skin = VerletSkinState.new(particles, systems, skin_params)
 ```
 
-`md_state_from_ase` accepts xyz, cif, or lammps input. [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] guesses initial capacities from geometry; it does not have to be exact, because warmup grows what is too small.
+`md_state_from_ase` accepts xyz, cif, or lammps input. [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] guesses initial capacities from geometry; it does not have to be exact, because warmup grows what is too small. The potential sees buffers sized for the cutoff; only the cache is sized for the skin.
 
 **Running.** The loop lives on the host side.
 

@@ -3,9 +3,6 @@
 
 """End-to-end smoke test for the Lennard-Jones MD entry point."""
 
-import tempfile
-
-import ase.build
 import jax.numpy as jnp
 import pytest
 
@@ -14,47 +11,7 @@ from kups.application.md.data import MdParameters, MdRunConfig
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
 
-
-def _ar_cif(rattle: float = 0.0) -> str:
-    """Write a small fcc-argon supercell (32 atoms, ~10.6 Å cube) as a P1 CIF.
-
-    Labels are kept uniform (``Ar``) so they match the LJ parameter table;
-    ASE's CIF writer would otherwise uniquify them to ``Ar1``, ``Ar2``, ...
-    """
-    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
-    if rattle:
-        atoms.rattle(rattle, seed=1)
-    a, b, c, al, be, ga = atoms.cell.cellpar()
-    rows = "\n".join(
-        f"Ar Ar {x:.6f} {y:.6f} {z:.6f}" for x, y, z in atoms.get_scaled_positions()
-    )
-    cif = f"""data_ar
-_cell_length_a {a:.6f}
-_cell_length_b {b:.6f}
-_cell_length_c {c:.6f}
-_cell_angle_alpha {al:.6f}
-_cell_angle_beta {be:.6f}
-_cell_angle_gamma {ga:.6f}
-_symmetry_space_group_name_H-M 'P 1'
-_symmetry_Int_Tables_number 1
-loop_
-_atom_site_label
-_atom_site_type_symbol
-_atom_site_fract_x
-_atom_site_fract_y
-_atom_site_fract_z
-{rows}
-"""
-    f = tempfile.NamedTemporaryFile(suffix=".cif", delete=False, mode="w")
-    f.write(cif)
-    f.close()
-    return f.name
-
-
-def _tmp_h5() -> str:
-    f = tempfile.NamedTemporaryFile(suffix=".h5", delete=False)
-    f.close()
-    return f.name
+from ._builders import ar_cif, tmp_h5
 
 
 def _config(out_file: str, inp_file: str) -> Config:
@@ -86,8 +43,8 @@ class TestRun:
 
     @pytest.fixture(scope="class")
     def out_file(self) -> str:
-        out = _tmp_h5()
-        run(_config(out, _ar_cif()))
+        out = tmp_h5()
+        run(_config(out, ar_cif()))
         return out
 
     def test_analyzer_reads_back_physical_outputs(self, out_file: str) -> None:

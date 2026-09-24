@@ -35,6 +35,10 @@ from kups.application.md.data import (
 )
 from kups.application.md.simulation import make_md_propagator, run_md
 from kups.application.potential.filter import POSITIONS_AND_CELL
+from kups.application.potential.verlet import (
+    make_skin_refresh_from_state,
+    verlet_neighborlist_factory,
+)
 from kups.application.simulations.potentials import (
     MaceConfig,
     PotentialConfig,
@@ -43,7 +47,8 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import UniversalNeighborlistParameters, VerletSkinState
+from kups.core.propagator import ResetOnErrorPropagator, SequentialPropagator
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -72,8 +77,21 @@ def run(config: Config) -> None:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
-    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+    cache = state_lens.focus(lambda s: s.verlet_skin)
+    potential, cutoff = config.potential.build(
+        state_lens,
+        POSITIONS_AND_CELL,
+        neighborlist_factory=verlet_neighborlist_factory(cache),
+    )
+    skin = config.md.verlet_skin
+    propagator = ResetOnErrorPropagator(
+        SequentialPropagator(
+            (
+                make_skin_refresh_from_state(state_lens, cutoff, skin),
+                make_md_propagator(state_lens, config.md.integrator, potential),
+            )
+        )
+    )
 
     mb_key = next(chain) if config.md.initialize_momenta else None
     all_particles: list[Table[ParticleId, MDParticles]] = []
@@ -87,14 +105,19 @@ def run(config: Config) -> None:
 
     base = 1 if isinstance(config.potential, TojaxPotentialConfig) else 2
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
+    counts = particles.data.system.counts
     neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, cutoff, base=base, multiplier=multiplier
+        counts, systems, cutoff, base=base, multiplier=multiplier
+    )
+    skin_params = UniversalNeighborlistParameters.estimate(
+        counts, systems, cutoff.map_data(lambda c: c + skin)
     )
     state = MdState(
         particles=particles,
         systems=systems,
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
+        verlet_skin=VerletSkinState.new(particles, systems, skin_params),
     )
     run_md(next(chain), propagator, state, config.run)
 
