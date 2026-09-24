@@ -33,7 +33,10 @@ from kups.application.relaxation.data import (  # noqa: E402
     relax_state_from_ase,
 )
 from kups.core.lens import identity_lens  # noqa: E402
-from kups.core.neighborlist import UniversalNeighborlistParameters  # noqa: E402
+from kups.core.neighborlist import (  # noqa: E402
+    UniversalNeighborlistParameters,
+    VerletSkinState,
+)
 from kups.potential.classical.lennard_jones import LennardJonesParameters  # noqa: E402
 from kups.potential.mliap.torch.interface import (  # noqa: E402
     lattice_gradient_from_virial,
@@ -62,7 +65,8 @@ def test_recovers_partial_lattice_gradient_under_shear():
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
     )
-    state = RelaxState(particles, systems, nlp, jnp.zeros(()), jnp.array([0]))
+    cache = VerletSkinState.new(particles, systems, nlp)
+    state = RelaxState(particles, systems, nlp, jnp.zeros(()), jnp.array([0]), cache)
 
     # Direct autodiff partial gradient (atoms pinned): the reference ∂E/∂h and ∂E/∂r.
     out = make_lennard_jones_from_state(

@@ -25,6 +25,10 @@ from nanoargs import NanoArgs
 from pydantic import BaseModel
 
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
+from kups.application.potential.verlet import (
+    make_skin_refresh_from_state,
+    verlet_neighborlist_factory,
+)
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxParticles,
@@ -41,7 +45,8 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import UniversalNeighborlistParameters, VerletSkinState
+from kups.core.propagator import ResetOnErrorPropagator, SequentialPropagator
 from kups.core.typing import ParticleId, SystemId
 from kups.relaxation.config import make_optimizer
 
@@ -70,10 +75,14 @@ def run(config: Config) -> None:
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
-    potential, cutoff = config.potential.build(state_lens, gradient)
-    propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, gradient
+    cache = state_lens.focus(lambda s: s.verlet_skin)
+    potential, cutoff = config.potential.build(
+        state_lens, gradient, neighborlist_factory=verlet_neighborlist_factory(cache)
     )
+    relax, opt_init = make_relax_propagator(state_lens, potential, optimizer, gradient)
+    skin = config.run.verlet_skin
+    refresh = make_skin_refresh_from_state(state_lens, cutoff, skin)
+    propagator = ResetOnErrorPropagator(SequentialPropagator((refresh, relax)))
 
     all_particles: list[Table[ParticleId, RelaxParticles]] = []
     all_systems: list[Table[SystemId, RelaxSystems]] = []
@@ -86,8 +95,12 @@ def run(config: Config) -> None:
 
     # Torch MLFF models need extra neighbor-list capacity headroom.
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
+    counts = particles.data.system.counts
     neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, cutoff, multiplier=multiplier
+        counts, systems, cutoff, multiplier=multiplier
+    )
+    skin_params = UniversalNeighborlistParameters.estimate(
+        counts, systems, cutoff.map_data(lambda c: c + skin)
     )
     opt_state = opt_init(particles, systems)
     state = RelaxState(
@@ -96,6 +109,7 @@ def run(config: Config) -> None:
         neighborlist_params=neighborlist_params,
         opt_state=opt_state,
         step=jnp.array([0]),
+        verlet_skin=VerletSkinState.new(particles, systems, skin_params),
     )
     logging.info("Starting relaxation")
     run_relax(key, propagator, state, config.run)

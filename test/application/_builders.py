@@ -4,7 +4,8 @@
 """Shared builders for the application-level Lennard-Jones integration tests.
 
 Single source of truth for the fcc-argon input structure the MD, relaxation and
-Verlet-skin smoke tests run on.
+Verlet-skin smoke tests run on, and for the LBFGS optimizer spec the relaxation
+ones relax with.
 """
 
 from __future__ import annotations
@@ -12,6 +13,15 @@ from __future__ import annotations
 import tempfile
 
 import ase.build
+
+from kups.relaxation.config import TransformationConfig
+
+#: LBFGS direction, clamped step length, descent sign.
+LBFGS_OPTIMIZER: TransformationConfig = [
+    {"transform": "scale_by_ase_lbfgs", "memory_size": 10, "alpha": 70},
+    {"transform": "max_step_size", "max_step_size": 0.2},
+    {"transform": "scale", "step_size": -1},
+]
 
 
 def ar_cif(rattle: float = 0.0, *, cubic: bool = False) -> str:

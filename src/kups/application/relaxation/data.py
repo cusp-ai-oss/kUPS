@@ -11,7 +11,7 @@ import ase
 import jax.numpy as jnp
 import optax
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kups.application.utils.particles import (
     Particles,
@@ -22,7 +22,7 @@ from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import UniversalNeighborlistParameters, VerletSkinState
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.core.utils.segment import bincount
@@ -84,6 +84,7 @@ class RelaxState:
     neighborlist_params: UniversalNeighborlistParameters
     opt_state: optax.OptState
     step: Array
+    verlet_skin: VerletSkinState
 
 
 class RelaxRunConfig(BaseModel):
@@ -101,6 +102,8 @@ class RelaxRunConfig(BaseModel):
     """List of Optax transform specifications passed to `make_optimizer`."""
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
+    verlet_skin: float = Field(default=1.0, ge=0.0)
+    """Neighbor-list skin (Å); zero disables caching."""
 
 
 def relax_state_from_ase(
