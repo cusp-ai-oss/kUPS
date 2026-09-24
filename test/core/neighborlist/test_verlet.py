@@ -1,31 +1,42 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the Verlet-skin margin bound (kups.core.neighborlist.verlet).
-
-Covers the pure pieces: the deformation-aware ``skin_margin`` bound (motion
-threshold, compression, expansion, pure shear, triclinic boundary crossing,
-non-periodic axes, per-system accounting) and the single-image clamp on the
-build radius (``effective_build_radii``).
-"""
+"""Verlet-skin margins, build radii, cache refresh, and the cached neighbor list."""
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import Array
 
 from kups.core.cell import Cell, TriclinicFrame
-from kups.core.data import Table
+from kups.core.data import Index, Table
+from kups.core.lens import bind, lens
+from kups.core.capacity import FixedCapacity
+from kups.core.data.wrappers import WithIndices
 from kups.core.neighborlist import (
+    SKIN_PARAMS,
+    CellListNeighborList,
+    DenseNearestNeighborList,
+    Edges,
     SkinMargin,
     SkinReference,
+    UniversalNeighborlistParameters,
+    VerletNeighborList,
+    VerletSkinState,
     effective_build_radii,
+    neighborlist_changes,
+    refresh_skin,
+    skin_covers,
     skin_margin,
 )
-from kups.core.typing import SystemId
+from kups.core.result import as_result_function
+from kups.core.typing import ParticleId, SystemId
+from kups.core.utils.jax import dataclass, tree_copy
 
-from ._builders import make_lh, make_systems
+from ._builders import SamplePoints, SampleSystems, make_lh, make_rh, make_systems
 
 CUTOFF, SKIN = 3.5, 1.0
 
@@ -52,8 +63,10 @@ def _margins(
     n_sys = int(jnp.max(system)) + 1
     particles = make_lh(positions, system)
     systems, cutoffs = make_systems(cell_now, jnp.full((n_sys,), cutoff))
-    reference = SkinReference(reference_positions, cell_ref)
-    return skin_margin(particles, systems, reference, cutoffs, skin)
+    built, _ = make_systems(cell_ref, jnp.full((n_sys,), cutoff))
+    reference = SkinReference.new(make_lh(reference_positions, system), built)
+    radii = Table(systems.keys, effective_build_radii(cutoffs.data, skin, cell_ref))
+    return skin_margin(particles, systems, reference, radii, cutoffs)
 
 
 def _margin_fires(*args, **kwargs) -> bool:
@@ -143,6 +156,51 @@ class TestSkinMargin:
         # 2 * 6 >= 10 triggers; the misread 2 * 4 would not.
         assert _margin_fires(pos_new, pos_ref, cell, cell, cutoff=1.0, skin=10.0)
 
+    def test_margin_uses_system_labels_with_an_empty_system(self):
+        """Particles map onto systems by label, so an empty system is unconstrained."""
+        positions = jnp.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+        particles = (
+            bind(make_lh(positions, jnp.array([0, 1])))
+            .focus(lambda p: p.data.system)
+            .set(Index((SystemId(0), SystemId(2)), jnp.array([0, 1])))
+        )
+        systems, cutoffs = make_systems(
+            _cell(20.0 * jnp.eye(3), n_sys=3), jnp.full(3, CUTOFF)
+        )
+        reference = SkinReference.new(particles, systems)
+        moved = (
+            bind(particles)
+            .focus(lambda p: p.data.positions)
+            .apply(lambda x: x.at[1, 0].add(0.2))
+        )
+        radii = cutoffs.map_data(lambda c: c + SKIN)
+        margin = skin_margin(moved, systems, reference, radii, cutoffs).data
+        np.testing.assert_allclose(margin.consumed, [0.0, 0.0, 0.4], atol=1e-12)
+
+    def test_zero_build_radius_leaves_no_budget(self):
+        """An unbuilt cache (zero radius) never covers, even without motion."""
+        cell = _cell(20.0 * jnp.eye(3))
+        pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
+        particles = make_lh(pos, jnp.zeros(2, dtype=int))
+        systems, cutoffs = make_systems(cell, jnp.array([CUTOFF]))
+        reference = SkinReference.new(particles, systems)
+        radii = Table(systems.keys, jnp.zeros(1))
+        margin = skin_margin(particles, systems, reference, radii, cutoffs).data
+        assert float(margin.budget[0]) == pytest.approx(-CUTOFF)
+        assert bool(margin.headroom[0] < 0.0)
+
+    def test_float32_geometry_keeps_a_float32_margin(self):
+        """Float64 cutoffs are compared in the float32 dtype of the build radii."""
+        cell = jax.tree.map(lambda x: x.astype(jnp.float32), _cell(20.0 * jnp.eye(3)))
+        pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]], dtype=jnp.float32)
+        particles = make_lh(pos, jnp.zeros(2, dtype=int))
+        systems, cutoffs = make_systems(cell, jnp.array([3.3]))
+        reference = SkinReference.new(particles, systems)
+        radii = Table(systems.keys, jnp.array([3.3], dtype=jnp.float32))
+        margin = skin_margin(particles, systems, reference, radii, cutoffs).data
+        assert margin.budget.dtype == jnp.float32
+        assert float(margin.budget[0]) == 0.0
+
 
 class TestEffectiveBuildRadii:
     def test_unclamped_below_the_limit(self):
@@ -160,3 +218,386 @@ class TestEffectiveBuildRadii:
         cell = _cell(8.0 * jnp.eye(3), periodic=(False, False, False))
         radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
         assert float(radii[0]) == pytest.approx(5.0)
+
+
+PARAMS = UniversalNeighborlistParameters(16, 32, 32, 64)
+
+
+def _inputs(dtype=jnp.float64):
+    positions = jax.random.uniform(jax.random.key(0), (12, 3)) * 10.0
+    # make_lh shares one buffer between labels; copy so no leaf aliases another.
+    particles = tree_copy(make_lh(positions.astype(dtype), jnp.zeros(12, dtype=int)))
+    systems, cutoffs = make_systems(_cell(10.0 * jnp.eye(3)), jnp.array([CUTOFF]))
+    return particles, systems, cutoffs
+
+
+def _built(cache: VerletSkinState) -> VerletSkinState:
+    """``cache`` with nonzero radii, as after a build."""
+    return bind(cache).focus(lambda c: c.radii.data).apply(lambda r: r + CUTOFF + SKIN)
+
+
+class TestVerletSkinState:
+    def test_new_allocates_an_unbuilt_cache_of_builder_size(self):
+        particles, systems, _ = _inputs()
+        cache = VerletSkinState.new(particles, systems, PARAMS)
+        assert len(cache.edges) == PARAMS.avg_edges * particles.size
+        assert not bool(cache.edges.indices.valid_mask.any())
+        np.testing.assert_array_equal(cache.radii.data, 0.0)
+        np.testing.assert_array_equal(
+            cache.reference.particles.data.positions, particles.data.positions
+        )
+
+    def test_new_copies_the_reference_so_the_state_can_be_donated(self):
+        @dataclass
+        class Holder:
+            particles: Table
+            cache: VerletSkinState
+
+        particles, systems, _ = _inputs()
+        holder = Holder(particles, VerletSkinState.new(particles, systems, PARAMS))
+        jax.jit(lambda h: h, donate_argnums=0)(holder)
+
+    def test_float32_positions_allocate_the_builder_shift_dtype(self):
+        particles, systems, cutoffs = _inputs(jnp.float32)
+        builder = DenseNearestNeighborList(
+            avg_candidates=FixedCapacity(PARAMS.avg_candidates),
+            avg_edges=FixedCapacity(PARAMS.avg_edges),
+            avg_image_candidates=FixedCapacity(PARAMS.avg_image_candidates),
+            cutoffs=cutoffs,
+        )
+        built = builder(particles, systems)
+        cache = VerletSkinState.new(particles, systems, PARAMS)
+        assert cache.edges.shifts.dtype == built.shifts.dtype
+        assert cache.edges.shifts.shape == built.shifts.shape
+
+    def test_edge_rows_must_match_the_capacities(self):
+        particles, systems, _ = _inputs()
+        cache = VerletSkinState.new(particles, systems, PARAMS)
+        grown = UniversalNeighborlistParameters(32, 32, 32, 64)
+        with pytest.raises(AssertionError):
+            VerletSkinState(grown, cache.edges, cache.reference, cache.radii)
+
+
+class TestSkinParams:
+    def test_unchanged_capacities_keep_the_build(self):
+        particles, systems, _ = _inputs()
+        cache = _built(VerletSkinState.new(particles, systems, PARAMS))
+        assert SKIN_PARAMS.set(cache, SKIN_PARAMS.get(cache)) is cache
+
+    def test_grown_capacities_discard_the_build(self):
+        particles, systems, _ = _inputs()
+        cache = _built(VerletSkinState.new(particles, systems, PARAMS))
+        grown = UniversalNeighborlistParameters(32, 64, 64, 64)
+        resized = SKIN_PARAMS.set(cache, grown)
+        assert SKIN_PARAMS.get(resized) == grown
+        assert len(resized.edges) == grown.avg_edges * particles.size
+        assert not bool(resized.edges.indices.valid_mask.any())
+        np.testing.assert_array_equal(resized.radii.data, 0.0)
+
+
+@dataclass
+class SkinState:
+    particles: Table[ParticleId, SamplePoints]
+    systems: Table[SystemId, SampleSystems]
+    neighborlist_params: UniversalNeighborlistParameters
+    verlet_skin: VerletSkinState
+
+
+SKIN_CAPACITIES = lens(lambda s: s.verlet_skin, cls=SkinState).nest(SKIN_PARAMS)
+
+
+def _skin_state(
+    lvecs, positions, params=PARAMS, cutoff=CUTOFF, neighborlist_params=PARAMS
+):
+    particles = tree_copy(
+        make_lh(jnp.asarray(positions), jnp.zeros(len(positions), dtype=int))
+    )
+    systems, cutoffs = make_systems(_cell(lvecs), jnp.array([cutoff]))
+    cache = VerletSkinState.new(particles, systems, params)
+    return SkinState(particles, systems, neighborlist_params, cache), cutoffs
+
+
+def _refresh(state, cutoffs, skin=SKIN, factory=DenseNearestNeighborList.new):
+    def refreshed(s):
+        return refresh_skin(
+            s.verlet_skin,
+            s.particles,
+            s.systems,
+            cutoffs,
+            skin,
+            lambda radii: factory(s, SKIN_CAPACITIES, radii),
+        )
+
+    evaluate = jax.jit(as_result_function(refreshed))
+    for _ in range(10):
+        result = evaluate(state)
+        if result.all_assertions_pass:
+            return bind(state).focus(lambda s: s.verlet_skin).set(result.value)
+        state = result.fix_or_raise(state)
+    raise AssertionError("capacity repair did not converge")
+
+
+def _covers(state, cutoffs):
+    return bool(skin_covers(state.verlet_skin, state.particles, state.systems, cutoffs))
+
+
+def _move(state, positions):
+    return bind(state).focus(lambda s: s.particles.data.positions).set(positions)
+
+
+def _edge_set(edges: Edges, particles, systems) -> set:
+    """Directed (i, j, quantized separation) tuples of the in-bounds rows."""
+    n = particles.size
+    idx = np.asarray(edges.indices.indices)
+    diff = np.asarray(edges.difference_vectors(particles, systems))[:, 0, :]
+    valid = (idx[:, 0] < n) & (idx[:, 1] < n)
+    return {
+        (int(i), int(j), tuple(np.round(d / 1e-6).astype(np.int64)))
+        for (i, j), d in zip(idx[valid], diff[valid])
+    }
+
+
+def _fresh(state, radius):
+    radii = Table(state.systems.keys, jnp.array([radius]))
+    params = state.verlet_skin.params
+    return DenseNearestNeighborList(
+        avg_candidates=FixedCapacity(params.avg_candidates),
+        avg_edges=FixedCapacity(params.avg_edges),
+        avg_image_candidates=FixedCapacity(params.avg_image_candidates),
+        cutoffs=radii,
+    )(state.particles, state.systems)
+
+
+BOX = 15.0 * jnp.eye(3)
+POSITIONS = jax.random.uniform(jax.random.key(1), (32, 3)) * 15.0
+
+
+class TestSkinCovers:
+    def test_unbuilt_cache_covers_nothing(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        assert not _covers(state, cutoffs)
+
+    def test_covers_within_the_skin_and_not_beyond(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        assert _covers(state, cutoffs)
+        assert _covers(_move(state, POSITIONS.at[0, 0].add(0.49 * SKIN)), cutoffs)
+        assert not _covers(_move(state, POSITIONS.at[0, 0].add(0.51 * SKIN)), cutoffs)
+
+    def test_label_change_is_not_covered(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        merged = (
+            bind(state)
+            .focus(lambda s: s.particles.data.exclusion.indices)
+            .apply(lambda x: x.at[1].set(x[0]))
+        )
+        assert not _covers(merged, cutoffs)
+
+    def test_longer_cutoff_than_the_build_is_not_covered(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        assert not _covers(state, cutoffs.map_data(lambda c: c + 2 * SKIN))
+
+
+class TestRefreshSkin:
+    @pytest.mark.parametrize(
+        "factory", [DenseNearestNeighborList.new, CellListNeighborList.new]
+    )
+    def test_build_holds_every_pair_within_the_build_radius(self, factory):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs, factory=factory)
+        np.testing.assert_allclose(state.verlet_skin.radii.data, [CUTOFF + SKIN])
+        assert _edge_set(state.verlet_skin.edges, state.particles, state.systems) == (
+            _edge_set(_fresh(state, CUTOFF + SKIN), state.particles, state.systems)
+        )
+
+    def test_keeps_a_covering_cache_and_rebuilds_a_stale_one(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        near = _refresh(_move(state, POSITIONS.at[0, 0].add(0.1)), cutoffs)
+        np.testing.assert_array_equal(
+            near.verlet_skin.reference.particles.data.positions, POSITIONS
+        )
+        far_positions = POSITIONS.at[0, 0].add(0.6)
+        far = _refresh(_move(state, far_positions), cutoffs)
+        np.testing.assert_array_equal(
+            far.verlet_skin.reference.particles.data.positions, far_positions
+        )
+
+    def test_label_change_rebuilds(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        merged = (
+            bind(state)
+            .focus(lambda s: s.particles.data.exclusion.indices)
+            .apply(lambda x: x.at[1].set(x[0]))
+        )
+        rebuilt = _refresh(merged, cutoffs)
+        np.testing.assert_array_equal(
+            rebuilt.verlet_skin.reference.particles.data.exclusion.indices,
+            merged.particles.data.exclusion.indices,
+        )
+
+    @pytest.mark.parametrize(
+        ("lvecs", "cutoff", "skin"),
+        [(BOX, CUTOFF, 0.0), (4.0 * jnp.eye(3), 4.5, SKIN)],
+        ids=["zero_skin", "multiple_images"],
+    )
+    def test_builds_without_budget_are_not_stored(self, lvecs, cutoff, skin):
+        state, cutoffs = _skin_state(lvecs, POSITIONS[:8] * 4.0 / 15.0, cutoff=cutoff)
+        refreshed = _refresh(state, cutoffs, skin=skin)
+        np.testing.assert_array_equal(refreshed.verlet_skin.radii.data, 0.0)
+        assert not _covers(refreshed, cutoffs)
+
+    def test_build_radius_is_clamped_to_a_single_image(self):
+        lvecs = 8.0 * jnp.eye(3)
+        state, cutoffs = _skin_state(lvecs, POSITIONS * 8.0 / 15.0, cutoff=3.5)
+        state = _refresh(state, cutoffs, skin=2.0)
+        np.testing.assert_allclose(state.verlet_skin.radii.data, [4.0])
+        assert _edge_set(state.verlet_skin.edges, state.particles, state.systems) == (
+            _edge_set(_fresh(state, 4.0), state.particles, state.systems)
+        )
+
+    def test_overflowing_build_is_repaired_and_complete(self):
+        tiny = UniversalNeighborlistParameters(1, 1, 1, 1)
+        state, cutoffs = _skin_state(BOX, POSITIONS, params=tiny)
+        state = _refresh(state, cutoffs)
+        assert state.verlet_skin.params.avg_edges > tiny.avg_edges
+        assert _edge_set(state.verlet_skin.edges, state.particles, state.systems) == (
+            _edge_set(_fresh(state, CUTOFF + SKIN), state.particles, state.systems)
+        )
+
+    def test_float32_geometry_keeps_float32_storage(self):
+        state, cutoffs = _skin_state(
+            BOX.astype(jnp.float32), POSITIONS.astype(jnp.float32)
+        )
+        state = _refresh(state, cutoffs)
+        assert state.verlet_skin.radii.data.dtype == jnp.float32
+        assert state.verlet_skin.edges.shifts.dtype == jnp.float32
+        assert _covers(state, cutoffs)
+
+
+NEIGHBORLIST_PARAMS = lens(lambda s: s.neighborlist_params, cls=SkinState)
+
+
+def _verlet(s: SkinState, cutoffs) -> VerletNeighborList:
+    return VerletNeighborList.new(s, NEIGHBORLIST_PARAMS, s.verlet_skin, cutoffs)
+
+
+def _call(state, cutoffs, call):
+    """Evaluate ``call(neighborlist, state)`` with capacity repair."""
+    evaluate = jax.jit(as_result_function(lambda s: call(_verlet(s, cutoffs), s)))
+    for _ in range(10):
+        result = evaluate(state)
+        if result.all_assertions_pass:
+            return result.value, state
+        state = result.fix_or_raise(state)
+    raise AssertionError("capacity repair did not converge")
+
+
+def _neighbors(state, cutoffs):
+    return _call(state, cutoffs, lambda nl, s: nl(s.particles, s.systems))
+
+
+def _assert_exact(state, cutoffs):
+    edges, state = _neighbors(state, cutoffs)
+    expected = _fresh(state, float(cutoffs.data[0]))
+    assert _edge_set(edges, state.particles, state.systems) == (
+        _edge_set(expected, state.particles, state.systems)
+    )
+    return edges
+
+
+TRICLINIC = jnp.array([[12.0, 0.0, 0.0], [6.0, 10.0, 0.0], [1.0, 2.0, 11.0]])
+
+
+class TestVerletNeighborList:
+    @pytest.mark.parametrize(
+        "factory", [DenseNearestNeighborList.new, CellListNeighborList.new]
+    )
+    @pytest.mark.parametrize("lvecs", [BOX, TRICLINIC], ids=["cubic", "triclinic"])
+    def test_matches_fresh_builds_while_covered_and_beyond(self, factory, lvecs):
+        positions = jax.random.uniform(jax.random.key(2), (32, 3)) @ lvecs
+        state, cutoffs = _skin_state(lvecs, positions)
+        _assert_exact(state, cutoffs)  # unbuilt cache
+        state = _refresh(state, cutoffs, factory=factory)
+        for displacement in (0.0, 0.3, 0.8):
+            moved = _move(state, positions.at[0, 0].add(displacement))
+            assert _covers(moved, cutoffs) is (displacement < SKIN / 2)
+            _assert_exact(moved, cutoffs)
+
+    def test_matches_fresh_builds_under_compression_and_wrapping(self):
+        positions = jax.random.uniform(jax.random.key(5), (32, 3)) @ TRICLINIC
+        state, cutoffs = _skin_state(TRICLINIC, positions)
+        state = _refresh(state, cutoffs)
+        cell = _cell(0.99 * TRICLINIC)
+        moved = (positions * 0.99).at[0].add(cell.vectors[0, 1])
+        state = (
+            bind(state)
+            .focus(lambda s: (s.particles.data.positions, s.systems.data.cell))
+            .set((moved, cell))
+        )
+        assert _covers(state, cutoffs)
+        _assert_exact(state, cutoffs)
+
+    def test_label_change_falls_back_to_an_exact_build(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        pairs = _assert_exact(state, cutoffs)
+        i, j = (int(x) for x in pairs.indices.indices[0])
+        merged = (
+            bind(state)
+            .focus(lambda s: s.particles.data.exclusion.indices)
+            .apply(lambda x: x.at[j].set(x[i]))
+        )
+        edges = _assert_exact(merged, cutoffs)
+        rows = {tuple(map(int, r)) for r in np.asarray(edges.indices.indices)}
+        assert (i, j) not in rows and (j, i) not in rows
+
+    def test_output_is_sized_by_the_cutoff_capacities_not_the_skin(self):
+        skin_params = UniversalNeighborlistParameters(64, 64, 64, 64)
+        state, cutoffs = _skin_state(BOX, POSITIONS, params=skin_params)
+        state = _refresh(state, cutoffs)
+        assert _covers(state, cutoffs)
+        edges, state = _neighbors(state, cutoffs)
+        assert len(state.verlet_skin.edges) == 64 * state.particles.size
+        assert len(edges) == state.neighborlist_params.avg_edges * state.particles.size
+
+    def test_undersized_output_capacity_is_repaired(self):
+        tiny = UniversalNeighborlistParameters(1, 1, 1, 1)
+        state, cutoffs = _skin_state(BOX, POSITIONS, neighborlist_params=tiny)
+        state = _refresh(state, cutoffs)
+        assert _covers(state, cutoffs)
+        _assert_exact(state, cutoffs)
+
+    def test_local_bipartite_and_change_queries_match_the_fallback(self):
+        state, cutoffs = _skin_state(BOX, POSITIONS)
+        state = _refresh(state, cutoffs)
+        changed = jnp.array([0, 5])
+        proposed, queried = make_rh(
+            state.particles, POSITIONS[changed] + 0.3, jnp.zeros(2, dtype=int), changed
+        )
+
+        def calls(nl, s):
+            return (
+                nl(s.particles, s.systems, queried_keys=queried),
+                nl(s.particles, s.systems, queries=proposed),
+                neighborlist_changes(
+                    nl, s.particles, WithIndices(queried, proposed), s.systems
+                ),
+            )
+
+        actual, _ = _call(state, cutoffs, calls)
+        expected, _ = _call(state, cutoffs, lambda nl, s: calls(nl.fallback, s))
+        for a, e in zip(jax.tree.leaves(actual), jax.tree.leaves(expected)):
+            np.testing.assert_array_equal(a, e)
+
+    def test_float32_geometry_matches_fresh_builds(self):
+        state, cutoffs = _skin_state(
+            BOX.astype(jnp.float32), POSITIONS.astype(jnp.float32)
+        )
+        state = _refresh(state, cutoffs)
+        assert _covers(state, cutoffs)
+        edges = _assert_exact(state, cutoffs)
+        assert edges.shifts.dtype == jnp.float32

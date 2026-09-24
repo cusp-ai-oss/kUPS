@@ -1,31 +1,39 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verlet neighbor list with a skin: the margin accounting.
-
-A Verlet-skin scheme builds one conservative neighbor list at an enlarged
-radius ``r_build ≈ cutoff + skin``, stores its edges, and reuses them over many
-steps via
-[`RefineCutoffNeighborList`][kups.core.neighborlist.refine.RefineCutoffNeighborList],
-amortizing the expensive build over the rebuild window. This module holds the
-pure geometry underneath such a scheme:
-[`skin_margin`][kups.core.neighborlist.verlet.skin_margin] decides how long the
-stored list remains complete, and
-[`effective_build_radii`][kups.core.neighborlist.verlet.effective_build_radii]
-keeps the build radius inside the single-image regime that edge reuse requires.
-"""
+"""Verlet-skin neighbor list: margin accounting, candidate cache, and refresh."""
 
 from __future__ import annotations
 
+from typing import Callable, Literal, overload
+
+import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
+from kups.core.capacity import Capacity, LensCapacity
 from kups.core.cell import AnyPeriodicity, Cell
-from kups.core.data import Table
-from kups.core.neighborlist.types import NeighborListSystems
-from kups.core.typing import HasPositionsAndSystemIndex, ParticleId, SystemId
-from kups.core.utils.jax import dataclass
+from kups.core.data import Index, Table
+from kups.core.lens import LambdaLens, Lens
+from kups.core.neighborlist.adaptive import AdaptiveNeighborList
+from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
+from kups.core.neighborlist.refine import RefineCutoffNeighborList
+from kups.core.neighborlist.types import (
+    IsUniversalNeighborlistParams,
+    NeighborList,
+    NeighborListPoints,
+    NeighborListSystems,
+)
+from kups.core.typing import (
+    ExclusionId,
+    HasPositionsAndSystemIndex,
+    InclusionId,
+    ParticleId,
+    SystemId,
+)
+from kups.core.utils.jax import dataclass, skip_post_init_if_disabled, tree_copy
 
 
 def effective_build_radii(
@@ -54,21 +62,52 @@ def effective_build_radii(
 
 
 @dataclass
-class SkinReference:
-    """Geometry snapshot taken when the skin list was built.
-
-    [`skin_margin`][kups.core.neighborlist.verlet.skin_margin] measures the
-    drift of the current geometry relative to this snapshot. The arrays must
-    not alias the live position/cell buffers (donated jitted steps would then
-    receive the same buffer twice).
-
-    Attributes:
-        positions: Cartesian positions at the build, ``(N, 3)``.
-        cell: ``(n_sys,)``-batched cell at the build.
-    """
+class SkinPoints:
+    """Particle inputs of a neighbor-list build."""
 
     positions: Array
-    cell: Cell[AnyPeriodicity]
+    system: Index[SystemId]
+    inclusion: Index[InclusionId]
+    exclusion: Index[ExclusionId]
+
+
+@dataclass
+class SkinReference:
+    """Particle inputs and cells at the last build.
+
+    [`skin_margin`][kups.core.neighborlist.verlet.skin_margin] measures drift
+    against this snapshot. Builders apply inclusion and exclusion masks, so the
+    labels are part of the snapshot.
+
+    Attributes:
+        particles: Positions and labels at the build.
+        cell: Cells at the build.
+    """
+
+    particles: Table[ParticleId, SkinPoints]
+    cell: Table[SystemId, Cell[AnyPeriodicity]]
+
+    @classmethod
+    def new(
+        cls,
+        particles: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+    ) -> SkinReference:
+        """Snapshot the inputs of a build.
+
+        Args:
+            particles: Particles passed to the builder.
+            systems: Systems passed to the builder.
+
+        Returns:
+            Reference sharing the input arrays.
+        """
+        return cls(
+            particles.map_data(
+                lambda p: SkinPoints(p.positions, p.system, p.inclusion, p.exclusion)
+            ),
+            systems.map_data(lambda s: s.cell),
+        )
 
 
 @dataclass
@@ -96,8 +135,8 @@ def skin_margin(
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
     systems: Table[SystemId, NeighborListSystems],
     reference: SkinReference,
+    radii: Table[SystemId, Array],
     cutoffs: Table[SystemId, Array],
-    skin: ArrayLike,
 ) -> Table[SystemId, SkinMargin]:
     """How much of the skin list's safety margin the geometry has used up.
 
@@ -135,27 +174,274 @@ def skin_margin(
     Args:
         particles: Current particle table (positions and system index).
         systems: Current system table (cells).
-        reference: Positions and cell snapshot taken at the last build.
+        reference: Particle inputs and cells at the last build.
+        radii: Build radii ``r_build`` (Å) per system; zero for no build.
         cutoffs: True cutoffs (Å) per system.
-        skin: Requested skin width (Å) the list was built with.
 
     Returns:
         Per-system [`SkinMargin`][kups.core.neighborlist.verlet.SkinMargin]
         table (``consumed`` and ``budget``, both in Å).
     """
-    cell_now = systems.data.cell
-    system = particles.data.system.indices
-    cutoff_values = Table.broadcast_to(cutoffs, systems).data
-    deform = reference.cell.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
+    cells = systems.map_data(lambda s: s.cell)
+    deformation = Table.join(cells, reference.cell).map_data(
+        lambda pair: pair[1].inverse_vectors @ pair[0].vectors  # d_now = d_ref @ F
+    )
     # u_i = x_i - x_i_ref @ F, min-image wrapped
-    co_moved = jnp.einsum("ni,nij->nj", reference.positions, deform[system])
-    residual = cell_now[system].wrap(particles.data.positions - co_moved)
-    u_max = particles.data.system.max_over(jnp.linalg.norm(residual, axis=-1)).data
-    u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
+    co_moved = jnp.einsum(
+        "ni,nij->nj",
+        reference.particles[particles.index].positions,
+        deformation[particles.data.system],
+    )
+    residual = cells[particles.data.system].wrap(particles.data.positions - co_moved)
+    displacement = particles.data.system.update_labels(systems.keys).max_over(
+        jnp.linalg.norm(residual, axis=-1)
+    )
+    # Empty systems reduce to -inf.
+    u_max = jnp.maximum(Table.broadcast_to(displacement, systems).data, 0.0)
     # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ
     # (cheaper than an SVD; the clamp guards eigvalsh's tiny negative noise).
-    gram = deform @ jnp.swapaxes(deform, -1, -2)
+    f = deformation.data
+    gram = f @ jnp.swapaxes(f, -1, -2)
     sigma_min = jnp.sqrt(jnp.maximum(jnp.linalg.eigvalsh(gram)[..., 0], 0.0))
-    r_build = effective_build_radii(cutoff_values, skin, reference.cell)
+    r_build = Table.broadcast_to(radii, systems).data
+    cutoff = Table.broadcast_to(cutoffs, systems).data.astype(r_build.dtype)
     consumed = 2.0 * u_max + r_build * jnp.maximum(0.0, 1.0 - sigma_min)
-    return Table(systems.keys, SkinMargin(consumed, r_build - cutoff_values))
+    return Table(systems.keys, SkinMargin(consumed, r_build - cutoff))
+
+
+@dataclass
+class VerletSkinState:
+    """The last skin build and the capacities it was built with.
+
+    Attributes:
+        params: Capacities of the build. ``edges`` has ``params.avg_edges`` rows
+            per particle, the full self-graph output size of the pair builders.
+        edges: Candidate pairs within ``radii`` at the build.
+        reference: Particle inputs and cells at the build.
+        radii: Build radii (Å); zero before the first build.
+    """
+
+    params: UniversalNeighborlistParameters
+    edges: Edges[Literal[2]]
+    reference: SkinReference
+    radii: Table[SystemId, Array]
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        rows = self.params.avg_edges * self.reference.particles.size
+        assert len(self.edges) == rows, (
+            f"Skin cache holds {len(self.edges)} edges; its capacities imply {rows}. "
+            "Change capacities through SKIN_PARAMS."
+        )
+
+    @classmethod
+    def new(
+        cls,
+        particles: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        params: UniversalNeighborlistParameters,
+    ) -> VerletSkinState:
+        """Allocate an unbuilt cache.
+
+        Args:
+            particles: Particle table.
+            systems: System table.
+            params: Capacities of the skin build.
+
+        Returns:
+            Cache with out-of-bounds edges and zero radii. The reference is a
+            copy, so donating a state that holds both is safe.
+        """
+        return _unbuilt(params, tree_copy(SkinReference.new(particles, systems)))
+
+
+def _unbuilt(
+    params: UniversalNeighborlistParameters, reference: SkinReference
+) -> VerletSkinState:
+    particles = reference.particles
+    rows = params.avg_edges * particles.size
+    # Builders emit shifts in the dtype of the fractional coordinates.
+    dtype = jnp.result_type(particles.data.positions, reference.cell.data.vectors)
+    return VerletSkinState(
+        params,
+        Edges(
+            Index(particles.keys, jnp.full((rows, 2), particles.size, dtype=int)),
+            jnp.zeros((rows, 1, 3), dtype),
+        ),
+        reference,
+        Table(reference.cell.keys, jnp.zeros(reference.cell.size, dtype)),
+    )
+
+
+def _set_skin_params(
+    state: VerletSkinState, value: UniversalNeighborlistParameters
+) -> VerletSkinState:
+    if value == state.params:
+        return state
+    return _unbuilt(value, state.reference)
+
+
+SKIN_PARAMS: Lens[VerletSkinState, UniversalNeighborlistParameters] = LambdaLens(
+    lambda c: c.params, _set_skin_params
+)
+"""Capacities of a skin cache. Setting different ones discards the build, which may
+have overflowed them."""
+
+
+def skin_covers(
+    cache: VerletSkinState,
+    particles: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    cutoffs: Table[SystemId, Array],
+) -> Array:
+    """Whether ``cache.edges`` hold every pair within ``cutoffs`` of this configuration.
+
+    Args:
+        cache: Skin cache.
+        particles: Current particles.
+        systems: Current systems.
+        cutoffs: Interaction cutoffs (Å).
+
+    Returns:
+        Scalar bool: the labels match the build and every system has headroom.
+    """
+    built, now = cache.reference.particles.data, particles.data
+    same_labels = (
+        (built.system.indices == now.system.indices).all()
+        & (built.inclusion.indices == now.inclusion.indices).all()
+        & (built.exclusion.indices == now.exclusion.indices).all()
+    )
+    margin = skin_margin(particles, systems, cache.reference, cache.radii, cutoffs)
+    return same_labels & (margin.data.headroom >= 0).all()
+
+
+def refresh_skin(
+    cache: VerletSkinState,
+    particles: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    cutoffs: Table[SystemId, Array],
+    skin: ArrayLike,
+    builder: Callable[[Table[SystemId, Array]], NeighborList[Literal[2]]],
+) -> VerletSkinState:
+    """Rebuild the cache at single-image radii once it stops covering the geometry.
+
+    Args:
+        cache: Skin cache.
+        particles: Current particles.
+        systems: Current systems.
+        cutoffs: Largest interaction cutoffs read through the cache (Å).
+        skin: Requested skin width (Å).
+        builder: Neighbor list bound to the given build radii, with
+            ``cache.params`` as its capacities.
+
+    Returns:
+        ``cache`` while it covers the geometry, otherwise a new build. A build
+        without skin budget in some system (zero skin, or a cutoff past the
+        single-image limit) could never cover another geometry, so it is not
+        stored.
+    """
+    c = Table.broadcast_to(cutoffs, systems).data
+    dtype = cache.radii.data.dtype
+    radii = Table(
+        systems.keys, effective_build_radii(c, skin, systems.data.cell).astype(dtype)
+    )
+    has_budget = (radii.data > c.astype(dtype)).all()
+
+    def rebuild() -> VerletSkinState:
+        return VerletSkinState(
+            cache.params,
+            builder(radii)(particles, systems),
+            SkinReference.new(particles, systems),
+            radii,
+        )
+
+    stale = ~skin_covers(cache, particles, systems, cutoffs)
+    return jax.lax.cond(stale & has_budget, rebuild, lambda: cache)
+
+
+@dataclass
+class VerletNeighborList(NeighborList[Literal[2]]):
+    """Refine a skin cache that covers the call; otherwise build.
+
+    Local, bipartite, and differently keyed calls always use ``fallback``.
+
+    Attributes:
+        cache: Skin cache, read only.
+        fallback: Neighbor list bound to ``cutoffs``.
+        avg_edges: Per-particle output capacity, as for ``fallback``.
+        cutoffs: Interaction cutoffs (Å).
+    """
+
+    cache: VerletSkinState
+    fallback: NeighborList[Literal[2]]
+    avg_edges: Capacity[int]
+    cutoffs: Table[SystemId, Array]
+
+    @classmethod
+    def new[S](
+        cls,
+        state: S,
+        lens: Lens[S, IsUniversalNeighborlistParams],
+        cache: VerletSkinState,
+        cutoffs: Table[SystemId, Array],
+    ) -> VerletNeighborList:
+        """Read ``cache``, falling back to an adaptive build.
+
+        Args:
+            state: Object exposing the output capacities via ``lens``.
+            lens: Lens focusing the ``IsUniversalNeighborlistParams`` of the
+                cutoff neighbor list.
+            cache: Skin cache.
+            cutoffs: Interaction cutoffs (Å).
+
+        Returns:
+            A neighbor list whose output is sized by the cutoff capacities.
+        """
+        return cls(
+            cache,
+            AdaptiveNeighborList.new(state, lens, cutoffs),
+            LensCapacity(lens.get(state).avg_edges, lens.focus(lambda p: p.avg_edges)),
+            cutoffs,
+        )
+
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]:
+        if queries is not None:
+            return self.fallback(keys, systems, queries=queries)
+        reference = self.cache.reference
+        if (
+            queried_keys is not None
+            or keys.keys != reference.particles.keys
+            or systems.keys != reference.cell.keys
+        ):
+            return self.fallback(keys, systems, queried_keys=queried_keys)
+        refine = RefineCutoffNeighborList(
+            self.cache.edges, self.avg_edges, self.cutoffs
+        )
+        return jax.lax.cond(
+            skin_covers(self.cache, keys, systems, self.cutoffs),
+            lambda: refine(keys, systems),
+            lambda: self.fallback(keys, systems),
+        )
