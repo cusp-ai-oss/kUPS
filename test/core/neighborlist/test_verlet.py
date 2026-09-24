@@ -1,22 +1,19 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the Verlet-skin margin bound (kups.core.neighborlist.verlet).
-
-Covers the pure pieces: the deformation-aware ``skin_margin`` bound (motion
-threshold, compression, expansion, pure shear, triclinic boundary crossing,
-non-periodic axes, per-system accounting) and the single-image clamp on the
-build radius (``effective_build_radii``).
-"""
+"""Verlet-skin margins, build radii, cache refresh, and the cached neighbor list."""
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import Array
 
 from kups.core.cell import Cell, TriclinicFrame
-from kups.core.data import Table
+from kups.core.data import Index, Table
+from kups.core.lens import bind
 from kups.core.neighborlist import (
     SkinMargin,
     SkinReference,
@@ -52,8 +49,10 @@ def _margins(
     n_sys = int(jnp.max(system)) + 1
     particles = make_lh(positions, system)
     systems, cutoffs = make_systems(cell_now, jnp.full((n_sys,), cutoff))
-    reference = SkinReference(reference_positions, cell_ref)
-    return skin_margin(particles, systems, reference, cutoffs, skin)
+    built, _ = make_systems(cell_ref, jnp.full((n_sys,), cutoff))
+    reference = SkinReference.new(make_lh(reference_positions, system), built)
+    radii = Table(systems.keys, effective_build_radii(cutoffs.data, skin, cell_ref))
+    return skin_margin(particles, systems, reference, radii, cutoffs)
 
 
 def _margin_fires(*args, **kwargs) -> bool:
@@ -142,6 +141,51 @@ class TestSkinMargin:
         pos_new = pos_ref + jnp.array([[6.0, 0.0, 0.0]])
         # 2 * 6 >= 10 triggers; the misread 2 * 4 would not.
         assert _margin_fires(pos_new, pos_ref, cell, cell, cutoff=1.0, skin=10.0)
+
+    def test_margin_uses_system_labels_with_an_empty_system(self):
+        """Particles map onto systems by label, so an empty system is unconstrained."""
+        positions = jnp.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+        particles = (
+            bind(make_lh(positions, jnp.array([0, 1])))
+            .focus(lambda p: p.data.system)
+            .set(Index((SystemId(0), SystemId(2)), jnp.array([0, 1])))
+        )
+        systems, cutoffs = make_systems(
+            _cell(20.0 * jnp.eye(3), n_sys=3), jnp.full(3, CUTOFF)
+        )
+        reference = SkinReference.new(particles, systems)
+        moved = (
+            bind(particles)
+            .focus(lambda p: p.data.positions)
+            .apply(lambda x: x.at[1, 0].add(0.2))
+        )
+        radii = cutoffs.map_data(lambda c: c + SKIN)
+        margin = skin_margin(moved, systems, reference, radii, cutoffs).data
+        np.testing.assert_allclose(margin.consumed, [0.0, 0.0, 0.4], atol=1e-12)
+
+    def test_zero_build_radius_leaves_no_budget(self):
+        """An unbuilt cache (zero radius) never covers, even without motion."""
+        cell = _cell(20.0 * jnp.eye(3))
+        pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]])
+        particles = make_lh(pos, jnp.zeros(2, dtype=int))
+        systems, cutoffs = make_systems(cell, jnp.array([CUTOFF]))
+        reference = SkinReference.new(particles, systems)
+        radii = Table(systems.keys, jnp.zeros(1))
+        margin = skin_margin(particles, systems, reference, radii, cutoffs).data
+        assert float(margin.budget[0]) == pytest.approx(-CUTOFF)
+        assert bool(margin.headroom[0] < 0.0)
+
+    def test_float32_geometry_keeps_a_float32_margin(self):
+        """Float64 cutoffs are compared in the float32 dtype of the build radii."""
+        cell = jax.tree.map(lambda x: x.astype(jnp.float32), _cell(20.0 * jnp.eye(3)))
+        pos = jnp.array([[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]], dtype=jnp.float32)
+        particles = make_lh(pos, jnp.zeros(2, dtype=int))
+        systems, cutoffs = make_systems(cell, jnp.array([3.3]))
+        reference = SkinReference.new(particles, systems)
+        radii = Table(systems.keys, jnp.array([3.3], dtype=jnp.float32))
+        margin = skin_margin(particles, systems, reference, radii, cutoffs).data
+        assert margin.budget.dtype == jnp.float32
+        assert float(margin.budget[0]) == 0.0
 
 
 class TestEffectiveBuildRadii:

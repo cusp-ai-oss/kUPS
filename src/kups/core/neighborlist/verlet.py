@@ -1,19 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verlet neighbor list with a skin: the margin accounting.
-
-A Verlet-skin scheme builds one conservative neighbor list at an enlarged
-radius ``r_build ≈ cutoff + skin``, stores its edges, and reuses them over many
-steps via
-[`RefineCutoffNeighborList`][kups.core.neighborlist.refine.RefineCutoffNeighborList],
-amortizing the expensive build over the rebuild window. This module holds the
-pure geometry underneath such a scheme:
-[`skin_margin`][kups.core.neighborlist.verlet.skin_margin] decides how long the
-stored list remains complete, and
-[`effective_build_radii`][kups.core.neighborlist.verlet.effective_build_radii]
-keeps the build radius inside the single-image regime that edge reuse requires.
-"""
+"""Verlet-skin neighbor list: margin accounting, candidate cache, and refresh."""
 
 from __future__ import annotations
 
@@ -22,9 +10,15 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from kups.core.cell import AnyPeriodicity, Cell
-from kups.core.data import Table
-from kups.core.neighborlist.types import NeighborListSystems
-from kups.core.typing import HasPositionsAndSystemIndex, ParticleId, SystemId
+from kups.core.data import Index, Table
+from kups.core.neighborlist.types import NeighborListPoints, NeighborListSystems
+from kups.core.typing import (
+    ExclusionId,
+    HasPositionsAndSystemIndex,
+    InclusionId,
+    ParticleId,
+    SystemId,
+)
 from kups.core.utils.jax import dataclass
 
 
@@ -54,21 +48,52 @@ def effective_build_radii(
 
 
 @dataclass
-class SkinReference:
-    """Geometry snapshot taken when the skin list was built.
-
-    [`skin_margin`][kups.core.neighborlist.verlet.skin_margin] measures the
-    drift of the current geometry relative to this snapshot. The arrays must
-    not alias the live position/cell buffers (donated jitted steps would then
-    receive the same buffer twice).
-
-    Attributes:
-        positions: Cartesian positions at the build, ``(N, 3)``.
-        cell: ``(n_sys,)``-batched cell at the build.
-    """
+class SkinPoints:
+    """Particle inputs of a neighbor-list build."""
 
     positions: Array
-    cell: Cell[AnyPeriodicity]
+    system: Index[SystemId]
+    inclusion: Index[InclusionId]
+    exclusion: Index[ExclusionId]
+
+
+@dataclass
+class SkinReference:
+    """Particle inputs and cells at the last build.
+
+    [`skin_margin`][kups.core.neighborlist.verlet.skin_margin] measures drift
+    against this snapshot. Builders apply inclusion and exclusion masks, so the
+    labels are part of the snapshot.
+
+    Attributes:
+        particles: Positions and labels at the build.
+        cell: Cells at the build.
+    """
+
+    particles: Table[ParticleId, SkinPoints]
+    cell: Table[SystemId, Cell[AnyPeriodicity]]
+
+    @classmethod
+    def new(
+        cls,
+        particles: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+    ) -> SkinReference:
+        """Snapshot the inputs of a build.
+
+        Args:
+            particles: Particles passed to the builder.
+            systems: Systems passed to the builder.
+
+        Returns:
+            Reference sharing the input arrays.
+        """
+        return cls(
+            particles.map_data(
+                lambda p: SkinPoints(p.positions, p.system, p.inclusion, p.exclusion)
+            ),
+            systems.map_data(lambda s: s.cell),
+        )
 
 
 @dataclass
@@ -96,8 +121,8 @@ def skin_margin(
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
     systems: Table[SystemId, NeighborListSystems],
     reference: SkinReference,
+    radii: Table[SystemId, Array],
     cutoffs: Table[SystemId, Array],
-    skin: ArrayLike,
 ) -> Table[SystemId, SkinMargin]:
     """How much of the skin list's safety margin the geometry has used up.
 
@@ -135,27 +160,36 @@ def skin_margin(
     Args:
         particles: Current particle table (positions and system index).
         systems: Current system table (cells).
-        reference: Positions and cell snapshot taken at the last build.
+        reference: Particle inputs and cells at the last build.
+        radii: Build radii ``r_build`` (Å) per system; zero for no build.
         cutoffs: True cutoffs (Å) per system.
-        skin: Requested skin width (Å) the list was built with.
 
     Returns:
         Per-system [`SkinMargin`][kups.core.neighborlist.verlet.SkinMargin]
         table (``consumed`` and ``budget``, both in Å).
     """
-    cell_now = systems.data.cell
-    system = particles.data.system.indices
-    cutoff_values = Table.broadcast_to(cutoffs, systems).data
-    deform = reference.cell.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
+    cells = systems.map_data(lambda s: s.cell)
+    deformation = Table.join(cells, reference.cell).map_data(
+        lambda pair: pair[1].inverse_vectors @ pair[0].vectors  # d_now = d_ref @ F
+    )
     # u_i = x_i - x_i_ref @ F, min-image wrapped
-    co_moved = jnp.einsum("ni,nij->nj", reference.positions, deform[system])
-    residual = cell_now[system].wrap(particles.data.positions - co_moved)
-    u_max = particles.data.system.max_over(jnp.linalg.norm(residual, axis=-1)).data
-    u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
+    co_moved = jnp.einsum(
+        "ni,nij->nj",
+        reference.particles[particles.index].positions,
+        deformation[particles.data.system],
+    )
+    residual = cells[particles.data.system].wrap(particles.data.positions - co_moved)
+    displacement = particles.data.system.update_labels(systems.keys).max_over(
+        jnp.linalg.norm(residual, axis=-1)
+    )
+    # Empty systems reduce to -inf.
+    u_max = jnp.maximum(Table.broadcast_to(displacement, systems).data, 0.0)
     # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ
     # (cheaper than an SVD; the clamp guards eigvalsh's tiny negative noise).
-    gram = deform @ jnp.swapaxes(deform, -1, -2)
+    f = deformation.data
+    gram = f @ jnp.swapaxes(f, -1, -2)
     sigma_min = jnp.sqrt(jnp.maximum(jnp.linalg.eigvalsh(gram)[..., 0], 0.0))
-    r_build = effective_build_radii(cutoff_values, skin, reference.cell)
+    r_build = Table.broadcast_to(radii, systems).data
+    cutoff = Table.broadcast_to(cutoffs, systems).data.astype(r_build.dtype)
     consumed = 2.0 * u_max + r_build * jnp.maximum(0.0, 1.0 - sigma_min)
-    return Table(systems.keys, SkinMargin(consumed, r_build - cutoff_values))
+    return Table(systems.keys, SkinMargin(consumed, r_build - cutoff))

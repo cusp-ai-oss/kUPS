@@ -86,6 +86,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.neighborlist.verlet import (
     SkinMargin,
+    SkinPoints,
     SkinReference,
     effective_build_radii,
     skin_margin,
@@ -140,6 +141,7 @@ __all__ = [
     "RefineMaskNeighborList",
     "QueriedKeysDedupMask",
     "SkinMargin",
+    "SkinPoints",
     "SkinReference",
     "UniversalNeighborlistParameters",
     "all_connected_neighborlist",
