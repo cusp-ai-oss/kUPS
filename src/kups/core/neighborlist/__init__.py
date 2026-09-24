@@ -85,14 +85,17 @@ from kups.core.neighborlist.types import (
     SelectableNeighborList,
 )
 from kups.core.neighborlist.verlet import (
+    SKIN_PARAMS,
     SkinMargin,
     SkinPoints,
     SkinReference,
+    VerletSkinState,
     effective_build_radii,
     skin_margin,
 )
 
 __all__ = [
+    "SKIN_PARAMS",
     "AdaptiveNeighborList",
     "AllDenseNearestNeighborList",
     "AllDenseSelector",
@@ -143,6 +146,7 @@ __all__ = [
     "SkinMargin",
     "SkinPoints",
     "SkinReference",
+    "VerletSkinState",
     "UniversalNeighborlistParameters",
     "all_connected_neighborlist",
     "all_dense_cost",

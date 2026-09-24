@@ -14,13 +14,19 @@ from jax import Array
 from kups.core.cell import Cell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.lens import bind
+from kups.core.capacity import FixedCapacity
 from kups.core.neighborlist import (
+    SKIN_PARAMS,
+    DenseNearestNeighborList,
     SkinMargin,
     SkinReference,
+    UniversalNeighborlistParameters,
+    VerletSkinState,
     effective_build_radii,
     skin_margin,
 )
 from kups.core.typing import SystemId
+from kups.core.utils.jax import dataclass, tree_copy
 
 from ._builders import make_lh, make_systems
 
@@ -204,3 +210,78 @@ class TestEffectiveBuildRadii:
         cell = _cell(8.0 * jnp.eye(3), periodic=(False, False, False))
         radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
         assert float(radii[0]) == pytest.approx(5.0)
+
+
+PARAMS = UniversalNeighborlistParameters(16, 32, 32, 64)
+
+
+def _inputs(dtype=jnp.float64):
+    positions = jax.random.uniform(jax.random.key(0), (12, 3)) * 10.0
+    # make_lh shares one buffer between labels; copy so no leaf aliases another.
+    particles = tree_copy(make_lh(positions.astype(dtype), jnp.zeros(12, dtype=int)))
+    systems, cutoffs = make_systems(_cell(10.0 * jnp.eye(3)), jnp.array([CUTOFF]))
+    return particles, systems, cutoffs
+
+
+def _built(cache: VerletSkinState) -> VerletSkinState:
+    """``cache`` with nonzero radii, as after a build."""
+    return bind(cache).focus(lambda c: c.radii.data).apply(lambda r: r + CUTOFF + SKIN)
+
+
+class TestVerletSkinState:
+    def test_new_allocates_an_unbuilt_cache_of_builder_size(self):
+        particles, systems, _ = _inputs()
+        cache = VerletSkinState.new(particles, systems, PARAMS)
+        assert len(cache.edges) == PARAMS.avg_edges * particles.size
+        assert not bool(cache.edges.indices.valid_mask.any())
+        np.testing.assert_array_equal(cache.radii.data, 0.0)
+        np.testing.assert_array_equal(
+            cache.reference.particles.data.positions, particles.data.positions
+        )
+
+    def test_new_copies_the_reference_so_the_state_can_be_donated(self):
+        @dataclass
+        class Holder:
+            particles: Table
+            cache: VerletSkinState
+
+        particles, systems, _ = _inputs()
+        holder = Holder(particles, VerletSkinState.new(particles, systems, PARAMS))
+        jax.jit(lambda h: h, donate_argnums=0)(holder)
+
+    def test_float32_positions_allocate_the_builder_shift_dtype(self):
+        particles, systems, cutoffs = _inputs(jnp.float32)
+        builder = DenseNearestNeighborList(
+            avg_candidates=FixedCapacity(PARAMS.avg_candidates),
+            avg_edges=FixedCapacity(PARAMS.avg_edges),
+            avg_image_candidates=FixedCapacity(PARAMS.avg_image_candidates),
+            cutoffs=cutoffs,
+        )
+        built = builder(particles, systems)
+        cache = VerletSkinState.new(particles, systems, PARAMS)
+        assert cache.edges.shifts.dtype == built.shifts.dtype
+        assert cache.edges.shifts.shape == built.shifts.shape
+
+    def test_edge_rows_must_match_the_capacities(self):
+        particles, systems, _ = _inputs()
+        cache = VerletSkinState.new(particles, systems, PARAMS)
+        grown = UniversalNeighborlistParameters(32, 32, 32, 64)
+        with pytest.raises(AssertionError):
+            VerletSkinState(grown, cache.edges, cache.reference, cache.radii)
+
+
+class TestSkinParams:
+    def test_unchanged_capacities_keep_the_build(self):
+        particles, systems, _ = _inputs()
+        cache = _built(VerletSkinState.new(particles, systems, PARAMS))
+        assert SKIN_PARAMS.set(cache, SKIN_PARAMS.get(cache)) is cache
+
+    def test_grown_capacities_discard_the_build(self):
+        particles, systems, _ = _inputs()
+        cache = _built(VerletSkinState.new(particles, systems, PARAMS))
+        grown = UniversalNeighborlistParameters(32, 64, 64, 64)
+        resized = SKIN_PARAMS.set(cache, grown)
+        assert SKIN_PARAMS.get(resized) == grown
+        assert len(resized.edges) == grown.avg_edges * particles.size
+        assert not bool(resized.edges.indices.valid_mask.any())
+        np.testing.assert_array_equal(resized.radii.data, 0.0)

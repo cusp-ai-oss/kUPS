@@ -5,12 +5,17 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table
+from kups.core.lens import LambdaLens, Lens
+from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.neighborlist.types import NeighborListPoints, NeighborListSystems
 from kups.core.typing import (
     ExclusionId,
@@ -19,7 +24,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, skip_post_init_if_disabled, tree_copy
 
 
 def effective_build_radii(
@@ -193,3 +198,82 @@ def skin_margin(
     cutoff = Table.broadcast_to(cutoffs, systems).data.astype(r_build.dtype)
     consumed = 2.0 * u_max + r_build * jnp.maximum(0.0, 1.0 - sigma_min)
     return Table(systems.keys, SkinMargin(consumed, r_build - cutoff))
+
+
+@dataclass
+class VerletSkinState:
+    """The last skin build and the capacities it was built with.
+
+    Attributes:
+        params: Capacities of the build. ``edges`` has ``params.avg_edges`` rows
+            per particle, the full self-graph output size of the pair builders.
+        edges: Candidate pairs within ``radii`` at the build.
+        reference: Particle inputs and cells at the build.
+        radii: Build radii (Å); zero before the first build.
+    """
+
+    params: UniversalNeighborlistParameters
+    edges: Edges[Literal[2]]
+    reference: SkinReference
+    radii: Table[SystemId, Array]
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        rows = self.params.avg_edges * self.reference.particles.size
+        assert len(self.edges) == rows, (
+            f"Skin cache holds {len(self.edges)} edges; its capacities imply {rows}. "
+            "Change capacities through SKIN_PARAMS."
+        )
+
+    @classmethod
+    def new(
+        cls,
+        particles: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        params: UniversalNeighborlistParameters,
+    ) -> VerletSkinState:
+        """Allocate an unbuilt cache.
+
+        Args:
+            particles: Particle table.
+            systems: System table.
+            params: Capacities of the skin build.
+
+        Returns:
+            Cache with out-of-bounds edges and zero radii. The reference is a
+            copy, so donating a state that holds both is safe.
+        """
+        return _unbuilt(params, tree_copy(SkinReference.new(particles, systems)))
+
+
+def _unbuilt(
+    params: UniversalNeighborlistParameters, reference: SkinReference
+) -> VerletSkinState:
+    particles = reference.particles
+    rows = params.avg_edges * particles.size
+    # Builders emit shifts in the dtype of the fractional coordinates.
+    dtype = jnp.result_type(particles.data.positions, reference.cell.data.vectors)
+    return VerletSkinState(
+        params,
+        Edges(
+            Index(particles.keys, jnp.full((rows, 2), particles.size, dtype=int)),
+            jnp.zeros((rows, 1, 3), dtype),
+        ),
+        reference,
+        Table(reference.cell.keys, jnp.zeros(reference.cell.size, dtype)),
+    )
+
+
+def _set_skin_params(
+    state: VerletSkinState, value: UniversalNeighborlistParameters
+) -> VerletSkinState:
+    if value == state.params:
+        return state
+    return _unbuilt(value, state.reference)
+
+
+SKIN_PARAMS: Lens[VerletSkinState, UniversalNeighborlistParameters] = LambdaLens(
+    lambda c: c.params, _set_skin_params
+)
+"""Capacities of a skin cache. Setting different ones discards the build, which may
+have overflowed them."""
