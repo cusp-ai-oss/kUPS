@@ -32,7 +32,10 @@ from kups.application.potential.mliap.tojax import (
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import Lens
-from kups.core.neighborlist import AdaptiveNeighborList, NeighborListFactory
+from kups.core.neighborlist import (
+    AdaptiveNeighborList,
+    NeighborListFactory,
+)
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import SystemId
@@ -64,13 +67,11 @@ class LjPotentialConfig(BaseModel):
     parameters: dict[str, tuple[float | None, float | None]]
     mixing_rule: MixingRule
 
-    def build[State, Focus: IsLJGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsLJGraphState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
+        neighborlist_factory: NeighborListFactory[State] = AdaptiveNeighborList.new,
     ) -> BuiltPotential[State]:
         """Build the LJ potential with its parameters bound in."""
         params = LennardJonesParameters.from_dict(
@@ -93,13 +94,11 @@ class TojaxPotentialConfig(BaseModel):
     backend: Literal["tojax"] = "tojax"
     model_path: str | Path
 
-    def build[State, Focus: IsTojaxedGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsTojaxedGraphState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
+        neighborlist_factory: NeighborListFactory[State] = AdaptiveNeighborList.new,
     ) -> BuiltPotential[State]:
         """Build the jaxified potential from the exported model."""
         model = TojaxedMliap.from_zip_file(get_model_path(self.model_path))
@@ -120,13 +119,11 @@ class MaceConfig(BaseModel):
     device: Literal["cpu", "cuda"] = "cuda"
     dtype: Literal["float32", "float64"] = "float32"
 
-    def build[State, Focus: IsTorchMliapGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsTorchMliapGraphState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
+        neighborlist_factory: NeighborListFactory[State] = AdaptiveNeighborList.new,
     ) -> BuiltPotential[State]:
         """Load the MACE checkpoint and build the potential (lazy torch import)."""
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
@@ -156,13 +153,11 @@ class UmaConfig(BaseModel):
     task_name: UMATaskName = "omat"
     inference_settings: UMAInferenceSettings = "default"
 
-    def build[State, Focus: IsTorchMliapGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsTorchMliapGraphState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
+        neighborlist_factory: NeighborListFactory[State] = AdaptiveNeighborList.new,
     ) -> BuiltPotential[State]:
         """Load the UMA checkpoint and build the potential (lazy torch import)."""
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state

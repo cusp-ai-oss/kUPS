@@ -28,6 +28,7 @@ from jax import Array
 from kups.core.capacity import Capacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
+from kups.core.lens import Lens
 from kups.core.neighborlist.edges import Edges
 from kups.core.typing import (
     HasCell,
@@ -281,24 +282,20 @@ class IsUniversalNeighborlistParams(Protocol):
 
 
 class NeighborListFactory[State](Protocol):
-    """Constructs a pair :class:`NeighborList` for a given state and cutoffs.
+    """Constructs a pair :class:`NeighborList` from a state, a lens to its
+    neighbor-list parameters, and cutoffs.
 
-    Used by radius-based potential factories so the construction strategy
-    can be swapped without coupling the potential to a concrete
-    neighbor-list class. The library default is
-    :meth:`kups.core.neighborlist.AdaptiveNeighborList.from_state`,
-    which is contravariant-compatible with any state satisfying
-    :class:`IsNeighborListState`.
-
-    The ``State`` type parameter is contravariant (it appears only in
-    input position in ``__call__``), so a factory written against a
-    broader state protocol can be passed where a narrower one is expected.
+    Matches the neighbor lists' ``new`` classmethods; the library default is
+    :meth:`kups.core.neighborlist.AdaptiveNeighborList.new`. ``lens`` is
+    relative to ``state``, the state runtime-assertion fixes are applied to.
     """
 
     def __call__(
         self,
         state: State,
+        lens: Lens[State, IsUniversalNeighborlistParams],
         cutoffs: Table[SystemId, Array],
+        /,
     ) -> NeighborList[Literal[2]]: ...
 
 
