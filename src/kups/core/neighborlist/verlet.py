@@ -5,19 +5,23 @@
 
 from __future__ import annotations
 
-from typing import Callable, Literal
+from typing import Callable, Literal, overload
 
 import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
 
+from kups.core.capacity import Capacity, LensCapacity
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table
 from kups.core.lens import LambdaLens, Lens
+from kups.core.neighborlist.adaptive import AdaptiveNeighborList
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
+from kups.core.neighborlist.refine import RefineCutoffNeighborList
 from kups.core.neighborlist.types import (
+    IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListPoints,
     NeighborListSystems,
@@ -353,3 +357,91 @@ def refresh_skin(
 
     stale = ~skin_covers(cache, particles, systems, cutoffs)
     return jax.lax.cond(stale & has_budget, rebuild, lambda: cache)
+
+
+@dataclass
+class VerletNeighborList(NeighborList[Literal[2]]):
+    """Refine a skin cache that covers the call; otherwise build.
+
+    Local, bipartite, and differently keyed calls always use ``fallback``.
+
+    Attributes:
+        cache: Skin cache, read only.
+        fallback: Neighbor list bound to ``cutoffs``.
+        avg_edges: Per-particle output capacity, as for ``fallback``.
+        cutoffs: Interaction cutoffs (Å).
+    """
+
+    cache: VerletSkinState
+    fallback: NeighborList[Literal[2]]
+    avg_edges: Capacity[int]
+    cutoffs: Table[SystemId, Array]
+
+    @classmethod
+    def new[S](
+        cls,
+        state: S,
+        lens: Lens[S, IsUniversalNeighborlistParams],
+        cache: VerletSkinState,
+        cutoffs: Table[SystemId, Array],
+    ) -> VerletNeighborList:
+        """Read ``cache``, falling back to an adaptive build.
+
+        Args:
+            state: Object exposing the output capacities via ``lens``.
+            lens: Lens focusing the ``IsUniversalNeighborlistParams`` of the
+                cutoff neighbor list.
+            cache: Skin cache.
+            cutoffs: Interaction cutoffs (Å).
+
+        Returns:
+            A neighbor list whose output is sized by the cutoff capacities.
+        """
+        return cls(
+            cache,
+            AdaptiveNeighborList.new(state, lens, cutoffs),
+            LensCapacity(lens.get(state).avg_edges, lens.focus(lambda p: p.avg_edges)),
+            cutoffs,
+        )
+
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints],
+    ) -> Edges[Literal[2]]: ...
+    @overload
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]: ...
+    def __call__(
+        self,
+        keys: Table[ParticleId, NeighborListPoints],
+        systems: Table[SystemId, NeighborListSystems],
+        *,
+        queries: Table[ParticleId, NeighborListPoints] | None = None,
+        queried_keys: Index[ParticleId] | None = None,
+    ) -> Edges[Literal[2]]:
+        if queries is not None:
+            return self.fallback(keys, systems, queries=queries)
+        reference = self.cache.reference
+        if (
+            queried_keys is not None
+            or keys.keys != reference.particles.keys
+            or systems.keys != reference.cell.keys
+        ):
+            return self.fallback(keys, systems, queried_keys=queried_keys)
+        refine = RefineCutoffNeighborList(
+            self.cache.edges, self.avg_edges, self.cutoffs
+        )
+        return jax.lax.cond(
+            skin_covers(self.cache, keys, systems, self.cutoffs),
+            lambda: refine(keys, systems),
+            lambda: self.fallback(keys, systems),
+        )
