@@ -21,7 +21,13 @@ from jax import Array
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.lens import bind
-from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled, tree_map
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    has_array_leaves,
+    skip_post_init_if_disabled,
+    tree_map,
+)
 from kups.core.utils.ops import pad_axis
 
 if TYPE_CHECKING:
@@ -54,6 +60,15 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
     plain array leaves are zeroed and other :class:`Index` leaves get an
     OOB sentinel for unoccupied rows.
 
+    Sanitization lives in ``__post_init__``, which JAX re-runs on every
+    pytree reconstruction (``tree_map``, ``jit`` boundaries, lens ``set``).
+    A row is therefore only ever as valid as its viewed leaf: data written
+    into an unoccupied row without also marking it occupied in the viewed
+    leaf is silently zeroed again by the next reconstruction.  Always write
+    the viewed leaf and the data together, as :meth:`update` does.
+    Reconstructions whose leaves are not arrays (``None`` or shape
+    placeholders, ``jit(...).lower`` stubs) skip sanitization.
+
     Attributes:
         view: Static callable that extracts the authoritative Index leaf
             from the data.
@@ -75,6 +90,8 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
         super().__post_init__()
+        if not has_array_leaves(self.data):
+            return  # Placeholder leaves carry no occupation to sanitize.
         mask = self.occupation
         try:
             viewed_leaf = self.view(self.data)

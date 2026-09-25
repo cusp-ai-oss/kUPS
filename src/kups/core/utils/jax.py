@@ -823,6 +823,19 @@ def skip_post_init_if_disabled(post_init: Callable[..., None]):
     return wrapper
 
 
+def has_array_leaves(tree: Any) -> bool:
+    """Whether every leaf of ``tree`` is a JAX or NumPy array.
+
+    Pytree dataclasses re-run ``__post_init__`` on every reconstruction,
+    including ones where the array leaves have been replaced by placeholders
+    (``None``, shapes, dataset names, ``jit(...).lower`` argument stubs, …).
+    Validation that inspects array shapes or values should return early when
+    this is false, since there is nothing to validate.
+    """
+    leaves = jax.tree.leaves(tree, is_leaf=lambda x: x is None)
+    return all(isinstance(x, (Array, np.ndarray)) for x in leaves)
+
+
 ScatterModes = Literal["promise_in_bounds", "fill", "drop", "clip"]
 
 
