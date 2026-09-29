@@ -3715,3 +3715,45 @@ class TestPropertyAlias:
 
         npt.assert_array_equal(result.inner.x, jnp.array([9, 8, 7]))
         npt.assert_array_equal(result.x, jnp.array([9, 8, 7]))
+
+
+@dataclass
+class Items:
+    """Container whose focus paths can be indexed."""
+
+    items: list[int]
+
+
+class TestOverlappingPaths:
+    """Inferred setters reject focus functions that select the same data twice."""
+
+    def test_duplicate_path_rejected_on_set(self, person):
+        duplicated = lens(lambda p: (p.age, p.age))
+        assert duplicated.get(person) == (30, 30)  # reading is unaffected
+        with pytest.raises(ValueError, match=r"overlapping paths.*x\.age and x\.age"):
+            duplicated.set(person, (31, 32))
+
+    def test_prefix_path_rejected_on_set(self, person):
+        nested = lens(lambda p: (p.address, p.address.city))
+        with pytest.raises(ValueError, match=r"x\.address\.city and x\.address"):
+            nested.set(person, (person.address, "Elsewhere"))
+
+    def test_identity_overlaps_every_field(self, person):
+        with pytest.raises(ValueError, match="overlapping paths"):
+            lens(lambda p: (p, p.name)).set(person, (person, "Jane"))
+
+    def test_disjoint_paths_still_set(self, person):
+        result = lens(lambda p: (p.name, p.address.city)).set(
+            person, ("Jane", "Elsewhere")
+        )
+        assert (result.name, result.address.city) == ("Jane", "Elsewhere")
+
+    def test_distinct_items_are_disjoint(self):
+        container = Items(items=[1, 2, 3])
+        result = lens(lambda c: (c.items[0], c.items[2])).set(container, (10, 30))
+        assert result.items == [10, 2, 30]
+
+    def test_duplicate_item_rejected_on_set(self):
+        container = Items(items=[1, 2, 3])
+        with pytest.raises(ValueError, match=r"x\.items\[1\] and x\.items\[1\]"):
+            lens(lambda c: (c.items[1], c.items[1])).set(container, (0, 0))
