@@ -263,10 +263,13 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         parameters = self.parameters_view(state)
         neighborlist_factory = self.neighborlist_view(state)
 
-        # Build cutoffs: remap sphere system indices into systems index space
-        seg_ids = parameters.system.indices_in(tuple(systems.keys))
-        max_radii = jax.ops.segment_max(parameters.radii, seg_ids, len(systems.keys))
-        cutoffs = Table(systems.keys, max_radii)
+        # Spheres are keyed on every system of the batch (``from_data`` only knows the
+        # systems that carry spheres); systems without spheres get a zero cutoff.
+        sphere_system = parameters.system.update_labels(tuple(systems.keys))
+        max_radii = jax.ops.segment_max(
+            parameters.radii, sphere_system.indices, len(systems.keys)
+        )
+        cutoffs = Table(systems.keys, jnp.maximum(max_radii, 0.0))
 
         nnlist_particles = particles.map_data(
             lambda p: _BlockingSpherePoints(
@@ -279,14 +282,14 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
 
         # Build sphere rh as Indexed[ParticleId, _BlockingSpherePoints]
         p = parameters.positions.shape[0]
-        sphere_inclusion = parameters.system.to_cls(InclusionId)
+        sphere_inclusion = sphere_system.to_cls(InclusionId)
         sphere_exclusion = Index.new(
             tuple(ExclusionId(len(particles) + i) for i in range(p))
         )
         spheres = Table.arange(
             _BlockingSpherePoints(
                 positions=parameters.positions,
-                system=parameters.system,
+                system=sphere_system,
                 inclusion=sphere_inclusion,
                 exclusion=sphere_exclusion,
             ),
