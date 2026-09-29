@@ -485,11 +485,7 @@ class SimpleLens(BaseLens[S, R]):
         try:
             return _traversal_lens(self.get, cls=type(state)).set(state, value)
         except _LensTraversalError as e:
-            raise ValueError(
-                f"Cannot set value through this lens: {e}\n"
-                "Hint: The focus function must return references to parts of the data, "
-                "not computed values or literals."
-            ) from e
+            raise ValueError(f"Cannot set value through this lens: {e}") from e
 
 
 @dataclass
@@ -1326,11 +1322,67 @@ def _lift_to_traversal(
             raise _LensTraversalError(
                 "Focus function returned a computed value instead of a path into the data. "
                 f"Use attribute access (x.field) or indexing (x[i]) to reference data. "
-                f"Got: {types}"
+                f"Got: {types}\n"
+                "Hint: The focus function must return references to parts of the data, "
+                "not computed values or literals."
             )
+        _check_paths_disjoint(leaves)
         return _TreeTraversal(treedef=treedef, children=tuple(leaves))
 
     return wrapper
+
+
+def _check_paths_disjoint(leaves: Sequence[_PathTraversal]) -> None:
+    """Raise if two focus paths are equal or one is a prefix of the other.
+
+    Setting through overlapping paths is order dependent: the later write wins
+    silently and ``get`` after ``set`` no longer returns what was set. Paths with
+    unhashable item keys (e.g. array indices) cannot be compared and are skipped.
+    """
+
+    # A path is the sequence of accesses the getter made on the proxy, e.g.
+    # ``x.address.city`` -> (attr "address", attr "city"). Attribute names and
+    # item keys are tagged so that ``x.foo`` and ``x["foo"]`` stay distinct.
+    def as_key(component: _LensPathComponent) -> tuple[str, Any]:
+        if isinstance(component, _AttributeAccess):
+            return ("attr", component.name)
+        return ("item", component.key)
+
+    def describe(path: tuple[tuple[str, Any], ...]) -> str:
+        return "x" + "".join(
+            f".{v}" if kind == "attr" else f"[{v!r}]" for kind, v in path
+        )
+
+    # Two paths overlap iff one is a prefix of the other (equality included).
+    # ``seen`` holds every complete path so far; ``prefixes`` holds all of their
+    # proper prefixes, so both directions are a set lookup rather than a scan.
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+    prefixes: set[tuple[tuple[str, Any], ...]] = set()
+    for leaf in leaves:
+        path = tuple(as_key(c) for c in leaf.lens_path)
+        try:
+            hash(path)
+        except TypeError:
+            # An item key such as a JAX array is unhashable; we cannot tell
+            # whether it repeats, so leave that path unchecked rather than guess.
+            continue
+        # Case 1: an earlier path is a prefix of (or equal to) this one, e.g.
+        # ``x.address`` was selected and now ``x.address.city`` is.
+        # ``range(len(path) + 1)`` includes ``path`` itself for the equality case.
+        clash = next((path[:i] for i in range(len(path) + 1) if path[:i] in seen), None)
+        # Case 2: this path is a proper prefix of an earlier one, e.g.
+        # ``x.address.city`` was selected and now ``x.address`` is. Recover the
+        # earlier path for the error message.
+        if clash is None and path in prefixes:
+            clash = next(s for s in seen if s[: len(path)] == path)
+        if clash is not None:
+            raise _LensTraversalError(
+                "Focus function references overlapping paths into the data: "
+                f"{describe(path)} and {describe(clash)}. "
+                "Each part of the data may be selected at most once."
+            )
+        seen.add(path)
+        prefixes.update(path[:i] for i in range(len(path)))
 
 
 class _LensTraversalError(Exception):
