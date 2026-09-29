@@ -210,8 +210,9 @@ def _make_noop_primitive(name: str) -> Primitive:
     batching.primitive_batchers[primitive] = noop_p_batcher
 
     def noop_p_dce_rule(
-        used_outputs: list[bool], eqn: JaxprEqn, **kwargs: Any
+        used_outputs: list[bool], *args: Any, **kwargs: Any
     ) -> tuple[list[bool], JaxprEqn]:
+        eqn = args[-1]
         return [True] * len(used_outputs), eqn
 
     pe.dce_rules[primitive] = noop_p_dce_rule
@@ -262,9 +263,10 @@ def _make_constant_primitive(name: str) -> Primitive:
     batching.primitive_batchers[primitive] = constant_p_batcher
 
     def constant_p_dce_rule(
-        used_outputs: list[bool], eqn: JaxprEqn, **kwargs: Any
+        used_outputs: list[bool], *args: Any, **kwargs: Any
     ) -> tuple[list[bool], JaxprEqn]:
         # The primitive is opaque, so all inputs are used.
+        eqn = args[-1]
         return [True] * len(eqn.invars), eqn
 
     pe.dce_rules[primitive] = constant_p_dce_rule
