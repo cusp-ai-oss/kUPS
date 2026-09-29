@@ -82,9 +82,7 @@ def make_ewald_from_state[State](
     gradient: None = None,
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsEwaldState[MaybeCached[EwaldParameters, Any]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -97,9 +95,7 @@ def make_ewald_from_state[State](
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsEwaldState[MaybeCached[EwaldParameters, Any]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -114,9 +110,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     gradient: None = None,
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsEwaldState[HasCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -134,9 +128,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, P]: ...
 
 
@@ -149,7 +141,7 @@ def make_ewald_from_state[State](
     gradient: None = None,
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -162,7 +154,7 @@ def make_ewald_from_state[State](
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -175,9 +167,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     gradient: None = None,
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsCachedEwaldGraphState[EwaldCache[EmptyType, EmptyType]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -192,9 +182,7 @@ def make_ewald_from_state[State, P: Patch[Any]](
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, P]: ...
 
 
@@ -206,7 +194,7 @@ def make_ewald_from_state(
     gradient: Lens[Geometry, Any] | None = None,
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[Any, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create an Ewald potential from a typed state, optionally with incremental updates.
 
@@ -260,8 +248,10 @@ def make_ewald_from_state(
         else:
             cache_view = state.focus(lambda x: x.ewald_cache)
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), param_view(s).cutoff)
+        return neighborlist_factory(s, neighborlist_params, param_view(s).cutoff)
 
     return make_ewald_potential(
         state.focus(lambda x: x.particles),

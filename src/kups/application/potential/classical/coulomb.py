@@ -70,7 +70,7 @@ def make_coulomb_vacuum_from_state[State](
     *,
     parameters: None = None,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -81,7 +81,7 @@ def make_coulomb_vacuum_from_state[State](
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -92,7 +92,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     *,
     parameters: None = None,
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -103,7 +103,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
@@ -114,7 +114,7 @@ def make_coulomb_vacuum_from_state[State](
     *,
     parameters: Table[SystemId, Array],
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
@@ -125,7 +125,7 @@ def make_coulomb_vacuum_from_state[State](
     *,
     parameters: Table[SystemId, Array],
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -136,7 +136,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     *,
     parameters: Table[SystemId, Array],
     gradient: None = None,
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
@@ -147,7 +147,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     *,
     parameters: Table[SystemId, Array],
     gradient: Lens[Geometry, PositionsAndCell],
-    neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
 
 
@@ -157,7 +157,7 @@ def make_coulomb_vacuum_from_state(
     *,
     parameters: Table[SystemId, Array] | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create a Coulomb vacuum potential from a typed state, optionally with incremental updates.
 
@@ -193,8 +193,10 @@ def make_coulomb_vacuum_from_state(
     else:
         cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), cutoff_view(s))
+        return neighborlist_factory(s, neighborlist_params, cutoff_view(s))
 
     return make_coulomb_vacuum_potential(
         state.focus(lambda x: x.particles),

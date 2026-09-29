@@ -187,7 +187,7 @@ def evaluate_radius_graph_potential[
     hessian_idx_view: View[Any, Hessians] = EMPTY_LENS,
     neighborlist_factory: NeighborListFactory[
         _RadiusGraphEvalState
-    ] = AdaptiveNeighborList.from_state,
+    ] = AdaptiveNeighborList.new,
 ) -> PotentialOut[Gradients, Hessians]:
     """Build a radius graph and evaluate an edge-based energy function on it.
 
@@ -203,7 +203,8 @@ def evaluate_radius_graph_potential[
         hessian_lens: Lens selecting the gradient for Hessian computation.
         hessian_idx_view: View used to index into the Hessian output.
         neighborlist_factory: Builds a ``NeighborList[Literal[2]]`` from the
-            internal eval state and per-system cutoffs.
+            internal eval state, a lens to its neighbor-list parameters, and
+            per-system cutoffs.
 
     Returns:
         ``PotentialOut`` containing energy, gradients, and Hessians.
@@ -211,6 +212,7 @@ def evaluate_radius_graph_potential[
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         point_cloud.particles.data.system.counts, point_cloud.systems, cutoffs
     )
+    params = lens(lambda s: s.neighborlist_params, cls=_RadiusGraphEvalState)
     state = _RadiusGraphEvalState(
         neighborlist_params=neighborlist_params,
         particles=_SizedView(size=point_cloud.particles.size),
@@ -223,7 +225,7 @@ def evaluate_radius_graph_potential[
                 graph_constructor=GraphConstructor(
                     particles=constant(point_cloud.particles),
                     systems=constant(point_cloud.systems),
-                    neighborlist=lambda s: neighborlist_factory(s, cutoffs),
+                    neighborlist=lambda s: neighborlist_factory(s, params, cutoffs),
                     probe=None,
                 ),
                 parameter_view=constant(parameters),
