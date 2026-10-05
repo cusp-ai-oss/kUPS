@@ -79,6 +79,14 @@ class TestConstruction:
         data_ar2 = Pair(jnp.ones(3), jnp.zeros(3))
         assert Table.arange(data_ar2).keys == (0, 1, 2)
 
+    def test_placeholder_leaves_skip_validation(self):
+        """Reconstructions with non-array leaves (shapes, None, lowering stubs) must not fail."""
+        table = Table((0, 1), jnp.array([1.0, 2.0]))
+
+        assert jax.tree.map(lambda x: x.shape, table).data == (2,)
+        assert jax.tree.map(lambda x: None, table).data is None
+        jax.jit(lambda t: t.data).lower(table)
+
 
 class TestKeyOrdering:
     """Primary keys must be strictly increasing, as ``Index`` requires.

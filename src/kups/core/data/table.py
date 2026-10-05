@@ -32,6 +32,7 @@ from kups.core.utils.jax import (
     ScatterArgs,
     dataclass,
     field,
+    has_array_leaves,
     no_post_init,
     skip_post_init_if_disabled,
     tree_map,
@@ -122,13 +123,14 @@ class Table(Batched, Generic[TKey, TData]):
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
         _check_keys(self.keys)
-        updated_data = _broadcast_rows(self.data, len(self.keys))
         assert all(type(x) is self.cls for x in self.keys), (
             f"Key type mismatch: expected {self.cls.__name__}, "
             f"got {set(type(x).__name__ for x in self.keys)}."
         )
         object.__setattr__(self, "_cls", self.cls)
-        object.__setattr__(self, "data", updated_data)
+        if not has_array_leaves(self.data):
+            return  # Placeholder leaves carry no rows to check.
+        object.__setattr__(self, "data", _broadcast_rows(self.data, len(self.keys)))
 
     @override
     def __str__(self) -> str:

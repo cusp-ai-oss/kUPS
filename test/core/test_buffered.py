@@ -11,6 +11,7 @@ import pytest
 from kups.core.data.buffered import Buffered, add_buffers
 from kups.core.data.index import Index
 from kups.core.data.table import Table
+from kups.core.lens import bind
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 
@@ -120,6 +121,34 @@ class TestSanitization:
         buf = Buffered(("a", "b", "c"), data, _view)
         npt.assert_array_equal(buf.data.values[1], [0.0, 0.0])
         npt.assert_array_equal(buf.data.values[0], [1.0, 1.0])
+
+    def test_sanitization_reruns_on_reconstruction(self):
+        """A write into an unoccupied row only survives if the viewed leaf is written with it."""
+        data = _td([10.0, 20.0, 30.0], [True, False, True])
+        buf = Buffered(("a", "b", "c"), data, _view)
+        row = Index.new(["b"])
+
+        # Lens sets reconstruct the Buffered per focused leaf, so the values
+        # land before the status and are sanitized against the old occupation.
+        values = jnp.array([10.0, 99.0, 30.0])
+        stale = bind(buf, lambda b: (b.data.values, b.data.status)).set(
+            (values, _make_status([True, True, True]))
+        )
+        npt.assert_array_equal(stale.data.values, [10.0, 0.0, 30.0])
+
+        # ``update`` writes the whole row pytree in one reconstruction.
+        fresh = buf.update(row, _td([99.0], [True]))
+        npt.assert_array_equal(fresh.data.values, values)
+        npt.assert_array_equal(jax.tree.map(lambda x: x, fresh).data.values, values)
+
+    def test_placeholder_leaves_skip_sanitization(self):
+        """Reconstructions with non-array leaves (shapes, None, lowering stubs) must not fail."""
+        data = _td([10.0, 20.0, 30.0], [True, False, True])
+        buf = Buffered(("a", "b", "c"), data, _view)
+
+        assert jax.tree.map(lambda x: x.shape, buf).data.values == (3,)
+        assert jax.tree.map(lambda x: None, buf).data.values is None
+        jax.jit(lambda b: b.data.values).lower(buf)
 
 
 _jit_select_free = jax.jit(lambda buf, n: buf.select_free(n), static_argnames="n")
