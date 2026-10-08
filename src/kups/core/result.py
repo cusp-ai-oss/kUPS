@@ -122,10 +122,17 @@ class Result[State, Return]:
             Exception: The configured exception of any failed assertion that has no fix function.
         """
         assertions = self.failed_assertions
+        # Pass 1: refuse the whole cycle before any fix runs. Fixes may have
+        # host side effects (e.g. stream refill consumes input), so an
+        # unfixable assertion must raise before those effects happen.
         for assertion in assertions:
             if assertion.fix_fn is None:
                 raise assertion.exception
+        # Pass 2: apply fixes in order. Not transactional: if a fix raises,
+        # effects of earlier fixes are not rolled back.
         for assertion in assertions:
+            # Building `exception` formats fmt_args, pulling device arrays to
+            # the host; skip that unless DEBUG is enabled.
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.debug("Applying assertion fix: %s", assertion.exception)
             state = assertion.fix(state)
