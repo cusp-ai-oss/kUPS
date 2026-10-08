@@ -799,10 +799,18 @@ def dataclass[T](
             _data: tuple[str, ...] = data_fields,
             _meta: tuple[str, ...] = meta_fields,
             _init_meta: frozenset[str] = frozenset(init_meta_fields),
+            _post_init: Callable[[Any], None] | None = getattr(
+                dcls, "_unflatten_post_init", None
+            ),
         ) -> T:
             kwargs = dict(zip(_data, data))
             kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
-            return _cls(**kwargs)
+            if _post_init is None:
+                return _cls(**kwargs)
+            with no_post_init():
+                obj = _cls(**kwargs)
+            _post_init(obj)
+            return obj
 
         jax.tree_util.register_pytree_with_keys(
             dcls, _flatten_with_keys, _unflatten, flatten_func=_flatten

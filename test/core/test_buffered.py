@@ -94,6 +94,11 @@ class TestConstruction:
         with pytest.raises(ValueError, match="Leaf has size"):
             Buffered(("a", "b"), bad, _view)
 
+        # pytree rebuilds still run the Table checks
+        buf = Buffered(("a", "b", "c"), _td([0.0, 1.0, 2.0], [True] * 3), _view)
+        with pytest.raises(ValueError, match="Leaf has size"):
+            jax.tree.map(lambda x: x[:2], buf)
+
 
 class TestSanitization:
     def test_sanitization(self):
@@ -350,6 +355,24 @@ class TestUpdate:
         npt.assert_array_equal(result.data.x, [1.0, 99.0, 3.0])
         npt.assert_array_equal(result.data.y, [4.0, 88.0, 6.0])
         npt.assert_array_equal(result.occupation, [True, True, True])
+
+    def test_update_sanitizes_raw_rows(self):
+        systems = tuple(SystemId(i) for i in range(3))
+        data = TDSys(
+            jnp.array([1.0, 2.0, 3.0]),
+            _make_status([True, True, True]),
+            Index(systems, jnp.array([0, 1, 2])),
+        )
+        buf = Buffered((0, 1, 2), data, _view)
+        rows = TDSys(
+            jnp.array([50.0, 60.0]),
+            _make_status([True, False]),
+            Index(systems, jnp.array([0, 2])),
+        )
+        result = buf.update(Index((0, 1, 2), jnp.array([0, 2])), rows)
+        npt.assert_array_equal(result.data.values, [50.0, 2.0, 0.0])
+        npt.assert_array_equal(result.data.system.indices, [0, 1, 3])
+        npt.assert_array_equal(result.occupation, [True, True, False])
 
 
 class TestJitCompatibility:
