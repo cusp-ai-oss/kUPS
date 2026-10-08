@@ -56,7 +56,6 @@ dependencies = [
     "rich>=13.0",
     "msgpack>=1.1.2",
     "nanoargs>=0.1.1",
-    "slub>=0.1.2",
     "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
     "hdf5plugin>=6.0.0",
 ]
@@ -126,6 +125,8 @@ conflicts = [[{ extra = "uma" }, { extra = "mace" }]]
 JAX_ENABLE_X64 = "True"
 JAX_PLATFORMS = { value = "cpu", "skip_if_set" = true }
 JAX_DISABLE_MOST_OPTIMIZATIONS = { value = "True", "skip_if_set" = true }
+# Multiple host devices so the interpreter's shard_map tests run on CPU.
+XLA_FLAGS = { value = "--xla_force_host_platform_device_count=4", "skip_if_set" = true }
 
 [tool.pytest.ini_options]
 addopts = "-n auto --durations=10 --dist loadfile -v --color=yes --cov=kups"

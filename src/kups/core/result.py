@@ -20,9 +20,9 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 from jax import Array
-from slub.interpreter import InterpreterPolicy
 
 from kups.core.assertion import RuntimeAssertion, with_runtime_assertions
+from kups.core.interpreter.interpreter import InterpreterPolicy
 from kups.core.utils.jax import (
     dataclass,
     field,
