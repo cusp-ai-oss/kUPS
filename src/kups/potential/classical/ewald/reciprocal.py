@@ -13,9 +13,10 @@ from __future__ import annotations
 import einops
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
-from kups.core.data import Index
+from kups.core.data import Index, Table
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
@@ -27,9 +28,6 @@ from .parameters import (
     RECIPROCAL_GRID_BACKENDS,
     ReciprocalGridBound,
 )
-
-# CPU grids retain a complete grid per particle.
-_CPU_GRID_PARTICLE_CHUNK = 256
 
 
 def _frequency_response(
@@ -49,56 +47,9 @@ def _frequency_response(
     )
 
 
-def _phase_factors_grid(
-    positions: Array,
-    inverse_vectors: Array,
-    batch_mask: Index[SystemId],
-    bound: ReciprocalGridBound,
-) -> tuple[Array, Array]:
-    """Factor ``exp(i k·r)`` into xy phases and z rotations.
-
-    Trigonometric work grows with the sum of the axis lengths. Keeping the
-    final contraction separate lets a single system sum particles inside it.
-    """
-    sys_idx = batch_mask.indices
-    phi = (
-        2
-        * jnp.pi
-        * einops.einsum(
-            positions,
-            inverse_vectors[sys_idx],
-            "particles d, particles d a -> particles a",
-        )
-    )
-    angles = [
-        phi[:, axis, None] * jnp.arange(0 if axis == 0 else -b, b + 1, dtype=phi.dtype)
-        for axis, b in enumerate(bound)
-    ]
-    cx, cy, cz = map(jnp.cos, angles)
-    sx, sy, sz = map(jnp.sin, angles)
-
-    # Small dots materialize phase tables; elementwise products repeat the trig.
-    def rotation(c: Array, sn: Array) -> Array:
-        return jnp.stack(
-            [jnp.stack([c, sn], axis=-1), jnp.stack([-sn, c], axis=-1)], axis=-2
-        )
-
-    xy = jnp.einsum("pxk,pykc->pxyc", jnp.stack([cx, sx], axis=-1), rotation(cy, sy))
-    return xy, rotation(cz, sz)
-
-
-def _frequency_response_grid(
-    positions: Array,
-    charges: Array,
-    inverse_vectors: Array,
-    batch_mask: Index[SystemId],
-    bound: ReciprocalGridBound,
-) -> Array:
-    """Per-particle responses in ``reciprocal_grid_shifts`` order, real/imag last."""
-    xy, z = _phase_factors_grid(positions, inverse_vectors, batch_mask, bound)
-    xyz = jnp.einsum("pxyk,pzkc->pxyzc", xy, z)
-    n = positions.shape[0]
-    return charges[:, None, None] * xyz.reshape(n, -1, 2)
+def _rotation(c: Array, s: Array) -> Array:
+    """Matrices ``[[c, s], [-s, c]]`` multiplying ``(re, im)`` rows by ``c + i s``."""
+    return jnp.stack([jnp.stack([c, s], axis=-1), jnp.stack([-s, c], axis=-1)], axis=-2)
 
 
 def _use_grid_response(bound: ReciprocalGridBound) -> bool:
@@ -107,62 +58,144 @@ def _use_grid_response(bound: ReciprocalGridBound) -> bool:
     )
 
 
+def _grid_layout(
+    grid_index: Array | np.ndarray, bound: ReciprocalGridBound
+) -> tuple[np.ndarray, slice, Array | np.ndarray]:
+    """Phase-grid rows and z range to evaluate, and each k-vector's position in them.
+
+    Concrete indices crop the grid to the xy rows and z range the k-vectors of
+    all systems occupy; traced ones keep the whole grid.
+
+    Args:
+        grid_index: Flat grid positions of the k-vectors, ``(n_systems, n_kvecs)``.
+        bound: Grid axis bounds.
+
+    Returns:
+        Flat xy row indices, the z slice and positions in the ``(rows, z)`` grid.
+    """
+    _, by, bz = bound
+    nz = 2 * bz + 1
+    if not isinstance(grid_index, np.ndarray):
+        return np.arange((bound[0] + 1) * (2 * by + 1)), slice(0, nz), grid_index
+    rows, row_of_k = np.unique(grid_index // nz, return_inverse=True)
+    z = grid_index % nz
+    z0, z1 = int(z.min()), int(z.max()) + 1
+    return rows, slice(z0, z1), row_of_k.reshape(z.shape) * (z1 - z0) + (z - z0)
+
+
+def _integer_phase_powers(cos: Array, sin: Array, n: np.ndarray) -> Array:
+    """``(cos nφ, sin nφ)`` for static non-negative ``n`` from ``(cos φ, sin φ)``.
+
+    Args:
+        cos: Cosines of the unit phases, shaped ``(p,)``.
+        sin: Sines of the unit phases, shaped ``(p,)``.
+        n: Non-negative integer multiples, shaped ``(m,)``.
+
+    Returns:
+        Cosines and sines of every multiple, shaped ``(p, m, 2)``.
+    """
+    assert (n >= 0).all(), "phase multiples must be non-negative"
+    out_c = jnp.ones((len(cos), len(n)), cos.dtype)
+    out_s = jnp.zeros((len(cos), len(n)), cos.dtype)
+    pc, ps = cos[:, None], sin[:, None]
+    for b in range(int(n.max(initial=0)).bit_length()):
+        bit = ((n >> b) & 1).astype(bool)
+        if bit.any():
+            out_c, out_s = (
+                jnp.where(bit, out_c * pc - out_s * ps, out_c),
+                jnp.where(bit, out_c * ps + out_s * pc, out_s),
+            )
+        pc, ps = pc * pc - ps * ps, 2 * pc * ps
+    return jnp.stack((out_c, out_s), axis=-1)
+
+
 def _structure_factor_grid(
     positions: Array,
     charges: Array,
     inverse_vectors: Array,
     batch_mask: Index[SystemId],
     bound: ReciprocalGridBound,
+    grid_index: Array | np.ndarray,
     particle_chunk_size: int,
     k_chunk_size: int,
 ) -> Array:
-    """Sum complete reciprocal grids in particle chunks within the workspace budget."""
-    n_particles, n_systems = len(positions), batch_mask.num_labels
+    """Structure factors from factored phase grids, gathered at ``grid_index``.
+
+    Integer multiples of each particle's unit phases come from one sine and
+    cosine per axis. Particles are summed in chunks within the workspace budget;
+    a single system contracts them before materializing the grid.
+    """
+    rows, z_range, position = _grid_layout(grid_index, bound)
     bx, by, bz = bound
-    n_kvecs = (bx + 1) * (2 * by + 1) * (2 * bz + 1)
+    n_particles, n_systems = len(positions), batch_mask.num_labels
+    n_z = z_range.stop - z_range.start
     capacity = min(
         n_particles,
-        _CPU_GRID_PARTICLE_CHUNK,
         particle_chunk_size,
-        max(1, particle_chunk_size * k_chunk_size // n_kvecs),
+        max(1, particle_chunk_size * k_chunk_size // (len(rows) * n_z)),
     )
-    num_chunks = (n_particles + capacity - 1) // capacity
-    chunk = (n_particles + num_chunks - 1) // num_chunks
-    pad = -n_particles % chunk
-    position_tiles = jnp.pad(positions, ((0, pad), (0, 0))).reshape(-1, chunk, 3)
-    charge_tiles = jnp.pad(charges, (0, pad)).reshape(-1, chunk)
-    system_tiles = jnp.pad(
-        batch_mask.indices, (0, pad), constant_values=n_systems
-    ).reshape(-1, chunk)
+    num_chunks = -(-n_particles // capacity)
+    chunk = -(-n_particles // num_chunks)
+    pad = num_chunks * chunk - n_particles
+    tiles = (
+        jnp.pad(positions, ((0, pad), (0, 0))).reshape(-1, chunk, 3),
+        jnp.pad(charges, (0, pad)).reshape(-1, chunk),
+        Index.concatenate(
+            batch_mask, Index(batch_mask.keys, jnp.full(pad, n_systems))
+        ).reshape(-1, chunk),
+    )
     dtype = jnp.result_type(positions, charges, inverse_vectors)
 
-    def add_particles(
-        acc: Array, tile: tuple[Array, Array, Array]
-    ) -> tuple[Array, None]:
-        positions, charges, system_ids = tile
-        system = Index(batch_mask.keys, jnp.minimum(system_ids, n_systems - 1))
+    def grid(tile: tuple[Array, Array, Index[SystemId]]) -> Array:
+        positions, charges, system = tile
+        valid = system.valid_mask
         if n_systems == 1:
-            xy, z = _phase_factors_grid(positions, inverse_vectors, system, bound)
-            # Contract the particle dimension before materializing the grid.
-            # This avoids both a particle-by-grid response and a scatter.
-            qz = jnp.where(system_ids == 0, charges, 0)[:, None, None, None] * z
-            sf = jnp.einsum("pxyk,pzkc->xyzc", xy, qz).reshape(1, n_kvecs, 2)
-            return acc + sf, None
-        response = _frequency_response_grid(
-            positions,
-            charges,
-            inverse_vectors,
-            system,
-            bound,
-        )
-        return acc + segment_sum(response, system_ids, n_systems, mode="drop"), None
+            phi = 2 * jnp.pi * positions @ inverse_vectors[0]
+        else:
+            cell = Table(system.keys, inverse_vectors)[system]
+            phi = 2 * jnp.pi * jnp.einsum("pd,pda->pa", positions, cell)
+        cos_phi, sin_phi = jnp.cos(phi), jnp.sin(phi)
 
-    sf, _ = jax.lax.scan(
-        jax.checkpoint(add_particles, prevent_cse=False),
-        jnp.zeros((n_systems, n_kvecs, 2), dtype),
-        (position_tiles, charge_tiles, system_tiles),
-    )
-    return sf
+        def phases(axis: int, n: np.ndarray) -> Array:
+            """Phases of signed multiples ``n`` from those of ``|n|`` (odd sine)."""
+            powers = _integer_phase_powers(cos_phi[:, axis], sin_phi[:, axis], abs(n))
+            if (n >= 0).all():
+                return powers
+            sign = np.stack((np.ones(len(n)), np.sign(n)), axis=-1)
+            return powers * sign.astype(phi.dtype)
+
+        x = phases(0, np.arange(bx + 1))
+        y = phases(1, np.arange(-by, by + 1))
+        z = jnp.where(valid, charges, 0)[:, None, None] * phases(
+            2, np.arange(-bz, bz + 1)[z_range]
+        )
+        # Keep XLA from recomputing the power chains inside the products below.
+        x, y, z = jax.lax.optimization_barrier((x, y, z))
+        xr, xi = x[:, :, None, 0], x[:, :, None, 1]
+        yr, yi = y[:, None, :, 0], y[:, None, :, 1]
+        xy = jnp.stack((xr * yr - xi * yi, xr * yi + xi * yr), axis=-1)
+        xy = xy.reshape(len(positions), -1, 2)[:, rows]
+        qz = _rotation(z[..., 0], z[..., 1])
+        if n_systems == 1:
+            sf = jnp.einsum("prk,pzkc->rzc", xy, qz)[None]
+        else:
+            response = jnp.einsum("prk,pzkc->przc", xy, qz)
+            sf = system.sum_over(response).data
+        return sf.reshape(n_systems, -1, 2).astype(dtype)
+
+    if num_chunks == 1:
+        sf = grid(jax.tree.map(lambda t: t[0], tiles))
+    else:
+        sf, _ = jax.lax.scan(
+            jax.checkpoint(
+                lambda acc, tile: (acc + grid(tile), None), prevent_cse=False
+            ),
+            jnp.zeros((n_systems, len(rows) * n_z, 2), dtype),
+            tiles,
+        )
+    # Offsetting each system's positions keeps concrete indices concrete.
+    offset = np.arange(n_systems)[:, None] * (len(rows) * n_z)
+    return sf.reshape(-1, 2)[offset + position]
 
 
 def _structure_factor_full(
@@ -176,10 +209,14 @@ def _structure_factor_full(
     particle_chunk_size: int = _DEFAULT_RECIPROCAL_PARTICLE_CHUNK,
     k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
     tiled: bool = False,
+    grid_index: Array | np.ndarray | None = None,
 ) -> Array:
     """Select CPU phase grids, fused GPU values, or tiled explicit sums.
 
     Signed charges allow the same reduction to evaluate incremental deltas.
+    ``grid_index`` locates the k-vectors inside the phase grid, shaped
+    ``(n_systems, n_kvecs)``, and is required there; NumPy indices let the grid
+    be cropped to the rows the k-vectors occupy.
     """
     if particle_chunk_size < 1 or k_chunk_size < 1:
         raise ValueError("Reciprocal chunk sizes must be positive")
@@ -188,17 +225,19 @@ def _structure_factor_full(
     if n == 0 or ns == 0 or nk == 0:
         return jnp.zeros((ns, nk, 2), dtype)
     # Inactive slots can contain NaNs. Mask before trig and differentiation.
-    valid = (batch_mask.indices >= 0) & (batch_mask.indices < ns)
+    valid = batch_mask.valid_mask
     positions = jnp.where(valid[:, None], positions, 0)
     charges = jnp.where(valid, charges, 0)
-    batch_mask = Index(batch_mask.keys, jnp.where(valid, batch_mask.indices, ns))
+    batch_mask = batch_mask.apply_mask(valid)
     if not tiled and _use_grid_response(bound) and inverse_vectors is not None:
+        assert grid_index is not None, "Grid evaluation needs the k-vector positions"
         return _structure_factor_grid(
             positions,
             charges,
             inverse_vectors,
             batch_mask,
             bound,
+            grid_index,
             particle_chunk_size,
             k_chunk_size,
         ).astype(dtype)

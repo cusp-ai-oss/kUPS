@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+import dataclasses
+import functools
 from typing import Any, Callable, Literal
 
 import jax
@@ -41,9 +43,14 @@ from kups.potential.classical.ewald import (
     ewald_short_range_energy,
     ewald_short_range_pair_kernel,
     prefactor,
+    reciprocal_grid_index,
+    reciprocal_grid_shifts,
     structure_factor,
 )
-from kups.potential.classical.ewald.reciprocal import _structure_factor_full
+from kups.potential.classical.ewald.reciprocal import (
+    _integer_phase_powers,
+    _structure_factor_full,
+)
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 
 
@@ -152,7 +159,6 @@ def _parameters(cell, alpha, cutoff, k_max):
         systems.set_data(jnp.asarray([alpha], dtype=cell.vectors.dtype)),
         systems.set_data(jnp.asarray([cutoff], dtype=cell.vectors.dtype)),
         systems.set_data(jnp.asarray([k_max], dtype=cell.vectors.dtype)),
-        compact=True,
     )
 
 
@@ -732,15 +738,23 @@ class TestReciprocalReduction:
         )
         npt.assert_allclose(actual.total, expected.total, rtol=1e-12, atol=1e-12)
 
-    def _input(self, grid=False, dtype=jnp.float64, chunks=(7, 11), *, batch=4):
+    def _input(
+        self,
+        grid=False,
+        dtype=jnp.float64,
+        chunks=(7, 11),
+        *,
+        batch=4,
+        k_max=(0.85, 0.8, 0.75, 0.8),
+    ):
         n = 19  # System 3 (when present) is empty; the last two slots are inactive.
         positions = random.uniform(random.key(81), (n, 3), dtype) * 7
         charges = (
             random.normal(random.key(82), (n,), dtype).at[jnp.array([3, 4])].set(0)
         )
-        ids = jnp.array([2, 0, 1, 0, 2, 1, 2, 1, 0, 2, 0, 1, 0, 2, 1, 0, 2, 4, -1])
+        ids = jnp.array([2, 0, 1, 0, 2, 1, 2, 1, 0, 2, 0, 1, 0, 2, 1, 0, 2, 4, 4])
         if batch == 1:
-            ids = jnp.where(ids < 0, -1, jnp.where(ids < 4, 0, batch))
+            ids = jnp.where(ids < 4, 0, batch)
         positions = positions.at[-2:].set(jnp.nan)
         charges = charges.at[-2:].set(jnp.nan)
         particles = Table.arange(
@@ -760,11 +774,12 @@ class TestReciprocalReduction:
             systems,
             systems.set_data(jnp.full(batch, 0.35, dtype)),
             systems.set_data(jnp.full(batch, 3.0, dtype)),
-            systems.set_data(jnp.asarray([0.85, 0.8, 0.75, 0.8][:batch], dtype)),
-            compact=not grid,
+            systems.set_data(jnp.asarray(k_max[:batch], dtype)),
             reciprocal_particle_chunk_size=chunks[0],
             reciprocal_k_chunk_size=chunks[1],
         )
+        if not grid:
+            params = dataclasses.replace(params, reciprocal_shift_bound=(0, 0, 0))
         return EwaldLongRangeInput(PointCloud(particles, systems), params)
 
     def _reference(self, inp):
@@ -849,6 +864,53 @@ class TestReciprocalReduction:
                 ),
             )
 
+    @pytest.mark.parametrize("batch", [1, 4])
+    def test_constant_grid_matches_traced(self, batch):
+        """Concrete shifts select a cropped phase grid for one system."""
+        inp = self._input(True, batch=batch)
+        assert inp.parameters.reciprocal_shift_bound != (0, 0, 0)
+        inputs = [inp, self._proposal(inp)]
+        if batch > 1:
+            # Parameters for every system, a point cloud holding only system 2.
+            p = inp.point_cloud.particles.data
+            rows = np.flatnonzero(np.asarray(p.system.indices) == 2)
+            p = jax.tree.map(lambda a: a[rows], p)
+            system = Index((SystemId(2),), jnp.zeros(len(rows), int))
+            p = bind(p, lambda x: x.system).set(system)
+            systems = inp.point_cloud.systems
+            systems = Table(
+                (SystemId(2),), jax.tree.map(lambda a: a[2:3], systems.data)
+            )
+            inputs.append(
+                bind(inp, lambda x: x.point_cloud).set(
+                    PointCloud(Table.arange(p, label=ParticleId), systems)
+                )
+            )
+        for x in inputs:
+            constant, _ = structure_factor(x)
+            traced, _ = jax.jit(structure_factor)(x)
+            npt.assert_allclose(constant.total, self._reference(x), atol=2e-13)
+            npt.assert_allclose(constant.total, traced.total, atol=2e-13)
+            energy = ewald_long_range_energy(x).data.data
+            npt.assert_allclose(
+                energy, jax.jit(ewald_long_range_energy)(x).data.data, rtol=1e-12
+            )
+
+        def total(x, positions):
+            x = bind(x, lambda y: y.point_cloud.particles.data.positions).set(positions)
+            return ewald_long_range_energy(x).data.data.sum()
+
+        # Closing over the input keeps the shifts concrete under jit; the
+        # proposal differentiates the incremental delta's JVP.
+        x = inputs[1]
+        pos = jnp.nan_to_num(x.point_cloud.particles.data.positions)
+        npt.assert_allclose(
+            jax.jit(jax.grad(functools.partial(total, x)))(pos),
+            jax.jit(jax.grad(total, 1))(x, pos),
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
     @pytest.mark.parametrize("grid", [False, True])
     @pytest.mark.parametrize("batch", [1, 4])
     @pytest.mark.parametrize("chunks", [(2, 11), (7, 11), (1024, 128)])
@@ -913,6 +975,12 @@ class TestReciprocalReduction:
         for actual, expected in zip(*second_derivatives):
             npt.assert_allclose(actual, expected, atol=2e-11, rtol=2e-11)
 
+    def test_incremental_update_requires_cache(self):
+        proposal = bind(self._proposal(self._input()), lambda x: x.cache).set(None)
+        for evaluate in (structure_factor, ewald_long_range_energy):
+            with pytest.raises(AssertionError):
+                evaluate(proposal)
+
     @pytest.mark.parametrize("empty", ["particles", "kvecs", "changes"])
     def test_empty_inputs(self, empty):
         inp = self._input()
@@ -959,25 +1027,19 @@ class TestReciprocalReduction:
 class TestReciprocalShifts:
     def test_grid_encloses_retained_vectors_with_tight_axis_bounds(self):
         inp = TestReciprocalReduction()._input(grid=True)
-        compact = EwaldParameters.from_cutoffs(
-            inp.point_cloud.systems,
-            inp.parameters.alpha,
-            inp.parameters.cutoff,
-            inp.parameters.k_max,
-            compact=True,
-        )
         bounds = inp.parameters.reciprocal_shift_bound
         assert len(set(bounds)) > 1  # Anisotropic, skew cells need distinct bounds.
-        shifts = np.asarray(compact.reciprocal_lattice_shifts.data)
+        shifts = np.asarray(inp.parameters.reciprocal_lattice_shifts.data)
         npt.assert_array_equal(bounds, np.max(np.abs(shifts), axis=(0, 1)))
-        actual_grid = np.asarray(inp.parameters.reciprocal_lattice_shifts.data)
-        assert actual_grid.shape[1] == (bounds[0] + 1) * (2 * bounds[1] + 1) * (
+        assert shifts.shape[1] < (bounds[0] + 1) * (2 * bounds[1] + 1) * (
             2 * bounds[2] + 1
         )
 
     @pytest.mark.parametrize("grid", [False, True])
-    def test_vectors_and_energy_against_independent_sphere(self, grid):
-        inp = TestReciprocalReduction()._input(grid)
+    # Different k-grids per system, one holding only k = 0.
+    @pytest.mark.parametrize("k_max", [(0.85, 0.8, 0.75, 0.8), (0.0, 1.1, 0.75, 0.4)])
+    def test_vectors_and_energy_against_independent_sphere(self, grid, k_max):
+        inp = TestReciprocalReduction()._input(grid, k_max=k_max)
         bound = inp.parameters.reciprocal_shift_bound
         assert isinstance(bound, tuple) and len(bound) == 3
         if not grid:
@@ -998,10 +1060,6 @@ class TestReciprocalShifts:
             inside = squared <= float(inp.parameters.k_max.data[s]) ** 2
             expected = vectors[inside]
             selected = actual[s]
-            if grid:
-                selected = selected[
-                    (selected**2).sum(-1) <= float(inp.parameters.k_max.data[s]) ** 2
-                ]
             # Compaction pads with k=0, whose weight is zero.
             npt.assert_allclose(
                 selected[np.any(selected != 0, axis=-1)],
@@ -1026,15 +1084,13 @@ class TestReciprocalShifts:
             rtol=2e-13,
         )
 
-    @pytest.mark.parametrize("compact", [False, True])
-    def test_zero_cutoff_has_only_background_energy(self, compact):
+    def test_zero_cutoff_has_only_background_energy(self):
         inp = TestReciprocalReduction()._input()
         parameters = EwaldParameters.from_cutoffs(
             inp.point_cloud.systems,
             inp.parameters.alpha,
             inp.parameters.cutoff,
             inp.parameters.k_max.map_data(jnp.zeros_like),
-            compact=compact,
         )
         assert parameters.reciprocal_shift_bound == (0, 0, 0)
         inp = bind(inp, lambda x: x.parameters).set(parameters)
@@ -1060,7 +1116,6 @@ class TestReciprocalShifts:
             inp.parameters.alpha,
             inp.parameters.cutoff,
             systems.set_data(jnp.full(4, 2 * jnp.pi / 10, dtype)),
-            compact=True,
         )
         inp = bind(inp, lambda x: x.parameters).set(params)
         result = jax.jit(as_result_function(lambda x: x.kvecs))(inp)
@@ -1074,9 +1129,20 @@ class TestReciprocalShifts:
         npt.assert_allclose(padded_vectors[:, :n_kvecs], result.value)
         npt.assert_array_equal(padded_vectors[:, n_kvecs:], 0)
 
-    @pytest.mark.parametrize("compact", [False, True])
-    def test_k_max_is_retained_and_masks_stored_shifts(self, compact):
-        inp = TestReciprocalReduction()._input(grid=not compact)
+    def test_grid_index_locates_grid_shifts(self):
+        bound = (1, 2, 3)
+        grid = reciprocal_grid_shifts(bound)
+        expected = np.array([[5, 0, 17], [len(grid) - 1, 9, 9]])
+        index = reciprocal_grid_index(grid[expected], bound)
+        # Concrete shifts give NumPy indices, traced ones JAX indices.
+        assert isinstance(index, np.ndarray)
+        npt.assert_array_equal(index, expected)
+        traced = jax.jit(reciprocal_grid_index, static_argnums=1)(grid[expected], bound)
+        npt.assert_array_equal(traced, expected)
+
+    @pytest.mark.parametrize("grid", [False, True])
+    def test_k_max_is_retained_and_masks_stored_shifts(self, grid):
+        inp = TestReciprocalReduction()._input(grid=grid)
         assert inp.parameters.k_max is not None
         shifts = inp.parameters.reciprocal_lattice_shifts.data
         assert jnp.issubdtype(shifts.dtype, jnp.integer)
@@ -1090,3 +1156,13 @@ class TestReciprocalShifts:
         assert bool(outside.any())
         npt.assert_array_equal(weights[outside], 0)
         npt.assert_array_equal(inp.parameters.reciprocal_lattice_shifts.data, shifts)
+
+
+@pytest.mark.parametrize("n", [[0], [0, 1, 2, 3, 5, 8, 13, 14], [16, 31, 64]])
+def test_integer_phase_powers_match_trigonometry(n):
+    phi = random.uniform(random.key(3), (50,), minval=-40.0, maxval=40.0)
+    n = np.array(n)
+    actual = _integer_phase_powers(jnp.cos(phi), jnp.sin(phi), n)
+    angles = np.asarray(phi)[:, None] * n
+    expected = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+    npt.assert_allclose(actual, expected, atol=1e-12)
