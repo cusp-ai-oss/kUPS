@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, assert_type
+from typing import Any, Callable, assert_type
 
 import jax
 import jax.numpy as jnp
@@ -16,7 +16,6 @@ import pytest
 from kups.core.data import Index, Table
 from kups.core.data.index import SupportsSorting
 from kups.core.lens import lens
-from kups.core.patch import IndexLensPatch
 from kups.core.typing import SystemId
 from kups.relaxation.optimizer import (
     ChainOptimizer,
@@ -52,6 +51,7 @@ X0 = jnp.array(
     ]
 )
 STIFFNESS = jnp.array([1.0, 1.0, 1.0, 2.0, 2.0])[:, None]
+MASK = Table((SystemId(0), SystemId(1)), jnp.array([False, True]))
 
 
 def _objective(prefix: Index[SystemId], x0: jax.Array, k: jax.Array):
@@ -128,37 +128,17 @@ type ResetIndices = (
 def _layout(name: str) -> ResetLayout[ChainOptState, object, ResetIndices]:
     if name.startswith("fire"):
         fire = fire2_reset_layout() if name.startswith("fire2") else fire_reset_layout()
-        return ResetLayout(
-            fields=lens(lambda s: s[1]).nest(fire.fields),
-            system_index=lambda s: fire.system_index(s[1]),
-        )
-    lbfgs = lbfgs_reset_layout()
-    outer = lens(lambda s: s[0], cls=tuple).nest(lbfgs.fields)
+        return fire.within(lens(lambda s: s[1], cls=tuple))
+    lbfgs = lbfgs_reset_layout().within(lens(lambda s: s[0], cls=tuple))
     if name in ("lbfgs_more_thuente", "lbfgs_backtracking"):
-        search = linesearch_reset_layout()
-        return ResetLayout(
-            fields=outer.merge(lens(lambda s: s[2]).nest(search.fields)),
-            system_index=lambda s: (
-                lbfgs.system_index(s[0]),
-                search.system_index(s[2]),
-            ),
-        )
-    return ResetLayout(fields=outer, system_index=lambda s: lbfgs.system_index(s[0]))
-
-
-def _replace[State, Data, Indices](
-    state: State,
-    fresh: State,
-    layout: ResetLayout[State, Data, Indices],
-    mask: Table[SystemId, jax.Array],
-) -> State:
-    return IndexLensPatch(
-        layout.fields.get(fresh), layout.system_index(state), layout.fields
-    )(state, mask)
+        search = linesearch_reset_layout().within(lens(lambda s: s[2], cls=tuple))
+        return lbfgs.merge(search)
+    return lbfgs
 
 
 @pytest.mark.parametrize("name", sorted(OPTIMIZERS))
-@pytest.mark.parametrize("k_before", [1, 5])
+# The first post-reset L-BFGS write lands in ring slot (k_before - 1) % 3: 0, 1, 2.
+@pytest.mark.parametrize("k_before", [1, 5, 6])
 def test_reset_system_matches_fresh_run(name: str, k_before: int):
     opt = OPTIMIZERS[name]()
     start = X0 + 0.7
@@ -168,8 +148,7 @@ def test_reset_system_matches_fresh_run(name: str, k_before: int):
     # System 1 receives a new structure; system 0 keeps relaxing.
     new_rows = jnp.array([[3.0, 0.0, 1.0], [0.5, 2.0, 0.0]])
     params_reset = params.at[3:].set(new_rows)
-    mask = Table((SystemId(0), SystemId(1)), jnp.array([False, True]))
-    state_reset = _replace(state, opt.init(params_reset, PREFIX), _layout(name), mask)
+    state_reset = _layout(name).reset(state, opt.init(params_reset, PREFIX), MASK)
     after, _ = _run(opt, params_reset, state_reset, PREFIX, X0, STIFFNESS, 4)
 
     # Fresh single-system run of the new structure.
@@ -188,12 +167,17 @@ def test_fire2_n_total_is_per_system():
     for _ in range(4):
         _, state = opt.update(-STIFFNESS * (X0 + 0.5 - X0), state, X0 + 0.5)
     npt.assert_array_equal(state.n_total.data, [4, 4])
-    mask = Table((SystemId(0), SystemId(1)), jnp.array([False, True]))
-    reset = _replace(state, opt.init(X0, PREFIX), fire2_reset_layout(), mask)
+    reset = fire2_reset_layout().reset(state, opt.init(X0, PREFIX), MASK)
     npt.assert_array_equal(reset.n_total.data, [4, 0])
     npt.assert_array_equal(reset.n_pos.data[0], state.n_pos.data[0])
     npt.assert_array_equal(reset.velocity[3:], 0.0)
     npt.assert_array_equal(reset.velocity[:3], state.velocity[:3])
+
+    # A non-positive-power step (force opposing velocity) shrinks dt for system 0,
+    # past its n_min warm-up, but not for the reset system 1, which is back inside it.
+    _, after = opt.update(-reset.velocity, reset, X0 + 0.5)
+    assert float(after.dt.data[0]) < float(reset.dt.data[0])
+    npt.assert_array_equal(after.dt.data[1], reset.dt.data[1])
 
 
 def test_lbfgs_reset_blanks_history_rows_only():
@@ -210,8 +194,7 @@ def test_lbfgs_reset_blanks_history_rows_only():
         4,
     )
     lbfgs_state = state[0]
-    mask = Table((SystemId(0), SystemId(1)), jnp.array([False, True]))
-    reset = _replace(lbfgs_state, opt.init(params, PREFIX), lbfgs_reset_layout(), mask)
+    reset = lbfgs_reset_layout().reset(lbfgs_state, opt.init(params, PREFIX), MASK)
     assert int(reset.count) == int(lbfgs_state.count)
     npt.assert_array_equal(reset.steps.data, [4, 0])
     for mem in reset.diff_params_memory + reset.diff_updates_memory:
@@ -227,7 +210,7 @@ def test_lbfgs_reset_blanks_history_rows_only():
     npt.assert_array_equal(reset.updates[0][3:], 0.0)
 
 
-def test_ordinary_chain_does_not_require_reset_support() -> None:
+def test_chain_supports_stateful_optax_transforms() -> None:
     opt = chain(optax.adam(0.1))
     state = opt.init(X0, PREFIX)
     updates, _ = opt.update(X0, state, X0)
@@ -239,11 +222,10 @@ def test_reset_is_jittable(name: str) -> None:
     opt = OPTIMIZERS[name]()
     state = opt.init(X0, PREFIX)
     _, state = _run(opt, X0 + 0.5, state, PREFIX, X0, STIFFNESS, 4)
-    mask = Table((SystemId(0), SystemId(1)), jnp.array([False, True]))
     layout = _layout(name)
 
     def replace(s: ChainOptState) -> ChainOptState:
-        return _replace(s, opt.init(X0, PREFIX), layout, mask)
+        return layout.reset(s, opt.init(X0, PREFIX), MASK)
 
     reset = jax.jit(replace)(state)
     assert jax.tree.structure(reset) == jax.tree.structure(state)
@@ -298,3 +280,40 @@ def test_reset_layout_preserves_concrete_index_type() -> None:
     indices = layout.system_index((PREFIX, X0))
     assert_type(indices, Index[SystemId])
     npt.assert_array_equal(indices.indices, PREFIX.indices)
+
+
+@pytest.mark.parametrize(
+    ("opt", "layout"),
+    [
+        (ScaleByFire[jax.Array](dt_start=0.1, n_min=1), fire_reset_layout()),
+        (
+            ScaleByFire2[jax.Array](dt_start=0.1, n_min=1, delaystep_start=False),
+            fire2_reset_layout(),
+        ),
+    ],
+    ids=["fire", "fire2"],
+)
+def test_fire_reset_restores_per_system_adaptation(
+    opt: Optimizer[jax.Array, Any],
+    layout: ResetLayout[Any, FireReset[Any, Table[SupportsSorting, jax.Array]], Any],
+) -> None:
+    state = opt.init(X0, PREFIX)
+    for _ in range(4):
+        state = opt.update(-STIFFNESS * 0.5 * jnp.ones_like(X0), state, X0)[1]
+    fresh = opt.init(X0, PREFIX)
+    reset = layout.reset(state, fresh, MASK)
+    for name in ("dt", "alpha", "n_pos"):
+        before, init, after = (getattr(s, name).data for s in (state, fresh, reset))
+        assert (before != init).all(), name  # the reset must be observable
+        npt.assert_array_equal(after, [before[0], init[1]], err_msg=name)
+
+
+def test_linesearch_reset_clears_previous_energy() -> None:
+    opt = OPTIMIZERS["lbfgs_backtracking"]()
+    state = opt.init(X0 + 0.5, PREFIX)
+    _, state = _run(opt, X0 + 0.5, state, PREFIX, X0, STIFFNESS, 2)
+    search = state[2]
+    assert not jnp.isnan(search.prev_phi0.data).any()
+    reset = linesearch_reset_layout().reset(search, opt.init(X0, PREFIX)[2], MASK)
+    assert jnp.isnan(reset.prev_phi0.data[1])
+    npt.assert_array_equal(reset.prev_phi0.data[0], search.prev_phi0.data[0])
