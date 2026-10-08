@@ -32,7 +32,6 @@ from kups.core.neighborlist.cell_list_cache import (
     CellListCache,
     CellListCacheParameters,
     block_bounds,
-    near_blocks,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.patch import Accept, Probe
@@ -83,6 +82,7 @@ from kups.potential.common.fused import (
     _gpu_query_chunk_size,
     fuse_pair_potentials,
     make_fused_potential,
+    near_blocks,
     sum_chunks,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
@@ -1952,3 +1952,61 @@ class TestBlockCulling:
             skipped += (~near[:, :-1]).sum()
         # The bounds are informative: many far blocks are skipped.
         assert skipped > 0.3 * sum((distances >= c).sum() for c in (1.5, 3.0, 4.5))
+
+    @pytest.mark.parametrize("block_size,chunk_size", [(4, 16), (8, 64), (16, 4096)])
+    def test_local_deltas_match_unculled_traversal_in_skewed_cell(
+        self, block_size: int, chunk_size: int
+    ):
+        state = _make_state(jax.random.key(31), (300,), (1.0,), n_inactive=3)
+        vectors = 14.0 * jnp.array(
+            [[1.0, 0.0, 0.0], [0.5, 0.866, 0.0], [0.5, 0.289, 0.816]]
+        )
+        fractions = state.particles.data.positions
+        rows = _molecule_rows(state, 0)
+        # Keep the molecule compact in real space.
+        fractions = fractions.at[rows].set(fractions[rows[0]] + 0.02 * jnp.eye(3))
+        state = _with_points(state, positions=fractions @ vectors)
+        state = dataclasses.replace(
+            state,
+            systems=state.systems.set_data(
+                _System(Cell(TriclinicFrame.from_matrix(vectors[None]), (True,) * 3))
+            ),
+        )
+        lj = _lj_params(1, 4.0)
+        lj = dataclasses.replace(lj, sigma=lj.sigma * 0.5)
+        params = (lj, _ewald_params(1, 4.5))
+        pair: PairEnergySum[_PairParameters, _Points, Index[Label] | jax.Array] = (
+            _LJ_PAIR.with_parameters(lambda p: p[0])
+            + _EWALD_PAIR.with_parameters(lambda p: p[1])
+        )
+        layout = CellListCacheParameters.estimate(
+            state.particles,
+            state.systems,
+            pair.cutoffs(params),
+            chunk_size=4,
+            key_layout="slots",
+        )
+        assert layout.max_images_per_pair == 1
+        cloud = PointCloud(state.particles, state.systems)
+        engines = [
+            FusedNeighborEnergy(
+                pair,
+                dataclasses.replace(layout, key_block_size=size, key_chunk_size=chunk),
+                max_queries_per_system=3,
+            )
+            for size, chunk in ((None, None), (block_size, chunk_size))
+        ]
+        tables = [engine.build_cell_list_cache(params, cloud) for engine in engines]
+        assert tables[0].block_lo is None and tables[1].block_lo is not None
+        old = state.particles.subset(Index(state.particles.keys, rows))
+        for key in jax.random.split(jax.random.key(32), 8):
+            shift = jax.random.uniform(key, (1, 3), minval=-9.0, maxval=9.0)
+            move = _move(state, rows, state.particles.data.positions[rows] + shift)
+            new = Table(old.keys, move.data, _cls=old.cls)
+            energies = [
+                engine(
+                    FusedLocalInput(params, cloud, (old, new), move.indices, table)
+                ).data.data
+                for engine, table in zip(engines, tables)
+            ]
+            npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)

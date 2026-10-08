@@ -67,6 +67,10 @@ class CellListCacheParameters:
         key_block_size: Optional slots per spatial block. When set, slots are
             ordered by a spatial bisection tree at build time and each block
             keeps fractional bounds of its active rows, maintained on updates.
+            Slot traversal then skips blocks that are provably beyond the
+            cutoff of every query and gathers only the remaining blocks, in
+            batches of ``key_chunk_size`` slots. Exact: skipped pairs are
+            outside the cutoff for the evaluated minimum image.
     """
 
     chunk_size: int = field(static=True, default=32)
