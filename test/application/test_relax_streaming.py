@@ -35,7 +35,7 @@ from kups.application.relaxation.streaming import (
 )
 from kups.application.utils.particles import particles_from_ase
 from kups.application.utils.propagate import make_cycle_function
-from kups.core.cell import MatrixLogFrame, OrthogonalFrame
+from kups.core.cell import Cell, MatrixLogFrame, OrthogonalFrame
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, bind, identity_lens
 from kups.core.patch import Patch
@@ -328,23 +328,34 @@ def test_pack_rejects_invalid_structures() -> None:
     particles, cell = _structures()[0]
     with pytest.raises(ValueError, match="at least one structure"):
         payload_from_structures([], 8, SPECIES, [])
-    with pytest.raises(ValueError, match="species vocabulary"):
+    with pytest.raises(ValueError, match="longer"):
+        payload_from_structures([(particles, cell)], 8, SPECIES, [0, 1])
+    for species in [(Label("Ne"), Label("Ar")), (Label("Ar"), Label("Ar"))]:
+        with pytest.raises(ValueError, match="sorted and unique"):
+            payload_from_structures([(particles, cell)], 8, species, [0])
+    with pytest.raises(ValueError, match="labels outside"):
         payload_from_structures([(particles, cell)], 8, (Label("Ne"),), [0])
     with pytest.raises(ValueError, match="slot capacity"):
         payload_from_structures([(particles, cell)], 2, SPECIES, [0])
+    slab = Cell.from_pbc(cell.frame, (True, True, False))
+    with pytest.raises(ValueError, match="share periodicity"):
+        payload_from_structures(
+            [(particles, cell), (particles, slab)], 8, SPECIES, [0, 1]
+        )
     sheared = MatrixLogFrame.from_matrix(
         jnp.array([[5.3, 0.5, 0.0], [0.0, 5.4, 0.0], [0.0, 0.0, 5.5]])
     )
     upper = bind(cell).focus(lambda c: c.frame).set(sheared)
-    with pytest.raises(ValueError, match="lower-triangular"):
-        payload_from_structures([(particles, upper)], 8, SPECIES, [0])
-    two_systems = (
-        bind(particles)
-        .focus(lambda p: p.data.system)
-        .set(Index.integer(jnp.array([0, 0, 1, 1]), n=2, label=SystemId))
-    )
-    with pytest.raises(ValueError, match="one complete system"):
-        payload_from_structures([(two_systems, cell)], 8, SPECIES, [0])
+    batched = jax.tree.map(lambda x: jnp.stack([x, x]), cell)
+    for bad_cell in [upper, batched]:
+        with pytest.raises(ValueError, match="lower-triangular"):
+            payload_from_structures([(particles, bad_cell)], 8, SPECIES, [0])
+    two_systems = Index.integer(jnp.array([0, 0, 1, 1]), n=2, label=SystemId)
+    incomplete = Index.integer(jnp.array([0, 0, 0, 1]), n=1, label=SystemId)
+    for system in [two_systems, incomplete]:
+        bad_particles = bind(particles).focus(lambda p: p.data.system).set(system)
+        with pytest.raises(ValueError, match="one complete system"):
+            payload_from_structures([(bad_particles, cell)], 8, SPECIES, [0])
 
 
 @state_dataclass
@@ -388,13 +399,16 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
     npt.assert_array_equal(final.batch.step, [1, 0])
 
 
-def test_orthogonal_and_triclinic_jobs_share_the_idle_signature() -> None:
+def test_cell_frames_and_classes_share_the_idle_signature() -> None:
     structures = _structures()
     particles, cell = structures[0]
     orthogonal = (
         bind(cell).focus(lambda c: c.frame).set(OrthogonalFrame(jnp.diag(cell.vectors)))
     )
     structures[0] = particles, orthogonal
+    # A plain Cell instead of the PeriodicCell that Cell.from_pbc builds.
+    particles, cell = structures[1]
+    structures[1] = particles, Cell(cell.frame, periodic=(True, True, True))
     rows, _ = _run(structures, max_steps=0)
     assert sorted(int(row.ordinal[0]) for row in rows) == [0, 1, 2]
     for row in rows:
