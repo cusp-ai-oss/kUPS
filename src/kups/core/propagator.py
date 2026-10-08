@@ -31,6 +31,8 @@ import jax.core
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.extend.core import jaxpr_as_fun
+from jax.tree_util import PyTreeDef
 
 from kups.core.assertion import check_assertions
 from kups.core.data.table import Table
@@ -40,9 +42,9 @@ from kups.core.result import Result, as_result_function
 from kups.core.schedule import IncrementSchedule, Schedule, Scheduler
 from kups.core.typing import SystemId
 from kups.core.utils.jax import (
-    PyTreeDef,
     dataclass,
     field,
+    is_traced,
     jit,
     key_chain,
     tree_structure,
@@ -264,20 +266,37 @@ def propose_mixed[State, Changes](
 
 
 def _cond_or_zeros[S, R](pred: Array, fn: Callable[[S], R], operand: S) -> R:
-    """Return ``fn(operand)`` unless ``pred``, else zeros shaped like its output."""
+    """Return ``fn(operand)`` unless ``pred``, else zeros shaped like its output.
 
-    def zeros(x: S) -> R:
-        treedefs: list[PyTreeDef[R]] = []
+    Like ``lax.cond``, this runs eagerly under ``disable_jit`` with a concrete
+    ``pred``. Otherwise ``fn`` is traced once, under the caller's ``disable_jit``
+    setting, and that trace provides both the zero shapes and the branch.
+    """
+    disabled = bool(jax.config.values["jax_disable_jit"])
+    eager = disabled and not is_traced(pred)
+    if eager and not pred:
+        return fn(operand)
 
-        def flat(y: S) -> list[Array]:
-            out = fn(y)
-            treedefs.append(tree_structure(out))
-            return jax.tree.leaves(out)
+    trees: list[PyTreeDef] = []
 
-        specs = jax.eval_shape(flat, x)
-        return treedefs[0].unflatten([jnp.zeros(s.shape, s.dtype) for s in specs])
+    # Flat outputs: rebuilding the output from avals would run its validation.
+    def flat(x: S) -> list[Array]:
+        with jax.disable_jit(disabled):
+            leaves, tree = jax.tree.flatten(fn(x))
+        trees.append(tree)
+        return leaves
 
-    return jax.lax.cond(pred, zeros, fn, operand)
+    with jax.disable_jit(False):
+        traced = jax.make_jaxpr(flat)(operand)
+
+        def zeros(_: S) -> list[Array]:
+            return [jnp.zeros(a.shape, a.dtype) for a in traced.out_avals]
+
+        def branch(x: S) -> list[Array]:
+            return jaxpr_as_fun(traced)(*jax.tree.leaves(x))
+
+        leaves = zeros(operand) if eager else jax.lax.cond(pred, zeros, branch, operand)
+    return trees[0].unflatten(leaves)
 
 
 def _apply_selected[S, I](
