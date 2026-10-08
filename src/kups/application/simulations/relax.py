@@ -44,6 +44,7 @@ from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
 from kups.relaxation.config import make_optimizer
+from kups.relaxation.optimizer import ChainOptState
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -67,7 +68,7 @@ class Config(BaseModel):
 def run(config: Config) -> None:
     """Run a structure relaxation for the configured force field."""
     key = jax.random.key(config.run.seed or time.time_ns())
-    state_lens = identity_lens(RelaxState)
+    state_lens = identity_lens(RelaxState[ChainOptState])
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
     potential, cutoff = config.potential.build(state_lens, gradient)
