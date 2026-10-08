@@ -175,8 +175,19 @@ def lennard_jones_pair_kernel(
     del rij, system
     species_i = labels_i.indices_in(parameters.labels)
     species_j = labels_j.indices_in(parameters.labels)
-    epsilon = parameters.epsilon[species_i, species_j]
-    sigma = parameters.sigma[species_i, species_j]
+    n_species = len(parameters.labels)
+    if species_i.size * n_species <= species_j.size and n_species <= 16:
+        # Few query rows against many keys: select mixing rows per species.
+        mixing_rows = jnp.stack([parameters.epsilon, parameters.sigma])[:, species_i]
+        epsilon_rows, sigma_rows = mixing_rows[0], mixing_rows[1]
+        epsilon = sigma = jnp.zeros(())
+        for t in range(n_species):
+            match = species_j == t
+            epsilon = jnp.where(match, epsilon_rows[..., t], epsilon)
+            sigma = jnp.where(match, sigma_rows[..., t], sigma)
+    else:
+        epsilon = parameters.epsilon[species_i, species_j]
+        sigma = parameters.sigma[species_i, species_j]
     c6 = (sigma**2 / r2) ** 3
     return 4 * epsilon * (c6**2 - c6)
 
