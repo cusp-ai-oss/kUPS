@@ -20,7 +20,7 @@ from kups.core.cell import AnyPeriodicity, Cell, Periodic3D
 from kups.core.data import Table
 from kups.core.neighborlist import NeighborListPoints
 from kups.core.typing import HasCell, HasCharges, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, no_jax_tracing
+from kups.core.utils.jax import dataclass, field, is_traced, no_jax_tracing
 from kups.core.utils.math import triangular_3x3_matmul
 
 type ReciprocalGridBound = tuple[int, int, int]
@@ -47,10 +47,12 @@ class IsEwaldPointData(HasCharges, NeighborListPoints, Protocol):
 class EwaldParameters:
     """Per-system cutoffs and reciprocal shifts prepared before evaluation.
 
-    ``reciprocal_shift_bound`` always stores three axis bounds. ``(0, 0, 0)``
-    selects explicit, sphere-filtered shifts padded for batching; other bounds
-    describe a complete grid. Rebuild parameters and the structure-factor cache
-    when changing the cell or cutoff.
+    ``reciprocal_lattice_shifts`` stores sphere-filtered shifts padded for
+    batching. ``reciprocal_shift_bound`` always stores three axis bounds.
+    ``(0, 0, 0)`` selects explicit sums over the shifts; other bounds select
+    factored phase grids over that box, from which the shifts are gathered.
+    Rebuild parameters and the structure-factor cache when changing the cell
+    or cutoff.
     """
 
     alpha: Table[SystemId, Array]  # (n_graphs,)
@@ -121,7 +123,6 @@ class EwaldParameters:
         cutoff: Table[SystemId, Array],
         k_max: Table[SystemId, Array],
         *,
-        compact: bool | None = None,
         reciprocal_particle_chunk_size: int | None = None,
         reciprocal_k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
     ) -> EwaldParameters:
@@ -132,7 +133,6 @@ class EwaldParameters:
             alpha: Screening parameters in 1/Å.
             cutoff: Real-space cutoffs in Å.
             k_max: Reciprocal cutoffs in 1/Å.
-            compact: Filter the grid; defaults to False on CPU and True elsewhere.
             reciprocal_particle_chunk_size: Maximum particles per response tile;
                 defaults to 8192 on GPU and 1024 elsewhere.
             reciprocal_k_chunk_size: Maximum k-vectors per tile.
@@ -140,12 +140,12 @@ class EwaldParameters:
         Returns:
             Parameters with stored integer shifts and reciprocal cutoffs.
         """
-        if compact is None:
-            compact = jax.default_backend() not in RECIPROCAL_GRID_BACKENDS
         if reciprocal_particle_chunk_size is None:
             reciprocal_particle_chunk_size = _default_reciprocal_particle_chunk()
         shifts, bound = prepare_reciprocal_shifts(
-            cell.data.cell, k_max[cell.index], compact=compact
+            cell.data.cell,
+            k_max[cell.index],
+            grid=jax.default_backend() in RECIPROCAL_GRID_BACKENDS,
         )
         return cls(
             alpha=alpha,
@@ -315,6 +315,27 @@ def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
     return vecs[jnp.sum(kvecs**2, axis=-1) <= kmax**2]
 
 
+def reciprocal_grid_index(
+    shifts: Array, bound: ReciprocalGridBound
+) -> Array | np.ndarray:
+    """Flat positions of shifts in ``reciprocal_grid_shifts(bound)``.
+
+    Args:
+        shifts: Integer shifts inside ``bound``, shaped ``(..., n_kvecs, 3)``.
+        bound: Grid axis bounds.
+
+    Returns:
+        Grid indices shaped ``(..., n_kvecs)``; a NumPy array for concrete
+        shifts, so kernels can specialize on them.
+    """
+    _, by, bz = bound
+    xp = jnp if is_traced(shifts) else np
+    ints = xp.asarray(shifts).astype(np.int32)
+    return (ints[..., 0] * (2 * by + 1) + ints[..., 1] + by) * (2 * bz + 1) + (
+        ints[..., 2] + bz
+    )
+
+
 def reciprocal_grid_shifts(bound: int | ReciprocalGridBound) -> Array:
     """Integer half-space grid: nonnegative x, signed y/z, x-major.
 
@@ -336,28 +357,22 @@ def reciprocal_grid_shifts(bound: int | ReciprocalGridBound) -> Array:
 
 @no_jax_tracing
 def prepare_reciprocal_shifts(
-    cells: Cell[Periodic3D], k_max: Array, *, compact: bool
+    cells: Cell[Periodic3D], k_max: Array, *, grid: bool
 ) -> tuple[Array, ReciprocalGridBound]:
-    """Batch sphere-filtered shifts, padding them or enclosing them in one grid.
+    """Batch sphere-filtered shifts, padded to a common count.
 
-    Compact shifts use ``(0, 0, 0)`` as their bound. Grid shifts use the tightest
-    common axis bounds for all systems, including batches with different cells.
+    With ``grid``, the bound is the tightest common enclosing grid of all
+    systems, including batches with different cells; otherwise ``(0, 0, 0)``.
     """
     cutoffs = np.asarray(k_max)
     if np.any(~np.isfinite(cutoffs)) or np.any(cutoffs < 0):
         raise ValueError("Reciprocal cutoffs must be finite and nonnegative")
     shifts = [kvecs_from_kmax(cells[i], k) for i, k in enumerate(cutoffs)]
-    if compact:
-        if not shifts:
-            return jnp.zeros((0, 0, 3), dtype=int), (0, 0, 0)
-        capacity = max(map(len, shifts))
-        padded = jnp.stack(
-            [jnp.pad(s, ((0, capacity - len(s)), (0, 0))) for s in shifts]
-        )
+    if not shifts:
+        return jnp.zeros((0, 0, 3), dtype=int), (0, 0, 0)
+    capacity = max(map(len, shifts))
+    padded = jnp.stack([jnp.pad(s, ((0, capacity - len(s)), (0, 0))) for s in shifts])
+    if not grid:
         return padded, (0, 0, 0)
-
-    maxima = [np.max(np.abs(s), axis=0) for s in shifts]
-    bx, by, bz = np.max(maxima or [(0, 0, 0)], axis=0)
-    bound = (int(bx), int(by), int(bz))
-    grid = reciprocal_grid_shifts(bound)
-    return jnp.broadcast_to(grid, (len(cutoffs), *grid.shape)), bound
+    bx, by, bz = np.max([np.max(np.abs(s), axis=0) for s in shifts], axis=0)
+    return padded, (int(bx), int(by), int(bz))

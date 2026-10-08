@@ -21,6 +21,7 @@ from .parameters import (
 from .potential import (
     TO_STANDARD_UNITS,
     EwaldCache,
+    EwaldCacheDeltaPatch,
     EwaldCachePatch,
     EwaldLongRangeComposer,
     EwaldLongRangeInput,
@@ -56,6 +57,7 @@ __all__ = [
     "reciprocal_grid_shifts",
     "TO_STANDARD_UNITS",
     "EwaldCache",
+    "EwaldCacheDeltaPatch",
     "EwaldCachePatch",
     "EwaldShortRangeInput",
     "IsChargedTemplate",
