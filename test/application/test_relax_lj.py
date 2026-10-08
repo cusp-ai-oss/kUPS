@@ -20,6 +20,8 @@ from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxRunConfig,
     RelaxState,
+    relax_gradients,
+    relax_index_prefix,
     relax_state_from_ase,
 )
 from kups.application.relaxation.simulation import make_relax_propagator, run_relax
@@ -30,6 +32,7 @@ from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
+from kups.relaxation.convergence import max_dof_per_system
 from kups.relaxation.optimizer import ChainOptState
 
 
@@ -185,6 +188,26 @@ class TestCellRelaxation:
         fmax = jnp.max(jnp.linalg.norm(stepped.particles.data.forces, axis=-1))
         max_dof = jnp.max(jnp.linalg.norm(dof, axis=-1))
         npt.assert_allclose(max_dof, fmax, atol=1e-12)
+
+    def test_cell_gradients_enter_per_system_fmax(self):
+        prop, state = _build_propagator(optimize_cell=True)
+        stepped = prop(jax.random.key(0), state)
+        # Zero the position DOFs so only the DeformedFrame cell gradient remains;
+        # otherwise the positions dominate and hide a dropped cell term.
+        stepped = (
+            bind(stepped)
+            .focus(lambda s: s.particles.data.position_gradients)
+            .apply(jnp.zeros_like)
+        )
+        prefix = relax_index_prefix(stepped.particles, stepped.systems)
+        leaves = jax.tree.leaves(stepped.systems.data.cell_gradients)
+        cell_max = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in leaves]))
+        assert cell_max > 0
+        gradients = relax_gradients(stepped)
+        npt.assert_allclose(max_dof_per_system(gradients, prefix).data, [cell_max])
+        npt.assert_array_equal(
+            max_dof_per_system(gradients, prefix, include_cell=False).data, [0.0]
+        )
 
     def test_stress_not_double_counted(self):
         # cell_gradients caches the *partial* dE/dh|_r, the correct stress source.

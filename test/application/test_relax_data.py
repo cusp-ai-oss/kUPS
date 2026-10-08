@@ -17,7 +17,7 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.simulation import IndexPrefix
 from kups.application.utils.particles import particles_from_ase
-from kups.core.cell import DeformedFrame
+from kups.core.cell import DeformedFrame, MatrixLogFrame
 from kups.core.data import Index, Table
 from kups.core.lens import bind
 from kups.core.typing import ParticleId, SystemId
@@ -53,6 +53,11 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
     npt.assert_array_equal(relaxed.data.system.counts.data, [1, 1] if batched else [2])
     frame = systems.data.cell.frame
     assert isinstance(frame, DeformedFrame)
+    assert isinstance(frame.deformation, MatrixLogFrame)
+    # ASE's exp_cell_factor: one atom count per system.
+    npt.assert_array_equal(
+        frame.deformation.cell_factor[:, 0, 0], [1, 1] if batched else [2]
+    )
     npt.assert_array_equal(
         frame.vectors, cell.vectors if batched else cell.vectors[None]
     )
