@@ -169,18 +169,24 @@ class TestEwald:
     """
 
     @pytest.mark.parametrize("singleton_alpha", [False, True])
+    # CPU float64 folds the erfc divisions; float32 and other backends do not.
+    @pytest.mark.parametrize(
+        "backend, dtype",
+        [("cpu", jnp.float64), ("cpu", jnp.float32), ("gpu", jnp.float64)],
+    )
     def test_short_range_kernel_values_and_radial_derivative(
-        self, singleton_alpha: bool
+        self, monkeypatch, singleton_alpha: bool, backend: str, dtype
     ) -> None:
+        monkeypatch.setattr(jax, "default_backend", lambda: backend)
         parameters = TestReciprocalReduction()._input().parameters
-        alpha = jnp.array([0.2]) if singleton_alpha else jnp.array([0.2, 0.3, 0.5, 0.4])
+        alpha = jnp.array([0.2] if singleton_alpha else [0.2, 0.3, 0.5, 0.4], dtype)
         parameters = bind(parameters, lambda p: p.alpha).set(
             Table.arange(alpha, label=SystemId)
         )
         system = Index.integer(jnp.array([[0], [2]]), n=4, label=SystemId)
-        distance = jnp.array([[0.02, 0.9, 2.3, 6.1], [0.1, 1.1, 3.3, 5.5]])
-        left = jnp.array([[0.4], [-0.6]])
-        right = jnp.array([-0.2, 0.7, 0.0, 0.3])
+        distance = jnp.array([[0.02, 0.9, 2.3, 6.1], [0.1, 1.1, 3.3, 5.5]], dtype)
+        left = jnp.array([[0.4], [-0.6]], dtype)
+        right = jnp.array([-0.2, 0.7, 0.0, 0.3], dtype)
 
         def energy(r2: Array) -> Array:
             return ewald_short_range_pair_kernel(
@@ -197,11 +203,12 @@ class TestEwald:
             * (screened / r**2 + 2 * a / np.sqrt(np.pi) * np.exp(-((a * r) ** 2)) / r)
             / (2 * r)
         )
+        rtol = 2e-11 if dtype == jnp.float64 else 2e-5
         npt.assert_allclose(
-            jax.jit(energy)(distance**2), expected, rtol=2e-11, atol=1e-13
+            jax.jit(energy)(distance**2), expected, rtol=rtol, atol=1e-13
         )
         actual_derivative = jax.jit(jax.grad(lambda r2: energy(r2).sum()))(distance**2)
-        npt.assert_allclose(actual_derivative, derivative, rtol=2e-11, atol=1e-13)
+        npt.assert_allclose(actual_derivative, derivative, rtol=rtol, atol=1e-13)
 
     def test_exclusion_correction_connects_bonded_pairs(self):
         """Exclusion correction: negative vacuum Coulomb over exactly the bonded pairs.
