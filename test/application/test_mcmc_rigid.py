@@ -1,6 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+import dataclasses
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -403,6 +404,22 @@ class TestMCMCStateUpdate:
         )
         npt.assert_allclose(
             new_state.particles.data.positions, state.particles.data.positions
+        )
+
+    @pytest.mark.parametrize("accept", [True, False])
+    def test_positions_only_matches_full_update_positions(
+        self, state, movement_update_newpos, accept
+    ):
+        update, _ = movement_update_newpos
+        positions_only = dataclasses.replace(update, positions_only=True)
+        acc = state.systems.set_data(jnp.full(len(state.systems), accept))
+        full, partial = update(state, acc), positions_only(state, acc)
+        npt.assert_allclose(
+            partial.particles.data.positions, full.particles.data.positions
+        )
+        npt.assert_allclose(partial.particles.data.masses, state.particles.data.masses)
+        npt.assert_array_equal(
+            partial.groups.data.system.indices, state.groups.data.system.indices
         )
 
 
@@ -1236,15 +1253,29 @@ class TestFusedPairIntegration:
             ):
                 npt.assert_array_equal(a, b, err_msg=jax.tree_util.keystr(path))
 
-    @pytest.mark.parametrize("charged", [False, True])
-    @pytest.mark.parametrize("cutoff", [5.0, 8.0])
-    def test_cycles_match_full_recomputation(self, charged, cutoff):
+    @pytest.mark.parametrize(
+        ("cutoff", "charged", "exchange_prob", "loadings"),
+        [
+            (5.0, False, 0.5, (2,)),
+            (5.0, True, 0.5, (2,)),
+            (8.0, False, 0.5, (2,)),
+            (8.0, True, 0.5, (2,)),
+            (5.0, True, 0.0, (0, 2)),
+        ],
+    )
+    def test_cycles_match_full_recomputation(
+        self, charged, cutoff, exchange_prob, loadings
+    ):
         from kups.core.propagator import propagate_and_fix
         from kups.core.result import as_result_function
 
-        config = _config(exchange_prob=0.5, init_adsorbates=(2,))
+        config = _config(exchange_prob=exchange_prob, init_adsorbates=(2,))
+        host = config.hosts[0]
         config = config.model_copy(
             update={
+                "hosts": tuple(
+                    host.model_copy(update={"init_adsorbates": (n,)}) for n in loadings
+                ),
                 "lj": config.lj.model_copy(update={"cutoff": cutoff}),
                 "ewald": config.ewald.model_copy(update={"real_cutoff": cutoff}),
             }
@@ -1254,7 +1285,7 @@ class TestFusedPairIntegration:
                 update={"charges": (0.0, 0.0, 0.0)}
             )
             config = config.model_copy(update={"adsorbates": (adsorbate,)})
-        state = init_state(jax.random.key(71), config)
+        state = initial = init_state(jax.random.key(71), config)
         initialize, cycle = make_propagator(state, config.run)
         reference = _make_potential(state)
 
@@ -1276,3 +1307,8 @@ class TestFusedPairIntegration:
             rtol=1e-9,
             atol=1e-10,
         )
+        if exchange_prob == 0:
+            npt.assert_array_equal(state.groups.data.system.counts.data, loadings)
+            assert not jnp.allclose(
+                state.particles.data.positions, initial.particles.data.positions
+            )
