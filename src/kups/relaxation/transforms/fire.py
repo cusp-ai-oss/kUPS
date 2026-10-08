@@ -58,7 +58,7 @@ from kups.core.utils.segmented_tree import (
     tree_segment_norm,
     tree_vdot,
 )
-from kups.relaxation.optimizer import Resettable, ResetLayout
+from kups.relaxation.optimizer import ResetLayout, Resettable
 
 
 @dataclass
