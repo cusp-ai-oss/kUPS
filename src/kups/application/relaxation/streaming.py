@@ -52,7 +52,7 @@ from kups.potential.common.geometry import (
     PositionsAndCellIndex,
 )
 from kups.relaxation.convergence import converged_per_system
-from kups.relaxation.optimizer import Optimizer, ResetLayout
+from kups.relaxation.optimizer import Resettable
 
 type Structure = tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity]]
 
@@ -364,20 +364,13 @@ def estimate_stream_neighborlist(
     )
 
 
-def make_streaming_relax_propagator[
-    State,
-    OptState,
-    ResetData,
-    ResetIndices,
-    P: Patch[Any],
-](
+def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
     state_lens: Lens[State, IsStreamingRelaxState[OptState]],
     potential: Potential[State, PositionsAndCell, EmptyType, P],
-    optimizer: Optimizer[PositionsAndCell, OptState],
+    optimizer: Resettable[PositionsAndCell, OptState],
     gradient: Lens[Geometry, PositionsAndCell],
     slots: Table[SystemId, Index[ParticleId]],
     *,
-    reset_layout: ResetLayout[OptState, ResetData, ResetIndices],
     force_tolerance: float,
     max_steps: int,
     include_cell: bool = True,
@@ -434,12 +427,7 @@ def make_streaming_relax_propagator[
         opt_state: OptState,
         mask: Table[SystemId, Array],
     ) -> OptState:
-        fresh = init(particles, systems)
-        return IndexLensPatch(
-            reset_layout.fields.get(fresh),
-            reset_layout.system_index(opt_state),
-            reset_layout.fields,
-        )(opt_state, mask)
+        return optimizer.reset_layout.reset(opt_state, init(particles, systems), mask)
 
     return (
         ResetOnErrorPropagator(SequentialPropagator((step, count))),

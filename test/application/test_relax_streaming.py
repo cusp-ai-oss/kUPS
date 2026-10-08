@@ -37,8 +37,7 @@ from kups.application.utils.particles import particles_from_ase
 from kups.application.utils.propagate import make_cycle_function
 from kups.core.cell import OrthogonalFrame
 from kups.core.data import Index, Table
-from kups.core.data.index import SupportsSorting
-from kups.core.lens import Lens, bind, const_lens, identity_lens, lens
+from kups.core.lens import Lens, bind, identity_lens
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.propagator import (
@@ -53,24 +52,19 @@ from kups.core.typing import Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass as state_dataclass
 from kups.core.utils.jax import jit, tree_concat, tree_map
 from kups.potential.classical.lennard_jones import LennardJonesParameters
-from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
-from kups.relaxation.optimizer import ChainOptimizer, ChainOptState, ResetLayout, chain
-from kups.relaxation.transforms import MaxStepSize, ScaleByAseLbfgs, ScaleByFire
-from kups.relaxation.transforms.fire import (
-    FireReset,
-    ScaleByFireState,
-    fire_reset_layout,
+from kups.potential.common.geometry import PositionsAndCell
+from kups.relaxation.optimizer import (
+    ChainOptState,
+    ResettableChain,
+    Stateless,
+    resettable_chain,
 )
-from kups.relaxation.transforms.lbfgs import LbfgsResetIndices, lbfgs_reset_layout
+from kups.relaxation.transforms import MaxStepSize, ScaleByAseLbfgs, ScaleByFire
+from kups.relaxation.transforms.fire import ScaleByFireState
 
 SPECIES = (Label("Ar"),)
 CAPACITY = 8
 type Batch = StreamingRelaxState[ChainOptState]
-type ResetIndices = (
-    tuple[()]
-    | FireReset[PositionsAndCellIndex, Index[SupportsSorting]]
-    | LbfgsResetIndices
-)
 LJ = LennardJonesParameters.from_dict(
     cutoff=5.0, parameters={"Ar": (3.405, 0.010326)}, mixing_rule="lorentz_berthelot"
 )
@@ -118,27 +112,18 @@ def _setup(
         state_lens, parameters=parameters, gradient=gradient
     )
     idle = idle_payload(CAPACITY, SPECIES, (True, True, True), 5.0)
-    opt: ChainOptimizer[PositionsAndCell] = chain(optax.scale(-0.1))
-    reset_layout: ResetLayout[ChainOptState, object, ResetIndices] = ResetLayout(
-        fields=const_lens(()), system_index=lambda s: ()
+    opt: ResettableChain[PositionsAndCell] = resettable_chain(
+        Stateless(optax.scale(-0.1))
     )
     if optimizer == "lbfgs":
-        opt = chain(
+        opt = resettable_chain(
             ScaleByAseLbfgs[PositionsAndCell](memory_size=3),
             MaxStepSize[PositionsAndCell](0.2),
-            optax.scale(-1.0),
-        )
-        lbfgs = lbfgs_reset_layout()
-        reset_layout = ResetLayout(
-            fields=lens(lambda s: s[0]).nest(lbfgs.fields),
-            system_index=lambda s: lbfgs.system_index(s[0]),
+            Stateless(optax.scale(-1.0)),
         )
     elif optimizer == "fire":
-        opt = chain(optax.scale(-1.0), ScaleByFire[PositionsAndCell](dt_start=0.1))
-        fire = fire_reset_layout()
-        reset_layout = ResetLayout(
-            fields=lens(lambda s: s[1]).nest(fire.fields),
-            system_index=lambda s: fire.system_index(s[1]),
+        opt = resettable_chain(
+            Stateless(optax.scale(-1.0)), ScaleByFire[PositionsAndCell](dt_start=0.1)
         )
     step, init, reset = make_streaming_relax_propagator(
         state_lens,
@@ -146,7 +131,6 @@ def _setup(
         opt,
         gradient,
         reservations,
-        reset_layout=reset_layout,
         force_tolerance=tolerance,
         max_steps=max_steps,
         include_cell=optimize_cell,
@@ -331,10 +315,9 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
     step, _, reset = make_streaming_relax_propagator(
         state_lens,
         potential,
-        chain(optax.scale(-0.1)),
+        resettable_chain(Stateless(optax.scale(-0.1))),
         POSITIONS_ONLY,
         setup.slots,
-        reset_layout=ResetLayout(fields=const_lens(()), system_index=lambda s: ()),
         force_tolerance=0.0,
         max_steps=3,
         include_cell=False,
@@ -383,7 +366,6 @@ def test_factory_preserves_native_optimizer_state_type() -> None:
         ScaleByFire[PositionsAndCell](),
         POSITIONS_ONLY,
         setup.slots,
-        reset_layout=fire_reset_layout(),
         force_tolerance=0.0,
         max_steps=3,
         include_cell=False,
