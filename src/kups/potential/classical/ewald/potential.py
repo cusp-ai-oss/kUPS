@@ -54,7 +54,7 @@ from kups.core.utils.jax import (
     tree_zeros_like,
 )
 from kups.core.utils.kahan import KahanSummand
-from kups.core.utils.math import triangular_3x3_matmul
+from kups.core.utils.math import erfc_over, triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
 from kups.core.utils.segment import segment_sum
 from kups.potential.classical.coulomb import (
@@ -292,13 +292,14 @@ def ewald_short_range_pair_kernel(
     alpha = parameters.alpha
     alpha_values = alpha.data[0] if alpha.size == 1 else alpha[system]
     argument = alpha_values * dists
-    # Direct erfc is faster on CPU but crashes the GPU fused kernel compiler.
-    erfc_term = (
-        jax.lax.erfc(argument)
-        if jax.default_backend() == "cpu"
-        else 1.0 - jax.lax.erf(argument)
-    )
-    return TO_STANDARD_UNITS * charges_i * charges_j * erfc_term / dists
+    if jax.default_backend() != "cpu":
+        # Direct erfc crashes the GPU fused kernel compiler.
+        screened = (1.0 - jax.lax.erf(argument)) / dists
+    elif argument.dtype == jnp.float64:
+        screened = erfc_over(argument, dists)
+    else:
+        screened = jax.lax.erfc(argument) / dists
+    return TO_STANDARD_UNITS * charges_i * charges_j * screened
 
 
 ewald_short_range_pair = PairEnergy[EwaldParameters, IsEwaldPointData, Array](
