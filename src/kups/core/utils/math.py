@@ -10,6 +10,7 @@ factorial ratios, polynomial root finding, and optimized matrix operations for
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, overload, override, runtime_checkable
 
@@ -737,3 +738,92 @@ if TYPE_CHECKING:
 
     def _(m: GeneralSquareMatrix) -> None:
         __: SquareMatrix = m
+
+
+# Cephes ndtr.c rational coefficients (highest degree first), as in XLA's
+# float64 erfc: 1 - x T(x^2) / U(x^2) for x < 1, exp(-x^2) P(x) / Q(x) below 8.
+_ERFC_T = (
+    9.60497373987051638749e0,
+    9.00260197203842689217e1,
+    2.23200534594684319226e3,
+    7.00332514112805075473e3,
+    5.55923013010394962768e4,
+)
+_ERFC_U = (
+    1.0,
+    3.35617141647503099647e1,
+    5.21357949780152679795e2,
+    4.59432382970980127987e3,
+    2.26290000613890934246e4,
+    4.92673942608635921086e4,
+)
+_ERFC_P = (
+    2.46196981473530512524e-10,
+    5.64189564831068821977e-1,
+    7.46321056442269912687e0,
+    4.86371970985681366614e1,
+    1.96520832956077098242e2,
+    5.26445194995477358631e2,
+    9.34528527171957607540e2,
+    1.02755188689515710272e3,
+    5.57535335369399327526e2,
+)
+_ERFC_Q = (
+    1.0,
+    1.32281951154744992508e1,
+    8.67072140885989742329e1,
+    3.54937778887819891062e2,
+    9.75708501743205489753e2,
+    1.82390916687909736289e3,
+    2.24633760818710981792e3,
+    1.65666309194161350182e3,
+    5.57535340817727675546e2,
+)
+
+
+def _polynomial(coefficients: tuple[float, ...], x: Array) -> Array:
+    """Evaluate a polynomial with coefficients from the highest degree."""
+    value = jnp.full_like(x, coefficients[0])
+    for coefficient in coefficients[1:]:
+        value = value * x + coefficient
+    return value
+
+
+def _erfc_fraction(x: Array) -> tuple[Array, Array]:
+    """Numerator and denominator with ``erfc(x) = num / den`` for ``x >= 0``."""
+    z = x * x
+    small = x < 1.0
+    u = _polynomial(_ERFC_U, z)
+    # Beyond 8, erfc(x) < 2e-29; the clamped rational keeps the exp(-x^2) decay.
+    clamped = jnp.minimum(x, 8.0)
+    numerator = jnp.where(
+        small,
+        u - x * _polynomial(_ERFC_T, z),
+        jnp.exp(-z) * _polynomial(_ERFC_P, clamped),
+    )
+    return numerator, jnp.where(small, u, _polynomial(_ERFC_Q, clamped))
+
+
+@jax.custom_jvp
+def erfc_over(x: Array, scale: Array) -> Array:
+    """``erfc(x) / scale`` for ``x >= 0`` with a single division.
+
+    Uses XLA's float64 approximations of ``erfc`` but drops the separate
+    rational for ``x >= 8`` (absolute error below ``2e-29 / scale`` there)
+    and folds the approximation's division into ``scale``. For ``x < 8`` the
+    relative error is about 2e-15, as for XLA's ``erfc``.
+    """
+    numerator, denominator = _erfc_fraction(x)
+    return numerator / (denominator * scale)
+
+
+@erfc_over.defjvp
+def _erfc_over_jvp(  # pyright: ignore[reportUnusedFunction]
+    primals: tuple[Array, Array], tangents: tuple[Array, Array]
+) -> tuple[Array, Array]:
+    x, scale = primals
+    dx, dscale = tangents
+    value = erfc_over(x, scale)
+    inverse = 1 / scale
+    derivative = -2 / math.sqrt(math.pi) * jnp.exp(-x * x) * inverse
+    return value, derivative * dx - value * inverse * dscale
