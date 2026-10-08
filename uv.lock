@@ -2152,7 +2152,6 @@ dependencies = [
     { name = "packaging" },
     { name = "pint" },
     { name = "rich" },
-    { name = "slub" },
     { name = "tqdm" },
 ]
 
@@ -2222,7 +2221,6 @@ requires-dist = [
     { name = "packaging", specifier = ">=24.2" },
     { name = "pint", specifier = ">=0.24.4" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "slub", specifier = ">=0.1.2" },
     { name = "tqdm", specifier = ">=4.67.1" },
 ]
 provides-extras = ["cuda", "hf", "uma", "mace"]
@@ -4810,18 +4808,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
-]
-
-[[package]]
-name = "slub"
-version = "0.1.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "jax" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/aa/2975dcd37589bc9c3f57fe13e4c4a5e2b7d7cf5138e71660e0a137563f91/slub-0.1.2.tar.gz", hash = "sha256:73c0e05786c8009ba0074abf3973ee0435b172794e732a6b8874a1aac783c832", size = 86837, upload-time = "2026-07-28T12:11:36.291Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/59/67f4f833561fb25eebc36c529ff852050dc7417f2f459a344b647b849999/slub-0.1.2-py3-none-any.whl", hash = "sha256:6197f701e715e4167763881ea470ba2b40d21c28c52b5870b80ca7fec497536c", size = 17403, upload-time = "2026-07-28T12:11:34.177Z" },
 ]
 
 [[package]]
