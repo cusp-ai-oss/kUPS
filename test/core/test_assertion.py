@@ -328,6 +328,35 @@ class TestAssertionTracing:
         assert len(assertions) == 1
         assert isinstance(assertions[0], RuntimeAssertion)
 
+    def test_while_loop_keeps_failures_from_every_iteration(self):
+        """Pre-loop assertions survive; loop predicates AND, fmt/fix args take the max."""
+
+        @jax.jit
+        @with_runtime_assertions
+        def run(x):
+            runtime_assert(x < 0, "before loop")
+
+            def body(i):
+                runtime_assert(
+                    i != 1,
+                    "fails at i=1",
+                    fmt_args={"v": jnp.where(i == 0, 5.0, 1.0), "flag": i < 0},
+                    fix_fn=lambda state, _: state,
+                    fix_args=jnp.stack([2 - i, i]),
+                )
+                return i + 1
+
+            jax.lax.while_loop(lambda i: i < 3, body, 0)
+            return x
+
+        _, (before, loop) = run(jnp.array(1.0))
+        assert not before.predicate
+        assert not loop.predicate
+        assert loop.fmt_args["v"] == 5.0
+        assert loop.fmt_args["flag"].dtype == jnp.bool_
+        assert not loop.fmt_args["flag"]
+        assert loop.fix_args.tolist() == [2, 2]
+
     def test_cond_unions_divergent_branches(self):
         """Branches with different assertions are unioned; the unchosen branch is padded passing."""
 
@@ -400,6 +429,32 @@ class TestAssertionTracing:
         # x = 6 takes the true branch; its predicate (12 > 10) passes.
         out, assertions = cond_fn(jnp.array(6.0))
         assert all(bool(a.predicate) for a in assertions)
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            check_assertions,
+            jax.jit(check_assertions),
+            lambda: jax.lax.while_loop(
+                lambda c: ~c[1], lambda c: (check_assertions(), True), (True, False)
+            )[0],
+        ],
+        ids=["direct", "jit", "while"],
+    )
+    def test_cond_branch_sees_outer_failure(self, read):
+        """A branch reading the context sees assertions made before the cond."""
+
+        @jax.jit
+        @with_runtime_assertions
+        def run(x):
+            runtime_assert(x > 0, "before cond")
+            branches = [lambda: read(), lambda: jnp.array(True)]
+            return jax.lax.switch((x > 0).astype(int), branches)
+
+        ok, assertions = run(jnp.array(-1.0))
+        assert not ok
+        assert len(assertions) == 1
+        assert not assertions[0].predicate
 
     def test_nested_cond_interprets_each_assertion_once(self, monkeypatch):
         import kups.core.assertion as assertion_module
