@@ -2134,7 +2134,7 @@ wheels = [
 
 [[package]]
 name = "kups"
-version = "1.0.7"
+version = "1.0.8"
 source = { editable = "." }
 dependencies = [
     { name = "ase" },
@@ -2222,7 +2222,7 @@ requires-dist = [
     { name = "packaging", specifier = ">=24.2" },
     { name = "pint", specifier = ">=0.24.4" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "slub", specifier = ">=0.1.1" },
+    { name = "slub", specifier = ">=0.1.2" },
     { name = "tqdm", specifier = ">=4.67.1" },
 ]
 provides-extras = ["cuda", "hf", "uma", "mace"]
@@ -4814,14 +4814,14 @@ wheels = [
 
 [[package]]
 name = "slub"
-version = "0.1.1"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/89/93ff76f3bba67c254c28071111c801f306365b08b3e6cc4edd82a5d755fc/slub-0.1.1.tar.gz", hash = "sha256:f5d07c8d1b9f53ae208dfa5c3840ab4d65f2f9e21ea532641794b10c8496729c", size = 83553, upload-time = "2026-04-16T17:02:17.914Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/aa/2975dcd37589bc9c3f57fe13e4c4a5e2b7d7cf5138e71660e0a137563f91/slub-0.1.2.tar.gz", hash = "sha256:73c0e05786c8009ba0074abf3973ee0435b172794e732a6b8874a1aac783c832", size = 86837, upload-time = "2026-07-28T12:11:36.291Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/93/81/3bc58931a04b0e809c1f4632965bac7877c2200c4621a51ab8bf907f982d/slub-0.1.1-py3-none-any.whl", hash = "sha256:547c314f10f74a3aefd68fd491f84d5511182bee2f61ba9821e1267009654fac", size = 16532, upload-time = "2026-04-16T17:02:39.926Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/59/67f4f833561fb25eebc36c529ff852050dc7417f2f459a344b647b849999/slub-0.1.2-py3-none-any.whl", hash = "sha256:6197f701e715e4167763881ea470ba2b40d21c28c52b5870b80ca7fec497536c", size = 17403, upload-time = "2026-07-28T12:11:34.177Z" },
 ]
 
 [[package]]
