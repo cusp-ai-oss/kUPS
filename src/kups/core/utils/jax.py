@@ -787,6 +787,9 @@ def dataclass[T](
         ) -> T:
             kwargs = dict(zip(_data, data))
             kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
+            if getattr(_cls, "_skip_post_init_on_unflatten", False):
+                with no_post_init():
+                    return _cls(**kwargs)
             return _cls(**kwargs)
 
         jax.tree_util.register_pytree_with_keys(

@@ -21,7 +21,13 @@ from jax import Array
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
 from kups.core.lens import bind
-from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled, tree_map
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    no_post_init,
+    skip_post_init_if_disabled,
+    tree_map,
+)
 from kups.core.utils.ops import pad_axis
 
 if TYPE_CHECKING:
@@ -38,6 +44,38 @@ def system_view(x: HasSystemIndex) -> Index[SystemId]:
     :func:`add_buffers` when data implements ``HasSystemIndex``.
     """
     return x.system
+
+
+def _sanitize[D](data: D, view: Callable[[D], Index[Any]]) -> D:
+    """Zero (or OOB-mark) every leaf in rows that ``view`` marks unoccupied."""
+    try:
+        viewed_leaf = view(data)
+    except AttributeError as e:
+        raise ValueError(
+            "Could not get occupation index with view. "
+            "Most likely the user Buffered an item without .system "
+            "attribute and did not overwrite `view`."
+        ) from e
+    assert isinstance(viewed_leaf, Index), (
+        f"View must point towards an Index. Got {viewed_leaf}."
+    )
+    mask = viewed_leaf.valid_mask
+
+    def _leaf(leaf: Any) -> Any:
+        if isinstance(leaf, Index):
+            if leaf is viewed_leaf:
+                return leaf  # source of truth — do not sanitize
+            oob_sentinel = len(leaf.keys)
+            data = jnp.where(mask, leaf.indices, oob_sentinel)
+            return Index(leaf.keys, data, leaf.max_count, _cls=leaf._cls)
+        expand_axes = tuple(i for i in range(leaf.ndim) if i != 0)
+        return jnp.where(
+            jnp.expand_dims(mask, axis=expand_axes),
+            leaf,
+            jnp.zeros_like(leaf),
+        )
+
+    return jax.tree.map(_leaf, data, is_leaf=lambda x: isinstance(x, Index))
 
 
 @dataclass
@@ -72,40 +110,13 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         """Number of occupied slots."""
         return self.occupation.sum()
 
+    # Leaves of a flattened ``Buffered`` are already sanitized.
+    _skip_post_init_on_unflatten = True
+
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
         super().__post_init__()
-        mask = self.occupation
-        try:
-            viewed_leaf = self.view(self.data)
-        except AttributeError as e:
-            raise ValueError(
-                "Could not get occupation index with view. "
-                "Most likely the user Buffered an item without .system "
-                "attribute and did not overwrite `view`."
-            ) from e
-        assert isinstance(viewed_leaf, Index), (
-            f"View must point towards an Index. Got {viewed_leaf}."
-        )
-
-        def _sanitize(leaf: Any) -> Any:
-            if isinstance(leaf, Index):
-                if leaf is viewed_leaf:
-                    return leaf  # source of truth — do not sanitize
-                oob_sentinel = len(leaf.keys)
-                data = jnp.where(mask, leaf.indices, oob_sentinel)
-                return Index(leaf.keys, data, leaf.max_count, _cls=leaf._cls)
-            expand_axes = tuple(i for i in range(leaf.ndim) if i != 0)
-            return jnp.where(
-                jnp.expand_dims(mask, axis=expand_axes),
-                leaf,
-                jnp.zeros_like(leaf),
-            )
-
-        sanitized = jax.tree.map(
-            _sanitize, self.data, is_leaf=lambda x: isinstance(x, Index)
-        )
-        object.__setattr__(self, "data", sanitized)
+        object.__setattr__(self, "data", _sanitize(self.data, self.view))
 
     def select_free(self, n: int) -> Index[TLabel]:
         """Return an ``Index`` referencing ``n`` unoccupied slots.
@@ -217,17 +228,30 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         The viewed Index leaf in ``data`` must carry correct validity
         (OOB sentinel for unoccupied rows).
         """
-        return cast(Buffered[TLabel, D], super().update(index, data, **kwargs))  # type: ignore
+        # Only the written rows can break the invariant.
+        data = _sanitize(data, self.view)
+        with no_post_init():
+            out = Table.update(self, index, data, **kwargs)
+        return cast(Buffered[TLabel, D], out)
 
     @override
     def update_if[D, L: SupportsSorting](
         self: Buffered[TLabel, D],
         accept: Table[L, Array],
         indices: Index[TLabel],
-        new_data: D,
+        new_data: D | Buffered[Any, D],
     ) -> Buffered[TLabel, D]:
-        """Conditionally update rows, returning ``Buffered``."""
-        return cast(Buffered[TLabel, D], super().update_if(accept, indices, new_data))  # type: ignore
+        """Conditionally update rows, returning ``Buffered``.
+
+        ``new_data`` may be given as a ``Buffered`` of already sanitized rows.
+        """
+        if isinstance(new_data, Buffered):
+            rows: D = new_data.data
+        else:
+            rows = _sanitize(new_data, self.view)
+        with no_post_init():
+            out = Table.update_if(self, accept, indices, rows)
+        return cast(Buffered[TLabel, D], out)
 
 
 _BufferGroup = (

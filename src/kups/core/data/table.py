@@ -35,7 +35,6 @@ from kups.core.utils.jax import (
     no_post_init,
     skip_post_init_if_disabled,
     tree_map,
-    tree_where_broadcast_last,
 )
 
 TKey = TypeVar("TKey", covariant=True, bound=SupportsSorting)
@@ -241,6 +240,15 @@ class Table(Batched, Generic[TKey, TData]):
         Returns:
             Updated container with accepted entries written.
         """
+        return self.update(self.accepted_indices(accept, indices, new_data), new_data)
+
+    def accepted_indices[D, L: SupportsSorting](
+        self: Table[TKey, D],
+        accept: Table[L, Array],
+        indices: Index[TKey],
+        new_data: D,
+    ) -> Index[TKey]:
+        """``indices`` with rows rejected by :meth:`update_if` sent out of bounds."""
         target_cls = accept.cls
         current_data = self[indices]
         self_idx = Index.find(current_data, target_cls)
@@ -249,8 +257,12 @@ class Table(Batched, Generic[TKey, TData]):
             accept.at(self_idx, args={"mode": "fill", "fill_value": False}).get()
             | accept.at(data_idx, args={"mode": "fill", "fill_value": False}).get()
         )
-        to_write = tree_where_broadcast_last(mask, new_data, current_data)
-        return self.update(indices, to_write)
+        # Rejected rows point out of bounds, where the scatter drops them.
+        return Index(
+            self.keys,
+            jnp.where(mask, indices.indices_in(self.keys), len(self.keys)),
+            _cls=self.cls,
+        )
 
     @overload
     def __getitem__[L1: SupportsSorting, L2: SupportsSorting, L3: SupportsSorting, D](
