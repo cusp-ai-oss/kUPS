@@ -16,13 +16,15 @@ from kups.core.data import Index, Table
 from kups.core.lens import bind, lens
 from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_list_cache import (
+    BlockBounds,
     CellListCacheParameters,
     CellListCacheUpdatePatch,
+    _bisection_levels,
     build_cell_list_cache,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.result import as_result_function
-from kups.core.typing import Label, ParticleId
+from kups.core.typing import Label, ParticleId, SystemId
 
 from ._builders import make_lh, make_systems, systems_from_lvecs
 
@@ -396,3 +398,253 @@ class TestCellListCache:
         cells = accepted.value.cells
         assert (cells[table.rows.cell[slot]] != slot[:, None]).all()
         assert (cells[crossing.cell] == slot[:, None]).sum() == 1
+
+
+class TestSpatialOrder:
+    def test_blocks_are_compact_per_system_with_exact_bounds(self):
+        rng = np.random.default_rng(7)
+        lengths = np.array([20.0, 12.0])
+        system = np.repeat([0, 1], (256, 64))
+        positions = rng.random((320, 3)) * lengths[system, None]
+        # Eight inactive rows per system keep active runs block aligned.
+        inactive = np.zeros(320, bool)
+        inactive[rng.choice(256, 8, replace=False)] = True
+        inactive[256 + rng.choice(64, 8, replace=False)] = True
+        particles = make_lh(jnp.asarray(positions), jnp.asarray(system))
+        inclusion = Index(particles.data.inclusion.keys, np.where(inactive, 2, system))
+        particles = particles.map_data(lambda p: replace(p, inclusion=inclusion))
+        systems, cutoffs = systems_from_lvecs(
+            jnp.asarray(lengths[:, None, None] * np.eye(3)), jnp.array([3.0, 3.0])
+        )
+        parameters = CellListCacheParameters(
+            chunk_size=8, max_cells_per_system=216, cell_capacity=64, key_block_size=8
+        )
+        table = jax.jit(build_cell_list_cache, static_argnums=4)(
+            particles, systems, cutoffs, (), parameters
+        )
+
+        slot = np.asarray(table.slot_of_row)
+        n_blocks = table.sentinel_slot // 8
+        frac = np.empty((n_blocks * 8, 3))
+        frac[slot] = positions / lengths[system, None]
+        active = np.zeros(n_blocks * 8, bool)
+        active[slot] = ~inactive
+        npt.assert_array_equal(
+            np.asarray(table.rows.cell[: n_blocks * 8]) != table.sentinel_cell, active
+        )
+        # Inactive slots come last and no block mixes systems.
+        assert np.all(active[: active.sum()])
+        block_system = np.full(n_blocks * 8, -1)
+        block_system[slot] = np.where(inactive, -1, system)
+        block_system = block_system.reshape(n_blocks, 8)
+        assert np.all(block_system == block_system[:, :1])
+
+        frac = frac.reshape(n_blocks, 8, 3)
+        mask = active.reshape(n_blocks, 8, 1)
+        lower = np.where(mask, frac, np.inf).min(1)
+        upper = np.where(mask, frac, -np.inf).max(1)
+        npt.assert_allclose(table.block_bounds.lower, lower.T, atol=1e-6)
+        npt.assert_allclose(table.block_bounds.upper, upper.T, atol=1e-6)
+        # Each block's system range is its one system; empty blocks have none.
+        occupied = block_system[:, 0] >= 0
+        lo, hi = np.asarray(table.block_bounds.systems.indices)
+        npt.assert_array_equal(lo[occupied], block_system[occupied, 0])
+        npt.assert_array_equal(hi[occupied], block_system[occupied, 0])
+        assert np.all(lo[~occupied] > hi[~occupied])
+
+        # Mean block extent relative to the edge of a cube holding one block.
+        owner = block_system[occupied, 0]
+        extent = (upper - lower)[occupied] * lengths[owner, None]
+        density = np.array([248 / 20.0**3, 56 / 12.0**3])
+        edge = (8 / density[owner]) ** (1 / 3)
+        assert np.mean(extent / edge[:, None]) < 0.9
+
+
+def _interleaved_points(positions, system, active):
+    """Particles of interleaved systems; inactive rows keep their system."""
+    points = make_lh(jnp.asarray(positions), jnp.asarray(system))
+    inclusion = points.data.inclusion
+    n_systems = len(inclusion.keys)
+    inclusion = Index(inclusion.keys, jnp.where(active, system, n_systems))
+    return points.map_data(lambda p: replace(p, inclusion=inclusion))
+
+
+def _assert_exact_bounds(table, block_size):
+    n = table.sentinel_slot
+    frac = np.asarray(table.rows.frac[:n]).reshape(-1, block_size, 3)
+    active = np.asarray(table.rows.cell[:n] != table.sentinel_cell)
+    active = active.reshape(-1, block_size)
+    system = table.rows.system[:n]
+    keys = system.keys
+    system = np.asarray(system.indices_in(keys)).reshape(-1, block_size)
+    bounds = table.block_bounds
+    npt.assert_array_equal(
+        bounds.lower, np.where(active[..., None], frac, np.inf).min(1).T
+    )
+    npt.assert_array_equal(
+        bounds.upper, np.where(active[..., None], frac, -np.inf).max(1).T
+    )
+    npt.assert_array_equal(
+        bounds.systems.indices_in(keys),
+        [
+            np.where(active, system, len(keys)).min(1),
+            np.where(active, system, 0).max(1),
+        ],
+    )
+
+
+class TestBlockBounds:
+    def test_empty_single_and_interleaved_blocks(self):
+        # Blocks: empty, one active row, interleaved systems, one system with an
+        # inactive row of another system.
+        active = np.array(
+            [[0, 0, 0, 0], [0, 0, 1, 0], [1, 1, 1, 1], [1, 0, 1, 1]], bool
+        )
+        ids = np.array([[0, 1, 2, 0], [2, 1, 1, 0], [2, 0, 2, 0], [1, 2, 1, 1]])
+        frac = np.random.default_rng(3).random((16, 3))
+        keys = tuple(SystemId(i) for i in range(3))
+        bounds = BlockBounds.of(
+            jnp.asarray(frac), Index(keys, ids.ravel()), active.ravel(), 4
+        )
+        frac = frac.reshape(4, 4, 3)
+        npt.assert_array_equal(
+            bounds.lower, np.where(active[..., None], frac, np.inf).min(1).T
+        )
+        npt.assert_array_equal(
+            bounds.upper, np.where(active[..., None], frac, -np.inf).max(1).T
+        )
+        # The empty block's range is out of bounds above its first system.
+        npt.assert_array_equal(
+            bounds.systems.indices_in(keys), [[3, 1, 0, 1], [0, 1, 2, 1]]
+        )
+        holds = [bounds.holds(Index(keys, jnp.array(s))) for s in range(4)]
+        npt.assert_array_equal(
+            holds,
+            [
+                [False, False, True, False],
+                [False, True, True, True],
+                [False, False, True, False],
+                # Out-of-bounds systems are in no block.
+                [False, False, False, False],
+            ],
+        )
+
+    def test_parameters_reject_non_positive_block_size(self):
+        with pytest.raises(ValueError, match="key_block_size"):
+            CellListCacheParameters(key_block_size=0)
+        assert (
+            CellListCacheParameters(chunk_size=6, key_block_size=4).slot_multiple == 12
+        )
+
+    @pytest.mark.parametrize("n_blocks", [1, 2, 5, 8])
+    def test_bisection_splits_at_block_boundaries(self, n_blocks):
+        levels = _bisection_levels(n_blocks, 3)
+        assert len(levels) == int(np.ceil(np.log2(n_blocks)))
+        for depth, level in enumerate(levels):
+            assert level.shape == (3 * n_blocks,)
+            steps = np.flatnonzero(np.diff(level)) + 1
+            assert np.all(np.diff(level) >= 0) and np.all(steps % 3 == 0)
+            assert level[-1] + 1 == min(2**depth, n_blocks)
+        # Every leaf of the last split is a single block.
+        if levels:
+            sizes = np.bincount(levels[-1]) // 3
+            assert np.all(sizes <= 2)
+
+    def test_interleaved_systems_build_and_update_exactly(self):
+        # Rows of three systems interleaved in input order, a slot count that is
+        # not a block multiple, and a third system with no active rows.
+        rng = np.random.default_rng(5)
+        lengths = np.array([10.0, 14.0, 9.0])
+        n, block_size = 61, 4
+        system = rng.permutation(np.arange(n) % 3)
+        positions = rng.random((n, 3)) * lengths[system, None]
+        active = (system != 2) & (rng.random(n) > 0.15)
+        systems, cutoffs = systems_from_lvecs(
+            jnp.asarray(lengths[:, None, None] * np.eye(3)), jnp.full(3, 3.0)
+        )
+        parameters = CellListCacheParameters(
+            chunk_size=block_size,
+            max_cells_per_system=64,
+            cell_capacity=16,
+            key_block_size=block_size,
+        )
+        points = _interleaved_points(positions, system, active)
+        table = jax.jit(build_cell_list_cache, static_argnums=4)(
+            points, systems, cutoffs, (), parameters
+        )
+        slot = np.asarray(table.slot_of_row)
+        assert np.unique(slot).size == n and slot.max() < table.sentinel_slot
+        # Active rows come first, grouped by system: only the block at the one
+        # boundary between the two active systems may mix them.
+        slot_active = np.zeros(table.sentinel_slot, bool)
+        slot_active[slot] = active
+        assert np.all(slot_active[: active.sum()])
+        slot_system = np.full(table.sentinel_slot, -1)
+        slot_system[slot[active]] = system[active]
+        mixed = [
+            np.unique(block[block >= 0]).size > 1
+            for block in slot_system.reshape(-1, block_size)
+        ]
+        assert sum(mixed) <= 1
+        _assert_exact_bounds(table, block_size)
+        # block_rows returns whole blocks of slots.
+        blocks = table.block_rows(jnp.array([[1, 0], [2, 2]]))
+        npt.assert_array_equal(
+            blocks.frac[1, 0], table.rows.frac[2 * block_size : 3 * block_size]
+        )
+        assert blocks.cell.shape == (2, 2, block_size)
+
+        # Moves across blocks, deletions and insertions, including into the
+        # empty system and into blocks of other systems.
+        @jax.jit
+        @as_result_function
+        def update(table, rows, proposal, accept):
+            query = points.subset(Index(points.keys, rows)).map_data(
+                lambda p: replace(
+                    p,
+                    positions=proposal.positions,
+                    system=proposal.system,
+                    inclusion=proposal.inclusion,
+                )
+            )
+            binned = table.bin_rows(query, systems, ())
+            patch = CellListCacheUpdatePatch(
+                table.slot_of_row[rows], proposal.system, binned, lens(lambda t: t)
+            )
+            return patch(table, systems.set_data(accept))
+
+        for step in range(6):
+            rows = rng.choice(n, 8, replace=False)
+            new_system = np.where(active[rows], system[rows], rng.integers(0, 3, 8))
+            new_active = np.where(active[rows], rng.random(8) > 0.3, True)
+            new_positions = rng.random((8, 3)) * lengths[new_system, None]
+            accept = rng.random(3) > 0.3
+            proposal = _interleaved_points(new_positions, new_system, new_active).data
+            proposal = replace(
+                proposal,
+                system=Index(points.data.system.keys, jnp.asarray(new_system)),
+                inclusion=Index(
+                    points.data.inclusion.keys,
+                    jnp.where(new_active, new_system, 3),
+                ),
+            )
+            result = update(table, jnp.asarray(rows), proposal, jnp.asarray(accept))
+            result.raise_assertion()
+            table = result.value
+            ok = accept[new_system]
+            positions[rows[ok]] = new_positions[ok]
+            system[rows[ok]] = new_system[ok]
+            active[rows[ok]] = new_active[ok]
+            _assert_exact_bounds(table, block_size)
+
+        # The updated table still finds exactly the dense neighbors.
+        points = _interleaved_points(positions, system, active)
+        dense = DenseNearestNeighborList(
+            FixedCapacity(64), FixedCapacity(1024), FixedCapacity(64 * 27), cutoffs
+        )
+        cached = _neighborlist(table, cutoffs, parameters, 1024)
+        actual = jax.jit(as_result_function(cached))(points, systems)
+        expected = jax.jit(as_result_function(dense))(points, systems)
+        actual.raise_assertion()
+        expected.raise_assertion()
+        assert _edge_rows(actual.value, n, n) == _edge_rows(expected.value, n, n)

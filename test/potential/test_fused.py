@@ -1140,7 +1140,12 @@ class TestPersistentCellListCache:
 
         engine = FusedNeighborEnergy(
             _LJ_PAIR,
-            dataclasses.replace(_PARAMS, key_layout=key_layout),
+            dataclasses.replace(
+                _PARAMS,
+                key_layout=key_layout,
+                key_block_size=2,
+                key_chunk_size=2,
+            ),
             lens(lambda s: s.cell_table),
         )
         table = engine.build_cell_list_cache(
@@ -1216,10 +1221,20 @@ class TestPersistentCellListCache:
                 npt.assert_array_equal(before, after)
 
     @pytest.mark.parametrize(
-        "key_layout,key_chunk_size", [("cells", None), ("cells", 1), ("slots", 8)]
+        "key_layout,key_chunk_size,key_block_size",
+        [
+            ("cells", None, 8),
+            ("cells", 1, 8),
+            ("slots", 8, 8),
+            ("slots", 8, 4),
+            ("slots", 2, 2),
+        ],
     )
     def test_move_chain_matches_graph(
-        self, key_layout: _KeyLayout, key_chunk_size: int | None
+        self,
+        key_layout: _KeyLayout,
+        key_chunk_size: int | None,
+        key_block_size: int,
     ):
         state = _make_state(
             jax.random.PRNGKey(11), (24, 16), (12.0, 10.0), n_inactive=3
@@ -1228,7 +1243,10 @@ class TestPersistentCellListCache:
         engine = FusedNeighborEnergy(
             _LJ_PAIR,
             dataclasses.replace(
-                _PARAMS, key_layout=key_layout, key_chunk_size=key_chunk_size
+                _PARAMS,
+                key_layout=key_layout,
+                key_chunk_size=key_chunk_size,
+                key_block_size=key_block_size,
             ),
             lens(lambda s: s.cell_table),
         )
@@ -1288,6 +1306,29 @@ class TestPersistentCellListCache:
                 rtol=1e-9,
                 atol=1e-12,
                 err_msg=f"step {step}",
+            )
+            table = state.cell_table
+            # Updated block bounds stay exact for the stored rows.
+            n = table.sentinel_slot
+            frac = np.asarray(table.rows.frac[:n]).reshape(-1, key_block_size, 3)
+            active = np.asarray(table.rows.cell[:n] != table.sentinel_cell)
+            active = active.reshape(-1, key_block_size, 1)
+            npt.assert_array_equal(
+                table.block_bounds.lower, np.where(active, frac, np.inf).min(1).T
+            )
+            npt.assert_array_equal(
+                table.block_bounds.upper, np.where(active, frac, -np.inf).max(1).T
+            )
+            system = np.asarray(table.rows.system.indices[:n])
+            system = system.reshape(-1, key_block_size)
+            # Empty blocks: out of bounds above the first system.
+            n_systems = len(table.block_bounds.systems.keys)
+            npt.assert_array_equal(
+                table.block_bounds.systems.indices,
+                [
+                    np.where(active[..., 0], system, n_systems).min(1),
+                    np.where(active[..., 0], system, 0).max(1),
+                ],
             )
 
 
