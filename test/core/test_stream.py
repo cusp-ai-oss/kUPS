@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from collections.abc import Callable
 from typing import assert_type, override
 
 import jax
@@ -159,6 +160,24 @@ def test_slot_rows_lens_translates_between_slot_and_batch_systems(
     npt.assert_array_equal(updated.data.system.indices, [2, 1, 1, 1, 0, 0])
 
 
+def test_slot_rows_lens_requires_systems_keyed_by_the_slots() -> None:
+    slots = reserve_slots(2, 2)
+    # Without the check, a write would merge the keys into (0, 1, 5, 7).
+    table = Table(
+        slots.data.keys,
+        Rows(
+            jnp.arange(4.0),
+            Index((SystemId(5), SystemId(7)), jnp.array([0, 0, 1, 1]), _cls=SystemId),
+        ),
+    )
+    payload = Rows(jnp.zeros((2, 2)), slot_system_index(jnp.ones((2, 2), bool)))
+    with pytest.raises(ValueError, match="keyed by the slots"):
+        _gather_rows(slots, table)
+    with pytest.raises(ValueError, match="keyed by the slots"):
+        _scatter_rows(slots, table, payload)
+
+
+@pytest.mark.parametrize("build", [slot_owners, slot_rows_lens])
 @pytest.mark.parametrize(
     "indices,match",
     [
@@ -167,15 +186,17 @@ def test_slot_rows_lens_translates_between_slot_and_batch_systems(
         ([0, 1, 2], "shape"),
     ],
 )
-def test_slot_owners_reject_invalid_reservations(
-    indices: list[list[int]] | list[int], match: str
+def test_invalid_reservations_are_rejected(
+    indices: list[list[int]] | list[int],
+    match: str,
+    build: Callable[[Table[SystemId, Index[ParticleId]]], object],
 ) -> None:
     slots = Table.arange(
         Index.integer(jnp.array(indices), n=3, label=ParticleId, max_count=1),
         label=SystemId,
     )
     with pytest.raises(ValueError, match=match):
-        slot_owners(slots)
+        build(slots)
 
 
 @dataclass
