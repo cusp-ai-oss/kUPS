@@ -302,15 +302,18 @@ class TestCellListCache:
 
     @pytest.mark.parametrize(
         "counts,expected_layout",
-        [((83,) + (52,) * 7, "slots"), ((142,) * 8, "cells")],
+        [((100,) + (60,) * 3, "slots"), ((142,) * 4, "cells")],
     )
     def test_auto_layout_requires_smaller_slot_blocks(self, counts, expected_layout):
-        centers = np.array(list(np.ndindex(2, 2, 2))) * 6.0 + 3.0
+        # A short z edge needs several images, so blocks are not culled.
+        centers = np.array(list(np.ndindex(2, 2, 1))) * 6.0 + 3.0
         particles = make_lh(
             jnp.asarray(np.repeat(centers, counts, axis=0)),
             jnp.zeros(sum(counts), int),
         )
-        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12.0, jnp.array([6.0]))
+        systems, cutoffs = systems_from_lvecs(
+            jnp.diag(jnp.array([12.0, 12.0, 10.0]))[None], jnp.array([6.0])
+        )
         parameters = CellListCacheParameters.estimate(
             particles,
             systems,
@@ -318,18 +321,19 @@ class TestCellListCache:
             key_layout="auto",
             key_chunk_size="auto",
         )
+        assert parameters.max_images_per_pair > 1
         assert parameters.key_layout == expected_layout
 
     @pytest.mark.parametrize(
         "length,n_systems,periodic,expected_layout",
         [
             (18.0, 1, (True, True, True), "slots"),
-            (18.0, 2, (True, True, True), "cells"),
+            (18.0, 2, (True, True, True), "slots"),
             (24.0, 1, (True, True, True), "cells"),
             (18.0, 1, (False, True, True), "cells"),
         ],
     )
-    def test_auto_slots_require_complete_single_system_stencil(
+    def test_auto_slots_require_complete_stencil(
         self, length, n_systems, periodic, expected_layout
     ):
         particles = make_lh(
@@ -343,13 +347,104 @@ class TestCellListCache:
             Cell(frame, periodic=periodic), jnp.full(n_systems, 6.0)
         )
         parameters = CellListCacheParameters.estimate(
+            particles, systems, cutoffs, key_layout="auto", key_chunk_size="auto"
+        )
+        assert parameters.key_layout == expected_layout
+        if expected_layout == "slots":
+            # Near blocks of a sparse table span all of them: one batch.
+            assert parameters.key_chunk_size == -(-5 * n_systems // 8) * 8
+
+    @pytest.mark.parametrize(
+        "key_layout,key_chunk_size,expected_chunk",
+        [("cells", None, None), ("slots", 12, 12), ("slots", "auto", 8)],
+    )
+    def test_explicit_layouts_keep_blocks(
+        self, key_layout, key_chunk_size, expected_chunk
+    ):
+        particles = make_lh(
+            jax.random.uniform(jax.random.key(77), (6, 3)) * 18.0, jnp.zeros(6, int)
+        )
+        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 18.0, jnp.array([6.0]))
+        parameters = CellListCacheParameters.estimate(
+            particles,
+            systems,
+            cutoffs,
+            key_layout=key_layout,
+            key_chunk_size=key_chunk_size,
+            key_block_size=4,
+        )
+        assert parameters.key_layout == key_layout
+        assert parameters.key_block_size == 4
+        assert parameters.key_chunk_size == expected_chunk
+
+    @pytest.mark.parametrize("n_systems", [1, 2])
+    def test_auto_blocks_cull_a_dense_cube(self, n_systems: int):
+        # 32 rows in each of 27 cells: without culling, cell traversal wins.
+        # Several systems hold the same cube with their rows interleaved.
+        rng = np.random.default_rng(75)
+        corners = np.array(list(np.ndindex(3, 3, 3)), float) * 7.0
+        positions = (corners[:, None] + rng.random((27, 32, 3)) * 7.0).reshape(-1, 3)
+        n = 864 * n_systems
+        particles = make_lh(
+            jnp.asarray(np.repeat(positions, n_systems, axis=0)),
+            jnp.arange(n) % n_systems,
+        )
+        systems, cutoffs = systems_from_lvecs(
+            jnp.tile(jnp.eye(3) * 21.0, (n_systems, 1, 1)), jnp.full(n_systems, 6.0)
+        )
+        parameters = CellListCacheParameters.estimate(
             particles,
             systems,
             cutoffs,
             key_layout="auto",
             key_chunk_size="auto",
         )
-        assert parameters.key_layout == expected_layout
+        assert parameters.key_layout == "slots"
+        size = parameters.key_block_size
+        batch = parameters.key_chunk_size
+        assert batch is not None and batch % size == 0
+        table = build_cell_list_cache(particles, systems, cutoffs, (), parameters)
+        bounds = table.block_bounds
+        assert batch < table.sentinel_slot
+        # Most moves of one row per system find all near blocks in one batch.
+        near = jax.vmap(near_blocks, in_axes=(0, None, None, None, None, None, None))(
+            jnp.asarray(positions / 21.0),
+            bounds.lower,
+            bounds.upper,
+            systems.data.cell.vectors[0],
+            systems.data.cell.perpendicular_lengths[0],
+            6.0,
+            (True, True, True),
+        )
+        union = jnp.zeros_like(near)
+        for system in range(n_systems):
+            union |= near & bounds.holds(Index(systems.keys, jnp.asarray(system)))
+        counts = np.asarray(union.sum(-1))
+        assert np.mean(counts * size <= batch) >= 0.9
+
+    @pytest.mark.parametrize(
+        "lengths,cutoff", [((21.0, 21.0, 11.0), 6.0), ((7.0, 7.0, 7.0), 4.5)]
+    )
+    def test_blocks_need_the_minimum_image(self, lengths, cutoff):
+        positions = jax.random.uniform(jax.random.key(76), (60, 3)) * jnp.array(lengths)
+        particles = make_lh(positions, jnp.zeros(60, int))
+        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array(lengths))[None])
+        systems, cutoffs = make_systems(
+            Cell(frame, periodic=(True, True, True)), jnp.array([cutoff])
+        )
+
+        def estimate(block: int) -> CellListCacheParameters:
+            return CellListCacheParameters.estimate(
+                particles,
+                systems,
+                cutoffs,
+                key_layout="auto",
+                key_chunk_size="auto",
+                key_block_size=block,
+            )
+
+        # Without culling the block size only sets the slot order.
+        assert replace(estimate(4), key_block_size=8) == estimate(8)
 
     def test_rejection_same_cell_and_overflow(self):
         particles = make_lh(
