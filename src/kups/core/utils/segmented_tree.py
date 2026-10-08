@@ -9,9 +9,8 @@ reductions used by Optax transforms (``optax.tree.vdot``,
 ``jax.tree.reduce(maximum, ...)``) collapse all systems into a single
 scalar — the bug behind cusp-ai-oss/kUPS#94 for batched relaxation.
 
-This module provides three system-aware helpers that the kUPS-native
-transforms need to operate per-segment instead, all built directly on
-existing relational primitives:
+This module provides system-aware helpers that operate per segment
+instead, all built directly on existing relational primitives:
 
 * [tree_vdot][kups.core.utils.segmented_tree.tree_vdot] —
   per-segment inner product, summed across pytree leaves.
@@ -23,6 +22,10 @@ existing relational primitives:
 * [tree_scale_per_row][kups.core.utils.segmented_tree.tree_scale_per_row]
   — multiply each row of every leaf by its segment's entry in a
   ``Table[K, Array]``.
+* [tree_clip_per_row][kups.core.utils.segmented_tree.tree_clip_per_row]
+  — clip each row of every leaf to its segment's limit.
+* [tree_where_per_row][kups.core.utils.segmented_tree.tree_where_per_row]
+  — select rows from one of two trees by a per-segment boolean table.
 
 The reductions are built on
 [Index.sum_over][kups.core.data.index.Index.sum_over] /

@@ -29,10 +29,10 @@ repos:
 
       - id: pyrefly
         name: pyrefly check
-        entry: uv run pyrefly check src/
+        entry: uv run pyrefly check src/ test/relaxation/transforms/test_reset.py
         language: system
         types: [python]
-        files: ^src/
+        files: ^(src/|test/relaxation/transforms/test_reset\.py$)
         pass_filenames: false
 
       - id: clear-notebook-output

@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for per-segment pytree reductions used by system-aware Optax transforms."""
+"""Tests for per-segment pytree operations in kups.core.utils.segmented_tree."""
 
 import jax
 import jax.numpy as jnp
