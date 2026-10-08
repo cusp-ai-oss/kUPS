@@ -396,3 +396,59 @@ class TestCellListCache:
         cells = accepted.value.cells
         assert (cells[table.rows.cell[slot]] != slot[:, None]).all()
         assert (cells[crossing.cell] == slot[:, None]).sum() == 1
+
+
+class TestSpatialOrder:
+    def test_blocks_are_compact_per_system_with_exact_bounds(self):
+        rng = np.random.default_rng(7)
+        lengths = np.array([20.0, 12.0])
+        system = np.repeat([0, 1], (256, 64))
+        positions = rng.random((320, 3)) * lengths[system, None]
+        # Eight inactive rows per system keep active runs block aligned.
+        inactive = np.zeros(320, bool)
+        inactive[rng.choice(256, 8, replace=False)] = True
+        inactive[256 + rng.choice(64, 8, replace=False)] = True
+        particles = make_lh(jnp.asarray(positions), jnp.asarray(system))
+        inclusion = Index(particles.data.inclusion.keys, np.where(inactive, 2, system))
+        particles = particles.map_data(lambda p: replace(p, inclusion=inclusion))
+        systems, cutoffs = systems_from_lvecs(
+            jnp.asarray(lengths[:, None, None] * np.eye(3)), jnp.array([3.0, 3.0])
+        )
+        parameters = CellListCacheParameters(
+            chunk_size=8, max_cells_per_system=216, cell_capacity=64, key_block_size=8
+        )
+        table = jax.jit(build_cell_list_cache, static_argnums=4)(
+            particles, systems, cutoffs, (), parameters
+        )
+        assert table.block_bounds is not None
+
+        slot = np.asarray(table.slot_of_row)
+        n_blocks = table.sentinel_slot // 8
+        frac = np.empty((n_blocks * 8, 3))
+        frac[slot] = positions / lengths[system, None]
+        active = np.zeros(n_blocks * 8, bool)
+        active[slot] = ~inactive
+        npt.assert_array_equal(
+            np.asarray(table.rows.cell[: n_blocks * 8]) != table.sentinel_cell, active
+        )
+        # Inactive slots come last and no block mixes systems.
+        assert np.all(active[: active.sum()])
+        block_system = np.full(n_blocks * 8, -1)
+        block_system[slot] = np.where(inactive, -1, system)
+        block_system = block_system.reshape(n_blocks, 8)
+        assert np.all(block_system == block_system[:, :1])
+
+        frac = frac.reshape(n_blocks, 8, 3)
+        mask = active.reshape(n_blocks, 8, 1)
+        lower = np.where(mask, frac, np.inf).min(1)
+        upper = np.where(mask, frac, -np.inf).max(1)
+        npt.assert_allclose(table.block_bounds.lower, lower.T, atol=1e-6)
+        npt.assert_allclose(table.block_bounds.upper, upper.T, atol=1e-6)
+
+        # Mean block extent relative to the edge of a cube holding one block.
+        occupied = block_system[:, 0] >= 0
+        owner = block_system[occupied, 0]
+        extent = (upper - lower)[occupied] * lengths[owner, None]
+        density = np.array([248 / 20.0**3, 56 / 12.0**3])
+        edge = (8 / density[owner]) ** (1 / 3)
+        assert np.mean(extent / edge[:, None]) < 0.9
