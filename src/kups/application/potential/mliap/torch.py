@@ -53,22 +53,22 @@ class IsTorchMliapState(IsTorchMliapGraphState, Protocol):
 
 
 @overload
-def make_torch_mliap_from_state[State, Focus: IsTorchMliapState](
-    state: Lens[State, Focus],
+def make_torch_mliap_from_state[State](
+    state: Lens[State, IsTorchMliapState],
     *,
     parameters: None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[Focus] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_torch_mliap_from_state[State, Focus: IsTorchMliapGraphState](
-    state: Lens[State, Focus],
+def make_torch_mliap_from_state[State](
+    state: Lens[State, IsTorchMliapGraphState],
     *,
     parameters: TorchMliap,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[Focus] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
@@ -77,7 +77,7 @@ def make_torch_mliap_from_state(
     *,
     parameters: TorchMliap | None = None,
     gradient: Lens[Geometry, PositionsAndCell] | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create a torch MLFF potential from a typed state.
 
@@ -100,8 +100,10 @@ def make_torch_mliap_from_state(
     else:
         model_view = state.focus(lambda x: x.torch_mliap_model)
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_view(s).cutoff)
+        return neighborlist_factory(s, neighborlist_params, model_view(s).cutoff)
 
     particles_view = state.focus(lambda x: x.particles)
     systems_view = state.focus(lambda x: x.systems)

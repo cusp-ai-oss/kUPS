@@ -319,7 +319,7 @@ class PotentialConfig(NamedTuple):
 
 
 def _test_nl_factory(
-    state: Any, cutoffs: Table[SystemId, Array]
+    state: Any, params_lens: Any, cutoffs: Table[SystemId, Array]
 ) -> AllDenseNearestNeighborList:
     return AllDenseNearestNeighborList(
         avg_edges=FixedCapacity(N_PARTICLES**2),

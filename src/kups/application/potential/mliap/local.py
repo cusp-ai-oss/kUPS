@@ -77,9 +77,7 @@ def make_local_mliap_from_state[State, Gradient, Hessian](
     out_idx_view: None = None,
     *,
     parameters: None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, Gradient, Hessian, Patch[Any]]: ...
 
 
@@ -102,11 +100,7 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     | None = None,
     *,
     parameters: None = None,
-    neighborlist_factory: NeighborListFactory[
-        IsLocalMLIAPState[
-            HasCache[LocalMLIAPData, KahanSummand[PotentialOut[Gradient, Hessian]]]
-        ]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 
 
@@ -123,7 +117,7 @@ def make_local_mliap_from_state[State, Gradient, Hessian](
     out_idx_view: None = None,
     *,
     parameters: LocalMLIAPData,
-    neighborlist_factory: NeighborListFactory[IsLocalMLIAPGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, Gradient, Hessian, Patch[Any]]: ...
 
 
@@ -143,9 +137,7 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     | None = None,
     *,
     parameters: LocalMLIAPData,
-    neighborlist_factory: NeighborListFactory[
-        IsCachedLocalMLIAPState[KahanSummand[PotentialOut[Gradient, Hessian]]]
-    ] = ...,
+    neighborlist_factory: NeighborListFactory[State] = ...,
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 
 
@@ -158,7 +150,7 @@ def make_local_mliap_from_state(
     out_idx_view: Any = None,
     *,
     parameters: LocalMLIAPData | None = None,
-    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
+    neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.new,
 ) -> Any:
     """Create a local MLIAP potential from a typed state, optionally with incremental updates.
 
@@ -192,6 +184,8 @@ def make_local_mliap_from_state(
         m = x.local_mliap_model
         return m.data if isinstance(m, HasCache) else m
 
+    neighborlist_params = state.focus(lambda x: x.neighborlist_params)
+
     if probe is None:
         if parameters is not None:
             model_lens = const_lens(parameters)
@@ -199,7 +193,7 @@ def make_local_mliap_from_state(
             model_lens = state.focus(_model)
 
         def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-            return neighborlist_factory(state(s), model_lens(s).cutoff)
+            return neighborlist_factory(s, neighborlist_params, model_lens(s).cutoff)
 
         return make_local_mliap_potential(
             state.focus(lambda x: x.particles),
@@ -229,7 +223,7 @@ def make_local_mliap_from_state(
         )
 
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_lens(s).cutoff)
+        return neighborlist_factory(s, neighborlist_params, model_lens(s).cutoff)
 
     return make_local_mliap_potential(
         state.focus(lambda x: x.particles),
