@@ -101,20 +101,29 @@ class LbfgsReset[PerSystem, PerLeaf]:
     diff_updates_memory: PerLeaf
 
 
+type LbfgsResetData = LbfgsReset[Table[SupportsSorting, Array], list[Array]]
+"""Resettable L-BFGS values: per-system tables and per-leaf arrays."""
+
 type LbfgsResetIndices = LbfgsReset[
     Index[SupportsSorting], list[Index[SupportsSorting]]
 ]
+"""Index prefix matching :data:`LbfgsResetData`."""
 
 
 def lbfgs_reset_layout[Params]() -> ResetLayout[
-    ScaleByAseLbfgsState[Params],
-    LbfgsReset[Table[SupportsSorting, Array], list[Array]],
-    LbfgsResetIndices,
+    ScaleByAseLbfgsState[Params], LbfgsResetData, LbfgsResetIndices
 ]:
-    """Mutable history fields and their row indices; preserve the shared ring cursor.
+    """Reset layout for L-BFGS.
 
-    Copying initialization blanks the selected history. The first update after
-    reset contributes an inert pair, independently of the preserved ring phase.
+    Resets a system's history: its step counter ``steps``, the last seen
+    parameters and updates, the ``(s, y)`` difference memory and the matching
+    ``ρ`` weights. ``count``, which selects the history ring-buffer slot each
+    update writes, is shared by all systems and is left alone, so a reset system
+    resumes at the batch's current ring position rather than where a fresh run
+    would start. This is harmless: its blanked slots hold zero pairs with zero
+    weight, which the two-loop recursion ignores; its first update after the
+    reset (``steps == 0``) stores another such inert pair; and its later pairs
+    are visited in the same relative order as in a fresh run.
     """
     fields = lens(
         lambda s: LbfgsReset(
@@ -133,7 +142,7 @@ def lbfgs_reset_layout[Params]() -> ResetLayout[
         history_idx = [i[None] for i in idx]  # Broadcast over the history axis.
         return LbfgsReset(
             steps=s.steps.index,
-            weights_memory=s.steps.index,
+            weights_memory=s.weights_memory.index,
             params=idx,
             updates=idx,
             diff_params_memory=history_idx,

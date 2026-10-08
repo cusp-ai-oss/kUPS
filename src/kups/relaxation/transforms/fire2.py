@@ -97,10 +97,15 @@ class Fire2Reset[Velocity, PerSystem](FireReset[Velocity, PerSystem]):
     n_total: PerSystem
 
 
+type Fire2ResetData = Fire2Reset[PyTree, Table[SupportsSorting, Array]]
+"""Resettable FIRE2 values: the FIRE fields plus the ``n_total`` table."""
+
+type Fire2ResetIndices = Fire2Reset[PyTree, Index[SupportsSorting]]
+"""Index prefix matching :data:`Fire2ResetData`."""
+
+
 def fire2_reset_layout() -> ResetLayout[
-    ScaleByFire2State,
-    Fire2Reset[PyTree, Table[SupportsSorting, Array]],
-    Fire2Reset[PyTree, Index[SupportsSorting]],
+    ScaleByFire2State, Fire2ResetData, Fire2ResetIndices
 ]:
     """Mutable FIRE2 fields, including the per-system warmup counter."""
     return ResetLayout(
@@ -116,9 +121,9 @@ def fire2_reset_layout() -> ResetLayout[
         system_index=lambda s: Fire2Reset(
             velocity=s.index_prefix,
             dt=s.dt.index,
-            alpha=s.dt.index,
-            n_pos=s.dt.index,
-            n_total=s.dt.index,
+            alpha=s.alpha.index,
+            n_pos=s.n_pos.index,
+            n_total=s.n_total.index,
         ),
     )
 
