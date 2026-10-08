@@ -1,6 +1,6 @@
 [project]
 name = "kups"
-version = "1.0.7"
+version = "1.0.8"
 description = "A toolkit for building high-performance molecular simulations on JAX."
 readme = "README.md"
 authors = [
@@ -56,7 +56,7 @@ dependencies = [
     "rich>=13.0",
     "msgpack>=1.1.2",
     "nanoargs>=0.1.1",
-    "slub>=0.1.1",
+    "slub>=0.1.2",
     "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
     "hdf5plugin>=6.0.0",
 ]
