@@ -1229,31 +1229,12 @@ class TestFusedPairIntegration:
         for key in jax.random.split(jax.random.key(83), 8):
             reference = propagate_and_fix(baseline_step, key, reference)
             candidate = propagate_and_fix(guarded_step, key, candidate)
-            npt.assert_array_equal(
-                candidate.particles.occupation, reference.particles.occupation
-            )
-            npt.assert_array_equal(
-                candidate.groups.occupation, reference.groups.occupation
-            )
-            npt.assert_allclose(
-                candidate.particles.data.positions,
-                reference.particles.data.positions,
-                rtol=0,
-                atol=1e-10,
-            )
-            npt.assert_allclose(
-                candidate.systems.data.potential_energy.total,
-                reference.systems.data.potential_energy.total,
-                rtol=1e-9,
-                atol=1e-10,
-            )
-            for name in ("translation", "rotation", "reinsertion", "exchange"):
-                left = getattr(candidate, name + "_params")
-                right = getattr(reference, name + "_params")
-                for a, b in zip(
-                    jax.tree.leaves(left), jax.tree.leaves(right), strict=True
-                ):
-                    npt.assert_array_equal(a, b)
+            for (path, a), b in zip(
+                jax.tree_util.tree_leaves_with_path(candidate),
+                jax.tree.leaves(reference),
+                strict=True,
+            ):
+                npt.assert_array_equal(a, b, err_msg=jax.tree_util.keystr(path))
 
     @pytest.mark.parametrize("charged", [False, True])
     @pytest.mark.parametrize("cutoff", [5.0, 8.0])
