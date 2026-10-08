@@ -28,7 +28,7 @@ from kups.core.utils.jax import (
     skip_post_init_if_disabled,
     tree_map,
 )
-from kups.core.utils.ops import pad_axis
+from kups.core.utils.ops import first_true_indices, pad_axis
 
 if TYPE_CHECKING:
     from kups.core.typing import HasSystemIndex, SystemId
@@ -129,7 +129,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             If fewer than ``n`` free slots exist, excess entries use
             the OOB sentinel (``len(index)``).
         """
-        data = jnp.where(~self.occupation, size=n, fill_value=len(self.keys))[0]
+        data = first_true_indices(~self.occupation, n, len(self.keys))
         return Index(self.keys, data)
 
     @classmethod
