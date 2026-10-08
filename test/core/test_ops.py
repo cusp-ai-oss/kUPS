@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
-from kups.core.utils.ops import expand_last_dims, pad_axis, where_broadcast_last
+from kups.core.utils.ops import (
+    expand_last_dims,
+    first_true_indices,
+    pad_axis,
+    where_broadcast_last,
+)
 
 
 class TestExpandLastDims:
@@ -72,3 +79,14 @@ class TestPadAxis:
         x = jnp.array([1.0, 2.0], dtype=jnp.float32)
         result = pad_axis(x, (1, 1), axis=0)
         assert result.dtype == jnp.float32
+
+
+@pytest.mark.parametrize("n", [17, 1000])
+@pytest.mark.parametrize("size", [0, 1, 3, 4, 6])
+@pytest.mark.parametrize("n_true", [0, 2, 5])
+def test_first_true_indices_matches_where(n: int, size: int, n_true: int) -> None:
+    positions = jnp.array([1, 4, 8, 9, 16][:n_true], dtype=int) * (n // 17)
+    mask = jnp.zeros(n, dtype=bool).at[positions].set(True)
+    expected = jnp.where(mask, size=size, fill_value=n)[0]
+    fn = jax.jit(first_true_indices, static_argnums=(1, 2))
+    npt.assert_array_equal(fn(mask, size, n), expected)
