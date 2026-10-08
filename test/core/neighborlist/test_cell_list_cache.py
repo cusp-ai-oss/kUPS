@@ -300,6 +300,31 @@ class TestCellListCache:
         assert updated.data.max_count == max_count
         npt.assert_array_equal(updated.data.indices[table.slot_of_row], [1, 1])
 
+    def test_estimate_counts_active_rows_per_system_cell(self):
+        # Rows of two systems interleave; the last three are buffered and would
+        # otherwise make system 0's cell the fullest with five rows.
+        system = jnp.array([1, 0, 1, 1, 0, 1, 0, 0, 0])
+        positions = jnp.where(system[:, None] == 0, 1.0, 13.0) * jnp.ones(3)
+        particles = make_lh(positions, system)
+        inclusion = particles.data.inclusion
+        particles = bind(particles, lambda p: p.data.inclusion).set(
+            Index(inclusion.keys, jnp.where(jnp.arange(9) < 6, system, 2))
+        )
+        systems, cutoffs = systems_from_lvecs(
+            jnp.stack([jnp.eye(3) * 12.0, jnp.eye(3) * 24.0]), jnp.array([6.0, 6.0])
+        )
+        parameters = CellListCacheParameters.estimate(
+            particles,
+            systems,
+            cutoffs,
+            occupancy_factor=1.0,
+            occupancy_headroom=0,
+        )
+        assert parameters.max_cells_per_system == 4**3
+        assert parameters.cell_capacity == 4
+        assert parameters.stencil_width == 27
+        assert parameters.max_images_per_pair == 1
+
     @pytest.mark.parametrize(
         "counts,expected_layout",
         [((100,) + (60,) * 3, "slots"), ((142,) * 4, "cells")],

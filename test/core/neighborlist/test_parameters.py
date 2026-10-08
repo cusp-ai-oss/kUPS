@@ -8,10 +8,7 @@ import pytest
 
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.table import Table
-from kups.core.neighborlist.parameters import (
-    UniversalNeighborlistParameters,
-    _estimate_avg_num_edges,
-)
+from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.typing import SystemId
 
 from ._builders import cutoff_table, make_systems
@@ -19,19 +16,6 @@ from ._builders import cutoff_table, make_systems
 
 def _is_power_of_two(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
-
-
-class TestEstimateAvgNumEdges:
-    def test_density_estimate_rounds_to_power_of_two(self):
-        # density = 100/1000 = 0.1; sphere(2) = 4/3*pi*8 ≈ 33.5; ≈ 3.35 -> 4.
-        est = _estimate_avg_num_edges(num_particles=100, volume=1000.0, cutoff=2.0)
-        assert est == 4
-
-    def test_scales_with_density(self):
-        sparse = _estimate_avg_num_edges(10, 1000.0, 2.0)
-        dense = _estimate_avg_num_edges(1000, 1000.0, 2.0)
-        assert dense > sparse
-        assert _is_power_of_two(sparse) and _is_power_of_two(dense)
 
 
 class TestUniversalNeighborlistParametersEstimate:
@@ -43,6 +27,20 @@ class TestUniversalNeighborlistParametersEstimate:
         particles_per_system = Table((SystemId(0),), jnp.array([n_particles]))
         cutoffs = cutoff_table(jnp.array([cutoff]))
         return particles_per_system, systems, cutoffs
+
+    def _avg_edges(self, n_particles: int, box: float, cutoff: float) -> int:
+        ppc, systems, cutoffs = self._single_system(n_particles, cutoff, box)
+        return UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs).avg_edges
+
+    def test_edge_density_estimate_rounds_to_power_of_two(self):
+        # density = 100/1000 = 0.1; sphere(2) = 4/3*pi*8 ≈ 33.5; ≈ 3.35 -> 4.
+        assert self._avg_edges(100, 10.0, 2.0) == 4
+
+    def test_edges_scale_with_density(self):
+        sparse = self._avg_edges(10, 10.0, 2.0)
+        dense = self._avg_edges(1000, 10.0, 2.0)
+        assert dense > sparse
+        assert _is_power_of_two(sparse) and _is_power_of_two(dense)
 
     def test_estimate_single_system(self):
         ppc, systems, cutoffs = self._single_system()
@@ -125,3 +123,19 @@ class TestUniversalNeighborlistParametersEstimate:
         assert params.cells == 125
         assert params.avg_edges > 0
         assert params.avg_candidates > 0
+
+    def test_heterogeneous_systems_round_edges_per_system(self):
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 30.0])
+            )
+        )
+        systems, cutoffs = make_systems(cell, jnp.array([2.0, 4.0]))
+        ppc = Table((SystemId(0), SystemId(1)), jnp.array([100, 1600]))
+        params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
+        # System 0: 5 bins/axis, 21.6 candidates, 3.35 edges -> 4.
+        # System 1: 7 bins/axis, 1600/343*27 ≈ 126 candidates, 15.9 edges -> 16.
+        assert params.cells == 343
+        assert params.avg_candidates == 128
+        assert params.avg_image_candidates == 128
+        assert params.avg_edges == (4 + 16) // 2
