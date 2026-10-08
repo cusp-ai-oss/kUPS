@@ -125,12 +125,24 @@ def slot_rows_lens[P: HasSystemIndex](
     bounds, and writes all of them with ``particles.update(slots.data, ...)``.
     Rows outside every reservation are left as they are.
 
-    The particles' system index must be keyed by ``slots.keys``. Building the
-    lens checks the reservations as ``slot_owners`` does.
+    The particles' system index must be keyed by ``slots.keys``, and ``set``
+    raises its ``max_count`` to at least the capacity. An index built from
+    ``slot_owners(slots).data`` has both, so ``set`` keeps the table's pytree
+    structure, as a loop carry needs.
+
+    Raises:
+        ValueError: When the lens is built, if the reservations are invalid
+            (see ``slot_owners``); on ``get`` or ``set``, if the particles'
+            system index is not keyed by ``slots.keys``.
     """
     owners = slot_owners(slots)[slots.data]
 
+    def check(particles: Table[ParticleId, P]) -> None:
+        if particles.data.system.keys != slots.keys:
+            raise ValueError("The particles' system index must be keyed by the slots.")
+
     def get(particles: Table[ParticleId, P]) -> P:
+        check(particles)
         rows = particles[slots.data]
         return (
             bind(rows)
@@ -139,6 +151,7 @@ def slot_rows_lens[P: HasSystemIndex](
         )
 
     def put(particles: Table[ParticleId, P], /, value: P) -> Table[ParticleId, P]:
+        check(particles)
         rows = (
             bind(value)
             .focus(lambda p: p.system)
