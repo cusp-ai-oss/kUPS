@@ -406,7 +406,7 @@ class TestAssertionTracing:
         assert all(bool(a.predicate) for a in assertions)
 
     def test_nested_cond_interprets_each_assertion_once(self, monkeypatch):
-        import kups.core.assertion as assertion_module
+        import kups.core.assertion.tracing as assertion_module
 
         interpreted = []
         original = assertion_module.assertion_handler
