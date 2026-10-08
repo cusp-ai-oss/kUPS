@@ -13,11 +13,12 @@ from __future__ import annotations
 import einops
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from kups.core.data import Index
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import dataclass, is_traced
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.segment import segment_sum
 
@@ -165,6 +166,106 @@ def _structure_factor_grid(
     return sf
 
 
+def _concrete_grid_index(
+    grid_index: Array | np.ndarray | None,
+) -> np.ndarray | None:
+    """Return trace-time grid positions, or ``None`` when they are traced."""
+    if isinstance(grid_index, np.ndarray):
+        return grid_index
+    if grid_index is None or is_traced(grid_index):
+        return None
+    return np.asarray(grid_index)
+
+
+def _cropped_grid_layout(
+    grid_index: np.ndarray, bound: ReciprocalGridBound
+) -> tuple[np.ndarray, slice, np.ndarray]:
+    """Occupied xy rows and z range covering one system's k-vectors.
+
+    Returns flat xy row indices, the z slice and each k-vector's position in
+    the cropped ``(rows, z)`` grid.
+    """
+    nz = 2 * bound[2] + 1
+    rows, row_of_k = np.unique(grid_index // nz, return_inverse=True)
+    z = grid_index % nz
+    z0, z1 = int(z.min()), int(z.max()) + 1
+    position = row_of_k.reshape(-1) * (z1 - z0) + (z - z0)
+    return rows, slice(z0, z1), position
+
+
+def _integer_phase_powers(cos: Array, sin: Array, n: np.ndarray) -> Array:
+    """``(cos nφ, sin nφ)`` for static non-negative ``n`` from ``(cos φ, sin φ)``.
+
+    Args:
+        cos: Cosines of the unit phases, shaped ``(p,)``.
+        sin: Sines of the unit phases, shaped ``(p,)``.
+        n: Non-negative integer multiples, shaped ``(m,)``.
+
+    Returns:
+        Cosines and sines of every multiple, shaped ``(p, m, 2)``.
+    """
+    n = np.asarray(n, dtype=np.int64)
+    assert (n >= 0).all(), "phase multiples must be non-negative"
+    out_c = jnp.ones((len(cos), len(n)), cos.dtype)
+    out_s = jnp.zeros((len(cos), len(n)), cos.dtype)
+    pc, ps = cos[:, None], sin[:, None]
+    for b in range(int(n.max(initial=0)).bit_length()):
+        bit = ((n >> b) & 1).astype(bool)
+        if bit.any():
+            out_c, out_s = (
+                jnp.where(bit, out_c * pc - out_s * ps, out_c),
+                jnp.where(bit, out_c * ps + out_s * pc, out_s),
+            )
+        pc, ps = pc * pc - ps * ps, 2 * pc * ps
+    return jnp.stack((out_c, out_s), axis=-1)
+
+
+def _structure_factor_cropped(
+    positions: Array,
+    charges: Array,
+    inverse_vectors: Array,
+    batch_mask: Index[SystemId],
+    bound: ReciprocalGridBound,
+    grid_index: np.ndarray,
+) -> Array:
+    """One system's structure factor on only the occupied part of the phase grid.
+
+    One contraction over particles yields the occupied xy rows times the
+    occupied z range, from which the stored k-vectors are gathered. Intended
+    for few particles, e.g. incremental moves.
+    """
+    rows, z_range, position = _cropped_grid_layout(grid_index.reshape(-1), bound)
+    bx, by, bz = bound
+    phi = 2 * jnp.pi * positions @ inverse_vectors[0]
+    q = jnp.where(batch_mask.indices == 0, charges, 0)
+
+    # Integer multiples of the unit phases via binary powers.
+    cos_phi, sin_phi = jnp.cos(phi), jnp.sin(phi)
+
+    def phases(axis: int, n: np.ndarray) -> Array:
+        return _integer_phase_powers(cos_phi[:, axis], sin_phi[:, axis], n)
+
+    def signed_phases(axis: int, n: np.ndarray) -> Array:
+        """Phases of signed ``n`` from those of ``|n|`` (odd sine)."""
+        sign = np.stack((np.ones(len(n)), np.sign(n)), axis=-1)
+        return phases(axis, np.abs(n)) * sign.astype(phi.dtype)
+
+    x = phases(0, np.arange(bx + 1))
+    y = signed_phases(1, np.arange(-by, by + 1))
+    z = q[:, None, None] * signed_phases(2, np.arange(-bz, bz + 1)[z_range])
+    x, y, z = jax.lax.optimization_barrier((x, y, z))
+    xr, xi = x[:, :, None, 0], x[:, :, None, 1]
+    yr, yi = y[:, None, :, 0], y[:, None, :, 1]
+    xy = jnp.stack((xr * yr - xi * yi, xr * yi + xi * yr), axis=-1)
+    xy = xy.reshape(len(positions), -1, 2)[:, rows]
+    zr, zi = z[..., 0], z[..., 1]
+    qz = jnp.stack(
+        (jnp.stack((zr, zi), axis=-1), jnp.stack((-zi, zr), axis=-1)), axis=-2
+    )
+    grid = jnp.einsum("prk,pzkc->rzc", xy, qz).reshape(-1, 2)
+    return grid[position][None]
+
+
 def _structure_factor_full(
     positions: Array,
     charges: Array,
@@ -176,10 +277,13 @@ def _structure_factor_full(
     particle_chunk_size: int = _DEFAULT_RECIPROCAL_PARTICLE_CHUNK,
     k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
     tiled: bool = False,
+    grid_index: Array | np.ndarray | None = None,
 ) -> Array:
     """Select CPU phase grids, fused GPU values, or tiled explicit sums.
 
     Signed charges allow the same reduction to evaluate incremental deltas.
+    ``grid_index`` locates compact k-vectors inside the phase grid, shaped
+    ``(n_systems, n_kvecs)``; ``None`` means the k-vectors enumerate the grid.
     """
     if particle_chunk_size < 1 or k_chunk_size < 1:
         raise ValueError("Reciprocal chunk sizes must be positive")
@@ -193,7 +297,12 @@ def _structure_factor_full(
     charges = jnp.where(valid, charges, 0)
     batch_mask = Index(batch_mask.keys, jnp.where(valid, batch_mask.indices, ns))
     if not tiled and _use_grid_response(bound) and inverse_vectors is not None:
-        return _structure_factor_grid(
+        static_index = _concrete_grid_index(grid_index)
+        if static_index is not None and ns == 1 and n <= _CPU_GRID_PARTICLE_CHUNK:
+            return _structure_factor_cropped(
+                positions, charges, inverse_vectors, batch_mask, bound, static_index
+            ).astype(dtype)
+        sf = _structure_factor_grid(
             positions,
             charges,
             inverse_vectors,
@@ -202,6 +311,9 @@ def _structure_factor_full(
             particle_chunk_size,
             k_chunk_size,
         ).astype(dtype)
+        if grid_index is not None:
+            sf = jnp.take_along_axis(sf, grid_index[..., None], axis=1)
+        return sf
     if not tiled and jax.default_backend() in {"gpu", "cuda", "rocm"}:
         return segment_sum(
             _frequency_response(positions, charges, kvecs, batch_mask),

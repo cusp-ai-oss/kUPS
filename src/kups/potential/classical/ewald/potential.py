@@ -10,10 +10,11 @@ include every current particle.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Periodic3D
@@ -79,7 +80,12 @@ from kups.potential.common.graph import (
 from kups.potential.common.pair import PairEnergy
 from kups.potential.common.rigid_body_composition import RigidBodyComposition
 
-from .parameters import EwaldParameters, IsEwaldPointData, ReciprocalGridBound
+from .parameters import (
+    EwaldParameters,
+    IsEwaldPointData,
+    ReciprocalGridBound,
+    reciprocal_grid_index,
+)
 from .reciprocal import _structure_factor_full, _use_grid_response
 
 TO_STANDARD_UNITS = HARTREE * BOHR
@@ -150,6 +156,36 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
             lambda old_sf: jax.tree.map(
                 lambda new, old: where_broadcast_last(mask, new, old),
                 new_sf,
+                old_sf,
+            ),
+        )
+
+
+@dataclass
+class EwaldCacheDeltaPatch[State, Gradient, Hessian](Patch[State]):
+    """Add each accepted system's structure-factor change to the compensated cache."""
+
+    structure_factor_delta: Array
+    system_idx: Index[SystemId]
+    lens: Lens[State, EwaldCache[Gradient, Hessian]] = field(static=True)
+
+    def __call__(self, state: State, accept: Accept) -> State:
+        """Apply structure-factor updates for accepted systems.
+
+        Args:
+            state: State containing the Ewald cache.
+            accept: Per-system acceptance mask.
+
+        Returns:
+            State with accepted structure factors and their compensation updated.
+        """
+        mask = accept[self.system_idx]
+        delta = self.structure_factor_delta
+        return self.lens.focus(lambda cache: cache.structure_factor).apply(
+            state,
+            lambda old_sf: jax.tree.map(
+                lambda new, old: where_broadcast_last(mask, new, old),
+                old_sf + delta,
                 old_sf,
             ),
         )
@@ -357,8 +393,7 @@ def _changed_particle_rows(
         "bound",
         "particle_chunk_size",
         "k_chunk_size",
-        "cache",
-        "changes",
+        "grid_index",
     ),
 )
 def _structure_factor(
@@ -370,18 +405,10 @@ def _structure_factor(
     bound: ReciprocalGridBound,
     particle_chunk_size: int,
     k_chunk_size: int,
-    cache: EwaldCache[Any, Any] | None,
-    changes: WithIndices[ParticleId, IsEwaldPointData] | None,
-) -> KahanSummand[Array]:
-    """Evaluate S(k), or add the signed new-minus-old contribution to the cache.
-
-    Changes to cells or reciprocal parameters require a full evaluation.
-    """
-    if changes is not None:
-        positions, charges, batch_mask = _changed_particle_rows(
-            positions, charges, batch_mask, changes
-        )
-    sf = _structure_factor_full(
+    grid_index: Array | np.ndarray | None,
+) -> Array:
+    """Evaluate S(k) from all current particles."""
+    return _structure_factor_full(
         positions,
         charges,
         kvecs,
@@ -390,28 +417,69 @@ def _structure_factor(
         bound=bound,
         particle_chunk_size=particle_chunk_size,
         k_chunk_size=k_chunk_size,
+        grid_index=grid_index,
     )
-    if changes is None:
-        return KahanSummand.init(sf)
-    assert cache is not None, "Cache required for structure factor update"
-    return cache.structure_factor + sf
 
 
-@functools.partial(_structure_factor.defjvp, symbolic_zeros=True)
-def _structure_factor_jvp(
+@functools.partial(
+    jax.custom_jvp,
+    nondiff_argnames=(
+        "batch_mask",
+        "bound",
+        "particle_chunk_size",
+        "k_chunk_size",
+        "grid_index",
+        "changes",
+    ),
+)
+def _structure_factor_delta(
+    positions: Array,
+    charges: Array,
+    kvecs: Array,
+    inverse_vectors: Array,
     batch_mask: Index[SystemId],
     bound: ReciprocalGridBound,
     particle_chunk_size: int,
     k_chunk_size: int,
-    cache: EwaldCache[Any, Any] | None,
-    changes: WithIndices[ParticleId, IsEwaldPointData] | None,
+    grid_index: Array | np.ndarray | None,
+    changes: WithIndices[ParticleId, IsEwaldPointData],
+) -> Array:
+    """Signed new-minus-old S(k) contribution of the changed particles.
+
+    ``changes`` holds the previous values of the changed rows.
+
+    Changes to cells or reciprocal parameters require a full evaluation. The
+    tangent is that of the full structure factor, since the cache is constant.
+    """
+    positions, charges, batch_mask = _changed_particle_rows(
+        positions, charges, batch_mask, changes
+    )
+    return _structure_factor_full(
+        positions,
+        charges,
+        kvecs,
+        inverse_vectors,
+        batch_mask=batch_mask,
+        bound=bound,
+        particle_chunk_size=particle_chunk_size,
+        k_chunk_size=k_chunk_size,
+        grid_index=grid_index,
+    )
+
+
+def _full_structure_factor_jvp(
+    batch_mask: Index[SystemId],
+    bound: ReciprocalGridBound,
+    particle_chunk_size: int,
+    k_chunk_size: int,
+    grid_index: Array | np.ndarray | None,
     primals: tuple[Array, Array, Array, Array],
     tangents: tuple[Array, Array, Array, Array],
-) -> tuple[KahanSummand[Array], KahanSummand[Array]]:
+) -> tuple[Array, Array]:
     """Differentiate all current particles, even when values use an incremental cache.
 
     Each kernel uses either k-vectors or inverse cells, counting cell dependence
-    once. Kahan compensation has zero tangent.
+    once.
     """
     full = functools.partial(
         _structure_factor_full,
@@ -420,6 +488,7 @@ def _structure_factor_jvp(
         particle_chunk_size=particle_chunk_size,
         k_chunk_size=k_chunk_size,
         tiled=not _use_grid_response(bound),
+        grid_index=grid_index,
     )
     # Absent tangents must not trigger charge or cell derivative work.
     active = tuple(
@@ -434,25 +503,130 @@ def _structure_factor_jvp(
             inputs[i] = value
         return full(*inputs)
 
-    value, tangent = jax.jvp(
+    return jax.jvp(
         active_full,
         tuple(primals[i] for i in active),
         tuple(tangents[i] for i in active),
     )
-    # Reuse the full CPU grid value; retain cached and direct GPU values.
-    if changes is None and _use_grid_response(bound):
-        sf = KahanSummand.init(value)
-    else:
-        sf = _structure_factor(
-            *primals,
-            batch_mask,
-            bound,
-            particle_chunk_size,
-            k_chunk_size,
-            cache,
-            changes,
+
+
+@functools.partial(_structure_factor.defjvp, symbolic_zeros=True)
+def _structure_factor_jvp(
+    batch_mask: Index[SystemId],
+    bound: ReciprocalGridBound,
+    particle_chunk_size: int,
+    k_chunk_size: int,
+    grid_index: Array | np.ndarray | None,
+    primals: tuple[Array, Array, Array, Array],
+    tangents: tuple[Array, Array, Array, Array],
+) -> tuple[Array, Array]:
+    value, tangent = _full_structure_factor_jvp(
+        batch_mask,
+        bound,
+        particle_chunk_size,
+        k_chunk_size,
+        grid_index,
+        primals,
+        tangents,
+    )
+    if not _use_grid_response(bound):
+        value = _structure_factor(
+            *primals, batch_mask, bound, particle_chunk_size, k_chunk_size, grid_index
         )
-    return sf, KahanSummand(tangent, jnp.zeros_like(tangent))
+    return value, tangent
+
+
+@functools.partial(_structure_factor_delta.defjvp, symbolic_zeros=True)
+def _structure_factor_delta_jvp(
+    batch_mask: Index[SystemId],
+    bound: ReciprocalGridBound,
+    particle_chunk_size: int,
+    k_chunk_size: int,
+    grid_index: Array | np.ndarray | None,
+    changes: WithIndices[ParticleId, IsEwaldPointData],
+    primals: tuple[Array, Array, Array, Array],
+    tangents: tuple[Array, Array, Array, Array],
+) -> tuple[Array, Array]:
+    _, tangent = _full_structure_factor_jvp(
+        batch_mask,
+        bound,
+        particle_chunk_size,
+        k_chunk_size,
+        grid_index,
+        primals,
+        tangents,
+    )
+    value = _structure_factor_delta(
+        *primals,
+        batch_mask,
+        bound,
+        particle_chunk_size,
+        k_chunk_size,
+        grid_index,
+        changes,
+    )
+    return value, tangent
+
+
+class _StructureFactorStatic(NamedTuple):
+    """Non-differentiable arguments of the structure-factor kernels."""
+
+    batch_mask: Index[SystemId]
+    bound: ReciprocalGridBound
+    particle_chunk_size: int
+    k_chunk_size: int
+    grid_index: Array | np.ndarray | None
+
+
+def _structure_factor_args(
+    inp: EwaldLongRangeInput[Any],
+) -> tuple[tuple[Array, Array, Array, Array], _StructureFactorStatic]:
+    particles = inp.point_cloud.particles.data
+    params = inp.parameters
+    bound = params.reciprocal_shift_bound
+    grid_index = (
+        reciprocal_grid_index(params.reciprocal_lattice_shifts.data, bound)
+        if _use_grid_response(bound)
+        else None
+    )
+    # Matching system keys keep a concrete index concrete.
+    if grid_index is not None and (
+        params.reciprocal_lattice_shifts.keys != inp.point_cloud.systems.keys
+    ):
+        grid_index = jnp.asarray(grid_index)[inp.point_cloud.systems.index.indices]
+    primals = (
+        particles.positions,
+        particles.charges,
+        inp.kvecs,
+        inp.point_cloud.systems.data.cell.inverse_vectors,
+    )
+    static = _StructureFactorStatic(
+        particles.system,
+        bound,
+        params.reciprocal_particle_chunk_size,
+        params.reciprocal_k_chunk_size,
+        grid_index,
+    )
+    return primals, static
+
+
+def structure_factor_delta(inp: EwaldLongRangeInput[Any]) -> Array:
+    """Signed structure-factor change from the input's previous particle values.
+
+    Args:
+        inp: Current particles with ``changes_from_prev`` set.
+
+    Returns:
+        New-minus-old contributions shaped ``(n_systems, n_kvecs, 2)``.
+    """
+    previous = inp.changes_from_prev
+    assert previous is not None, "Previous particle values required for a delta"
+    previous = WithIndices(
+        previous.indices.update_labels(inp.point_cloud.particles.keys),
+        previous.data,
+    )
+    primals, static = _structure_factor_args(inp)
+    return _structure_factor_delta(*primals, *static, previous)
 
 
 def structure_factor[State](
@@ -467,28 +641,20 @@ def structure_factor[State](
         Compensated structure factors shaped ``(n_systems, n_kvecs, 2)`` and
         an acceptance patch, or an identity patch when no cache lens is supplied.
     """
-    particles = inp.point_cloud.particles.data
-    params = inp.parameters
-    previous = inp.changes_from_prev
-    if previous is not None:
-        previous = WithIndices(
-            previous.indices.update_labels(inp.point_cloud.particles.keys),
-            previous.data,
+    if inp.changes_from_prev is None:
+        primals, static = _structure_factor_args(inp)
+        sk = KahanSummand.init(_structure_factor(*primals, *static))
+        patch = (
+            EwaldCachePatch(sk, inp.point_cloud.systems.index, inp.cache_lens)
+            if inp.cache_lens is not None
+            else IdPatch[State]()
         )
-    sk = _structure_factor(
-        particles.positions,
-        particles.charges,
-        inp.kvecs,
-        inp.point_cloud.systems.data.cell.inverse_vectors,
-        particles.system,
-        params.reciprocal_shift_bound,
-        params.reciprocal_particle_chunk_size,
-        params.reciprocal_k_chunk_size,
-        inp.cache,
-        previous,
-    )
+        return sk, patch
+    assert inp.cache is not None, "Cache required for structure factor update"
+    delta = structure_factor_delta(inp)
+    sk = inp.cache.structure_factor + delta
     patch = (
-        EwaldCachePatch(sk, inp.point_cloud.systems.index, inp.cache_lens)
+        EwaldCacheDeltaPatch(delta, inp.point_cloud.systems.index, inp.cache_lens)
         if inp.cache_lens is not None
         else IdPatch[State]()
     )
@@ -528,8 +694,19 @@ def ewald_long_range_energy[State](
     Returns:
         Per-system energies in eV with the structure-factor acceptance patch.
     """
-    structure_out, patch = structure_factor(inp)
-    energy = long_range(inp, structure_out.total)
+    if inp.changes_from_prev is not None and inp.cache is not None:
+        delta = structure_factor_delta(inp)
+        cached = inp.cache.structure_factor
+        new_total = (cached.value - cached.compensate) + delta
+        patch: Patch[State] = (
+            EwaldCacheDeltaPatch(delta, inp.point_cloud.systems.index, inp.cache_lens)
+            if inp.cache_lens is not None
+            else IdPatch[State]()
+        )
+    else:
+        structure_out, patch = structure_factor(inp)
+        new_total = structure_out.total
+    energy = long_range(inp, new_total)
     assert energy.shape == (inp.point_cloud.batch_size,), (
         f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     )
@@ -1026,6 +1203,7 @@ def make_ewald_potential[
         # State buffers may be donated before this potential is traced again.
         lr_systems = constant(jax.tree.map(jnp.copy, systems_view(initial)))
         lr_parameters = constant(jax.tree.map(jnp.copy, parameter_lens(initial)))
+
     lr_potential = make_ewald_long_range_potential(
         particles_view=atomic_view,
         systems_view=lr_systems,

@@ -1,6 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+import dataclasses
 from typing import Any, Callable, Literal
 
 import jax
@@ -152,7 +153,6 @@ def _parameters(cell, alpha, cutoff, k_max):
         systems.set_data(jnp.asarray([alpha], dtype=cell.vectors.dtype)),
         systems.set_data(jnp.asarray([cutoff], dtype=cell.vectors.dtype)),
         systems.set_data(jnp.asarray([k_max], dtype=cell.vectors.dtype)),
-        compact=True,
     )
 
 
@@ -761,10 +761,11 @@ class TestReciprocalReduction:
             systems.set_data(jnp.full(batch, 0.35, dtype)),
             systems.set_data(jnp.full(batch, 3.0, dtype)),
             systems.set_data(jnp.asarray([0.85, 0.8, 0.75, 0.8][:batch], dtype)),
-            compact=not grid,
             reciprocal_particle_chunk_size=chunks[0],
             reciprocal_k_chunk_size=chunks[1],
         )
+        if not grid:
+            params = dataclasses.replace(params, reciprocal_shift_bound=(0, 0, 0))
         return EwaldLongRangeInput(PointCloud(particles, systems), params)
 
     def _reference(self, inp):
@@ -847,6 +848,22 @@ class TestReciprocalReduction:
                     getattr(updated, name),
                     getattr(proposal.cache.structure_factor, name),
                 ),
+            )
+
+    @pytest.mark.parametrize("batch", [1, 4])
+    def test_constant_grid_matches_traced(self, batch):
+        """Concrete shifts select a cropped phase grid for one system."""
+        inp = self._input(True, batch=batch)
+        assert inp.parameters.reciprocal_shift_bound != (0, 0, 0)
+        proposal = self._proposal(inp)
+        for x in (inp, proposal):
+            constant, _ = structure_factor(x)
+            traced, _ = jax.jit(structure_factor)(x)
+            npt.assert_allclose(constant.total, self._reference(x), atol=2e-13)
+            npt.assert_allclose(constant.total, traced.total, atol=2e-13)
+            energy = ewald_long_range_energy(x).data.data
+            npt.assert_allclose(
+                energy, jax.jit(ewald_long_range_energy)(x).data.data, rtol=1e-12
             )
 
     @pytest.mark.parametrize("grid", [False, True])
@@ -959,19 +976,11 @@ class TestReciprocalReduction:
 class TestReciprocalShifts:
     def test_grid_encloses_retained_vectors_with_tight_axis_bounds(self):
         inp = TestReciprocalReduction()._input(grid=True)
-        compact = EwaldParameters.from_cutoffs(
-            inp.point_cloud.systems,
-            inp.parameters.alpha,
-            inp.parameters.cutoff,
-            inp.parameters.k_max,
-            compact=True,
-        )
         bounds = inp.parameters.reciprocal_shift_bound
         assert len(set(bounds)) > 1  # Anisotropic, skew cells need distinct bounds.
-        shifts = np.asarray(compact.reciprocal_lattice_shifts.data)
+        shifts = np.asarray(inp.parameters.reciprocal_lattice_shifts.data)
         npt.assert_array_equal(bounds, np.max(np.abs(shifts), axis=(0, 1)))
-        actual_grid = np.asarray(inp.parameters.reciprocal_lattice_shifts.data)
-        assert actual_grid.shape[1] == (bounds[0] + 1) * (2 * bounds[1] + 1) * (
+        assert shifts.shape[1] < (bounds[0] + 1) * (2 * bounds[1] + 1) * (
             2 * bounds[2] + 1
         )
 
@@ -998,10 +1007,6 @@ class TestReciprocalShifts:
             inside = squared <= float(inp.parameters.k_max.data[s]) ** 2
             expected = vectors[inside]
             selected = actual[s]
-            if grid:
-                selected = selected[
-                    (selected**2).sum(-1) <= float(inp.parameters.k_max.data[s]) ** 2
-                ]
             # Compaction pads with k=0, whose weight is zero.
             npt.assert_allclose(
                 selected[np.any(selected != 0, axis=-1)],
@@ -1026,15 +1031,13 @@ class TestReciprocalShifts:
             rtol=2e-13,
         )
 
-    @pytest.mark.parametrize("compact", [False, True])
-    def test_zero_cutoff_has_only_background_energy(self, compact):
+    def test_zero_cutoff_has_only_background_energy(self):
         inp = TestReciprocalReduction()._input()
         parameters = EwaldParameters.from_cutoffs(
             inp.point_cloud.systems,
             inp.parameters.alpha,
             inp.parameters.cutoff,
             inp.parameters.k_max.map_data(jnp.zeros_like),
-            compact=compact,
         )
         assert parameters.reciprocal_shift_bound == (0, 0, 0)
         inp = bind(inp, lambda x: x.parameters).set(parameters)
@@ -1060,7 +1063,6 @@ class TestReciprocalShifts:
             inp.parameters.alpha,
             inp.parameters.cutoff,
             systems.set_data(jnp.full(4, 2 * jnp.pi / 10, dtype)),
-            compact=True,
         )
         inp = bind(inp, lambda x: x.parameters).set(params)
         result = jax.jit(as_result_function(lambda x: x.kvecs))(inp)
@@ -1074,9 +1076,9 @@ class TestReciprocalShifts:
         npt.assert_allclose(padded_vectors[:, :n_kvecs], result.value)
         npt.assert_array_equal(padded_vectors[:, n_kvecs:], 0)
 
-    @pytest.mark.parametrize("compact", [False, True])
-    def test_k_max_is_retained_and_masks_stored_shifts(self, compact):
-        inp = TestReciprocalReduction()._input(grid=not compact)
+    @pytest.mark.parametrize("grid", [False, True])
+    def test_k_max_is_retained_and_masks_stored_shifts(self, grid):
+        inp = TestReciprocalReduction()._input(grid=grid)
         assert inp.parameters.k_max is not None
         shifts = inp.parameters.reciprocal_lattice_shifts.data
         assert jnp.issubdtype(shifts.dtype, jnp.integer)
@@ -1090,3 +1092,14 @@ class TestReciprocalShifts:
         assert bool(outside.any())
         npt.assert_array_equal(weights[outside], 0)
         npt.assert_array_equal(inp.parameters.reciprocal_lattice_shifts.data, shifts)
+
+
+def test_integer_phase_powers_match_trigonometry():
+    from kups.potential.classical.ewald.reciprocal import _integer_phase_powers
+
+    phi = random.uniform(random.key(3), (50,), minval=-40.0, maxval=40.0)
+    n = np.array([0, 1, 2, 3, 5, 8, 13, 14])
+    actual = _integer_phase_powers(jnp.cos(phi), jnp.sin(phi), n)
+    angles = np.asarray(phi)[:, None] * n
+    expected = np.stack((np.cos(angles), np.sin(angles)), axis=-1)
+    npt.assert_allclose(actual, expected, atol=1e-12)
