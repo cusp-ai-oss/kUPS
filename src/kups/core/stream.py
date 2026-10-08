@@ -17,6 +17,10 @@ Slots are ordinary ``Table``/``Index`` relations: gather a slotted view with
   its slot, including padding rows, which a particle's ``system`` index marks
   out of bounds. Per-slot state built on it, such as an optimizer's per-system
   reductions and resets, also covers rows a future system will occupy.
+- **[slot_rows_lens][kups.core.stream.slot_rows_lens]**: Reads each slot's
+  rows as a payload that does not name its slot, with the system index of
+  [slot_system_index][kups.core.stream.slot_system_index], and writes a
+  payload back into the slots.
 - **[RefillGate][kups.core.stream.RefillGate]**: Lets compiled code
   ask the host for new systems through a failing
   [runtime_assert][kups.core.assertion.runtime_assert]; its fix runs the
@@ -33,9 +37,9 @@ from jax import Array
 from kups.core.assertion import Fix, runtime_assert
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.lens import View
+from kups.core.lens import LambdaLens, Lens, View, bind
 from kups.core.propagator import Propagator
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import HasSystemIndex, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, is_traced
 
 
@@ -91,6 +95,58 @@ def slot_owners(
     return Table(rows.keys, owners).update(
         rows, Index(slots.keys, slot_of_reservation, capacity, _cls=SystemId)
     )
+
+
+def slot_system_index(valid: Array) -> Index[SystemId]:
+    """System index of slot payload rows, which do not name their slot.
+
+    Valid rows reference the single key ``SystemId(0)``; the others are out of
+    bounds.
+
+    Args:
+        valid: Which rows hold particles, any shape.
+
+    Returns:
+        An index of the same shape over the keys ``(SystemId(0),)``.
+    """
+    return Index.zeros(valid.shape, label=SystemId).apply_mask(valid)
+
+
+def slot_rows_lens[P: HasSystemIndex](
+    slots: Table[SystemId, Index[ParticleId]],
+) -> Lens[Table[ParticleId, P], P]:
+    """Lens onto each slot's reserved rows, with slot-local system indices.
+
+    ``get`` gathers ``particles[slots.data]``, shape ``(n_slots, capacity, ...)``,
+    and sets its system index to
+    [slot_system_index][kups.core.stream.slot_system_index] of the rows'
+    validity. ``set`` points each valid row at the slot that reserves it, as
+    [slot_owners][kups.core.stream.slot_owners] does, marks padding rows out of
+    bounds, and writes all of them with ``particles.update(slots.data, ...)``.
+    Rows outside every reservation are left as they are.
+
+    The particles' system index must be keyed by ``slots.keys``. Building the
+    lens checks the reservations as ``slot_owners`` does.
+    """
+    owners = slot_owners(slots)[slots.data]
+
+    def get(particles: Table[ParticleId, P]) -> P:
+        rows = particles[slots.data]
+        return (
+            bind(rows)
+            .focus(lambda p: p.system)
+            .set(slot_system_index(rows.system.valid_mask))
+        )
+
+    def put(particles: Table[ParticleId, P], /, value: P) -> Table[ParticleId, P]:
+        rows = (
+            bind(value)
+            .focus(lambda p: p.system)
+            .set(owners.apply_mask(value.system.valid_mask))
+        )
+        return particles.update(slots.data, rows)
+
+    return LambdaLens(get, put)
 
 
 @dataclass

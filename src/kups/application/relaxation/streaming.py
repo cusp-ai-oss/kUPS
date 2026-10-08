@@ -43,7 +43,7 @@ from kups.core.propagator import (
     ResetOnErrorPropagator,
     SequentialPropagator,
 )
-from kups.core.stream import slot_owners
+from kups.core.stream import slot_owners, slot_rows_lens, slot_system_index
 from kups.core.typing import Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, tree_concat, tree_map
 from kups.potential.common.geometry import (
@@ -98,30 +98,23 @@ class StreamingRelaxState[OptState]:
     finished: Table[SystemId, Array]
 
 
-def _slotted_system(valid: Array) -> Index[SystemId]:
-    """Payload rows use one local system key, independent of their destination."""
-    return Index(
-        (SystemId(0),),
-        jnp.where(valid, 0, 1),
-        _cls=SystemId,
-    )
-
-
 def slot_payload_lens[State: IsStreamingRelaxState[object]](
     slots: Table[SystemId, Index[ParticleId]],
 ) -> Lens[State, RelaxPayload]:
     """Gather/scatter particle rows for the batch's systems, preserving vocabularies.
 
+    Particle rows go through [slot_rows_lens][kups.core.stream.slot_rows_lens].
     Reservations must be disjoint and have the same system keys as the batch.
     """
-
-    owners = slot_owners(slots)[slots.data]
+    rows: Lens[Table[ParticleId, RelaxParticles], RelaxParticles] = slot_rows_lens(
+        slots
+    )
 
     def get(s: State) -> RelaxPayload:
         assert s.systems.keys == slots.keys, (
             "Reservations must match the batch systems."
         )
-        p = s.particles[slots.data]
+        p = rows.get(s.particles)
         return RelaxPayload(
             particles=Particles(
                 positions=p.positions,
@@ -129,7 +122,7 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
                 atomic_numbers=p.atomic_numbers,
                 charges=p.charges,
                 labels=p.labels,
-                system=_slotted_system(p.system.valid_mask),
+                system=p.system,
             ),
             position_gradients=p.position_gradients,
             systems=s.systems.data,
@@ -142,9 +135,7 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
             "Reservations must match the batch systems."
         )
         particles = relax_particles(
-            bind(value.particles)
-            .focus(lambda p: p.system)
-            .set(owners.apply_mask(value.particles.system.valid_mask)),
+            value.particles,
             position_gradients=value.position_gradients,
             exclusion=s.particles[slots.data].exclusion,
         )
@@ -153,7 +144,7 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
             .focus(lambda x: (x.particles, x.systems.data, x.step, x.slot_ordinal))
             .set(
                 (
-                    s.particles.update(slots.data, particles),
+                    rows.set(s.particles, particles),
                     value.systems,
                     value.step,
                     value.ordinal,
@@ -250,7 +241,7 @@ def payload_from_structures(
                     lambda x: x[None],
                     bind(padded)
                     .focus(lambda p: p.system)
-                    .set(_slotted_system(padded.system.valid_mask)),
+                    .set(slot_system_index(padded.system.valid_mask)),
                     is_leaf=lambda x: isinstance(x, Index),
                 ),
                 position_gradients=jnp.zeros((1, capacity, 3), dtype),
