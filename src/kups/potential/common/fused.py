@@ -885,6 +885,7 @@ class FusedPotentialCache[Feat]:
                 pair.cutoffs(parameters),
                 key_chunk_size="auto" if on_cpu or on_gpu else None,
                 key_layout="auto" if on_cpu else "cells",
+                key_block_size="auto" if on_cpu else None,
             )
             if on_gpu:
                 layout = bind(layout, lambda x: x.chunk_size).set(
