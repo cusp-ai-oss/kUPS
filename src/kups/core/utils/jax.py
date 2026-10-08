@@ -45,6 +45,22 @@ from jax import Array
 
 from kups.core.utils.ops import where_broadcast_last
 
+
+def _use_unrolled_threefry_on_cpu() -> None:
+    """Lower Threefry-2x32 unrolled on CPU, as on other backends."""
+    try:
+        from jax._src import prng as _prng
+        from jax._src.interpreters import mlir as _mlir
+
+        _mlir.register_lowering(
+            _prng.threefry2x32_p, _prng._threefry2x32_lowering_rule, platform="cpu"
+        )
+    except (ImportError, AttributeError):  # pragma: no cover - JAX internals moved
+        pass
+
+
+_use_unrolled_threefry_on_cpu()
+
 StaticScalar = Union[
     np.bool_,
     np.number,  # NumPy scalar types
