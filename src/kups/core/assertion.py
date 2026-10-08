@@ -22,16 +22,20 @@ import traceback
 import typing
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Final, Self, no_type_check, override
+from typing import Any, Final, Self, override
 
 import jax
-import jax.interpreters.partial_eval as pe
 import jax.numpy as jnp
 from jax import Array
 from jax.core import ShapedArray
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive, jaxpr_as_fun
 from jax.interpreters import ad, batching, mlir
 
+from kups.core.interpreter._compat import (
+    get_bind_params,
+    manual_axes_kwarg,
+    register_dce_rule,
+)
 from kups.core.interpreter.handlers import (
     ScanSemantics,
     default_checkpoint_handler,
@@ -51,7 +55,6 @@ from kups.core.interpreter.interpreter import (
     contains_subjaxprs,
     reinterpret,
 )
-from kups.core.interpreter.util import get_bind_params
 from kups.core.lens import bind
 from kups.core.utils.jax import dataclass, field
 
@@ -210,23 +213,16 @@ def _make_noop_primitive(name: str) -> Primitive:
     batching.primitive_batchers[primitive] = noop_p_batcher
 
     def noop_p_dce_rule(
-        used_outputs: list[bool], *args: Any, **kwargs: Any
+        used_outputs: list[bool], eqn: JaxprEqn
     ) -> tuple[list[bool], JaxprEqn]:
-        eqn = args[-1]
         return [True] * len(used_outputs), eqn
 
-    pe.dce_rules[primitive] = noop_p_dce_rule
+    register_dce_rule(primitive, noop_p_dce_rule)
     return primitive
 
 
-@no_type_check
 def _scalar_bool(x: ShapedArray) -> ShapedArray:
-    # JAX 0.10 renamed the ShapeDtypeStruct kwarg ``vma`` → ``manual_axis_type``.
-    mat = getattr(x, "manual_axis_type", getattr(x, "vma", None))
-    try:
-        return ShapedArray((), jnp.bool, sharding=x.sharding, manual_axis_type=mat)
-    except TypeError:
-        return ShapedArray((), jnp.bool, sharding=x.sharding, vma=mat)
+    return ShapedArray((), jnp.bool, sharding=x.sharding, **manual_axes_kwarg(x))
 
 
 def _make_constant_primitive(name: str) -> Primitive:
@@ -263,13 +259,12 @@ def _make_constant_primitive(name: str) -> Primitive:
     batching.primitive_batchers[primitive] = constant_p_batcher
 
     def constant_p_dce_rule(
-        used_outputs: list[bool], *args: Any, **kwargs: Any
+        used_outputs: list[bool], eqn: JaxprEqn
     ) -> tuple[list[bool], JaxprEqn]:
         # The primitive is opaque, so all inputs are used.
-        eqn = args[-1]
         return [True] * len(eqn.invars), eqn
 
-    pe.dce_rules[primitive] = constant_p_dce_rule
+    register_dce_rule(primitive, constant_p_dce_rule)
     return primitive
 
 

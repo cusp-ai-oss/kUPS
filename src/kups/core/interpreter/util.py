@@ -3,30 +3,7 @@
 
 import itertools as it
 from collections.abc import Sequence
-from typing import Any, Literal, cast
-
-from jax.extend.core import JaxprEqn
-
-# jax.core.get_aval was deprecated in JAX 0.9.2 in favour of jax.typeof.
-try:
-    from jax import typeof as get_aval  # type: ignore[attr-defined]
-except ImportError:
-    from jax.core import get_aval  # type: ignore[assignment]  # noqa: F401
-
-
-def get_bind_params(eqn: JaxprEqn) -> tuple[list[Any], dict[str, Any]]:
-    """Extract subfuns and bind_params, compatible with old and new JAX APIs.
-
-    Returns:
-        A ``(subfuns, bind_params)`` pair.  ``subfuns`` are callable sub-function
-        closures (used by higher-order primitives in JAX < 0.9.2); ``bind_params``
-        is the keyword-argument dict passed to ``Primitive.bind``.  JAX >= 0.9.2
-        returns only ``bind_params``; this helper normalises both forms.
-    """
-    result: Any = eqn.primitive.get_bind_params(eqn.params)
-    if isinstance(result, tuple):
-        return result[0], result[1]
-    return [], result
+from typing import Literal, cast
 
 
 def split_sequence[S: Sequence[object]](
