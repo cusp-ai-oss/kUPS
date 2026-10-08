@@ -52,6 +52,8 @@ from kups.relaxation.propagator import RelaxationPropagator, UpdateMask
 
 
 class IsRelaxState[OptState](IsState[RelaxParticles, RelaxSystems], Protocol):
+    """Relaxation state: particle and system tables, optimizer state and step count."""
+
     @property
     def opt_state(self) -> OptState: ...
     @property
@@ -87,10 +89,29 @@ def make_relax_step[State, OptState](
     accept: View[State, Table[SystemId, Array]] | None = None,
     index_prefix: IndexPrefix = relax_index_prefix,
 ) -> tuple[Propagator[State], OptInit[OptState]]:
-    """Wire an optimizer step and initialization.
+    """Wire one optimizer step and its optimizer-state initializer.
 
-    The acceptance view reads the freshly evaluated gradients. Index mappings
-    are supplied explicitly; streaming may use a fixed row-to-slot mapping.
+    Args:
+        state_lens: Lens focusing on the relaxation sub-state.
+        potential: Potential reporting the DOF gradient ``∂E/∂u`` (built with the
+            same ``gradient`` filter).
+        optimizer: Optimizer (e.g. FIRE, Adam, L-BFGS).
+        gradient: Relaxation filter selecting the optimizer DOFs ``u`` — must be
+            the one ``potential`` was built with. The step optimises *these* DOFs
+            (not raw ``(positions, cell)``) so the filter's atoms-ride-the-cell
+            coupling is applied on every ``set``; using the raw property would
+            drop that coupling and diverge from ASE's cell filters.
+        accept: Optional per-system update mask, read after the freshly
+            evaluated energies and gradients are cached. Rejected systems keep
+            their parameters (up to the filter's set/get round-off); their
+            optimizer state still advances.
+        index_prefix: Maps every optimizer DOF to its owning system, for
+            ``optimizer.init`` and the update mask. Streaming may use a fixed
+            row-to-slot mapping.
+
+    Returns:
+        Tuple of ``(step, opt_init)``. ``step`` neither counts steps nor recovers
+        from capacity errors; see :func:`make_relax_propagator`.
     """
 
     def to_geometry(s: State) -> Geometry:
@@ -145,7 +166,16 @@ def make_relax_propagator[State, OptState](
     optimizer: Optimizer[PositionsAndCell, OptState],
     gradient: Lens[Geometry, PositionsAndCell],
 ) -> tuple[Propagator[State], OptInit[OptState]]:
-    """Build a relaxation step with counting and capacity-error recovery."""
+    """Build a relaxation propagator with step counting and error recovery.
+
+    Wraps :func:`make_relax_step` (see it for the arguments, notably the
+    ``gradient`` filter contract) in a step counter and a
+    ``ResetOnErrorPropagator``.
+
+    Returns:
+        Tuple of ``(propagator, opt_init)`` where *propagator* performs one
+        optimisation step and *opt_init* initialises the optimizer state.
+    """
 
     step, init = make_relax_step(
         state_lens,

@@ -47,7 +47,14 @@ class PositionCellTree[P, C](NamedTuple):
 PositionsAndCell = PositionCellTree[
     Table[ParticleId, Array], Table[SystemId, Cell[AnyPeriodicity]]
 ]
-"""Optimizer coordinates or gradients of the standard cell filters."""
+"""Optimizer DOFs / gradient payload of the standard cell filters.
+
+``positions`` is a per-particle table of DOF coordinates (``∂E/∂r`` when this
+carries a gradient); ``cell`` is a per-system table of the cell (its frame
+parameters carrying ``∂E/∂h`` for a gradient). Values, gradients and their
+``PositionsAndCellIndex`` share one ``PositionCellTree`` class, so their tree
+structures match.
+"""
 
 PositionsAndCellIndex = PositionCellTree[Index[SystemId], Index[SystemId]]
 """System assignment for the two branches of a positions-and-cell pytree."""
