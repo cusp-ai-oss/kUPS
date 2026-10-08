@@ -94,6 +94,17 @@ class TestConstruction:
         with pytest.raises(ValueError, match="Leaf has size"):
             Buffered(("a", "b"), bad, _view)
 
+        # pytree rebuilds still run the Table checks
+        buf = Buffered(("a", "b", "c"), _td([0.0, 1.0, 2.0], [True] * 3), _view)
+        with pytest.raises(ValueError, match="Leaf has size"):
+            jax.tree.map(lambda x: x[:2], buf)
+
+        # but trust their leaves instead of re-sanitizing unoccupied rows
+        buf = Buffered(("a", "b"), _td([1.0, 2.0], [True, False]), _view)
+        shifted = jax.tree.map(lambda x: x + 1 if x.dtype.kind == "f" else x, buf)
+        npt.assert_array_equal(shifted.data.values, [2.0, 1.0])
+        npt.assert_array_equal(shifted.occupation, [True, False])
+
 
 class TestSanitization:
     def test_sanitization(self):
@@ -241,6 +252,9 @@ class TestSubset:
         npt.assert_array_equal(sub.occupation, [False, True])
 
 
+_jit_update_if = jax.jit(lambda b, a, i, d: b.update_if(a, i, d))
+
+
 class TestUpdateIf:
     def _make_buf(self, values, occ):
         n = len(values)
@@ -289,6 +303,56 @@ class TestUpdateIf:
         npt.assert_array_equal(result.data.values[2], 3.0)
         assert result.occupation[0]
         assert result.occupation[2]
+
+    @pytest.mark.parametrize(
+        "accept, values, occupation, system",
+        [
+            (
+                [True, True],
+                [0.0, 2.0, 7.0, 0.0],
+                [False, True, True, False],
+                [2, 1, 1, 2],
+            ),
+            (
+                [True, False],
+                [0.0, 2.0, 0.0, 0.0],
+                [False, True, False, False],
+                [2, 1, 2, 2],
+            ),
+            (
+                [False, True],
+                [1.0, 2.0, 7.0, 0.0],
+                [True, True, True, False],
+                [0, 1, 1, 2],
+            ),
+        ],
+    )
+    def test_update_if_insert_and_delete(self, accept, values, occupation, system):
+        systems = (SystemId(0), SystemId(1))
+        buf = Buffered(
+            (0, 1, 2, 3),
+            TDSys(
+                jnp.array([1.0, 2.0, 0.0, 0.0]),
+                _make_status([True, True, False, False]),
+                Index(systems, jnp.array([0, 1, 2, 2])),
+            ),
+            _view,
+        )
+        # Delete slot 0 (system 0) and insert into free slot 2 (system 1).
+        rows = TDSys(
+            jnp.array([5.0, 7.0]),
+            _make_status([False, True]),
+            Index(systems, jnp.array([2, 1])),
+        )
+        result = _jit_update_if(
+            buf,
+            Table.arange(jnp.array(accept), label=SystemId),
+            Index(buf.keys, jnp.array([0, 2])),
+            rows,
+        )
+        npt.assert_array_equal(result.data.values, values)
+        npt.assert_array_equal(result.occupation, occupation)
+        npt.assert_array_equal(result.data.system.indices_in(systems), system)
 
 
 class TestInheritedBehavior:
@@ -350,6 +414,32 @@ class TestUpdate:
         npt.assert_array_equal(result.data.x, [1.0, 99.0, 3.0])
         npt.assert_array_equal(result.data.y, [4.0, 88.0, 6.0])
         npt.assert_array_equal(result.occupation, [True, True, True])
+
+    def test_update_sanitizes_raw_rows(self):
+        systems = tuple(SystemId(i) for i in range(3))
+        data = TDSys(
+            jnp.array([1.0, 2.0, 3.0]),
+            _make_status([True, True, True]),
+            Index(systems, jnp.array([0, 1, 2])),
+        )
+        buf = Buffered((0, 1, 2), data, _view)
+        rows = TDSys(
+            jnp.array([50.0, 60.0]),
+            _make_status([True, False]),
+            Index(systems, jnp.array([0, 2])),
+        )
+        result = buf.update(Index((0, 1, 2), jnp.array([0, 2])), rows)
+        npt.assert_array_equal(result.data.values, [50.0, 2.0, 0.0])
+        npt.assert_array_equal(result.data.system.indices, [0, 1, 3])
+        npt.assert_array_equal(result.occupation, [True, True, False])
+
+    def test_update_without_rows_under_jit(self):
+        buf = Buffered((0, 1, 2), _td([1.0, 2.0, 3.0], [True, False, True]), _view)
+        rows = jax.tree.map(lambda x: x[:0], buf.data)
+        idx = Index(buf.keys, jnp.zeros(0, dtype=int))
+        result = jax.jit(lambda b, i, r: b.update(i, r))(buf, idx, rows)
+        npt.assert_array_equal(result.data.values, [1.0, 0.0, 3.0])
+        npt.assert_array_equal(result.occupation, [True, False, True])
 
 
 class TestJitCompatibility:
