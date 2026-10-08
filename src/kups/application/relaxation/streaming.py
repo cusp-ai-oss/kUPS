@@ -81,6 +81,17 @@ class RelaxPayload:
 
 
 class IsStreamingRelaxState[OptState](IsRelaxState[OptState], Protocol):
+    """Relaxation state whose systems are slots, each running one job at a time.
+
+    ``step`` has one entry per slot: the number of optimizer updates of the
+    slot's current job.
+
+    Attributes:
+        slot_ordinal: Job id of each slot's system, ``-1`` while the slot is idle.
+        finished: Per-slot refill request, set when a job has converged or used
+            its update budget and cleared when the slot is replaced.
+    """
+
     @property
     def slot_ordinal(self) -> Array: ...
     @property
@@ -89,6 +100,19 @@ class IsStreamingRelaxState[OptState](IsRelaxState[OptState], Protocol):
 
 @dataclass
 class StreamingRelaxState[OptState]:
+    """Slotted relaxation batch.
+
+    Built by
+    [make_streaming_relax_state][kups.application.relaxation.streaming.make_streaming_relax_state]:
+    ``particles`` holds every slot's reserved rows, padding included, and
+    ``systems`` one row per slot.
+
+    Attributes:
+        step: Per-slot count of the current job's optimizer updates.
+        slot_ordinal: Job id of each slot's system, ``-1`` while the slot is idle.
+        finished: Per-slot refill request.
+    """
+
     particles: Table[ParticleId, RelaxParticles]
     systems: Table[SystemId, RelaxSystems]
     neighborlist_params: UniversalNeighborlistParameters
@@ -197,9 +221,13 @@ def payload_from_structures(
     are promoted to TriclinicFrame so orthogonal and triclinic jobs can mix.
 
     Raises:
-        ValueError: If a structure has more atoms than ``capacity`` or a label
-            outside ``species``.
+        ValueError: If ``structures`` is empty or not as long as ``ordinals``,
+            or if a structure's cell is batched or not lower triangular, its
+            particles are not one complete system, it has more atoms than
+            ``capacity``, or it has a label outside ``species``.
     """
+    if not structures:
+        raise ValueError("Need at least one structure to pack.")
     vocabulary = tuple(species)
     rows: list[RelaxPayload] = []
     for (particles, cell), ordinal in zip(structures, ordinals, strict=True):
@@ -366,11 +394,45 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
     max_steps: int,
     include_cell: bool = True,
 ) -> tuple[Propagator[State], OptInit[OptState], OptReset[OptState]]:
-    """Relax occupied slots; completed slots retain their evaluated geometry.
+    """Relax occupied slots and flag finished ones for refill.
 
-    Compose RefillGate before this step to service finished slots through
-    propagate_and_fix. A final evaluation after the last allowed update ensures
-    that budget-exhausted results also carry consistent energy and gradients.
+    Completed slots retain their evaluated geometry (up to the gradient
+    filter's round-off). Compose [RefillGate][kups.core.stream.RefillGate]
+    before this step to service finished slots through
+    [propagate_and_fix][kups.core.propagator.propagate_and_fix]. A final
+    evaluation after the last allowed update ensures that budget-exhausted
+    results also carry consistent energy and gradients.
+
+    Args:
+        state_lens: Lens onto the streaming sub-state; pass the same lens to
+            [replace_slots][kups.application.relaxation.streaming.replace_slots].
+        potential: Potential reporting the DOF gradient, built with the same
+            ``gradient`` filter.
+        optimizer: [Resettable][kups.relaxation.optimizer.Resettable] optimizer;
+            the returned ``reset`` applies its ``reset_layout`` to refilled
+            slots.
+        gradient: Relaxation filter selecting the optimizer DOFs.
+        slots: Particle rows reserved for each slot, e.g. by
+            [reserve_slots][kups.core.stream.reserve_slots]; pass the same table
+            to ``replace_slots``,
+            [slot_payload_lens][kups.application.relaxation.streaming.slot_payload_lens]
+            and
+            [make_streaming_relax_state][kups.application.relaxation.streaming.make_streaming_relax_state].
+        force_tolerance: A job converges once its largest DOF gradient norm is
+            below this.
+        max_steps: Optimizer updates a job may take before it finishes
+            unconverged.
+        include_cell: Whether cell gradients count towards convergence.
+
+    Returns:
+        ``(propagator, init, reset)``: ``propagator`` takes one optimizer step
+        in every running slot, flags finished slots and rolls back on a failed
+        runtime assertion; ``init`` builds optimizer state for
+        ``make_streaming_relax_state``; ``reset`` restores refilled slots'
+        optimizer state for ``replace_slots``.
+
+    Raises:
+        ValueError: If ``max_steps`` or ``force_tolerance`` is negative.
     """
     if max_steps < 0 or force_tolerance < 0:
         raise ValueError("max_steps and force_tolerance must be non-negative.")
