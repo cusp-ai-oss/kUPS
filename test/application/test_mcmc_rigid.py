@@ -1273,7 +1273,11 @@ class TestFusedPairIntegration:
                 jax.tree.leaves(reference),
                 strict=True,
             ):
-                npt.assert_array_equal(a, b, err_msg=jax.tree_util.keystr(path))
+                # An evaluated empty system leaves ~1e-34 of rounding in the
+                # Ewald Kahan terms where the skipped one keeps zeros.
+                npt.assert_allclose(
+                    a, b, rtol=0, atol=1e-30, err_msg=jax.tree_util.keystr(path)
+                )
 
     def test_default_layout_culls_blocks_exactly(self):
         from kups.core.propagator import propagate_and_fix
