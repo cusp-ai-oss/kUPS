@@ -344,7 +344,7 @@ class TestMCMCPropagator:
         npt.assert_array_equal(result1.value, result2.value)
 
     @pytest.mark.parametrize("log_ratio", [0.0, -jnp.inf])
-    def test_noop_skips_evaluation_but_updates_acceptance(
+    def test_noop_skips_density_but_updates_acceptance(
         self, simple_state, parameter_scheduler, log_ratio
     ):
         calls = []
@@ -374,7 +374,7 @@ class TestMCMCPropagator:
         result = step(jax.random.key(0), empty)
         jax.block_until_ready(result)
         jax.effects_barrier()
-        assert calls == []
+        assert calls == ["patch"]
         npt.assert_array_equal(result.value, empty.value)
         npt.assert_array_equal(result.scheduler_params.data.history.index, [1, 1])
         npt.assert_array_equal(
@@ -385,7 +385,7 @@ class TestMCMCPropagator:
         result = step(jax.random.key(0), simple_state)
         jax.block_until_ready(result)
         jax.effects_barrier()
-        assert calls == ["patch", "density"]
+        assert calls == ["patch", "patch", "density"]
         npt.assert_array_equal(result.value, simple_state.value + (log_ratio == 0))
 
     def test_noop_preserves_mixed_move_trajectory(
@@ -439,10 +439,10 @@ class TestMCMCPropagator:
             return state.array_data[0], Table.arange(jnp.zeros(2), label=SystemId)
 
         def patch(key, state, increment):
-            runtime_assert(increment != 0, "empty patch evaluated")
             return ExamplePatch(increment)
 
         def density(state, patch):
+            runtime_assert(patch.increment != 0, "empty density evaluated")
             runtime_assert(patch.increment < 2, "invalid density")
             return WithPatch(Table.arange(jnp.zeros(2), label=SystemId), IdPatch())
 
