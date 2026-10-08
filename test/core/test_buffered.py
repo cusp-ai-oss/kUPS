@@ -290,6 +290,19 @@ class TestUpdateIf:
         assert result.occupation[0]
         assert result.occupation[2]
 
+    def test_update_if_accepts_buffered_rows(self):
+        buf = self._make_buf([1.0, 2.0, 3.0, 4.0], [True, True, True, True])
+        idx = Index(buf.keys, jnp.array([0, 2]))
+        new_data = self._make_new([90.0, 91.0], [True, False], [0, 2])
+        rows = Buffered((0, 1), new_data, lambda d: d.status)
+        accept = Table.arange(jnp.array([True, False, True, False]), label=SystemId)
+        expected = buf.update_if(accept, idx, new_data)
+        result = buf.update_if(accept, idx, rows)
+        for a, b in zip(jax.tree.leaves(result), jax.tree.leaves(expected)):
+            npt.assert_array_equal(a, b)
+        # The unoccupied row was sanitized when the rows were buffered.
+        npt.assert_array_equal(result.data.values, [90.0, 2.0, 0.0, 4.0])
+
 
 class TestInheritedBehavior:
     def test_getitem_and_at_set(self):

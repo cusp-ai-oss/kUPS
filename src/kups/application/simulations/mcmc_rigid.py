@@ -279,11 +279,9 @@ class MCMCStateUpdate:
     def __call__[State: MCMCStateBase](self, state: State, accept: Accept) -> State:
         """Apply the update to ``state``, conditional on ``accept``."""
         acc = Table.broadcast_to(accept, state.systems)
-        new_groups = state.groups.update_if(
-            acc, self.groups.indices, self.groups.data.data
-        )
+        new_groups = state.groups.update_if(acc, self.groups.indices, self.groups.data)
         new_particles = state.particles.update_if(
-            acc, self._particles.indices, self._particles.data.data
+            acc, self._particles.indices, self._particles.data
         )
         return bind(state, lambda x: (x.particles, x.groups)).set(
             (new_particles, new_groups)
