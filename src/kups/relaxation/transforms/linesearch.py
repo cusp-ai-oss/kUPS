@@ -70,7 +70,7 @@ from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
 from kups.core.utils.segmented_tree import tree_scale_per_row, tree_vdot
-from kups.relaxation.optimizer import Resettable, ResetLayout
+from kups.relaxation.optimizer import ResetLayout, Resettable
 
 type ValueAndGradFn = Callable[[PyTree], tuple[Table[SupportsSorting, Array], PyTree]]
 """Maps trial params to ``(per-system energies, gradient pytree)``."""

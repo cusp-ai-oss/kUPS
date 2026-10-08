@@ -29,7 +29,7 @@ from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_norm,
 )
-from kups.relaxation.optimizer import Resettable, ResetLayout
+from kups.relaxation.optimizer import ResetLayout, Resettable
 
 
 @dataclass
