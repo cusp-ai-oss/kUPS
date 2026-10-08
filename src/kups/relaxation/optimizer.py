@@ -9,6 +9,8 @@ factory out of here avoids a circular import with
 :mod:`kups.relaxation.transforms`.
 """
 
+from __future__ import annotations
+
 from typing import Any, Callable, Protocol, no_type_check, override
 
 import optax
@@ -17,7 +19,8 @@ from jax import Array
 from kups.core.data.index import SupportsSorting
 from kups.core.data.table import Table
 from kups.core.lens import Lens, View
-from kups.core.typing import PyTree
+from kups.core.patch import IndexLensPatch
+from kups.core.typing import PyTree, SystemId
 from kups.core.utils.jax import dataclass, field
 
 
@@ -30,7 +33,8 @@ class ResetLayout[OptState, Data, Indices]:
     cursor, survive replacement.
 
     ``Data`` and ``Indices`` retain the concrete value and index-prefix types.
-    Their pytree alignment is checked by ``IndexLensPatch`` when applied.
+    Their pytree alignment is checked by ``IndexLensPatch`` when applied. The
+    lens must select disjoint parts of the state, as for any inferred lens.
 
     Attributes:
         fields: Lens reading and writing the resettable part of optimizer state.
@@ -43,6 +47,32 @@ class ResetLayout[OptState, Data, Indices]:
 
     fields: Lens[OptState, Data] = field(static=True)
     system_index: View[OptState, Indices] = field(static=True)
+
+    def within[Outer](
+        self, outer: Lens[Outer, OptState]
+    ) -> ResetLayout[Outer, Data, Indices]:
+        """Lift this layout into a larger state holding ``OptState`` at ``outer``."""
+        return ResetLayout(
+            fields=outer.nest(self.fields),
+            system_index=lambda s: self.system_index(outer.get(s)),
+        )
+
+    def merge[Data2, Indices2](
+        self, other: ResetLayout[OptState, Data2, Indices2]
+    ) -> ResetLayout[OptState, tuple[Data, Data2], tuple[Indices, Indices2]]:
+        """Reset the fields of both layouts."""
+        return ResetLayout(
+            fields=self.fields.merge(other.fields),
+            system_index=lambda s: (self.system_index(s), other.system_index(s)),
+        )
+
+    def reset(
+        self, state: OptState, fresh: OptState, mask: Table[SystemId, Array]
+    ) -> OptState:
+        """Copy ``fresh`` field values into the systems selected by ``mask``."""
+        return IndexLensPatch(
+            self.fields.get(fresh), self.system_index(state), self.fields
+        )(state, mask)
 
 
 class Optimizer[Params, OptState](Protocol):
