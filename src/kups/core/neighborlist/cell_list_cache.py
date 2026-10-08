@@ -40,6 +40,11 @@ from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, Syst
 from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_map
 from kups.core.utils.segment import bincount
 
+AUTO_KEY_BLOCK_SIZE = 8
+"""Slots per culled block chosen by ``key_block_size="auto"``."""
+AUTO_BLOCK_BATCH_HEADROOM = 1.25
+"""Factor on the estimated near-block count of one culled batch."""
+
 
 @dataclass
 class CellListCacheParameters:
@@ -116,6 +121,7 @@ class CellListCacheParameters:
         occupancy_headroom: int = 32,
         key_chunk_size: int | Literal["auto"] | None = None,
         key_layout: Literal["cells", "slots", "auto"] = "cells",
+        key_block_size: int | Literal["auto"] | None = None,
     ) -> Self:
         """Estimate parameters from a concrete state.
 
@@ -138,6 +144,11 @@ class CellListCacheParameters:
             key_layout: ``"auto"`` selects slots when a single system's stencil
                 covers all cells and the estimated slot block is smaller than
                 the combined cell blocks. Otherwise retains cell traversal.
+            key_block_size: Slots per spatially culled block for slot
+                traversal, or ``"auto"`` to enable culling for slot traversal
+                in the minimum-image regime. With ``"auto"`` and
+                ``key_chunk_size="auto"``, gathered batches hold a fraction of
+                the slots. Ignored for cell traversal.
 
         Returns:
             Static parameters for the table.
@@ -153,19 +164,39 @@ class CellListCacheParameters:
         cell_chunk_size = max(32, -(-max_occupancy // 32) * 32)
         occupancy = int((cell < n_cells).sum()) + occupancy_headroom
         slot_chunk_size = max(128, -(-occupancy // 128) * 128)
+        max_images = int(images.prod(axis=-1).max())
         if key_layout == "auto":
             limits = jnp.where(jnp.asarray(systems.data.cell.periodic), 3, 2)
+            culled = key_block_size is not None and (
+                key_block_size != "auto" or max_images == 1
+            )
             key_layout = (
                 "slots"
                 if systems.size == 1
                 and bool((bins <= limits).all())
-                and slot_chunk_size < stencil_width * cell_chunk_size
+                and (culled or slot_chunk_size < stencil_width * cell_chunk_size)
                 else "cells"
             )
+        if key_block_size == "auto":
+            key_block_size = (
+                AUTO_KEY_BLOCK_SIZE
+                if key_layout == "slots" and max_images == 1
+                else None
+            )
+        elif key_layout != "slots":
+            key_block_size = None
         if key_chunk_size == "auto":
             key_chunk_size = (
                 slot_chunk_size if key_layout == "slots" else cell_chunk_size
             )
+            if key_block_size is not None:
+                key_chunk_size = _estimate_block_batch(
+                    systems,
+                    cutoff,
+                    int((cell < n_cells).sum()),
+                    particles.size,
+                    key_block_size,
+                )
         return cls(
             chunk_size=chunk_size,
             key_chunk_size=key_chunk_size,
@@ -175,8 +206,30 @@ class CellListCacheParameters:
                 1, int(max_occupancy * occupancy_factor) + occupancy_headroom
             ),
             stencil_width=stencil_width,
-            max_images_per_pair=int(images.prod(axis=-1).max()),
+            max_images_per_pair=max_images,
+            key_block_size=key_block_size,
         )
+
+
+def _estimate_block_batch(
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
+    cutoff: Array,
+    active: int,
+    n_rows: int,
+    block_size: int,
+) -> int:
+    """Slots per culled batch covering the blocks near a typical query.
+
+    Counts the blocks of ``active`` rows within ``cutoff`` plus three quarters
+    of a block edge at the mean density, with headroom.
+    """
+    volume = float(np.max(np.asarray(systems.data.cell.volume)))
+    edge = (block_size * volume / max(active, 1)) ** (1 / 3)
+    reach = float(np.max(np.asarray(cutoff))) + 0.75 * edge
+    fraction = min(1.0, 4 / 3 * math.pi * reach**3 / volume)
+    blocks = math.ceil(AUTO_BLOCK_BATCH_HEADROOM * fraction * active / block_size)
+    n_blocks = -(-n_rows // block_size)
+    return min(n_blocks, max(1, blocks)) * block_size
 
 
 class CellRows[Data](NamedTuple):
