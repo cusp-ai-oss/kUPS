@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Callable
-from enum import Enum
 from functools import partial
-from typing import Any, Literal, overload
+from typing import Any
 
 import jax
 from jax import ShapeDtypeStruct
@@ -23,14 +22,13 @@ from kups.core.interpreter._compat import (
 from kups.core.interpreter.interpreter import (
     HandlerResult,
     Interpreter,
-    InterpreterContext,
     TracerValue,
     reinterpret,
 )
 from kups.core.interpreter.util import split_sequence
 
 
-def default_primitive_handler[Context: InterpreterContext](
+def default_primitive_handler[Context](
     _: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,
@@ -43,7 +41,7 @@ def default_primitive_handler[Context: InterpreterContext](
     return HandlerResult(ctx, outvals)
 
 
-def default_jit_handler[Context: InterpreterContext](
+def default_jit_handler[Context](
     interpreter: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,
@@ -76,51 +74,35 @@ def default_jit_handler[Context: InterpreterContext](
 
 
 class Uninitialized(ShapeDtypeStruct):
-    def __init__(self, aval: AbstractValue, ignore_sharding: bool = False):
+    def __init__(self, aval: AbstractValue):
         assert hasattr(aval, "shape") and hasattr(aval, "dtype"), (
             f"{aval} does not have a shape or dtype"
         )
         shape = getattr(aval, "shape")
         dtype = getattr(aval, "dtype")
-        sharding = None if ignore_sharding else getattr(aval, "sharding", None)
-        manual_axes = manual_axes_kwarg(None if ignore_sharding else aval)
         super().__init__(
             shape,
             dtype,
-            sharding=sharding,
+            sharding=getattr(aval, "sharding", None),
             weak_type=getattr(aval, "weak_type", False),
             is_ref=getattr(aval, "is_ref", False),
-            **manual_axes,
+            **manual_axes_kwarg(aval),
         )
 
 
-def _sentinel_preserving_parent[Context: InterpreterContext](
-    ctx_out_tree: Context, ctx: Context
-) -> Context:
-    """Build sentinel from trace output, preserving real parent values.
+def _sentinel_for_new_leaves[Context](ctx_out_tree: Context, ctx: Context) -> Context:
+    """Abstract body output context whose new leaves are marked uninitialized.
 
-    The dry-run trace wraps ALL leaves (including the parent chain) as abstract
-    values. Naive jax.tree.map(Uninitialized, ...) would cause the initializer
-    to zero pre-existing parent data. This function keeps real parent values
-    intact and only marks child-level leaves as Uninitialized.
-
-    Relies on register_dataclass flattening data_fields in declaration order:
-    parent leaves come first, then child value leaves.
+    A loop body may only extend the context, so the incoming context's leaves
+    are a prefix of the body's output leaves. Those keep their real values; the
+    leaves the body appends become ``Uninitialized`` for the initializer to fill.
     """
     trace_leaves, trace_treedef = jax.tree.flatten(ctx_out_tree)
-    parent_leaves = jax.tree.leaves(ctx)
-    n_parent = len(parent_leaves)
-
-    sentinel_leaves = list(parent_leaves) + [
-        Uninitialized(leaf) for leaf in trace_leaves[n_parent:]
+    leaves = jax.tree.leaves(ctx)
+    sentinel_leaves = list(leaves) + [
+        Uninitialized(leaf) for leaf in trace_leaves[len(leaves) :]
     ]
-
     return jax.tree.unflatten(trace_treedef, sentinel_leaves)
-
-
-class ScanSemantics(Enum):
-    CARRY = "carry"
-    RESULT = "result"
 
 
 def _assert_same_tree[PyTree](old: PyTree, new: PyTree):
@@ -142,54 +124,12 @@ def _assert_same_tree[PyTree](old: PyTree, new: PyTree):
         raise ValueError(f"Function modified the tree values: {leaf_mismatches}")
 
 
-def _scan_handler_result[Context: InterpreterContext](
+def default_scan_handler[Context](
     interpreter: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,
     invals: list[TracerValue],
-) -> HandlerResult[Context]:
-    _, bind_params = get_bind_params(eqn)
-    jaxpr: ClosedJaxpr = bind_params["jaxpr"]
-    consts, carry, xs = split_scan_operands(bind_params, invals)
-
-    # Trace to discover child context structure for reconstruction after scan
-    _, ctx_out_tree = (
-        jax.jit(partial(interpreter, jaxpr))
-        .trace(ctx.push(), *consts, *carry, *(x[0] for x in xs))
-        .out_info
-    )
-    ctx_out_treedef = jax.tree_util.tree_structure(ctx_out_tree)
-    n_parent = len(jax.tree.leaves(ctx))
-
-    def _new_body_fn(carry: list[TracerValue], xs: list[TracerValue]):
-        out_flat, ctx_out = interpreter(jaxpr, ctx.push(), *consts, *carry, *xs)
-        carry_out_flat, results_flat = split_scan_results(bind_params, out_flat)
-        # Only return child-level leaves as scan results — parent is constant
-        child_leaves = jax.tree.leaves(ctx_out)[n_parent:]
-        return carry_out_flat, (child_leaves, results_flat)
-
-    carry_out, (stacked_child_leaves, results) = jax.lax.scan(
-        _new_body_fn,
-        carry,
-        xs,
-        length=bind_params.get("length"),
-        unroll=bind_params.get("unroll", 1),
-        reverse=bind_params.get("reverse", False),
-    )
-
-    # Reconstruct: real parent (unstacked) + stacked child values
-    all_leaves = list(jax.tree.leaves(ctx)) + list(stacked_child_leaves)
-    ctx_out = jax.tree.unflatten(ctx_out_treedef, all_leaves)
-    ctx_out = ctx_out.pop()
-
-    return HandlerResult(ctx_out, jax.tree.leaves(carry_out + results))
-
-
-def _scan_handler_carry[Context: InterpreterContext](
-    interpreter: Interpreter[Context],
-    ctx: Context,
-    eqn: JaxprEqn,
-    invals: list[TracerValue],
+    *,
     initializer: Callable[[Context, Context], Context],
     updater: Callable[[Context, Context], Context],
 ) -> HandlerResult[Context]:
@@ -199,10 +139,10 @@ def _scan_handler_carry[Context: InterpreterContext](
 
     _, ctx_out_tree = (
         jax.jit(partial(interpreter, jaxpr))
-        .trace(ctx.push(), *consts, *carry, *(x[0] for x in xs))
+        .trace(ctx, *consts, *carry, *(x[0] for x in xs))
         .out_info
     )
-    sentinel_ctx = _sentinel_preserving_parent(ctx_out_tree, ctx)
+    sentinel_ctx = _sentinel_for_new_leaves(ctx_out_tree, ctx)
     initialized_ctx = initializer(ctx, sentinel_ctx)
     if any(isinstance(x, Uninitialized) for x in jax.tree.leaves(initialized_ctx)):
         raise ValueError(
@@ -212,7 +152,7 @@ def _scan_handler_carry[Context: InterpreterContext](
 
     def _body_fn(carry: tuple[Context, list[TracerValue]], xs: list[TracerValue]):
         old_ctx, carry_in_flat = carry
-        out_flat, new_ctx = interpreter(jaxpr, ctx.push(), *consts, *carry_in_flat, *xs)
+        out_flat, new_ctx = interpreter(jaxpr, ctx, *consts, *carry_in_flat, *xs)
         new_ctx = updater(old_ctx, new_ctx)
         try:
             _assert_same_tree(old_ctx, new_ctx)
@@ -229,58 +169,10 @@ def _scan_handler_carry[Context: InterpreterContext](
         unroll=bind_params.get("unroll", 1),
         reverse=bind_params.get("reverse", False),
     )
-    return HandlerResult(ctx_out.pop(), jax.tree.leaves(carry + results))
+    return HandlerResult(ctx_out, jax.tree.leaves(carry + results))
 
 
-@overload
-def default_scan_handler[Context: InterpreterContext](
-    interpreter: Interpreter[Context],
-    ctx: Context,
-    eqn: JaxprEqn,
-    invals: list[TracerValue],
-    *,
-    threading: Literal[ScanSemantics.CARRY],
-    initializer: Callable[[Context, Context], Context],
-    updater: Callable[[Context, Context], Context],
-) -> HandlerResult[Context]: ...
-
-
-@overload
-def default_scan_handler[Context: InterpreterContext](
-    interpreter: Interpreter[Context],
-    ctx: Context,
-    eqn: JaxprEqn,
-    invals: list[TracerValue],
-    *,
-    threading: Literal[ScanSemantics.RESULT],
-) -> HandlerResult[Context]: ...
-
-
-def default_scan_handler[Context: InterpreterContext](
-    interpreter: Interpreter[Context],
-    ctx: Context,
-    eqn: JaxprEqn,
-    invals: list[TracerValue],
-    *,
-    threading: ScanSemantics = ScanSemantics.CARRY,
-    initializer: Callable[[Context, Context], Context] | None = None,
-    updater: Callable[[Context, Context], Context] | None = None,
-) -> HandlerResult[Context]:
-    if threading == ScanSemantics.CARRY:
-        assert initializer is not None, (
-            "Initializer must be provided for carry threading."
-        )
-        assert updater is not None, "Updater must be provided for carry threading."
-        return _scan_handler_carry(
-            interpreter, ctx, eqn, invals, initializer=initializer, updater=updater
-        )
-    elif threading == ScanSemantics.RESULT:
-        return _scan_handler_result(interpreter, ctx, eqn, invals)
-    else:
-        raise ValueError(f"Unknown scan threading: {threading}")
-
-
-def default_while_handler[Context: InterpreterContext](
+def default_while_handler[Context](
     interpreter: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,
@@ -301,10 +193,10 @@ def default_while_handler[Context: InterpreterContext](
 
     _, ctx_out_tree = (
         jax.jit(partial(interpreter, body_jaxpr))
-        .trace(ctx.push(), *body_consts, *nonconst_invals)
+        .trace(ctx, *body_consts, *nonconst_invals)
         .out_info
     )
-    sentinel_ctx = _sentinel_preserving_parent(ctx_out_tree, ctx)
+    sentinel_ctx = _sentinel_for_new_leaves(ctx_out_tree, ctx)
     initialized_ctx = initializer(ctx, sentinel_ctx)
     if any(isinstance(x, Uninitialized) for x in jax.tree.leaves(initialized_ctx)):
         raise ValueError(
@@ -325,7 +217,7 @@ def default_while_handler[Context: InterpreterContext](
     def _body(packed: tuple[Context, list[TracerValue]]):
         old_ctx, args = packed
         args_flat, _ = jax.tree.flatten(args)
-        out, new_ctx = interpreter(body_jaxpr, ctx.push(), *body_consts, *args_flat)
+        out, new_ctx = interpreter(body_jaxpr, ctx, *body_consts, *args_flat)
         new_ctx = updater(old_ctx, new_ctx)
         try:
             _assert_same_tree(old_ctx, new_ctx)
@@ -336,10 +228,10 @@ def default_while_handler[Context: InterpreterContext](
     ctx_out, outvals = jax.lax.while_loop(
         _cond, _body, (initialized_ctx, nonconst_invals)
     )
-    return HandlerResult(ctx_out.pop(), outvals)
+    return HandlerResult(ctx_out, outvals)
 
 
-def default_cond_handler[Context: InterpreterContext](
+def default_cond_handler[Context](
     interpreter: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,
@@ -352,7 +244,7 @@ def default_cond_handler[Context: InterpreterContext](
         reinterpret(jaxpr_as_fun(jaxpr), interpreter) for jaxpr in branches
     ]
     branch_ctx_trees = [
-        jax.jit(branch_fn).trace(ctx.push(), *invals[1:]).out_info
+        jax.jit(branch_fn).trace(ctx, *invals[1:]).out_info
         for branch_fn in context_aware_branch_fns
     ]
     assert len(branches) > 0
@@ -368,7 +260,7 @@ def default_cond_handler[Context: InterpreterContext](
     return HandlerResult(ctx_out, outvals)
 
 
-def default_checkpoint_handler[Context: InterpreterContext](
+def default_checkpoint_handler[Context](
     interpreter: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,
@@ -379,7 +271,7 @@ def default_checkpoint_handler[Context: InterpreterContext](
     return HandlerResult(ctx_out, outvals)
 
 
-def default_shard_map_handler[Context: InterpreterContext](
+def default_shard_map_handler[Context](
     interpreter: Interpreter[Context],
     ctx: Context,
     eqn: JaxprEqn,

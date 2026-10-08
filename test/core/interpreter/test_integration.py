@@ -34,7 +34,7 @@ class TestIntegration:
             return inner(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, outs), ctx1 = wrapped(ctx0, jnp.array(1.0))
         assert carry == 4 and outs.shape[0] == 4
         assert {"jit", "scan", "sin"}.issubset(set(ctx1.metadata))
@@ -66,7 +66,7 @@ class TestIntegration:
             return inner(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.warns(UserWarning):
             (a, b), ctx1 = wrapped(ctx0, jnp.array(2.0))
         assert a == 3 and b == 3
@@ -93,7 +93,7 @@ class TestIntegration:
             return inner(x, scale)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         result, ctx1 = wrapped(ctx0, jnp.array(3.0), 5)  # scale=5 as static arg
 
         expected = 3.0 * (1 + 2 + 3 + 4) + 2.0  # 17.0

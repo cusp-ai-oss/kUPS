@@ -14,7 +14,6 @@ import pytest
 from jax import checkpoint
 
 from kups.core.interpreter.handlers import (
-    ScanSemantics,
     default_scan_handler,
     default_while_handler,
 )
@@ -44,7 +43,7 @@ class TestPrimitiveAndJit:
             return inner(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(1.0))
         assert jnp.allclose(out, jnp.sin(1.0) + 2.0)
         assert {"jit", "sin"}.issubset(ctx1.metadata)
@@ -63,29 +62,10 @@ class TestScan:
             return jax.lax.scan(body, 0, jnp.arange(3))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, ys), ctx1 = wrapped(ctx0, jnp.array(0.0))
         assert carry == 3
         assert jnp.allclose(ys, jnp.array([0, 2, 4]))
-        assert "scan" in ctx1.metadata and ctx1.total_value_count == 1
-
-    def test_scan_result_threading(self, handler_factory: HandlerFactory):
-        scan_h = handler_factory.create_scan_handler_with_mode(
-            "scan", constant_context_threading=True
-        )
-        interpreter = create_test_interpreter({"scan": scan_h})
-
-        def fn(_: jax.Array):
-            def body(carry, x):
-                return carry + 1, x * 2
-
-            return jax.lax.scan(body, 0, jnp.arange(4))
-
-        wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
-        (carry, ys), ctx1 = wrapped(ctx0, jnp.array(0.0))
-        assert carry == 4
-        assert jnp.allclose(ys, jnp.array([0, 2, 4, 6]))
         assert "scan" in ctx1.metadata and ctx1.total_value_count == 1
 
     def test_scan_with_nested_primitive(self, handler_factory: HandlerFactory):
@@ -101,7 +81,7 @@ class TestScan:
             return jax.lax.scan(body, 0.0, jnp.arange(3, dtype=float))
 
         wrapped = reinterpret(fn, inner)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (_, ys), ctx1 = wrapped(ctx0, jnp.array(0.0))
         # Both handlers should have contributed once
         assert {"scan", "sin"}.issubset(ctx1.metadata)
@@ -119,98 +99,10 @@ class TestScan:
             return jax.lax.scan(body, 0, length=5)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, _), ctx1 = wrapped(ctx0, jnp.array(0.0))
         assert carry == 5
         assert "scan" in ctx1.metadata
-
-    def test_scan_carry_only_result_threading(self, handler_factory: HandlerFactory):
-        """Carry-only scan with RESULT threading must forward length. Fixes #42."""
-        scan_h = handler_factory.create_scan_handler_with_mode(
-            "scan", constant_context_threading=True
-        )
-        interpreter = create_test_interpreter({"scan": scan_h})
-
-        def fn(_: jax.Array):
-            def body(carry, _xs):
-                return carry + 1, None
-
-            return jax.lax.scan(body, 0, length=5)
-
-        wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
-        (carry, _), ctx1 = wrapped(ctx0, jnp.array(0.0))
-        assert carry == 5
-        assert "scan" in ctx1.metadata
-
-    def test_scan_result_threading_no_parent_stacking(
-        self, handler_factory: HandlerFactory
-    ):
-        """Result threading must NOT stack parent values — only child values.
-
-        The parent is constant across scan iterations. Stacking it produces
-        N redundant copies and causes shape mismatches when nested inside
-        while_loop. After pop, parent values should retain their original
-        (unstacked) shape, while child values are stacked [N, ...].
-        """
-        sin_h = handler_factory.create_primitive_handler_with_extra_value(
-            "sin", value_fn=lambda invals: invals[0]
-        )
-        scan_h = handler_factory.create_scan_handler_with_mode(
-            "scan", constant_context_threading=True
-        )
-        interpreter = create_test_interpreter({"scan": scan_h, jax.lax.sin_p: sin_h})
-
-        def fn(x: jax.Array):
-            pre = jnp.sin(x)  # pre-call: scalar value
-
-            def body(carry, elem):
-                return carry + jnp.sin(elem), elem
-
-            return jax.lax.scan(body, pre, jnp.arange(4.0))
-
-        wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
-        x_in = jnp.array(1.0)
-        (_, _), ctx1 = wrapped(ctx0, x_in)
-
-        # Pre-call sin value (from parent) should be scalar, not stacked [4]
-        has_scalar_precall = any(
-            jnp.allclose(v, x_in) and v.shape == () for v in ctx1.value
-        )
-        assert has_scalar_precall, (
-            f"Pre-call value should be scalar {x_in}, got shapes: "
-            f"{[v.shape for v in ctx1.value]}"
-        )
-
-        # Scan handler's own value should also be scalar (added before push)
-        # Child sin values from body should be stacked [4, ...]
-        has_stacked_child = any(v.shape[0:1] == (4,) for v in ctx1.value)
-        assert has_stacked_child, (
-            f"Child values should be stacked [4, ...], got shapes: "
-            f"{[v.shape for v in ctx1.value]}"
-        )
-
-    def test_scan_result_threading_reverse_unroll(
-        self, handler_factory: HandlerFactory
-    ):
-        """RESULT threading must also forward reverse/unroll args."""
-        scan_h = handler_factory.create_scan_handler_with_mode(
-            "scan", constant_context_threading=True
-        )
-        interpreter = create_test_interpreter({"scan": scan_h})
-
-        def fn(_: jax.Array):
-            def body(carry, x):
-                return carry + x, x * 2
-
-            return jax.lax.scan(body, 0, jnp.arange(4), reverse=True, unroll=2)
-
-        wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
-        (carry, ys), _ = wrapped(ctx0, jnp.array(0.0))
-        assert carry == 6
-        assert jnp.allclose(ys, jnp.array([0, 2, 4, 6]))
 
     def test_scan_args_reverse_unroll(self, handler_factory: HandlerFactory):
         """Test that scan args (reverse, unroll) are passed through correctly."""
@@ -224,24 +116,18 @@ class TestScan:
             return jax.lax.scan(body, 0, jnp.arange(4), reverse=True, unroll=2)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, ys), ctx1 = wrapped(ctx0, jnp.array(0.0))
         # With reverse=True, scan processes [3,2,1,0] but outputs in original order
         assert carry == 6  # 0+1+2+3
         assert jnp.allclose(ys, jnp.array([0, 2, 4, 6]))
         assert "scan" in ctx1.metadata
 
-    @pytest.mark.parametrize("threading", list(ScanSemantics))
     def test_scan_partitions_consts_carry_and_results(
-        self, handler_factory: HandlerFactory, threading: ScanSemantics
+        self, handler_factory: HandlerFactory
     ):
         """Scan schema partitions closed constants, carry, xs, and results."""
-        if threading == ScanSemantics.CARRY:
-            scan_h = handler_factory.create_scan_handler("scan")
-        else:
-            scan_h = handler_factory.create_scan_handler_with_mode(
-                "scan", constant_context_threading=True
-            )
+        scan_h = handler_factory.create_scan_handler("scan")
         interpreter = create_test_interpreter({"scan": scan_h})
         offsets = jnp.array([10, 20, 30], dtype=jnp.int32)
         biases = jnp.array([5, 100], dtype=jnp.int32)
@@ -260,7 +146,7 @@ class TestScan:
             )
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         ((total, count), (adjusted, prior_totals)), ctx1 = wrapped(
             ctx0, jnp.array([1, 2, 3], dtype=jnp.int32)
         )
@@ -287,7 +173,7 @@ class TestWhile:
             return jax.lax.while_loop(cond, body, 0)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(0.0))
         assert out == 5
         assert "while" in ctx1.metadata and ctx1.total_value_count == 1
@@ -313,7 +199,7 @@ class TestWhileStress:
             return jax.lax.while_loop(cond, body, (0, 0, 1))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (i, total, product), ctx1 = wrapped(ctx0, jnp.array(0.0))
         assert i == 4
         assert total == 6  # 0+1+2+3
@@ -338,7 +224,7 @@ class TestWhileStress:
             return jax.lax.while_loop(cond, body, 0.0)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(0.0))
         assert out == 3.0
         assert {"while", "sin"}.issubset(ctx1.metadata)
@@ -358,7 +244,7 @@ class TestWhileStress:
             return jax.lax.while_loop(cond, body, 5)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(0.0))
         assert out == 5
         assert "while" in ctx1.metadata
@@ -380,7 +266,7 @@ class TestWhileStress:
             return jax.lax.while_loop(cond, body, (0, jnp.zeros(4)))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (i, arr), _ = wrapped(ctx0, jnp.array(0.0))
         assert i == 3
         assert jnp.allclose(arr, jnp.full(4, 3.0))
@@ -396,11 +282,11 @@ class TestNestingAdversarial:
     def test_while_in_scan_exact_context_counts(self, handler_factory: HandlerFactory):
         """While inside scan: verify exact metadata/value counts after all iterations.
 
-        Expected: scan handler adds 1 meta + 1 value (before push).
-        While handler adds 1 meta + 1 value (before push).
+        Expected: scan handler adds 1 meta + 1 value before the loop.
+        While handler adds 1 meta + 1 value before the loop.
         Sin handler adds 1 meta + 1 value per body equation.
         With default updater (replace), only last iteration of each loop survives.
-        After pops merge up: scan_meta + while_meta + sin_meta = 3 entries.
+        Result: scan_meta + while_meta + sin_meta = 3 entries.
         """
         sin_h = handler_factory.create_primitive_handler_with_extra_value("sin")
         wh_h = handler_factory.create_while_handler("while")
@@ -423,7 +309,7 @@ class TestNestingAdversarial:
             return jax.lax.scan(scan_body, 0.0, jnp.arange(4.0))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, _ys), ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         # Each scan iteration: while runs 3 times, result=3.0. carry accumulates.
@@ -467,7 +353,7 @@ class TestNestingAdversarial:
             return jax.lax.while_loop(w_cond, w_body, (0, 0.0))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (i, total), ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         assert i == 3
@@ -512,7 +398,7 @@ class TestNestingAdversarial:
             return jax.lax.while_loop(outer_cond, outer_body, (0, 0))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (i, total), ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         assert i == 2
@@ -533,8 +419,6 @@ class TestNestingAdversarial:
             "scan",
             updater=lambda old_ctx, new_ctx: MockContext(
                 new_ctx.metadata,
-                new_ctx.parent,
-                new_ctx.level,
                 tuple(o + n for o, n in zip(old_ctx.value, new_ctx.value)),
             ),
         )
@@ -547,7 +431,7 @@ class TestNestingAdversarial:
             return jax.lax.scan(body, 0.0, jnp.ones(5))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, _), ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         assert jnp.allclose(carry, 5 * jnp.sin(1.0))
@@ -556,7 +440,7 @@ class TestNestingAdversarial:
         assert ctx1.metadata.count("sin") == 1
         # Values: scan handler adds 1 value, sin handler adds 1 value.
         # The sin value was accumulated 5 times via the summing updater.
-        # After pop, scan_value + accumulated_sin_value = 2 values total.
+        # scan_value + accumulated_sin_value = 2 values total.
         assert ctx1.total_value_count == 2
         # The accumulated sin value should be ~5x the per-iteration value
         sin_values = [v for v in ctx1.value if jnp.allclose(v, 5 * jnp.ones(1))]
@@ -583,7 +467,7 @@ class TestNestingAdversarial:
             return jax.lax.while_loop(cond, body, 0.0)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         # sin(0)+cos(0) = 0+1 = 1 per iteration, 3 iterations → 3.0
@@ -620,7 +504,7 @@ class TestNestingAdversarial:
             return jax.lax.while_loop(cond, body, 0.0)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         assert out == 2.0
@@ -630,49 +514,6 @@ class TestNestingAdversarial:
         assert ctx1.metadata.count("sin") == 1
         assert len(ctx1.metadata) == 3
         assert ctx1.total_value_count == 3
-
-    def test_result_threaded_scan_in_while(self, handler_factory: HandlerFactory):
-        """RESULT-threaded scan inside while: stacked context values are carried correctly.
-
-        Result threading stacks ctx values along scan axis [N, ...].
-        The while handler's updater must carry these stacked values across iterations.
-        """
-        sin_h = handler_factory.create_primitive_handler_with_extra_value("sin")
-        scan_h = handler_factory.create_scan_handler_with_mode(
-            "scan", constant_context_threading=True
-        )
-        wh_h = handler_factory.create_while_handler("while")
-        interpreter = create_test_interpreter(
-            {"while": wh_h, "scan": scan_h, jax.lax.sin_p: sin_h}
-        )
-
-        def fn(_: jax.Array):
-            def w_cond(state):
-                i, _ = state
-                return i < 2
-
-            def w_body(state):
-                i, total = state
-
-                def scan_body(carry, x):
-                    return carry + jnp.sin(x), x
-
-                final_carry, _ = jax.lax.scan(scan_body, 0.0, jnp.ones(3))
-                return i + 1, total + final_carry
-
-            return jax.lax.while_loop(w_cond, w_body, (0, 0.0))
-
-        wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
-        (i, total), ctx1 = wrapped(ctx0, jnp.array(0.0))
-
-        assert i == 2
-        expected = 2 * 3 * jnp.sin(1.0)
-        assert jnp.allclose(total, expected)
-        assert ctx1.metadata.count("while") == 1
-        assert ctx1.metadata.count("scan") == 1
-        assert ctx1.metadata.count("sin") == 1
-        assert len(ctx1.metadata) == 3
 
     def test_triple_nesting_scan_while_cond(self, handler_factory: HandlerFactory):
         """3-level nesting: scan → while → cond with CONSISTENT branches.
@@ -711,7 +552,7 @@ class TestNestingAdversarial:
             return jax.lax.scan(scan_body, 0.0, jnp.arange(3.0))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, _), ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         # while body: each iteration adds sin(0)+1 = 1.0, runs 2 iterations → 2.0
@@ -747,7 +588,7 @@ class TestNestingAdversarial:
             return jax.lax.while_loop(cond, body, 0.0)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(0.0))
 
         assert out == 2.0
@@ -762,10 +603,10 @@ class TestNestingAdversarial:
 class TestInitializerCorruption:
     """Reproduce #40: dry-run trace + initializer corrupt pre-existing context.
 
-    Both `_scan_handler_carry` and `default_while_handler` do a dry-run trace
+    Both `default_scan_handler` and `default_while_handler` do a dry-run trace
     to discover the output context shape, then `jax.tree.map(Uninitialized, ...)`
-    over the entire tree (including the parent chain). The standard initializer
-    zeros ALL Uninitialized leaves — destroying pre-existing values in the parent.
+    over the entire tree (including pre-existing entries). The standard initializer
+    zeros ALL Uninitialized leaves — destroying pre-existing values.
 
     Bug manifests as:
     - Extra metadata entries (from the dry-run trace's handler calls)
@@ -805,7 +646,7 @@ class TestInitializerCorruption:
             return jax.lax.while_loop(cond, body, (jnp.int32(1), pre_result))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (i, result), ctx1 = wrapped(ctx0, jnp.array(1.0))
 
         assert i == 2
@@ -847,7 +688,7 @@ class TestInitializerCorruption:
             return jax.lax.while_loop(cond, body, (jnp.int32(1), pre))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x_in = jnp.array(1.0)
         (i, result), ctx1 = wrapped(ctx0, x_in)
 
@@ -869,12 +710,12 @@ class TestInitializerCorruption:
     ):
         """0-iteration while: pre-call VALUES must be preserved.
 
-        Known limitation: 0-iteration while_loop produces phantom child metadata
-        because JAX requires fixed-structure carry. The child metadata from the
+        Known limitation: 0-iteration while_loop produces phantom body metadata
+        because JAX requires fixed-structure carry. The body metadata from the
         dry-run trace is baked into the carry structure. With 0 iterations, the
-        initialized carry IS the result, and pop() merges phantom metadata.
+        initialized carry IS the result, phantom metadata included.
 
-        What MUST work: parent values are NOT zeroed.
+        What MUST work: pre-call values are NOT zeroed.
         """
         sin_h = handler_factory.create_primitive_handler_with_extra_value(
             "sin", value_fn=lambda invals: invals[0]
@@ -896,7 +737,7 @@ class TestInitializerCorruption:
             return jax.lax.while_loop(cond, body, (jnp.int32(1), pre))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x_in = jnp.array(1.0)
         (i, result), ctx1 = wrapped(ctx0, x_in)
 
@@ -941,7 +782,7 @@ class TestInitializerCorruption:
             return jax.lax.while_loop(cond, body, (jnp.int32(1), pre))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x_in = jnp.array(2.0)
         (i, _), ctx1 = wrapped(ctx0, x_in)
 
@@ -953,7 +794,7 @@ class TestInitializerCorruption:
         assert has_cos_input, f"Pre-call cos input lost: {ctx1.value}"
 
     def test_while_in_scan_precall_preserved(self, handler_factory: HandlerFactory):
-        """Nested while-in-scan with pre-call: parent chain preserved at depth."""
+        """Nested while-in-scan with pre-call: pre-call values preserved at depth."""
         sin_h = handler_factory.create_primitive_handler_with_extra_value(
             "sin", value_fn=lambda invals: invals[0]
         )
@@ -981,7 +822,7 @@ class TestInitializerCorruption:
             return jax.lax.scan(scan_body, pre, jnp.ones(2))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x_in = jnp.array(1.0)
         (_, _), ctx1 = wrapped(ctx0, x_in)
 
@@ -1008,7 +849,7 @@ class TestInitializerCorruption:
             return jax.lax.scan(body, pre, jnp.ones(3))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         (carry, _), ctx1 = wrapped(ctx0, jnp.array(1.0))
 
         assert jnp.allclose(carry, jnp.sin(1.0) + 3 * jnp.sin(1.0))
@@ -1037,7 +878,7 @@ class TestInitializerCorruption:
             return jax.lax.scan(body, pre, jnp.ones(3))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x_in = jnp.array(1.0)
         (_, _), ctx1 = wrapped(ctx0, x_in)
 
@@ -1068,7 +909,7 @@ class TestInitializerCorruption:
             return jax.lax.scan(body, pre, jnp.ones(1))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x_in = jnp.array(2.0)
         (carry, _), ctx1 = wrapped(ctx0, x_in)
 
@@ -1098,7 +939,7 @@ class TestCond:
             return jax.lax.cond(x > 0, true_fn, false_fn, x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out_pos, ctx_pos = wrapped(ctx0, jnp.array(2.0))
         out_neg, ctx_neg = wrapped(ctx0, jnp.array(-2.0))
         assert out_pos == 3.0 and out_neg == -3.0
@@ -1120,7 +961,7 @@ class TestCond:
             return jax.lax.cond(x > 0, t, f, x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.raises(ValueError):
             wrapped(ctx0, jnp.array(1.0))
 
@@ -1139,7 +980,7 @@ class TestCheckpoint:
             return body(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(3.0))
         assert out == 7.0
         assert "checkpoint" in ctx1.metadata
@@ -1159,7 +1000,7 @@ class TestCheckpoint:
             return body(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(1.0))
         assert jnp.allclose(out, jnp.sin(1.0) + 1.0)
         assert {"checkpoint", "sin"}.issubset(ctx1.metadata)
@@ -1182,7 +1023,7 @@ class TestCheckpoint:
             return outer(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.array(2.0))
         assert out == 7.0  # 2*3 + 1
         assert ctx1.metadata.count("checkpoint") == 2
@@ -1201,7 +1042,7 @@ class TestCheckpoint:
             return body(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, _ = wrapped(ctx0, jnp.array(2.0))
         expected = jnp.exp(2.0) + jnp.log(2.0)
         assert jnp.allclose(out, expected)
@@ -1217,7 +1058,7 @@ class TestPolicies:
             return jnp.sin(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.raises(NotImplementedError):
             wrapped(ctx0, jnp.array(1.0))
 
@@ -1230,7 +1071,7 @@ class TestPolicies:
             return jnp.sin(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.warns(UserWarning):
             wrapped(ctx0, jnp.array(1.0))
 
@@ -1243,7 +1084,7 @@ class TestPolicies:
             return jnp.sin(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         # Should not raise or warn
         wrapped(ctx0, jnp.array(1.0))
 
@@ -1262,7 +1103,7 @@ class TestErrorPaths:
             return jax.lax.scan(body, 0, jnp.arange(2))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.warns(UserWarning):
             wrapped(ctx0, jnp.array(0.0))
 
@@ -1289,7 +1130,6 @@ class TestScanInitializerError:
                 ctx,
                 eqn,
                 invals,
-                threading=ScanSemantics.CARRY,
                 initializer=bad_initializer,
                 updater=updater,
             )
@@ -1304,7 +1144,7 @@ class TestScanInitializerError:
             return jax.lax.scan(body, 0.0, jnp.arange(3.0))
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.raises(ValueError, match="initialized"):
             wrapped(ctx0, jnp.array(0.0))
 
@@ -1346,15 +1186,6 @@ class TestWhileInitializerError:
             )
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         with pytest.raises(ValueError, match="initialized"):
             wrapped(ctx0, jnp.array(0.0))
-
-
-class TestContextBasics:
-    def test_context_push_pop(self):
-        ctx = MockContext(("root",), None, 0, (jnp.array(1.0),))
-        child = ctx.push().add_meta("inner").add_value(jnp.array(2.0))
-        merged = child.pop()
-        assert merged.total_metadata_count == 2
-        assert merged.total_value_count == 2

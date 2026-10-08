@@ -14,7 +14,7 @@ from ._builders import HandlerFactory, MockContext
 
 @pytest.fixture
 def empty_context() -> MockContext:
-    return MockContext((), None, 0, ())
+    return MockContext((), ())
 
 
 @pytest.fixture
