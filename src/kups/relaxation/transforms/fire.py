@@ -58,7 +58,7 @@ from kups.core.utils.segmented_tree import (
     tree_segment_norm,
     tree_vdot,
 )
-from kups.relaxation.optimizer import Optimizer, ResetLayout
+from kups.relaxation.optimizer import Resettable, ResetLayout
 
 
 @dataclass
@@ -123,7 +123,7 @@ def fire_reset_layout() -> ResetLayout[
 
 
 @dataclass
-class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
+class ScaleByFire[Params](Resettable[Params, ScaleByFireState]):
     """FIRE (Fast Inertial Relaxation Engine) optimizer with per-system state.
 
     Implements Bitzek et al. *Phys. Rev. Lett.* **97**, 170201 (2006), but
@@ -284,3 +284,11 @@ class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
             n_pos=state.n_pos.set_data(new_n_pos_data),
             index_prefix=idx,
         )
+
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[ScaleByFireState, FireResetData, FireResetIndices]:
+        """Velocities and the per-system ``dt``, ``alpha`` and ``n_pos``."""
+        return fire_reset_layout()

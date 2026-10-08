@@ -39,7 +39,7 @@ from kups.core.utils.segmented_tree import (
     tree_vdot,
     tree_where_per_row,
 )
-from kups.relaxation.optimizer import Optimizer, ResetLayout
+from kups.relaxation.optimizer import Resettable, ResetLayout
 
 
 @dataclass
@@ -153,7 +153,7 @@ def lbfgs_reset_layout[Params]() -> ResetLayout[
 
 
 @dataclass
-class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
+class ScaleByAseLbfgs[Params](Resettable[Params, ScaleByAseLbfgsState[Params]]):
     """L-BFGS preconditioner with per-system block-diagonal Hessian.
 
     With a trivial ``index_prefix`` (one system) this reduces to the same
@@ -293,6 +293,14 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
             index_prefix=state.index_prefix,
             treedef=state.treedef,
         )
+
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[ScaleByAseLbfgsState[Params], LbfgsResetData, LbfgsResetIndices]:
+        """Per-system step counter and history; the shared ring position is kept."""
+        return lbfgs_reset_layout()
 
 
 def _precondition_by_lbfgs_segmented(
