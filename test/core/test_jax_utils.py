@@ -2,12 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+import importlib
+import types
+import warnings
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
+from jax.extend.random import threefry_2x32
 
 import kups.core.utils.jax as jax_utils
 from kups.core.utils.jax import (
@@ -25,6 +29,64 @@ from kups.core.utils.jax import (
     tree_stack,
     tree_zeros_like,
 )
+
+
+def test_threefry_lowers_unrolled_on_cpu() -> None:
+    jax_utils.enable_unrolled_threefry()
+    lowered = jax.jit(lambda k: jax.random.uniform(k, (4,))).lower(jax.random.key(0))
+    assert "stablehlo.while" not in lowered.as_text()
+
+
+@pytest.mark.parametrize(
+    "key, count, expected",
+    [
+        ((0, 0), (0, 0), (0x6B200159, 0x99BA4EFE)),
+        ((0xFFFFFFFF,) * 2, (0xFFFFFFFF,) * 2, (0x1CB996FC, 0xBB002BE7)),
+        ((0x13198A2E, 0x03707344), (0x243F6A88, 0x85A308D3), (0xC4923A9C, 0x483DF7A0)),
+    ],
+)
+def test_threefry_matches_random123_known_answer(
+    key: tuple[int, int], count: tuple[int, int], expected: tuple[int, int]
+) -> None:
+    jax_utils.enable_unrolled_threefry()
+    out = jax.jit(threefry_2x32)(
+        jnp.array(key, dtype=jnp.uint32), jnp.array(count, dtype=jnp.uint32)
+    )
+    npt.assert_array_equal(out, jnp.array(expected, dtype=jnp.uint32))
+
+
+def _threefry_internals() -> Any:
+    try:
+        return importlib.import_module("jax._src.random.threefry2x32")
+    except ImportError:
+        return importlib.import_module("jax._src.prng")
+
+
+@pytest.mark.parametrize(
+    "modules, warns",
+    [
+        ({"jax._src.random.threefry2x32": _threefry_internals()}, False),
+        ({"jax._src.prng": _threefry_internals()}, False),
+        ({"jax._src.prng": types.SimpleNamespace()}, True),
+        ({}, True),
+    ],
+    ids=["jax>=0.11", "jax<0.11", "symbols-moved", "module-moved"],
+)
+def test_enable_unrolled_threefry_resolves_or_warns(
+    modules: dict[str, Any], warns: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def import_module(name: str) -> Any:
+        if name not in modules:
+            raise ImportError(name)
+        return modules[name]
+
+    monkeypatch.setattr(
+        jax_utils, "importlib", types.SimpleNamespace(import_module=import_module)
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        jax_utils.enable_unrolled_threefry()
+    assert len(caught) == warns
 
 
 @pytest.mark.parametrize("shape", [(), (3,), (2, 3), (0,)])
