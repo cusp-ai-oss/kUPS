@@ -38,6 +38,7 @@ from kups.potential.classical.ewald import (
     EwaldParameters,
     IsEwaldPointData,
     ewald_long_range_energy,
+    ewald_net_charge_energy,
     ewald_self_interaction_energy,
     ewald_short_range_energy,
 )
@@ -266,7 +267,7 @@ def evaluate_ewald_potential[
         PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Hessians
     ] = EMPTY_LENS,
 ) -> PotentialOut[Gradients, Hessians]:
-    """Evaluate the full Ewald potential: long-range + short-range + self-interaction.
+    """Evaluate the full Ewald potential: long-range, short-range, self and net charge.
 
     Args:
         point_cloud: Particles and systems for the Ewald sum.
@@ -276,7 +277,8 @@ def evaluate_ewald_potential[
         hessian_idx_view: View used to index into the Hessian output.
 
     Returns:
-        ``PotentialOut`` summing long-range, short-range, and self-interaction terms.
+        ``PotentialOut`` summing the long-range, short-range, self-interaction and
+        net-charge terms.
     """
     lr_out = evaluate_potential(
         EwaldLongRangeInput(point_cloud, parameters),
@@ -323,23 +325,27 @@ def evaluate_ewald_potential[
         hessian_lens=hessian_lens,
         hessian_idx_view=hessian_idx_view,
     )
-    self_out = evaluate_potential(
-        GraphPotentialInput(
-            parameters,
-            HyperGraph(
-                point_cloud.particles,
-                point_cloud.systems,
-                Edges(
-                    Index(pi_keys, jnp.zeros((0, 0), dtype=int)),
-                    jnp.zeros((0, 0, 3), dtype=int),
-                ),
+    charge_graph = GraphPotentialInput(
+        parameters,
+        HyperGraph(
+            point_cloud.particles,
+            point_cloud.systems,
+            Edges(
+                Index(pi_keys, jnp.zeros((0, 0), dtype=int)),
+                jnp.zeros((0, 0, 3), dtype=int),
             ),
         ),
-        energy_fn=ewald_self_interaction_energy,
-        gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).focus(
-            gradient_lens.get
-        ),
-        hessian_lens=hessian_lens,
-        hessian_idx_view=lambda state: hessian_idx_view(state.graph),
     )
-    return lr_out + sr_out + self_out
+    self_out, net_out = (
+        evaluate_potential(
+            charge_graph,
+            energy_fn=energy_fn,
+            gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).focus(
+                gradient_lens.get
+            ),
+            hessian_lens=hessian_lens,
+            hessian_idx_view=lambda state: hessian_idx_view(state.graph),
+        )
+        for energy_fn in (ewald_self_interaction_energy, ewald_net_charge_energy)
+    )
+    return lr_out + sr_out + self_out + net_out

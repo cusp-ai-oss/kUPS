@@ -24,7 +24,11 @@ from kups.application.mcmc.data import (
     MotifParticles,
     RunConfig,
 )
-from kups.application.mcmc.logging import MCMCLoggedData, MCMCStepData
+from kups.application.mcmc.logging import (
+    MCMCLoggedData,
+    MCMCStepData,
+    make_mcmc_logged_data,
+)
 from kups.application.mcmc.rigid_body_composition import make_rigid_body_composition
 from kups.application.potential.classical.blocking import (
     make_blocking_spheres_from_state,
@@ -90,11 +94,15 @@ from kups.mcmc.moves import (
     propose_reinsertion,
 )
 from kups.potential.classical.blocking import BlockingSpheresParameters
-from kups.potential.classical.ewald import EwaldCache, EwaldParameters
+from kups.potential.classical.ewald import (
+    EwaldCache,
+    EwaldParameters,
+    make_ewald_net_charge_potential,
+)
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
 )
-from kups.potential.common.graph import PointCloud
+from kups.potential.common.graph import POINTCLOUD_GEOMETRY, PointCloud
 
 L = 15.0  # box side (Ang)
 N_MAX = 3  # max molecules (2 real + 1 empty slot for exchange)
@@ -186,6 +194,11 @@ def _build_state() -> MCMCState:
                 )
             ),
             self_interaction=KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                )
+            ),
+            net_charge=KahanSummand.init(
                 PotentialOut(
                     Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
                 )
@@ -679,12 +692,14 @@ class TestRigidCorrections:
             make_lennard_jones_tail_correction_from_state(sl, composition=composition),
             prepared_ewald.self_interaction,
             ScaledPotential(prepared_ewald.exclusion_correction, -1),
+            prepared_ewald.net_charge,
         )
         ewald = make_ewald_from_state(sl, include_exclusion_mask=True)
         reference = (
             make_lennard_jones_tail_correction_from_state(sl),
             ewald.self_interaction,
             ScaledPotential(ewald.exclusion_correction, -1),
+            ewald.net_charge,
         )
         return tuple(map(jax.jit, actual)), tuple(map(jax.jit, reference))
 
@@ -707,6 +722,40 @@ class TestRigidCorrections:
         )
         with pytest.raises(ValueError, match="energy-only"):
             factory(sl, gradient=POSITIONS_AND_CELL, composition=composition)
+
+    def test_net_charge_composition_requires_energy_only(self, mixture: MCMCState):
+        from kups.application.potential.filter import POSITIONS_AND_CELL
+
+        sl = identity_lens(MCMCState)
+        composition = make_rigid_body_composition(
+            mixture,
+            PointCloud(mixture.particles, mixture.systems),
+            mixture.motifs,
+            sl.focus(lambda s: s.groups),
+        )
+        with pytest.raises(ValueError, match="energy-only"):
+            make_ewald_net_charge_potential(
+                sl.focus(lambda s: s.particles),
+                sl.focus(lambda s: s.systems),
+                sl.focus(lambda s: s.ewald_parameters.data),
+                POINTCLOUD_GEOMETRY.nest(POSITIONS_AND_CELL),
+                composition=composition,
+            )
+
+    def test_logged_long_range_energy_includes_net_charge(self, mixture: MCMCState):
+        ewald = make_ewald_from_state(identity_lens(MCMCState), _probe)
+        state = mixture
+        for term in (ewald.long_range, ewald.net_charge):
+            state = PotentialAsPropagator(jax.jit(term))(jax.random.key(97), state)
+        logged = make_mcmc_logged_data(state).per_step.view(state).systems.data
+        long_range, net_charge = (
+            jax.jit(term)(state).data.total_energies.data
+            for term in (ewald.long_range, ewald.net_charge)
+        )
+        assert jnp.all(net_charge != 0)
+        npt.assert_allclose(
+            logged.ewald_long_range_energy, long_range + net_charge, rtol=1e-12
+        )
 
     def test_fixed_excluded_molecules_retain_their_energy(self, mixture: MCMCState):
         """A fixed molecule with exclusions needs the ordinary geometric term."""
@@ -806,6 +855,11 @@ class TestRigidCorrections:
             npt.assert_allclose(
                 state.ewald_parameters.cache.exclusion.total.total_energies.data,
                 reference[2](state).data.total_energies.data,
+                atol=1e-12,
+            )
+            npt.assert_allclose(
+                state.ewald_parameters.cache.net_charge.total.total_energies.data,
+                reference[3](state).data.total_energies.data,
                 atol=1e-12,
             )
         assert int(state.groups.data.system.counts.data[0]) == 0
