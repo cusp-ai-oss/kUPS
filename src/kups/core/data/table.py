@@ -27,7 +27,7 @@ from kups.core.data.index import (
     SupportsSorting,
     _format_keys,
 )
-from kups.core.lens import BoundLens, bind
+from kups.core.lens import BoundLens, View, bind
 from kups.core.utils.jax import (
     ScatterArgs,
     dataclass,
@@ -220,11 +220,13 @@ class Table(Batched, Generic[TKey, TData]):
             result = bind(self, lambda x: (x.keys, x.data)).set((new_idx, new_data))
         return result
 
-    def update_if[D, L: SupportsSorting](
+    def update_if[D, F, L: SupportsSorting](
         self: Table[TKey, D],
         accept: Table[L, Array],
         indices: Index[TKey],
         new_data: D,
+        *,
+        only: View[D, F] | None = None,
     ) -> Table[TKey, D]:
         """Conditionally update rows based on a per-element accept mask.
 
@@ -236,11 +238,19 @@ class Table(Batched, Generic[TKey, TData]):
             accept: Per-key boolean acceptance indexed by ``L``.
             indices: Target slot positions in ``self``.
             new_data: Proposed replacement data (same structure as subset).
+            only: Optional view of the leaves to write; others are kept.
 
         Returns:
             Updated container with accepted entries written.
         """
-        return self.update(self.accepted_indices(accept, indices, new_data), new_data)
+        target = self.accepted_indices(accept, indices, new_data)
+        if only is None:
+            return self.update(target, new_data)
+        return (
+            bind(self, lambda x: only(x.data))
+            .at(target.indices_in(self.keys))
+            .set(only(new_data))
+        )
 
     def accepted_indices[D, L: SupportsSorting](
         self: Table[TKey, D],

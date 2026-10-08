@@ -1,6 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+import dataclasses
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -403,6 +404,22 @@ class TestMCMCStateUpdate:
         )
         npt.assert_allclose(
             new_state.particles.data.positions, state.particles.data.positions
+        )
+
+    @pytest.mark.parametrize("accept", [True, False])
+    def test_positions_only_matches_full_update_positions(
+        self, state, movement_update_newpos, accept
+    ):
+        update, _ = movement_update_newpos
+        positions_only = dataclasses.replace(update, positions_only=True)
+        acc = state.systems.set_data(jnp.full(len(state.systems), accept))
+        full, partial = update(state, acc), positions_only(state, acc)
+        npt.assert_allclose(
+            partial.particles.data.positions, full.particles.data.positions
+        )
+        npt.assert_allclose(partial.particles.data.masses, state.particles.data.masses)
+        npt.assert_array_equal(
+            partial.groups.data.system.indices, state.groups.data.system.indices
         )
 
 

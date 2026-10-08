@@ -86,6 +86,7 @@ from kups.core.typing import (
 )
 from kups.core.utils.jax import (
     dataclass,
+    field,
     key_chain,
     no_jax_tracing,
     tree_map,
@@ -236,10 +237,12 @@ class MCMCStateUpdate:
     """Proposed particle and group changes for an MCMC move.
 
     Calling an instance applies the update conditionally on ``accept``.
+    With ``positions_only``, only particle positions are written.
     """
 
     _particles: WithIndices[ParticleId, Buffered[ParticleId, MCMCParticles]]
     groups: WithIndices[GroupId, Buffered[GroupId, MCMCGroup]]
+    positions_only: bool = field(static=True, default=False, kw_only=True)
 
     @staticmethod
     def from_changes(
@@ -274,11 +277,21 @@ class MCMCStateUpdate:
         particle_changes = WithIndices(proposal.particles.indices, new_particles)
         group_changes = WithIndices(proposal.groups.indices, new_groups)
 
-        return MCMCStateUpdate(particle_changes, group_changes)
+        return MCMCStateUpdate(
+            particle_changes, group_changes, positions_only=proposal.positions_only
+        )
 
     def __call__[State: MCMCStateBase](self, state: State, accept: Accept) -> State:
         """Apply the update to ``state``, conditional on ``accept``."""
         acc = Table.broadcast_to(accept, state.systems)
+        if self.positions_only:
+            new_particles = state.particles.update_if(
+                acc,
+                self._particles.indices,
+                self._particles.data,
+                only=lambda d: d.positions,
+            )
+            return bind(state, lambda x: x.particles).set(new_particles)
         new_groups = state.groups.update_if(acc, self.groups.indices, self.groups.data)
         new_particles = state.particles.update_if(
             acc, self._particles.indices, self._particles.data

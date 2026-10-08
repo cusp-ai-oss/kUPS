@@ -290,6 +290,15 @@ class TestUpdateIf:
         assert result.occupation[0]
         assert result.occupation[2]
 
+    def test_update_if_writes_only_selected_leaves(self):
+        buf = self._make_buf([1.0, 2.0, 3.0], [True, True, True])
+        idx = Index(buf.keys, jnp.array([0, 2]))
+        new_data = self._make_new([90.0, 91.0], [True, True], [1, 2])
+        accept = Table.arange(jnp.array([True, False, False]), label=SystemId)
+        result = buf.update_if(accept, idx, new_data, only=lambda d: d.values)
+        npt.assert_array_equal(result.data.values, [90.0, 2.0, 3.0])
+        npt.assert_array_equal(result.data.system.indices, [0, 1, 2])
+
     def test_update_if_accepts_buffered_rows(self):
         buf = self._make_buf([1.0, 2.0, 3.0, 4.0], [True, True, True, True])
         idx = Index(buf.keys, jnp.array([0, 2]))

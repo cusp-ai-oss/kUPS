@@ -22,6 +22,7 @@ Moves generate proposals compatible with [MCMCPropagator][kups.core.propagator.M
 from __future__ import annotations
 
 import abc
+import dataclasses
 from typing import Any, Callable, Protocol, override, runtime_checkable
 
 import jax
@@ -527,10 +528,13 @@ class ExchangeChanges:
     Attributes:
         particles: Target particle slots and buffered particle data.
         groups: Target group slots and buffered group data.
+        positions_only: Statically known to change only particle positions;
+            all other fields hold their current values.
     """
 
     particles: WithIndices[ParticleId, Buffered[ParticleId, ExchangeParticleData]]
     groups: WithIndices[GroupId, Buffered[GroupId, ExchangeGroupData]]
+    positions_only: bool = field(static=True, default=False, kw_only=True)
 
     def is_noop(self, groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
         """Whether no particle is targeted and group metadata stays unchanged.
@@ -1259,6 +1263,28 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                 state.focus(lambda x: x.reinsertion_params),
             )
         )
+    if exchange_weight <= 0:
+        # Displacements only: lift once after the move selection. Empty
+        # displacements only occur without molecules and evaluate as no-ops.
+        gcmc = state
+
+        def _patch(key: Array, state: State, proposal: ParticlePositionChanges) -> Move:
+            inner = gcmc(state)
+            changes = exchange_changes_from_position_changes(
+                proposal, inner.particles, inner.groups
+            )
+            return patch_fn(
+                key, state, dataclasses.replace(changes, positions_only=True)
+            )
+
+        return MCMCPropagator(
+            _patch,
+            tuple(_symmetric(fn) for _, fn, _ in _moves),
+            probability_fn,
+            tuple(_sched(params_lens) for _, _, params_lens in _moves),
+            weights=tuple(w for w, _, _ in _moves),
+        )
+
     for w, fn, params_lens in _moves:
         propose_fns.append(_lift_to_exchange(_symmetric(fn)))
         wts.append(w)
