@@ -126,7 +126,7 @@ from jax import Array
 from kups.application.relaxation.streaming import StreamingRelaxState
 from kups.application.utils.propagate import make_cycle_function
 from kups.core.propagator import LoopPropagator, SequentialPropagator, propagate_and_fix
-from kups.core.stream import RefillPropagator
+from kups.core.stream import RefillGate
 
 # numerical_step comes from make_streaming_relax_propagator.
 # refill(state, requested) is the application's input/output adapter.
@@ -135,7 +135,7 @@ def repetitions[OptState](state: StreamingRelaxState[OptState]) -> Array:
     return jnp.where(run, 8, 0)
 
 cycle = make_cycle_function(SequentialPropagator((
-    RefillPropagator(lambda state: state.finished, refill),
+    RefillGate(lambda state: state.finished, refill),
     LoopPropagator(numerical_step, repetitions),
 )))
 
