@@ -31,6 +31,7 @@ from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_list_cache import (
     CellListCache,
     CellListCacheParameters,
+    block_bounds,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.patch import Accept, Probe
@@ -1108,8 +1109,12 @@ class TestPersistentCellListCache:
     applying each composed patch (cache + table) and the move, the committed cache
     must equal a graph full recomputation of the committed particles."""
 
-    @pytest.mark.parametrize("key_layout", ["cells", "slots"])
-    def test_open_boundary_move_chain(self, key_layout: _KeyLayout):
+    @pytest.mark.parametrize(
+        "key_layout,key_block_size", [("cells", None), ("slots", None), ("slots", 2)]
+    )
+    def test_open_boundary_move_chain(
+        self, key_layout: _KeyLayout, key_block_size: int | None
+    ):
         # One two-particle system for each open face, with no molecular exclusions.
         state = _make_state(jax.random.key(41), (2,) * 6, (10.0,) * 6, molecule_size=1)
         positions = np.full((6, 2, 3), 5.0)
@@ -1140,7 +1145,12 @@ class TestPersistentCellListCache:
 
         engine = FusedNeighborEnergy(
             _LJ_PAIR,
-            dataclasses.replace(_PARAMS, key_layout=key_layout),
+            dataclasses.replace(
+                _PARAMS,
+                key_layout=key_layout,
+                key_block_size=key_block_size,
+                key_chunk_size=key_block_size,
+            ),
             lens(lambda s: s.cell_table),
         )
         table = engine.build_cell_list_cache(
@@ -1216,10 +1226,20 @@ class TestPersistentCellListCache:
                 npt.assert_array_equal(before, after)
 
     @pytest.mark.parametrize(
-        "key_layout,key_chunk_size", [("cells", None), ("cells", 1), ("slots", 8)]
+        "key_layout,key_chunk_size,key_block_size",
+        [
+            ("cells", None, None),
+            ("cells", 1, None),
+            ("slots", 8, None),
+            ("slots", 8, 4),
+            ("slots", 2, 2),
+        ],
     )
     def test_move_chain_matches_graph(
-        self, key_layout: _KeyLayout, key_chunk_size: int | None
+        self,
+        key_layout: _KeyLayout,
+        key_chunk_size: int | None,
+        key_block_size: int | None,
     ):
         state = _make_state(
             jax.random.PRNGKey(11), (24, 16), (12.0, 10.0), n_inactive=3
@@ -1228,7 +1248,10 @@ class TestPersistentCellListCache:
         engine = FusedNeighborEnergy(
             _LJ_PAIR,
             dataclasses.replace(
-                _PARAMS, key_layout=key_layout, key_chunk_size=key_chunk_size
+                _PARAMS,
+                key_layout=key_layout,
+                key_chunk_size=key_chunk_size,
+                key_block_size=key_block_size,
             ),
             lens(lambda s: s.cell_table),
         )
@@ -1289,6 +1312,17 @@ class TestPersistentCellListCache:
                 atol=1e-12,
                 err_msg=f"step {step}",
             )
+            table = state.cell_table
+            if key_block_size is not None:
+                # Updated block bounds stay exact for the stored rows.
+                n = table.sentinel_slot
+                lower, upper = block_bounds(
+                    table.rows.frac[:n],
+                    table.rows.cell[:n] != table.sentinel_cell,
+                    key_block_size,
+                )
+                npt.assert_array_equal(table.block_lo, lower.T)
+                npt.assert_array_equal(table.block_hi, upper.T)
 
 
 class TestAdditivePairEnergy:

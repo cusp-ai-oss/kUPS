@@ -8,10 +8,12 @@ Reuses cell-list binning and updates occupants after accepted particle moves.
 
 from __future__ import annotations
 
+import math
 from typing import Literal, NamedTuple, Self
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 
 from kups.core.assertion import runtime_assert
@@ -36,7 +38,6 @@ from kups.core.neighborlist.types import (
 from kups.core.patch import Accept, Patch
 from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_map
-from kups.core.utils.ops import where_broadcast_last
 from kups.core.utils.segment import bincount
 
 
@@ -63,6 +64,9 @@ class CellListCacheParameters:
         max_images_per_pair: Capacity for each pair's periodic-image window.
             Estimated from the cutoff and cell geometry; one in the
             minimum-image regime.
+        key_block_size: Optional slots per spatial block. When set, slots are
+            ordered by a spatial bisection tree at build time and each block
+            keeps fractional bounds of its active rows, maintained on updates.
     """
 
     chunk_size: int = field(static=True, default=32)
@@ -74,6 +78,7 @@ class CellListCacheParameters:
         static=True, default="cells", kw_only=True
     )
     max_images_per_pair: int = field(static=True, default=1, kw_only=True)
+    key_block_size: int | None = field(static=True, default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if min(self.chunk_size, self.max_cells_per_system, self.cell_capacity) <= 0:
@@ -86,6 +91,13 @@ class CellListCacheParameters:
             raise ValueError("stencil_width must be between 1 and 27")
         if self.max_images_per_pair < 1:
             raise ValueError("max_images_per_pair must be positive")
+        if self.key_block_size is not None and self.key_block_size < 1:
+            raise ValueError("key_block_size must be positive")
+
+    @property
+    def slot_multiple(self) -> int:
+        """Padded slot counts are multiples of the query chunk and block size."""
+        return math.lcm(self.chunk_size, self.key_block_size or 1)
 
     @classmethod
     @no_jax_tracing
@@ -279,6 +291,10 @@ class CellListCache[Data](NamedTuple):
         stencil: Neighbor cell ids per cell, ``(n_cells + 1, stencil_width)``,
             invalid entries routed to the sentinel cell.
         bins: Per-system bin counts, ``(n_systems, 3)``.
+        block_lo: Optional per-block lower fractional bounds of the active
+            rows in each run of ``key_block_size`` slots, planar
+            ``(3, n_blocks)``; ``+inf`` for empty blocks.
+        block_hi: Matching upper bounds; ``-inf`` for empty blocks.
     """
 
     rows: CellRows[Data]
@@ -286,6 +302,28 @@ class CellListCache[Data](NamedTuple):
     cells: Array
     stencil: Array
     bins: Array
+    block_lo: Array | None = None
+    block_hi: Array | None = None
+
+    @property
+    def block_size(self) -> int | None:
+        """Slots per spatial block, or ``None`` without block bounds."""
+        if self.block_lo is None:
+            return None
+        return self.sentinel_slot // self.block_lo.shape[1]
+
+    def block_rows(self, blocks: Array) -> CellRows[Data]:
+        """Rows of whole blocks, leaves ``(*blocks.shape, block_size, ...)``.
+
+        Block ids must be in bounds; callers mask padded ids themselves.
+        """
+        size = self.block_size
+        assert size is not None, "The table has no spatial blocks"
+        n = self.sentinel_slot
+        return jax.tree.map(
+            lambda x: x[:n].reshape(n // size, size, *x.shape[1:])[blocks],
+            self.rows,
+        )
 
     @property
     def sentinel_slot(self) -> int:
@@ -404,6 +442,96 @@ def cell_candidates[Data](
     ), ctx
 
 
+def block_bounds(frac: Array, active: Array, block_size: int) -> tuple[Array, Array]:
+    """Fractional bounds of the active rows of consecutive blocks.
+
+    Args:
+        frac: Fractional coordinates, ``(..., n_blocks * block_size, 3)``.
+        active: Active rows, ``(..., n_blocks * block_size)``.
+        block_size: Rows per block.
+
+    Returns:
+        Lower and upper bounds ``(..., n_blocks, 3)``; ``+inf``/``-inf`` for
+        blocks without active rows.
+    """
+    shape = (*frac.shape[:-2], frac.shape[-2] // block_size, block_size)
+    frac = frac.reshape(*shape, 3)
+    active = active.reshape(*shape, 1)
+    return (
+        jnp.where(active, frac, jnp.inf).min(-2),
+        jnp.where(active, frac, -jnp.inf).max(-2),
+    )
+
+
+def _bisection_levels(n_blocks: int, block_size: int) -> list[np.ndarray]:
+    """Static segment ids of each level of a balanced block bisection."""
+    segments = [(0, n_blocks)]
+    levels: list[np.ndarray] = []
+    while any(end - start > 1 for start, end in segments):
+        sizes = [(end - start) * block_size for start, end in segments]
+        levels.append(np.repeat(np.arange(len(segments)), sizes))
+        children: list[tuple[int, int]] = []
+        for start, end in segments:
+            if end - start > 1:
+                middle = (start + end) // 2
+                children += [(start, middle), (middle, end)]
+            else:
+                children.append((start, end))
+        segments = children
+    return levels
+
+
+def spatial_order(
+    frac: Array,
+    system: Array,
+    active: Array,
+    scale: Array,
+    n_slots: int,
+    block_size: int,
+) -> Array:
+    """Order rows by recursive bisection so that blocks are spatially compact.
+
+    Each level sorts every segment along its widest axis (fractional extents
+    scaled by ``scale``, e.g. perpendicular cell widths) and splits it at a
+    block boundary. Systems are kept apart and inactive rows sort last.
+
+    Args:
+        frac: Fractional coordinates, ``(n, 3)``.
+        system: System index per row, ``(n,)``.
+        active: Active rows, ``(n,)``.
+        scale: Per-system axis scale, ``(n_systems, 3)``.
+        n_slots: Padded slot count, a multiple of ``block_size`` and ``>= n``.
+        block_size: Slots per block.
+
+    Returns:
+        Row index for each of the first ``n`` slots, ``(n,)``.
+    """
+    n = frac.shape[0]
+    coords = frac * scale[system]
+    # Separate systems by more than any in-cell extent.
+    offset = 4 * jnp.max(scale, initial=1.0) * system
+    coords = jnp.where(active[:, None], coords + offset[:, None], jnp.inf)
+    coords = jnp.concatenate([coords, jnp.full((n_slots - n, 3), jnp.inf)])
+    valid = jnp.concatenate([active, jnp.zeros(n_slots - n, bool)])
+    perm = jnp.arange(n_slots)
+    position = jnp.arange(n_slots)
+    for level in _bisection_levels(n_slots // block_size, block_size):
+        segment = jnp.asarray(level)
+        n_segments = int(level[-1]) + 1
+        points, mask = coords[perm], valid[perm]
+        upper = jax.ops.segment_max(
+            jnp.where(mask[:, None], points, -jnp.inf), segment, n_segments
+        )
+        lower = jax.ops.segment_min(
+            jnp.where(mask[:, None], points, jnp.inf), segment, n_segments
+        )
+        axis = jnp.argmax(upper - lower, axis=-1)[segment]
+        key = jnp.take_along_axis(points, axis[:, None], axis=1)[:, 0]
+        # Inactive and padding rows keep their relative order at the end.
+        perm = perm[jnp.lexsort((position, key, segment))]
+    return perm[:n]
+
+
 def build_cell_list_cache[Data](
     particles: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
@@ -424,7 +552,7 @@ def build_cell_list_cache[Data](
         The cell table.
     """
     n = particles.size
-    n_pad = -(-n // parameters.chunk_size) * parameters.chunk_size
+    n_pad = -(-n // parameters.slot_multiple) * parameters.slot_multiple
     max_cells = parameters.max_cells_per_system
     n_cells = systems.size * max_cells
     cutoff = Table.broadcast_to(cutoffs, systems).data
@@ -443,8 +571,21 @@ def build_cell_list_cache[Data](
     )
 
     rows = cell_rows(particles, systems, bins, max_cells, data)
-    order = jnp.argsort(rows.cell)
-    sorted_cell = rows.cell[order]
+    block_size = parameters.key_block_size
+    if block_size is None:
+        order = jnp.argsort(rows.cell)
+        slot_by_cell = jnp.arange(n)
+    else:
+        order = spatial_order(
+            rows.frac,
+            rows.system.indices,
+            rows.cell < n_cells,
+            systems.data.cell.perpendicular_lengths,
+            n_pad,
+            block_size,
+        )
+        slot_by_cell = jnp.argsort(rows.cell[order], stable=True)
+    sorted_cell = rows.cell[order][slot_by_cell]
     rank = jnp.arange(n) - jnp.searchsorted(sorted_cell, sorted_cell, side="left")
     runtime_assert(
         ((rank < parameters.cell_capacity) | (sorted_cell == n_cells)).all(),
@@ -453,7 +594,7 @@ def build_cell_list_cache[Data](
     cells = (
         jnp.full((n_cells + 1, parameters.cell_capacity), n_pad, dtype=int)
         .at[sorted_cell, rank]
-        .set(jnp.arange(n), mode="drop")
+        .set(slot_by_cell, mode="drop")
         # Inactive particles were scattered into the sentinel-cell row; reset it.
         .at[n_cells]
         .set(n_pad)
@@ -461,6 +602,16 @@ def build_cell_list_cache[Data](
 
     sorted_rows: CellRows[Data] = jax.tree.map(lambda x: x[order], rows)
     padded_rows = sorted_rows.pad(n_pad + 1 - n, sentinel_cell=n_cells)
+    block_lo = block_hi = None
+    if block_size is not None:
+        block_lo, block_hi = (
+            bound.T
+            for bound in block_bounds(
+                padded_rows.frac[:n_pad],
+                padded_rows.cell[:n_pad] != n_cells,
+                block_size,
+            )
+        )
     return CellListCache(
         rows=padded_rows,
         slot_of_row=jnp.zeros(n, dtype=order.dtype).at[order].set(jnp.arange(n)),
@@ -473,6 +624,8 @@ def build_cell_list_cache[Data](
             width=parameters.stencil_width,
         ),
         bins=bins,
+        block_lo=block_lo,
+        block_hi=block_hi,
     )
 
 
@@ -547,10 +700,11 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                 jnp.any(relocate), move_cells, lambda cells: cells, table.cells
             )
 
+            # Rejected or padded rows target an out-of-bounds slot and drop.
+            target = jnp.where(ok, self.slots, n_pad + 1)
+
             def write(current: Array, new: Array) -> Array:
-                return current.at[self.slots].set(
-                    where_broadcast_last(ok, new, current[self.slots])
-                )
+                return current.at[target].set(new.astype(current.dtype), mode="drop")
 
             def rewrite[Key: SupportsSorting](
                 current: Array | Index[Key], new: Array | Index[Key]
@@ -567,7 +721,19 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
             rows: CellRows[Data] = jax.tree.map(
                 rewrite, table.rows, self.new, is_leaf=lambda x: isinstance(x, Index)
             )
-            return table._replace(rows=rows, cells=cells)
+            table = table._replace(rows=rows, cells=cells)
+            if table.block_lo is None or table.block_hi is None:
+                return table
+            n_blocks = table.block_lo.shape[1]
+            block = jnp.where(ok, self.slots // (n_pad // n_blocks), n_blocks)
+            touched = table.block_rows(jnp.minimum(block, n_blocks - 1))
+            lo, hi = block_bounds(
+                touched.frac, touched.cell != n_cells, n_pad // n_blocks
+            )
+            return table._replace(
+                block_lo=table.block_lo.at[:, block].set(lo[:, 0].T, mode="drop"),
+                block_hi=table.block_hi.at[:, block].set(hi[:, 0].T, mode="drop"),
+            )
 
         table = jax.lax.cond(jnp.any(ok), apply, lambda table: table, table)
         return self.lens.set(state, table)
