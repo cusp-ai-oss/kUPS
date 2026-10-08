@@ -96,10 +96,15 @@ class FireReset[Velocity, PerSystem]:
     n_pos: PerSystem
 
 
+type FireResetData = FireReset[PyTree, Table[SupportsSorting, Array]]
+"""Resettable FIRE values: the velocity pytree and per-system tables."""
+
+type FireResetIndices = FireReset[PyTree, Index[SupportsSorting]]
+"""Index prefix matching :data:`FireResetData`: velocity rows map to systems."""
+
+
 def fire_reset_layout() -> ResetLayout[
-    ScaleByFireState,
-    FireReset[PyTree, Table[SupportsSorting, Array]],
-    FireReset[PyTree, Index[SupportsSorting]],
+    ScaleByFireState, FireResetData, FireResetIndices
 ]:
     """Mutable FIRE fields; initialization supplies the configured dt and alpha."""
     return ResetLayout(
@@ -109,7 +114,10 @@ def fire_reset_layout() -> ResetLayout[
             )
         ),
         system_index=lambda s: FireReset(
-            velocity=s.index_prefix, dt=s.dt.index, alpha=s.dt.index, n_pos=s.dt.index
+            velocity=s.index_prefix,
+            dt=s.dt.index,
+            alpha=s.alpha.index,
+            n_pos=s.n_pos.index,
         ),
     )
 
