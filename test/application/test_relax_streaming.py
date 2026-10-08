@@ -48,7 +48,7 @@ from kups.core.propagator import (
     propagate_and_fix,
 )
 from kups.core.result import as_result_function
-from kups.core.stream import RefillPropagator, reserve_slots
+from kups.core.stream import RefillGate, reserve_slots
 from kups.core.typing import Label, ParticleId, SystemId
 from kups.core.utils.jax import dataclass as state_dataclass
 from kups.core.utils.jax import jit, tree_concat, tree_map
@@ -221,7 +221,7 @@ def _run(
         completed.extend(emitted)
         return result
 
-    gate: RefillPropagator[Batch] = RefillPropagator(lambda s: s.finished, refill)
+    gate: RefillGate[Batch] = RefillGate(lambda s: s.finished, refill)
 
     def repetitions(s: Batch) -> Array:
         run = ~s.finished.data.any() & (s.slot_ordinal >= 0).any()

@@ -3,7 +3,7 @@
 
 """Pure slot packing, replacement, and batched relaxation.
 
-Host input and output are supplied by the caller through RefillPropagator's
+Host input and output are supplied by the caller through RefillGate's
 fix callback. No device queue, file formats, or background workers live here.
 """
 
@@ -384,7 +384,7 @@ def make_streaming_relax_propagator[
 ) -> tuple[Propagator[State], OptInit[OptState], OptReset[OptState]]:
     """Relax occupied slots; completed slots retain their evaluated geometry.
 
-    Compose RefillPropagator before this step to service finished slots through
+    Compose RefillGate before this step to service finished slots through
     propagate_and_fix. A final evaluation after the last allowed update ensures
     that budget-exhausted results also carry consistent energy and gradients.
     """
