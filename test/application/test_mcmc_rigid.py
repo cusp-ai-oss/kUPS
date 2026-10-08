@@ -1145,19 +1145,40 @@ class TestBlockingSpheresPatch:
 class TestRunNVT:
     """Canonical (fixed-N) MCMC: exchange disabled, host pre-loaded."""
 
+    init_adsorbates = (2,)
+
     @pytest.fixture(scope="class")
     def run_result(self) -> tuple[MCMCState, str]:
-        config = _config(exchange_prob=0.0, init_adsorbates=(2,))
+        config = _config(exchange_prob=0.0, init_adsorbates=self.init_adsorbates)
         return run(config), str(config.run.out_file)
 
     def test_loading_is_conserved(self, run_result):
         state, _ = run_result
         # exchange_prob=0 keeps the molecule count fixed at the initial loading.
-        assert int(state.groups.data.system.counts.data[0]) == 2
+        counts = state.groups.data.system.counts.data
+        npt.assert_array_equal(counts, self.init_adsorbates)
 
     def test_analyzer_reads_back_physical_outputs(self, run_result):
         _, out_file = run_result
         _assert_readable(out_file)
+
+    def test_no_free_slots_without_insertions(self, run_result):
+        state, _ = run_result
+        # Without exchange moves no molecule can be inserted: buffers hold
+        # exactly the initial molecules.
+        assert len(state.groups) == sum(self.init_adsorbates)
+        assert len(state.particles) == int(state.particles.occupation.sum())
+
+    def test_empty_host_keeps_one_slot_and_runs(self):
+        # At zero pressure the reservoir estimate is 0; one slot is still kept.
+        base = _config(exchange_prob=0.0, init_adsorbates=(0,))
+        host = base.hosts[0].model_copy(update={"pressure": 0.0})
+        config = base.model_copy(update={"hosts": (host,)})
+        state = init_state(jax.random.key(7), config)
+        assert len(state.groups) == 1
+        assert int(state.groups.occupation.sum()) == 0
+        final = run(config)
+        assert int(final.groups.data.system.counts.data[0]) == 0
 
 
 class TestRunGCMC:
