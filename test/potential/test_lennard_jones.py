@@ -23,6 +23,7 @@ from kups.potential.classical.lennard_jones import (
     global_lennard_jones_tail_correction_energy,
     global_lennard_jones_tail_correction_pressure,
     lennard_jones_energy,
+    lennard_jones_pair_kernel,
     make_global_lennard_jones_tail_correction_pressure,
     pair_tail_corrected_lennard_jones_energy,
 )
@@ -312,6 +313,32 @@ class TestLennardJonesEnergy:
         assert jnp.all(jnp.isfinite(grad_epsilon))
         assert jnp.any(jnp.abs(grad_sigma) > 1e-10)
         assert jnp.any(jnp.abs(grad_epsilon) > 1e-10)
+
+    def test_pair_kernel_broadcast_queries_match_pair_gather(self):
+        """Few query rows against many keys select the same mixing entries."""
+        labels = ("A", "B", "C")
+        # Asymmetric tables expose swapped row and column selection.
+        params = LennardJonesParameters(
+            labels=labels,
+            sigma=jnp.linspace(2.8, 3.6, 9).reshape(3, 3),
+            epsilon=jnp.linspace(20.0, 80.0, 9).reshape(3, 3),
+            cutoff=_cutoff(12.0),
+        )
+        species_i = jnp.array([[2], [0]])
+        species_j = jnp.array([[0, 1, 2, 2, 1, 0, 1, 2, 0]])
+        r2 = jnp.linspace(9.0, 20.0, 18).reshape(2, 9)
+        energy = lennard_jones_pair_kernel(
+            params,
+            Index(labels, species_i),
+            Index(labels, species_j),
+            jnp.zeros((*r2.shape, 3)),
+            r2,
+            Index((SystemId(0),), jnp.zeros(2, int)),
+        )
+        sigma = params.sigma[species_i, species_j]
+        c6 = (sigma**2 / r2) ** 3
+        expected = 4 * params.epsilon[species_i, species_j] * (c6**2 - c6)
+        npt.assert_allclose(energy, expected, rtol=1e-12)
 
 
 class TestPairTailCorrectedLennardJonesEnergy:
