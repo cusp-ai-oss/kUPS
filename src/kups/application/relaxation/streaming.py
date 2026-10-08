@@ -422,14 +422,16 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
             the returned ``reset`` applies its ``reset_layout`` to refilled
             slots.
         gradient: Relaxation filter selecting the optimizer DOFs.
-        slots: Particle rows reserved for each slot, e.g. by
+        slots: Disjoint particle rows reserved for each slot, e.g. by
             [reserve_slots][kups.core.stream.reserve_slots]; pass the same table
             to ``replace_slots``,
             [slot_payload_lens][kups.application.relaxation.streaming.slot_payload_lens]
             and
             [make_streaming_relax_state][kups.application.relaxation.streaming.make_streaming_relax_state].
         force_tolerance: A job converges once its largest DOF gradient norm is
-            below this.
+            below this. A non-finite gradient instead fails a runtime assertion
+            that has no fix (see
+            [converged_per_system][kups.relaxation.convergence.converged_per_system]).
         max_steps: Optimizer updates a job may take before it finishes
             unconverged.
         include_cell: Whether cell gradients count towards convergence.
@@ -442,7 +444,9 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
         optimizer state for ``replace_slots``.
 
     Raises:
-        ValueError: If ``max_steps`` or ``force_tolerance`` is negative.
+        ValueError: If ``max_steps`` or ``force_tolerance`` is negative, or if
+            ``slots`` is not two-dimensional or, when concrete, reserves a row
+            twice; see [slot_owners][kups.core.stream.slot_owners].
     """
     if max_steps < 0 or force_tolerance < 0:
         raise ValueError("max_steps and force_tolerance must be non-negative.")
