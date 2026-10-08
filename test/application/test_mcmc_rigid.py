@@ -1159,6 +1159,21 @@ class TestRunNVT:
         _, out_file = run_result
         _assert_readable(out_file)
 
+    def test_no_free_slots_without_insertions(self, run_result):
+        state, _ = run_result
+        # Without exchange moves no molecule can be inserted: buffers hold
+        # exactly the initial molecules.
+        assert len(state.groups) == 2
+        assert len(state.particles) == int(state.particles.occupation.sum())
+
+    def test_empty_host_keeps_one_slot_and_runs(self):
+        config = _config(exchange_prob=0.0, init_adsorbates=(0,))
+        state = init_state(jax.random.key(7), config)
+        assert len(state.groups) == 1
+        assert int(state.groups.occupation.sum()) == 0
+        final = run(config)
+        assert int(final.groups.data.system.counts.data[0]) == 0
+
 
 class TestRunGCMC:
     """Grand-canonical (µVT) MCMC with insertions/deletions and initial loading."""

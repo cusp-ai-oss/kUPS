@@ -434,6 +434,13 @@ def init_state(key: Array, config: Config) -> MCMCState:
         f"{len(groups)} molecules, across {len(system)} systems."
     )
     max_adsorbates = estimate_max_adsorbates(particles, motifs, system)
+    if config.run.exchange_prob <= 0:
+        # Without insertions no free slots are needed, except one to keep an
+        # empty group buffer non-empty.
+        free = jnp.zeros_like(max_adsorbates.data)
+        if len(groups) == 0:
+            free = free.at[0].set(jnp.minimum(max_adsorbates.data[0], 1))
+        max_adsorbates = max_adsorbates.set_data(free)
     n_sys = len(system)
     lj_params = config.lj.make_parameters(
         particles.data.labels.keys + motifs.data.labels.keys
