@@ -217,33 +217,43 @@ def payload_from_structures(
     Each structure is padded to ``capacity`` rows, its labels are remapped into
     the fixed ``species`` vocabulary and its cell is wrapped in the relaxation
     frame with ``cell_factor = n_atoms``. Cells must be unbatched and lower
-    triangular, in the same coordinate frame as their particles. Plain frames
-    are promoted to TriclinicFrame so orthogonal and triclinic jobs can mix.
+    triangular, in the same coordinate frame as their particles. Each is
+    rebuilt by [Cell.from_pbc][kups.core.cell.Cell.from_pbc] on a
+    TriclinicFrame, so jobs whose cells differ only in frame type or cell class
+    can mix. All structures of a stream, its idle rows included, must share
+    periodicity.
 
     Raises:
         ValueError: If ``structures`` is empty or not as long as ``ordinals``,
-            or if a structure's cell is batched or not lower triangular, its
-            particles are not one complete system, it has more atoms than
-            ``capacity``, or it has a label outside ``species``.
+            ``species`` is not sorted and unique, or the structures do not
+            share periodicity; or if a structure's cell is batched or not lower
+            triangular, its particles are not one complete system, it has more
+            atoms than ``capacity``, or it has a label outside ``species``.
     """
     if not structures:
         raise ValueError("Need at least one structure to pack.")
     vocabulary = tuple(species)
+    if vocabulary != tuple(sorted(set(vocabulary))):
+        raise ValueError(
+            f"The species vocabulary {vocabulary} must be sorted and unique."
+        )
+    periodic = structures[0][1].periodic
     rows: list[RelaxPayload] = []
     for (particles, cell), ordinal in zip(structures, ordinals, strict=True):
         if cell.vectors.shape != (3, 3) or bool(
             jnp.any(jnp.triu(cell.vectors, 1) != 0)
         ):
             raise ValueError("Each structure requires one lower-triangular cell.")
+        if cell.periodic != periodic:
+            raise ValueError(
+                f"Structures must share periodicity: structure {ordinal} has "
+                f"{cell.periodic}, the first {periodic}."
+            )
         if particles.data.system.num_labels != 1 or not bool(
             jnp.all(particles.data.system.valid_mask)
         ):
             raise ValueError("Each structure must contain one complete system.")
-        cell = (
-            bind(cell)
-            .focus(lambda c: c.frame)
-            .set(TriclinicFrame.from_matrix(cell.vectors))
-        )
+        cell = Cell.from_pbc(TriclinicFrame.from_matrix(cell.vectors), cell.periodic)
         n = len(particles.keys)
         if n > capacity:
             raise ValueError(
