@@ -10,7 +10,12 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
-from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
+from kups.application.utils.propagate import (
+    make_cycle_function,
+    make_sampled_cycle_function,
+    run_sampled_cycles,
+    run_simulation_cycles,
+)
 from kups.core.assertion import runtime_assert
 from kups.core.data import Index, Table
 from kups.core.lens import bind
@@ -21,7 +26,7 @@ from kups.core.propagator import (
     SequentialPropagator,
     propagate_and_fix,
 )
-from kups.core.stream import RefillPropagator, reserve_slots, slot_owners
+from kups.core.stream import RefillGate, reserve_slots, slot_owners
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
 
@@ -77,6 +82,25 @@ def test_slot_owners_preserve_noncontiguous_keys_and_unreserved_rows(
     npt.assert_array_equal(owners[slots.data].indices, [[0, 0, 2], [1, 1, 2]])
 
 
+@pytest.mark.parametrize(
+    "indices,match",
+    [
+        ([[0, 1], [1, 2]], "disjoint"),
+        ([[0, 0], [1, 2]], "disjoint"),
+        ([0, 1, 2], "shape"),
+    ],
+)
+def test_slot_owners_reject_invalid_reservations(
+    indices: list[list[int]] | list[int], match: str
+) -> None:
+    slots = Table.arange(
+        Index.integer(jnp.array(indices), n=3, label=ParticleId, max_count=1),
+        label=SystemId,
+    )
+    with pytest.raises(ValueError, match=match):
+        slot_owners(slots)
+
+
 @dataclass
 class State:
     values: Array
@@ -107,7 +131,7 @@ def test_refill_and_capacity_repair_preserve_committed_state() -> None:
         runtime_assert(s.capacity >= 1, "capacity", fix_fn=grow, fix_args=jnp.array(1))
         return bind(s).focus(lambda x: x.values).apply(lambda values: values + 1)
 
-    gate: RefillPropagator[State] = RefillPropagator(lambda s: s.requested, refill)
+    gate: RefillGate[State] = RefillGate(lambda s: s.requested, refill)
     cycle = make_cycle_function(
         SequentialPropagator((gate, ResetOnErrorPropagator(advance)))
     )
@@ -144,7 +168,7 @@ def test_refill_is_serviced_once_per_host_cycle() -> None:
             .set((s.values + 1, s.requested.set_data(jnp.ones(1, bool))))
         )
 
-    gate: RefillPropagator[State] = RefillPropagator(lambda s: s.requested, refill)
+    gate: RefillGate[State] = RefillGate(lambda s: s.requested, refill)
     cycle = make_cycle_function(
         SequentialPropagator((gate, ResetOnErrorPropagator(advance)))
     )
@@ -186,7 +210,7 @@ def test_blocked_refill_preserves_progress_across_capacity_repair() -> None:
             .set((values, s.requested.set_data(values == 7)))
         )
 
-    gate: RefillPropagator[State] = RefillPropagator(lambda s: s.requested, refill)
+    gate: RefillGate[State] = RefillGate(lambda s: s.requested, refill)
     loop = LoopPropagator(
         ResetOnErrorPropagator(advance),
         lambda s: jnp.where(s.requested.data.any(), 0, 4),
@@ -238,7 +262,7 @@ def test_refill_logs_committed_cycles_not_repairs(
     cycle = make_cycle_function(
         SequentialPropagator(
             (
-                RefillPropagator(lambda s: s.requested, refill),
+                RefillGate(lambda s: s.requested, refill),
                 ResetOnErrorPropagator(advance),
             )
         )
@@ -272,7 +296,7 @@ def test_fatal_assertion_prevents_refill_side_effects() -> None:
     cycle = make_cycle_function(
         SequentialPropagator(
             (
-                RefillPropagator(lambda s: s.requested, refill),
+                RefillGate(lambda s: s.requested, refill),
                 ResetOnErrorPropagator(fail),
             )
         )
@@ -292,10 +316,61 @@ def test_raising_refill_aborts_without_retrying_callback() -> None:
         calls.append(1)
         raise ValueError("replacement rejected")
 
-    cycle = make_cycle_function(RefillPropagator(lambda s: s.requested, refill))
+    cycle = make_cycle_function(RefillGate(lambda s: s.requested, refill))
     initial = State(
         jnp.zeros(1), Table.arange(jnp.ones(1, bool), label=SystemId), jnp.array(1)
     )
     with pytest.raises(ValueError, match="replacement rejected"):
         propagate_and_fix(cycle, jax.random.key(0), initial)
     assert calls == [1]
+
+
+def test_refill_that_keeps_requests_exhausts_retries() -> None:
+    calls: list[int] = []
+
+    def refill(s: State, mask: Table[SystemId, Array]) -> State:
+        calls.append(1)
+        return s
+
+    cycle = make_cycle_function(RefillGate(lambda s: s.requested, refill))
+    initial = State(
+        jnp.zeros(1), Table.arange(jnp.ones(1, bool), label=SystemId), jnp.array(1)
+    )
+    with pytest.raises(RuntimeError, match="multiple attempts"):
+        propagate_and_fix(cycle, jax.random.key(0), initial, max_tries=3)
+    assert calls == [1, 1, 1]
+
+
+def test_refill_after_block_rollback_fails_fast() -> None:
+    calls: list[int] = []
+
+    def refill(s: State, mask: Table[SystemId, Array]) -> State:
+        calls.append(1)
+        return bind(s).focus(lambda x: x.requested).set(mask.set_data(~mask.data))
+
+    def advance(key: Array, s: State) -> State:
+        del key
+        values = s.values + 1
+        # Raise the request mid-block, at the third of four scanned cycles.
+        return (
+            bind(s)
+            .focus(lambda x: (x.values, x.requested))
+            .set((values, s.requested.set_data(values >= 3)))
+        )
+
+    gate: RefillGate[State] = RefillGate(lambda s: s.requested, refill)
+    cycle = make_sampled_cycle_function(
+        SequentialPropagator((gate, ResetOnErrorPropagator(advance))),
+        lambda s: s.values,
+    )
+    initial = State(
+        jnp.zeros(1, int),
+        Table.arange(jnp.zeros(1, bool), label=SystemId),
+        jnp.array(1),
+    )
+    # The block rolls back to its start, where no slot is flagged yet.
+    with pytest.raises(RuntimeError, match="rolled back"):
+        run_sampled_cycles(
+            jax.random.key(0), cycle, initial, 4, NullLogger(), cycles_per_call=4
+        )
+    assert calls == []
