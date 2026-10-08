@@ -336,8 +336,10 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
 
         ``excluded`` masks the slots of removed rows, ``(n_slots + 1,)``. Rows
         form consecutive ``phases`` (sizes). Near blocks of each phase are
-        compacted and gathered in batches of ``key_chunk_size`` slots. Each
-        active phase is traversed on its own and inactive ones skip.
+        compacted and gathered in batches of ``key_chunk_size`` slots.
+        When both phases of an old/new pair are active and their near blocks
+        fit one batch together, a single merged pass evaluates both; otherwise
+        each active phase is traversed on its own and inactive ones skip.
 
         Returns:
             Per-row energies, ``(n,)``.
@@ -378,7 +380,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                 return mask
             return jnp.any(jax.vmap(row)(jnp.arange(span.start, span.stop)), axis=0)
 
-        def traverse(span: slice, mask: Array) -> Array:
+        def traverse(span: slice, mask: Array, bounded: bool) -> Array:
             sub = jax.tree.map(lambda x: x[span], rows)
             matrix = geometry.matrix[span]
             blocks = compact_indices(mask, n_batches * batch)
@@ -395,7 +397,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                 return self._block_energies(inp, sub, keys, usable, matrix)
 
             total = evaluate(0)
-            if n_batches == 1:
+            if bounded or n_batches == 1:
                 return total
             zeros = jnp.zeros(span.stop - span.start, rows.frac.dtype)
             return total + jax.lax.cond(
@@ -412,18 +414,41 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         masks = [near(span) for span in spans]
         actives = [jnp.any(valid[span]) for span in spans]
 
-        return jnp.concatenate(
-            [
-                jax.lax.cond(
-                    active,
-                    lambda span=span, mask=mask: traverse(span, mask),
-                    lambda span=span: jnp.zeros(
-                        span.stop - span.start, rows.frac.dtype
-                    ),
-                )
-                for span, mask, active in zip(spans, masks, actives)
-            ]
+        def separate() -> Array:
+            return jnp.concatenate(
+                [
+                    jax.lax.cond(
+                        active,
+                        lambda span=span, mask=mask: traverse(span, mask, False),
+                        lambda span=span: jnp.zeros(
+                            span.stop - span.start, rows.frac.dtype
+                        ),
+                    )
+                    for span, mask, active in zip(spans, masks, actives)
+                ]
+            )
+
+        if len(spans) != 2:
+            return separate()
+        union = masks[0] | masks[1]
+        merge = actives[0] & actives[1] & (jnp.sum(union) <= batch)
+        zeros = [jnp.zeros(span.stop - span.start, rows.frac.dtype) for span in spans]
+        branches = [
+            lambda: jnp.concatenate(zeros),
+            lambda: jnp.concatenate([traverse(spans[0], masks[0], False), zeros[1]]),
+            lambda: jnp.concatenate([zeros[0], traverse(spans[1], masks[1], False)]),
+            lambda: jnp.concatenate(
+                [
+                    traverse(spans[0], masks[0], False),
+                    traverse(spans[1], masks[1], False),
+                ]
+            ),
+            lambda: traverse(slice(0, bounds[-1]), union, True),
+        ]
+        index = jnp.where(
+            merge, 4, actives[0].astype(jnp.int32) + 2 * actives[1].astype(jnp.int32)
         )
+        return jax.lax.switch(index, branches)
 
     def _local_blocks(
         self,
