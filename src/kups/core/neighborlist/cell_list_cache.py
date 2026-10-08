@@ -67,6 +67,15 @@ class CellListCacheParameters:
         key_block_size: Optional slots per spatial block. When set, slots are
             ordered by a spatial bisection tree at build time and each block
             keeps fractional bounds of its active rows, maintained on updates.
+            Local fused evaluations then skip blocks that are provably
+            beyond the cutoff of every query and gather only the remaining
+            blocks, in batches of ``key_chunk_size`` slots. Exact: skipped
+            pairs are outside the cutoff for the evaluated minimum image.
+            Culling applies only with ``key_layout="slots"``,
+            ``max_images_per_pair == 1`` and at most 64 query rows per
+            evaluation, summed over phases and systems
+            (``fused.MAX_DENSE_QUERY_ROWS``); otherwise the unculled
+            traversal runs and the bounds are maintained unused.
     """
 
     chunk_size: int = field(static=True, default=32)

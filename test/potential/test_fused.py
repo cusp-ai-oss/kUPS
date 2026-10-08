@@ -694,6 +694,7 @@ class TestPeriodicImages:
         periodic: AnyPeriodicity = (True, True, True),
         key_layout: _KeyLayout = "cells",
         key_chunk_size: int | None = None,
+        key_block_size: int | None = None,
     ):
         state = _make_state(jax.random.key(91), (6, 5), (4.0, 10.0), n_inactive=1)
         vectors = jnp.array(
@@ -736,6 +737,7 @@ class TestPeriodicImages:
             key_layout=key_layout,
             key_chunk_size=key_chunk_size,
         )
+        layout = dataclasses.replace(layout, key_block_size=key_block_size)
         return state, params, FusedNeighborEnergy(pair, layout)
 
     @staticmethod
@@ -827,13 +829,24 @@ class TestPeriodicImages:
         npt.assert_allclose(actual, [expected], rtol=1e-10, atol=1e-12)
 
     @pytest.mark.parametrize(
-        "key_layout,key_chunk_size", [("cells", None), ("cells", 2), ("slots", 4)]
+        "key_layout,key_chunk_size,key_block_size",
+        [
+            ("cells", None, None),
+            ("cells", 2, None),
+            ("slots", 4, None),
+            ("slots", 4, 2),
+        ],
     )
     def test_persistent_updates_with_periodic_images(
-        self, key_layout: _KeyLayout, key_chunk_size: int | None
+        self,
+        key_layout: _KeyLayout,
+        key_chunk_size: int | None,
+        key_block_size: int | None,
     ):
         state, params, engine = self._setup(
-            key_layout=key_layout, key_chunk_size=key_chunk_size
+            key_layout=key_layout,
+            key_chunk_size=key_chunk_size,
+            key_block_size=key_block_size,
         )
         engine = dataclasses.replace(
             engine,
@@ -1907,3 +1920,149 @@ class TestSumChunks:
         empty = run(jnp.zeros(0))
         empty.raise_assertion()
         npt.assert_allclose(empty.value, 0.0)
+
+
+class TestBlockCulling:
+    @pytest.mark.parametrize("block_size,chunk_size", [(4, 16), (8, 64), (16, 4096)])
+    def test_local_deltas_match_unculled_traversal_in_skewed_cell(
+        self, block_size: int, chunk_size: int
+    ):
+        state = _make_state(jax.random.key(31), (300,), (1.0,), n_inactive=3)
+        vectors = 14.0 * jnp.array(
+            [[1.0, 0.0, 0.0], [0.5, 0.866, 0.0], [0.5, 0.289, 0.816]]
+        )
+        fractions = state.particles.data.positions
+        rows = _molecule_rows(state, 0)
+        # Keep the molecule compact in real space.
+        fractions = fractions.at[rows].set(fractions[rows[0]] + 0.02 * jnp.eye(3))
+        state = _with_points(state, positions=fractions @ vectors)
+        state = dataclasses.replace(
+            state,
+            systems=state.systems.set_data(
+                _System(Cell(TriclinicFrame.from_matrix(vectors[None]), (True,) * 3))
+            ),
+        )
+        lj = _lj_params(1, 4.0)
+        lj = dataclasses.replace(lj, sigma=lj.sigma * 0.5)
+        params = (lj, _ewald_params(1, 4.5))
+        pair: PairEnergySum[_PairParameters, _Points, Index[Label] | jax.Array] = (
+            _LJ_PAIR.with_parameters(lambda p: p[0])
+            + _EWALD_PAIR.with_parameters(lambda p: p[1])
+        )
+        layout = CellListCacheParameters.estimate(
+            state.particles,
+            state.systems,
+            pair.cutoffs(params),
+            chunk_size=4,
+            key_layout="slots",
+        )
+        assert layout.max_images_per_pair == 1
+        cloud = PointCloud(state.particles, state.systems)
+        engines = [
+            FusedNeighborEnergy(
+                pair,
+                dataclasses.replace(layout, key_block_size=size, key_chunk_size=chunk),
+                max_queries_per_system=3,
+            )
+            for size, chunk in ((None, None), (block_size, chunk_size))
+        ]
+        tables = [engine.build_cell_list_cache(params, cloud) for engine in engines]
+        assert tables[0].block_bounds is None and tables[1].block_bounds is not None
+        old = state.particles.subset(Index(state.particles.keys, rows))
+        for key in jax.random.split(jax.random.key(32), 8):
+            shift = jax.random.uniform(key, (1, 3), minval=-9.0, maxval=9.0)
+            move = _move(state, rows, state.particles.data.positions[rows] + shift)
+            new = Table(old.keys, move.data, _cls=old.cls)
+            energies = [
+                engine(
+                    FusedLocalInput(params, cloud, (old, new), move.indices, table)
+                ).data.data
+                for engine, table in zip(engines, tables)
+            ]
+            npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)
+
+    def test_batched_systems_match_unculled_traversal(self):
+        # Nine moved rows per system give 18-row phases, and one shared inclusion
+        # id leaves only the system mask between the two cells.
+        state = _make_state(jax.random.key(33), (120, 60), (16.0, 11.0), n_inactive=2)
+        p = state.particles.data
+        inclusion = Index(p.inclusion.keys, jnp.where(p.inclusion.valid_mask, 0, 2))
+        state = _with_points(state, inclusion=inclusion)
+        params = _lj_params(2, 4.0)
+        layout = CellListCacheParameters.estimate(
+            state.particles,
+            state.systems,
+            _LJ_PAIR.cutoffs(params),
+            chunk_size=4,
+            key_layout="slots",
+        )
+        assert layout.max_images_per_pair == 1
+        cloud = PointCloud(state.particles, state.systems)
+        engines = [
+            FusedNeighborEnergy(
+                _LJ_PAIR,
+                dataclasses.replace(layout, key_block_size=size, key_chunk_size=chunk),
+                max_queries_per_system=9,
+            )
+            for size, chunk in ((None, None), (4, 16))
+        ]
+        tables = [engine.build_cell_list_cache(params, cloud) for engine in engines]
+        evaluate = [
+            jax.jit(lambda inp, engine=engine: engine(inp).data.data)
+            for engine in engines
+        ]
+        rng = np.random.default_rng(34)
+        rows = jnp.asarray(
+            np.concatenate([rng.choice(120, 9, False), 122 + rng.choice(60, 9, False)])
+        )
+        old = state.particles.subset(Index(state.particles.keys, rows))
+        for key in jax.random.split(jax.random.key(35), 2):
+            shift = jax.random.uniform(key, (18, 3), minval=-3.0, maxval=3.0)
+            move = _move(state, rows, state.particles.data.positions[rows] + shift)
+            data = dataclasses.replace(move.data, inclusion=inclusion[rows])
+            new = Table(old.keys, data, _cls=old.cls)
+            energies = [
+                f(FusedLocalInput(params, cloud, (old, new), move.indices, table))
+                for f, table in zip(evaluate, tables)
+            ]
+            npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)
+
+    def test_mixed_precision_matches_unculled_traversal(self):
+        # float32 geometry with float64 parameters (x64 is on in tests) yields
+        # float64 energies.
+        state = _make_state(jax.random.key(36), (60,), (12.0,))
+        state = _with_points(
+            state, positions=state.particles.data.positions.astype(jnp.float32)
+        )
+        frame = TriclinicFrame.from_matrix(jnp.eye(3, dtype=jnp.float32)[None] * 12)
+        state = dataclasses.replace(
+            state, systems=state.systems.set_data(_System(Cell(frame, (True,) * 3)))
+        )
+        params = _lj_params(1, 4.0)
+        layout = CellListCacheParameters.estimate(
+            state.particles,
+            state.systems,
+            _LJ_PAIR.cutoffs(params),
+            chunk_size=4,
+            key_layout="slots",
+        )
+        cloud = PointCloud(state.particles, state.systems)
+        rows = _molecule_rows(state, 0)
+        old = state.particles.subset(Index(state.particles.keys, rows))
+        move = _move(state, rows, state.particles.data.positions[rows] + 1.5)
+        new = Table(old.keys, move.data, _cls=old.cls)
+        energies = []
+        for size, chunk in ((None, None), (4, 8)):
+            engine = FusedNeighborEnergy(
+                _LJ_PAIR,
+                dataclasses.replace(layout, key_block_size=size, key_chunk_size=chunk),
+                max_queries_per_system=3,
+            )
+            table = engine.build_cell_list_cache(params, cloud)
+            energies.append(
+                engine(
+                    FusedLocalInput(params, cloud, (old, new), move.indices, table)
+                ).data.data
+            )
+        assert energies[1].dtype == jnp.float64
+        npt.assert_allclose(energies[1], energies[0], rtol=1e-6)
