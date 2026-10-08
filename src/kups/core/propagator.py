@@ -40,15 +40,14 @@ from kups.core.result import Result, as_result_function
 from kups.core.schedule import IncrementSchedule, Schedule, Scheduler
 from kups.core.typing import SystemId
 from kups.core.utils.jax import (
+    PyTreeDef,
     dataclass,
     field,
     jit,
     key_chain,
-    tree_map,
     tree_structure,
     tree_where_broadcast_last,
 )
-from kups.core.utils.ops import select_n
 
 
 class StateProperty[State, Property](Protocol):
@@ -264,6 +263,23 @@ def propose_mixed[State, Changes](
     return selected, log_ratio, which
 
 
+def _cond_or_zeros[S, R](pred: Array, fn: Callable[[S], R], operand: S) -> R:
+    """Return ``fn(operand)`` unless ``pred``, else zeros shaped like its output."""
+
+    def zeros(x: S) -> R:
+        treedefs: list[PyTreeDef[R]] = []
+
+        def flat(y: S) -> list[Array]:
+            out = fn(y)
+            treedefs.append(tree_structure(out))
+            return jax.tree.leaves(out)
+
+        specs = jax.eval_shape(flat, x)
+        return treedefs[0].unflatten([jnp.zeros(s.shape, s.dtype) for s in specs])
+
+    return jax.lax.cond(pred, zeros, fn, operand)
+
+
 class LogProbabilityRatioFn[State, Move: Patch[Any]](Protocol):
     """Protocol for computing target density ratios.
 
@@ -291,9 +307,11 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
         weights: Selection probabilities per move (unnormalized). None for uniform.
         is_noop: Optional scalar predicate over ``(state, changes)``. True
             certifies that both patches leave the entire state unchanged and
-            the target log probability ratio is zero. Their evaluation is then
-            skipped; proposal acceptance and scheduling still run. Proposal log
-            ratios must cover every acceptance system when using this option.
+            the target log probability ratio is zero. Their density evaluation
+            is then skipped and their patch applied with an all-false mask;
+            proposal acceptance and scheduling still run. ``patch_fn`` must
+            accept such proposals, and proposal log ratios must cover every
+            acceptance system when using this option.
 
     The predicate applies to the whole batch. Under an outer ``vmap``, JAX may
     evaluate both conditional branches, so this does not guarantee a speedup.
@@ -333,29 +351,53 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
                     jax.random.uniform(accept_key, (len(log_ratio),))
                 )
 
-            def evaluate(current: State) -> tuple[State, Accept]:
-                patch = self.patch_fn(patch_key, current, changes)
-                density = self.log_probability_ratio_fn(current, patch)
-                accept = accept_ratio(move_log_ratio + density.data)
-                updated = patch(current, accept)
-                return density.patch(updated, accept), accept
-
+            patch = self.patch_fn(patch_key, state, changes)
             if self.is_noop is None:
-                new_state, accept = evaluate(state)
+                density = self.log_probability_ratio_fn(state, patch)
+                apply = accept = accept_ratio(move_log_ratio + density.data)
             else:
-                # Preserve random choices and scheduler updates for empty moves.
-                new_state, accept = jax.lax.cond(
-                    self.is_noop(state, changes),
-                    lambda current: (current, accept_ratio(move_log_ratio)),
-                    evaluate,
-                    state,
+                noop = self.is_noop(state, changes)
+                density = _cond_or_zeros(
+                    noop, lambda s: self.log_probability_ratio_fn(s, patch), state
                 )
+                accept = accept_ratio(move_log_ratio + density.data)
+                apply = accept.set_data(accept.data & ~noop)
+            new_state = density.patch(patch(state, apply), apply)
 
             # Selectively update only the chosen scheduler
-            candidates = tuple(
-                sched(new_state, accept) for sched in self.parameter_schedulers
-            )
-        return tree_map(lambda *cs: select_n(which, *cs), *candidates)
+            return _apply_selected(which, self.parameter_schedulers, new_state, accept)
+
+
+def _apply_selected[S, I](
+    which: Array, schedulers: tuple[Scheduler[S, I], ...], state: S, input: I
+) -> S:
+    """Apply only ``schedulers[which]``, switching over the leaves any one changes."""
+    if len(schedulers) == 1:
+        return schedulers[0](state, input)
+    leaves, treedef = jax.tree.flatten(state)
+    candidates = [treedef.flatten_up_to(sched(state, input)) for sched in schedulers]
+    changed = [
+        i for i, leaf in enumerate(leaves) if any(c[i] is not leaf for c in candidates)
+    ]
+
+    def with_changed(values: list[Array]) -> S:
+        out = list(leaves)
+        for i, value in zip(changed, values):
+            out[i] = value
+        return treedef.unflatten(out)
+
+    def branch(sched: Scheduler[S, I]) -> Callable[[list[Array]], list[Array]]:
+        def run(values: list[Array]) -> list[Array]:
+            out = treedef.flatten_up_to(sched(with_changed(values), input))
+            return [out[i] for i in changed]
+
+        return run
+
+    return with_changed(
+        jax.lax.switch(
+            which, [branch(sched) for sched in schedulers], [leaves[i] for i in changed]
+        )
+    )
 
 
 @dataclass
