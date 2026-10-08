@@ -350,9 +350,11 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
 
         ``excluded`` masks the slots of removed rows, ``(n_slots + 1,)``. Rows
         form consecutive ``phases`` (sizes). Near blocks of each phase are
-        compacted and gathered in batches of ``key_chunk_size`` slots. Each
-        active phase is traversed on its own and inactive ones skip. ``dtype``
-        is the energy dtype.
+        compacted and gathered in batches of ``key_chunk_size`` slots.
+        When both phases of an old/new pair are active and their near blocks
+        fit one batch together, a single merged pass evaluates both; otherwise
+        each active phase is traversed on its own and inactive ones skip.
+        ``dtype`` is the energy dtype.
 
         Returns:
             Per-row energies, ``(n,)``.
@@ -426,15 +428,24 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         masks = [near(span) for span in spans]
         actives = [jnp.any(valid[span]) for span in spans]
 
-        return jnp.concatenate(
-            [
-                jax.lax.cond(
-                    active,
-                    lambda span=span, mask=mask: traverse(span, mask),
-                    lambda span=span: jnp.zeros(span.stop - span.start, dtype),
-                )
-                for span, mask, active in zip(spans, masks, actives)
-            ]
+        def separate() -> Array:
+            return jnp.concatenate(
+                [
+                    jax.lax.cond(
+                        active,
+                        lambda span=span, mask=mask: traverse(span, mask),
+                        lambda span=span: jnp.zeros(span.stop - span.start, dtype),
+                    )
+                    for span, mask, active in zip(spans, masks, actives)
+                ]
+            )
+
+        if len(spans) != 2:
+            return separate()
+        union = masks[0] | masks[1]
+        merge = actives[0] & actives[1] & (jnp.sum(union) <= batch)
+        return jax.lax.cond(
+            merge, lambda: traverse(slice(0, ends[-1]), union), separate
         )
 
     def _local_blocks(

@@ -1923,7 +1923,12 @@ class TestSumChunks:
 
 
 class TestBlockCulling:
-    @pytest.mark.parametrize("block_size,chunk_size", [(4, 16), (8, 64), (16, 4096)])
+    # At block size 4, both phases fit 224-slot batches while their union does
+    # not, 264 slots miss the union by one, and 4096 always merge.
+    @pytest.mark.parametrize(
+        "block_size,chunk_size",
+        [(4, 16), (8, 64), (16, 4096), (4, 224), (4, 264), (4, 4096)],
+    )
     def test_local_deltas_match_unculled_traversal_in_skewed_cell(
         self, block_size: int, chunk_size: int
     ):
@@ -1968,18 +1973,31 @@ class TestBlockCulling:
         ]
         tables = [engine.build_cell_list_cache(params, cloud) for engine in engines]
         assert tables[0].block_bounds is None and tables[1].block_bounds is not None
+        evaluate = [
+            jax.jit(lambda inp, engine=engine: engine(inp).data.data)
+            for engine in engines
+        ]
         old = state.particles.subset(Index(state.particles.keys, rows))
+        inclusion = old.data.inclusion
+        padding = Index(
+            inclusion.keys,
+            jnp.where(jnp.arange(3) < 2, inclusion.indices, inclusion.num_labels),
+        )
+
+        def pad(table: Table[ParticleId, _Points]) -> Table[ParticleId, _Points]:
+            return table.map_data(lambda p: dataclasses.replace(p, inclusion=padding))
+
         for key in jax.random.split(jax.random.key(32), 8):
             shift = jax.random.uniform(key, (1, 3), minval=-9.0, maxval=9.0)
             move = _move(state, rows, state.particles.data.positions[rows] + shift)
             new = Table(old.keys, move.data, _cls=old.cls)
-            energies = [
-                engine(
-                    FusedLocalInput(params, cloud, (old, new), move.indices, table)
-                ).data.data
-                for engine, table in zip(engines, tables)
-            ]
-            npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)
+            # Each move also with a padding row in both phases.
+            for queries in ((old, new), (pad(old), pad(new))):
+                energies = [
+                    f(FusedLocalInput(params, cloud, queries, move.indices, table))
+                    for f, table in zip(evaluate, tables)
+                ]
+                npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)
 
     def test_batched_systems_match_unculled_traversal(self):
         # Nine moved rows per system give 18-row phases, and one shared inclusion
