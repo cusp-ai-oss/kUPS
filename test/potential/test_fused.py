@@ -32,6 +32,7 @@ from kups.core.neighborlist.cell_list_cache import (
     CellListCache,
     CellListCacheParameters,
     block_bounds,
+    near_blocks,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.patch import Accept, Probe
@@ -1906,3 +1907,48 @@ class TestSumChunks:
         empty = run(jnp.zeros(0))
         empty.raise_assertion()
         npt.assert_allclose(empty.value, 0.0)
+
+
+class TestBlockCulling:
+    @pytest.mark.parametrize(
+        "periodic", [(True, True, True), (False, True, True), (False, False, False)]
+    )
+    def test_skipped_blocks_are_beyond_the_cutoff(self, periodic):
+        rng = np.random.default_rng(5)
+        matrix = np.array([[8.0, 0.0, 0.0], [4.0, 7.0, 0.0], [3.5, -2.0, 6.5]])
+        wraps = np.asarray(periodic)
+        # Compact blocks around random centers, some crossing periodic faces.
+        centers = rng.random((60, 1, 3)) * 1.2 - 0.1
+        keys = centers + (rng.random((60, 6, 3)) - 0.5) * rng.random((60, 1, 1)) * 0.6
+        keys = np.where(wraps, keys % 1.0, keys)
+        queries = rng.random((9, 3)) * 1.2 - 0.1
+        queries = np.where(wraps, queries % 1.0, queries)
+        lower = np.concatenate([keys.min(1), np.full((1, 3), np.inf)]).T
+        upper = np.concatenate([keys.max(1), np.full((1, 3), -np.inf)]).T
+        perpendicular = 1 / np.linalg.norm(np.linalg.inv(matrix), axis=0)
+        delta = keys[None] - queries[:, None, None]
+        delta = delta - np.where(wraps, np.round(delta), 0.0)
+        distances = np.linalg.norm(delta @ matrix, axis=-1).min(-1)
+        skipped = 0
+        for cutoff in (1.5, 3.0, 4.5):
+            near = np.stack(
+                [
+                    np.asarray(
+                        near_blocks(
+                            jnp.asarray(query),
+                            jnp.asarray(lower),
+                            jnp.asarray(upper),
+                            jnp.asarray(matrix),
+                            jnp.asarray(perpendicular),
+                            jnp.asarray(cutoff),
+                            periodic,
+                        )
+                    )
+                    for query in queries
+                ]
+            )
+            assert not near[:, -1].any()
+            assert np.all(near[:, :-1] | (distances >= cutoff))
+            skipped += (~near[:, :-1]).sum()
+        # The bounds are informative: many far blocks are skipped.
+        assert skipped > 0.3 * sum((distances >= c).sum() for c in (1.5, 3.0, 4.5))

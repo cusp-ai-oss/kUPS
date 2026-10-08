@@ -532,6 +532,91 @@ def spatial_order(
     return perm[:n]
 
 
+def compact_indices(mask: Array, size: int) -> Array:
+    """Indices of the True entries in order, padded with ``len(mask)``.
+
+    Equivalent to ``jnp.nonzero(mask, size=size, fill_value=len(mask))[0]``
+    for ``size >= mask.sum()``; the prefix sum uses blocked triangular
+    products.
+    """
+    n = mask.shape[0]
+    width = min(32, max(n, 1))
+    padded = jnp.pad(mask, (0, -n % width)).reshape(-1, width)
+    inner = padded.astype(jnp.float32) @ jnp.triu(jnp.ones((width, width), jnp.float32))
+    totals = inner[:, -1]
+    rows = totals.shape[0]
+    offsets = jnp.tril(jnp.ones((rows, rows), jnp.float32), -1) @ totals
+    position = (inner + offsets[:, None]).reshape(-1)[:n].astype(jnp.int32) - 1
+    return (
+        jnp.full(size, n, jnp.int32)
+        .at[jnp.where(mask, position, size)]
+        .set(jnp.arange(n, dtype=jnp.int32), mode="drop")
+    )
+
+
+def near_blocks(
+    frac: Array,
+    lower: Array,
+    upper: Array,
+    matrix: Array,
+    perpendicular: Array,
+    cutoff: Array,
+    periodic: tuple[bool, bool, bool],
+) -> Array:
+    """Blocks that may hold a key within the cutoff of one query.
+
+    Pairs use the shift ``round(key - query)`` on periodic axes, so each
+    fractional separation lies in ``[lower - query, upper - query]`` before
+    wrapping. A block is skipped if either bound reaches the cutoff for every
+    evaluated pair: the wrapped separation along an axis times the
+    perpendicular width, or, when no axis can wrap ambiguously, the
+    projection of the separation box onto the direction of its center.
+
+    Args:
+        frac: Query fractional coordinates, ``(3,)``.
+        lower: Block lower fractional bounds, ``(3, b)`` (``+inf`` if empty).
+        upper: Block upper fractional bounds, ``(3, b)`` (``-inf`` if empty).
+        matrix: Lattice vectors as rows, ``(3, 3)``.
+        perpendicular: Perpendicular cell widths, ``(3,)``.
+        cutoff: Cutoff, including any tolerance, scalar.
+        periodic: Static periodicity per axis.
+
+    Returns:
+        ``(b,)`` mask, False only for blocks provably beyond the cutoff.
+    """
+    centers: list[Array] = []
+    halves: list[Array] = []
+    beyond: list[Array] = []
+    wraps: list[Array] = []
+    for axis in range(3):
+        center = (lower[axis] + upper[axis]) * 0.5 - frac[axis]
+        half = (upper[axis] - lower[axis]) * 0.5
+        if periodic[axis]:
+            center = center - jnp.round(center)
+            magnitude = jnp.abs(center)
+            gap = jnp.minimum(magnitude - half, 1.0 - magnitude - half)
+            # Margin: roundoff must not hide a half-integer inside the box.
+            wraps.append(magnitude + half >= 0.5 - 1e-12)
+        else:
+            gap = jnp.abs(center) - half
+        beyond.append(gap * perpendicular[axis] >= cutoff)
+        centers.append(center)
+        halves.append(half)
+    v = [sum(centers[a] * matrix[a, j] for a in range(3)) for j in range(3)]
+    distance2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
+    support = sum(
+        halves[a] * jnp.abs(sum(matrix[a, j] * v[j] for j in range(3)))
+        for a in range(3)
+    )
+    # |v| - support / |v| >= cutoff, without square roots or divisions.
+    excess = distance2 - support
+    projected = (excess >= 0) & (excess * excess >= cutoff * cutoff * distance2)
+    for w in wraps:
+        projected &= ~w
+    far = beyond[0] | beyond[1] | beyond[2]
+    return ~(far | projected) & (lower[0] <= upper[0])
+
+
 def build_cell_list_cache[Data](
     particles: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
