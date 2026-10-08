@@ -291,6 +291,39 @@ def test_streamed_updates_match_fresh_single_structure_runs(
         )
 
 
+@pytest.mark.parametrize("optimizer", ["fire", "lbfgs"])
+def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
+    # The unrattled crystal (ordinal 1) is converged on its first evaluation, so
+    # its slot is refilled while ordinal 0 is still relaxing in the other slot.
+    crystal, cell, _ = particles_from_ase(
+        ase.build.bulk("Ar", "fcc", a=5.3, cubic=True)
+    )
+    structures = _structures()
+    structures.insert(1, (crystal, cell))
+    max_steps, tolerance = 3, 1e-6
+    rows, _ = _run(
+        structures, max_steps=max_steps, tolerance=tolerance, optimizer=optimizer
+    )
+    assert sorted(int(row.ordinal[0]) for row in rows) == [0, 1, 2, 3]
+    assert int(rows[0].ordinal[0]) == 1  # collected while ordinal 0 relaxes
+    for row in rows:
+        ordinal = int(row.ordinal[0])
+        assert int(row.step[0]) == (0 if ordinal == 1 else max_steps)
+        alone, _ = _run(
+            [structures[ordinal]],
+            slots=1,
+            max_steps=max_steps,
+            tolerance=tolerance,
+            optimizer=optimizer,
+        )
+        npt.assert_allclose(
+            row.particles.positions, alone[0].particles.positions, atol=1e-12
+        )
+        npt.assert_allclose(
+            row.position_gradients, alone[0].position_gradients, atol=1e-12
+        )
+
+
 def test_pack_rejects_unknown_species_and_oversized_structures() -> None:
     structure = _structures()[0]
     with pytest.raises(ValueError, match="species vocabulary"):
