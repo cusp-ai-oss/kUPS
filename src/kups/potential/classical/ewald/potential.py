@@ -10,6 +10,7 @@ include every current particle.
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 import jax
@@ -209,6 +210,10 @@ class EwaldLongRangeInput[State]:
     cache: EwaldCache[Any, Any] | None = None
     cache_lens: Lens[State, EwaldCache[Any, Any]] | None = None
     changes_from_prev: WithIndices[ParticleId, IsEwaldPointData] | None = None
+    changed_rows: IsEwaldPointData | None = None
+    net_charge: Array | None = None
+    """Optional current values of the changed rows and per-system net charges
+    for energy-only evaluation; derivatives use ``point_cloud``."""
 
     @property
     def volume(self) -> Array:
@@ -359,23 +364,34 @@ def _changed_particle_rows(
     charges: Array,
     batch_mask: Index[SystemId],
     previous: WithIndices[ParticleId, IsEwaldPointData],
+    current: IsEwaldPointData | None = None,
 ) -> tuple[Array, Array, Index[SystemId]]:
-    """Pair changed current rows with negated previous charges; drop invalid probes."""
+    """Pair changed current rows with negated previous charges; drop invalid probes.
+
+    ``current`` holds the current values of the changed rows; when omitted
+    they are gathered from ``positions``, ``charges`` and ``batch_mask``.
+    """
     idx = previous.indices.indices
     valid = (idx >= 0) & (idx < len(positions))
     idx = jnp.where(valid, idx, len(positions))
-    positions = jnp.concatenate(
-        (positions.at[idx].get(mode="fill", fill_value=0), previous.data.positions)
-    )
-    charges = jnp.concatenate(
-        (charges.at[idx].get(mode="fill", fill_value=0), -previous.data.charges)
-    )
     ns = batch_mask.num_labels
+    if current is None:
+        new_positions = positions.at[idx].get(mode="fill", fill_value=0)
+        new_charges = charges.at[idx].get(mode="fill", fill_value=0)
+        new_system = batch_mask.indices.at[idx].get(mode="fill", fill_value=ns)
+    else:
+        new_positions = jnp.where(valid[:, None], current.positions, 0)
+        new_charges = jnp.where(valid, current.charges, 0)
+        new_system = jnp.where(
+            valid, current.system.indices_in(batch_mask.keys, allow_missing=True), ns
+        )
+    positions = jnp.concatenate((new_positions, previous.data.positions))
+    charges = jnp.concatenate((new_charges, -previous.data.charges))
     # Reciprocal inputs also use negative system ids for inactive particles.
     previous_system = previous.data.system.apply_mask(previous.data.system.indices >= 0)
     system_ids = jnp.concatenate(
         (
-            batch_mask.indices.at[idx].get(mode="fill", fill_value=ns),
+            new_system,
             jnp.where(
                 valid,
                 previous_system.indices_in(batch_mask.keys, allow_missing=True),
@@ -442,17 +458,18 @@ def _structure_factor_delta(
     particle_chunk_size: int,
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
-    changes: WithIndices[ParticleId, IsEwaldPointData],
+    changes: tuple[WithIndices[ParticleId, IsEwaldPointData], IsEwaldPointData | None],
 ) -> Array:
     """Signed new-minus-old S(k) contribution of the changed particles.
 
-    ``changes`` holds the previous values of the changed rows.
+    ``changes`` holds the previous rows and, optionally, their current values.
 
     Changes to cells or reciprocal parameters require a full evaluation. The
     tangent is that of the full structure factor, since the cache is constant.
     """
+    previous, current = changes
     positions, charges, batch_mask = _changed_particle_rows(
-        positions, charges, batch_mask, changes
+        positions, charges, batch_mask, previous, current
     )
     return _structure_factor_full(
         positions,
@@ -543,7 +560,7 @@ def _structure_factor_delta_jvp(
     particle_chunk_size: int,
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
-    changes: WithIndices[ParticleId, IsEwaldPointData],
+    changes: tuple[WithIndices[ParticleId, IsEwaldPointData], IsEwaldPointData | None],
     primals: tuple[Array, Array, Array, Array],
     tangents: tuple[Array, Array, Array, Array],
 ) -> tuple[Array, Array]:
@@ -626,7 +643,7 @@ def structure_factor_delta(inp: EwaldLongRangeInput[Any]) -> Array:
         previous.data,
     )
     primals, static = _structure_factor_args(inp)
-    return _structure_factor_delta(*primals, *static, previous)
+    return _structure_factor_delta(*primals, *static, (previous, inp.changed_rows))
 
 
 def structure_factor[State](
@@ -670,14 +687,16 @@ def ewald_net_charge_energy(inp: EwaldLongRangeInput[Any]) -> Table[SystemId, En
     Returns:
         Table of per-system neutralizing-background energies in eV.
     """
-    particles = inp.point_cloud.particles.data
     sys_idx = inp.point_cloud.systems.index
-    net_charge = segment_sum(
-        particles.charges,
-        particles.system.indices,
-        inp.point_cloud.batch_size,
-        mode="drop",
-    )
+    net_charge = inp.net_charge
+    if net_charge is None:
+        particles = inp.point_cloud.particles.data
+        net_charge = segment_sum(
+            particles.charges,
+            particles.system.indices,
+            inp.point_cloud.batch_size,
+            mode="drop",
+        )
     alpha = inp.parameters.alpha[sys_idx]
     energies = -jnp.pi / (2 * inp.volume * alpha**2) * net_charge**2 * TO_STANDARD_UNITS
     return Table.arange(energies, label=SystemId)
@@ -729,6 +748,9 @@ class EwaldLongRangeComposer[
     )
     parameters: View[State, EwaldParameters] = field(static=True)
     cache: Lens[State, EwaldCache[Any, Any]] | None = field(static=True)
+    net_charge: Callable[[State, Ptch | None], Array] | None = field(
+        static=True, default=None
+    )
 
     def __call__(
         self, state: State, patch: Ptch | None
@@ -744,9 +766,12 @@ class EwaldLongRangeComposer[
         """
         particles = self.particles(state)
         previous = None
+        current = None
         if patch is not None and self.probe is not None:
             updates = self.probe(state, patch)
             previous = WithIndices(updates.indices, particles[updates.indices])
+            current = updates.data
+            # Only derivatives read the patched particles.
             particles = particles.update(updates.indices, updates.data)
         inp = EwaldLongRangeInput(
             PointCloud(particles, self.systems(state)),
@@ -754,6 +779,8 @@ class EwaldLongRangeComposer[
             self.cache.get(state) if self.cache else None,
             self.cache,
             previous,
+            current,
+            self.net_charge(state, patch) if self.net_charge is not None else None,
         )
         return Sum(Summand(inp))
 
@@ -859,6 +886,7 @@ def make_ewald_long_range_potential[
     hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
     hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
     patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
+    net_charge: Callable[[State, Ptch | None], Array] | None = None,
 ) -> Potential[State, Gradients, Hessians, Ptch]:
     """Create the Ewald reciprocal-space (long-range) potential.
 
@@ -872,6 +900,8 @@ def make_ewald_long_range_potential[
         hessian_lens: Lens selecting gradient entries to differentiate again.
         hessian_idx_view: View supplying Hessian row and column indices.
         patch_idx_view: Optional view supplying indices for output-cache updates.
+        net_charge: Optional per-system net charge of the (proposed) state,
+            replacing the sum over all particle charges in energy-only use.
 
     Returns:
         Reciprocal potential with optional incremental structure-factor updates.
@@ -884,6 +914,7 @@ def make_ewald_long_range_potential[
             probe=probe,
             parameters=parameter_lens,
             cache=cache_lens,
+            net_charge=net_charge,
         ),
         gradient_lens=lens(lambda x: x.point_cloud).nest(gradient_lens),
         hessian_lens=hessian_lens,
@@ -1198,11 +1229,28 @@ def make_ewald_potential[
     )
     lr_systems = systems_view
     lr_parameters: View[State, EwaldParameters] = parameter_lens
+    lr_net_charge: Callable[[State, Ptch | None], Array] | None = None
     if composition is not None:
         initial = composition.initial_state
         # State buffers may be donated before this potential is traced again.
         lr_systems = constant(jax.tree.map(jnp.copy, systems_view(initial)))
         lr_parameters = constant(jax.tree.map(jnp.copy, parameter_lens(initial)))
+        gradients = gradient_lens(
+            PointCloud(particles_view(initial), systems_view(initial))
+        )
+        if not jax.tree.leaves(gradients):
+            # Net charges are linear in the rigid-body counts.
+            charge_coefficients = composition.sum_particles(
+                particles_view(initial).data.charges, composition.templates.charges
+            )
+            counts = composition.counts
+
+            def net_charge(state: State, patch: Ptch | None) -> Array:
+                return jnp.einsum(
+                    "gi,gi->g", counts(state, patch).data, charge_coefficients
+                )
+
+            lr_net_charge = net_charge
 
     lr_potential = make_ewald_long_range_potential(
         particles_view=atomic_view,
@@ -1214,6 +1262,7 @@ def make_ewald_potential[
         hessian_lens=hessian_lens,
         hessian_idx_view=hessian_idx_view,
         patch_idx_view=patch_idx_view,
+        net_charge=lr_net_charge,
     )
     self_potential = make_ewald_self_interaction_potential(
         particles_view=atomic_view,
