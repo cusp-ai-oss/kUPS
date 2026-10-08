@@ -57,6 +57,7 @@ from kups.relaxation.optimizer import (
     ChainOptState,
     ResettableChain,
     Stateless,
+    chain,
     resettable_chain,
 )
 from kups.relaxation.transforms import MaxStepSize, ScaleByAseLbfgs, ScaleByFire
@@ -309,6 +310,9 @@ def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
     for row in rows:
         ordinal = int(row.ordinal[0])
         assert int(row.step[0]) == (0 if ordinal == 1 else max_steps)
+        original = structures[ordinal][0].data.positions
+        moved = jnp.abs(row.particles.positions[0, : len(original)] - original).max()
+        assert bool(moved > 1e-3) == (ordinal != 1)  # stepped jobs really moved
         alone, _ = _run(
             [structures[ordinal]],
             slots=1,
@@ -385,15 +389,18 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
         payload_from_structures(structures[:1], CAPACITY, SPECIES, [0]),
         setup.idle,
     )
+    # Install slot 0 only; slot 1 keeps its pending request.
     state = replace_slots(
         WrappedState(setup.state, jnp.array(17)),
         payload,
-        setup.state.finished,
+        setup.state.finished.set_data(jnp.array([True, False])),
         state_lens=state_lens,
         slots=setup.slots,
         reset=reset,
     )
     assert_type(state, WrappedState)
+    npt.assert_array_equal(state.batch.slot_ordinal, [0, -1])
+    npt.assert_array_equal(state.batch.finished.data, [False, True])
     final = propagate_and_fix(make_cycle_function(step), jax.random.key(0), state)
     assert int(final.unrelated) == 17
     npt.assert_array_equal(final.batch.step, [1, 0])
@@ -449,6 +456,32 @@ def test_factory_preserves_native_optimizer_state_type() -> None:
     )
     assert_type(restored, ScaleByFireState)
     npt.assert_array_equal(restored.dt.data, initialized.dt.data)
+
+
+def _rejected_by_the_type_checker(setup: Setup) -> None:
+    """Never called: pyrefly in pre-commit fails if a call here type-checks.
+
+    A plain chain is not resettable, and the optimizer's state must be the
+    one the state lens holds.
+    """
+    make_streaming_relax_propagator(
+        identity_lens(StreamingRelaxState[ChainOptState]),
+        setup.potential,
+        chain(Stateless(optax.scale(-1.0))),  # pyrefly: ignore[bad-argument-type]
+        POSITIONS_ONLY,
+        setup.slots,
+        force_tolerance=0.0,
+        max_steps=3,
+    )
+    make_streaming_relax_propagator(
+        identity_lens(StreamingRelaxState[ChainOptState]),
+        setup.potential,
+        ScaleByFire[PositionsAndCell](),  # pyrefly: ignore[bad-argument-type]
+        POSITIONS_ONLY,
+        setup.slots,
+        force_tolerance=0.0,
+        max_steps=3,
+    )
 
 
 def test_noncontiguous_reservations_and_nondefault_keys() -> None:
