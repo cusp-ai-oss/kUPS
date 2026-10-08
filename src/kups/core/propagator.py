@@ -169,7 +169,7 @@ def propagate_and_fix[State](
         if not out.failed_assertions:
             return state
         state = out.fix_or_raise(state)
-    raise RuntimeError("Failed to resolve potential after multiple attempts")
+    raise RuntimeError("Failed to resolve runtime assertions after multiple attempts")
 
 
 def compose_propagators[S](*propagators: Propagator[S]) -> Propagator[S]:

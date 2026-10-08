@@ -108,9 +108,9 @@ class Result[State, Return]:
     def fix_or_raise(self, state: State) -> State:
         """Apply fixes for all failed assertions, raising for any without a fix function.
 
-        If all assertions pass, the state is returned unchanged. Otherwise each
-        failed assertion's fix function is applied in sequence. Assertions that
-        have no fix function registered will raise their configured exception.
+        If all assertions pass, the state is returned unchanged. Unfixable
+        assertions raise before any fixes run. Otherwise fixes are applied in
+        sequence; host-side effects are not rolled back if a fix raises.
 
         Args:
             state: Current simulation state to repair.
@@ -122,11 +122,19 @@ class Result[State, Return]:
             Exception: The configured exception of any failed assertion that has no fix function.
         """
         assertions = self.failed_assertions
-        if not assertions:
-            return state
-        logging.info("Fixing failed assertions.")
+        # Pass 1: refuse the whole cycle before any fix runs. Fixes may have
+        # host side effects (e.g. stream refill consumes input), so an
+        # unfixable assertion must raise before those effects happen.
         for assertion in assertions:
-            logging.info("\t" + str(assertion.exception))
+            if assertion.fix_fn is None:
+                raise assertion.exception
+        # Pass 2: apply fixes in order. Not transactional: if a fix raises,
+        # effects of earlier fixes are not rolled back.
+        for assertion in assertions:
+            # Building `exception` formats fmt_args, pulling device arrays to
+            # the host; skip that unless DEBUG is enabled.
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.debug("Applying assertion fix: %s", assertion.exception)
             state = assertion.fix(state)
         return state
 
