@@ -16,8 +16,8 @@ from jax.extend import source_info_util
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive
 from jax.interpreters import partial_eval as pe
 
+from kups.core.interpreter._compat import get_bind_params
 from kups.core.interpreter.environment import InterpreterEnvironment
-from kups.core.interpreter.util import get_aval, get_bind_params
 
 type PyTreeDef = Any
 type TracerValue = Any
@@ -231,7 +231,7 @@ def reinterpret[Context: InterpreterContext, **P, R](
         )
         fn_wrapped, out_tree_thunk = jax.api_util.flatten_fun(fn_wrapped, in_tree)
         jaxpr, _, const = pe.trace_to_jaxpr_dynamic(
-            fn_wrapped, [get_aval(x) for x in args_flat]
+            fn_wrapped, [jax.typeof(x) for x in args_flat]
         )
         out, ctx = interpreter(ClosedJaxpr(jaxpr, const), ctx, *args_flat)
         out_tree = out_tree_thunk()

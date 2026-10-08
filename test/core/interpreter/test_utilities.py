@@ -7,7 +7,8 @@ from __future__ import annotations
 import jax.numpy as jnp
 import pytest
 
-from kups.core.interpreter.util import get_bind_params, split_sequence
+from kups.core.interpreter._compat import get_bind_params
+from kups.core.interpreter.util import split_sequence
 
 
 class TestUtilities:

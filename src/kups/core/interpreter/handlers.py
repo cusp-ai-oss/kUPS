@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from enum import Enum
 from functools import partial
 from typing import Any, Literal, overload
@@ -13,6 +13,13 @@ from jax.core import AbstractValue
 from jax.extend.core import ClosedJaxpr, JaxprEqn, jaxpr_as_fun
 from jax.sharding import PartitionSpec
 
+from kups.core.interpreter._compat import (
+    get_bind_params,
+    manual_axes_kwarg,
+    shard_map_manual_axes,
+    split_scan_operands,
+    split_scan_results,
+)
 from kups.core.interpreter.interpreter import (
     HandlerResult,
     Interpreter,
@@ -20,7 +27,7 @@ from kups.core.interpreter.interpreter import (
     TracerValue,
     reinterpret,
 )
-from kups.core.interpreter.util import get_aval, get_bind_params, split_sequence
+from kups.core.interpreter.util import split_sequence
 
 
 def default_primitive_handler[Context: InterpreterContext](
@@ -75,33 +82,16 @@ class Uninitialized(ShapeDtypeStruct):
         )
         shape = getattr(aval, "shape")
         dtype = getattr(aval, "dtype")
-        if ignore_sharding:
-            sharding = None
-            mat = None
-        else:
-            sharding = getattr(aval, "sharding", None)
-            mat = getattr(aval, "manual_axis_type", getattr(aval, "vma", None))
-        weak_type = getattr(aval, "weak_type", False)
-        is_ref = getattr(aval, "is_ref", False)
-        # JAX 0.10 renamed the ShapeDtypeStruct kwarg ``vma`` → ``manual_axis_type``.
-        try:
-            super().__init__(
-                shape,
-                dtype,
-                sharding=sharding,
-                weak_type=weak_type,
-                manual_axis_type=mat,  # type: ignore[call-arg]
-                is_ref=is_ref,
-            )
-        except TypeError:
-            super().__init__(
-                shape,
-                dtype,
-                sharding=sharding,
-                weak_type=weak_type,
-                vma=mat,  # pyrefly: ignore[unexpected-keyword]
-                is_ref=is_ref,
-            )
+        sharding = None if ignore_sharding else getattr(aval, "sharding", None)
+        manual_axes = manual_axes_kwarg(None if ignore_sharding else aval)
+        super().__init__(
+            shape,
+            dtype,
+            sharding=sharding,
+            weak_type=getattr(aval, "weak_type", False),
+            is_ref=getattr(aval, "is_ref", False),
+            **manual_axes,
+        )
 
 
 def _sentinel_preserving_parent[Context: InterpreterContext](
@@ -133,32 +123,6 @@ class ScanSemantics(Enum):
     RESULT = "result"
 
 
-def _split_scan_inputs(
-    bind_params: dict[str, Any], invals: list[TracerValue]
-) -> tuple[list[TracerValue], list[TracerValue], list[TracerValue]]:
-    """Partition scan inputs across JAX's old and new parameter schemas."""
-    if "ft_in" in bind_params:
-        consts, carry, xs = bind_params["ft_in"].update(invals).unpack()
-        return list(consts), list(carry), list(xs)
-
-    consts, carry, xs = split_sequence(
-        invals, (bind_params["num_consts"], bind_params["num_carry"])
-    )
-    return consts, carry, xs
-
-
-def _split_scan_outputs(
-    bind_params: dict[str, Any], outvals: list[TracerValue]
-) -> tuple[list[TracerValue], list[TracerValue]]:
-    """Partition scan outputs across JAX's old and new parameter schemas."""
-    if "ft_out" in bind_params:
-        carry, results = bind_params["ft_out"].update(outvals).unpack()
-        return list(carry), list(results)
-
-    carry, results = split_sequence(outvals, (bind_params["num_carry"],))
-    return carry, results
-
-
 def _assert_same_tree[PyTree](old: PyTree, new: PyTree):
     old_leaves, old_tree_def = jax.tree.flatten(old)
     new_leaves, new_tree_def = jax.tree.flatten(new)
@@ -169,8 +133,8 @@ def _assert_same_tree[PyTree](old: PyTree, new: PyTree):
         )
     leaf_mismatches: list[str] = []
     for x, y in zip(old_leaves, new_leaves, strict=True):
-        xaval = get_aval(x)
-        yaval = get_aval(y)
+        xaval = jax.typeof(x)
+        yaval = jax.typeof(y)
         match_attrs = ["shape", "dtype"]
         if any(getattr(xaval, attr) != getattr(yaval, attr) for attr in match_attrs):
             leaf_mismatches.append(f"{xaval} != {yaval}")
@@ -186,7 +150,7 @@ def _scan_handler_result[Context: InterpreterContext](
 ) -> HandlerResult[Context]:
     _, bind_params = get_bind_params(eqn)
     jaxpr: ClosedJaxpr = bind_params["jaxpr"]
-    consts, carry, xs = _split_scan_inputs(bind_params, invals)
+    consts, carry, xs = split_scan_operands(bind_params, invals)
 
     # Trace to discover child context structure for reconstruction after scan
     _, ctx_out_tree = (
@@ -199,7 +163,7 @@ def _scan_handler_result[Context: InterpreterContext](
 
     def _new_body_fn(carry: list[TracerValue], xs: list[TracerValue]):
         out_flat, ctx_out = interpreter(jaxpr, ctx.push(), *consts, *carry, *xs)
-        carry_out_flat, results_flat = _split_scan_outputs(bind_params, out_flat)
+        carry_out_flat, results_flat = split_scan_results(bind_params, out_flat)
         # Only return child-level leaves as scan results — parent is constant
         child_leaves = jax.tree.leaves(ctx_out)[n_parent:]
         return carry_out_flat, (child_leaves, results_flat)
@@ -231,7 +195,7 @@ def _scan_handler_carry[Context: InterpreterContext](
 ) -> HandlerResult[Context]:
     _, bind_params = get_bind_params(eqn)
     jaxpr: ClosedJaxpr = bind_params["jaxpr"]
-    consts, carry, xs = _split_scan_inputs(bind_params, invals)
+    consts, carry, xs = split_scan_operands(bind_params, invals)
 
     _, ctx_out_tree = (
         jax.jit(partial(interpreter, jaxpr))
@@ -254,7 +218,7 @@ def _scan_handler_carry[Context: InterpreterContext](
             _assert_same_tree(old_ctx, new_ctx)
         except ValueError as e:
             raise ValueError("Scan body modified the context.") from e
-        carry_out_flat, results_flat = _split_scan_outputs(bind_params, out_flat)
+        carry_out_flat, results_flat = split_scan_results(bind_params, out_flat)
         return (new_ctx, carry_out_flat), results_flat
 
     (ctx_out, carry), results = jax.lax.scan(
@@ -474,18 +438,11 @@ def default_shard_map_handler[Context: InterpreterContext](
     else:
         ctx_out_specs = jax.P()
 
-    # JAX 0.11 renamed the shard_map primitive parameter while retaining
-    # ``axis_names`` in the public API.
-    axis_names: frozenset[Hashable] = (
-        eqn.params["newly_manual_axes"]
-        if "newly_manual_axes" in eqn.params
-        else eqn.params.get("manual_axes", frozenset())
-    )
     sharded_fn = jax.shard_map(
         out_specs=(list(eqn.params["out_specs"]), ctx_out_specs),
         in_specs=(ctx_in_specs, *eqn.params["in_specs"]),
         mesh=eqn.params["mesh"],
-        axis_names=axis_names,
+        axis_names=shard_map_manual_axes(eqn.params),
         check_vma=eqn.params["check_vma"],
     )(fn)
 
