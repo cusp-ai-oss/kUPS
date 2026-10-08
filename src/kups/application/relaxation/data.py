@@ -60,14 +60,14 @@ class RelaxSystems:
     """System-level data for structure relaxation."""
 
     cell: Cell[AnyPeriodicity]
-    """Cell geometry, batched with shape (1,)."""
+    """Cell geometry, one row per system."""
     cell_gradients: Cell[AnyPeriodicity]
     """Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the relaxation filter's output),
     stored on :attr:`cell`'s frame (the lower-triangular log-deformation entries
     under ``cell_filter``). The ASE-fmax convergence quantity for the cell; the
     atoms-ride-the-cell coupling is already folded in by the filter pullback."""
     potential_energy: Array
-    """Potential energy per system, shape (1,)."""
+    """Potential energy per system, shape ``(n_systems,)``."""
 
 
 @dataclass
@@ -132,7 +132,7 @@ class RelaxRunConfig(BaseModel):
 
 
 def relax_cell(cell: Cell[AnyPeriodicity], n_atoms: Array) -> Cell[AnyPeriodicity]:
-    """Wrap unbatched cells in the relaxation's log-deformation frame.
+    """Wrap cells in the relaxation's log-deformation frame, batching an unbatched cell.
 
     ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
     cell-virial gradient against the per-atom forces in the joint optimiser.
