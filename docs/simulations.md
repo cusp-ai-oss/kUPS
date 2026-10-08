@@ -56,70 +56,48 @@ Relaxation converges when the maximum force on any atom drops below a configurab
 
 ### Streaming batches as a library
 
-Streaming is assembled from the same propagators and runtime assertions as other
-simulations. `kups.core.stream.reserve_slots` returns a
-`Table[SystemId, Index[ParticleId]]` reserving a fixed number of particle rows per
-system, including unused rows; `slot_owners` maps those rows back to systems.
-These helpers do not depend on relaxation. Relaxation payload lenses
-gather and update through the reservation table; rows need not be contiguous.
-`make_streaming_relax_propagator` returns the numerical step, optimizer initializer,
-and per-system reset function. `make_streaming_relax_state` creates idle slots
-requesting their first refill.
+Streaming relaxation keeps a fixed number of *slots* on the device, one
+structure per slot, and refills a slot from the host once its structure has
+converged or used its step budget. It is assembled from the same propagators
+and runtime assertions as the other simulations.
+[`kups.core.stream`][kups.core.stream] holds the parts that do not depend on
+relaxation: [`reserve_slots`][kups.core.stream.reserve_slots] reserves a fixed
+number of particle rows per slot,
+[`slot_rows_lens`][kups.core.stream.slot_rows_lens] reads and writes those
+rows, and [`RefillGate`][kups.core.stream.RefillGate] asks the host for new
+structures through a failing runtime assertion.
 
-The application supplies a host refill function. It reads completed structures
-through `slot_payload_lens`, packs replacements with `payload_from_structures`,
-and calls `replace_slots`. The replacement payload has one row per slot; only
-requested rows are installed. At end of input, supply `idle_payload` rows with
-ordinal `-1`. Replacement resets the selected optimizer state and clears the
-serviced requests, preserving other slots. Pass the same `state_lens` to the
-propagator factory and `replace_slots`; the optimizer-state type is preserved
-through initialization and reset. Jobs share periodicity, dtypes, and the species
-vocabulary. Packing promotes lower-triangular cells to a common triclinic frame.
+[`make_streaming_relax_propagator`][kups.application.relaxation.streaming.make_streaming_relax_propagator]
+returns the numerical step, the optimizer initializer and the per-slot
+optimizer reset;
+[`make_streaming_relax_state`][kups.application.relaxation.streaming.make_streaming_relax_state]
+creates idle slots that request their first refill. The application supplies
+the refill callback: it reads finished slots through
+[`slot_payload_lens`][kups.application.relaxation.streaming.slot_payload_lens],
+packs new structures with
+[`payload_from_structures`][kups.application.relaxation.streaming.payload_from_structures]
+(or takes [`idle_payload`][kups.application.relaxation.streaming.idle_payload]
+rows, ordinal `-1`, once the input is exhausted) and passes one payload row per
+slot to [`replace_slots`][kups.application.relaxation.streaming.replace_slots].
+That installs the requested rows, resets their optimizer state and clears their
+requests, leaving the other slots as they are. Jobs share periodicity, dtypes
+and the species vocabulary; packing promotes lower-triangular cells to a common
+triclinic frame.
 
-Streaming requires an explicit `ResetLayout` dataclass:
+The optimizer must be [`Resettable`][kups.relaxation.optimizer.Resettable], so
+that a refill reinitializes only the refilled slots. Every native transform is;
+chain them with
+[`resettable_chain`][kups.relaxation.optimizer.resettable_chain] and wrap
+stateless Optax transforms in
+[`Stateless`][kups.relaxation.optimizer.Stateless], as in
+`resettable_chain(ScaleByAseLbfgs(), MaxStepSize(0.2), Stateless(optax.scale(-1.0)))`.
+A custom optimizer subclasses `Resettable` and declares all of its per-system
+state in `reset_layout`; state shared between systems cannot be reset per slot.
 
-- `fields` is the lens selecting optimizer fields to reinitialize.
-- `system_index` maps those fields' rows to systems, so the refill mask selects
-  the right rows. It returns an index-tree prefix matching the selected data.
-
-`ResetLayout[OptState, Data, Indices]` preserves the view's concrete return type
-as `Indices`, rather than erasing it to `object`. The leaves are system indices
-(`Index[SystemId]` in streaming); a prefix leaf can cover a whole data subtree.
-The existing patch checks that the prefix and data structures align.
-
-FIRE, FIRE2 and L-BFGS expose named reset projections (`FireReset`, `Fire2Reset`,
-`LbfgsReset`). Each is a generic dataclass used for both values and their index
-prefix: for example, `FireReset.dt` carries a table of timesteps in the value
-view and a system index in the index view. The ordinary lens derives the setter
-from the projection; there is no separate reset-state conversion or setter.
-
-Replacement copies fresh `optimizer.init` values through the lens using
-`IndexLensPatch`; no optimizer capability is discovered at runtime. Compose a
-native layout into a chain with the usual lens operations:
-
-```python
-from kups.core.lens import lens
-from kups.relaxation.optimizer import ResetLayout
-from kups.relaxation.transforms.fire import fire_reset_layout
-
-# For chain(optax.scale(-1), ScaleByFire(...)), FIRE is state entry 1.
-fire = fire_reset_layout()
-reset_layout = ResetLayout(
-    fields=lens(lambda states: states[1]).nest(fire.fields),
-    system_index=lambda states: fire.system_index(states[1]),
-)
-```
-
-Use `merge` and a matching tuple of index prefixes when several transforms carry
-mutable state. Stateless transforms need no fields; an entirely stateless chain
-uses `ResetLayout(fields=const_lens(()), system_index=lambda state: ())`.
-Native layouts cover FIRE, FIRE2,
-L-BFGS and both line searches. L-BFGS's index prefix broadcasts over the history
-axis; its lens preserves the shared ring cursor. Custom layouts must cover all
-per-job mutable state; a transform with coupled cross-system state is not suitable
-for independent slot reuse.
+One host cycle services pending refills, then runs a bounded block of steps:
 
 ```python
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -128,9 +106,11 @@ from kups.application.utils.propagate import make_cycle_function
 from kups.core.propagator import LoopPropagator, SequentialPropagator, propagate_and_fix
 from kups.core.stream import RefillGate
 
-# numerical_step comes from make_streaming_relax_propagator.
-# refill(state, requested) is the application's input/output adapter.
+# numerical_step comes from make_streaming_relax_propagator, state from
+# make_streaming_relax_state; refill(state, requested) is the application's
+# input/output adapter.
 def repetitions[OptState](state: StreamingRelaxState[OptState]) -> Array:
+    # No steps while a refill is pending or once every slot is idle.
     run = ~state.finished.data.any() & (state.slot_ordinal >= 0).any()
     return jnp.where(run, 8, 0)
 
@@ -139,56 +119,23 @@ cycle = make_cycle_function(SequentialPropagator((
     LoopPropagator(numerical_step, repetitions),
 )))
 
-state = propagate_and_fix(cycle, key, state)
+# The stream ends once a refill has left every slot idle.
+while state.finished.data.any() or (state.slot_ordinal >= 0).any():
+    key, subkey = jax.random.split(key)
+    state = propagate_and_fix(cycle, subkey, state)
 ```
 
-The refill gate runs **before** the numerical step's error-recovery wrapper.
-When refill is requested, the numerical step cannot commit; the host applies the
-fix and retries. The zero repetition count avoids evaluating the potential on
-repair-only attempts or after input is exhausted. Completed payloads remain in
-state, rather than travelling in
-`fix_args`, which compiled loops reduce by an elementwise maximum.
-
-Run one such cycle per host iteration. Refill happens on the host, not inside an
-uninterrupted device loop; using the bounded repair loop to consume an entire
-stream would exhaust its retry budget. Input/output adapters should not retain
-references to donated state arrays: extract completed results before replacing
-slots. The stream ends when all slot ordinals are `-1` after servicing refill.
-
-Fixes are not transactions. Stage input and validate replacements before committing
-source cursors or output writes; a callback exception aborts the cycle and is not retried.
-Unfixable assertions raise before any callbacks run. Repair diagnostics are DEBUG
-messages; unrecoverable errors still raise with their assertion tracebacks.
-
-Cycle logging records successful host cycles, not individual optimizer steps or
-jobs. For job results, collect completed payloads at refill using their `ordinal`
-and per-job `step`, including the final drain. Do not treat reusable slot keys as
-job identities or use the fixed-batch `RelaxLoggedData` schema unchanged. Durable
-writers must own their retry/idempotency policy; the assertion tracer does not.
-
-Bounded device blocks amortize host synchronization. Completed structures stay
-frozen until the block ends; eight steps is an example, not a universal optimum.
-Smaller blocks refill sooner, while larger blocks reduce dispatch overhead.
-Both the block and slot count should be measured on the intended workload.
-
-Refill is a performance boundary: prepare payloads in bounded batches and JIT a
-closure around the pure `replace_slots` operation, not the host callback itself.
-Use `kups.core.utils.jax.jit` to keep table/index validation inside the compiled
-function rather than repeating it on the host for each result.
-Transfer request masks to the host once per refill rather than reading GPU
-scalars in a Python loop. The integration test below demonstrates correctness;
-throughput also depends on packing, result collection, and host synchronization.
-
-`max_steps` counts parameter updates. One final evaluation records consistent
-energy and gradients even when a structure exhausts that budget. Ordinary
-fixed-batch optimization only requires the existing `Optimizer` interface and
-does not need a reset layout.
-Non-finite active gradients fail a runtime assertion instead of counting as
-convergence. As in fixed-batch relaxation, choose appropriate optimizer controls
-(for example, `MaxStepSize`) for strongly distorted structures.
+The block size (8 here) trades refill latency against dispatch overhead, since
+finished slots wait for the block to end; measure it and the slot count on the
+intended workload. Per-job results come out of the refill callback, keyed by
+their `ordinal`, rather than out of cycle logging. The cycle donates its state,
+so copy results out (for example with `jax.device_get`) instead of keeping
+references to state arrays. JIT a closure around `replace_slots` rather than
+the host callback, using `kups.core.utils.jax.jit`, which validates tables and
+indices when tracing instead of on every call.
 
 The [streaming integration test](https://github.com/cusp-ai-oss/kUPS/blob/main/test/application/test_relax_streaming.py)
-shows a complete source, collector, and refill callback.
+shows a complete source, collector and refill callback.
 
 ## Grand-Canonical Monte Carlo (GCMC)
 

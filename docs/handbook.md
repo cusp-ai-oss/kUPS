@@ -54,9 +54,9 @@ MD, MC, relaxation, GCMC, and ML-potential dynamics are all assembled from these
 [Streaming relaxation](simulations.md#streaming-batches-as-a-library) uses the
 same boundary for host work: a `RefillGate` requests service through a runtime
 assertion, its fix replaces selected slots, and the existing retry driver resumes
-the numerical step. A table reserves particle rows for each system; an explicit
-lens and index view select optimizer fields to reinitialize. Input sources and result writers remain
-application concerns.
+the numerical step. A table reserves particle rows for each slot, and a
+resettable optimizer's own reset layout selects the state to reinitialize when a
+slot is refilled. Input sources and result writers remain application concerns.
 
 ## A worked example: `md`
 
