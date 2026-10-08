@@ -70,7 +70,7 @@ from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
 from kups.core.utils.segmented_tree import tree_scale_per_row, tree_vdot
-from kups.relaxation.optimizer import Optimizer, ResetLayout
+from kups.relaxation.optimizer import Resettable, ResetLayout
 
 type ValueAndGradFn = Callable[[PyTree], tuple[Table[SupportsSorting, Array], PyTree]]
 """Maps trial params to ``(per-system energies, gradient pytree)``."""
@@ -457,7 +457,7 @@ def _more_thuente(
 
 
 @dataclass
-class ScaleByBacktrackingLinesearch[Params](Optimizer[Params, LineSearchState]):
+class ScaleByBacktrackingLinesearch[Params](Resettable[Params, LineSearchState]):
     """Per-system Armijo backtracking line search — ASE ``LineSearchArmijo``.
 
     Rescales the incoming descent direction by a per-system step ``t``: it shrinks
@@ -521,9 +521,19 @@ class ScaleByBacktrackingLinesearch[Params](Optimizer[Params, LineSearchState]):
         )
         return tree_scale_per_row(updates, Table(keys, t), idx), new_state
 
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[
+        LineSearchState, Table[SupportsSorting, Array], Index[SupportsSorting]
+    ]:
+        """The previous per-system energies ``prev_phi0``."""
+        return linesearch_reset_layout()
+
 
 @dataclass
-class ScaleByMoreThuenteLinesearch[Params](Optimizer[Params, LineSearchState]):
+class ScaleByMoreThuenteLinesearch[Params](Resettable[Params, LineSearchState]):
     """Per-system More–Thuente line search — ASE ``LineSearch``.
 
     Brackets and refines a step meeting the strong Wolfe conditions via the
@@ -590,3 +600,13 @@ class ScaleByMoreThuenteLinesearch[Params](Optimizer[Params, LineSearchState]):
             max_steps=self.max_steps,
         )
         return tree_scale_per_row(updates, Table(keys, t), idx), state
+
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[
+        LineSearchState, Table[SupportsSorting, Array], Index[SupportsSorting]
+    ]:
+        """The previous per-system energies ``prev_phi0``."""
+        return linesearch_reset_layout()

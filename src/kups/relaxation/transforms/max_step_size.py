@@ -25,7 +25,7 @@ from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_max,
 )
-from kups.relaxation.optimizer import Optimizer
+from kups.relaxation.optimizer import Resettable, ResetLayout
 
 
 @dataclass
@@ -42,7 +42,7 @@ class MaxStepSizeState:
 
 
 @dataclass
-class MaxStepSize[Params](Optimizer[Params, MaxStepSizeState]):
+class MaxStepSize[Params](Resettable[Params, MaxStepSizeState]):
     """Clip updates so no element of any system moves more than ``max_step_size``.
 
     Per-element norms are computed along the last axis. For every system, the
@@ -85,3 +85,11 @@ class MaxStepSize[Params](Optimizer[Params, MaxStepSizeState]):
         )
         updates = tree_scale_per_row(updates, scale, index_prefix)
         return updates, state
+
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[MaxStepSizeState, tuple[()], tuple[()]]:
+        """Nothing per system: the state only holds the index prefix from ``init``."""
+        return ResetLayout.empty()
