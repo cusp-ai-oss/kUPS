@@ -14,12 +14,13 @@ Key Components:
 - **[RuntimeAssertion][kups.core.assertion.RuntimeAssertion]**: Core assertion dataclass with optional fixing capabilities
 - **[runtime_assert][kups.core.assertion.runtime_assert]**: Function to create assertions that work with JAX transformations
 - **[with_runtime_assertions][kups.core.assertion.with_runtime_assertions]**: Decorator to enable assertion tracing in functions
+- **[LoopMerge][kups.core.assertion.LoopMerge]**: How loops fold an assertion's arguments across iterations
 """
 
 from __future__ import annotations
 
+import dataclasses
 import traceback
-import typing
 from collections.abc import Callable
 from functools import partial
 from typing import Any, Final, Self, override
@@ -70,6 +71,64 @@ NO_ARGS: Final[_NO_ARGS] = _NO_ARGS()
 _TRACEBACK_MARKER: Final[str] = "\nAssertion created at:\n"
 
 
+@dataclasses.dataclass(frozen=True)
+class LoopMerge:
+    """How a loop folds an assertion's ``fmt_args``/``fix_args`` across iterations.
+
+    The predicate of an assertion inside ``scan`` or ``while_loop`` always
+    accumulates as a conjunction over iterations. ``LoopMerge`` decides, leaf by
+    leaf, which values the reported ``fmt_args`` and ``fix_args`` carry.
+
+    Attributes:
+        init: Value of an argument leaf before the first iteration, given a leaf
+            from the loop body.
+        combine: ``(old_predicate, old, new_predicate, new) -> merged`` for one
+            leaf, where ``old`` is accumulated over the previous iterations and
+            ``new`` comes from the current one.
+    """
+
+    init: Callable[[Array], Array]
+    combine: Callable[[Array, Array, Array, Array], Array]
+
+
+def _keep_last_failure(
+    old_predicate: Array, old: Array, new_predicate: Array, new: Array
+) -> Array:
+    return jnp.where(new_predicate, old, new)
+
+
+def _keep_first_failure(
+    old_predicate: Array, old: Array, new_predicate: Array, new: Array
+) -> Array:
+    return jnp.where(old_predicate, new, old)
+
+
+def _keep_largest(
+    old_predicate: Array, old: Array, new_predicate: Array, new: Array
+) -> Array:
+    return jnp.maximum(old, new)
+
+
+def _lowest_like(x: Array) -> Array:
+    """Fill with the dtype's minimum for integers and ``-inf`` otherwise."""
+    if jnp.issubdtype(x.dtype, jnp.integer):
+        return jnp.full_like(x, fill_value=jnp.iinfo(x.dtype).min)
+    return jnp.full_like(x, fill_value=-jnp.inf)
+
+
+LAST_FAILURE: Final[LoopMerge] = LoopMerge(jnp.empty_like, _keep_last_failure)
+"""Report the arguments of the last failing iteration (``scan`` default)."""
+
+FIRST_FAILURE: Final[LoopMerge] = LoopMerge(jnp.empty_like, _keep_first_failure)
+"""Report the arguments of the first failing iteration."""
+
+ELEMENTWISE_MAX: Final[LoopMerge] = LoopMerge(_lowest_like, _keep_largest)
+"""Report the elementwise maximum over all iterations (``while_loop`` default).
+
+Suits fixes that must cover every iteration, such as capacity requirements.
+"""
+
+
 @dataclass
 class RuntimeAssertion[State, FixArgs]:
     """
@@ -92,6 +151,8 @@ class RuntimeAssertion[State, FixArgs]:
         static_info: Additional metadata for debugging (not traced by JAX)
         fix_fn: Optional function to repair the state when assertion fails
         fix_args: Arguments to pass to the fix function (can be complex PyTree structures)
+        loop_merge: How loops fold ``fmt_args``/``fix_args`` across iterations;
+            ``None`` uses the loop's default (see [LoopMerge][kups.core.assertion.LoopMerge])
 
     Example:
         ```python
@@ -117,6 +178,7 @@ class RuntimeAssertion[State, FixArgs]:
     static_info: dict[str, Any] = field(static=True, default_factory=dict)
     fix_fn: Fix[State, FixArgs] | None = field(static=True, default=None)
     fix_args: FixArgs | _NO_ARGS = field(default=NO_ARGS)
+    loop_merge: LoopMerge | None = field(static=True, default=None)
 
     def valid(self) -> bool:
         """Check if the assertion is valid (i.e., passes)."""
@@ -287,6 +349,7 @@ def runtime_assert[State, FixArgs](
     static_info: dict[str, Any] | None = None,
     fix_fn: Fix[State, FixArgs] | None = None,
     fix_args: FixArgs | _NO_ARGS = NO_ARGS,
+    loop_merge: LoopMerge | None = None,
 ) -> None:
     """
     Create a runtime assertion that integrates with JAX transformations.
@@ -304,6 +367,10 @@ def runtime_assert[State, FixArgs](
         static_info: Additional metadata for debugging (not traced by JAX)
         fix_fn: Optional function to repair state when assertion fails
         fix_args: Arguments for the fix function (can be complex PyTree structures)
+        loop_merge: How ``scan``/``while_loop`` fold ``fmt_args`` and ``fix_args``
+            across iterations. ``None`` keeps the loop's default:
+            [LAST_FAILURE][kups.core.assertion.LAST_FAILURE] for ``scan`` and
+            [ELEMENTWISE_MAX][kups.core.assertion.ELEMENTWISE_MAX] for ``while_loop``.
 
     Type Parameters:
         State: Type of state that can be modified by the fix function
@@ -374,6 +441,7 @@ def runtime_assert[State, FixArgs](
         static_info_hashable=static_info_hashable,
         fix_fn=fix_fn,
         fix_args_tree=fix_args_tree,
+        loop_merge=loop_merge,
     )
 
 
@@ -435,6 +503,7 @@ def assertion_handler(
     static_info_hashable = bind_params["static_info_hashable"]
     fix_fn = bind_params["fix_fn"]
     fix_args_tree = bind_params["fix_args_tree"]
+    loop_merge = bind_params["loop_merge"]
 
     # Convert static_info back from hashable format
     static_info = dict(static_info_hashable)
@@ -467,6 +536,7 @@ def assertion_handler(
             static_info=static_info,
             fix_fn=fix_fn,
             fix_args=fix_args,
+            loop_merge=loop_merge,
         )
     )
 
@@ -536,52 +606,67 @@ def cond_handler(
     return HandlerResult(ctx_out, outvals)
 
 
+def _loop_initializer(
+    default: LoopMerge,
+) -> Callable[[AssertionContext, AssertionContext], AssertionContext]:
+    """Seed the assertions a loop body appends: passing, with initial args."""
+
+    def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
+        merge = a.loop_merge or default
+        a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
+        return (
+            bind(a)
+            .focus(lambda a: (a.fix_args, a.fmt_args))
+            .apply(partial(jax.tree.map, merge.init))
+        )
+
+    def initializer(old: AssertionContext, new: AssertionContext) -> AssertionContext:
+        appended = new.assertions[len(old.assertions) :]
+        return AssertionContext(old.assertions + tuple(map(initialize, appended)))
+
+    return initializer
+
+
+def _loop_updater(
+    default: LoopMerge,
+) -> Callable[[AssertionContext, AssertionContext], AssertionContext]:
+    """Fold one iteration's assertions into those accumulated so far."""
+
+    def merge(
+        old: RuntimeAssertion[Any, Any], new: RuntimeAssertion[Any, Any]
+    ) -> RuntimeAssertion[Any, Any]:
+        combine = (old.loop_merge or default).combine
+        fmt_args, fix_args = jax.tree.map(
+            lambda o, n: combine(old.predicate, o, new.predicate, n),
+            (old.fmt_args, old.fix_args),
+            (new.fmt_args, new.fix_args),
+        )
+        return dataclasses.replace(
+            old,
+            predicate=jnp.where(new.predicate, old.predicate, new.predicate),
+            fmt_args=fmt_args,
+            fix_args=fix_args,
+        )
+
+    def updater(old: AssertionContext, new: AssertionContext) -> AssertionContext:
+        return AssertionContext(tuple(map(merge, old.assertions, new.assertions)))
+
+    return updater
+
+
 def scan_handler(
     interpreter: Interpreter[AssertionContext],
     ctx: AssertionContext,
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
-    def init_with_true(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Initialize all assertions to be true."""
-
-        def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-            a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
-            a = (
-                bind(a)
-                .focus(lambda a: (a.fix_args, a.fmt_args))
-                .apply(partial(jax.tree.map, jnp.empty_like))
-            )
-            return a
-
-        return AssertionContext(
-            old.assertions
-            + tuple(map(initialize, new.assertions[len(old.assertions) :]))
-        )
-
-    def update_on_fail(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Always keep the first assertion that fails."""
-        return AssertionContext(
-            tuple(
-                typing.cast(
-                    RuntimeAssertion[Any, Any],
-                    jax.tree.map(partial(jnp.where, new.predicate), old, new),
-                )
-                for old, new in zip(old.assertions, new.assertions)
-            )
-        )
-
     return default_scan_handler(
         interpreter,
         ctx,
         eqn,
         invals,
-        initializer=init_with_true,
-        updater=update_on_fail,
+        initializer=_loop_initializer(LAST_FAILURE),
+        updater=_loop_updater(LAST_FAILURE),
     )
 
 
@@ -591,57 +676,13 @@ def while_handler(
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
-    def init_with_true(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Initialize all assertions to be true."""
-
-        def _sentinel_like(x: jax.Array) -> jax.Array:
-            """Fill with -inf for floats, min value for integers."""
-            if jnp.issubdtype(x.dtype, jnp.integer):
-                return jnp.full_like(x, fill_value=jnp.iinfo(x.dtype).min)
-            return jnp.full_like(x, fill_value=-jnp.inf)
-
-        def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-            a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
-            a = (
-                bind(a)
-                .focus(lambda a: (a.fix_args, a.fmt_args))
-                .apply(partial(jax.tree.map, _sentinel_like))
-            )
-            return a
-
-        return AssertionContext(
-            old.assertions
-            + tuple(map(initialize, new.assertions[len(old.assertions) :]))
-        )
-
-    def update_on_fail(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Always keep the first assertion that fails."""
-        return AssertionContext(
-            tuple(
-                RuntimeAssertion(
-                    predicate=jnp.logical_and(old.predicate, new.predicate),
-                    message=old.message,
-                    fmt_args=jax.tree.map(jnp.maximum, old.fmt_args, new.fmt_args),
-                    exception_type=old.exception_type,
-                    static_info=old.static_info,
-                    fix_fn=old.fix_fn,
-                    fix_args=jax.tree.map(jnp.maximum, old.fix_args, new.fix_args),
-                )
-                for old, new in zip(old.assertions, new.assertions)
-            )
-        )
-
     return default_while_handler(
         interpreter,
         ctx,
         eqn,
         invals,
-        initializer=init_with_true,
-        updater=update_on_fail,
+        initializer=_loop_initializer(ELEMENTWISE_MAX),
+        updater=_loop_updater(ELEMENTWISE_MAX),
     )
 
 
