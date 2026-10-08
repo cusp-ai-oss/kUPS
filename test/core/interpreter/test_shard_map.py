@@ -73,7 +73,7 @@ class TestShardMapHandler:
             )(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
 
         # No reduce_ctx → the captured per-shard value violates out_specs=P().
         with pytest.raises(Exception):
@@ -89,7 +89,7 @@ class TestShardMapHandler:
         def reduce_ctx(ctx: MockContext) -> MockContext:
             # psum across the manual axis: output is replicated (VMA={}).
             summed = tuple(jax.lax.psum(v, axis_name="data") for v in ctx.value)
-            return MockContext(ctx.metadata, ctx.parent, ctx.level, summed)
+            return MockContext(ctx.metadata, summed)
 
         def shard_map_h(interp, ctx, eqn, invals):
             return default_shard_map_handler(
@@ -106,7 +106,7 @@ class TestShardMapHandler:
             )(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         x = jnp.arange(4, dtype=jnp.float32)
         out, ctx1 = wrapped(ctx0, x)
 
@@ -138,7 +138,7 @@ class TestShardMapHandler:
         def reduce_ctx(ctx: MockContext) -> MockContext:
             # pmax across manual axis: replicated max of per-shard axis_index.
             reduced = tuple(jax.lax.pmax(v, axis_name="data") for v in ctx.value)
-            return MockContext(ctx.metadata, ctx.parent, ctx.level, reduced)
+            return MockContext(ctx.metadata, reduced)
 
         def shard_map_h(interp, ctx, eqn, invals):
             return default_shard_map_handler(
@@ -159,7 +159,7 @@ class TestShardMapHandler:
             )(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext((), None, 0, ())
+        ctx0 = MockContext((), ())
         out, ctx1 = wrapped(ctx0, jnp.zeros(4, dtype=jnp.float32))
 
         # Each shard's axis index added to its element.
@@ -187,7 +187,7 @@ class TestShardMapHandler:
             )(x)
 
         wrapped = reinterpret(fn, interpreter)
-        ctx0 = MockContext(("seed",), None, 0, ())
+        ctx0 = MockContext(("seed",), ())
         out, ctx1 = wrapped(ctx0, jnp.zeros(4, dtype=jnp.float32))
 
         assert jnp.array_equal(out, jnp.ones(4, dtype=jnp.float32))

@@ -10,7 +10,6 @@ import jax
 import jax.numpy as jnp
 
 from kups.core.interpreter.handlers import (
-    ScanSemantics,
     Uninitialized,
     default_checkpoint_handler,
     default_cond_handler,
@@ -24,7 +23,6 @@ from kups.core.interpreter.interpreter import (
     Handler,
     HandlerResult,
     Interpreter,
-    InterpreterContext,
     InterpreterPolicy,
     JaxprEqn,
     TracerValue,
@@ -34,41 +32,24 @@ from kups.core.interpreter.interpreter import (
 
 @partial(
     jax.tree_util.register_dataclass,
-    meta_fields=("metadata", "level"),
-    data_fields=("parent", "value"),
+    meta_fields=("metadata",),
+    data_fields=("value",),
 )
 @dataclass(frozen=True)
-class MockContext(InterpreterContext):
-    """Test implementation of InterpreterContext.
+class MockContext:
+    """Context that records handled primitives' names and captured values.
 
     Note: Named MockContext to avoid pytest collection warnings.
     """
 
     metadata: tuple[str, ...]
-    parent: MockContext | None
-    level: int
     value: tuple[TracerValue, ...]
 
     def add_meta(self, key: str) -> MockContext:
-        return MockContext(self.metadata + (key,), self.parent, self.level, self.value)
+        return MockContext(self.metadata + (key,), self.value)
 
     def add_value(self, value: TracerValue) -> MockContext:
-        return MockContext(
-            self.metadata, self.parent, self.level, self.value + (value,)
-        )
-
-    def push(self) -> MockContext:
-        return MockContext((), self, self.level + 1, ())
-
-    def pop(self) -> MockContext:
-        parent = self.parent
-        if parent is None:
-            raise ValueError("Cannot pop from root context")
-        for key in self.metadata:
-            parent = parent.add_meta(key)
-        for value in self.value:
-            parent = parent.add_value(value)
-        return parent
+        return MockContext(self.metadata, self.value + (value,))
 
     @property
     def total_metadata_count(self) -> int:
@@ -207,72 +188,9 @@ class HandlerFactory:
                 ctx,
                 eqn,
                 invals,
-                threading=ScanSemantics.CARRY,
                 initializer=initializer,
                 updater=updater,
             )
-
-        return handler
-
-    @staticmethod
-    def create_scan_handler_with_mode(
-        meta_key: str = "scan",
-        *,
-        constant_context_threading: bool,
-        value_fn: Callable[[], TracerValue] | None = None,
-    ) -> Handler[MockContext]:
-        """Create a scan handler with control over constant_context_threading.
-
-        When constant_context_threading is True, context is threaded via consts; otherwise via carry.
-        """
-        if value_fn is None:
-
-            def default_value_fn() -> TracerValue:
-                return jnp.zeros(1, dtype=jnp.float32)
-
-            value_fn = default_value_fn
-
-        # Convert the old parameter to new ScanSemantics enum
-        threading = (
-            ScanSemantics.RESULT if constant_context_threading else ScanSemantics.CARRY
-        )
-
-        def initializer(_old_ctx, sentinel_ctx):
-            leaves, tree = jax.tree.flatten(sentinel_ctx)
-            leaves = [
-                jnp.zeros_like(x) if isinstance(x, Uninitialized) else x for x in leaves
-            ]
-            return jax.tree.unflatten(tree, leaves)
-
-        def updater(old_ctx, new_ctx):
-            return new_ctx
-
-        def handler(
-            interpreter: Interpreter[MockContext],
-            ctx: MockContext,
-            eqn: JaxprEqn,
-            invals: list[TracerValue],
-        ) -> HandlerResult[MockContext]:
-            ctx = ctx.add_meta(meta_key)
-            ctx = ctx.add_value(value_fn())
-            if threading == ScanSemantics.CARRY:
-                return default_scan_handler(
-                    interpreter,
-                    ctx,
-                    eqn,
-                    invals,
-                    threading=threading,
-                    initializer=initializer,
-                    updater=updater,
-                )
-            else:  # RESULT threading
-                return default_scan_handler(
-                    interpreter,
-                    ctx,
-                    eqn,
-                    invals,
-                    threading=threading,
-                )
 
         return handler
 
@@ -315,7 +233,6 @@ class HandlerFactory:
                 ctx,
                 eqn,
                 invals,
-                threading=ScanSemantics.CARRY,
                 initializer=initializer,
                 updater=eff_updater,
             )
@@ -383,7 +300,6 @@ class HandlerFactory:
                 ctx,
                 eqn,
                 invals,
-                threading=ScanSemantics.CARRY,
                 initializer=initializer,
                 updater=updater,
             )

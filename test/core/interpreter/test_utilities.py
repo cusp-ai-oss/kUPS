@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import jax.numpy as jnp
-import pytest
 
 from kups.core.interpreter._compat import get_bind_params
 from kups.core.interpreter.util import split_sequence
@@ -19,13 +18,6 @@ class TestUtilities:
         a, b, c = split_sequence(seq, (2, 2))
         assert a == (0, 1) and b == (2, 3) and c == (4, 5)
 
-    def test_split_sequence_align_left_and_right(self):
-        seq = tuple(range(8))
-        left = split_sequence(seq, (3, 2), align="left")
-        assert left[0] == (0, 1, 2) and left[1] == (3, 4)
-        right = split_sequence(seq, (3, 2), align="right")
-        assert right == ((0, 1, 2), (3, 4, 5), (6, 7))
-
     def test_split_sequence_arrays(self):
         arrs = [jnp.array([1, 2]), jnp.array([3, 4]), jnp.array([5, 6])]
         (p1,), (p2, p3) = split_sequence(arrs, (1,))
@@ -33,10 +25,6 @@ class TestUtilities:
         assert jnp.allclose(p2, jnp.array([3, 4])) and jnp.allclose(
             p3, jnp.array([5, 6])
         )
-
-    def test_split_sequence_invalid_align(self):
-        with pytest.raises(ValueError):
-            split_sequence((1, 2, 3), (1,), align="center")  # type: ignore
 
 
 class TestGetBindParams:
