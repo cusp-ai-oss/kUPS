@@ -128,11 +128,17 @@ while state.finished.data.any() or (state.slot_ordinal >= 0).any():
 The block size (8 here) trades refill latency against dispatch overhead, since
 finished slots wait for the block to end; measure it and the slot count on the
 intended workload. Per-job results come out of the refill callback, keyed by
-their `ordinal`, rather than out of cycle logging. The cycle donates its state,
-so copy results out (for example with `jax.device_get`) instead of keeping
-references to state arrays. JIT a closure around `replace_slots` rather than
-the host callback, using `kups.core.utils.jax.jit`, which validates tables and
-indices when tracing instead of on every call.
+their `ordinal`, rather than out of cycle logging. JIT a closure around
+`replace_slots` rather than the host callback, using `kups.core.utils.jax.jit`,
+which validates tables and indices when tracing instead of on every call.
+
+The cycle donates its state, so copy results out (for example with
+`jax.device_get`) instead of keeping references to state arrays. A non-finite
+gradient in an occupied slot fails a runtime assertion that has no fix, rather
+than counting as converged: `propagate_and_fix` raises, the stream stops, and
+the slots still in flight are lost with the donated state. Screen structures
+before packing them (coincident atoms, for example, give non-finite gradients),
+and bound the step, for example with `MaxStepSize`, for strongly distorted ones.
 
 The [streaming integration test](https://github.com/cusp-ai-oss/kUPS/blob/main/test/application/test_relax_streaming.py)
 shows a complete source, collector and refill callback.
