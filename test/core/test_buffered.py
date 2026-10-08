@@ -165,6 +165,16 @@ class TestSelectFree:
         updated = buf.at(free).set(_td([99.0], [True]))
         npt.assert_array_equal(updated.values, [1.0, 99.0, 3.0])
 
+    @pytest.mark.parametrize(
+        ("free", "n"),
+        [([], 2), ([5, 299], 3), (list(range(10)), 9)],
+    )
+    def test_select_free_long_buffer(self, free, n):
+        occ = [i not in free for i in range(300)]
+        buf = Buffered(tuple(range(300)), _td([0.0] * 300, occ), _view)
+        expected = (free + [300] * n)[:n]
+        npt.assert_array_equal(_jit_select_free(buf, n).indices_in(buf.keys), expected)
+
 
 class TestArange:
     def test_arange(self):

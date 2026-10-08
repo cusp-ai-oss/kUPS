@@ -34,6 +34,7 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     skip_post_init_if_disabled,
 )
+from kups.core.utils.ops import first_true_indices
 from kups.core.utils.segment import bincount, segment_sum
 from kups.core.utils.subselect import offsets_from_counts, subselect
 
@@ -386,7 +387,9 @@ class Index[Key: SupportsSorting]:
             size = capacity.generate_assertion(required).size
         else:
             size = None
-        return jnp.where(mask, size=size, fill_value=len(self))[0]
+        if size is None:
+            return jnp.where(mask, fill_value=len(self))[0]
+        return first_true_indices(mask, size, len(self))
 
     def indices_in(
         self, tokens: tuple[Key, ...], *, allow_missing: bool = False
