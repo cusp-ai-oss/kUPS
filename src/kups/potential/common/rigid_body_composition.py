@@ -53,6 +53,13 @@ class RigidBodyComposition[State, Template]:
             axis=1,
         )
 
+    @staticmethod
+    def sum_counts(counts: Array, coefficients: Array) -> Array:
+        """Per-system sum of count rows with linear or quadratic coefficients."""
+        if coefficients.ndim == 3:
+            return jnp.einsum("gi,gij,gj->g", counts, coefficients, counts)
+        return jnp.einsum("gi,gi->g", counts, coefficients)
+
     def potential[Gradients, Hessians](
         self,
         coefficients: Array,
@@ -70,12 +77,9 @@ class RigidBodyComposition[State, Template]:
         def energy(
             inp: Table[SystemId, Array],
         ) -> WithPatch[Table[SystemId, Array], IdPatch[State]]:
-            values = (
-                jnp.einsum("gi,gij,gj->g", inp.data, coefficients, inp.data)
-                if coefficients.ndim == 3
-                else jnp.einsum("gi,gi->g", inp.data, coefficients)
+            return WithPatch(
+                inp.set_data(self.sum_counts(inp.data, coefficients)), IdPatch()
             )
-            return WithPatch(inp.set_data(values), IdPatch())
 
         return PotentialFromEnergy(
             energy_fn=energy,
