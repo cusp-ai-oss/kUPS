@@ -3,6 +3,7 @@
 
 from collections import Counter
 from dataclasses import replace
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import bind, lens
 from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_list_cache import (
+    AUTO_KEY_BLOCK_SIZE,
     CellListCacheParameters,
     CellListCacheUpdatePatch,
     build_cell_list_cache,
@@ -342,6 +344,73 @@ class TestCellListCache:
             key_chunk_size="auto",
         )
         assert parameters.key_layout == expected_layout
+
+    def test_auto_blocks_cull_a_dense_cube(self):
+        # 32 rows in each of 27 cells: without culling, cell traversal wins.
+        rng = np.random.default_rng(75)
+        corners = np.array(list(np.ndindex(3, 3, 3)), float) * 7.0
+        positions = (corners[:, None] + rng.random((27, 32, 3)) * 7.0).reshape(-1, 3)
+        particles = make_lh(jnp.asarray(positions), jnp.zeros(864, int))
+        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 21.0, jnp.array([6.0]))
+        parameters = CellListCacheParameters.estimate(
+            particles,
+            systems,
+            cutoffs,
+            key_layout="auto",
+            key_chunk_size="auto",
+            key_block_size="auto",
+        )
+        assert parameters.key_layout == "slots"
+        assert parameters.key_block_size == AUTO_KEY_BLOCK_SIZE
+        batch = parameters.key_chunk_size
+        assert batch is not None and batch % AUTO_KEY_BLOCK_SIZE == 0
+        table = build_cell_list_cache(particles, systems, cutoffs, (), parameters)
+        assert table.block_bounds is not None
+        assert batch < table.sentinel_slot
+        # Most queries find all their near blocks in one batch.
+        near = jax.vmap(near_blocks, in_axes=(0, None, None, None, None, None, None))(
+            table.rows.frac[:864],
+            *table.block_bounds,
+            systems.data.cell.vectors[0],
+            systems.data.cell.perpendicular_lengths[0],
+            6.0,
+            (True, True, True),
+        )
+        counts = np.asarray(near.sum(-1))
+        assert np.mean(counts * AUTO_KEY_BLOCK_SIZE <= batch) >= 0.9
+
+    @pytest.mark.parametrize(
+        "lengths,n_systems,cutoff,key_block_size",
+        [
+            ((21.0, 21.0, 11.0), 1, 6.0, "auto"),
+            ((21.0, 21.0, 21.0), 2, 6.0, "auto"),
+            ((7.0, 7.0, 7.0), 1, 4.5, 8),
+        ],
+    )
+    def test_blocks_need_one_system_and_the_minimum_image(
+        self, lengths, n_systems, cutoff, key_block_size
+    ):
+        n = 60 * n_systems
+        positions = jax.random.uniform(jax.random.key(76), (n, 3)) * jnp.array(lengths)
+        particles = make_lh(positions, jnp.arange(n) % n_systems)
+        frame = TriclinicFrame.from_matrix(
+            jnp.tile(jnp.diag(jnp.array(lengths)), (n_systems, 1, 1))
+        )
+        systems, cutoffs = make_systems(
+            Cell(frame, periodic=(True, True, True)), jnp.full(n_systems, cutoff)
+        )
+
+        def estimate(block: int | Literal["auto"] | None) -> CellListCacheParameters:
+            return CellListCacheParameters.estimate(
+                particles,
+                systems,
+                cutoffs,
+                key_layout="auto",
+                key_chunk_size="auto",
+                key_block_size=block,
+            )
+
+        assert estimate(key_block_size) == estimate(None)
 
     def test_rejection_same_cell_and_overflow(self):
         particles = make_lh(
