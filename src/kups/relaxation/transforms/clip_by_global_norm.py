@@ -29,7 +29,7 @@ from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_norm,
 )
-from kups.relaxation.optimizer import Optimizer
+from kups.relaxation.optimizer import ResetLayout, Resettable
 
 
 @dataclass
@@ -46,7 +46,7 @@ class ClipByGlobalNormState:
 
 
 @dataclass
-class ClipByGlobalNorm[Params](Optimizer[Params, ClipByGlobalNormState]):
+class ClipByGlobalNorm[Params](Resettable[Params, ClipByGlobalNormState]):
     """Clip the per-system L2 norm of updates to ``max_norm``.
 
     With ``index_prefix=None`` this reduces to the standard
@@ -80,3 +80,11 @@ class ClipByGlobalNorm[Params](Optimizer[Params, ClipByGlobalNormState]):
         norm = tree_segment_norm(updates, index_prefix)
         scale = norm.map_data(lambda x: jnp.minimum(1.0, self.max_norm / (x + 1e-12)))
         return tree_scale_per_row(updates, scale, index_prefix), state
+
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[ClipByGlobalNormState, tuple[()], tuple[()]]:
+        """Nothing per system: the state only holds the index prefix from ``init``."""
+        return ResetLayout.empty()

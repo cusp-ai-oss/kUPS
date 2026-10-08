@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, assert_type
+from typing import Any, Callable, assert_type, override
 
 import jax
 import jax.numpy as jnp
@@ -16,26 +16,50 @@ import pytest
 from kups.core.data import Index, Table
 from kups.core.data.index import SupportsSorting
 from kups.core.lens import lens
-from kups.core.typing import SystemId
+from kups.core.typing import PyTree, SystemId
+from kups.core.utils.jax import dataclass
 from kups.relaxation.optimizer import (
     ChainOptimizer,
     ChainOptState,
     Optimizer,
     ResetLayout,
+    Resettable,
+    ResettableChain,
+    Stateless,
     chain,
+    resettable_chain,
 )
 from kups.relaxation.transforms import (
     ClipByGlobalNorm,
+    ClipByGlobalNormState,
+    LineSearchState,
     MaxStepSize,
+    MaxStepSizeState,
     ScaleByAseLbfgs,
+    ScaleByAseLbfgsState,
     ScaleByBacktrackingLinesearch,
     ScaleByFire,
     ScaleByFire2,
+    ScaleByFire2State,
     ScaleByMoreThuenteLinesearch,
 )
-from kups.relaxation.transforms.fire import FireReset, fire_reset_layout
-from kups.relaxation.transforms.fire2 import fire2_reset_layout
-from kups.relaxation.transforms.lbfgs import LbfgsResetIndices, lbfgs_reset_layout
+from kups.relaxation.transforms.fire import (
+    FireReset,
+    FireResetData,
+    FireResetIndices,
+    ScaleByFireState,
+    fire_reset_layout,
+)
+from kups.relaxation.transforms.fire2 import (
+    Fire2ResetData,
+    Fire2ResetIndices,
+    fire2_reset_layout,
+)
+from kups.relaxation.transforms.lbfgs import (
+    LbfgsResetData,
+    LbfgsResetIndices,
+    lbfgs_reset_layout,
+)
 from kups.relaxation.transforms.linesearch import linesearch_reset_layout
 
 # Two systems: rows 0-2 belong to system 0, rows 3-4 to system 1.
@@ -111,6 +135,42 @@ OPTIMIZERS: dict[str, Callable[[], ChainOptimizer[jax.Array]]] = {
     ),
     "fire_clipped": lambda: chain(
         optax.scale(-1.0),
+        ScaleByFire[jax.Array](dt_start=0.1),
+        ClipByGlobalNorm[jax.Array](max_norm=0.5),
+        MaxStepSize[jax.Array](max_step_size=0.2),
+    ),
+}
+
+
+NEGATE = Stateless(optax.scale(-1.0))
+
+# The OPTIMIZERS chains, with each layout declared by its member.
+RESETTABLE: dict[str, Callable[[], ResettableChain[jax.Array]]] = {
+    "fire": lambda: resettable_chain(NEGATE, ScaleByFire[jax.Array](dt_start=0.1)),
+    "fire2": lambda: resettable_chain(
+        NEGATE, ScaleByFire2[jax.Array](dt_start=0.1, n_min=3)
+    ),
+    "fire2_abc": lambda: resettable_chain(
+        NEGATE, ScaleByFire2[jax.Array](dt_start=0.1, use_abc=True)
+    ),
+    "lbfgs": lambda: resettable_chain(
+        ScaleByAseLbfgs[jax.Array](memory_size=3), NEGATE
+    ),
+    "lbfgs_adaptive": lambda: resettable_chain(
+        ScaleByAseLbfgs[jax.Array](memory_size=3, adaptive_scale=True), NEGATE
+    ),
+    "lbfgs_more_thuente": lambda: resettable_chain(
+        ScaleByAseLbfgs[jax.Array](memory_size=3),
+        NEGATE,
+        ScaleByMoreThuenteLinesearch[jax.Array](),
+    ),
+    "lbfgs_backtracking": lambda: resettable_chain(
+        ScaleByAseLbfgs[jax.Array](memory_size=3),
+        NEGATE,
+        ScaleByBacktrackingLinesearch[jax.Array](),
+    ),
+    "fire_clipped": lambda: resettable_chain(
+        NEGATE,
         ScaleByFire[jax.Array](dt_start=0.1),
         ClipByGlobalNorm[jax.Array](max_norm=0.5),
         MaxStepSize[jax.Array](max_step_size=0.2),
@@ -317,3 +377,177 @@ def test_linesearch_reset_clears_previous_energy() -> None:
     reset = linesearch_reset_layout().reset(search, opt.init(X0, PREFIX)[2], MASK)
     assert jnp.isnan(reset.prev_phi0.data[1])
     npt.assert_array_equal(reset.prev_phi0.data[0], search.prev_phi0.data[0])
+
+
+@pytest.mark.parametrize("name", sorted(OPTIMIZERS))
+def test_resettable_chain_matches_explicit_layout(name: str) -> None:
+    plain, opt = OPTIMIZERS[name](), RESETTABLE[name]()
+    _, expected = _run(
+        plain, X0 + 0.5, plain.init(X0 + 0.5, PREFIX), PREFIX, X0, STIFFNESS, 4
+    )
+    _, state = _run(opt, X0 + 0.5, opt.init(X0 + 0.5, PREFIX), PREFIX, X0, STIFFNESS, 4)
+    for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(expected), strict=True):
+        npt.assert_array_equal(a, b)
+
+    fresh = opt.init(X0, PREFIX)
+    explicit = _layout(name).reset(state, fresh, MASK)
+    composed = opt.reset_layout.reset(state, fresh, MASK)
+    compiled = jax.jit(lambda s: opt.reset_layout.reset(s, fresh, MASK))(state)
+    assert jax.tree.structure(composed) == jax.tree.structure(explicit)
+    for a, b, c in zip(
+        jax.tree.leaves(explicit),
+        jax.tree.leaves(composed),
+        jax.tree.leaves(compiled),
+        strict=True,
+    ):
+        npt.assert_array_equal(b, a)
+        npt.assert_array_equal(c, a)
+
+
+def test_resettable_chains_nest() -> None:
+    inner = resettable_chain(NEGATE, ScaleByFire[jax.Array](dt_start=0.1, n_min=1))
+    opt = resettable_chain(inner, MaxStepSize[jax.Array](max_step_size=0.2))
+    _, state = _run(opt, X0 + 0.5, opt.init(X0 + 0.5, PREFIX), PREFIX, X0, STIFFNESS, 4)
+    fresh = opt.init(X0, PREFIX)
+    reset = opt.reset_layout.reset(state, fresh, MASK)
+    fire, new_fire = state[0][1], reset[0][1]
+    npt.assert_array_equal(new_fire.dt.data, [fire.dt.data[0], fresh[0][1].dt.data[1]])
+    npt.assert_array_equal(new_fire.velocity[:3], fire.velocity[:3])
+    npt.assert_array_equal(new_fire.velocity[3:], 0.0)
+
+
+def test_stateless_rejects_stateful_optax_transforms() -> None:
+    with pytest.raises(ValueError, match="without state"):
+        Stateless(optax.adam(0.1)).init(X0, PREFIX)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: optax.sgd(0.1),
+        lambda: optax.chain(optax.clip(1.0), optax.scale(-1.0)),
+        lambda: optax.masked(
+            optax.scale(-1.0), lambda p: jax.tree.map(lambda _: True, p)
+        ),
+    ],
+    ids=["sgd", "chain", "masked"],
+)
+def test_stateless_passes_composite_states_through(
+    make: Callable[[], optax.GradientTransformation],
+) -> None:
+    # Composite stateless transforms have structured, leafless states.
+    plain = chain(make(), ScaleByFire[jax.Array](dt_start=0.1))
+    opt = resettable_chain(Stateless(make()), ScaleByFire[jax.Array](dt_start=0.1))
+    _, expected = _run(
+        plain, X0 + 0.5, plain.init(X0 + 0.5, PREFIX), PREFIX, X0, STIFFNESS, 3
+    )
+    _, state = _run(opt, X0 + 0.5, opt.init(X0 + 0.5, PREFIX), PREFIX, X0, STIFFNESS, 3)
+    for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(expected), strict=True):
+        npt.assert_array_equal(a, b)
+    reset = opt.reset_layout.reset(state, opt.init(X0, PREFIX), MASK)
+    assert jax.tree.structure(reset) == jax.tree.structure(state)
+    npt.assert_array_equal(reset[1].velocity[3:], 0.0)
+
+
+@dataclass
+class _Forgetful(Resettable[jax.Array, ScaleByFireState]):
+    """Declares itself resettable but never says what to reset."""
+
+    @override
+    def init(
+        self, parameters: jax.Array, index_prefix: PyTree | None = None
+    ) -> ScaleByFireState:
+        return ScaleByFire[jax.Array]().init(parameters, index_prefix)
+
+    @override
+    def update(
+        self,
+        updates: jax.Array,
+        state: ScaleByFireState,
+        params: jax.Array | None = None,
+        **kwargs: Any,
+    ) -> tuple[jax.Array, ScaleByFireState]:
+        return ScaleByFire[jax.Array]().update(updates, state, params, **kwargs)
+
+
+def test_resettable_without_layout_cannot_be_built() -> None:
+    with pytest.raises(TypeError, match="reset_layout"):
+        _Forgetful()
+
+
+def test_native_transforms_declare_their_layouts() -> None:
+    assert_type(
+        ScaleByFire[jax.Array]().reset_layout,
+        ResetLayout[ScaleByFireState, FireResetData, FireResetIndices],
+    )
+    assert_type(
+        ScaleByFire2[jax.Array]().reset_layout,
+        ResetLayout[ScaleByFire2State, Fire2ResetData, Fire2ResetIndices],
+    )
+    assert_type(
+        ScaleByAseLbfgs[jax.Array]().reset_layout,
+        ResetLayout[ScaleByAseLbfgsState[jax.Array], LbfgsResetData, LbfgsResetIndices],
+    )
+    search = ResetLayout[
+        LineSearchState, Table[SupportsSorting, jax.Array], Index[SupportsSorting]
+    ]
+    assert_type(ScaleByBacktrackingLinesearch[jax.Array]().reset_layout, search)
+    assert_type(ScaleByMoreThuenteLinesearch[jax.Array]().reset_layout, search)
+    assert_type(
+        MaxStepSize[jax.Array](max_step_size=0.2).reset_layout,
+        ResetLayout[MaxStepSizeState, tuple[()], tuple[()]],
+    )
+    assert_type(
+        ClipByGlobalNorm[jax.Array](max_norm=0.5).reset_layout,
+        ResetLayout[ClipByGlobalNormState, tuple[()], tuple[()]],
+    )
+    assert_type(
+        RESETTABLE["fire"]().reset_layout,
+        ResetLayout[ChainOptState, tuple[Any, ...], tuple[Any, ...]],
+    )
+    # Params comes from the native member, whichever position it takes.
+    assert_type(
+        resettable_chain(NEGATE, ScaleByFire[jax.Array]()), ResettableChain[jax.Array]
+    )
+
+
+@dataclass
+class _StructuralOnly(Optimizer[jax.Array, ScaleByFireState]):
+    """Has a reset layout but does not subclass Resettable."""
+
+    @override
+    def init(
+        self, parameters: jax.Array, index_prefix: PyTree | None = None
+    ) -> ScaleByFireState:
+        return ScaleByFire[jax.Array]().init(parameters, index_prefix)
+
+    @override
+    def update(
+        self,
+        updates: jax.Array,
+        state: ScaleByFireState,
+        params: jax.Array | None = None,
+        **kwargs: Any,
+    ) -> tuple[jax.Array, ScaleByFireState]:
+        return ScaleByFire[jax.Array]().update(updates, state, params, **kwargs)
+
+    @property
+    def reset_layout(
+        self,
+    ) -> ResetLayout[ScaleByFireState, FireResetData, FireResetIndices]:
+        return fire_reset_layout()
+
+
+def _rejected_by_the_type_checker() -> None:
+    """Never called: pyrefly in pre-commit fails if any call here type-checks.
+
+    A bare Optax transform and a plain chain have no reset layout, and a
+    layout alone does not make an optimizer resettable: membership is nominal,
+    so only subclasses of Resettable may join a resettable chain.
+    """
+    resettable_chain(optax.adam(0.1))  # pyrefly: ignore[bad-argument-type]
+    # Bound first: inline, chain(...) would be inferred against the unsolved
+    # Params and fail on that instead of on the missing layout.
+    plain = chain(ScaleByFire[jax.Array]())
+    resettable_chain(plain)  # pyrefly: ignore[bad-argument-type]
+    resettable_chain(_StructuralOnly())  # pyrefly: ignore[bad-argument-type]

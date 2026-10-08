@@ -61,7 +61,7 @@ from kups.core.utils.segmented_tree import (
     tree_vdot,
     tree_where_per_row,
 )
-from kups.relaxation.optimizer import Optimizer, ResetLayout
+from kups.relaxation.optimizer import ResetLayout, Resettable
 from kups.relaxation.transforms.fire import FireReset
 
 
@@ -129,7 +129,7 @@ def fire2_reset_layout() -> ResetLayout[
 
 
 @dataclass
-class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
+class ScaleByFire2[Params](Resettable[Params, ScaleByFire2State]):
     """FIRE 2.0 (with optional ABC-FIRE) with per-system block-diagonal state.
 
     Per-system port of the LAMMPS-style FIRE 2.0 integrator described in
@@ -361,3 +361,11 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             n_total=state.n_total.set_data(n_total),
             index_prefix=idx,
         )
+
+    @property
+    @override
+    def reset_layout(
+        self,
+    ) -> ResetLayout[ScaleByFire2State, Fire2ResetData, Fire2ResetIndices]:
+        """The FIRE fields plus the per-system warm-up counter ``n_total``."""
+        return fire2_reset_layout()
