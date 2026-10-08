@@ -14,16 +14,35 @@ from kups.relaxation.transforms.clip_by_global_norm import (
     ClipByGlobalNorm,
     ClipByGlobalNormState,
 )
-from kups.relaxation.transforms.fire import ScaleByFire, ScaleByFireState
-from kups.relaxation.transforms.fire2 import ScaleByFire2, ScaleByFire2State
+from kups.relaxation.transforms.fire import (
+    FireReset,
+    FireResetData,
+    FireResetIndices,
+    ScaleByFire,
+    ScaleByFireState,
+    fire_reset_layout,
+)
+from kups.relaxation.transforms.fire2 import (
+    Fire2Reset,
+    Fire2ResetData,
+    Fire2ResetIndices,
+    ScaleByFire2,
+    ScaleByFire2State,
+    fire2_reset_layout,
+)
 from kups.relaxation.transforms.lbfgs import (
+    LbfgsReset,
+    LbfgsResetData,
+    LbfgsResetIndices,
     ScaleByAseLbfgs,
     ScaleByAseLbfgsState,
+    lbfgs_reset_layout,
 )
 from kups.relaxation.transforms.linesearch import (
     LineSearchState,
     ScaleByBacktrackingLinesearch,
     ScaleByMoreThuenteLinesearch,
+    linesearch_reset_layout,
 )
 from kups.relaxation.transforms.max_step_size import (
     MaxStepSize,
@@ -33,6 +52,15 @@ from kups.relaxation.transforms.max_step_size import (
 __all__ = [
     "ClipByGlobalNorm",
     "ClipByGlobalNormState",
+    "Fire2Reset",
+    "Fire2ResetData",
+    "Fire2ResetIndices",
+    "FireReset",
+    "FireResetData",
+    "FireResetIndices",
+    "LbfgsReset",
+    "LbfgsResetData",
+    "LbfgsResetIndices",
     "LineSearchState",
     "MaxStepSize",
     "MaxStepSizeState",
@@ -44,4 +72,8 @@ __all__ = [
     "ScaleByFire2State",
     "ScaleByFireState",
     "ScaleByMoreThuenteLinesearch",
+    "fire2_reset_layout",
+    "fire_reset_layout",
+    "lbfgs_reset_layout",
+    "linesearch_reset_layout",
 ]

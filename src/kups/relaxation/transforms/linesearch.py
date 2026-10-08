@@ -66,10 +66,11 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
+from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import tree_scale_per_row, tree_vdot
+from kups.core.utils.segmented_tree import tree_scale_per_row, tree_vdot
+from kups.relaxation.optimizer import Optimizer, ResetLayout
 
 type ValueAndGradFn = Callable[[PyTree], tuple[Table[SupportsSorting, Array], PyTree]]
 """Maps trial params to ``(per-system energies, gradient pytree)``."""
@@ -82,14 +83,14 @@ class LineSearchState:
     Attributes:
         index_prefix: Tree prefix whose leaves are ``Index`` objects, captured at
             init and used to take every reduction per system.
-        prev_phi0: Previous step's per-system energies, ``NaN`` until a step
-            records them. :class:`ScaleByBacktrackingLinesearch` uses them for its
-            Nocedal & Wright eq. 3.60 initial-step estimate;
+        prev_phi0: Previous step's per-system energies, keyed by system and
+            ``NaN`` until a step records them. :class:`ScaleByBacktrackingLinesearch`
+            uses them for its Nocedal & Wright eq. 3.60 initial-step estimate;
             :class:`ScaleByMoreThuenteLinesearch` leaves them untouched.
     """
 
     index_prefix: PyTree
-    prev_phi0: Array
+    prev_phi0: Table[SupportsSorting, Array]
 
 
 def _init_state(parameters: PyTree, index_prefix: PyTree | None) -> LineSearchState:
@@ -98,7 +99,17 @@ def _init_state(parameters: PyTree, index_prefix: PyTree | None) -> LineSearchSt
     leaves = jax.tree.leaves(index_prefix, is_leaf=lambda x: isinstance(x, Index))
     keys = next(leaf for leaf in leaves if isinstance(leaf, Index)).keys
     return LineSearchState(
-        index_prefix=tree_copy(index_prefix), prev_phi0=jnp.full(len(keys), jnp.nan)
+        index_prefix=tree_copy(index_prefix),
+        prev_phi0=Table(keys, jnp.full(len(keys), jnp.nan)),
+    )
+
+
+def linesearch_reset_layout() -> ResetLayout[
+    LineSearchState, Table[SupportsSorting, Array], Index[SupportsSorting]
+]:
+    """Previous energies, indexed by system; shared by both line searches."""
+    return ResetLayout(
+        fields=lens(lambda s: s.prev_phi0), system_index=lambda s: s.prev_phi0.index
     )
 
 
@@ -118,8 +129,7 @@ def _setup(
             "`value_and_grad_fn` keywords that RelaxationPropagator supplies."
         )
     idx = state.index_prefix
-    leaves = jax.tree.leaves(idx, is_leaf=lambda x: isinstance(x, Index))
-    keys = next(leaf for leaf in leaves if isinstance(leaf, Index)).keys
+    keys = state.prev_phi0.keys
     if tuple(energies.keys) != tuple(keys):
         raise ValueError(
             f"total_energies keys {energies.keys} do not match index_prefix "
@@ -499,14 +509,16 @@ class ScaleByBacktrackingLinesearch[Params](Optimizer[Params, LineSearchState]):
             phi0,
             dphi0,
             value_and_grad_fn,
-            state.prev_phi0,
+            state.prev_phi0.data,
             c1=self.c1,
             a_min=self.a_min,
             a_max=self.a_max,
             max_steps=self.max_steps,
             t_init=self.t_init,
         )
-        new_state = LineSearchState(index_prefix=state.index_prefix, prev_phi0=phi0)
+        new_state = LineSearchState(
+            index_prefix=state.index_prefix, prev_phi0=state.prev_phi0.set_data(phi0)
+        )
         return tree_scale_per_row(updates, Table(keys, t), idx), new_state
 
 
