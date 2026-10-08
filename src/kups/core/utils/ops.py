@@ -157,3 +157,33 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
     keys = jnp.where(mask, -jnp.arange(n, dtype=jnp.float32), -jnp.inf)
     values, found = jax.lax.top_k(keys, size)
     return jnp.where(values > -jnp.inf, found.astype(int), fill_value)
+
+
+def compact_indices(mask: Array, size: int) -> Array:
+    """Positions of the first ``size`` true entries of a 1D ``mask``.
+
+    Equivalent to ``jnp.nonzero(mask, size=size, fill_value=len(mask))[0]``,
+    but the prefix sum uses blocked triangular matrix products, which are
+    faster than a scan for masks of up to a few thousand entries. Positions
+    are exact below ``2**24``.
+
+    Args:
+        mask: Boolean array of shape ``(n,)``.
+        size: Number of positions to return.
+
+    Returns:
+        Integer array of shape ``(size,)``, padded with ``n``.
+    """
+    n = mask.shape[0]
+    width = min(32, max(n, 1))
+    padded = jnp.pad(mask, (0, -n % width)).reshape(-1, width)
+    inner = padded.astype(jnp.float32) @ jnp.triu(jnp.ones((width, width), jnp.float32))
+    totals = inner[:, -1]
+    rows = totals.shape[0]
+    offsets = jnp.tril(jnp.ones((rows, rows), jnp.float32), -1) @ totals
+    position = (inner + offsets[:, None]).reshape(-1)[:n].astype(jnp.int32) - 1
+    return (
+        jnp.full(size, n, jnp.int32)
+        .at[jnp.where(mask, position, size)]
+        .set(jnp.arange(n, dtype=jnp.int32), mode="drop")
+    )

@@ -19,6 +19,7 @@ from kups.core.neighborlist.cell_list_cache import (
     CellListCacheParameters,
     CellListCacheUpdatePatch,
     build_cell_list_cache,
+    near_blocks,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.result import as_result_function
@@ -452,3 +453,52 @@ class TestSpatialOrder:
         density = np.array([248 / 20.0**3, 56 / 12.0**3])
         edge = (8 / density[owner]) ** (1 / 3)
         assert np.mean(extent / edge[:, None]) < 0.9
+
+
+class TestBlockCulling:
+    @pytest.mark.parametrize(
+        "periodic", [(True, True, True), (False, True, True), (False, False, False)]
+    )
+    def test_skipped_blocks_are_beyond_the_cutoff(self, periodic):
+        rng = np.random.default_rng(5)
+        matrix = np.array([[8.0, 0.0, 0.0], [4.0, 7.0, 0.0], [3.5, -2.0, 6.5]])
+        wraps = np.asarray(periodic)
+        # Compact blocks around random centers, some crossing periodic faces.
+        centers = rng.random((60, 1, 3)) * 1.2 - 0.1
+        keys = centers + (rng.random((60, 6, 3)) - 0.5) * rng.random((60, 1, 1)) * 0.6
+        keys = np.where(wraps, keys % 1.0, keys)
+        keys[0] = keys[0, :1]
+        queries = rng.random((9, 3)) * 1.2 - 0.1
+        queries = np.where(wraps, queries % 1.0, queries)
+        # Queries exactly on a block's box center and on a single-point block.
+        center = (keys[1].min(0) + keys[1].max(0)) / 2
+        queries = np.concatenate([queries, center[None], keys[0, :1]])
+        lower = np.concatenate([keys.min(1), np.full((1, 3), np.inf)]).T
+        upper = np.concatenate([keys.max(1), np.full((1, 3), -np.inf)]).T
+        perpendicular = 1 / np.linalg.norm(np.linalg.inv(matrix), axis=0)
+        delta = keys[None] - queries[:, None, None]
+        delta = delta - np.where(wraps, np.round(delta), 0.0)
+        distances = np.linalg.norm(delta @ matrix, axis=-1).min(-1)
+        # Separations to each block's box as near_blocks sees them, per axis.
+        offset = (lower[:, :-1] + upper[:, :-1]).T / 2 - queries[:, None]
+        offset = np.abs(offset - np.where(wraps, np.round(offset), 0.0))
+        half = (upper[:, :-1] - lower[:, :-1]).T / 2
+        gap = np.where(wraps, np.minimum(offset, 1 - offset), offset) - half
+        near_fn = jax.jit(
+            jax.vmap(near_blocks, in_axes=(0, None, None, None, None, None, None)),
+            static_argnums=6,
+        )
+        skipped = projected = 0
+        for cutoff in (1.5, 3.0, 4.5):
+            near = np.asarray(
+                near_fn(queries, lower, upper, matrix, perpendicular, cutoff, periodic)
+            )
+            assert not near[:, -1].any()
+            assert np.all(near[:, :-1] | (distances >= cutoff))
+            skipped += (~near[:, :-1]).sum()
+            slab = (gap * perpendicular >= cutoff).any(-1)
+            projected += (~near[:, :-1] & ~slab).sum()
+        # The bounds are informative: many far blocks are skipped, including
+        # blocks that no per-axis slab bound skips.
+        assert skipped > 0.3 * sum((distances >= c).sum() for c in (1.5, 3.0, 4.5))
+        assert projected > 0
