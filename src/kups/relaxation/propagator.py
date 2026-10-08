@@ -66,8 +66,11 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
         opt_state: Lens to get/set the optimizer state
         optimizer: Gradient transformation
         mask: Optional acceptance and parameter-index views, read after evaluating
-            the potential and applying its patch. Optimizer state still advances;
-            a reused slot must be reset before its next update.
+            the potential and applying its patch. Rejected rows are written back
+            through ``property``, so they stay bit-identical only when
+            ``property.set(s, property.get(s))`` round-trips exactly (under
+            ``FRECHET_FILTER`` positions move by round-off). Optimizer state still
+            advances; a reused slot must be reset before its next update.
 
     Example:
         ```python

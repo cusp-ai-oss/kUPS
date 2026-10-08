@@ -47,7 +47,8 @@ class RelaxStepData:
     Attributes:
         atoms: Particle data at this step.
         potential_energy: Potential energy per system.
-        max_force: Maximum atomic force magnitude per system (eV/Å).
+        max_force: Maximum atomic force magnitude per system (eV/Å); non-finite
+            forces are reported as ``inf``.
         stress_tensor: Stress tensor per system, shape (..., 3, 3).
     """
 

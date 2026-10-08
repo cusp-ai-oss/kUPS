@@ -70,7 +70,12 @@ def converged_per_system(
     *,
     include_cell: bool = True,
 ) -> Table[SystemId, Array]:
-    """``Table[SystemId, bool]``: systems whose :func:`max_dof_per_system` is below ``tolerance``."""
+    """``Table[SystemId, bool]``: systems whose :func:`max_dof_per_system` is below ``tolerance``.
+
+    Records a runtime assertion if any active DOF gradient is non-finite; it
+    raises only under ``as_result_function``/``with_runtime_assertions`` (an
+    eager call just reports that system as not converged).
+    """
     maximum = max_dof_per_system(gradients, index_prefix, include_cell=include_cell)
     runtime_assert(
         ~jnp.any(jnp.isposinf(maximum.data)), "Non-finite relaxation gradients."
