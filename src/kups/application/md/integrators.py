@@ -109,7 +109,7 @@ def make_md_step_from_state[State](
 def make_md_step_from_state[State](
     state: Lens[State, IsState[_MDParticleData, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
-    integrator: Literal["csvr_npt"],
+    integrator: Literal["csvr_npt", "csvr_npt_1eval"],
     *,
     parameters: None = None,
 ) -> Propagator[State]: ...
@@ -149,7 +149,7 @@ def make_md_step_from_state[State](
 def make_md_step_from_state[State](
     state: Lens[State, IsState[_MDParticleData, IsMDSystemNPTBase]],
     derivative_computation: Propagator[State],
-    integrator: Literal["csvr_npt"],
+    integrator: Literal["csvr_npt", "csvr_npt_1eval"],
     *,
     parameters: IsCSVRNPTParams,
 ) -> Propagator[State]: ...
@@ -198,6 +198,10 @@ def make_md_step_from_state[State](
     - ``"csvr_npt"`` — [CSVR-NPT][kups.md.integrators.make_csvr_npt_step]
       (NPT via CSVR thermostat with barostat). Requires
       ``integrator_params: IsCSVRNPTParams`` and a ``cell_gradients`` leaf on each system.
+    - ``"csvr_npt_1eval"`` — as ``"csvr_npt"``, but with the post-barostat
+      force/stress eval dropped, halving the derivative evaluations per step. Only
+      accurate for slow barostats and isotropic cells; see
+      [``refresh_after_barostat``][kups.md.integrators.make_csvr_npt_step].
     - ``"baoab_npt_langevin"`` — [BAOAB NPT Langevin][kups.md.integrators.make_baoab_npt_langevin_step]
       (Gao–Fang–Wang JCP 2016 fully-flexible-cell NPT). Requires
       ``integrator_params: IsBAOABNPTLangevinParams`` plus ``cell_momentum``
@@ -247,9 +251,13 @@ def make_md_step_from_state[State](
             return make_csvr_step(
                 particles_lens, systems_lens, derivative_computation, flow
             )
-        case "csvr_npt":
+        case "csvr_npt" | "csvr_npt_1eval":
             return make_csvr_npt_step(
-                particles_lens, systems_lens, derivative_computation, flow
+                particles_lens,
+                systems_lens,
+                derivative_computation,
+                flow,
+                refresh_after_barostat=integrator == "csvr_npt",
             )
         case "baoab_npt_langevin":
             return make_baoab_npt_langevin_step(

@@ -62,7 +62,12 @@ type Pressure = Array
 type Stress = Array
 
 type Integrator = Literal[
-    "verlet", "baoab_langevin", "csvr", "csvr_npt", "baoab_npt_langevin"
+    "verlet",
+    "baoab_langevin",
+    "csvr",
+    "csvr_npt",
+    "csvr_npt_1eval",
+    "baoab_npt_langevin",
 ]
 
 # χ constant in the Gao-Fang-Wang NPT Langevin barostat-pressure term
@@ -887,6 +892,7 @@ def make_csvr_npt_step[State](
     systems: Lens[State, Table[SystemId, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
+    refresh_after_barostat: bool = True,
 ) -> SequentialPropagator[State]:
     r"""Create NPT integrator for isothermal-isobaric (NPT) ensemble sampling.
 
@@ -904,7 +910,8 @@ def make_csvr_npt_step[State](
         - Compute $\mathbf{F}(t+\Delta t)$ — force evaluation
         - $\mathbf{p}(t+\Delta t) = \mathbf{p}(t+\Delta t/2) + \mathbf{F}(t+\Delta t) \cdot \Delta t/2$ — half momentum step
     3. Stochastic cell rescaling (pressure control)
-    4. Recompute forces and stress after box/position scaling
+    4. Recompute forces and stress after box/position scaling (unless
+       ``refresh_after_barostat`` is False)
 
     Args:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, positions $\\mathbf{r}$,
@@ -915,6 +922,12 @@ def make_csvr_npt_step[State](
             degrees of freedom $N_{\\text{dof}}$, thermostat time constant $\\tau_T$)
         derivative_computation: Propagator to compute forces $\\mathbf{F}$ and stress tensor $\\mathbf{W}$ from state
         flow: Flow operator for position updates (handles boundary conditions)
+        refresh_after_barostat: If True (default), recompute $\\mathbf{F}$ and $\\mathbf{W}$
+            after the barostat rescale, costing two derivative evaluations per step. If
+            False, the next step's first half-kick instead reuses the pre-rescale forces,
+            halving the cost. The resulting force error grows with $|\\mu - 1|$, so only
+            drop the refresh for slow barostats ($\\tau_P \\gg \\Delta t$) and isotropic
+            cells.
 
     Returns:
         SequentialPropagator implementing the CSVR-NPT algorithm
@@ -933,17 +946,19 @@ def make_csvr_npt_step[State](
     params_half: View[State, Table[SystemId, IsCSVRNPTParams]] = pipe(
         systems.get, _half_time_params
     )
-    return SequentialPropagator(
-        (
-            CSVRStep(particles, params),
-            MomentumStep(particles, params_half),
-            PositionStep(particles, params, flow),
-            derivative_computation,
-            MomentumStep(particles, params_half),
-            StochasticCellRescalingStep(particles, systems),
-            derivative_computation,
-        )
-    )
+    # Pressure control is unaffected by refresh_after_barostat either way: the barostat
+    # consumes the fresh pre-rescale stress produced by the eval above it.
+    steps: list[Propagator[State]] = [
+        CSVRStep(particles, params),
+        MomentumStep(particles, params_half),
+        PositionStep(particles, params, flow),
+        derivative_computation,
+        MomentumStep(particles, params_half),
+        StochasticCellRescalingStep(particles, systems),
+    ]
+    if refresh_after_barostat:
+        steps.append(derivative_computation)
+    return SequentialPropagator(tuple(steps))
 
 
 # =============================================================================
