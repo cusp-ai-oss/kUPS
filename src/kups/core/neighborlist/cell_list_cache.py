@@ -333,16 +333,15 @@ def cell_rows[Data](
         The binned rows.
     """
     points = particles.data
-    active = points.inclusion.indices < points.inclusion.num_labels
-    system = Index(
-        systems.keys, jnp.where(active, points.system.indices_in(systems.keys), 0)
-    )
+    active = points.inclusion.valid_mask
+    system_ids = jnp.where(active, points.system.indices_in(systems.keys), 0)
+    system = Index(systems.keys, system_ids)
     frames = systems.map_data(lambda s: s.cell.frame.materialize())
     frac = frames[system].to_fractional(
         jnp.where(active[:, None], points.positions, 0.0)
     )
     frac, cell = assign_cells(
-        frac, system.indices, active, bins, max_cells, systems.data.cell
+        frac, system_ids, active, bins, max_cells, systems.data.cell
     )
     inclusion = points.inclusion.apply_mask(cell < bins.shape[0] * max_cells)
     return CellRows(frac, system, inclusion, points.exclusion, data, cell)
@@ -477,7 +476,7 @@ class CellListCache[Data](NamedTuple):
 
 def cell_candidates[Data](
     keys: CellRows[Data],
-    queries: CellRows[Data],
+    queries: CellRows[Data] | None,
     index: Array,
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
     cutoffs: Table[SystemId, Array],
@@ -485,16 +484,25 @@ def cell_candidates[Data](
 ) -> tuple[CandidateBatch[Literal[2]], PipelineContext]:
     """Adapt a cell-table query to the standard neighbor pipeline.
 
-    ``index`` contains key slots per query row. The same adapter handles
-    within-system query pairs, so geometry and masks have a single implementation.
-    Periodic images expand only this chunk, with capacity bounded per pair.
+    ``index`` contains key slots per query row. Without ``queries`` the rows of
+    ``keys`` query each other, so geometry and masks have a single
+    implementation. Periodic images expand only this chunk, with capacity
+    bounded per pair.
     """
     key_table = Table.arange(keys, label=ParticleId)
-    query_table = Table.arange(queries, label=ParticleId)
-    ctx = PipelineContext(key_table, query_table, systems, None)
+    query_table = (
+        key_table
+        if queries is None
+        else Table(
+            tuple(ParticleId(key_table.size + i) for i in range(len(index))), queries
+        )
+    )
+    ctx = PipelineContext(
+        key_table, None if queries is None else query_table, systems, None
+    )
     candidates = Candidates(
         Index(key_table.keys, index.ravel()),
-        Index(query_table.keys, jnp.repeat(jnp.arange(index.shape[0]), index.shape[1])),
+        Index(query_table.keys, jnp.repeat(jnp.arange(len(index)), index.shape[1])),
     )
     if max_images_per_pair == 1:
         return make_batch_with_mic(candidates, key_table, query_table, systems), ctx
@@ -850,8 +858,8 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                 if isinstance(current, Index):
                     assert isinstance(new, Index), "Expected matching Index leaves"
                     # Retain the cache's static vocabulary and count bound.
-                    return bind(current, lambda x: x.indices).set(
-                        write(current.indices, new.indices_in(current.keys))
+                    return current.with_raw_indices(
+                        write(current.raw_indices, new.indices_in(current.keys))
                     )
                 assert isinstance(new, Array), "Expected matching array leaves"
                 return write(current, new)

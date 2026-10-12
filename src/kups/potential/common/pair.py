@@ -50,15 +50,11 @@ class PairBatch(NamedTuple):
         query-table order. This shares one cell matrix across a whole lane block
         and broadcasts query coordinates so their gradients reduce along lanes.
         """
-        keys = ctx.keys[batch.key_idx]
-        queries = (
-            ctx.edge_query_table[batch.query_idx]
-            if query_lanes is None
-            else jax.tree.map(
-                lambda x: jnp.repeat(x, query_lanes, axis=0),
-                ctx.edge_query_table.data,
+        keys, queries = ctx.endpoints(batch)
+        if query_lanes is not None:
+            queries = jax.tree.map(
+                lambda x: jnp.repeat(x, query_lanes, axis=0), ctx.edge_query_table.data
             )
-        )
         key_system, query_system = Index.match(keys.system, queries.system)
         valid = InBoundsMask()(batch, ctx) & (key_system == query_system)
         delta = keys.positions - queries.positions - batch.edges.shifts[:, 0]

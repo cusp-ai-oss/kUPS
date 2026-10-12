@@ -432,21 +432,21 @@ def _make_point_changes(
     state: State,
     new_positions: Array,
     indices: Array,
-    new_system_ids: Array | None = None,
+    new_system: Index[SystemId] | None = None,
 ) -> WithIndices[ParticleId, ParticleData]:
     pdata = state.particles.data
-    sys_ids = (
-        new_system_ids[indices]
-        if new_system_ids is not None
-        else jnp.zeros(indices.size, dtype=int)
+    system = (
+        new_system[indices]
+        if new_system is not None
+        else Index.zeros(indices.size, label=SystemId)
     )
     # Slice particle data preserving Index label metadata
     sliced = jax.tree.map(lambda x: x[indices], pdata)
     changed_data = ParticleData(
         positions=new_positions[indices],
         labels=sliced.labels,
-        system=Index(pdata.system.keys, sys_ids, _cls=pdata.system.cls),
-        inclusion=Index(pdata.inclusion.keys, sys_ids, _cls=pdata.inclusion.cls),
+        system=system,
+        inclusion=system.to_cls(InclusionId),
         exclusion=Index(pdata.exclusion.keys, indices, _cls=pdata.exclusion.cls),
         atomic_numbers=sliced.atomic_numbers,
         charges=sliced.charges,
@@ -476,12 +476,10 @@ def _build_probe(pot: PotentialConfig, spec: PerturbationSpec) -> Any:
             state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
         )
         new_positions = new_state.particles.data.positions
-        new_system_ids = (
-            new_state.particles.data.system.indices
-            if spec.new_system_ids is not None
-            else None
+        new_system = (
+            new_state.particles.data.system if spec.new_system_ids is not None else None
         )
-        return _make_point_changes(state, new_positions, spec.indices, new_system_ids)
+        return _make_point_changes(state, new_positions, spec.indices, new_system)
 
     def _fixed_edges_neighborlist[D: int](
         state: State, degree: D

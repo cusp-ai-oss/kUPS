@@ -173,20 +173,18 @@ def random_rotate_groups(
         Rotated particle positions with center of mass preserved.
     """
     positions = particles.data.positions
-    system_ids = particles.data.system.indices
+    system = particles.data.system
     cell = systems.data.cell
     chain = key_chain(key)
-    n_sys = len(systems)
-    rotations = Quaternion.random(next(chain), (n_sys,)) ** step_width
-    group_index = Index(
-        tuple(GroupId(i) for i in range(n_sys)),
-        system_ids,
+    rotations = systems.set_data(
+        Quaternion.random(next(chain), (len(systems),)) ** step_width
     )
+    group_index = system.to_cls(GroupId)
     data = _RotPositions(positions=positions, group=group_index)
     rot_particles = Table.arange(data, label=ParticleId)
     center_of_masses = center_of_mass(rot_particles, cell)
     rel_positions = to_relative_positions(rot_particles, cell, center_of_masses)
-    rel_positions = rel_positions @ rotations[system_ids]
+    rel_positions = rel_positions @ rotations[system]
     new_data = _RotPositions(positions=rel_positions, group=group_index)
     new_rot_particles = Table.arange(new_data, label=ParticleId)
     new_abs_positions = to_absolute_positions(
@@ -617,9 +615,9 @@ def insert_random_motif(
     selected_motifs = jax.random.choice(
         next(chain), jnp.arange(n_motifs), shape=(n_sys,)
     )
+    selected = Index(motifs.data.motif.keys, selected_motifs)
     ins_system_ids, particle_idx = subselect(
-        selected_motifs,
-        motifs.data.motif.indices,
+        *Index.match(selected, motifs.data.motif),
         output_buffer_size=capacity,
         num_segments=n_motifs,
     )
@@ -642,10 +640,7 @@ def insert_random_motif(
         f"Array size insufficient, requested {capacity.size} free entries while available {{available}}.",
         fmt_args={"available": n_free_particles},
     )
-    free_particle_idx = particles.select_free(capacity.size).indices
-    free_particle_idx = jnp.where(
-        ins_system_ids < n_sys, free_particle_idx, len(particles)
-    )
+    p_idx = particles.select_free(capacity.size).apply_mask(sys_idx.valid_mask)
 
     # Find free group slots using Buffered.select_free
     n_free_groups = (~groups.occupation).sum()
@@ -655,20 +650,14 @@ def insert_random_motif(
         fmt_args={"available": n_free_groups},
     )
     free_group_index = groups.select_free(n_sys)
-    free_group_idx = free_group_index.indices
+    ins_group = Table(cell.keys, free_group_index)[sys_idx]
 
-    p_idx = Index(particles.keys, free_particle_idx)
     ins_particle_data = ExchangeParticleData(
         new_positions=new_positions,
         system=Index.integer(
             ins_system_ids, n=n_sys, label=SystemId, max_count=max_sys_count
         ),
-        group=Index.integer(
-            free_group_idx[ins_system_ids],
-            n=len(groups),
-            label=GroupId,
-            max_count=motif_max_seg,
-        ),
+        group=bind(ins_group, lambda g: g.max_count).set(motif_max_seg),
         motif=Index.integer(particle_idx, n=n_motif_particles, label=MotifParticleId),
     )
     ins_particles = WithIndices(
@@ -677,7 +666,7 @@ def insert_random_motif(
     )
 
     ins_group_data = ExchangeGroupData(
-        motif=Index.integer(selected_motifs, n=n_motifs, label=MotifId),
+        motif=selected,
         system=Index.integer(
             jnp.arange(n_sys),
             n=n_sys,
@@ -721,17 +710,12 @@ def delete_random_motif(
     # Randomly select a motif to delete for each system
     motifs_to_delete = jax.random.choice(next(chain), n_motifs, shape=(n_sys,))
     # Mark groups whose label matches selected motif and belong to correct system
-    possible_group_ids = jnp.where(
-        groups.data.motif.indices == motifs_to_delete[groups.data.system.indices],
-        groups.data.system.indices,
-        n_sys,
-    )
-    possible_group_sys = Index.integer(
-        possible_group_ids,
-        n=n_sys,
-        label=SystemId,
-        max_count=groups.data.system.max_count,
-    )
+    group_system = groups.data.system
+    selected_motif = Table(
+        group_system.keys, Index(motifs.data.motif.keys, motifs_to_delete)
+    )[group_system]
+    group_motif, selected_motif = Index.match(groups.data.motif, selected_motif)
+    possible_group_sys = group_system.apply_mask(group_motif == selected_motif)
 
     possible_groups = Table(groups.keys, SystemIndex(system=possible_group_sys))
 
@@ -739,13 +723,11 @@ def delete_random_motif(
     selected = random_select_groups(next(chain), possible_groups, particles, capacity)
     selected_data = particles[selected]
 
-    group_ids_to_delete = selected_data.group.indices
-    del_system_ids = selected_data.system.indices
+    # The group deleted in each system, via its first selected particle.
+    first = selected_data.system.select_per_label(jnp.zeros(n_sys, dtype=int))
+    deleted_group = bind(selected_data.group).at(first).get()
 
-    deleted_group_ids = jnp.full(n_sys, len(groups), dtype=group_ids_to_delete.dtype)
-    deleted_group_ids = deleted_group_ids.at[del_system_ids].set(group_ids_to_delete)
-
-    n_deleted = selected.indices.shape[0]
+    n_deleted = selected.shape[0]
 
     del_particle_data = ExchangeParticleData(
         new_positions=jnp.zeros((n_deleted, 3), dtype=particles.data.positions.dtype),
@@ -772,7 +754,9 @@ def delete_random_motif(
         Buffered.arange(del_particle_data, num_occupied=0, label=ParticleId),
     )
 
-    g_idx = Index(groups.keys, deleted_group_ids)
+    # Match the insertion's free-slot index, which carries no count bound.
+    g_idx = deleted_group.update_labels(groups.keys)
+    g_idx = bind(g_idx, lambda g: g.max_count).set(None)
     del_group_data = ExchangeGroupData(
         motif=Index.integer(jnp.full(n_sys, n_motifs), n=n_motifs, label=MotifId),
         system=Index.integer(

@@ -305,12 +305,12 @@ def md_state_from_particles_and_cell(
             "particles must reference exactly one system; "
             f"got {len(p.system.keys)} system keys."
         )
-    if p.system.indices.shape != (n_particles,):
+    if p.system.shape != (n_particles,):
         raise ValueError(
             "particles must contain one system reference per particle; "
-            f"got shape {p.system.indices.shape} for {n_particles} particles."
+            f"got shape {p.system.shape} for {n_particles} particles."
         )
-    if bool(jnp.any(p.system.indices != 0)):
+    if not bool(p.system.valid_mask.all()):
         raise ValueError(
             "particles system references must all select the sole SystemId."
         )

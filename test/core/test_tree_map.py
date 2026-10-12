@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 
 from kups.core.data.index import Index
@@ -92,15 +93,16 @@ class TestTreeMatchAlignment:
     Index is a TreeMatch *and* a pytree. tree_map first aligns keys via
     __tree_match__, then recurses into the Index children (the `indices`
     array). So fn receives plain arrays (the remapped integer indices).
+    Positions follow the sorted keys, so ``jnp.maximum`` picks the larger key.
     """
 
     def test_same_keys_no_remapping(self):
         """Indices with identical keys: integer values unchanged after alignment."""
         a = Index(("H", "O"), jnp.array([0, 1, 0]))
-        b = Index(("H", "O"), jnp.array([1, 0, 1]))
-        result = tree_map(jnp.add, a, b)
+        b = Index(("H", "O"), jnp.array([0, 0, 1]))
+        result = tree_map(jnp.maximum, a, b)
         assert isinstance(result, Index)
-        npt.assert_array_equal(result.indices, [1, 1, 1])
+        npt.assert_array_equal(np.asarray(result), ["H", "O", "O"])
         assert result.keys == ("H", "O")
 
     def test_different_key_order(self):
@@ -108,34 +110,32 @@ class TestTreeMatchAlignment:
 
         a: keys=("A","B"), indices=[0,1] -> values A, B
         b: keys=("B","C"), indices=[0,1] -> values B, C
-        After alignment, merged keys = ("A", "B", "C"):
-          a remapped: A->0, B->1 => [0, 1]
-          b remapped: B->1, C->2 => [1, 2]
+        After alignment, merged keys = ("A", "B", "C"), so the elementwise
+        larger keys are B and C.
         """
         a = Index(("A", "B"), jnp.array([0, 1]))
         b = Index(("B", "C"), jnp.array([0, 1]))
-        result = tree_map(jnp.add, a, b)
+        result = tree_map(jnp.maximum, a, b)
         assert isinstance(result, Index)
         assert result.keys == ("A", "B", "C")
-        npt.assert_array_equal(result.indices, [0 + 1, 1 + 2])
+        npt.assert_array_equal(np.asarray(result), ["B", "C"])
 
     def test_disjoint_keys_merged(self):
         """Indices with disjoint key sets are merged into a union."""
         a = Index(("X",), jnp.array([0, 0]))
         b = Index(("Y",), jnp.array([0, 0]))
-        result = tree_map(jnp.add, a, b)
+        result = tree_map(jnp.maximum, a, b)
         assert isinstance(result, Index)
         assert set(result.keys) == {"X", "Y"}
-        # a: X->0, b: Y->1 => sum [0+1, 0+1] = [1, 1]
-        npt.assert_array_equal(result.indices, [1, 1])
+        npt.assert_array_equal(np.asarray(result), ["Y", "Y"])
 
     def test_alignment_preserves_semantic_values(self):
         """After alignment, both indices decode to the same label vocabulary."""
         a = Index.new(["O", "H", "O"])  # keys=("H","O"), indices=[1,0,1]
         b = Index.new(["H", "H", "O"])  # keys=("H","O"), indices=[0,0,1]
-        # Same keys, so no remapping needed. Sum of indices:
-        result = tree_map(jnp.add, a, b)
-        npt.assert_array_equal(result.indices, [1 + 0, 0 + 0, 1 + 1])
+        # Same keys, so no remapping needed.
+        result = tree_map(jnp.maximum, a, b)
+        npt.assert_array_equal(np.asarray(result), ["O", "H", "O"])
 
 
 class TestTreeMatchInsidePytree:
@@ -151,14 +151,12 @@ class TestTreeMatchInsidePytree:
             position=jnp.array([3.0, 4.0]),
             species=Index(("O", "Si"), jnp.array([0, 1])),
         )
-        result = tree_map(jnp.add, a, b)
+        result = tree_map(jnp.maximum, a, b)
         assert isinstance(result, ParticleState)
-        npt.assert_array_equal(result.position, [4.0, 6.0])
-        # species aligned to ("H", "O", "Si"):
-        #   a: H->0, O->1 => [0, 1]
-        #   b: O->1, Si->2 => [1, 2]
+        npt.assert_array_equal(result.position, [3.0, 4.0])
+        # species aligned to ("H", "O", "Si").
         assert result.species.keys == ("H", "O", "Si")
-        npt.assert_array_equal(result.species.indices, [0 + 1, 1 + 2])
+        npt.assert_array_equal(np.asarray(result.species), ["O", "Si"])
 
     def test_index_keys_merged_inside_dataclass(self):
         """Verify that Index keys are merged when inside a dataclass."""
@@ -197,11 +195,8 @@ class TestMultipleTrees:
         a = Index(("A", "B"), jnp.array([0, 1]))
         b = Index(("B", "C"), jnp.array([0, 1]))
         c = Index(("A", "C"), jnp.array([0, 1]))
-        # Merged keys: ("A", "B", "C")
-        #   a: A->0, B->1 => [0, 1]
-        #   b: B->1, C->2 => [1, 2]
-        #   c: A->0, C->2 => [0, 2]
-        result = tree_map(lambda x, y, z: x + y + z, a, b, c)
+        # Merged keys: ("A", "B", "C").
+        result = tree_map(lambda x, y, z: jnp.maximum(jnp.maximum(x, y), z), a, b, c)
         assert isinstance(result, Index)
         assert result.keys == ("A", "B", "C")
-        npt.assert_array_equal(result.indices, [0 + 1 + 0, 1 + 2 + 2])
+        npt.assert_array_equal(np.asarray(result), ["B", "C"])

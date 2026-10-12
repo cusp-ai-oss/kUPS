@@ -21,7 +21,7 @@ from kups.core.neighborlist.masks import (
     TouchesQueriedKeysMask,
 )
 
-from ._builders import make_batch, make_lh, make_pipeline_ctx
+from ._builders import after, make_batch, make_lh, make_pipeline_ctx
 
 
 class TestInBoundsMask:
@@ -35,10 +35,10 @@ class TestInBoundsMask:
 
     def test_bipartite_checks_both_tables(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
-        rh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
+        rh = after(lh, make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int)))
         ctx = make_pipeline_ctx(lh, rh)
-        # Edge 1: rh idx 5 is OOB; edge 2: lh idx 9 is OOB.
-        batch = make_batch(lh.keys, jnp.array([0, 1, 9]), jnp.array([1, 5, 0]))
+        # Edges index lh then rh. Edge 1: rh side OOB; edge 2: lh side OOB.
+        batch = make_batch(ctx.edge_keys, jnp.array([0, 1, 6]), jnp.array([4, 6, 3]))
         result = InBoundsMask()(batch, ctx)
         assert result.tolist() == [True, False, False]
 
@@ -46,10 +46,12 @@ class TestInBoundsMask:
 class TestInclusionMatchMask:
     def test_matches_inclusion_segments(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.array([0, 0, 1, 1]))
-        rh = make_lh(jnp.zeros((4, 3)), jnp.array([0, 1, 0, 1]))
+        rh = after(lh, make_lh(jnp.zeros((4, 3)), jnp.array([0, 1, 0, 1])))
         ctx = make_pipeline_ctx(lh, rh)
         # lh.incl[lh_idx] = [0, 0, 1, 1]; rh.incl[rh_idx] = [0, 1, 0, 1].
-        batch = make_batch(lh.keys, jnp.array([0, 1, 2, 3]), jnp.array([0, 1, 0, 3]))
+        batch = make_batch(
+            ctx.edge_keys, jnp.array([0, 1, 2, 3]), jnp.array([4, 5, 4, 7])
+        )
         result = InclusionMatchMask()(batch, ctx)
         assert result.tolist() == [True, False, False, True]
 
@@ -133,10 +135,12 @@ class TestExclusionMask:
             jnp.zeros(4, dtype=int),
             exclusion_ids=jnp.array([0, 1, 2, 3]),
         )
-        ctx = make_pipeline_ctx(lh, rh)
+        ctx = make_pipeline_ctx(lh, after(lh, rh))
         # lh.excl[lh_idx=[0,1,2,3]] = [0, 1, 0, 2].
         # rh.excl[rh_idx=[0,1,0,1]] = [0, 1, 0, 1]. All min-image.
-        batch = make_batch(lh.keys, jnp.array([0, 1, 2, 3]), jnp.array([0, 1, 0, 1]))
+        batch = make_batch(
+            ctx.edge_keys, jnp.array([0, 1, 2, 3]), jnp.array([4, 5, 4, 5])
+        )
         result = ExclusionMask()(batch, ctx)
         assert result.tolist() == [False, False, False, True]
 

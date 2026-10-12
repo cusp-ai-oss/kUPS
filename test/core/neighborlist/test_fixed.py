@@ -7,6 +7,7 @@ from typing import Literal
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -18,7 +19,7 @@ from kups.core.neighborlist.fixed import EmptyNeighborList, FixedEdgesNeighborLi
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId
 
-from ._builders import make_edges, make_lh, make_systems
+from ._builders import make_edges, make_lh, make_systems, valid_ids
 
 
 def _simple_lh(n: int):
@@ -37,19 +38,19 @@ class TestEmptyNeighborList:
     def test_degree_zero_returns_empty_pointcloud(self):
         nl = EmptyNeighborList[Literal[0]](degree=0)
         edges = nl(_simple_lh(4), _simple_systems())
-        assert edges.indices.indices.shape == (0, 0)
+        assert edges.indices.shape == (0, 0)
         assert edges.shifts.shape == (0, 0, 3)
 
     def test_degree_two_returns_pair_shaped_empty(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         edges = nl(_simple_lh(4), _simple_systems())
-        assert edges.indices.indices.shape == (0, 2)
+        assert edges.indices.shape == (0, 2)
         assert edges.shifts.shape == (0, 1, 3)
 
     def test_degree_three_returns_triple_shaped_empty(self):
         nl = EmptyNeighborList[Literal[3]](degree=3)
         edges = nl(_simple_lh(4), _simple_systems())
-        assert edges.indices.indices.shape == (0, 3)
+        assert edges.indices.shape == (0, 3)
         assert edges.shifts.shape == (0, 2, 3)
 
     def test_rh_or_queried_keys_arguments_are_ignored(self):
@@ -58,8 +59,8 @@ class TestEmptyNeighborList:
         systems = _simple_systems()
         rh = _simple_lh(2)
         queried_keys = Index(lh.keys, jnp.array([0, 2]))
-        assert nl(lh, systems, queries=rh).indices.indices.shape == (0, 2)
-        assert nl(lh, systems, queried_keys=queried_keys).indices.indices.shape == (
+        assert nl(lh, systems, queries=rh).indices.shape == (0, 2)
+        assert nl(lh, systems, queried_keys=queried_keys).indices.shape == (
             0,
             2,
         )
@@ -88,7 +89,7 @@ class TestEmptyNeighborList:
         lh = _simple_lh(4)
         systems = _simple_systems()
         edges = jax.jit(lambda l, s: nl(l, s))(lh, systems)
-        assert edges.indices.indices.shape == (0, 2)
+        assert edges.indices.shape == (0, 2)
 
 
 class TestFixedEdgesNeighborList:
@@ -101,7 +102,7 @@ class TestFixedEdgesNeighborList:
         stored = self._edges()
         nl = FixedEdgesNeighborList[Literal[2]](indices=stored.indices)
         out = nl(_simple_lh(4), _simple_systems())
-        npt.assert_array_equal(out.indices.indices, stored.indices.indices)
+        npt.assert_array_equal(np.asarray(out.indices), np.asarray(stored.indices))
         npt.assert_array_equal(out.shifts, jnp.zeros_like(stored.shifts))
 
     def test_full_call_computes_shifts_from_current_positions(self):
@@ -125,7 +126,7 @@ class TestFixedEdgesNeighborList:
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([2]))
         out = nl(lh, _simple_systems(), queried_keys=queried_keys)
-        npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3]]))
+        npt.assert_array_equal(np.asarray(out.indices), [[1, 2], [2, 3]])
 
     def test_queried_keys_returns_touched_edges(self):
         stored = self._edges()
@@ -135,7 +136,7 @@ class TestFixedEdgesNeighborList:
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([2]))
         out = nl(lh, _simple_systems(), queried_keys=queried_keys)
-        npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3]]))
+        npt.assert_array_equal(np.asarray(out.indices), [[1, 2], [2, 3]])
         npt.assert_array_equal(out.shifts, jnp.zeros((2, 1, 3), dtype=int))
 
     def test_patch_call_uses_capacity_and_pads_with_oob_rows(self):
@@ -146,7 +147,8 @@ class TestFixedEdgesNeighborList:
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([2]))
         out = nl(lh, _simple_systems(), queried_keys=queried_keys)
-        npt.assert_array_equal(out.indices.indices, jnp.array([[1, 2], [2, 3], [4, 4]]))
+        npt.assert_array_equal(valid_ids(out.indices), [[1, 2], [2, 3]])
+        npt.assert_array_equal(out.indices.valid_mask.any(-1), [True, True, False])
         npt.assert_array_equal(out.shifts[-1], jnp.zeros((1, 3), dtype=int))
 
     def test_queried_keys_multiplies_avg_edges_by_affected_count(self):
@@ -157,8 +159,9 @@ class TestFixedEdgesNeighborList:
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([0, 3]))
         out = nl(lh, _simple_systems(), queried_keys=queried_keys)
+        npt.assert_array_equal(valid_ids(out.indices), [[0, 1], [2, 3]])
         npt.assert_array_equal(
-            out.indices.indices, jnp.array([[0, 1], [2, 3], [4, 4], [4, 4]])
+            out.indices.valid_mask.any(-1), [True, True, False, False]
         )
 
     def test_rh_call_is_rejected(self):
@@ -190,7 +193,6 @@ class TestFixedEdgesNeighborList:
         lh = _simple_lh(5)
         queried_keys = Index(lh.keys, jnp.array([0]))
         out = nl(lh, _simple_systems(), queried_keys=queried_keys)
-        npt.assert_array_equal(
-            out.indices.indices, jnp.array([[0, 1, 2], [0, 4, 3], [5, 5, 5]])
-        )
+        npt.assert_array_equal(valid_ids(out.indices), [[0, 1, 2], [0, 4, 3]])
+        npt.assert_array_equal(out.indices.valid_mask.any(-1), [True, True, False])
         npt.assert_array_equal(out.shifts[-1], jnp.zeros((2, 3), dtype=int))

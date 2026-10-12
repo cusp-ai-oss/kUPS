@@ -128,9 +128,9 @@ def _molecular_stress_via_virial_theorem(
     position_gradients: Array,
     vector_gradients: Array,
     positions: Array,
-    com: Array,
+    com: Table[GroupId, Array],
     group: Index[GroupId],
-    group_cells: Cell[AnyPeriodicity],
+    group_cells: Table[GroupId, Cell[AnyPeriodicity]],
     system: Index[SystemId],
     system_cell: Cell[AnyPeriodicity],
 ) -> Array:
@@ -139,10 +139,7 @@ def _molecular_stress_via_virial_theorem(
     ``com`` comes from [center_of_mass][kups.core.utils.position.center_of_mass],
     which is mass-weighted and minimum-image aware.
     """
-    batched_cells = group_cells[group.indices]
-    rel_pos = batched_cells.wrap(
-        positions - com.at[group.indices].get(mode="fill", fill_value=0)
-    )
+    rel_pos = group_cells[group].wrap(positions - com[group])
     pos_outer = system.sum_over(
         position_gradients[:, None] * (positions - rel_pos)[..., None]
     ).data
@@ -243,13 +240,13 @@ def molecular_stress_via_virial_theorem(
     Returns:
         Symmetric stress tensor per system, shape ``(n_systems, 3, 3)``.
     """
-    group_cells = systems[groups.data.system].cell
+    group_cells = groups.set_data(systems[groups.data.system].cell)
     cell = systems.data.cell
     stress = _molecular_stress_via_virial_theorem(
         particles.data.position_gradients,
         cell.frame.vectors_gradient(systems.data.cell_gradients.frame),
         particles.data.positions,
-        center_of_mass(particles, group_cells),
+        groups.set_data(center_of_mass(particles, group_cells.data)),
         particles.data.group,
         group_cells,
         particles.data.system,

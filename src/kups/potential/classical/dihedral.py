@@ -218,7 +218,7 @@ def dihedral_energy(
         Total dihedral energy per system
     """
     graph = inp.graph
-    assert graph.edges.indices.indices.shape[1] == 4, (
+    assert graph.edges.indices.shape[1] == 4, (
         "Dihedral potential only supports quadruplet interactions (order=4)."
     )
     edg = graph.particles[graph.edges.indices]

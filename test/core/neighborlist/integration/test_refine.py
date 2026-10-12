@@ -19,12 +19,14 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.neighborlist import RefineCutoffNeighborList, RefineMaskNeighborList
 
 from .._builders import (
+    after,
     cutoff_table,
     make_edges,
     make_lh,
     make_rh,
     make_systems,
     systems_from_lvecs,
+    valid_ids,
 )
 
 
@@ -68,15 +70,11 @@ class TestRefineCutoffNeighborList:
         assert len(edges) > 0
         assert edges.degree == 2
 
-        pos_diffs = (
-            lh_positions[edges.indices.indices[:, 1]]
-            - lh_positions[edges.indices.indices[:, 0]]
+        edge_positions = lh[edges.indices].positions
+        distances = jnp.linalg.norm(
+            edge_positions[:, 1] - edge_positions[:, 0], axis=-1
         )
-        distances = jnp.linalg.norm(pos_diffs, axis=-1)
-        valid_distances = distances[edges.indices.indices[:, 0] < len(lh_positions)]
-        valid_distances = valid_distances[
-            edges.indices.indices[:, 1][: len(valid_distances)] < len(lh_positions)
-        ]
+        valid_distances = distances[edges.indices.valid_mask.all(axis=-1)]
 
         if len(valid_distances) > 0:
             assert jnp.all(valid_distances <= cutoffs[0] + 1e-6), (
@@ -175,7 +173,7 @@ class TestRefineCutoffNeighborList:
         edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
         npt.assert_array_equal(
-            np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
+            np.asarray(edges.indices[edges.indices.valid_mask[:, 0]]),
             np.array([[1, 2]]),
         )
 
@@ -196,8 +194,9 @@ class TestRefineCutoffNeighborList:
             jnp.array([0]),
             exclusion_ids=jnp.array([20]),
         )
+        rh = after(lh, rh)
         candidates = self._create_candidate_edges(
-            jnp.array([1]), jnp.array([0]), n_particles=2
+            jnp.array([1]), jnp.array([2]), n_particles=3
         )
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -209,8 +208,8 @@ class TestRefineCutoffNeighborList:
         edges = refinement_nl(keys=lh, systems=systems, queries=rh)
 
         npt.assert_array_equal(
-            np.asarray(edges.indices.indices[edges.indices.indices[:, 0] < lh.size]),
-            np.array([[1, 0]]),
+            np.asarray(edges.indices[edges.indices.valid_mask[:, 0]]),
+            np.array([[1, 2]]),
         )
 
     def test_queried_keys_uses_updated_lh_exclusion_for_cutoff_refinement(self):
@@ -243,7 +242,7 @@ class TestRefineCutoffNeighborList:
 
         edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
-        assert not np.any(np.asarray(edges.indices.indices[:, 0] < lh.size))
+        assert not edges.indices.valid_mask[:, 0].any()
 
     def test_empty_candidates(self):
         """Test refinement with candidates that fail the distance filter."""
@@ -267,10 +266,7 @@ class TestRefineCutoffNeighborList:
 
         assert edges.degree == 2
 
-        valid_edges = edges.indices.indices[
-            (edges.indices.indices[:, 0] < len(lh_positions))
-            & (edges.indices.indices[:, 1] < len(lh_positions))
-        ]
+        valid_edges = edges.indices[edges.indices.valid_mask.all(axis=-1)]
         assert len(valid_edges) == 0, "Should have no valid edges due to cutoff filter"
 
     def test_multiple_segments(self):
@@ -324,11 +320,7 @@ class TestRefineCutoffNeighborList:
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
         edges = refinement_nl(keys=lh, systems=_sys)
 
-        valid_edges = edges.indices.indices[
-            edges.indices.indices[:, 0] < len(lh_positions)
-        ]
-        valid_edges = valid_edges[valid_edges[:, 1] < len(lh_positions)]
-        for i, edge in enumerate(valid_edges):
+        for i, edge in enumerate(valid_ids(edges.indices)):
             if len(edge) >= 2:
                 assert edge[0] != edge[1], f"Found self-interaction in edge {i}: {edge}"
 
@@ -384,14 +376,10 @@ class TestRefineCutoffNeighborList:
                 assert diff_vectors.shape[-1] == 3
                 assert diff_vectors.shape[1] == expected_neighbors
 
-                for i in range(len(edges.indices.indices)):
-                    edge = edges.indices.indices[i]
-                    if edge[0] < len(positions) and edge[1] < len(positions):
-                        expected_diff = positions[edge[1]] - positions[edge[0]]
-                        if i < len(diff_vectors) and diff_vectors.shape[1] > 0:
-                            npt.assert_allclose(
-                                diff_vectors[i, 0], expected_diff, rtol=1e-10
-                            )
+                valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
+                for edge, diff in zip(valid_ids(edges.indices), diff_vectors[valid]):
+                    expected_diff = positions[edge[1]] - positions[edge[0]]
+                    npt.assert_allclose(diff[0], expected_diff, rtol=1e-10)
 
 
 class TestRefineMaskNeighborList:
@@ -422,10 +410,7 @@ class TestRefineMaskNeighborList:
         sys, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
         edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys)
 
-        raw = edges.indices.indices
-        oob = lh.size
-        valid_mask = (raw[:, 0] < oob) & (raw[:, 1] < oob)
-        valid = np.asarray(raw[valid_mask])
+        valid = valid_ids(edges.indices)
         valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
 
         npt.assert_array_equal(valid, np.array([[0, 1], [1, 4], [2, 3]]))
@@ -454,10 +439,7 @@ class TestRefineMaskNeighborList:
         sys, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
         edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys)
 
-        raw = edges.indices.indices
-        oob = lh.size
-        valid_mask = (raw[:, 0] < oob) & (raw[:, 1] < oob)
-        valid = np.asarray(raw[valid_mask])
+        valid = valid_ids(edges.indices)
         valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
 
         npt.assert_array_equal(valid, np.array([[0, 1], [2, 3]]))
@@ -476,7 +458,8 @@ class TestRefineMaskNeighborList:
             jnp.array([0, 1]),
             exclusion_ids=jnp.array([2, 3]),
         )
-        candidates = make_edges(jnp.array([0]), jnp.array([1]), n_particles=2)
+        rh = after(lh, rh)
+        candidates = make_edges(jnp.array([0]), jnp.array([3]), n_particles=4)
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         systems, _ = systems_from_lvecs(
             jnp.eye(3)[None].repeat(2, axis=0) * 100.0,
@@ -485,7 +468,8 @@ class TestRefineMaskNeighborList:
 
         edges = refine_nl(keys=lh, systems=systems, queries=rh)
 
-        npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
+        assert edges.indices.shape == (1, 2)
+        assert not edges.indices.valid_mask.any()
 
     def test_queried_keys_uses_updated_lh_inclusion(self):
         """Updated lh rows can move inclusion segments before refinement."""
@@ -510,7 +494,8 @@ class TestRefineMaskNeighborList:
 
         edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
-        npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
+        assert edges.indices.shape == (1, 2)
+        assert not edges.indices.valid_mask.any()
 
     def test_queried_keys_uses_updated_lh_exclusion(self):
         """Updated lh rows can introduce an exclusion before refinement."""
@@ -533,4 +518,5 @@ class TestRefineMaskNeighborList:
 
         edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys)
 
-        npt.assert_array_equal(np.asarray(edges.indices.indices), np.array([[2, 2]]))
+        assert edges.indices.shape == (1, 2)
+        assert not edges.indices.valid_mask.any()

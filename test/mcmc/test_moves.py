@@ -156,14 +156,13 @@ class TestRandomSelectGroups:
             capacity=self.capacity,
         )
         index_result.raise_assertion()
-        indices = index_result.value.indices
-        selected_systems = self.particle_data.data.system.indices[indices]
+        selected_systems = self.particle_data[index_result.value].system
         target = (
             jnp.arange(self.n_sys)[:, None]
             .repeat(self.max_group_size, axis=-1)
             .reshape(-1)
         )
-        npt.assert_allclose(selected_systems, target)
+        npt.assert_array_equal(selected_systems.value, target)
 
     def test_permuted(self):
         key = jax.random.key(1)
@@ -173,39 +172,35 @@ class TestRandomSelectGroups:
         )
         group_system_ids = (
             bind(self.group_system_ids)
-            .focus(lambda x: x.data.system.indices)
-            .set(self.group_system_ids.data.system.indices[group_permutation])
+            .focus(lambda x: x.data.system)
+            .set(self.group_system_ids.data.system[group_permutation])
         )
         permutation = jax.random.permutation(
             next(chain),
             jnp.arange(self.n_groups_per_sys * self.max_group_size * self.n_sys),
         )
-        inv_group_permutation = jnp.argsort(group_permutation)
+        group = self.particle_data.data.group
+        regroup = Table(
+            group.keys,
+            Index(group.keys, jnp.argsort(group_permutation), group.max_count),
+        )
         particle_data = (
             bind(self.particle_data)
-            .focus(lambda x: x.data.group.indices)
-            .set(
-                inv_group_permutation[self.particle_data.data.group.indices][
-                    permutation
-                ]
-            )
+            .focus(lambda x: x.data.group)
+            .set(regroup[group][permutation])
         )
         particle_data = (
             bind(particle_data)
-            .focus(lambda x: x.data.system.indices)
-            .set(particle_data.data.system.indices[permutation])
+            .focus(lambda x: x.data.system)
+            .set(particle_data.data.system[permutation])
         )
         index_result = self.jit_select(
             next(chain), group_system_ids, particle_data, capacity=self.capacity
         )
         index_result.raise_assertion()
-        indices = index_result.value.indices
-        selected_systems = particle_data.data.system.indices[indices]
-        particles_per_system = jax.ops.segment_sum(
-            jnp.ones_like(selected_systems), selected_systems, self.n_sys
-        )
+        selected_systems = particle_data[index_result.value].system
         npt.assert_allclose(
-            particles_per_system,
+            selected_systems.counts.data,
             jnp.full((self.n_sys,), fill_value=self.max_group_size),
         )
 
@@ -840,23 +835,26 @@ class TestExchangeMove:
         for _ in range(n):
             proposal = self.move(next(chain), state).value[0]
             proposals.append(proposal)
-            assert np.all(proposal.particles.indices.indices < positions.shape[0])
-            if proposal.particles.indices.indices >= 10:
+            assert np.all(proposal.particles.indices.valid_mask)
+            if np.asarray(proposal.particles.indices).astype(int) >= 10:
                 n_inserts += 1
-                npt.assert_allclose(proposal.groups.indices.indices, 10)
-                npt.assert_allclose(proposal.particles.data.data.group.indices, 10)
-                npt.assert_allclose(proposal.particles.data.data.system.indices, 0)
-                npt.assert_allclose(proposal.groups.data.data.system.indices, 0)
+                npt.assert_array_equal(np.asarray(proposal.groups.indices), 10)
+                npt.assert_array_equal(
+                    np.asarray(proposal.particles.data.data.group), 10
+                )
+                assert proposal.particles.data.data.system.valid_mask.all()
+                assert proposal.groups.data.data.system.valid_mask.all()
                 assert np.all(
                     (proposal.particles.data.data.new_positions < 0.5)
                     & (proposal.particles.data.data.new_positions > -0.5)
                 )
-                npt.assert_allclose(proposal.groups.data.data.motif.indices, 0)
+                npt.assert_array_equal(np.asarray(proposal.groups.data.data.motif), 0)
             else:
                 n_dels += 1
-                assert np.all(proposal.groups.indices.indices < 10)
-                npt.assert_allclose(proposal.particles.data.data.system.indices, 1)
-                npt.assert_allclose(proposal.groups.data.data.system.indices, 1)
+                assert proposal.groups.indices.valid_mask.all()
+                assert np.all(np.asarray(proposal.groups.indices).astype(int) < 10)
+                assert not proposal.particles.data.data.system.valid_mask.any()
+                assert not proposal.groups.data.data.system.valid_mask.any()
         assert 0.1 < n_inserts / n < 0.9, f"Unexpected insert ratio: {n_inserts / n}"
 
     def test_atomic_two_systems(self):
@@ -899,9 +897,9 @@ class TestExchangeMove:
         for _ in range(n_iters):
             proposal = self.move(next(chain), state).value[0]
             proposals.append(proposal)
-            assert np.all(proposal.particles.indices.indices < positions.shape[0])
-            p_insert_mask = proposal.particles.data.data.system.indices < 2
-            g_insert_mask = proposal.groups.data.data.system.indices < 2
+            assert np.all(proposal.particles.indices.valid_mask)
+            p_insert_mask = proposal.particles.data.data.system.valid_mask
+            g_insert_mask = proposal.groups.data.data.system.valid_mask
             n_inserts += np.sum(p_insert_mask)
             n_dels += np.sum(~p_insert_mask)
             assert np.all(
@@ -912,16 +910,10 @@ class TestExchangeMove:
                 | ~p_insert_mask[:, None]
             )
             npt.assert_allclose(g_insert_mask.sum(), p_insert_mask.sum())
-            assert np.all(
-                (proposal.groups.data.data.motif.indices == 0) | ~g_insert_mask
-            )
-            assert np.all((proposal.particles.indices.indices < 10) | p_insert_mask)
-            assert np.all(
-                (proposal.particles.data.data.system.indices == 2) | p_insert_mask
-            )
-            assert np.all(
-                (proposal.groups.data.data.system.indices == 2) | g_insert_mask
-            )
+            inserted_motifs = proposal.groups.data.data.motif[g_insert_mask]
+            assert np.all(np.asarray(inserted_motifs).astype(int) == 0)
+            deleted = proposal.particles.indices[~p_insert_mask]
+            assert np.all(np.asarray(deleted).astype(int) < 10)
         assert 0.1 < n_inserts / (n_iters * 2) < 0.9, (
             f"Unexpected insert ratio: {n_inserts / (n_iters * 2)}"
         )
@@ -975,12 +967,9 @@ class TestExchangeMove:
         motif_counts = jnp.zeros(3)
         for _ in range(5):
             proposal = self.move(next(chain), state).value[0]
-            g_insert_mask = proposal.groups.data.data.system.indices < 2
-            if jnp.any(g_insert_mask):
-                selected_motifs = proposal.groups.data.data.motif.indices[g_insert_mask]
-                for motif_id in selected_motifs:
-                    if motif_id < 3:
-                        motif_counts = motif_counts.at[motif_id].add(1)
+            g_insert_mask = proposal.groups.data.data.system.valid_mask
+            motif = proposal.groups.data.data.motif.apply_mask(g_insert_mask)
+            motif_counts += motif.counts.data
         assert jnp.sum(motif_counts) > 0, f"No motifs were selected: {motif_counts}"
 
     def test_larger_motif(self):
@@ -1023,14 +1012,16 @@ class TestExchangeMove:
 
         for _ in range(5):
             proposal = self.move(next(chain), state).value[0]
-            p_insert_mask = proposal.particles.data.data.system.indices < 1
+            p_insert_mask = proposal.particles.data.data.system.valid_mask
             n_insertions = jnp.sum(p_insert_mask)
             if n_insertions > 0:
                 assert n_insertions == 5, (
                     f"Expected 5 particles in insertion, got {n_insertions}"
                 )
-                group_ids = proposal.particles.data.data.group.indices[p_insert_mask]
-                assert jnp.all(group_ids == group_ids[0]), (
+                group_ids = np.asarray(
+                    proposal.particles.data.data.group[p_insert_mask]
+                )
+                assert np.all(group_ids == group_ids[0]), (
                     "Inserted particles should belong to same group"
                 )
 
@@ -1075,29 +1066,16 @@ class TestExchangeMove:
         n_dels = 0
         for _ in range(5):
             proposal = self.move(next(chain), state).value[0]
-            valid_particle_mask = (
-                proposal.particles.indices.indices < positions.shape[0]
-            )
             assert np.all(
-                valid_particle_mask
-                | (proposal.particles.indices.indices == positions.shape[0])
+                proposal.particles.indices.raw_indices <= positions.shape[0]
             ), "Invalid particle IDs found"
-            p_insert_mask = proposal.particles.data.data.system.indices < 2
+            p_insert_mask = proposal.particles.data.data.system.valid_mask
             n_inserts += np.sum(p_insert_mask)
             n_dels += np.sum(~p_insert_mask)
-            if jnp.any(p_insert_mask):
-                insert_system_ids = proposal.particles.data.data.system.indices[
-                    p_insert_mask
-                ]
-                assert jnp.all(insert_system_ids < 2), (
-                    f"Invalid system IDs: {insert_system_ids}"
-                )
-                for sys_id in range(2):
-                    sys_insertions = jnp.sum(insert_system_ids == sys_id)
-                    if sys_insertions > 0:
-                        assert sys_insertions <= 4, (
-                            f"Too many insertions for system {sys_id}, got {sys_insertions}"
-                        )
+            sys_insertions = proposal.particles.data.data.system.counts.data
+            assert jnp.all(sys_insertions <= 4), (
+                f"Too many insertions per system, got {sys_insertions}"
+            )
         assert 0.1 < n_inserts / (n_inserts + n_dels) < 0.9, (
             f"Unexpected insert/delete ratio: {n_inserts}/{n_dels}"
         )
@@ -1158,13 +1136,11 @@ class TestExchangeMove:
         motif_usage = jnp.zeros(3)
         for _ in range(5):
             proposal = self.move(next(chain), state).value[0]
-            p_insert_mask = proposal.particles.data.data.system.indices < 2
-            g_insert_mask = proposal.groups.data.data.system.indices < 2
+            p_insert_mask = proposal.particles.data.data.system.valid_mask
+            g_insert_mask = proposal.groups.data.data.system.valid_mask
+            motif = proposal.groups.data.data.motif.apply_mask(g_insert_mask)
+            motif_usage += motif.counts.data
             if jnp.any(g_insert_mask):
-                selected_motifs = proposal.groups.data.data.motif.indices[g_insert_mask]
-                for motif_id in selected_motifs:
-                    if motif_id < 3:
-                        motif_usage = motif_usage.at[motif_id].add(1)
                 n_inserted_particles = jnp.sum(p_insert_mask)
                 if n_inserted_particles > 0:
                     assert n_inserted_particles <= 10, (
@@ -1216,9 +1192,9 @@ class TestExchangeMove:
         n_iters = 3
         for _ in range(n_iters):
             proposal = self.move(next(chain), state).value[0]
-            particle_ids = proposal.particles.indices.indices
-            valid_particle_mask = particle_ids < positions.shape[0]
-            no_op_mask = particle_ids >= positions.shape[0]
+            particle_ids = proposal.particles.indices.raw_indices
+            valid_particle_mask = proposal.particles.indices.valid_mask
+            no_op_mask = ~valid_particle_mask
             n_valid_ops = jnp.sum(valid_particle_mask)
             n_no_ops = jnp.sum(no_op_mask)
             total_no_ops += int(n_no_ops)
@@ -1227,8 +1203,8 @@ class TestExchangeMove:
                 f"Expected {state['capacity'].size} total operations, got {total_ops}"
             )
             p_insert_mask = (
-                proposal.particles.data.data.system.indices < 2
-            ) & valid_particle_mask
+                proposal.particles.data.data.system.valid_mask & valid_particle_mask
+            )
             n_inserted = jnp.sum(p_insert_mask)
             max_particles_per_proposal = max(
                 max_particles_per_proposal, int(n_inserted)
@@ -1238,19 +1214,9 @@ class TestExchangeMove:
                 assert jnp.all(no_op_particle_ids == positions.shape[0]), (
                     f"No-op particle IDs should be {positions.shape[0]}, got {no_op_particle_ids}"
                 )
-            if n_inserted > 0:
-                insert_system_ids = proposal.particles.data.data.system.indices[
-                    p_insert_mask
-                ]
-                assert jnp.all(insert_system_ids < 2), (
-                    f"Invalid system IDs: {insert_system_ids}"
-                )
-                insert_group_ids = proposal.particles.data.data.group.indices[
-                    p_insert_mask
-                ]
-                assert jnp.all(insert_group_ids < groups.size), (
-                    f"Invalid group IDs: {insert_group_ids}"
-                )
+            assert jnp.all(
+                proposal.particles.data.data.group.valid_mask | ~p_insert_mask
+            ), "Invalid group IDs"
         assert max_particles_per_proposal >= 3, (
             f"Expected at least motif-sized proposals with high capacity, max was {max_particles_per_proposal}"
         )
@@ -1320,8 +1286,8 @@ class TestInsertRandomMotif:
         assert result.particles.data.occupation.all()
         assert result.groups.data.occupation.all()
         # Non-empty indices
-        assert result.particles.indices.indices.shape[0] > 0
-        assert result.groups.indices.indices.shape[0] > 0
+        assert result.particles.indices.shape[0] > 0
+        assert result.groups.indices.shape[0] > 0
         assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
 
 

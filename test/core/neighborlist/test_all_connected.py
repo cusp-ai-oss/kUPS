@@ -19,7 +19,13 @@ from kups.core.neighborlist.all_connected import (
     all_connected_neighborlist,
 )
 
-from ._builders import make_lh, make_pipeline_ctx, make_systems, valid_edge_set
+from ._builders import (
+    make_lh,
+    make_pipeline_ctx,
+    make_systems,
+    valid_edge_set,
+    valid_pairs,
+)
 
 
 def _systems(n=1, box=100.0):
@@ -33,13 +39,7 @@ class TestInclusionGroupSelector:
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int), inclusion_max_count=3)
         ctx = make_pipeline_ctx(lh)
         batch = InclusionGroupSelector(capacity=FixedCapacity(9))(ctx)
-        pairs = {
-            (a, b)
-            for a, b in zip(
-                batch.key_idx.indices.tolist(), batch.query_idx.indices.tolist()
-            )
-            if a < 3 and b < 3
-        }
+        pairs = set(valid_pairs(batch.key_idx, batch.query_idx))
         # All ordered pairs within the single inclusion segment, incl. self.
         assert pairs == {(a, b) for a in range(3) for b in range(3)}
         assert bool(batch.is_minimum_image.all())
@@ -54,7 +54,7 @@ class TestAllConnectedNeighborlist:
             inclusion_max_count=3,
         )
         edges = all_connected_neighborlist(lh, _systems())
-        assert valid_edge_set(edges, 3) == {
+        assert valid_edge_set(edges) == {
             (0, 1),
             (0, 2),
             (1, 0),
@@ -72,7 +72,7 @@ class TestAllConnectedNeighborlist:
             inclusion_max_count=3,
         )
         edges = all_connected_neighborlist(lh, _systems())
-        assert valid_edge_set(edges, 3) == {(0, 2), (2, 0), (1, 2), (2, 1)}
+        assert valid_edge_set(edges) == {(0, 2), (2, 0), (1, 2), (2, 1)}
 
     def test_separate_inclusion_segments_do_not_connect(self):
         lh = make_lh(
@@ -83,7 +83,7 @@ class TestAllConnectedNeighborlist:
         )
         edges = all_connected_neighborlist(lh, _systems(n=2))
         # Only within-segment pairs: {0,1} and {2,3}.
-        assert valid_edge_set(edges, 4) == {(0, 1), (1, 0), (2, 3), (3, 2)}
+        assert valid_edge_set(edges) == {(0, 1), (1, 0), (2, 3), (3, 2)}
 
     def test_requires_inclusion_max_count(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))  # no max_count
@@ -101,5 +101,5 @@ class TestAllConnectedNeighborlist:
             lh, _systems(), queried_keys=Index(lh.keys, jnp.array([0]))
         )
         # Every surviving edge must touch particle 0.
-        valid = valid_edge_set(edges, 3)
+        valid = valid_edge_set(edges)
         assert valid == {(0, 1), (1, 0), (0, 2), (2, 0)}

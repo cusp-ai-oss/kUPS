@@ -23,9 +23,7 @@ class TestMirrorPairEdges:
         batch = make_batch(lh.keys, jnp.array([0]), jnp.array([1]), shifts=shifts)
         compacted = ReduceCompactor(avg_edges=FixedCapacity(1))(keep, batch, ctx)
         edges = MirrorPairEdges()(compacted, ctx)
-        npt.assert_array_equal(
-            np.asarray(edges.indices.indices), np.array([[0, 1], [1, 0]])
-        )
+        npt.assert_array_equal(np.asarray(edges.indices), np.array([[0, 1], [1, 0]]))
         npt.assert_allclose(
             np.asarray(edges.shifts),
             np.array([[[0.5, 0.0, 0.0]], [[-0.5, -0.0, -0.0]]]),
@@ -41,7 +39,7 @@ class TestMirrorPairEdges:
             shifts=jnp.array([[0.25, 0.0, 0.0]]),
         )
         out = MirrorPairEdges()(edges, ctx)
-        npt.assert_array_equal(np.asarray(out.indices.indices), np.array([[0, 1]]))
+        npt.assert_array_equal(np.asarray(out.indices), np.array([[0, 1]]))
         npt.assert_allclose(np.asarray(out.shifts), np.array([[[0.25, 0.0, 0.0]]]))
 
     def test_only_when_queried_keys_false_mirrors_unconditionally(self):
@@ -54,6 +52,4 @@ class TestMirrorPairEdges:
             shifts=jnp.array([[0.25, 0.0, 0.0]]),
         )
         out = MirrorPairEdges(only_when_queried_keys=False)(edges, ctx)
-        npt.assert_array_equal(
-            np.asarray(out.indices.indices), np.array([[0, 1], [1, 0]])
-        )
+        npt.assert_array_equal(np.asarray(out.indices), np.array([[0, 1], [1, 0]]))

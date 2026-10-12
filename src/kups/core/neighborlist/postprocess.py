@@ -46,7 +46,6 @@ class MirrorPairEdges(Postprocessor[Literal[2]]):
         if self.only_when_queried_keys and ctx.queried_keys is None:
             return edges
 
-        indices = edges.indices.indices
-        mirrored_indices = jnp.concatenate([indices, indices[:, ::-1]], axis=0)
+        mirrored_indices = Index.concatenate(edges.indices, edges.indices[:, ::-1])
         mirrored_shifts = jnp.concatenate([edges.shifts, -edges.shifts], axis=0)
-        return Edges(Index(edges.indices.keys, mirrored_indices), mirrored_shifts)
+        return Edges(mirrored_indices, mirrored_shifts)

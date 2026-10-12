@@ -45,7 +45,6 @@ from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, tree_map, vectorize
 from kups.core.utils.math import solve_affine_ode
 from kups.core.utils.random import sample_like
-from kups.core.utils.segment import segment_sum
 from kups.md.observables import (
     instantaneous_pressure,
     instantaneous_pressure_tensor,
@@ -594,7 +593,8 @@ class CSVRStep[State](Propagator[State]):
             particles.data.momenta, particles.data.masses
         )
         # K: total kinetic energy per system [energy]
-        kinetic_energy_current = particles.data.system.sum_over(per_particle_ke).data
+        kinetic_energy = particles.data.system.sum_over(per_particle_ke)
+        kinetic_energy_current = kinetic_energy.data
         # K_target = N_dof·kT/2 [energy]
         kinetic_energy_target = degrees_of_freedom * target_thermal_energy / 2
 
@@ -631,7 +631,9 @@ class CSVRStep[State](Propagator[State]):
         velocity_scale = jnp.sqrt(jnp.maximum(scaling_squared, 0.0))
 
         # Scale momenta by system
-        scale_per_system = velocity_scale[particles.data.system.indices]
+        scale_per_system = kinetic_energy.set_data(velocity_scale)[
+            particles.data.system
+        ]
         new_momenta = particles.data.momenta * scale_per_system[..., None]
 
         assert new_momenta.shape == particles.data.momenta.shape
@@ -816,11 +818,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
             particles.data.momenta, particles.data.masses
         )
         # K: total kinetic energy per system [energy]
-        kinetic_energy = segment_sum(
-            per_particle_ke,
-            particles.data.system.indices,
-            particles.data.system.num_labels,
-        )
+        kinetic_energy = particles.data.system.sum_over(per_particle_ke).data
 
         # Full Cauchy stress via virial theorem:
         # σ = -(1/V)(Σ ∂U/∂r_i ⊗ r_i + h^T · ∂U/∂h)
@@ -875,7 +873,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         particle_lens = self.particles.bind(state)
         particles = particle_lens.get()
         # μ_i: scaling factor per system [dimensionless]
-        scaling_per_system = scaling_factor[particles.data.system.indices]
+        scaling_per_system = systems.set_data(scaling_factor)[particles.data.system]
 
         new_positions = particles.data.positions * scaling_per_system[..., None]
         assert new_positions.shape == particles.data.positions.shape
@@ -1152,8 +1150,9 @@ class CoupledMomentumStep[State](Propagator[State]):
         params = sys.data.integrator_params
         V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
         M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
-        A_per_p = -M_pos[par.data.system.indices]  # column-form A
-        dt_half_per_p = params.time_step[par.data.system.indices] / 2
+        # Column-form A
+        A_per_p, dt_per_p = sys.set_data((-M_pos, params.time_step))[par.data.system]
+        dt_half_per_p = dt_per_p / 2
         new_momenta = jax.vmap(solve_affine_ode)(
             A_per_p, par.data.forces, par.data.momenta, dt_half_per_p
         )
@@ -1187,8 +1186,11 @@ class CoupledPositionStep[State](Propagator[State]):
         params = sys.data.integrator_params
         V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
         M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
-        A_per_p = jnp.swapaxes(M_pos, -1, -2)[par.data.system.indices]  # upper-tri
-        dt_half_per_p = params.time_step[par.data.system.indices] / 2
+        # Upper-triangular A
+        A_per_p, dt_per_p = sys.set_data(
+            (jnp.swapaxes(M_pos, -1, -2), params.time_step)
+        )[par.data.system]
+        dt_half_per_p = dt_per_p / 2
         v = par.data.momenta / par.data.masses[..., None]
         new_positions = jax.vmap(solve_affine_ode)(
             A_per_p, v, par.data.positions, dt_half_per_p

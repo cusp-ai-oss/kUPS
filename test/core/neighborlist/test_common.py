@@ -26,6 +26,7 @@ from kups.core.neighborlist.common import (
 from kups.core.typing import SystemId
 
 from ._builders import (
+    after,
     cutoff_table,
     make_lh,
     make_pipeline_ctx,
@@ -188,12 +189,8 @@ class TestReplicateForImages:
             FixedCapacity(8),
         )
         assert len(batch.edges) == 8
-        npt.assert_array_equal(
-            np.asarray(batch.key_idx.indices), np.zeros(8, dtype=int)
-        )
-        npt.assert_array_equal(
-            np.asarray(batch.query_idx.indices), np.ones(8, dtype=int)
-        )
+        npt.assert_array_equal(np.asarray(batch.key_idx), np.zeros(8, dtype=int))
+        npt.assert_array_equal(np.asarray(batch.query_idx), np.ones(8, dtype=int))
 
     def test_replication_spans_anchored_window(self):
         # separation f = [-0.3,0,0], ratio 0.8 -> anchor ceil(f-ratio) = [-1,0,0],
@@ -263,12 +260,15 @@ class TestReplicateForImages:
         )
         assert len(batch.edges) == 9
         # First row is the lone system-0 copy; the rest expand the system-1 pair.
-        assert (int(batch.key_idx.indices[0]), int(batch.query_idx.indices[0])) == (
+        assert (
+            int(batch.key_idx.value[0]),
+            int(batch.query_idx.value[0]),
+        ) == (
             0,
             1,
         )
-        npt.assert_array_equal(np.asarray(batch.key_idx.indices[1:]), np.full(8, 2))
-        npt.assert_array_equal(np.asarray(batch.query_idx.indices[1:]), np.full(8, 3))
+        npt.assert_array_equal(np.asarray(batch.key_idx[1:]), np.full(8, 2))
+        npt.assert_array_equal(np.asarray(batch.query_idx[1:]), np.full(8, 3))
         # One minimum image per candidate: the system-0 copy plus system-1's.
         assert int(batch.is_minimum_image.sum()) == 2
         assert bool(batch.is_minimum_image[0])
@@ -276,10 +276,10 @@ class TestReplicateForImages:
     def test_uses_rh_positions_for_minimum_image(self):
         # Bipartite: the rhs endpoint lives in a separate ``rh`` table, so the
         # minimum-image delta must read rh's position (here giving MIC [-1,0,0]),
-        # not lh's. The emitted rh column is keyed by ``rh``.
+        # not lh's. The edges index the union of both tables.
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
         lh = make_lh(jnp.array([[0.1, 0.0, 0.0]]), jnp.zeros(1, dtype=int))
-        rh = make_lh(jnp.array([[0.9, 0.0, 0.0]]), jnp.zeros(1, dtype=int))
+        rh = after(lh, make_lh(jnp.array([[0.9, 0.0, 0.0]]), jnp.zeros(1, dtype=int)))
         systems, _ = make_systems(cell, jnp.array([2.0]))
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([0])),
@@ -289,7 +289,7 @@ class TestReplicateForImages:
             candidates, lh, rh, systems, cutoff_table(jnp.array([2.0])), None
         )
         npt.assert_array_equal(np.asarray(batch.edges.shifts), [[[-1.0, 0.0, 0.0]]])
-        assert batch.query_keys == rh.keys
+        assert batch.edges.indices.keys == lh.keys + rh.keys
 
     def test_missing_capacity_with_replication_needed_asserts(self):
         # max_image_candidates=None falls back to a non-growable capacity sized
@@ -320,7 +320,7 @@ class TestMakeBatchWithMic:
 
 
 class TestCandidatesToBatch:
-    def test_packs_indices_shifts_and_query_keys(self):
+    def test_packs_indices_and_shifts(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([0, 1])),
@@ -329,10 +329,10 @@ class TestCandidatesToBatch:
         shifts = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         batch = candidates_to_batch(candidates, shifts, jnp.array([True, False]))
         npt.assert_array_equal(
-            np.asarray(batch.edges.indices.indices), np.array([[0, 1], [1, 2]])
+            np.asarray(batch.edges.indices), np.array([[0, 1], [1, 2]])
         )
         npt.assert_array_equal(np.asarray(batch.edges.shifts[:, 0]), np.asarray(shifts))
-        assert batch.query_keys == lh.keys
+        assert batch.edges.indices.keys == lh.keys
 
 
 class TestMinimumImageShifts:
@@ -370,13 +370,13 @@ class TestRealDistanceSq:
 class TestContextTableHelpers:
     def test_edge_query_table_prefers_queries(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
-        rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        rh = after(lh, make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int)))
         assert make_pipeline_ctx(lh).edge_query_table is lh
         assert make_pipeline_ctx(lh, rh).edge_query_table is rh
 
     def test_query_table_self_full_vs_subset_vs_bipartite(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
-        rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
+        rh = after(lh, make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int)))
         assert make_pipeline_ctx(lh).query_table.size == 4
         assert (
             make_pipeline_ctx(lh, queried_keys=jnp.array([1, 3])).query_table.size == 2
@@ -389,11 +389,11 @@ class TestContextTableHelpers:
         # query-local rhs ids [0, 1] map through queried_keys -> lh ids [2, 0].
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([1, 3])),
-            query_idx=Index(lh.keys, jnp.array([0, 1])),
+            query_idx=Index(ctx.query_table.keys, jnp.array([0, 1])),
         )
         lifted = lift_query_candidates(candidates, ctx)
-        npt.assert_array_equal(np.asarray(lifted.key_idx.indices), np.array([1, 3]))
-        npt.assert_array_equal(np.asarray(lifted.query_idx.indices), np.array([2, 0]))
+        npt.assert_array_equal(np.asarray(lifted.key_idx), np.array([1, 3]))
+        npt.assert_array_equal(np.asarray(lifted.query_idx), np.array([2, 0]))
 
     def test_lift_query_candidates_noop_without_queried_keys(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))

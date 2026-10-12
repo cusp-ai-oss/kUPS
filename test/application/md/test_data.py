@@ -139,8 +139,8 @@ def test_builder_preserves_identity_and_geometry(md_config: MdParameters) -> Non
     assert md_particles.keys == particle_keys
     assert md_particles.data.system.keys == (system_key,)
     npt.assert_array_equal(
-        md_particles.data.system.indices,
-        jnp.zeros(2, dtype=int),
+        md_particles.data.system.value,
+        [system_key, system_key],
     )
     assert systems.keys == (system_key,)
     npt.assert_array_equal(
@@ -364,12 +364,12 @@ def test_canonical_array_outputs_support_table_union(
     assert merged_particles.keys == tuple(ParticleId(i) for i in range(4))
     assert merged_systems.keys == (SystemId(0), SystemId(1))
     assert merged_particles.data.system.keys == (SystemId(0), SystemId(1))
-    npt.assert_array_equal(merged_particles.data.system.indices, [0, 0, 1, 1])
+    npt.assert_array_equal(merged_particles.data.system.value, [0, 0, 1, 1])
     assert merged_particles.data.exclusion.keys == (
         ExclusionId(0),
         ExclusionId(1),
     )
-    npt.assert_array_equal(merged_particles.data.exclusion.indices, [0, 1, 0, 1])
+    npt.assert_array_equal(merged_particles.data.exclusion.value, [0, 1, 0, 1])
     assert merged_systems.data.cell.vectors.shape == (2, 3, 3)
 
 
@@ -448,12 +448,12 @@ def test_builder_initial_zero_state_and_pytree_contract(
     assert md_particles.data.labels.keys == particles.data.labels.keys
     assert md_particles.data.system.keys == particles.data.system.keys
     npt.assert_array_equal(
-        md_particles.data.labels.indices,
-        particles.data.labels.indices,
+        md_particles.data.labels.value,
+        particles.data.labels.value,
     )
     npt.assert_array_equal(
-        md_particles.data.system.indices,
-        particles.data.system.indices,
+        md_particles.data.system.value,
+        particles.data.system.value,
     )
     assert md_particles.data.position_gradients.shape == (3, 3)
     assert md_particles.data.position_gradients.dtype == particles.data.positions.dtype
@@ -465,7 +465,7 @@ def test_builder_initial_zero_state_and_pytree_contract(
     assert md_particles.data.momenta.dtype == jnp.zeros((3, 3)).dtype
     npt.assert_array_equal(md_particles.data.momenta, jnp.zeros((3, 3)))
     assert md_particles.data.exclusion.keys == tuple(ExclusionId(i) for i in range(3))
-    npt.assert_array_equal(md_particles.data.exclusion.indices, jnp.arange(3))
+    npt.assert_array_equal(md_particles.data.exclusion.value, jnp.arange(3))
 
     assert systems.data.cell.vectors.shape == (1, 3, 3)
     assert systems.data.cell.vectors.dtype == cell.vectors.dtype

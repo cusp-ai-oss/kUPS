@@ -45,7 +45,6 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-from kups.core.utils.segment import bincount
 
 
 def num_cells(
@@ -77,14 +76,8 @@ def lift_query_candidates(candidates: Candidates, ctx: PipelineContext) -> Candi
     """Convert query-local self-update candidates to ``ctx.keys`` positions."""
     if ctx.queried_keys is None:
         return candidates
-    oob = ctx.keys.size
-    query_idx = ctx.queried_keys.at[candidates.query_idx.indices].get(
-        mode="fill", fill_value=oob
-    )
-    return Candidates(
-        key_idx=candidates.key_idx,
-        query_idx=Index(ctx.keys.keys, query_idx, _cls=ctx.keys.cls),
-    )
+    queried = Table.arange(ctx.queried_keys, label=ParticleId)
+    return Candidates(candidates.key_idx, queried[candidates.query_idx])
 
 
 def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.Array:
@@ -187,28 +180,30 @@ def _get_candidate_images(
     candidate.
     """
     cells = systems.data.cell
-    images = candidate_image_counts(cells, cutoffs)
-    images_per_sys = jnp.prod(images, axis=-1).astype(int)
-
-    cand_sys_ids = keys.data.system.indices[candidates.key_idx.indices]
-    cand_per_sys = bincount(cand_sys_ids, length=systems.size)
-    total_cand = jnp.vdot(cand_per_sys, images_per_sys)
-    out_size = out_size.generate_assertion(total_cand)
+    key_points = keys[candidates.key_idx]
+    # Out-of-bounds candidates take no images.
+    images, ratio = (
+        systems.set_data(
+            (
+                candidate_image_counts(cells, cutoffs),
+                cutoffs[:, None] / cells.perpendicular_lengths,
+            )
+        )
+        .at(key_points.system, args={"mode": "fill", "fill_value": 0})
+        .get()
+    )
+    per_candidate = jnp.prod(images, axis=-1)
+    out_size = out_size.generate_assertion(per_candidate.sum())
     num_cands = candidates.key_idx.size
     if num_cands == 0 or out_size.size <= num_cands:
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         return jnp.arange(num_cands), offset
 
-    window = _generate_image_offsets(images[cand_sys_ids], out_size)
+    window = _generate_image_offsets(images, out_size)
     idx = jnp.arange(num_cands + 1).repeat(
-        jnp.pad(images_per_sys[cand_sys_ids], (0, 1)),
-        total_repeat_length=out_size.size,
+        jnp.pad(per_candidate, (0, 1)), total_repeat_length=out_size.size
     )
-    ratio = cutoffs[cand_sys_ids][..., None] / cells.perpendicular_lengths[cand_sys_ids]
-    separation = (
-        keys.data.positions[candidates.key_idx.indices]
-        - queries.data.positions[candidates.query_idx.indices]
-    )
+    separation = key_points.positions - queries[candidates.query_idx].positions
     # Anchor each window at ceil(separation - ratio) so it brackets every in-range
     # image of the pair. Where the ratio is non-finite (infinite cutoff or
     # degenerate axis) the window has width 1 and sits on the minimum image;
@@ -230,8 +225,7 @@ def _minimum_image_shifts(
 ) -> Array:
     """Compute minimum-image fractional shifts for each candidate pair."""
     deltas = (
-        keys.data.positions[candidates.key_idx.indices]
-        - queries.data.positions[candidates.query_idx.indices]
+        keys[candidates.key_idx].positions - queries[candidates.query_idx].positions
     )
     return systems.data.cell.minimum_image_shifts(deltas)
 
@@ -293,18 +287,12 @@ def candidates_to_batch(
     is_minimum_image: Array,
 ) -> CandidateBatch[Literal[2]]:
     """Pack ``(candidates, flat shifts, is_min)`` into a ``CandidateBatch[2]``."""
-    indices_2d = jnp.stack(
-        [candidates.key_idx.indices, candidates.query_idx.indices], axis=-1
-    )
+    # Bipartite candidates index the union of the disjoint key and query ids.
+    indices = Index.concatenate(candidates.key_idx, candidates.query_idx)
     edges: Edges[Literal[2]] = Edges(
-        Index(candidates.key_idx.keys, indices_2d, _cls=candidates.key_idx.cls),
-        jnp.expand_dims(shifts, axis=-2),
+        indices.reshape(2, -1).T, jnp.expand_dims(shifts, axis=-2)
     )
-    return CandidateBatch(
-        edges=edges,
-        is_minimum_image=is_minimum_image,
-        query_keys=candidates.query_idx.keys,
-    )
+    return CandidateBatch(edges=edges, is_minimum_image=is_minimum_image)
 
 
 def replicate_for_images(

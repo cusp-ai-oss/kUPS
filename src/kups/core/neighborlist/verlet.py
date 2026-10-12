@@ -144,12 +144,14 @@ def skin_margin(
         table (``consumed`` and ``budget``, both in Å).
     """
     cell_now = systems.data.cell
-    system = particles.data.system.indices
+    system = particles.data.system
     cutoff_values = Table.broadcast_to(cutoffs, systems).data
     deform = reference.cell.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
     # u_i = x_i - x_i_ref @ F, min-image wrapped
-    co_moved = jnp.einsum("ni,nij->nj", reference.positions, deform[system])
-    residual = cell_now[system].wrap(particles.data.positions - co_moved)
+    co_moved = jnp.einsum(
+        "ni,nij->nj", reference.positions, systems.set_data(deform)[system]
+    )
+    residual = systems[system].cell.wrap(particles.data.positions - co_moved)
     u_max = particles.data.system.max_over(jnp.linalg.norm(residual, axis=-1)).data
     u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
     # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ

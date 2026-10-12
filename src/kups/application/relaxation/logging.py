@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -58,11 +57,7 @@ class RelaxStepData:
         """Extract per-step logging data from a relaxation state."""
         forces = state.particles.data.forces
         force_norms = jnp.linalg.norm(forces, axis=-1)
-        max_force = jax.ops.segment_max(
-            force_norms,
-            state.particles.data.system.indices,
-            state.particles.data.system.num_labels,
-        )
+        max_force = state.particles.data.system.max_over(force_norms).data
         return RelaxStepData(
             atoms=state.particles,
             potential_energy=state.systems.data.potential_energy,

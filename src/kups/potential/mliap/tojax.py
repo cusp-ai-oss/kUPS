@@ -148,7 +148,7 @@ def tojaxed_energy(
         constant_values=0,
     )
     batch = jnp.pad(
-        graph.particles.data.system.indices,
+        graph.particles.data.system.raw_indices,
         (0, 1),
         constant_values=graph.particles.data.system.num_labels,
     )

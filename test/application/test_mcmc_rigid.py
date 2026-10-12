@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -350,11 +351,11 @@ class TestPatchFn:
                 particle_ids=ids, new_positions=jnp.array([[5.0, 5.0, 5.0]])
             ),
         )
-        npt.assert_array_equal(update._particles.indices.indices, jnp.array([1]))
+        npt.assert_array_equal(update._particles.indices.value, [1])
 
     def test_non_particle_fields_from_motif(self, movement_update_pid0):
         npt.assert_array_equal(
-            movement_update_pid0._particles.data.data.labels.indices, jnp.array([0])
+            np.asarray(movement_update_pid0._particles.data.data.labels), [Label("Ar")]
         )
         # Masses now come from motif data (1.0), not original particles (40.0)
         npt.assert_allclose(
@@ -362,7 +363,7 @@ class TestPatchFn:
         )
 
     def test_group_changes_single(self, movement_update_pid0):
-        assert movement_update_pid0.groups.indices.indices.shape == (1,)
+        assert movement_update_pid0.groups.indices.shape == (1,)
 
 
 class TestExchPatchFn:
@@ -374,7 +375,8 @@ class TestExchPatchFn:
 
     def test_motif_properties_used(self, exchange_update_default):
         npt.assert_array_equal(
-            exchange_update_default._particles.data.data.labels.indices, jnp.array([0])
+            np.asarray(exchange_update_default._particles.data.data.labels),
+            [Label("Ar")],
         )
         # Mass comes from motifs (1.0), not from the particle fixture (40.0)
         npt.assert_allclose(
@@ -382,9 +384,7 @@ class TestExchPatchFn:
         )
 
     def test_group_indices_stored(self, exchange_update_default):
-        npt.assert_array_equal(
-            exchange_update_default.groups.indices.indices, jnp.array([2])
-        )
+        npt.assert_array_equal(exchange_update_default.groups.indices.value, [2])
 
     def test_returns_mcmc_state_update(self, exchange_update_default):
         assert isinstance(exchange_update_default, MCMCStateUpdate)
@@ -429,7 +429,7 @@ class TestMCMCStateUpdate:
         )
         npt.assert_allclose(partial.particles.data.masses, state.particles.data.masses)
         npt.assert_array_equal(
-            partial.groups.data.system.indices, state.groups.data.system.indices
+            *Index.match(partial.groups.data.system, state.groups.data.system)
         )
 
 
