@@ -510,14 +510,14 @@ def key_chain(rng: Array, shape: tuple[int, ...] = ()) -> Generator[Array, None,
     """
     size = math.prod(shape)
     key = jax.random.split(rng, size)
-
-    @jit
-    def fold_keys(key: Array, i: np.uint32) -> Array:
-        return jax.vmap(jax.random.fold_in, in_axes=(0, None))(key, i).reshape(shape)
-
     for i in count():
         # fold_in consumes 32 bits; wrap on the host without a device increment.
-        yield fold_keys(key, np.uint32(i % 2**32))
+        yield _fold_keys(key, np.uint32(i % 2**32), shape=shape)
+
+
+@jit(static_argnames="shape")
+def _fold_keys(key: Array, i: np.uint32, shape: tuple[int, ...]) -> Array:
+    return jax.vmap(jax.random.fold_in, in_axes=(0, None))(key, i).reshape(shape)
 
 
 def field[T](

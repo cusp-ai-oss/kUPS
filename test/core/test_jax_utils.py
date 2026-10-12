@@ -113,6 +113,21 @@ def test_key_chain_preserves_counter_sequence(
         jax.config.update("jax_enable_x64", previous_x64)
 
 
+def test_key_chains_share_one_fold_program(monkeypatch: pytest.MonkeyPatch) -> None:
+    traces = []
+    fold_in = jax.random.fold_in
+
+    def counted(key, data):
+        traces.append(key.shape)
+        return fold_in(key, data)
+
+    monkeypatch.setattr(jax.random, "fold_in", counted)
+    for seed in range(3):
+        chain = jax_utils.key_chain(jax.random.key(seed), (5, 1))
+        assert next(chain).shape == next(chain).shape == (5, 1)
+    assert len(traces) <= 1
+
+
 @dataclass
 class _Point:
     x: float

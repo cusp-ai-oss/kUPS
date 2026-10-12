@@ -4,6 +4,7 @@
 """Tests for mcmc_state_from_ase, _make_molecule, and estimate_occupied_volume."""
 
 import tempfile
+from dataclasses import replace
 
 import ase
 import ase.data
@@ -196,6 +197,26 @@ class TestHostOnly:
         assert jnp.isfinite(self.systems2.data.log_fugacity).all()
         assert float(self.systems2.data.log_fugacity[0, 0]) < 0
         npt.assert_allclose(self.systems2.data.potential_energy.total, jnp.array([0.0]))
+
+
+@pytest.mark.parametrize("replication", [1, (2, 1, 3)])
+def test_cell_replication_tiles_wrapped_host(replication):
+    original = np.array([[1.0, 2.0, 3.0], [12.0, -1.0, 4.0]])
+    atoms = ase.Atoms("Ar2", positions=original, cell=[L, L, L], pbc=True)
+    host = _host(_write_cif(atoms)).model_copy(update={"cell_replication": replication})
+    particles, _, systems, _ = _call(host, [_co2_config()], key=jax.random.key(0))
+    reps = np.broadcast_to(replication, 3)
+    npt.assert_allclose(systems.data.cell.vectors[0], np.diag(reps) * L, atol=1e-5)
+    # Each host atom appears once per tile, inside one supercell span.
+    positions = np.asarray(particles.data.positions)
+    assert len(positions) == 2 * reps.prod()
+    assert np.all(np.ptp(positions, axis=0) < reps * L)
+    images = np.round(positions / L, 4) % 1
+    npt.assert_allclose(
+        images, np.tile(np.round(original / L, 4) % 1, (reps.prod(), 1))
+    )
+    tiles = np.floor(positions[::2] / L)
+    assert len(np.unique(tiles, axis=0)) == reps.prod()
 
 
 class TestWithInitialAdsorbates:
@@ -467,6 +488,22 @@ class TestEstimateMaxAdsorbates:
             dtype=int,
         )
         npt.assert_array_equal(result.data, expected)
+
+    def test_interleaved_systems_skip_buffered_rows(self):
+        particles = _particles([8, 6, 8, 1], [1, 0, 1, 1])
+        # The third row is buffered: its system index is out of bounds.
+        system = Index((SystemId(0), SystemId(1)), jnp.array([1, 0, 2, 1]))
+        particles = particles.set_data(replace(particles.data, system=system))
+        args = (particles, _motifs([[1]]), _systems([L, L / 2], log_fugacity=5.0))
+        expected = [
+            np.floor((L**3 - _sphere_volume(6)) / _sphere_volume(1)),
+            np.floor(
+                ((L / 2) ** 3 - _sphere_volume(8) - _sphere_volume(1))
+                / _sphere_volume(1)
+            ),
+        ]
+        npt.assert_array_equal(estimate_max_adsorbates(*args).data, expected)
+        npt.assert_array_equal(estimate_max_adsorbates(*args, 0.0).data, [0, 0])
 
     def test_clamped_at_zero(self):
         # Tiny box fully occupied -> no room for adsorbates.

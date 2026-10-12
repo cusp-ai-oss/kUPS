@@ -73,7 +73,6 @@ from kups.core.propagator import (
     SequentialPropagator,
     propagate_and_fix,
 )
-from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, key_chain, tree_map
@@ -344,7 +343,7 @@ def run(config: Config) -> WidomState:
 
     state = init_state(next(chain), config)
     init_prop, propagator = make_propagator(state, config.run)
-    state = propagate_and_fix(as_result_function(init_prop), next(chain), state)
+    state = propagate_and_fix(make_cycle_function(init_prop), next(chain), state)
 
     cycle_fn = make_cycle_function(propagator)
     state = run_warmup_cycles(
