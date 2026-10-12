@@ -30,7 +30,10 @@ jobs:
         resolution: ["highest", "lowest-direct"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+        with:
+          jax-cache-key: ${{ matrix.python-version }}-${{ matrix.resolution }}
       - name: Get main commit hash
         id: get-main-hash
         run: echo "main_hash=$(git rev-parse origin/main)" >> $GITHUB_OUTPUT
@@ -59,3 +62,11 @@ jobs:
         with:
           path: .testmondata
           key: testmon-${{ steps.get-main-hash.outputs.main_hash }}-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.resolution }}
+      - name: Reset an oversized JAX cache
+        if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: if [ "$(du -sm /tmp/jax_cache | cut -f1)" -gt 1000 ]; then rm -rf /tmp/jax_cache/*; fi
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          path: /tmp/jax_cache
+          key: ${{ steps.setup.outputs.jax-cache-key }}
