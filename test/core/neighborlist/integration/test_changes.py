@@ -33,6 +33,9 @@ from .._builders import (
 
 _EdgeKey = tuple[int, int, tuple[int, ...]]
 
+# Shared across tests so calls with equal static signatures reuse one program.
+_changes = jax.jit(neighborlist_changes, static_argnames="compaction")
+
 
 def _edge_counts(edges: Edges[Literal[2]], n_particles: int) -> Counter[_EdgeKey]:
     """Count occurrences of each ``(i, j, shift)`` edge with both ends in range."""
@@ -88,7 +91,7 @@ class TestNeighborlistChanges:
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
-        result = neighborlist_changes(nl, lh, rh_with_indices, systems)
+        result = _changes(nl, lh, rh_with_indices, systems)
 
         added_set = valid_edge_set(result.added, N)
         removed_set = valid_edge_set(result.removed, N)
@@ -126,7 +129,7 @@ class TestNeighborlistChanges:
             lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
-        result = neighborlist_changes(nl, lh, rh_with_indices, systems)
+        result = _changes(nl, lh, rh_with_indices, systems)
 
         removed = valid_edge_set(result.removed, 3)
         added = valid_edge_set(result.added, 3)
@@ -165,7 +168,7 @@ class TestNeighborlistChanges:
             lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
-        result = neighborlist_changes(nl, lh, rh_with_indices, systems)
+        result = _changes(nl, lh, rh_with_indices, systems)
 
         added = valid_edge_set(result.added, 4)
         assert (0, 1) in added
@@ -206,9 +209,7 @@ class TestNeighborlistChanges:
 
         lh = make_lh(positions, batch)
         rh_table, queried_keys = make_rh(lh, new_pos, rh_batch, changed_idx)
-        result = neighborlist_changes(
-            nl, lh, WithIndices(queried_keys, rh_table), systems
-        )
+        result = _changes(nl, lh, WithIndices(queried_keys, rh_table), systems)
 
         counts = _edge_counts(result.added, N)
         assert (1, 2, (0, 0, 0)) in counts, "expected the moved particle's new edge"
@@ -232,9 +233,7 @@ class TestNeighborlistChanges:
             lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
-        result = neighborlist_changes(
-            nl, lh, rh_with_indices, systems, compaction=compaction
-        )
+        result = _changes(nl, lh, rh_with_indices, systems, compaction=compaction)
 
         removed = valid_edge_set(result.removed, 3)
         added = valid_edge_set(result.added, 3)
@@ -268,9 +267,7 @@ class TestNeighborlistChanges:
         rh_table, queried_keys = make_rh(
             lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
         )
-        result = neighborlist_changes(
-            nl, lh, WithIndices(queried_keys, rh_table), systems
-        )
+        result = _changes(nl, lh, WithIndices(queried_keys, rh_table), systems)
 
         assert valid_edge_set(result.added, N) == valid_edge_set(ref_after, N)
         assert valid_edge_set(result.removed, N) == valid_edge_set(ref_removed, N)

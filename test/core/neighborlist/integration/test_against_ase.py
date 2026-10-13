@@ -10,25 +10,28 @@ agree with ``ase.neighborlist.neighbor_list`` across cutoffs that are smaller,
 larger, and much larger than the perpendicular cell length.
 """
 
+import functools
+
 import ase
 import ase.build
-import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
 from ase.neighborlist import neighbor_list as ase_neighbor_list
+from jax import Array
 
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, to_lower_triangular
 from kups.core.data.table import Table
+from kups.core.lens import bind
 from kups.core.neighborlist import (
     CellListNeighborList,
     DenseNearestNeighborList,
     UniversalNeighborlistParameters,
 )
-from kups.core.result import as_result_function
+from kups.core.typing import SystemId
 
-from .._builders import EvalState, make_lh, make_systems
+from .._builders import EvalState, make_lh, make_systems, pad, run_nl
 
 
 def _atoms_to_cell(atoms: ase.Atoms) -> Cell:
@@ -60,6 +63,42 @@ def _ensure_lower_triangular(atoms: ase.Atoms) -> ase.Atoms:
     return out
 
 
+# Structures up to this many atoms are padded with inactive particles and share
+# one capacity estimate, so each implementation compiles one program for all of
+# them and every cutoff.
+_PADDED = 8
+
+
+def _estimate(
+    atoms: ase.Atoms, cutoff: float, n: int
+) -> UniversalNeighborlistParameters:
+    systems, cutoffs = make_systems(_atoms_to_cell(atoms), jnp.array([cutoff]))
+    particles_per_system = Table(systems.keys, jnp.array([n]))
+    return UniversalNeighborlistParameters.estimate(
+        particles_per_system, systems, cutoffs
+    )
+
+
+@functools.cache
+def _capacities(small: bool) -> UniversalNeighborlistParameters:
+    """Largest estimate over the size class at each structure's largest cutoff."""
+    estimates = [
+        _estimate(
+            _ensure_lower_triangular(atoms),
+            max(cutoffs),
+            _PADDED if small else len(atoms),
+        )
+        for _, builder, cutoffs in _CASES
+        if (len(atoms := builder()) <= _PADDED) == small
+    ]
+    return UniversalNeighborlistParameters(
+        avg_edges=max(e.avg_edges for e in estimates),
+        avg_candidates=max(e.avg_candidates for e in estimates),
+        avg_image_candidates=max(e.avg_image_candidates for e in estimates),
+        cells=max(e.cells for e in estimates),
+    )
+
+
 def _build_state(atoms: ase.Atoms, cutoff: float) -> tuple[EvalState, Table]:
     """Construct an ``EvalState`` from an ``ase.Atoms`` and a scalar cutoff."""
     positions = jnp.asarray(np.asarray(atoms.get_positions()))
@@ -67,14 +106,33 @@ def _build_state(atoms: ase.Atoms, cutoff: float) -> tuple[EvalState, Table]:
     systems, cutoff_table = make_systems(
         _atoms_to_cell(atoms), jnp.array([float(cutoff)])
     )
-    particles_per_system = Table(systems.keys, jnp.array([len(atoms)]))
-    nl_params = UniversalNeighborlistParameters.estimate(
-        particles_per_system, systems, cutoff_table
-    )
+    small = len(atoms) <= _PADDED
+    if small:
+        particles, systems, cutoff_table, _ = pad(
+            particles, systems, cutoff_table, n_particles=_PADDED, n_systems=1
+        )
     state = EvalState(
-        particles=particles, systems=systems, neighborlist_params=nl_params
+        particles=particles, systems=systems, neighborlist_params=_capacities(small)
     )
     return state, cutoff_table
+
+
+# Capacity lenses are part of the jit signature, so reuse one neighbor list per
+# implementation and capacity estimate and only swap its cutoffs.
+type _NeighborListClass = type[CellListNeighborList] | type[DenseNearestNeighborList]
+type _NeighborList = CellListNeighborList | DenseNearestNeighborList
+_NEIGHBOR_LISTS: dict[
+    tuple[_NeighborListClass, UniversalNeighborlistParameters], _NeighborList
+] = {}
+
+
+def _neighbor_list(
+    nl_cls: _NeighborListClass, state: EvalState, cutoffs: Table[SystemId, Array]
+) -> _NeighborList:
+    key = (nl_cls, state.neighborlist_params)
+    if key not in _NEIGHBOR_LISTS:
+        _NEIGHBOR_LISTS[key] = nl_cls.from_state(state, cutoffs)
+    return bind(_NEIGHBOR_LISTS[key], lambda nl: nl.cutoffs).set(cutoffs)
 
 
 def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
@@ -88,11 +146,8 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
 
     result = None
     for _ in range(2):
-        nl = nl_cls.from_state(state, cutoff_table)
-        result = jax.jit(as_result_function(nl))(
-            keys=state.particles,
-            systems=state.systems,
-        )
+        nl = _neighbor_list(nl_cls, state, cutoff_table)
+        result = run_nl(nl, state.particles, state.systems)
         if not result.failed_assertions:
             break
         state = result.fix_or_raise(state)

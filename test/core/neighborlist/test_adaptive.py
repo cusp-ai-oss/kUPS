@@ -107,9 +107,13 @@ class TestAdaptiveNeighborList:
             )
             npt.assert_array_equal(impl.cutoffs.data, jnp.array([2.0]))
 
-    @pytest.mark.parametrize("implementation", [0, 1, 2, 3])
-    @pytest.mark.parametrize("inclusion", [False, True])
-    @pytest.mark.parametrize("exclusion", [False, True])
+    @pytest.mark.parametrize(
+        "implementation,inclusion,exclusion",
+        # Mixed policies only combine masks the uniform ones already apply to
+        # each implementation's candidates, so one implementation runs them.
+        [(i, flag, flag) for i in range(4) for flag in (False, True)]
+        + [(0, True, False), (0, False, True)],
+    )
     def test_pair_candidates_retain_group_pairs_and_self_images(
         self, implementation: int, inclusion: bool, exclusion: bool
     ):

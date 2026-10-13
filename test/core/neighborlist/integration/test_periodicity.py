@@ -8,48 +8,79 @@ checking that periodic faces wrap only on periodic axes and that the cell-list
 stencil routing stays consistent with the dense reference.
 """
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax import Array
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, OrthogonalFrame, PeriodicCell, VacuumCell
+from kups.core.cell import (
+    AnyPeriodicity,
+    Cell,
+    OrthogonalFrame,
+    PeriodicCell,
+    VacuumCell,
+)
+from kups.core.data.table import Table
 from kups.core.neighborlist import CellListNeighborList, DenseNearestNeighborList
-from kups.core.result import as_result_function
+from kups.core.typing import ParticleId, SystemId
 
-from .._builders import make_lh, make_systems, valid_edge_set
+from .._builders import (
+    SamplePoints,
+    SampleSystems,
+    make_lh,
+    make_systems,
+    pad,
+    run_nl,
+    valid_edge_set,
+)
+
+# Every fixture is padded with inactive particles to this count, so each
+# periodicity compiles one program per implementation.
+_PADDED = 30
+_CAPACITY = FixedCapacity(_PADDED * _PADDED)
+
+
+def _padded_inputs(
+    positions: Array, cell: Cell[AnyPeriodicity], cutoff: float
+) -> tuple[
+    Table[ParticleId, SamplePoints],
+    Table[SystemId, SampleSystems],
+    Table[SystemId, Array],
+]:
+    lh = make_lh(positions, jnp.zeros(len(positions), dtype=int))
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    lh, systems, cutoffs, _ = pad(
+        lh, systems, cutoffs, n_particles=_PADDED, n_systems=1
+    )
+    return lh, systems, cutoffs
 
 
 def _run_cell_list(positions, cell, cutoff):
     """Run ``CellListNeighborList`` on a single-system fixture."""
-    n = len(positions)
-    lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    lh, systems, cutoffs = _padded_inputs(positions, cell, cutoff)
     nl = CellListNeighborList(
-        avg_candidates=FixedCapacity(max(n * n, 8)),
-        avg_edges=FixedCapacity(max(n * n, 8)),
+        avg_candidates=_CAPACITY,
+        avg_edges=_CAPACITY,
         cells=FixedCapacity(512),
-        avg_image_candidates=FixedCapacity(max(n * n, 8)),
+        avg_image_candidates=_CAPACITY,
         cutoffs=cutoffs,
     )
-    result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
+    result = run_nl(nl, lh, systems)
     result.raise_assertion()
     return result.value
 
 
 def _run_dense(positions, cell, cutoff):
     """Run ``DenseNearestNeighborList`` on the same fixture, for cross-check."""
-    n = len(positions)
-    lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    lh, systems, cutoffs = _padded_inputs(positions, cell, cutoff)
     nl = DenseNearestNeighborList(
-        avg_candidates=FixedCapacity(max(n * n, 8)),
-        avg_edges=FixedCapacity(max(n * n, 8)),
-        avg_image_candidates=FixedCapacity(max(n * n, 8)),
+        avg_candidates=_CAPACITY,
+        avg_edges=_CAPACITY,
+        avg_image_candidates=_CAPACITY,
         cutoffs=cutoffs,
     )
-    result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
+    result = run_nl(nl, lh, systems)
     result.raise_assertion()
     return result.value
 

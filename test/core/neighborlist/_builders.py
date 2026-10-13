@@ -12,19 +12,31 @@ it matters.
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.core.capacity import Capacity
 from kups.core.cell import Cell, OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
+from kups.core.neighborlist.common import Candidates, replicate_for_images
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
-from kups.core.neighborlist.types import CandidateBatch, PipelineContext
+from kups.core.neighborlist.types import (
+    CandidateBatch,
+    NeighborList,
+    NeighborListPoints,
+    NeighborListSystems,
+    PipelineContext,
+)
+from kups.core.result import Result, as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from kups.core.utils.ops import pad_axis
 
 
 @dataclass
@@ -202,9 +214,9 @@ def make_batch(
 
 def valid_edge_set(edges: Edges, n_particles: int) -> set[tuple[int, int]]:
     """Set of ``(i, j)`` edges with both endpoints below ``n_particles`` (non-padding)."""
-    raw = edges.indices.indices
+    raw = np.asarray(edges.indices.indices)
     in_range = (raw[:, 0] < n_particles) & (raw[:, 1] < n_particles)
-    return {(int(a), int(b)) for a, b in np.asarray(raw[in_range])}
+    return {(int(a), int(b)) for a, b in raw[in_range]}
 
 
 @dataclass
@@ -237,15 +249,127 @@ def make_adaptive_state(n_particles: int, n_systems: int) -> EvalState:
     return EvalState(particles=lh, systems=systems, neighborlist_params=params)
 
 
+def pad(
+    lh: Table[ParticleId, SamplePoints],
+    systems: Table[SystemId, SampleSystems],
+    cutoffs: Table[SystemId, Array],
+    queried_keys: Index[ParticleId] | None = None,
+    *,
+    n_particles: int,
+    n_systems: int,
+    n_queried: int = 0,
+) -> tuple[
+    Table[ParticleId, SamplePoints],
+    Table[SystemId, SampleSystems],
+    Table[SystemId, Array],
+    Index[ParticleId] | None,
+]:
+    """Pad to ``n_particles`` particles, ``n_systems`` systems, ``n_queried`` queried keys.
+
+    Padding particles belong to the out-of-range system and inclusion segment and
+    padding queried keys are out of range, so both are inactive; padding systems
+    repeat the last one and hold no particles. The edges between real particles
+    are unchanged.
+    """
+    labels = tuple(range(n_systems))
+    n_pad = n_particles - lh.size
+
+    def pad_segments(index: Index[int]) -> Index[int]:
+        indices = jnp.concatenate([index.indices, jnp.full(n_pad, n_systems)])
+        return Index(labels, indices, max_count=index.max_count)
+
+    points = SamplePoints(
+        positions=pad_axis(lh.data.positions, (0, n_pad), axis=0),
+        system=pad_segments(lh.data.system),
+        inclusion=pad_segments(lh.data.inclusion),
+        exclusion=Index.integer(
+            jnp.concatenate(
+                [lh.data.exclusion.indices, jnp.arange(lh.size, n_particles)]
+            ),
+            n=n_particles,
+        ),
+    )
+    padded = Table(tuple(ParticleId(i) for i in range(n_particles)), points)
+    if queried_keys is not None:
+        indices = queried_keys.indices
+        assert n_queried >= len(indices)
+        queried_keys = Index(
+            padded.keys,
+            jnp.concatenate([indices, jnp.full(n_queried - len(indices), n_particles)]),
+        )
+    system_keys = tuple(SystemId(i) for i in range(n_systems))
+
+    def repeat_last(x: Array) -> Array:
+        return jnp.concatenate([x, jnp.repeat(x[-1:], n_systems - len(x), axis=0)])
+
+    return (
+        padded,
+        Table(system_keys, jax.tree.map(repeat_last, systems.data)),
+        Table(system_keys, repeat_last(cutoffs.data)),
+        queried_keys,
+    )
+
+
+@jax.jit
+def _run_nl(
+    nl: NeighborList[Literal[2]],
+    keys: Table[ParticleId, SamplePoints],
+    systems: Table[SystemId, SampleSystems],
+    queried_keys: Index[ParticleId] | None,
+) -> Result[Any, Edges[Literal[2]]]:
+    return as_result_function(nl)(keys=keys, systems=systems, queried_keys=queried_keys)
+
+
+def run_nl(
+    nl: NeighborList[Literal[2]],
+    keys: Table[ParticleId, SamplePoints],
+    systems: Table[SystemId, SampleSystems],
+    queried_keys: Index[ParticleId] | None = None,
+) -> Result[Any, Edges[Literal[2]]]:
+    """Run a neighbor list under jit, with its cutoffs as runtime inputs.
+
+    Calls with equal capacities, shapes and labels share one compiled program;
+    passing every argument positionally keeps them on one cache entry.
+    """
+    return _run_nl(nl, keys, systems, queried_keys)
+
+
+@jax.jit
+def _replicate(
+    candidates: Candidates,
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    cutoffs: Table[SystemId, Array],
+    image_candidates: Capacity[int] | None,
+) -> Result[Any, CandidateBatch[Literal[2]]]:
+    return as_result_function(replicate_for_images)(
+        candidates, keys, queries, systems, cutoffs, image_candidates
+    )
+
+
+def replicate(
+    candidates: Candidates,
+    keys: Table[ParticleId, NeighborListPoints],
+    queries: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, NeighborListSystems],
+    cutoffs: Table[SystemId, Array],
+    image_candidates: Capacity[int] | None,
+) -> CandidateBatch[Literal[2]]:
+    """``replicate_for_images`` under jit, raising its runtime assertions.
+
+    Cutoffs and positions are runtime inputs and the image capacity is static
+    (pytree metadata), so calls with equal shapes and capacity share one
+    compiled program.
+    """
+    result = _replicate(candidates, keys, queries, systems, cutoffs, image_candidates)
+    result.raise_assertion()
+    return result.value
+
+
 def call_with_retry(nl, lh, systems, queried_keys=None):
     """Run a neighbor list, growing its capacities until no assertion fails."""
-    from kups.core.result import as_result_function
-
-    while (
-        result := jax.jit(as_result_function(nl))(
-            keys=lh, systems=systems, queried_keys=queried_keys
-        )
-    ).failed_assertions:
+    while (result := run_nl(nl, lh, systems, queried_keys)).failed_assertions:
         nl = result.fix_or_raise(nl)
     result.raise_assertion()
     return result.value

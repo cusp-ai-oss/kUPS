@@ -164,6 +164,22 @@ def _parameters(cell, alpha, cutoff, k_max):
     )
 
 
+@jax.jit
+def _total_energy(
+    params: EwaldParameters,
+    graph: HyperGraph[PointCloudParticles, SystemData, Any],
+) -> Array:
+    """Total Ewald energy of the first system."""
+    sr_inp = GraphPotentialInput(params, graph)
+    lr_inp = EwaldLongRangeInput(PointCloud(graph.particles, graph.systems), params)
+    return (
+        ewald_short_range_energy(sr_inp).data.data[0]
+        + ewald_long_range_energy(lr_inp).data.data[0]
+        + ewald_self_interaction_energy(sr_inp).data.data[0]
+        + ewald_net_charge_energy(sr_inp).data.data[0]
+    )
+
+
 class TestEwald:
     """Tests for Ewald summation and exclusion correction.
 
@@ -309,15 +325,7 @@ class TestEwald:
         edges = _build_neighborlist(all_particles, systems, len(charges))
 
         graph = HyperGraph(particles=all_particles, systems=systems, edges=edges)
-        sr_inp = GraphPotentialInput(params, graph)
-        e_atomic = (
-            ewald_short_range_energy(sr_inp).data.data[0]
-            + ewald_long_range_energy(
-                EwaldLongRangeInput(PointCloud(all_particles, systems), params, None)
-            ).data.data[0]
-            + ewald_self_interaction_energy(sr_inp).data.data[0]
-            + ewald_net_charge_energy(sr_inp).data.data[0]
-        )
+        e_atomic = _total_energy(params, graph)
 
         # 2. Vacuum Coulomb of the excluded (bonded) pairs via manual edges
         # Bonds: (0,1) and (2,3), all within the same image (no PBC shift needed)
@@ -391,23 +399,9 @@ class TestEwald:
             systems=systems,
             edges=edges,
         )
-        sr_input = GraphPotentialInput(params, graph)
-        sr_result = ewald_short_range_energy(sr_input)
-
-        lr_input = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
-        lr_result = ewald_long_range_energy(lr_input)
-        self_result = ewald_self_interaction_energy(sr_input)
-        net_result = ewald_net_charge_energy(sr_input)
-
-        total_energy = (
-            sr_result.data.data
-            + lr_result.data.data
-            + self_result.data.data
-            + net_result.data.data
-        )
         npt.assert_allclose(
             MADELUNG_CONSTANT * (REPEATS**3) * 4,
-            total_energy[0] / TO_STANDARD_UNITS,
+            _total_energy(params, graph) / TO_STANDARD_UNITS,
             rtol=eps,
         )
 
@@ -464,19 +458,8 @@ class TestEwald:
         edges = _build_neighborlist(particles, systems, len(charges))
         graph = HyperGraph(particles=particles, systems=systems, edges=edges)
 
-        def total_energy(alpha: float) -> Array:
-            params = _parameters(cell, alpha, rc, 6.0)
-            sr_inp = GraphPotentialInput(params, graph)
-            lr_inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
-            return (
-                ewald_short_range_energy(sr_inp).data.data[0]
-                + ewald_long_range_energy(lr_inp).data.data[0]
-                + ewald_self_interaction_energy(sr_inp).data.data[0]
-                + ewald_net_charge_energy(sr_inp).data.data[0]
-            )
-
-        e_lo = total_energy(0.5)
-        e_hi = total_energy(1.0)  # alpha doubled
+        e_lo = _total_energy(_parameters(cell, 0.5, rc, 6.0), graph)
+        e_hi = _total_energy(_parameters(cell, 1.0, rc, 6.0), graph)  # alpha doubled
         assert bool(jnp.isfinite(e_lo)) and bool(jnp.isfinite(e_hi))
         npt.assert_allclose(e_lo, e_hi, atol=5e-3, rtol=1e-3)
 
@@ -697,7 +680,6 @@ class TestStructureFactorCache:
         moved = random.randint(random.key(2), (self.N_STEPS,), 0, n)
         deltas = random.normal(random.key(1), (self.N_STEPS, 3), self.DTYPE) * 1e-4
 
-        @jax.jit
         def step(
             carry: tuple[KahanSummand[Array], Array], move: tuple[Array, Array]
         ) -> tuple[tuple[KahanSummand[Array], Array], None]:
@@ -716,9 +698,12 @@ class TestStructureFactorCache:
             sk, _ = structure_factor(make_input(new_pos, self._cache(sk), previous))
             return (sk, new_pos), None
 
-        positions = particles.data.positions
-        sk0, _ = structure_factor(make_input(positions))
-        (sk, pos), _ = jax.lax.scan(step, (sk0, positions), (moved, deltas))
+        @jax.jit
+        def walk(positions: Array) -> tuple[KahanSummand[Array], Array]:
+            sk0, _ = structure_factor(make_input(positions))
+            return jax.lax.scan(step, (sk0, positions), (moved, deltas))[0]
+
+        sk, pos = walk(particles.data.positions)
         # Without compensation only the running sum survives, as before this change.
         return (sk.total if compensated else sk.value), pos
 
@@ -734,12 +719,11 @@ class TestStructureFactorCache:
 
     def test_compensation_reduces_drift(self):
         """Carrying the compensation shrinks drift over a chain of moves."""
-        reference = self._reference(self._walk(compensated=True)[1])
+        walks = {compensated: self._walk(compensated) for compensated in (True, False)}
+        reference = self._reference(walks[True][1])
         errors = {
-            compensated: float(
-                np.abs(np.asarray(self._walk(compensated)[0][0]) - reference).max()
-            )
-            for compensated in (True, False)
+            compensated: float(np.abs(np.asarray(sk[0]) - reference).max())
+            for compensated, (sk, _) in walks.items()
         }
         assert errors[True] < errors[False] / 4, errors
 
@@ -850,7 +834,7 @@ class TestReciprocalReduction:
                 ),
             )
         )
-        sk, _ = structure_factor(inp)
+        sk, _ = jax.jit(structure_factor)(inp)
         cache = bind(
             EwaldCache.make(len(inp.point_cloud.systems), sk.value.shape[1]),
             lambda x: x.structure_factor,
@@ -872,10 +856,13 @@ class TestReciprocalReduction:
             )
         )
 
-    @pytest.mark.parametrize("grid", [False, True])
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
-    @pytest.mark.parametrize("chunks", [(2, 11), (1024, 128), (8, 128)])
     @pytest.mark.parametrize("batch", [1, 4])
+    # Chunk sizes select explicit particle and k tiles but only change the tile
+    # count of phase grids, so the grid case keeps one chunk setting.
+    @pytest.mark.parametrize(
+        "grid,chunks", [(False, (1024, 128)), (False, (2, 11)), (True, (2, 11))]
+    )
     def test_full_and_incremental(self, grid, dtype, chunks, batch):
         inp = self._input(grid, dtype, chunks, batch=batch)
         actual, _ = jax.jit(structure_factor)(inp)
@@ -924,15 +911,17 @@ class TestReciprocalReduction:
                     PointCloud(Table.arange(p, label=ParticleId), systems)
                 )
             )
+
+        def evaluate(x: EwaldLongRangeInput[Any]) -> tuple[Array, Array]:
+            return structure_factor(x)[0].total, ewald_long_range_energy(x).data.data
+
         for x in inputs:
-            constant, _ = structure_factor(x)
-            traced, _ = jax.jit(structure_factor)(x)
-            npt.assert_allclose(constant.total, self._reference(x), atol=2e-13)
-            npt.assert_allclose(constant.total, traced.total, atol=2e-13)
-            energy = ewald_long_range_energy(x).data.data
-            npt.assert_allclose(
-                energy, jax.jit(ewald_long_range_energy)(x).data.data, rtol=1e-12
-            )
+            # Closing over the input keeps its shifts concrete under jit.
+            constant, energy = jax.jit(functools.partial(evaluate, x))()
+            traced, traced_energy = jax.jit(evaluate)(x)
+            npt.assert_allclose(constant, self._reference(x), atol=2e-13)
+            npt.assert_allclose(constant, traced, atol=2e-13)
+            npt.assert_allclose(energy, traced_energy, rtol=1e-12)
 
         def total(x, positions):
             x = bind(x, lambda y: y.point_cloud.particles.data.positions).set(positions)
@@ -949,9 +938,17 @@ class TestReciprocalReduction:
             atol=1e-12,
         )
 
-    @pytest.mark.parametrize("grid", [False, True])
-    @pytest.mark.parametrize("batch", [1, 4])
-    @pytest.mark.parametrize("chunks", [(2, 11), (7, 11), (1024, 128)])
+    @pytest.mark.parametrize(
+        # Without tiles, the batch size does not change the explicit k-vector sum.
+        "grid,chunks,batch",
+        [
+            (False, (1024, 128), 4),
+            (False, (2, 11), 1),
+            (False, (2, 11), 4),
+            (True, (2, 11), 1),
+            (True, (2, 11), 4),
+        ],
+    )
     def test_cached_derivatives_match_full_energy(self, grid, batch, chunks):
         proposal = self._proposal(self._input(grid, chunks=chunks, batch=batch))
         p = proposal.point_cloud.particles.data
@@ -1006,7 +1003,7 @@ class TestReciprocalReduction:
         second_derivatives = []
         for incremental in (False, True):
             grad_pq = jax.grad(lambda x, y: energy(x, y, args[2], incremental), (0, 1))
-            _, tangent = jax.jvp(
+            _, tangent = jax.jit(jax.jvp, static_argnums=0)(
                 grad_pq, (pos, q), (jnp.ones_like(pos) * 0.03, jnp.ones_like(q) * 0.02)
             )
             second_derivatives.append(tangent)
