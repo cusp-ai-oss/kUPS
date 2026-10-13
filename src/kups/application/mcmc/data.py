@@ -35,7 +35,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
+from kups.core.utils.jax import dataclass, field, jit, key_chain, tree_zeros_like
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.quaternion import Quaternion
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
@@ -380,6 +380,16 @@ def _make_molecule(
     return particles, group
 
 
+@jit(static_argnames="replication")
+def _replicate_host[C: Cell[Any]](
+    cell: C, replication: int | tuple[int, int, int], particles: Particles
+) -> tuple[C, Particles]:
+    """Wrap host atoms into the cell and tile it into a supercell."""
+    pos_lens = lens(lambda x: x.positions, cls=Particles)
+    particles = pos_lens.apply(particles, cell.wrap)
+    return make_supercell(cell, replication, particles, pos_lens)
+
+
 def mcmc_state_from_config(
     key: Array,
     host: HostConfig,
@@ -411,9 +421,7 @@ def mcmc_state_from_config(
     p = hp.data
     n_host = len(hp.keys)
     if host.cell_replication is not None:
-        pos_lens = lens(lambda x: x.positions, cls=Particles)
-        p = pos_lens.apply(p, cell.wrap)
-        cell, p = make_supercell(cell, host.cell_replication, p, pos_lens)
+        cell, p = _replicate_host(cell, replication=host.cell_replication, particles=p)
         n_host = len(p.positions)
     n_ads = len(adsorbates)
 
@@ -492,6 +500,7 @@ def mcmc_state_from_config(
     return particles, groups, system, motifs
 
 
+@jit
 def estimate_max_adsorbates(
     particles: Table[Any, MCMCParticles],
     motifs: Table[Any, MotifParticles],

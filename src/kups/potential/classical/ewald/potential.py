@@ -49,6 +49,7 @@ from kups.core.utils.functools import constant, pipe
 from kups.core.utils.jax import (
     dataclass,
     field,
+    jit,
     no_jax_tracing,
     tree_zeros_like,
 )
@@ -1105,12 +1106,18 @@ class IsChargedTemplate(HasPositions, HasCharges, Protocol):
     """Properties needed to prepare intramolecular Coulomb energies."""
 
 
-def _molecular_exclusion_coefficients[State](
+@jit
+def _exclusion_coefficients[State](
     composition: RigidBodyComposition[State, IsChargedTemplate],
     particles: IsEwaldPointData,
     systems: Table[SystemId, HasCell[Periodic3D]],
-) -> Array | None:
-    """Prepare template energies when rigid moves preserve minimum-image distances."""
+) -> tuple[Array, Array]:
+    """Template energies per system and motif, and whether rigid moves keep them.
+
+    They are usable when every template fits within half the narrowest cell
+    height (minimum-image distances are preserved) and no fixed particle
+    carries exclusions.
+    """
     templates, motif = composition.templates, composition.template_motif
     distance = jnp.linalg.norm(
         templates.positions[:, None] - templates.positions[None, :], axis=-1
@@ -1120,9 +1127,8 @@ def _molecular_exclusion_coefficients[State](
     fixed_exclusions = (
         composition.fixed_system.valid_mask & particles.exclusion.valid_mask
     ).any()
-    half_height = float(systems.data.cell.perpendicular_lengths.min() / 2)
-    if float(diameter) >= half_height or bool(fixed_exclusions):
-        return None
+    half_height = systems.data.cell.perpendicular_lengths.min() / 2
+    usable = (diameter < half_height) & ~fixed_exclusions
     mask = same_motif & ~jnp.eye(len(distance), dtype=bool)
     pair_energy = jnp.where(
         mask,
@@ -1132,7 +1138,18 @@ def _molecular_exclusion_coefficients[State](
         0,
     )
     per_motif = motif.sum_over(pair_energy.sum(axis=1)).data / 2
-    return jnp.zeros((len(systems), 1 + motif.num_labels)).at[:, 1:].set(per_motif)
+    coefficients = jnp.zeros((len(systems), 1 + motif.num_labels))
+    return coefficients.at[:, 1:].set(per_motif), usable
+
+
+def _molecular_exclusion_coefficients[State](
+    composition: RigidBodyComposition[State, IsChargedTemplate],
+    particles: IsEwaldPointData,
+    systems: Table[SystemId, HasCell[Periodic3D]],
+) -> Array | None:
+    """Prepare template energies when rigid moves preserve minimum-image distances."""
+    coefficients, usable = _exclusion_coefficients(composition, particles, systems)
+    return coefficients if bool(usable) else None
 
 
 def make_ewald_exclusion_correction_potential[

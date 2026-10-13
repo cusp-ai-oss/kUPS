@@ -3,8 +3,6 @@
 
 """Inputs for energy terms that depend only on rigid-body counts."""
 
-from dataclasses import dataclass
-
 import jax
 import jax.numpy as jnp
 from jax import Array
@@ -14,6 +12,7 @@ from kups.core.lens import Lens, View, const_lens
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Potential, PotentialOut
 from kups.core.typing import MotifId, SystemId
+from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
     FullSumComposer,
@@ -22,7 +21,7 @@ from kups.potential.common.energy import (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class RigidBodyComposition[State, Template]:
     """Rigid templates and counts for energy terms independent of body poses.
 
@@ -39,8 +38,11 @@ class RigidBodyComposition[State, Template]:
     fixed_system: Index[SystemId]
     templates: Template
     template_motif: Index[MotifId]
-    counts: InputConstructor[State, Table[SystemId, Array], Patch[State]]
+    counts: InputConstructor[State, Table[SystemId, Array], Patch[State]] = field(
+        static=True
+    )
 
+    @jit
     def sum_particles(self, fixed_values: Array, template_values: Array) -> Array:
         """Sum particle properties into background and template coefficients."""
         fixed = self.fixed_system.sum_over(fixed_values).data

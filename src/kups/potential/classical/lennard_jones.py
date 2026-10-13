@@ -507,6 +507,7 @@ type GCLJInp = GraphPotentialInput[
 ]
 
 
+@jit
 def _molecular_tail_coefficients[State](
     composition: RigidBodyComposition[State, HasLabels],
     particles: HasLabels,
