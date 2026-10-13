@@ -14,6 +14,7 @@ from kups.core.utils.math import (
     MatmulSide,
     cubic_roots,
     det_and_inverse_3x3,
+    erfc_over,
     log_factorial_ratio,
     logm,
     next_higher_power,
@@ -602,6 +603,45 @@ class TestSquareMatrixPromotion:
         assert type(L.matmul(L)) is LowerTriangularSquareMatrix
         assert type(D.matmul(L)) is LowerTriangularSquareMatrix
         assert type(D.matmul(D)) is DiagonalSquareMatrix
+
+
+class TestErfcOver:
+    def test_matches_xla_erfc(self):
+        x = jnp.concatenate([jnp.linspace(0.0, 7.99, 20001), jnp.array([1.0, 8.0])])
+        scale = jnp.linspace(0.5, 12.0, x.size)
+        npt.assert_allclose(
+            erfc_over(x, scale), jax.lax.erfc(x) / scale, rtol=5e-15, atol=0
+        )
+
+    def test_large_arguments_are_negligible(self):
+        x = jnp.array([8.0, 10.0, 30.0, 1e3])
+        values = erfc_over(x, jnp.ones_like(x))
+        assert jnp.all(jnp.isfinite(values)) and jnp.all(values >= 0)
+        npt.assert_allclose(values, jax.lax.erfc(x), rtol=0, atol=1e-28)
+        gradients = jax.grad(lambda x, s: erfc_over(x, s).sum(), (0, 1))(x, x)
+        for gradient in gradients:
+            assert jnp.all(jnp.isfinite(gradient))
+            npt.assert_allclose(gradient, 0, atol=1e-28)
+
+    # Arguments alpha * r span zero and both sides of the rational switch at 1.
+    @pytest.mark.parametrize(
+        "alpha, distance", [(0.0, 2.0), (0.27, 0.4), (0.27, 3.7), (0.27, 11.9)]
+    )
+    def test_derivatives_match_xla_erfc(self, alpha, distance):
+        def ours(alpha, r):
+            return erfc_over(alpha * r, r)
+
+        def reference(alpha, r):
+            return jax.lax.erfc(alpha * r) / r
+
+        def summed_gradient(f):
+            gradient = jax.grad(f, argnums=(0, 1))
+            return lambda a, r: sum(gradient(a, r))
+
+        f, g = ours, reference
+        for _ in range(2):  # First and second derivatives in alpha and r.
+            f, g = summed_gradient(f), summed_gradient(g)
+            npt.assert_allclose(f(alpha, distance), g(alpha, distance), rtol=1e-13)
 
 
 if __name__ == "__main__":
