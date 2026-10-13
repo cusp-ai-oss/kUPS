@@ -54,6 +54,7 @@ from kups.core.data.buffered import Buffered
 from kups.core.data.index import Index
 from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist.cell_list_cache import near_blocks
 from kups.core.parameter_scheduler import (
     AcceptanceHistory,
     Correlation,
@@ -1293,6 +1294,57 @@ class TestFusedPairIntegration:
                 strict=True,
             ):
                 npt.assert_array_equal(a, b, err_msg=jax.tree_util.keystr(path))
+
+    # Two hosts: GCMC over interleaved systems.
+    @pytest.mark.parametrize("n_hosts", [1, 2])
+    def test_default_layout_culls_blocks_exactly(self, n_hosts):
+        from kups.core.propagator import propagate_and_fix
+        from kups.core.result import as_result_function
+
+        config = _config(exchange_prob=0.5, init_adsorbates=(40,))
+        cif = _tmp_file(".cif", _EMPTY_CIF.replace(str(_BOX), "19.0"))
+        config = config.model_copy(
+            update={
+                "hosts": (config.hosts[0].model_copy(update={"cif_file": cif}),)
+                * n_hosts,
+                "max_num_adsorbates": 44 * n_hosts,
+            }
+        )
+        state = init_state(jax.random.key(74), config)
+        layout = state.cell_tables.layout
+        assert layout.key_layout == "slots"
+        assert layout.max_images_per_pair == 1
+        initialize, cycle = make_propagator(state, config.run)
+        reference = _make_potential(state)
+
+        def apply(propagator, key, state):
+            return propagate_and_fix(as_result_function(propagator), key, state)
+
+        state = apply(initialize, jax.random.key(75), state)
+        for key in jax.random.split(jax.random.key(76), 3):
+            state = apply(cycle, key, state)
+            npt.assert_allclose(
+                state.systems.data.potential_energy.total,
+                reference(state).data.total_energies.data,
+                rtol=1e-9,
+                # Insertions cancel Ewald terms of ~1e7 down to ~1e-1.
+                atol=1e-10 if n_hosts == 1 else 1e-7,
+            )
+        # Some query skips a block that holds active rows.
+        table = state.cell_tables.table
+        cell = state.systems.data.cell
+        near = jax.vmap(near_blocks, in_axes=(0, None, None, None, None, None, None))(
+            table.rows.frac,
+            table.block_bounds.lower,
+            table.block_bounds.upper,
+            cell.vectors[0],
+            cell.perpendicular_lengths[0],
+            5.0,
+            (True, True, True),
+        )
+        occupied = table.block_bounds.lower[0] <= table.block_bounds.upper[0]
+        active = table.rows.cell != table.sentinel_cell
+        assert jnp.any(active[:, None] & occupied & ~near)
 
     @pytest.mark.parametrize(
         ("cutoff", "charged", "exchange_prob", "loadings"),
