@@ -557,6 +557,18 @@ class TestWhereAndSubselect:
             _jit_where_flat(sa4, Index.new(["A", "C"]), capacity=FixedCapacity(3)),
             [0, 2, 3],
         )
+        # Concrete inputs need no capacity and return exactly the matches.
+        npt.assert_array_equal(sa4.where_flat(Index.new(["B"])), [1, 4])
+        # Spare capacity is filled with the OOB sentinel.
+        npt.assert_array_equal(
+            _jit_where_flat(sa4, Index.new(["C"]), capacity=FixedCapacity(2)), [2, 5]
+        )
+        # Long index with matches spread over blocks and the ragged tail.
+        long = Index(("A", "B"), (jnp.arange(300) % 97 == 96).astype(int))
+        npt.assert_array_equal(
+            _jit_where_flat(long, Index.new(["B"]), capacity=FixedCapacity(4)),
+            [96, 193, 290, 300],
+        )
 
         # subselect
         sub = _jit_subselect(sa, Index.new(["O"]), capacity=FixedCapacity(2))
