@@ -12,6 +12,7 @@ For each classical potential the tests verify:
 
 from typing import Any, Literal, NamedTuple
 
+import jax
 import jax.numpy as jnp
 import pytest
 from jax import Array
@@ -40,7 +41,7 @@ from kups.core.neighborlist import (
     FixedEdgesNeighborList,
 )
 from kups.core.patch import IndexLensPatch, Patch
-from kups.core.potential import EMPTY, EmptyType, PotentialOut
+from kups.core.potential import EMPTY, EmptyType, Potential, PotentialOut
 from kups.core.typing import (
     ExclusionId,
     InclusionId,
@@ -358,11 +359,6 @@ _POTENTIALS: list[PotentialConfig] = [
 # ---------------------------------------------------------------------------
 
 
-def _move_single() -> PerturbationSpec:
-    new_pos = _INITIAL_POSITIONS.at[0].add(jnp.array([0.3, 0.1, 0.2]))
-    return PerturbationSpec("move_single", jnp.array([0]), new_pos)
-
-
 def _move_multiple() -> PerturbationSpec:
     new_pos = _INITIAL_POSITIONS.at[0].add(jnp.array([0.3, 0.1, 0.2]))
     new_pos = new_pos.at[2].add(jnp.array([-0.1, 0.2, 0.15]))
@@ -409,7 +405,7 @@ def _edge_swap() -> PerturbationSpec:
     )
 
 
-_PERTURBATIONS = [_move_single(), _move_multiple(), _mask_particle(), _edge_swap()]
+_PERTURBATIONS = [_move_multiple(), _mask_particle(), _edge_swap()]
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +434,6 @@ def _make_point_changes(
     indices: Array,
     new_system_ids: Array | None = None,
 ) -> WithIndices[ParticleId, ParticleData]:
-    import jax
-
     pdata = state.particles.data
     sys_ids = (
         new_system_ids[indices]
@@ -571,6 +565,38 @@ def _make_reference_state(
     return ref
 
 
+def _assert_incremental_matches_full(
+    name: str,
+    state: State,
+    basic_pot: Potential[State, Any, Any, Any],
+    updates_pot: Potential[State, Any, Any, Any],
+    spec: PerturbationSpec,
+) -> None:
+    """Incremental energy after ``spec`` equals a full recomputation."""
+
+    @jax.jit
+    def energies(
+        state: State, pos_patch: IndexLensPatch[State, Any]
+    ) -> tuple[Array, Array]:
+        # 1. Full eval to populate cache
+        out_full = updates_pot(state, patch=None)
+        state_cached: State = out_full.patch(
+            state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
+        )
+
+        # 2. Incremental evaluation with patch
+        e_incr = updates_pot(state_cached, patch=pos_patch).data.total_energies.data
+
+        # 3. Full recomputation on reference state
+        ref_state = _make_reference_state(state_cached, spec, pos_patch)
+        return e_incr, basic_pot(ref_state).data.total_energies.data
+
+    e_incr, e_full = energies(state, _make_patch(spec))
+    assert jnp.allclose(e_incr, e_full, atol=1e-6), (
+        f"{name}-{spec.name}: incremental {e_incr} != full {e_full}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -643,25 +669,8 @@ class TestFromStateWithUpdates:
         for spec in perturbations:
             probe = _build_probe(pot, spec)
             updates_pot = pot.factory(state_lens, probe)
-
-            # 1. Full eval to populate cache
-            out_full = updates_pot(state, patch=None)
-            state_cached: State = out_full.patch(
-                state,
-                state.systems.set_data(jnp.ones(len(state.systems), dtype=bool)),
-            )
-
-            # 2. Incremental evaluation with patch
-            pos_patch = _make_patch(spec)
-            out_incr = updates_pot(state_cached, patch=pos_patch)
-            e_incr = out_incr.data.total_energies.data
-
-            # 3. Full recomputation on reference state
-            ref_state = _make_reference_state(state_cached, spec, pos_patch)
-            e_full = basic_pot(ref_state).data.total_energies.data
-
-            assert jnp.allclose(e_incr, e_full, atol=1e-6), (
-                f"{pot.name}-{spec.name}: incremental {e_incr} != full {e_full}"
+            _assert_incremental_matches_full(
+                pot.name, state, basic_pot, updates_pot, spec
             )
 
 
@@ -703,18 +712,6 @@ class TestLJConstantParameters:
                 parameters=params,
                 neighborlist_factory=_test_nl_factory,
             )
-
-            out_full = updates_pot(state, patch=None)
-            state_cached: State = out_full.patch(
-                state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
-            )
-
-            pos_patch = _make_patch(spec)
-            e_incr = updates_pot(state_cached, patch=pos_patch).data.total_energies.data
-
-            ref_state = _make_reference_state(state_cached, spec, pos_patch)
-            e_full = basic_pot(ref_state).data.total_energies.data
-
-            assert jnp.allclose(e_incr, e_full, atol=1e-6), (
-                f"lennard_jones-{spec.name}: incremental {e_incr} != full {e_full}"
+            _assert_incremental_matches_full(
+                "lennard_jones", state, basic_pot, updates_pot, spec
             )

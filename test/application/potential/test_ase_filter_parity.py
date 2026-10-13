@@ -373,10 +373,11 @@ def test_frechet_matches_ase_at_convergence_under_shear() -> None:
     steps because the ~1e-10/step round-off accumulated over the long flat tail
     shifts the exact ``fmax`` crossing."""
     atoms = _ase_system()
+    # Same clamp as the per-step shear tests, which share its compiled relaxer.
     n_ase, ase_cell, ase_pos = _relax_ase(
-        _FrechetCellFilterFixed, atoms, fmax=1e-5, max_step=0.2
+        _FrechetCellFilterFixed, atoms, fmax=1e-5, max_step=0.5
     )
-    n_kups, cell, pos = _relax_kups(atoms, fmax=1e-5, max_step=0.2)
+    n_kups, cell, pos = _relax_kups(atoms, fmax=1e-5, max_step=0.5)
     assert abs(n_kups - n_ase) <= 10
     assert np.allclose(ase_cell, cell, rtol=0, atol=1e-4)
     assert np.allclose(ase_pos, pos, rtol=0, atol=1e-4)

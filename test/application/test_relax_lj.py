@@ -144,18 +144,26 @@ def _build_propagator(optimize_cell: bool):
 class TestCellRelaxation:
     """``optimize_cell`` drives the lattice vectors via the total cell gradient."""
 
-    def test_cell_moves_only_when_optimizing_cell(self):
+    @pytest.fixture(scope="class")
+    def position_step(self) -> tuple[RelaxState, RelaxState]:
+        prop, state = _build_propagator(optimize_cell=False)
+        return state, jax.jit(lambda s: prop(jax.random.key(0), s))(state)
+
+    @pytest.fixture(scope="class")
+    def cell_step(self) -> tuple[RelaxState, RelaxState]:
+        prop, state = _build_propagator(optimize_cell=True)
+        return state, jax.jit(lambda s: prop(jax.random.key(0), s))(state)
+
+    def test_cell_moves_only_when_optimizing_cell(self, cell_step, position_step):
         # optimize_cell=True: the cell relaxes (total lattice gradient is non-zero
         # for the off-equilibrium fcc-Ar cell).
-        prop, state = _build_propagator(optimize_cell=True)
-        stepped = prop(jax.random.key(0), state)
+        state, stepped = cell_step
         assert not jnp.allclose(
             stepped.systems.data.cell.vectors, state.systems.data.cell.vectors
         )
 
         # optimize_cell=False: positions move but the cell is held fixed.
-        prop0, state0 = _build_propagator(optimize_cell=False)
-        stepped0 = prop0(jax.random.key(0), state0)
+        state0, stepped0 = position_step
         npt.assert_array_equal(
             stepped0.systems.data.cell.vectors, state0.systems.data.cell.vectors
         )
@@ -163,22 +171,20 @@ class TestCellRelaxation:
             stepped0.particles.data.positions, state0.particles.data.positions
         )
 
-    def test_converged_value_matches_fmax(self):
+    def test_converged_value_matches_fmax(self, position_step):
         # POSITIONS_ONLY: the cached gradient is the optimizer DOF gradient ∂E/∂u,
         # which equals the physical ∂E/∂r, so max|∂E/∂u| is exactly ASE's fmax.
-        prop, state = _build_propagator(optimize_cell=False)
-        stepped = prop(jax.random.key(0), state)
+        _, stepped = position_step
         dof = stepped.particles.data.position_gradients  # ∂E/∂u == ∂E/∂r here
         fmax = jnp.max(jnp.linalg.norm(stepped.particles.data.forces, axis=-1))
         max_dof = jnp.max(jnp.linalg.norm(dof, axis=-1))
         npt.assert_allclose(max_dof, fmax, atol=1e-12)
 
-    def test_stress_not_double_counted(self):
+    def test_stress_not_double_counted(self, cell_step):
         # cell_gradients caches the *partial* dE/dh|_r, the correct stress source.
         # Feeding the *total* lattice gradient to the virial theorem re-adds the
         # position virial -- the bug the filter design removes.
-        prop, state = _build_propagator(optimize_cell=True)
-        stepped = prop(jax.random.key(0), state)
+        _, stepped = cell_step
         sigma_partial = stress_via_virial_theorem(
             stepped.particles, stepped.systems
         ).data
