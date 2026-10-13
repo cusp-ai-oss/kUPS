@@ -19,7 +19,7 @@ Key Components:
 from __future__ import annotations
 
 import traceback
-import typing
+import weakref
 from collections.abc import Callable
 from functools import partial
 from typing import Any, Final, Self, no_type_check, override
@@ -33,15 +33,14 @@ from jax.core import ShapedArray
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive, jaxpr_as_fun
 from jax.interpreters import ad, batching, mlir
 from slub.handlers import (
-    ScanSemantics,
     default_checkpoint_handler,
     default_jit_handler,
     default_primitive_handler,
-    default_scan_handler,
     default_shard_map_handler,
 )
 from slub.interpreter import (
     Dispatcher,
+    Handler,
     HandlerResult,
     Interpreter,
     InterpreterContext,
@@ -552,19 +551,40 @@ class _AssertionPacker:
         ]
 
 
-def _contains_primitive(jaxprs: object, name: str) -> bool:
-    """Whether any (nested) jaxpr in ``jaxprs`` binds the primitive ``name``."""
-    for leaf in jax.tree.leaves(
-        jaxprs, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
-    ):
-        if isinstance(leaf, ClosedJaxpr):
-            leaf = leaf.jaxpr
-        if not isinstance(leaf, Jaxpr):
-            continue
-        for eqn in leaf.eqns:
-            if eqn.primitive.name == name or _contains_primitive(eqn.params, name):
-                return True
-    return False
+_primitive_names_cache: weakref.WeakKeyDictionary[Jaxpr, frozenset[str]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _sub_jaxprs(params: Any) -> list[Jaxpr]:
+    """The jaxprs among the leaves of ``params``, unwrapping closed jaxprs."""
+    leaves = jax.tree.leaves(
+        params, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
+    )
+    return [
+        leaf.jaxpr if isinstance(leaf, ClosedJaxpr) else leaf
+        for leaf in leaves
+        if isinstance(leaf, (Jaxpr, ClosedJaxpr))
+    ]
+
+
+def _primitive_names(jaxpr: Jaxpr) -> frozenset[str]:
+    """Names of the primitives bound in ``jaxpr`` or any nested jaxpr."""
+    if (names := _primitive_names_cache.get(jaxpr)) is None:
+        names = frozenset(eqn.primitive.name for eqn in jaxpr.eqns).union(
+            *(
+                _primitive_names(sub)
+                for eqn in jaxpr.eqns
+                for sub in _sub_jaxprs(eqn.params)
+            )
+        )
+        _primitive_names_cache[jaxpr] = names
+    return names
+
+
+def _contains_primitive(jaxprs: object, *names: str) -> bool:
+    """Whether any (nested) jaxpr in ``jaxprs`` binds one of ``names``."""
+    return any(not _primitive_names(j).isdisjoint(names) for j in _sub_jaxprs(jaxprs))
 
 
 def _passing(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
@@ -646,48 +666,50 @@ def scan_handler(
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
-    def init_with_true(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Initialize all assertions to be true."""
+    """Carry the body's assertions through the scan, keeping the last failure.
 
-        def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-            a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
-            a = (
-                bind(a)
-                .focus(lambda a: (a.fix_args, a.fmt_args))
-                .apply(partial(jax.tree.map, jnp.empty_like))
-            )
-            return a
-
-        return AssertionContext(
-            old.assertions
-            + tuple(map(initialize, new.assertions[len(old.assertions) :]))
+    Assertions created before the scan stay outside it. The body is traced
+    once: the dry run that discovers its assertions is reused by the scan.
+    """
+    _, bind_params = get_bind_params(eqn)
+    if "ft_in" in bind_params:  # JAX >= 0.11
+        consts, carry, xs = map(list, bind_params["ft_in"].update(invals).unpack())
+    else:
+        consts, carry, xs = split_sequence(
+            invals, (bind_params["num_consts"], bind_params["num_carry"])
         )
+    n_in = len(ctx.assertions)
+    body = jax.jit(partial(interpreter, bind_params["jaxpr"]))
+    _, ctx_out_tree = body.trace(
+        ctx.push(), *consts, *carry, *(x[0] for x in xs)
+    ).out_info
+    init = tuple(map(_passing, ctx_out_tree.assertions[n_in:]))
 
-    def update_on_fail(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Always keep the first assertion that fails."""
-        return AssertionContext(
-            tuple(
-                typing.cast(
-                    RuntimeAssertion[Any, Any],
-                    jax.tree.map(partial(jnp.where, new.predicate), old, new),
-                )
-                for old, new in zip(old.assertions, new.assertions)
-            )
+    def step(
+        state: tuple[tuple[RuntimeAssertion[Any, Any], ...], list[Any]],
+        x: list[Any],
+    ) -> tuple[tuple[tuple[RuntimeAssertion[Any, Any], ...], list[Any]], list[Any]]:
+        kept, args = state
+        out, new_ctx = body(ctx.push(), *consts, *args, *x)
+        kept = tuple(
+            jax.tree.map(partial(jnp.where, new.predicate), old, new)
+            for old, new in zip(kept, new_ctx.assertions[n_in:], strict=True)
         )
+        if "ft_out" in bind_params:
+            carry_out, ys = map(list, bind_params["ft_out"].update(out).unpack())
+        else:
+            carry_out, ys = split_sequence(out, (bind_params["num_carry"],))
+        return (kept, carry_out), ys
 
-    return default_scan_handler(
-        interpreter,
-        ctx,
-        eqn,
-        invals,
-        threading=ScanSemantics.CARRY,
-        initializer=init_with_true,
-        updater=update_on_fail,
+    (kept, carry), ys = jax.lax.scan(
+        step,
+        (init, list(carry)),
+        list(xs),
+        length=bind_params["length"],
+        unroll=bind_params["unroll"],
+        reverse=bind_params["reverse"],
     )
+    return HandlerResult(AssertionContext(ctx.assertions + kept), [*carry, *ys])
 
 
 def while_handler(
@@ -711,11 +733,8 @@ def while_handler(
         invals, (num_cond_consts, num_body_consts)
     )
     n_in = len(ctx.assertions)
-    _, ctx_out_tree = (
-        jax.jit(partial(interpreter, body_jaxpr))
-        .trace(ctx.push(), *body_consts, *nonconst_invals)
-        .out_info
-    )
+    body = jax.jit(partial(interpreter, body_jaxpr))
+    _, ctx_out_tree = body.trace(ctx.push(), *body_consts, *nonconst_invals).out_info
     packer = _AssertionPacker(ctx_out_tree.assertions[n_in:])
 
     def full_ctx(packed: list[Array]) -> AssertionContext:
@@ -732,7 +751,7 @@ def while_handler(
         carry: tuple[list[Array], list[Any]],
     ) -> tuple[list[Array], list[Any]]:
         packed, args = carry
-        out, new_ctx = interpreter(body_jaxpr, ctx.push(), *body_consts, *args)
+        out, new_ctx = body(ctx.push(), *body_consts, *args)
         new = packer.pack(new_ctx.assertions[n_in:])
         combined = [
             jnp.logical_and(old, n) if is_pred else jnp.maximum(old, n)
@@ -774,12 +793,33 @@ def shard_map_handler(
     )
 
 
+_ASSERTION_PRIMITIVES: Final = ("assertion", "check_assertion")
+
+
 def _contains_assertion_primitive[Context: InterpreterContext](
     ctx: Context,  # type: ignore
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> bool:
-    return _contains_primitive(eqn.params, "assertion")
+    return _contains_primitive(eqn.params, *_ASSERTION_PRIMITIVES)
+
+
+def _only_with_assertions[Context: InterpreterContext](
+    handler: Handler[Context],
+) -> Handler[Context]:
+    """Bind ``eqn`` unchanged unless its sub-jaxprs create or read assertions."""
+
+    def wrapped(
+        interpreter: Interpreter[Context],
+        ctx: Context,
+        eqn: JaxprEqn,
+        invals: list[TracerValue],
+    ) -> HandlerResult[Context]:
+        if _contains_assertion_primitive(ctx, eqn, invals):
+            return handler(interpreter, ctx, eqn, invals)
+        return default_primitive_handler(interpreter, ctx, eqn, invals)
+
+    return wrapped
 
 
 def with_runtime_assertions[**P, R](
@@ -870,11 +910,12 @@ def with_runtime_assertions[**P, R](
         handlers={
             "assertion": assertion_handler,
             "check_assertion": check_assertion_handler,
+            # Re-tracing jit and cond bodies yields slightly faster CPU programs.
             "jit": default_jit_handler,
-            "remat2": default_checkpoint_handler,
-            "scan": scan_handler,
-            "while": while_handler,
             "cond": cond_handler,
+            "remat2": default_checkpoint_handler,
+            "scan": _only_with_assertions(scan_handler),
+            "while": _only_with_assertions(while_handler),
             "shard_map": partial(shard_map_handler, context_sharding=context_sharding),
         }
     ).register_custom_matching_rule(_contains_assertion_primitive)

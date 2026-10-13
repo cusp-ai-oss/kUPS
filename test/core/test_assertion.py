@@ -8,6 +8,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import Array
 
@@ -536,6 +537,94 @@ class TestAssertionTracing:
         assert len(assertions) == 1
         assert not assertions[0].predicate
 
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_scan_with_consts_carry_and_xs_matches_plain_scan(self, reverse):
+        def f(x, xs, ws):
+            runtime_assert(x > 0, "before scan")
+
+            def body(carry, inputs):
+                a, b = carry
+                xi, wi = inputs
+                runtime_assert(xi < 3, "small {v}", fmt_args={"v": xi})
+                return (a + 2 * x * xi, b * wi), (xi * wi, a)
+
+            return jax.lax.scan(body, (x, x), (xs, ws), reverse=reverse, unroll=2)
+
+        run = jax.jit(with_runtime_assertions(f))
+        ws = jnp.arange(1.0, 6.0)
+        for x, xs in [(1.0, jnp.array([0.0, 4.0, 1.0, 5.0, 2.0])), (-1.0, ws - 1)]:
+            out, (before, loop) = run(x, xs, ws)
+            jax.tree.map(np.testing.assert_allclose, out, jax.jit(f)(x, xs, ws))
+            assert bool(before.predicate) == (x > 0)
+            assert bool(loop.predicate) == bool((xs < 3).all())
+        # The last failing iteration wins, in the scan's iteration order.
+        _, (_, loop) = run(1.0, jnp.array([0.0, 4.0, 1.0, 5.0, 2.0]), ws)
+        assert loop.fmt_args["v"] == (4.0 if reverse else 5.0)
+
+    def test_only_loops_using_assertions_are_interpreted(self, monkeypatch):
+        import kups.core.assertion as assertion_module
+
+        interpreted = []
+        for name in ("scan_handler", "while_handler"):
+            original = getattr(assertion_module, name)
+
+            def counted(interpreter, ctx, eqn, invals, original=original):
+                interpreted.append(eqn.primitive.name)
+                return original(interpreter, ctx, eqn, invals)
+
+            monkeypatch.setattr(assertion_module, name, counted)
+
+        def plain(c):
+            return jax.lax.scan(lambda c, _: (c + 1, None), c, length=2)[0]
+
+        def checked(c, _):
+            runtime_assert(c >= 0, "non-negative")
+            return c + 1, None
+
+        @jax.jit
+        @with_runtime_assertions
+        def run(x):
+            runtime_assert(x > 0, "before loops")
+            nested = jax.lax.while_loop(lambda c: c < 4, plain, 0)
+            read = jax.lax.while_loop(
+                lambda c: c[0] < 1, lambda c: (c[0] + 1, check_assertions()), (0, True)
+            )[1]
+            return nested, read, jax.lax.scan(checked, 0, length=2)[0]
+
+        (nested, read, scanned), assertions = run(jnp.array(1.0))
+        assert (nested, read, scanned) == (4, True, 2)
+        assert len(assertions) == 2
+        assert sorted(interpreted) == ["scan", "while"]
+
+    def test_only_scans_using_assertions_are_interpreted(self, monkeypatch):
+        import kups.core.assertion as assertion_module
+
+        interpreted = []
+        original = assertion_module.scan_handler
+
+        def counted(interpreter, ctx, eqn, invals):
+            interpreted.append(eqn)
+            return original(interpreter, ctx, eqn, invals)
+
+        monkeypatch.setattr(assertion_module, "scan_handler", counted)
+
+        def read(count, _):
+            return count + check_assertions().astype(int), None
+
+        @jax.jit
+        @with_runtime_assertions
+        def run(x):
+            runtime_assert(x > 0, "before scan")
+            plain = jax.lax.scan(lambda c, _: (c + 1, None), 0, length=2)[0]
+            return plain, jax.lax.scan(read, 0, length=3)[0]
+
+        (plain, passed), _ = run(jnp.array(1.0))
+        assert plain == 2 and passed == 3
+        (_, passed), _ = run(jnp.array(-1.0))
+        assert passed == 0
+        # Only the scan whose body reads the outer assertion is re-traced.
+        assert len(interpreted) == 1
+
     def test_nested_cond_interprets_each_assertion_once(self, monkeypatch):
         import kups.core.assertion as assertion_module
 
@@ -569,6 +658,37 @@ class TestAssertionTracing:
         assert all(not bool(a.predicate) for a in failures)
         assert len(interpreted) == 5
         assert jax.grad(lambda x: run(x)[0])(jnp.array(0.5)) == 1.0
+
+    def test_scan_inside_while_interprets_its_assertion_once(self, monkeypatch):
+        import kups.core.assertion as assertion_module
+
+        interpreted = []
+        original = assertion_module.assertion_handler
+
+        def counted(interpreter, ctx, eqn, invals):
+            interpreted.append(eqn.params["message"])
+            return original(interpreter, ctx, eqn, invals)
+
+        monkeypatch.setattr(assertion_module, "assertion_handler", counted)
+
+        def step(x, _):
+            runtime_assert(x > 0, "positive")
+            return x - 1, None
+
+        def loop(x):
+            return jax.lax.while_loop(
+                lambda c: c[1] < 2,
+                lambda c: (jax.lax.scan(step, c[0], length=2)[0], c[1] + 1),
+                (x, 0),
+            )[0]
+
+        run = jax.jit(with_runtime_assertions(loop))
+        value, assertions = run(jnp.array(5.0))
+        assert value == 1.0
+        assert bool(assertions[0].predicate)
+        _, failures = run(jnp.array(3.0))
+        assert not bool(failures[0].predicate)
+        assert len(interpreted) == 1
 
     def test_traceback_present_in_message(self):
         """Test that assertion messages include the creation-site traceback."""
