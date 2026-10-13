@@ -32,6 +32,7 @@ from kups.core.propagator import (
     SequentialPropagator,
     StatePropertySum,
     SwitchPropagator,
+    _cond_or_zeros,
     compose_propagators,
     propagate_and_fix,
     propagator_with_assertions,
@@ -516,6 +517,38 @@ class TestMCMCPropagator:
         npt.assert_array_equal(
             result.scheduler_params.data.history.values[:, 0], [True, noop]
         )
+
+    @pytest.mark.parametrize("mode", ["jit", "disable_jit", "disable_jit_vmap"])
+    @pytest.mark.parametrize("noop", [False, True])
+    def test_cond_or_zeros_traces_fn_once(self, mode, noop):
+        calls = []
+
+        def fn(x):
+            calls.append(x)
+            return Table.arange(2 * x, label=SystemId), (x.astype(int), jnp.ones(()))
+
+        def run(pred, x):
+            # Tables validate their rows when rebuilt, so the caller rebuilds them.
+            table, rest = _cond_or_zeros(pred, fn, x)
+            assert isinstance(table, Table)
+            return table.data, *rest
+
+        x = jnp.array([1.5, -2.0, 3.0])
+        if mode == "jit":
+            out = jax.jit(run)(noop, x)
+        else:
+            with jax.disable_jit():
+                if mode == "disable_jit":
+                    out = run(jnp.array(noop), x)
+                else:
+                    out = jax.vmap(run)(jnp.array([noop, not noop]), jnp.stack([x, x]))
+                    out = [leaf[0] for leaf in out]
+        assert len(calls) == 1
+        data, rounded, one = out
+        npt.assert_array_equal(data, 0 if noop else 2 * x)
+        npt.assert_array_equal(rounded, 0 if noop else x.astype(int))
+        assert rounded.dtype == x.astype(int).dtype
+        assert one == (not noop)
 
     def test_noop_keeps_proposal_and_active_branch_assertions(
         self, simple_state, parameter_scheduler
