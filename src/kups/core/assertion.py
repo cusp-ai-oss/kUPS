@@ -27,6 +27,7 @@ from typing import Any, Final, Self, no_type_check, override
 import jax
 import jax.interpreters.partial_eval as pe
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.core import ShapedArray
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive, jaxpr_as_fun
@@ -38,7 +39,6 @@ from slub.handlers import (
     default_primitive_handler,
     default_scan_handler,
     default_shard_map_handler,
-    default_while_handler,
 )
 from slub.interpreter import (
     Dispatcher,
@@ -47,13 +47,12 @@ from slub.interpreter import (
     InterpreterContext,
     InterpreterPolicy,
     TracerValue,
-    contains_subjaxprs,
     reinterpret,
 )
-from slub.util import get_bind_params
+from slub.util import get_bind_params, split_sequence
 
 from kups.core.lens import bind
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import PyTreeDef, dataclass, field
 
 # Type alias for fix functions that take a state and fix arguments, returning a new state
 type Fix[State, FixArgs] = Callable[[State, FixArgs], State]
@@ -486,6 +485,98 @@ def assertion_handler(
     return default_primitive_handler(interpreter, ctx, eqn, invals)
 
 
+class _AssertionPacker:
+    """Pack assertion leaves into one flat array per role and dtype.
+
+    Control flow then carries a few arrays instead of one per assertion leaf.
+    Predicates and arguments stay apart since loops combine them differently.
+    """
+
+    def __init__(self, templates: tuple[RuntimeAssertion[Any, Any], ...]) -> None:
+        self.treedefs: list[PyTreeDef[RuntimeAssertion[Any, Any]]] = []
+        self.specs: list[list[tuple[int, int, tuple[int, ...]]]] = []
+        self.groups: list[tuple[bool, jnp.dtype]] = []
+        sizes: list[int] = []
+        for a in templates:
+            leaves, treedef = jax.tree.flatten(a)
+            self.treedefs.append(treedef)
+            spec: list[tuple[int, int, tuple[int, ...]]] = []
+            for j, leaf in enumerate(leaves):
+                group = (j == 0, jnp.dtype(leaf.dtype))
+                if group not in self.groups:
+                    self.groups.append(group)
+                    sizes.append(0)
+                g = self.groups.index(group)
+                shape = tuple(leaf.shape)
+                spec.append((g, sizes[g], shape))
+                sizes[g] += int(np.prod(shape, dtype=int))
+            self.specs.append(spec)
+        self.sizes = sizes
+
+    def pack(self, assertions: tuple[RuntimeAssertion[Any, Any], ...]) -> list[Array]:
+        parts: list[list[Array]] = [[] for _ in self.groups]
+        for a, spec in zip(assertions, self.specs, strict=True):
+            for leaf, (g, _, _) in zip(jax.tree.leaves(a), spec, strict=True):
+                parts[g].append(jnp.ravel(leaf).astype(self.groups[g][1]))
+        return [
+            jnp.concatenate(p) if p else jnp.zeros((0,), d)
+            for p, (_, d) in zip(parts, self.groups)
+        ]
+
+    def unpack(self, packed: list[Array]) -> tuple[RuntimeAssertion[Any, Any], ...]:
+        out: list[RuntimeAssertion[Any, Any]] = []
+        for treedef, spec in zip(self.treedefs, self.specs):
+            leaves = [
+                packed[g][o : o + int(np.prod(shape, dtype=int))].reshape(shape)
+                for g, o, shape in spec
+            ]
+            out.append(jax.tree.unflatten(treedef, leaves))
+        return tuple(out)
+
+    def initial(self) -> list[Array]:
+        """Packed carry before any loop iteration.
+
+        Predicates start True and arguments at the identity of ``maximum``.
+        """
+
+        def lowest(dtype: jnp.dtype) -> bool | int | float:
+            if jnp.issubdtype(dtype, jnp.bool_):
+                return False
+            if jnp.issubdtype(dtype, jnp.integer):
+                return int(jnp.iinfo(dtype).min)
+            return -jnp.inf
+
+        return [
+            jnp.ones((n,), d) if is_pred else jnp.full((n,), lowest(d), d)
+            for (is_pred, d), n in zip(self.groups, self.sizes)
+        ]
+
+
+def _contains_primitive(jaxprs: object, name: str) -> bool:
+    """Whether any (nested) jaxpr in ``jaxprs`` binds the primitive ``name``."""
+    for leaf in jax.tree.leaves(
+        jaxprs, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
+    ):
+        if isinstance(leaf, ClosedJaxpr):
+            leaf = leaf.jaxpr
+        if not isinstance(leaf, Jaxpr):
+            continue
+        for eqn in leaf.eqns:
+            if eqn.primitive.name == name or _contains_primitive(eqn.params, name):
+                return True
+    return False
+
+
+def _passing(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
+    """Passing copy of an assertion: True predicate, zeroed fmt/fix args."""
+    a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
+    return (
+        bind(a)
+        .focus(lambda a: (a.fmt_args, a.fix_args))
+        .apply(partial(jax.tree.map, jnp.zeros_like))
+    )
+
+
 def cond_handler(
     interpreter: Interpreter[AssertionContext],
     ctx: AssertionContext,
@@ -509,36 +600,32 @@ def cond_handler(
     branch_fns = [
         jax.jit(reinterpret(jaxpr_as_fun(jaxpr), interpreter)) for jaxpr in branches
     ]
+    # Incoming assertions bypass the conditional unless a branch reads them.
+    needs_ctx = _contains_primitive(branches, "check_assertion")
+    base = ctx.push() if needs_ctx else AssertionContext()
+    n_in = len(base.assertions)
 
     # Dry-run trace each branch to learn the assertions it appends; the abstract
     # leaves (shape/dtype) are used to build placeholders for the other branches.
-    n_in = len(ctx.assertions)
     suffix_templates = [
-        fn.trace(ctx.push(), *invals[1:]).out_info[1].assertions[n_in:]
-        for fn in branch_fns
+        fn.trace(base, *invals[1:]).out_info[1].assertions[n_in:] for fn in branch_fns
     ]
-
-    def passing(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-        """Passing copy of an assertion: True predicate, zeroed fmt/fix args."""
-        a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
-        return (
-            bind(a)
-            .focus(lambda a: (a.fmt_args, a.fix_args))
-            .apply(partial(jax.tree.map, jnp.zeros_like))
-        )
+    packer = _AssertionPacker(sum(suffix_templates, ()))
 
     def wrap(
         index: int, fn: Callable[..., tuple[Any, AssertionContext]]
-    ) -> Callable[..., tuple[Any, AssertionContext]]:
-        def wrapped(ctx: AssertionContext, *args: Any) -> tuple[Any, AssertionContext]:
+    ) -> Callable[..., tuple[Any, list[Array]]]:
+        def wrapped(ctx_in: AssertionContext, *args: Any) -> tuple[Any, list[Array]]:
             with jax.disable_jit(False):
-                outvals, ctx_out = fn(ctx, *args)
-            merged = list(ctx_out.assertions[:n_in])
+                outvals, ctx_out = fn(ctx_in, *args)
+            merged: list[RuntimeAssertion[Any, Any]] = []
             for i, templates in enumerate(suffix_templates):
                 merged.extend(
-                    ctx_out.assertions[n_in:] if i == index else map(passing, templates)
+                    ctx_out.assertions[n_in:]
+                    if i == index
+                    else map(_passing, templates)
                 )
-            return outvals, AssertionContext(tuple(merged))
+            return outvals, packer.pack(tuple(merged))
 
         return wrapped
 
@@ -546,8 +633,11 @@ def cond_handler(
 
     # jax.lax.switch selects branch ``invals[0]`` (the cond/switch index) directly,
     # matching the primitive's branch order and supporting any number of branches.
-    outvals, ctx_out = jax.lax.switch(invals[0], wrapped_fns, ctx, *invals[1:])
-    return HandlerResult(ctx_out, outvals)
+    # Branches only append, so the incoming assertions need not be returned.
+    outvals, packed = jax.lax.switch(invals[0], wrapped_fns, base, *invals[1:])
+    return HandlerResult(
+        AssertionContext(ctx.assertions + packer.unpack(packed)), outvals
+    )
 
 
 def scan_handler(
@@ -606,58 +696,54 @@ def while_handler(
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
-    def init_with_true(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Initialize all assertions to be true."""
+    """Thread only the loop's own assertions, packed, through the carry.
 
-        def _sentinel_like(x: jax.Array) -> jax.Array:
-            """Fill with -inf for floats, min value for integers."""
-            if jnp.issubdtype(x.dtype, jnp.integer):
-                return jnp.full_like(x, fill_value=jnp.iinfo(x.dtype).min)
-            return jnp.full_like(x, fill_value=-jnp.inf)
-
-        def initialize(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
-            a = bind(a).focus(lambda a: a.predicate).apply(jnp.ones_like)
-            a = (
-                bind(a)
-                .focus(lambda a: (a.fix_args, a.fmt_args))
-                .apply(partial(jax.tree.map, _sentinel_like))
-            )
-            return a
-
-        return AssertionContext(
-            old.assertions
-            + tuple(map(initialize, new.assertions[len(old.assertions) :]))
-        )
-
-    def update_on_fail(
-        old: AssertionContext, new: AssertionContext
-    ) -> AssertionContext:
-        """Always keep the first assertion that fails."""
-        return AssertionContext(
-            tuple(
-                RuntimeAssertion(
-                    predicate=jnp.logical_and(old.predicate, new.predicate),
-                    message=old.message,
-                    fmt_args=jax.tree.map(jnp.maximum, old.fmt_args, new.fmt_args),
-                    exception_type=old.exception_type,
-                    static_info=old.static_info,
-                    fix_fn=old.fix_fn,
-                    fix_args=jax.tree.map(jnp.maximum, old.fix_args, new.fix_args),
-                )
-                for old, new in zip(old.assertions, new.assertions)
-            )
-        )
-
-    return default_while_handler(
-        interpreter,
-        ctx,
-        eqn,
-        invals,
-        initializer=init_with_true,
-        updater=update_on_fail,
+    Each iteration ANDs the predicates and takes the maximum of format and fix
+    arguments, so a failure in any iteration is kept. Assertions created before
+    the loop stay outside it.
+    """
+    _, bind_params = get_bind_params(eqn)
+    cond_jaxpr: ClosedJaxpr = bind_params["cond_jaxpr"]
+    body_jaxpr: ClosedJaxpr = bind_params["body_jaxpr"]
+    num_cond_consts = bind_params["cond_nconsts"]
+    num_body_consts = bind_params["body_nconsts"]
+    cond_consts, body_consts, nonconst_invals = split_sequence(
+        invals, (num_cond_consts, num_body_consts)
     )
+    n_in = len(ctx.assertions)
+    _, ctx_out_tree = (
+        jax.jit(partial(interpreter, body_jaxpr))
+        .trace(ctx.push(), *body_consts, *nonconst_invals)
+        .out_info
+    )
+    packer = _AssertionPacker(ctx_out_tree.assertions[n_in:])
+
+    def full_ctx(packed: list[Array]) -> AssertionContext:
+        return AssertionContext(ctx.assertions + packer.unpack(packed))
+
+    def _cond(carry: tuple[list[Array], list[Any]]) -> Array:
+        packed, args = carry
+        out, new_ctx = interpreter(cond_jaxpr, full_ctx(packed), *cond_consts, *args)
+        if len(new_ctx.assertions) != n_in + len(packer.specs):
+            raise ValueError("While cond modified the context.")
+        return jax.tree.leaves(out)[0]
+
+    def _body(
+        carry: tuple[list[Array], list[Any]],
+    ) -> tuple[list[Array], list[Any]]:
+        packed, args = carry
+        out, new_ctx = interpreter(body_jaxpr, ctx.push(), *body_consts, *args)
+        new = packer.pack(new_ctx.assertions[n_in:])
+        combined = [
+            jnp.logical_and(old, n) if is_pred else jnp.maximum(old, n)
+            for (is_pred, _), old, n in zip(packer.groups, packed, new)
+        ]
+        return combined, list(out)
+
+    packed, outvals = jax.lax.while_loop(
+        _cond, _body, (packer.initial(), list(nonconst_invals))
+    )
+    return HandlerResult(full_ctx(packed), outvals)
 
 
 def shard_map_handler(
@@ -693,24 +779,7 @@ def _contains_assertion_primitive[Context: InterpreterContext](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> bool:
-    for leaf in jax.tree.leaves(
-        eqn.params, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
-    ):
-        if isinstance(leaf, ClosedJaxpr):
-            jaxpr = leaf.jaxpr
-        elif isinstance(leaf, Jaxpr):
-            jaxpr = leaf
-        else:
-            continue
-        assert isinstance(jaxpr, Jaxpr)
-        for eqn in jaxpr.eqns:
-            if eqn.primitive.name == "assertion":
-                return True
-            # Recursively check for nested jaxprs
-            if contains_subjaxprs(ctx, eqn, invals):
-                if _contains_assertion_primitive(ctx, eqn, invals):
-                    return True
-    return False
+    return _contains_primitive(eqn.params, "assertion")
 
 
 def with_runtime_assertions[**P, R](
