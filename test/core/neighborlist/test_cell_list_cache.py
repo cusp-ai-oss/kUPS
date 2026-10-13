@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import replace
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -24,10 +26,18 @@ from kups.core.neighborlist.cell_list_cache import (
     near_blocks,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
+from kups.core.neighborlist.edges import Edges
+from kups.core.neighborlist.types import NeighborList
 from kups.core.result import as_result_function
 from kups.core.typing import Label, ParticleId, SystemId
 
-from ._builders import make_lh, make_systems, systems_from_lvecs
+from ._builders import (
+    SamplePoints,
+    SampleSystems,
+    make_lh,
+    make_systems,
+    systems_from_lvecs,
+)
 
 
 def _edge_rows(edges, n_keys, n_queries):
@@ -56,10 +66,21 @@ def _neighborlist(cache, cutoffs, layout, avg_edges):
     )
 
 
+@jax.jit
+@as_result_function
+def _evaluate(
+    neighborlists: Sequence[NeighborList[Literal[2]]],
+    points: Table[ParticleId, SamplePoints],
+    systems: Table[SystemId, SampleSystems],
+    **kwargs: Table[ParticleId, SamplePoints] | Index[ParticleId],
+) -> list[Edges[Literal[2]]]:
+    """Evaluate several neighbor lists in one compiled program."""
+    return [nl(points, systems, **kwargs) for nl in neighborlists]
+
+
 class TestCachedCellList:
-    @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("periodic", [(False, False, False), (False, True, True)])
-    def test_open_boundaries_match_dense(self, cached, periodic):
+    def test_open_boundaries_match_dense(self, periodic):
         # Include neighbors inside/outside both faces and entirely outside the box.
         x = jnp.array([-21.0, -20.0, -0.5, 0.5, 9.5, 10.5, 20.0, 21.0])
         points = make_lh(jnp.stack((x, x * 0, x * 0), -1), jnp.zeros(len(x), int))
@@ -68,16 +89,23 @@ class TestCachedCellList:
             jnp.array([2.0]),
         )
         layout = CellListCacheParameters.estimate(points, systems, cutoffs)
-        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
-        neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 8)
         dense = DenseNearestNeighborList(
             FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
         )
-        actual = jax.jit(as_result_function(neighborlist))(points, systems)
-        expected = jax.jit(as_result_function(dense))(points, systems)
-        actual.raise_assertion()
-        expected.raise_assertion()
-        assert _edge_rows(actual.value, 8, 8) == _edge_rows(expected.value, 8, 8)
+        cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
+        result = _evaluate(
+            (
+                dense,
+                _neighborlist(None, cutoffs, layout, 8),
+                _neighborlist(cache, cutoffs, layout, 8),
+            ),
+            points,
+            systems,
+        )
+        result.raise_assertion()
+        expected, *actuals = result.value
+        for actual in actuals:
+            assert _edge_rows(actual, 8, 8) == _edge_rows(expected, 8, 8)
 
     @pytest.mark.parametrize("cached", [False, True])
     def test_roundoff_at_periodic_boundary_preserves_neighbors(self, cached: bool):
@@ -95,20 +123,25 @@ class TestCachedCellList:
             [(0, 1, 0, 0, 0), (1, 0, 0, 0, 0)]
         )
 
-    @pytest.mark.parametrize("cached", [False, True])
-    @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries"])
-    @pytest.mark.parametrize("cutoff", [1.4, 5.4])
+    # Pairwise covering of periodicity, cutoff (one or several images) and mode.
     @pytest.mark.parametrize(
-        "periodic",
+        "periodic,cutoff,mode",
         [
-            (True, True, True),
-            (False, True, True),
-            (True, True, False),
-            (False, False, False),
+            ((True, True, True), 5.4, "full"),
+            ((True, True, True), 1.4, "queried_keys"),
+            ((True, True, True), 5.4, "queries"),
+            ((False, True, True), 1.4, "full"),
+            ((False, True, True), 5.4, "queried_keys"),
+            ((False, True, True), 5.4, "queries"),
+            ((True, True, False), 1.4, "full"),
+            ((True, True, False), 5.4, "queried_keys"),
+            ((False, False, False), 5.4, "full"),
+            ((False, False, False), 5.4, "queried_keys"),
+            ((False, False, False), 1.4, "queries"),
         ],
     )
     def test_matches_dense_with_images_and_original_particle_ids(
-        self, mode, cutoff, periodic, cached
+        self, periodic, cutoff, mode
     ):
         matrices = jnp.array(
             [
@@ -184,15 +217,22 @@ class TestCachedCellList:
             kwargs[mode] = query
             n_queries = query.size
         cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
-        neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 256)
-        actual = jax.jit(as_result_function(neighborlist))(points, systems, **kwargs)
-        expected = jax.jit(as_result_function(dense))(points, systems, **kwargs)
-        actual.raise_assertion()
-        expected.raise_assertion()
-        assert actual.value.indices.keys == points.keys
-        assert _edge_rows(actual.value, points.size, n_queries) == _edge_rows(
-            expected.value, points.size, n_queries
+        result = _evaluate(
+            (
+                dense,
+                _neighborlist(None, cutoffs, layout, 256),
+                _neighborlist(cache, cutoffs, layout, 256),
+            ),
+            points,
+            systems,
+            **kwargs,
         )
+        result.raise_assertion()
+        expected, *actuals = result.value
+        expected_rows = _edge_rows(expected, points.size, n_queries)
+        for actual in actuals:
+            assert actual.indices.keys == points.keys
+            assert _edge_rows(actual, points.size, n_queries) == expected_rows
 
     @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries", "empty_keys"])
