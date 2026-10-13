@@ -21,7 +21,6 @@ from kups.core.typing import (
     ParticleId,
 )
 from kups.core.utils.jax import jit
-from kups.core.utils.segment import segment_sum
 
 
 @jit
@@ -55,19 +54,15 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
         com = center_of_mass(molecules, cell)
         ```
     """
-    group_ids = particles.data.group.indices
-    num_groups = particles.data.group.num_labels
+    group = particles.data.group
+    num_groups = group.num_labels
     # TODO: This function assumes that the structure is less than half the size of the cell!
     assert cells.vectors.shape[0] == num_groups, (
         f"Cells must match the number of groups. Got {cells.vectors.shape[0]} for {num_groups} groups."
     )
-    batched_cells = cells[group_ids]
-    # Index any particle in each group
-    ref_idx = (
-        jnp.zeros((num_groups,), dtype=int)
-        .at[group_ids]
-        .set(jnp.arange(len(group_ids)), mode="drop")
-    )
+    batched_cells = Table(group.keys, cells)[group]
+    # Index the first particle of each group
+    ref_idx = group.select_per_label(jnp.zeros(num_groups, dtype=int))
     positions = particles.data.positions
     if isinstance(particles.data, HasWeights):
         weight = particles.data.weights[:, None]
@@ -76,19 +71,10 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     else:
         weight = jnp.ones_like(positions[:, 0])[:, None]
     offsets = positions[ref_idx]
-    rel_positions = positions - offsets[group_ids]
+    rel_positions = positions - Table(group.keys, offsets)[group]
     rel_positions = batched_cells.wrap(rel_positions)
-    center_of_masses = segment_sum(
-        rel_positions * weight,
-        group_ids,
-        num_groups,
-    )
-    total_mass = segment_sum(
-        weight,
-        group_ids,
-        num_groups,
-    )
-    center_of_masses /= total_mass
+    center_of_masses = group.sum_over(rel_positions * weight).data
+    center_of_masses /= group.sum_over(weight).data
     center_of_masses += offsets
     center_of_masses = cells.wrap(center_of_masses)
     return center_of_masses
@@ -121,15 +107,13 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
         rel_pos = to_relative_positions(molecules, cell)
         ```
     """
-    group_ids = particles.data.group.indices
+    group = particles.data.group
     if center_of_masses is None:
         center_of_masses = center_of_mass(particles, cells)
-    positions = particles.data.positions
-    rel_positions = positions - center_of_masses.at[group_ids].get(
-        mode="fill", fill_value=0
+    rel_positions = (
+        particles.data.positions - Table(group.keys, center_of_masses)[group]
     )
-    rel_positions = cells[group_ids].wrap(rel_positions)
-    return rel_positions
+    return Table(group.keys, cells)[group].wrap(rel_positions)
 
 
 @jit
@@ -158,10 +142,8 @@ def to_absolute_positions[P: HasPositionsAndGroupIndex](
         abs_pos = to_absolute_positions(rel_molecules, cell, com)
         ```
     """
-    group_ids = particles.data.group.indices
-    positions = particles.data.positions
-    abs_positions = positions + center_of_masses.at[group_ids].get(
-        mode="fill", fill_value=0
+    group = particles.data.group
+    abs_positions = (
+        particles.data.positions + Table(group.keys, center_of_masses)[group]
     )
-    abs_positions = cells[group_ids].wrap(abs_positions)
-    return abs_positions
+    return Table(group.keys, cells)[group].wrap(abs_positions)

@@ -68,7 +68,6 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.ops import where_broadcast_last
-from kups.core.utils.segment import segment_sum
 from kups.potential.common.energy import (
     PotentialFromEnergy,
     Sum,
@@ -334,18 +333,18 @@ def local_mliap_energy_full[
         Total energy per system and patch to update cache
     """
     point_cloud = inp.point_cloud
-    n = point_cloud.particles.size
     edges = inp.edges
     # Initial node embeddings
     node_emb = inp.config.init_function(point_cloud.particles.data.atomic_numbers)
     # Edge embeddings / messages
+    edge_nodes = Table(point_cloud.particles.keys, node_emb)[edges.indices]
     edge_emb = inp.config.edge_function(
-        node_emb[edges.indices.indices[:, 0]],
-        node_emb[edges.indices.indices[:, 1]],
+        edge_nodes[:, 0],
+        edge_nodes[:, 1],
         edges.difference_vectors(point_cloud.particles, point_cloud.systems)[:, 0],
     )
     # Aggregate messages
-    msg_sum = segment_sum(edge_emb, edges.indices.indices[:, 0], n)
+    msg_sum = edges.indices[:, 0].sum_over(edge_emb).data
     # Node-wise energies
     energies = inp.config.readout_function(node_emb, msg_sum)
     # Total energies per system
@@ -393,7 +392,6 @@ def local_mliap_energy_update[
     new_point_cloud = bind(old_point_cloud, lambda x: x.particles).apply(
         lambda p: p.update(change_indices, changes.data)
     )
-    n = old_point_cloud.particles.size
 
     # Compute changed initial embeddings
     old_node_emb = inp.config.cache.node_init
@@ -401,16 +399,19 @@ def local_mliap_energy_update[
         inp.config.init_function(changes.data.atomic_numbers)
     )
     # Compute updated and deleted messages
+    keys = old_point_cloud.particles.keys
+    old_edge_nodes = Table(keys, old_node_emb)[inp.edges_deleted.indices]
+    new_edge_nodes = Table(keys, node_emb)[inp.edges.indices]
     old_edge_emb = inp.config.edge_function(
-        old_node_emb[inp.edges_deleted.indices.indices[:, 0]],
-        old_node_emb[inp.edges_deleted.indices.indices[:, 1]],
+        old_edge_nodes[:, 0],
+        old_edge_nodes[:, 1],
         inp.edges_deleted.difference_vectors(
             old_point_cloud.particles, old_point_cloud.systems
         )[:, 0],
     )
     new_edge_emb = inp.config.edge_function(
-        node_emb[inp.edges.indices.indices[:, 0]],
-        node_emb[inp.edges.indices.indices[:, 1]],
+        new_edge_nodes[:, 0],
+        new_edge_nodes[:, 1],
         inp.edges.difference_vectors(
             new_point_cloud.particles, new_point_cloud.systems
         )[:, 0],
@@ -418,8 +419,8 @@ def local_mliap_energy_update[
     # Update message sums
     msg_sum = (
         inp.config.cache.msg_sum
-        - segment_sum(old_edge_emb, inp.edges_deleted.indices.indices[:, 0], n)
-        + segment_sum(new_edge_emb, inp.edges.indices.indices[:, 0], n)
+        - inp.edges_deleted.indices[:, 0].sum_over(old_edge_emb).data
+        + inp.edges.indices[:, 0].sum_over(new_edge_emb).data
     )
     # Node-wise readout
     energies = inp.config.readout_function(node_emb, msg_sum)

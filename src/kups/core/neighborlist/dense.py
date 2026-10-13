@@ -48,8 +48,8 @@ def _dense_subselect(
     max_num_candidates: Capacity[int],
 ) -> Candidates:
     selection_result = subselect(
-        keys.data.system.indices,
-        queries.data.system.indices,
+        keys.data.system.indices_in(systems.keys),
+        queries.data.system.indices_in(systems.keys),
         output_buffer_size=max_num_candidates,
         num_segments=systems.size,
     )

@@ -19,7 +19,7 @@ from kups.core.neighborlist.cell_list import (
 from kups.core.neighborlist.common import Candidates
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems
+from ._builders import EvalState, cutoff_table, make_lh, make_systems, valid_pairs
 
 
 class TestCellHashClampsAtBoundary:
@@ -85,14 +85,7 @@ class TestCellListSubselect:
             max_num_cells=FixedCapacity(128),
             max_num_candidates=FixedCapacity(32),
         )
-        pairs = {
-            (a, b)
-            for a, b in zip(
-                candidates.key_idx.indices.tolist(),
-                candidates.query_idx.indices.tolist(),
-            )
-            if a < 3 and b < 3
-        }
+        pairs = set(valid_pairs(candidates.key_idx, candidates.query_idx))
         assert (0, 1) in pairs or (1, 0) in pairs
         assert (0, 2) not in pairs and (2, 0) not in pairs
 
@@ -118,13 +111,7 @@ class TestCellListSubselect:
                 max_num_cells=max_cells,
                 max_num_candidates=FixedCapacity(16),
             )
-            return {
-                (a, b)
-                for a, b in zip(
-                    c.key_idx.indices.tolist(), c.query_idx.indices.tolist()
-                )
-                if a < 3 and b < 3
-            }
+            return set(valid_pairs(c.key_idx, c.query_idx))
 
         single = pairs(FixedCapacity(1))
         multi = pairs(FixedCapacity(64))
@@ -156,14 +143,7 @@ class TestCellListSubselect:
                 max_num_candidates=FixedCapacity(64),
                 promise_unique_cells=promise_unique_cells,
             )
-            return {
-                (key, query)
-                for key, query in zip(
-                    candidates.key_idx.indices.tolist(),
-                    candidates.query_idx.indices.tolist(),
-                )
-                if key < len(positions) and query < len(positions)
-            }
+            return set(valid_pairs(candidates.key_idx, candidates.query_idx))
 
         assert pairs(False) == pairs(True)
 

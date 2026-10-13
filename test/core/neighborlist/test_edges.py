@@ -4,6 +4,7 @@
 """Unit tests for ``kups.core.neighborlist.edges`` (the ``Edges`` dataclass)."""
 
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -34,7 +35,7 @@ class TestEdgesConstruction:
         assert edges.indices.shape == (3, 2)
         assert edges.shifts.shape == (3, 1, 3)
         assert len(edges) == 3
-        npt.assert_array_equal(edges.indices.indices, indices.indices)
+        npt.assert_array_equal(np.asarray(edges.indices), np.asarray(indices))
         npt.assert_array_equal(edges.shifts, shifts)
 
     def test_creation_ternary(self):
@@ -49,7 +50,7 @@ class TestEdgesConstruction:
         assert edges.degree == 3
         assert edges.indices.shape == (2, 3)
         assert edges.shifts.shape == (2, 2, 3)
-        npt.assert_array_equal(edges.indices.indices, indices.indices)
+        npt.assert_array_equal(np.asarray(edges.indices), np.asarray(indices))
         npt.assert_array_equal(edges.shifts, shifts)
 
     def test_degree_one_has_zero_inner_shift_dim(self):

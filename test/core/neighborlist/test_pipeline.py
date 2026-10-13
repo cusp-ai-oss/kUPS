@@ -28,7 +28,13 @@ from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.refine import PrecomputedEdgesSelector
 from kups.core.typing import SystemId
 
-from ._builders import make_edges, make_lh, make_systems, systems_from_lvecs
+from ._builders import (
+    make_edges,
+    make_lh,
+    make_systems,
+    systems_from_lvecs,
+    valid_ids,
+)
 
 
 class TestPrepare:
@@ -103,10 +109,8 @@ class TestPipelineComposition:
             compactor=MaskOnlyCompactor(),
         )
         edges = pipeline(lh, systems)
-        oob = lh.size
-        npt.assert_array_equal(
-            np.asarray(edges.indices.indices), np.array([[0, 1], [oob, oob]])
-        )
+        npt.assert_array_equal(valid_ids(edges.indices), [[0, 1]])
+        npt.assert_array_equal(edges.indices.valid_mask.any(-1), [True, False])
 
     def test_runs_postprocessors_in_order(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
@@ -130,8 +134,7 @@ class TestPipelineComposition:
         )
         edges = pipeline(lh, systems)
         npt.assert_array_equal(
-            np.asarray(edges.indices.indices),
-            np.array([[0, 1], [1, 0], [1, 0], [0, 1]]),
+            valid_ids(edges.indices), [[0, 1], [1, 0], [1, 0], [0, 1]]
         )
         npt.assert_allclose(
             np.asarray(edges.shifts),

@@ -165,7 +165,8 @@ class BlockingSpheresPotentialInput:
         particles: Indexed particle data with positions, system, and group index
         groups: Indexed group data providing the motif index for each group
         cell: Per-system cell used for periodic boundary wrapping
-        edges: Particle-sphere pairs to check for blocking
+        edges: Particle-sphere pairs to check for blocking, indexing the
+            particles followed by the spheres
     """
 
     parameters: BlockingSpheresParameters
@@ -173,6 +174,18 @@ class BlockingSpheresPotentialInput:
     groups: Table[GroupId, HasMotifIndex]
     cell: Table[SystemId, Cell[AnyPeriodicity]]
     edges: Edges[Literal[2]]
+
+
+def _sphere_ids(
+    particles: Table[ParticleId, Any], parameters: BlockingSpheresParameters
+) -> tuple[ParticleId, ...]:
+    """Particle ids of the spheres, following those of ``particles``.
+
+    Particle-sphere edges index the union of both, as for any bipartite
+    neighbor-list query.
+    """
+    n = len(particles)
+    return tuple(ParticleId(n + i) for i in range(len(parameters.radii)))
 
 
 def blocking_spheres_energy(
@@ -188,23 +201,24 @@ def blocking_spheres_energy(
     Returns:
         Energy and patch with infinite energy for blocked particles.
     """
-    particle_motif_idx = inp.edges.indices[:, 0]
-    sph_idx = inp.edges.indices[:, 1].indices
-    particles = inp.particles[particle_motif_idx]
+    spheres = Table(_sphere_ids(inp.particles, inp.parameters), inp.parameters)
+    particles = inp.particles[
+        inp.edges.indices[:, 0].update_labels(inp.particles.keys, allow_missing=True)
+    ]
+    sphere = spheres[
+        inp.edges.indices[:, 1].update_labels(spheres.keys, allow_missing=True)
+    ]
     particle_sys = particles.system
-    diffs = particles.positions - inp.parameters.positions[sph_idx]
-    diffs = inp.cell[particle_sys].wrap(diffs)
+    diffs = inp.cell[particle_sys].wrap(particles.positions - sphere.positions)
     dists = jnp.linalg.norm(diffs, axis=-1)
-    radii = inp.parameters.radii[sph_idx]
-    sph_motif = inp.parameters.motif[sph_idx]
     # Compare motifs in a merged keyspace so that groups whose motif has no
     # sphere (and OOB-sentinel groups, e.g. buffered empty slots) never match
     # any sphere motif and therefore are not blocked.
     group_motif_idx, sph_motif_idx = Index.match(
-        inp.groups[particles.group].motif, sph_motif
+        inp.groups[particles.group].motif, sphere.motif
     )
     raw_energies = jnp.where(
-        (dists < radii) & (group_motif_idx == sph_motif_idx), jnp.inf, 0.0
+        (dists < sphere.radii) & (group_motif_idx == sph_motif_idx), jnp.inf, 0.0
     )
     energies = particle_sys.sum_over(raw_energies)
     return WithPatch(energies, IdPatch[Any]())
@@ -277,20 +291,15 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
             )
         )
 
-        # Build sphere rh as Indexed[ParticleId, _BlockingSpherePoints]
-        p = parameters.positions.shape[0]
-        sphere_inclusion = parameters.system.to_cls(InclusionId)
-        sphere_exclusion = Index.new(
-            tuple(ExclusionId(len(particles) + i) for i in range(p))
-        )
-        spheres = Table.arange(
+        ids = _sphere_ids(particles, parameters)
+        spheres = Table(
+            ids,
             _BlockingSpherePoints(
                 positions=parameters.positions,
                 system=parameters.system,
-                inclusion=sphere_inclusion,
-                exclusion=sphere_exclusion,
+                inclusion=parameters.system.to_cls(InclusionId),
+                exclusion=Index.new(tuple(map(ExclusionId, ids))),
             ),
-            label=ParticleId,
         )
 
         neighborlist = neighborlist_factory(cutoffs)

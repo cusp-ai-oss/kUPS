@@ -299,7 +299,7 @@ class MCMCGroup:
     @property
     def labels(self) -> Index[Label]:
         """Group labels derived from motif index."""
-        return Index(tuple(Label(str(m)) for m in self.motif.keys), self.motif.indices)
+        return self.motif.to_cls(lambda m: Label(str(m)))
 
 
 @dataclass

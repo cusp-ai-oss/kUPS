@@ -722,13 +722,13 @@ class TestPeriodicImages:
         vectors = jnp.array(
             [[[4.0, 0.0, 0.0], [1.4, 5.0, 0.0], [0.6, 0.3, 6.0]], jnp.eye(3) * 10.0]
         )
-        system = state.particles.data.system.indices
-        fractions = (
-            state.particles.data.positions / jnp.array([4.0, 10.0])[system, None]
-        )
+        box, lattice = state.systems.set_data((jnp.array([4.0, 10.0]), vectors))[
+            state.particles.data.system
+        ]
+        fractions = state.particles.data.positions / box[:, None]
         state = _with_points(
             state,
-            positions=jnp.einsum("ni,nij->nj", fractions, vectors[system]),
+            positions=jnp.einsum("ni,nij->nj", fractions, lattice),
             charges=state.particles.data.charges.at[jnp.array([6, 12])].set(
                 jnp.array([0.2, -0.3])
             ),
@@ -1009,16 +1009,15 @@ class TestPeriodicImages:
 
 def _molecule_rows(state: _MiniState, system: int, size: int = 3) -> jax.Array:
     p = state.particles.data
-    active = p.inclusion.indices < p.inclusion.num_labels
-    return jnp.nonzero(active & (p.system.indices == system))[0][-size:]
+    active = p.inclusion.valid_mask
+    selected = p.system.isin(Index(p.system.keys, jnp.array([system])))
+    return jnp.nonzero(active & selected)[0][-size:]
 
 
 def _move(
     state: _MiniState, rows: jax.Array, positions: jax.Array, active: bool = True
 ) -> _Move:
     p = state.particles.data
-    n_systems = p.inclusion.num_labels
-    inclusion = jnp.where(active, p.system.indices[rows], n_systems)
     return _Move(
         indices=Index(state.particles.keys, rows),
         data=_Points(
@@ -1026,7 +1025,7 @@ def _move(
             labels=p.labels[rows],
             charges=p.charges[rows],
             system=p.system[rows],
-            inclusion=Index(p.inclusion.keys, inclusion),
+            inclusion=p.system[rows].to_cls(InclusionId).apply_mask(jnp.array(active)),
             exclusion=p.exclusion[rows],
         ),
     )
@@ -1114,7 +1113,7 @@ class TestDeltaEvaluation:
         state = _make_state(jax.random.PRNGKey(7), (18, 12), (12.0, 10.0), n_inactive=3)
         params = _lj_params(2, 3.0)
         p = state.particles.data
-        inactive = jnp.nonzero(p.inclusion.indices >= 2)[0][:2]
+        inactive = jnp.nonzero(~p.inclusion.valid_mask)[0][:2]
         insert = _move(state, inactive, jnp.array([[3.1, 4.2, 5.3], [3.6, 4.2, 5.3]]))
         self._check(state, insert, params, lennard_jones_energy, _LJ)
         rows = _molecule_rows(state, 1)
@@ -1126,7 +1125,7 @@ class TestDeltaEvaluation:
             _make_state(jax.random.PRNGKey(8), (18, 12), (12.0, 10.0), n_inactive=3)
         )
         p = state.particles.data
-        inactive = jnp.nonzero(p.inclusion.indices >= 2)[0][:3]
+        inactive = jnp.nonzero(~p.inclusion.valid_mask)[0][:3]
         charges = p.charges.at[inactive].set(jnp.array([0.4, -0.25, -0.15]))
         state = _with_points(state, charges=charges)
         new = jnp.array([[3.1, 4.2, 5.3], [4.0, 4.2, 5.3], [3.5, 4.9, 5.3]])
@@ -1294,7 +1293,7 @@ class TestPersistentCellListCache:
             patch_idx_view=_patch_indices,
             cache_lens=lens(lambda s: s.cache),
         )
-        inactive = jnp.nonzero(state.particles.data.inclusion.indices >= 2)[0]
+        inactive = jnp.nonzero(~state.particles.data.inclusion.valid_mask)[0]
 
         def translation(state: _MiniState, key: jax.Array) -> _Move:
             rows = jnp.concatenate([_molecule_rows(state, 0), _molecule_rows(state, 1)])
@@ -1351,17 +1350,20 @@ class TestPersistentCellListCache:
             npt.assert_array_equal(
                 table.block_bounds.upper, np.where(active, frac, -np.inf).max(1).T
             )
-            system = np.asarray(table.rows.system.indices[:n])
+            system = np.asarray(table.rows.system[:n]).astype(int)
             system = system.reshape(-1, key_block_size)
-            # Empty blocks: out of bounds above the first system.
-            n_systems = len(table.block_bounds.systems.keys)
+            active = active[..., 0]
+            occupied = active.any(1)
+            bounds = table.block_bounds.systems
             npt.assert_array_equal(
-                table.block_bounds.systems.indices,
+                np.asarray(bounds[:, occupied]).astype(int),
                 [
-                    np.where(active[..., 0], system, n_systems).min(1),
-                    np.where(active[..., 0], system, 0).max(1),
+                    np.where(active, system, system.max()).min(1)[occupied],
+                    np.where(active, system, 0).max(1)[occupied],
                 ],
             )
+            # Empty blocks hold no system.
+            assert not bounds[0, ~occupied].valid_mask.any()
 
 
 class TestAdditivePairEnergy:
@@ -1713,16 +1715,17 @@ class TestAdditivePairEnergy:
         )
 
         def consume(indices: jax.Array):
-            local = dataclasses.replace(ctx, queried_keys=indices)
+            local = dataclasses.replace(ctx, queried_keys=Index(ctx.keys.keys, indices))
             batch = selector(local)
             pairs = PairBatch.from_candidates(batch, local)
             pairs = pairs._replace(
-                valid=pairs.valid & (batch.key_idx.indices != batch.query_idx.indices)
+                valid=pairs.valid
+                & jnp.not_equal(*Index.match(batch.key_idx, batch.query_idx))
             )
-            left = jax.tree.map(lambda x: x[batch.query_idx.indices], features)
-            right = jax.tree.map(lambda x: x[batch.key_idx.indices], features)
+            table = ctx.keys.set_data(features)
+            left, right = table[batch.query_idx], table[batch.key_idx]
             energies = pair.evaluate(params, left, right, pairs)
-            return jax.ops.segment_sum(energies, pairs.system.indices, num_segments=2)
+            return pairs.system.sum_over(energies).data
 
         result = (
             jax.jit(lambda: sum_chunks(consume, jnp.arange(state.particles.size), 4))()

@@ -40,17 +40,11 @@ from ._builders import (
 )
 
 
-def _edge_rows(edges, n_keys, n_queries):
-    indices = np.asarray(edges.indices.indices)
-    valid = (indices >= 0).all(axis=-1)
-    valid &= (indices[:, 0] < n_keys) & (indices[:, 1] < n_queries)
+def _edge_rows(edges):
+    valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
+    ids = np.asarray(edges.indices[valid]).astype(int)
     return Counter(
-        map(
-            tuple,
-            np.concatenate(
-                [indices[valid], np.asarray(edges.shifts)[valid, 0]], axis=-1
-            ),
-        )
+        map(tuple, np.concatenate([ids, np.asarray(edges.shifts)[valid, 0]], axis=-1))
     )
 
 
@@ -105,7 +99,7 @@ class TestCachedCellList:
         result.raise_assertion()
         expected, *actuals = result.value
         for actual in actuals:
-            assert _edge_rows(actual, 8, 8) == _edge_rows(expected, 8, 8)
+            assert _edge_rows(actual) == _edge_rows(expected)
 
     @pytest.mark.parametrize("cached", [False, True])
     def test_roundoff_at_periodic_boundary_preserves_neighbors(self, cached: bool):
@@ -119,9 +113,7 @@ class TestCachedCellList:
         neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 2)
         result = jax.jit(as_result_function(neighborlist))(points, systems)
         result.raise_assertion()
-        assert _edge_rows(result.value, 2, 2) == Counter(
-            [(0, 1, 0, 0, 0), (1, 0, 0, 0, 0)]
-        )
+        assert _edge_rows(result.value) == Counter([(0, 1, 0, 0, 0), (1, 0, 0, 0, 0)])
 
     # Pairwise covering of periodicity, cutoff (one or several images) and mode.
     @pytest.mark.parametrize(
@@ -192,7 +184,6 @@ class TestCachedCellList:
             FixedCapacity(16), FixedCapacity(256), FixedCapacity(16 * 27), cutoffs
         )
         kwargs = {}
-        n_queries = points.size
         if mode == "queried_keys":
             # A call must rebuild from updated positions, including crossed bins.
             points = points.map_data(
@@ -215,7 +206,6 @@ class TestCachedCellList:
                 ),
             )
             kwargs[mode] = query
-            n_queries = query.size
         cache = build_cell_list_cache(points, systems, cutoffs, (), layout)
         result = _evaluate(
             (
@@ -229,10 +219,10 @@ class TestCachedCellList:
         )
         result.raise_assertion()
         expected, *actuals = result.value
-        expected_rows = _edge_rows(expected, points.size, n_queries)
+        expected_rows = _edge_rows(expected)
         for actual in actuals:
-            assert actual.indices.keys == points.keys
-            assert _edge_rows(actual, points.size, n_queries) == expected_rows
+            assert actual.indices.keys == expected.indices.keys
+            assert _edge_rows(actual) == expected_rows
 
     @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries", "empty_keys"])
@@ -262,7 +252,7 @@ class TestCachedCellList:
             },
         )(points, systems, **kwargs)
         result.raise_assertion()
-        assert not _edge_rows(result.value, points.size, queries.size)
+        assert not _edge_rows(result.value)
 
     def test_selector_reuses_an_updated_table(self):
         points = make_lh(
@@ -280,14 +270,14 @@ class TestCachedCellList:
         index = Index(points.keys, jnp.array([2]))
         rows = table.bin_rows(moved.subset(index), systems, ())
         patch = CellListCacheUpdatePatch(
-            table.slot_of_row[index.indices], rows.system, rows, lens(lambda t: t)
+            table.slot_of_row[jnp.array([2])], rows.system, rows, lens(lambda t: t)
         )
         updated = as_result_function(patch)(table, systems.set_data(jnp.array([True])))
         updated.raise_assertion()
         neighborlist = _neighborlist(updated.value, cutoffs, layout, 6)
         result = jax.jit(as_result_function(neighborlist))(moved, systems)
         result.raise_assertion()
-        assert _edge_rows(result.value, 3, 3) == Counter(
+        assert _edge_rows(result.value) == Counter(
             (i, j, 0, 0, 0) for i in range(3) for j in range(3) if i != j
         )
 
@@ -338,7 +328,7 @@ class TestCellListCache:
         assert updated.inclusion.max_count == max_count
         assert updated.data.keys == features.keys
         assert updated.data.max_count == max_count
-        npt.assert_array_equal(updated.data.indices[table.slot_of_row], [1, 1])
+        npt.assert_array_equal(np.asarray(updated.data[table.slot_of_row]), ["B", "B"])
 
     def test_estimate_counts_active_rows_per_system_cell(self):
         # Rows of two systems interleave; the last three are buffered and would
@@ -524,7 +514,7 @@ class TestCellListCache:
             particles, systems, cutoffs, jnp.zeros(3), parameters
         )
         index = Index(particles.keys, jnp.array([2]))
-        slot = table.slot_of_row[index.indices]
+        slot = table.slot_of_row[jnp.array([2])]
 
         def proposed(position):
             query = particles.subset(index).map_data(
@@ -614,10 +604,11 @@ class TestSpatialOrder:
         npt.assert_allclose(table.block_bounds.upper, upper.T, atol=1e-6)
         # Each block's system range is its one system; empty blocks have none.
         occupied = block_system[:, 0] >= 0
-        lo, hi = np.asarray(table.block_bounds.systems.indices)
-        npt.assert_array_equal(lo[occupied], block_system[occupied, 0])
-        npt.assert_array_equal(hi[occupied], block_system[occupied, 0])
-        assert np.all(lo[~occupied] > hi[~occupied])
+        systems = table.block_bounds.systems
+        lo, hi = np.asarray(systems[:, occupied]).astype(int)
+        npt.assert_array_equal(lo, block_system[occupied, 0])
+        npt.assert_array_equal(hi, block_system[occupied, 0])
+        assert not systems[0, ~occupied].valid_mask.any()
 
         # Mean block extent relative to the edge of a cube holding one block.
         owner = block_system[occupied, 0]
@@ -814,7 +805,7 @@ class TestBlockBounds:
         expected = jax.jit(as_result_function(dense))(points, systems)
         actual.raise_assertion()
         expected.raise_assertion()
-        assert _edge_rows(actual.value, n, n) == _edge_rows(expected.value, n, n)
+        assert _edge_rows(actual.value) == _edge_rows(expected.value)
 
 
 class TestBlockCulling:

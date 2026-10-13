@@ -240,13 +240,15 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         self,
         inp: FusedLocalInput[Params, Part, Feat],
         rows: CellRows[Feat],
-        keys: CellRows[Feat],
+        keys: CellRows[Feat] | None,
         index: Array,
-        mask: View[CandidateBatch[Literal[2]], Array],
+        mask: View[CandidateBatch[Literal[2]], Array] | None = None,
     ) -> Array:
+        """Energies of query ``rows`` against ``keys``, or against each other."""
+        key_rows = rows if keys is None else keys
         batch, ctx = cell_candidates(
-            keys,
-            rows,
+            key_rows,
+            None if keys is None else rows,
             index,
             inp.cloud.systems,
             self.pair.cutoffs(inp.parameters),
@@ -256,22 +258,20 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         pairs = PairBatch.from_candidates(
             batch, ctx, query_lanes=None if multiple_images else index.shape[1]
         )
-        pairs = bind(pairs, lambda p: p.valid).apply(lambda v: v & mask(batch))
+        if mask is not None:
+            pairs = bind(pairs, lambda p: p.valid).apply(lambda v: v & mask(batch))
         if multiple_images:
-            key_index = batch.key_idx.indices
-            query_index = batch.query_idx.indices
-            energies = self.pair.evaluate(
-                inp.parameters,
-                tree_map(itemgetter(query_index), rows.data),
-                tree_map(itemgetter(key_index), keys.data),
-                pairs,
+            key, query = cast(
+                tuple[CellRows[Feat], CellRows[Feat]], ctx.endpoints(batch)
             )
-            return jax.ops.segment_sum(
-                energies, query_index, num_segments=rows.frac.shape[0]
+            energies = self.pair.evaluate(inp.parameters, query.data, key.data, pairs)
+            query_idx = batch.query_idx.update_labels(
+                ctx.edge_query_table.keys, allow_missing=True
             )
+            return query_idx.sum_over(energies).data
         pairs = tree_map(lambda x: x.reshape(*index.shape, *x.shape[1:]), pairs)
         left = tree_map(lambda x: x[:, None], rows.data)
-        right = tree_map(lambda x: x[index], keys.data)
+        right = tree_map(lambda x: x[index], key_rows.data)
         return self.pair.evaluate(inp.parameters, left, right, pairs).sum(-1)
 
     def _block_energies(
@@ -469,9 +469,10 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                 jnp.broadcast_to(limit, (n,)),
             )
         else:
-            system = rows.system.indices_in(systems.keys)
             geometry = _QueryGeometry(
-                cell.vectors[system], cell.perpendicular_lengths[system], limit[system]
+                *systems.set_data((cell.vectors, cell.perpendicular_lengths, limit))[
+                    rows.system
+                ]
             )
         index = jnp.arange(n)
         mutual = self._block_energies(
@@ -487,9 +488,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         values = (environment + mutual / 2) * weights
         if systems.size == 1:
             return values.sum(keepdims=True)
-        return jax.ops.segment_sum(
-            values, rows.system.indices_in(systems.keys), num_segments=systems.size
-        )
+        return rows.system.sum_over(values)[systems.index]
 
     def _sum_keys(
         self,
@@ -498,11 +497,13 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         excluded: Array,
     ) -> Array:
         table = inp.cell_table
+        # Excluded slots drop out of the pairs as inactive keys.
+        keys = bind(table.rows, lambda r: r.inclusion).apply(
+            lambda inclusion: inclusion.apply_mask(~excluded)
+        )
 
         def consume(index: Array) -> Array:
-            return self._energies(
-                inp, rows, table.rows, index, lambda b: ~excluded[b.key_idx.indices]
-            )
+            return self._energies(inp, rows, keys, index)
 
         chunk_size = self.layout.key_chunk_size
         if self.layout.key_layout == "slots":
@@ -539,11 +540,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         def consume(chunk: tuple[CellRows[Feat], Array]) -> Array:
             rows, weights = chunk
             energies = self._sum_keys(inp, rows, excluded)
-            return jax.ops.segment_sum(
-                energies * weights,
-                rows.system.indices,
-                num_segments=inp.cloud.systems.size,
-            )
+            systems = inp.cloud.systems
+            return rows.system.sum_over(energies * weights)[systems.index]
 
         n = rows.frac.shape[0]
         chunk_size = (
@@ -567,13 +565,16 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         particles = graph.particles[graph.edges.indices]
         inclusion = exclusion = jnp.ones(len(graph.edges), dtype=bool)
         if not self.pair.inclusion:
-            inclusion = (
-                particles.inclusion.indices[:, 0] == particles.inclusion.indices[:, 1]
+            inclusion = jnp.equal(
+                *Index.match(particles.inclusion[:, 0], particles.inclusion[:, 1])
             )
         if not self.pair.exclusion:
             exclusion = (
-                particles.exclusion.indices[:, 0] != particles.exclusion.indices[:, 1]
-            ) | ~inp.batch.is_minimum_image
+                jnp.not_equal(
+                    *Index.match(particles.exclusion[:, 0], particles.exclusion[:, 1])
+                )
+                | ~inp.batch.is_minimum_image
+            )
         energies = graph_pair_energies(
             self.pair, inp.parameters, graph, inclusion, exclusion
         )
@@ -625,10 +626,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             else max(q.size for q in queries),
         )
         # Keep old and new query pairs separate: no old-new cross interactions.
-        n_systems = inp.cloud.systems.size
-        system = Index(
-            tuple(range(len(queries) * n_systems)),
-            rows.system.indices + phase * n_systems,
+        system = Index.combine(
+            Index.integer(phase, n=len(queries)), rows.system
         ).apply_mask(rows.inclusion.valid_mask)
         width = min(max(q.size for q in queries), self.max_queries_per_system or n)
         runtime_assert(
@@ -640,14 +639,16 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         pairs = self._energies(
             inp,
             rows,
-            rows,
+            None,
             query_index,
-            lambda b: (b.key_idx.indices != b.query_idx.indices) | ~b.is_minimum_image,
+            lambda b: (
+                jnp.not_equal(*Index.match(b.key_idx, b.query_idx))
+                | ~b.is_minimum_image
+            ),
         )
-        values = environment + jax.ops.segment_sum(
-            pairs * weights / 2,
-            rows.system.indices,
-            num_segments=inp.cloud.systems.size,
+        values = (
+            environment
+            + rows.system.sum_over(pairs * weights / 2)[inp.cloud.systems.index]
         )
         return values, parts[-1], slots
 

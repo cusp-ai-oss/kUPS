@@ -38,7 +38,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
+from kups.core.utils.jax import dataclass, skip_post_init_if_disabled
 
 
 @runtime_checkable
@@ -120,18 +120,15 @@ class CandidateBatch[D: int]:
     keep non-minimum periodic copies of excluded pairs.
 
     Attributes:
-        edges: Candidate edges (indices + fractional shifts). The first column
-            is keyed by ``edges.indices.keys``.
+        edges: Candidate edges (indices + fractional shifts), keyed by
+            [`PipelineContext.edge_keys`][kups.core.neighborlist.types.PipelineContext.edge_keys].
         is_minimum_image: ``(n,)`` bool — True where the candidate's shift
             equals the minimum-image shift; False for non-MIC replicated
             copies emitted by selectors that handle PBC image expansion.
-        query_keys: Pair-specific key vocabulary for the second edge column.
-            ``None`` means it uses ``edges.indices.keys``.
     """
 
     edges: Edges[D]
     is_minimum_image: Array
-    query_keys: tuple[ParticleId, ...] | None = field(default=None, static=True)
 
     @property
     def key_idx(self) -> Index[ParticleId]:
@@ -141,11 +138,7 @@ class CandidateBatch[D: int]:
     @property
     def query_idx(self) -> Index[ParticleId]:
         """Pair-specific: query-side index of shape ``(n,)``. Only meaningful for ``D == 2``."""
-        return Index(
-            self.edges.indices.keys if self.query_keys is None else self.query_keys,
-            self.edges.indices.indices[:, 1],
-            _cls=self.edges.indices.cls,
-        )
+        return self.edges.indices[:, 1]
 
 
 @dataclass
@@ -154,34 +147,44 @@ class PipelineContext:
 
     Positions in ``keys`` and optional ``queries`` are in **fractional**
     coordinates (transformed by
-    [`_prepare`][kups.core.neighborlist.pipeline._prepare]). There is no
-    ``out_of_bounds`` field — masks/compactors that need an OOB sentinel resolve
-    the query table first.
+    [`_prepare`][kups.core.neighborlist.pipeline._prepare]).
+
+    Edges index ``keys``, or for bipartite queries the union of ``keys`` and
+    ``queries``, whose particle ids must then be disjoint.
 
     Attributes:
-        keys: Key particle table in fractional coords (the table the returned
-            ``Edges`` index into).
+        keys: Key particle table in fractional coords.
         queries: Query particle table in fractional coords for true bipartite
             queries. ``None`` for full self-graphs and ``queried_keys`` updates.
         systems: Indexed system data with cell information.
-        queried_keys: Raw ``keys`` positions to update/query, or ``None`` for a
-            full self-graph or bipartite query.
+        queried_keys: ``keys`` ids to update/query, or ``None`` for a full
+            self-graph or bipartite query.
     """
 
     keys: Table[ParticleId, NeighborListPoints]
     queries: Table[ParticleId, NeighborListPoints] | None
     systems: Table[SystemId, NeighborListSystems]
-    queried_keys: Array | None
+    queried_keys: Index[ParticleId] | None
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
         assert self.queries is None or self.queried_keys is None, (
             "PipelineContext cannot combine queries with queried_keys."
         )
+        assert self.queries is None or set(self.keys.keys).isdisjoint(
+            self.queries.keys
+        ), "Bipartite queries need particle ids disjoint from the keys."
+
+    @property
+    def edge_keys(self) -> tuple[ParticleId, ...]:
+        """Particle ids addressed by candidate and edge indices."""
+        if self.queries is None:
+            return self.keys.keys
+        return tuple(sorted(self.keys.keys + self.queries.keys))
 
     @property
     def edge_query_table(self) -> Table[ParticleId, NeighborListPoints]:
-        """Table addressed by the second edge column."""
+        """Table holding the second endpoint of each pair."""
         return self.queries if self.queries is not None else self.keys
 
     @property
@@ -190,13 +193,23 @@ class PipelineContext:
 
         ``queries`` is reserved for true bipartite calls. ``queried_keys``
         selects a self-graph update subset from ``keys`` and is lifted back to
-        ``keys`` index space before masks and compaction see the batch.
+        ``keys`` ids before masks and compaction see the batch.
         """
         if self.queries is not None:
             return self.queries
         if self.queried_keys is None:
             return self.keys
-        return self.keys.subset(Index(self.keys.keys, self.queried_keys))
+        return self.keys.subset(self.queried_keys)
+
+    def endpoints[D: int](
+        self, batch: CandidateBatch[D]
+    ) -> tuple[NeighborListPoints, NeighborListPoints]:
+        """Key and query rows of each candidate pair."""
+        query = self.edge_query_table
+        return (
+            self.keys[batch.key_idx.update_labels(self.keys.keys, allow_missing=True)],
+            query[batch.query_idx.update_labels(query.keys, allow_missing=True)],
+        )
 
 
 class CandidateSelector[D: int](Protocol):

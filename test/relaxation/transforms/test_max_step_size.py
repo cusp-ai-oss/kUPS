@@ -171,7 +171,7 @@ class TestMaxStepSizePerSystem:
         _, new_state = transform.update(updates, state)
         assert isinstance(state.index_prefix, Index)
         assert isinstance(new_state.index_prefix, Index)
-        npt.assert_allclose(state.index_prefix.indices, new_state.index_prefix.indices)
+        npt.assert_array_equal(state.index_prefix.value, new_state.index_prefix.value)
 
 
 class TestParticleIdIndex:

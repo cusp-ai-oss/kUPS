@@ -188,9 +188,7 @@ class TestHostOnly:
         # groups empty for host
         assert len(self.groups2.keys) == 0
         # host group sentinel motif
-        npt.assert_array_equal(
-            self.particles2.data.group.indices, jnp.zeros(2, dtype=int)
-        )
+        assert not self.particles2.data.group.valid_mask.any()
         # system fields
         npt.assert_allclose(self.systems2.data.temperature, jnp.array([300.0]))
         assert self.systems2.data.log_fugacity.shape == (1, 1)
@@ -236,7 +234,7 @@ class TestWithInitialAdsorbates:
         # 0 host groups + 2 adsorbate groups
         assert len(self.groups.keys) == 2
         # adsorbate motif assignment
-        npt.assert_array_equal(self.groups.data.motif.indices, jnp.array([0, 0]))
+        npt.assert_array_equal(self.groups.data.motif.value, [0, 0])
         # adsorbate positions within box
         assert jnp.all(jnp.isfinite(self.particles.data.positions))
         ads_pos = self.particles.data.positions[2:]
@@ -258,7 +256,7 @@ class TestMultipleSpecies:
         # 2 host + 3 CO2 atoms + 1 CH4 atom = 6
         assert len(self.particles.keys) == 6
         # First group: CO2 (motif 0), second group: CH4 (motif 1)
-        npt.assert_array_equal(self.groups.data.motif.indices, jnp.array([0, 1]))
+        npt.assert_array_equal(self.groups.data.motif.value, [0, 1])
         # log fugacity shape and values
         assert self.systems.data.log_fugacity.shape == (1, 2)
         assert jnp.isfinite(self.systems.data.log_fugacity).all()
@@ -304,13 +302,13 @@ class TestMakeMolecule:
         labels = particles.data.labels
         assert Label("C_co2") in labels.keys
         assert Label("O_co2") in labels.keys
-        assert labels.indices.shape == (3,)
+        assert labels.shape == (3,)
 
     def test_group_has_correct_motif(self):
         motifs = _build_motifs(_co2_config(), _ch4_config())
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
         _, group = _make_molecule(motifs, _motif_index(1), cell, jax.random.key(0))
-        npt.assert_array_equal(group.data.motif.indices, jnp.array([1]))
+        npt.assert_array_equal(group.data.motif.value, [1])
 
     def test_single_group_created(self):
         motifs = _build_motifs(_co2_config())

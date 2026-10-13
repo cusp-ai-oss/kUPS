@@ -46,7 +46,7 @@ class Particles:
     @property
     def inclusion(self) -> Index[InclusionId]:
         """System index re-labeled as InclusionId."""
-        return Index(tuple(map(InclusionId, self.system.keys)), self.system.indices)
+        return self.system.to_cls(InclusionId)
 
 
 def default_exclusion(n: int) -> Index[ExclusionId]:

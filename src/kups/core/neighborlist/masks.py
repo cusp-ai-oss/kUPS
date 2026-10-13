@@ -23,35 +23,22 @@ from kups.core.data import Index, Table
 from kups.core.neighborlist.common import real_distance_sq
 from kups.core.neighborlist.types import CandidateBatch, PipelineContext
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, isin
+from kups.core.utils.jax import dataclass
 
 
 @dataclass
 class InBoundsMask:
     """Drops candidates whose key/query indices fall outside the valid inclusion-segment range.
 
-    Implements the per-side ``inclusion.indices < num_labels`` check used to
+    Implements the per-side ``inclusion.valid_mask`` check used to
     guard scatter/gather lookups when the candidate buffer is padded.
     """
 
     def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
-        ngraphs = ctx.keys.data.inclusion.num_labels
-        key_inclusions = ctx.keys.map_data(lambda d: d.inclusion.indices < ngraphs)
         if ctx.queries is None:
-            idx = batch.edges.indices.indices_in(key_inclusions.keys)
-            edge_in = key_inclusions.data.at[idx].get(mode="fill", fill_value=False)
-            return edge_in.all(axis=-1)
-
-        query_inclusions = ctx.queries.map_data(
-            lambda d: d.inclusion.indices < d.inclusion.num_labels
-        )
-        key_idx = batch.key_idx.indices_in(key_inclusions.keys)
-        query_idx = batch.query_idx.indices_in(query_inclusions.keys)
-        key_in = key_inclusions.data.at[key_idx].get(mode="fill", fill_value=False)
-        query_in = query_inclusions.data.at[query_idx].get(
-            mode="fill", fill_value=False
-        )
-        return key_in & query_in
+            return ctx.keys[batch.edges.indices].inclusion.valid_mask.all(axis=-1)
+        key, query = ctx.endpoints(batch)
+        return key.inclusion.valid_mask & query.inclusion.valid_mask
 
 
 @dataclass
@@ -60,12 +47,12 @@ class InclusionMatchMask:
 
     def __call__[D: int](self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
         if ctx.queries is None:
-            edge_incl = ctx.keys[batch.edges.indices].inclusion.indices
-            return (edge_incl == edge_incl[:, :1]).all(axis=-1)
+            edge_incl = ctx.keys[batch.edges.indices].inclusion
+            incl, first_incl = Index.match(edge_incl, edge_incl[:, :1])
+            return (incl == first_incl).all(axis=-1)
 
-        key_incl, query_incl = Index.match(
-            ctx.keys[batch.key_idx].inclusion, ctx.queries[batch.query_idx].inclusion
-        )
+        key, query = ctx.endpoints(batch)
+        key_incl, query_incl = Index.match(key.inclusion, query.inclusion)
         return key_incl == query_incl
 
 
@@ -88,14 +75,13 @@ class QueriedKeysDedupMask:
     ) -> Array:
         if ctx.queried_keys is None:
             return jnp.ones((batch.key_idx.size,), dtype=bool)
-        key = batch.key_idx.indices
-        query = batch.query_idx.indices
+        key, query = Index.match(batch.key_idx, batch.query_idx)
         shift = batch.edges.shifts[:, 0, :]
         first_nonzero = jnp.take_along_axis(
             shift, jnp.argmax(shift != 0, axis=-1)[:, None], axis=-1
         )[:, 0]
         return (
-            ~isin(key, ctx.queried_keys, ctx.keys.size)
+            ~batch.key_idx.isin(ctx.queried_keys)
             | (key > query)
             | ((key == query) & (first_nonzero > 0))
         )
@@ -112,9 +98,7 @@ class TouchesQueriedKeysMask[D: int]:
     def __call__(self, batch: CandidateBatch[D], ctx: PipelineContext) -> Array:
         if ctx.queried_keys is None:
             return jnp.ones((len(batch.edges),), dtype=bool)
-        return isin(batch.edges.indices.indices, ctx.queried_keys, ctx.keys.size).any(
-            -1
-        )
+        return batch.edges.indices.isin(ctx.queried_keys).any(-1)
 
 
 @dataclass
@@ -131,17 +115,10 @@ class DistanceCutoffMask:
         frame_table: Table[SystemId, MaterializedFrame] = ctx.systems.map_data(
             lambda s: s.cell.frame.materialize()
         )
-        key_system = ctx.keys[batch.key_idx].system
-        frames: MaterializedFrame = frame_table[key_system]
-        if ctx.queries is None:
-            pair_positions = ctx.keys[batch.edges.indices].positions
-            key_positions = pair_positions[:, 0]
-            query_positions = pair_positions[:, 1]
-        else:
-            key_positions = ctx.keys[batch.key_idx].positions
-            query_positions = ctx.queries[batch.query_idx].positions
-        dist_sq = real_distance_sq(key_positions, query_positions, frames, shifts)
-        return dist_sq < cutoffs[key_system] ** 2
+        key, query = ctx.endpoints(batch)
+        frames: MaterializedFrame = frame_table[key.system]
+        dist_sq = real_distance_sq(key.positions, query.positions, frames, shifts)
+        return dist_sq < cutoffs[key.system] ** 2
 
 
 @dataclass
@@ -155,11 +132,6 @@ class ExclusionMask:
     def __call__(
         self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext
     ) -> Array:
-        if ctx.queries is None:
-            edge_excl = ctx.keys[batch.edges.indices].exclusion.indices
-            return (edge_excl[:, 0] != edge_excl[:, 1]) | ~batch.is_minimum_image
-
-        key_excl, query_excl = Index.match(
-            ctx.keys[batch.key_idx].exclusion, ctx.queries[batch.query_idx].exclusion
-        )
+        key, query = ctx.endpoints(batch)
+        key_excl, query_excl = Index.match(key.exclusion, query.exclusion)
         return (key_excl != query_excl) | ~batch.is_minimum_image

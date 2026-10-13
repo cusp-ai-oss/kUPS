@@ -23,7 +23,6 @@ from kups.core.capacity import CapacityError, FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.lens import bind
 from kups.core.neighborlist import (
     AllDenseNearestNeighborList,
     CellListNeighborList,
@@ -41,6 +40,7 @@ from .._builders import (
     pad,
     run_nl,
     systems_from_lvecs,
+    valid_ids,
 )
 
 
@@ -185,8 +185,7 @@ class TestNearestNeighborListImplementations:
         # Should find 4 edges: (0,1), (1,0), (1,2), (2,1)
         assert edges.degree == 2
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 3]
-        valid_edges = valid_edges[valid_edges[:, 1] < 3]
+        valid_edges = valid_ids(edges.indices)
 
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
         expected_edges = {(0, 1), (1, 0), (1, 2), (2, 1)}
@@ -220,8 +219,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 2]
-        valid_edges = valid_edges[valid_edges[:, 1] < 2]
+        valid_edges = valid_ids(edges.indices)
 
         # The implementation uses < cutoff, so particles exactly at cutoff
         # should not be neighbors.
@@ -241,7 +239,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 2]
+        valid_edges = valid_ids(edges.indices)
         assert valid_edges.shape[0] >= 2  # At least bidirectional edge
 
     def test_multi_batch_isolation(self, neighbor_list_impl):
@@ -264,7 +262,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 4]
+        valid_edges = valid_ids(edges.indices)
 
         batch_mask = jnp.array([0, 0, 1, 1])
         for i in range(valid_edges.shape[0]):
@@ -291,8 +289,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 3]
-        valid_edges = valid_edges[valid_edges[:, 1] < 3]
+        valid_edges = valid_ids(edges.indices)
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
 
         # lh[1] (2,0,0) vs updated lh[2] (1,0,0): dist=1.0<1.5, edge (1,2)
@@ -329,10 +326,7 @@ class TestNearestNeighborListImplementations:
             capacity=20,
         )
         result_pos.raise_assertion()
-        valid_pos = result_pos.value.indices.indices[
-            result_pos.value.indices.indices[:, 0] < 4
-        ]
-        valid_pos = valid_pos[valid_pos[:, 1] < 4]
+        valid_pos = valid_ids(result_pos.value.indices)
         assert len(valid_pos) > 0, "Should find edges within same systems"
         for i in range(valid_pos.shape[0]):
             lh_idx, rh_idx = valid_pos[i]
@@ -354,10 +348,7 @@ class TestNearestNeighborListImplementations:
             capacity=20,
         )
         result_neg.raise_assertion()
-        valid_neg = result_neg.value.indices.indices[
-            result_neg.value.indices.indices[:, 0] < 4
-        ]
-        valid_neg = valid_neg[valid_neg[:, 1] < 4]
+        valid_neg = valid_ids(result_neg.value.indices)
         for i in range(valid_neg.shape[0]):
             lh_idx, rh_idx = valid_neg[i]
             if lh_idx < 4 and rh_idx < 4:
@@ -397,8 +388,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 3]
-        valid_edges = valid_edges[valid_edges[:, 1] < 3]
+        valid_edges = valid_ids(edges.indices)
         edge_set = set(tuple(edge.tolist()) for edge in valid_edges)
 
         assert (1, 0) in edge_set, f"Expected edge (1, 0) not found in {edge_set}"
@@ -422,19 +412,7 @@ class TestNearestNeighborListImplementations:
         )
         result.raise_assertion()
         edges = result.value
-        sort_idxs = jnp.lexsort(
-            [edges.indices.indices[:, 0], edges.indices.indices[:, 1]]
-        )
-        edges = bind(edges).focus(lambda e: e[sort_idxs]).get()
-        relevant_edges = tuple(
-            sorted(
-                tuple(index_list)
-                for index_list in jax.tree.map(
-                    lambda x: x[:10], edges.indices.indices
-                ).tolist()
-                if index_list[0] < 4 and index_list[1] < 4
-            )
-        )
+        relevant_edges = map(tuple, valid_ids(edges.indices).tolist())
 
         assert set(relevant_edges) == set(
             (
@@ -469,8 +447,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 2]
-        valid_edges = valid_edges[valid_edges[:, 1] < 2]
+        valid_edges = valid_ids(edges.indices)
 
         assert len(valid_edges) > 0, "Should find edges with queried_keys"
 
@@ -512,8 +489,7 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_edges = edges.indices.indices[edges.indices.indices[:, 0] < 3]
-        valid_edges = valid_edges[valid_edges[:, 1] < 3]
+        valid_edges = valid_ids(edges.indices)
 
         lh_batch_mask = jnp.array([0, 1, 0])
         for i in range(valid_edges.shape[0]):
@@ -544,7 +520,9 @@ class TestNearestNeighborListImplementations:
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
         result.raise_assertion()
-        actual_edges = {tuple(map(int, edge)) for edge in result.value.indices.indices}
+        actual_edges = {
+            tuple(map(int, edge)) for edge in valid_ids(result.value.indices)
+        }
 
         diffs = positions[:, None] - positions[None, :]
         diffs = cell.wrap(diffs)
@@ -595,7 +573,9 @@ class TestNearestNeighborListImplementations:
         ).failed_assertions:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
         result.raise_assertion()
-        actual_edges = {tuple(map(int, edge)) for edge in result.value.indices.indices}
+        actual_edges = {
+            tuple(map(int, edge)) for edge in valid_ids(result.value.indices)
+        }
 
         diffs = positions[:, None] - new_positions[None, :]
         diffs = cell.wrap(diffs)
@@ -651,11 +631,7 @@ class TestNearestNeighborListImplementations:
         _sys_1, _cut_1 = make_systems(cell_1, jnp.array([cutoff]))
         result_1 = run_nl(*self._with_images(neighbor_list_impl, lh_1, _sys_1, _cut_1))
         result_1.raise_assertion()
-        valid_1 = {
-            (int(e[0]), int(e[1]))
-            for e in result_1.value.indices.indices
-            if e[0] < len(positions_1) and e[1] < len(positions_1)
-        }
+        valid_1 = {(int(e[0]), int(e[1])) for e in valid_ids(result_1.value.indices)}
         expected_1 = self._compute_naive_neighbors(positions_1, cell_1, cutoff)
         assert expected_1.issubset(valid_1), f"Missing edges: {expected_1 - valid_1}"
 
@@ -668,11 +644,7 @@ class TestNearestNeighborListImplementations:
         _sys_2, _cut_2 = make_systems(cell_2, jnp.array([cutoff]))
         result_2 = run_nl(*self._with_images(neighbor_list_impl, lh_2, _sys_2, _cut_2))
         result_2.raise_assertion()
-        valid_2 = {
-            (int(e[0]), int(e[1]))
-            for e in result_2.value.indices.indices
-            if e[0] < len(positions_2) and e[1] < len(positions_2)
-        }
+        valid_2 = {(int(e[0]), int(e[1])) for e in valid_ids(result_2.value.indices)}
         expected_2 = self._compute_naive_neighbors(positions_2, cell_2, cutoff)
         assert expected_2.issubset(valid_2), f"Missing edges: {expected_2 - valid_2}"
 
@@ -697,11 +669,7 @@ class TestNearestNeighborListImplementations:
             neighbor_list_instance = result.fix_or_raise(neighbor_list_instance)
         result.raise_assertion()
 
-        actual_edges = {
-            (int(e[0]), int(e[1]))
-            for e in result.value.indices.indices
-            if e[0] < N and e[1] < N
-        }
+        actual_edges = {(int(e[0]), int(e[1])) for e in valid_ids(result.value.indices)}
         expected = self._compute_naive_neighbors(positions, cell, cutoff)
         for edge in expected:
             assert edge in actual_edges, f"Missing edge {edge}"
@@ -732,11 +700,7 @@ class TestNearestNeighborListImplementations:
         result = run_nl(*self._with_images(neighbor_list_impl, lh, _sys, _cut))
         result.raise_assertion()
 
-        valid_edges = {
-            (int(e[0]), int(e[1]))
-            for e in result.value.indices.indices
-            if e[0] < len(positions) and e[1] < len(positions)
-        }
+        valid_edges = {(int(e[0]), int(e[1])) for e in valid_ids(result.value.indices)}
 
         assert (0, 1) in valid_edges and (1, 0) in valid_edges
         assert (2, 3) in valid_edges and (3, 2) in valid_edges
@@ -783,8 +747,8 @@ class TestNearestNeighborListImplementations:
                 *self._with_images(neighbor_list_impl, reordered, _sys, _cut)
             )
             result.raise_assertion()
-            mask = (result.value.indices.indices < 6).all(axis=1)
-            valid = np.asarray(result.value.indices.indices[mask])
+            mask = result.value.indices.valid_mask.all(axis=1)
+            valid = np.asarray(result.value.indices[mask])
             shifts = np.asarray(result.value.shifts[mask])
             return {
                 (int(rev_order[i]), int(rev_order[j]), *map(int, s))
@@ -815,11 +779,7 @@ class TestNearestNeighborListImplementations:
         result = run_nl(*self._with_images(neighbor_list_impl, lh, _sys, _cut))
         result.raise_assertion()
 
-        valid_edges = {
-            (int(e[0]), int(e[1]))
-            for e in result.value.indices.indices
-            if e[0] < len(positions) and e[1] < len(positions)
-        }
+        valid_edges = {(int(e[0]), int(e[1])) for e in valid_ids(result.value.indices)}
         expected = self._compute_naive_neighbors(positions, cell, cutoff)
         assert len(expected.difference(valid_edges)) == 0, (
             f"Missing edges: {expected - valid_edges}"
@@ -844,9 +804,13 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_mask = (edges.indices.indices == 0).all(axis=1)
-        valid_indices = np.asarray(edges.indices.indices[valid_mask])
-        valid_shifts = np.asarray(edges.shifts[valid_mask, 0])
+        valid_indices = valid_ids(edges.indices)
+        valid_shifts = np.asarray(edges.shifts[edges.indices.valid_mask.all(-1), 0])
+        self_edges = (valid_indices == 0).all(axis=1)
+        valid_indices, valid_shifts = (
+            valid_indices[self_edges],
+            valid_shifts[self_edges],
+        )
         edge_set = {
             (int(i), int(j), tuple(int(s) for s in shift))
             for (i, j), shift in zip(valid_indices, valid_shifts)
@@ -879,9 +843,8 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_mask = (edges.indices.indices < 2).all(axis=1)
-        valid_indices = np.asarray(edges.indices.indices[valid_mask])
-        valid_shifts = np.asarray(edges.shifts[valid_mask, 0])
+        valid_indices = valid_ids(edges.indices)
+        valid_shifts = np.asarray(edges.shifts[edges.indices.valid_mask.all(-1), 0])
 
         edge_set = {
             (int(i), int(j), tuple(int(s) for s in shift))
@@ -919,9 +882,8 @@ class TestNearestNeighborListImplementations:
         result.raise_assertion()
         edges = result.value
 
-        valid_mask = (edges.indices.indices < 2).all(axis=1)
-        valid_indices = np.asarray(edges.indices.indices[valid_mask])
-        valid_shifts = np.asarray(edges.shifts[valid_mask, 0])
+        valid_indices = valid_ids(edges.indices)
+        valid_shifts = np.asarray(edges.shifts[edges.indices.valid_mask.all(-1), 0])
 
         edge_set = {
             (int(i), int(j), tuple(int(s) for s in shift))

@@ -132,27 +132,26 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
             return_sort_order: If True, also return the sort permutation.
         """
         n = len(self.particles)
-        sort_order = jnp.argsort(self.particles.data.system.indices, stable=True)
+        sort_order = jnp.argsort(self.particles.data.system.raw_indices, stable=True)
         sorted_data = bind(self.particles.data).at((sort_order,)).get()
         sorted_particles = Table(
             self.particles.keys, sorted_data, _cls=self.particles.cls
         )
-        # Size n+1: padded edge indices (>= n) map to n, the sentinel slot.
-        inverse_order = (
-            jnp.full(n + 1, fill_value=n, dtype=sort_order.dtype)
-            .at[sort_order]
-            .set(jnp.arange(n, dtype=sort_order.dtype))
+        # Each particle's new row, so edges follow their endpoints.
+        inverse_order = Table(
+            self.particles.keys,
+            Index(
+                self.particles.keys,
+                jnp.zeros_like(sort_order).at[sort_order].set(jnp.arange(n)),
+                max_count=self.edges.indices.max_count,
+                _cls=self.particles.cls,
+            ),
         )
-        remapped_indices = Index(
-            self.edges.indices.keys,
-            inverse_order[self.edges.indices.indices],
-            max_count=self.edges.indices.max_count,
-            _cls=self.edges.indices.cls,
-        )
+        remapped_indices = inverse_order[self.edges.indices]
         sorted_edges = Edges(indices=remapped_indices, shifts=self.edges.shifts)
         if sort_edges:
-            edge_systems = sorted_particles[remapped_indices[:, 0]].system.indices
-            edge_order = jnp.argsort(edge_systems, stable=True)
+            edge_systems = sorted_particles[remapped_indices[:, 0]].system
+            edge_order = jnp.argsort(edge_systems.raw_indices, stable=True)
             sorted_edges = Edges(
                 indices=remapped_indices[edge_order],
                 shifts=sorted_edges.shifts[edge_order],
@@ -257,7 +256,7 @@ def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
     valid = (
         graph.edges.indices.indices_in(graph.particles.keys) < graph.particles.size
     ).all(-1)
-    valid &= system.valid_mask & (system.indices == particles.system[:, 1].indices)
+    valid &= system.valid_mask & jnp.equal(*Index.match(system, particles.system[:, 1]))
     rij = jnp.where(valid[:, None], graph.edge_shifts[:, 0], 0.0)
     # Combining periodic geometry with pair algebra can crash the CUDA MLIR
     # fusion compiler in CSE. Preserve this boundary without changing autodiff.

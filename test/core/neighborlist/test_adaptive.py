@@ -158,9 +158,9 @@ class TestAdaptiveNeighborList:
         )(particles, systems)
         result.raise_assertion()
         batch = result.value
-        edges = batch.edges.indices.indices
-        valid = (edges < 2).all(-1)
-        same_particle = edges[:, 0] == edges[:, 1]
+        edges = batch.edges.indices
+        valid = edges.valid_mask.all(-1)
+        same_particle = jnp.equal(*Index.match(edges[:, 0], edges[:, 1]))
         # Each atom has six self images; the zero-shift self edge is absent.
         assert int((valid & same_particle).sum()) == 12
         assert not bool((valid & same_particle & batch.is_minimum_image).any())
@@ -173,7 +173,7 @@ class TestAdaptiveNeighborList:
         )
         if inclusion and exclusion:
             normal = neighbors(particles, systems)
-            npt.assert_array_equal(edges, normal.indices.indices)
+            npt.assert_array_equal(*Index.match(edges, normal.indices))
             npt.assert_array_equal(batch.edges.shifts, normal.shifts)
 
     @pytest.mark.parametrize("implementation", [0, 1, 2])

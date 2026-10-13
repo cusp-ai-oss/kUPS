@@ -52,7 +52,7 @@ def _run(
 ) -> set[tuple[int, int]]:
     result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
     result.raise_assertion()
-    return valid_edge_set(result.value, lh.size)
+    return valid_edge_set(result.value)
 
 
 class TestAdaptiveNeighborListEndToEnd:

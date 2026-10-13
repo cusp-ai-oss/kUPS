@@ -346,13 +346,10 @@ def _global_tail_correction_common(
     assert inp.parameters.epsilon.shape == (n_species, n_species)
     assert inp.parameters.tail_corrected.shape == (n_species, n_species)
     n_graphs = inp.graph.batch_size
-    system_ids = inp.graph.particles.data.system.indices
-    species_ids = inp.graph.particles.data.labels.indices_in(inp.parameters.labels)
-    counts = (
-        jnp.zeros((n_graphs, n_species), dtype=inp.parameters.sigma.dtype)
-        .at[system_ids, species_ids]
-        .add(1, mode="drop")
-    )
+    particles = inp.graph.particles.data
+    species = particles.labels.update_labels(inp.parameters.labels)
+    counts = Index.combine(particles.system, species).counts.data
+    counts = counts.reshape(n_graphs, n_species).astype(inp.parameters.sigma.dtype)
     volume = inp.graph.systems.data.cell.volume
     if (
         jax.default_backend() in {"gpu", "cuda", "rocm"}

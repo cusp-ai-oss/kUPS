@@ -115,7 +115,7 @@ class TestKeyOrdering:
         )
         assert t.keys == (SystemId(0), SystemId(1), SystemId(2))
         assert t.index.keys == t.keys
-        npt.assert_array_equal(t.index.indices, jnp.arange(3))
+        npt.assert_array_equal(t.index.value, t.keys)
         npt.assert_array_equal(t[t.index], t.data)
         npt.assert_array_equal(t[Index.new([SystemId(1)])], [1.0])
 
@@ -131,7 +131,7 @@ class TestKeyOrdering:
         assert t.keys == (ParticleId(0), ParticleId(1), ParticleId(2))
         npt.assert_array_equal(t.data.positions, [[0.0], [1.0], [2.0]])
         # the foreign key column is a per-row column and must be permuted too
-        npt.assert_array_equal(t.data.system.indices, [0, 0, 1])
+        npt.assert_array_equal(t.data.system.value, [0, 0, 1])
         assert t.data.system.keys == (SystemId(0), SystemId(1))
 
     def test_new_passthrough_and_edge_cases(self):
@@ -190,7 +190,7 @@ class TestIndex:
         assert idx.keys == ("a", "b", "c")
         assert idx.max_count == 1
         assert idx.cls is str
-        npt.assert_array_equal(idx.indices, jnp.arange(3))
+        npt.assert_array_equal(idx.value, ["a", "b", "c"])
 
         # Integer-typed keys preserve cls via _cls
         ti = Table.arange(jnp.array([1.0, 2.0, 3.0]), label=ParticleId)
@@ -205,7 +205,7 @@ class TestIndex:
         empty_idx = empty.index
         assert empty_idx.keys == ()
         assert empty_idx.cls is str
-        assert empty_idx.indices.shape == (0,)
+        assert empty_idx.shape == (0,)
 
 
 class TestAt:
@@ -298,8 +298,8 @@ class TestGetitem:
         oob = Index.integer([0, 2], n=2, label=ParticleId)
         gathered = Table.arange(data, label=ParticleId)[oob]
         npt.assert_array_equal(gathered.positions, [[1.0, 1.0], [0.0, 0.0]])
-        npt.assert_array_equal(gathered.system.indices, [0, 2])
-        assert not gathered.system.valid_mask[1]
+        npt.assert_array_equal(gathered.system.valid_mask, [True, False])
+        assert gathered.system[0].value == SystemId(0)
 
     def test_non_float_leaves_keep_plain_indexing(self):
         """Integer and boolean leaves clamp out of bounds, as ``at[].get()`` does."""
@@ -598,7 +598,7 @@ class TestConcatenateTable:
         assert merged_s.keys == (SystemId(0), SystemId(1))
         npt.assert_array_equal(merged_p.data.positions, [[0.0], [1.0], [2.0]])
         npt.assert_array_equal(merged_s.data.energy, [10.0, 20.0])
-        npt.assert_array_equal(merged_p.data.system.indices, [0, 0, 1])
+        npt.assert_array_equal(merged_p.data.system.value, [0, 0, 1])
         assert merged_p.data.system.keys == (SystemId(0), SystemId(1))
 
     def test_union_three_groups_and_key_shifting(self):
@@ -640,8 +640,8 @@ class TestConcatenateTable:
         assert mg.keys == (GroupId(0), GroupId(1))
         assert mp.data.system.keys == (SystemId(0), SystemId(1))
         assert mg.data.system.keys == (SystemId(0), SystemId(1))
-        npt.assert_array_equal(mp.data.system.indices, [0, 1])
-        npt.assert_array_equal(mg.data.system.indices, [0, 1])
+        npt.assert_array_equal(mp.data.system.value, [0, 1])
+        npt.assert_array_equal(mg.data.system.value, [0, 1])
 
         # Integer vs string key shifting
         lp0 = Table((ParticleId(0),), Index((Label("H"),), jnp.array([0])))
@@ -674,7 +674,7 @@ class TestConcatenateTable:
         assert ms.keys == (SystemId(0), SystemId(1), SystemId(2))
         npt.assert_array_equal(ms.data.energy, [10.0, 20.0, 30.0])
         assert mp.data.system.keys == (SystemId(0), SystemId(1), SystemId(2))
-        npt.assert_array_equal(mp.data.system.indices, [0, 1, 2])
+        npt.assert_array_equal(mp.data.system.value, [0, 1, 2])
 
         # max_count preserved
         mc0 = Table(
@@ -708,7 +708,7 @@ class TestConcatenateTable:
             ParticleId(1),
             ParticleId(2),
         )
-        npt.assert_array_equal(result.data.neighbor.indices, [1, 0, 2])
+        npt.assert_array_equal(result.data.neighbor.value, [1, 0, 2])
 
         # Empty index
         e0 = Table((ParticleId(0),), Index((), jnp.zeros(0, dtype=jnp.int32), _cls=int))
@@ -757,7 +757,7 @@ class TestMatchIndices:
         )
         mp, ms = Table.match(particles, systems)
         assert mp.data.system.keys == (SystemId(0), SystemId(1))
-        npt.assert_array_equal(mp.data.system.indices, [0, 0])
+        npt.assert_array_equal(mp.data.system.value, [0, 0])
         assert ms.keys == systems.keys
 
     def test_three_groups_and_self_ref(self):
@@ -798,4 +798,4 @@ class TestMatchIndices:
             ParticleId(1),
             ParticleId(2),
         )
-        npt.assert_array_equal(result.data.neighbor.indices, [1, 0, 1])
+        npt.assert_array_equal(result.data.neighbor.value, [1, 0, 1])

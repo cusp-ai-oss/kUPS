@@ -18,11 +18,11 @@ Graph-level output shaping, such as restoring undirected symmetry after
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core.capacity import Capacity
-from kups.core.data import Index
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import CandidateBatch, Compactor, PipelineContext
 from kups.core.utils.jax import dataclass
@@ -54,31 +54,24 @@ class ReduceCompactor[D: int](Compactor[D]):
         ctx: PipelineContext,
     ) -> CandidateBatch[D]:
         """Compact edges together with the image flags needed by pair kernels."""
-        oob = max(ctx.keys.size, ctx.edge_query_table.size)
         max_edges = self.avg_edges.generate_assertion(keep.sum())
         sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
 
-        def gather(values: Array, fill_value: int = 0) -> Array:
+        def gather(values: Array) -> Array:
             if keep.size == 0:
                 # JAX cannot gather a padded output from an empty source array.
-                return jnp.full(
-                    (max_edges.size, *values.shape[1:]), fill_value, dtype=values.dtype
-                )
+                return jnp.zeros((max_edges.size, *values.shape[1:]), values.dtype)
             return values.at[sort_idxs].get(
-                mode="fill", fill_value=fill_value, indices_are_sorted=True
+                mode="fill", fill_value=0, indices_are_sorted=True
             )
 
+        compacted = jax.tree.map(gather, batch)
         return CandidateBatch(
             Edges(
-                Index(
-                    batch.edges.indices.keys,
-                    gather(batch.edges.indices.indices, oob),
-                    _cls=batch.edges.indices.cls,
-                ),
-                gather(batch.edges.shifts),
+                compacted.edges.indices.apply_mask(sort_idxs[:, None] < keep.size),
+                compacted.edges.shifts,
             ),
-            gather(batch.is_minimum_image),
-            batch.query_keys,
+            compacted.is_minimum_image,
         )
 
 
@@ -96,11 +89,6 @@ class MaskOnlyCompactor[D: int](Compactor[D]):
         batch: CandidateBatch[D],
         ctx: PipelineContext,
     ) -> Edges[D]:
-        oob = max(ctx.keys.size, ctx.edge_query_table.size)
-        indices_in = batch.edges.indices.indices
-        indices = where_broadcast_last(keep, indices_in, oob)
+        indices = batch.edges.indices.apply_mask(keep[:, None])
         shifts = where_broadcast_last(keep, batch.edges.shifts, 0)
-        return Edges(
-            Index(batch.edges.indices.keys, indices, _cls=batch.edges.indices.cls),
-            shifts,
-        )
+        return Edges(indices, shifts)

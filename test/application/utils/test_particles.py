@@ -47,7 +47,7 @@ class TestParticlesCreation:
             system=system,
         )
         assert particles.system.keys == (SystemId(0),)
-        npt.assert_array_equal(particles.system.indices, jnp.zeros(n, dtype=int))
+        npt.assert_array_equal(particles.system.value, jnp.zeros(n, dtype=int))
 
     def test_multi_system(self):
         ids = jnp.array([0, 0, 1, 1])
@@ -61,7 +61,7 @@ class TestParticlesCreation:
             system=system,
         )
         assert particles.system.keys == (SystemId(0), SystemId(1))
-        npt.assert_array_equal(particles.system.indices, ids)
+        npt.assert_array_equal(particles.system.value, ids)
 
 
 class TestInclusionProperty:
@@ -82,7 +82,7 @@ class TestInclusionProperty:
         assert isinstance(inclusion, Index)
         assert all(isinstance(lbl, InclusionId) for lbl in inclusion.keys)
         assert inclusion.keys == (InclusionId(0),)
-        npt.assert_array_equal(inclusion.indices, system.indices)
+        npt.assert_array_equal(inclusion.value, system.value)
 
     def test_multi_system_inclusion(self):
         ids = jnp.array([0, 1, 0, 1])
@@ -97,7 +97,7 @@ class TestInclusionProperty:
         )
         inclusion = particles.inclusion
         assert inclusion.keys == (InclusionId(0), InclusionId(1))
-        npt.assert_array_equal(inclusion.indices, ids)
+        npt.assert_array_equal(inclusion.value, ids)
 
 
 class TestParticlesFromAse:
@@ -141,7 +141,7 @@ class TestParticlesFromAse:
         # Check system index — single system
         assert particles.data.system.keys == (SystemId(0),)
         npt.assert_array_equal(
-            particles.data.system.indices, jnp.zeros(len(atoms), dtype=int)
+            particles.data.system.value, jnp.zeros(len(atoms), dtype=int)
         )
 
     def test_multi_element(self):
@@ -283,9 +283,9 @@ class TestParticlesFromArrays:
         npt.assert_array_equal(actual.data.atomic_numbers, expected.data.atomic_numbers)
         npt.assert_allclose(actual.data.charges, expected.data.charges)
         assert actual.data.labels.keys == expected.data.labels.keys
-        npt.assert_array_equal(actual.data.labels.indices, expected.data.labels.indices)
+        npt.assert_array_equal(actual.data.labels.value, expected.data.labels.value)
         assert actual.data.system.keys == expected.data.system.keys
-        npt.assert_array_equal(actual.data.system.indices, expected.data.system.indices)
+        npt.assert_array_equal(actual.data.system.value, expected.data.system.value)
 
     def test_numpy_orthogonal_periodic_matches_ase(self):
         from ase import Atoms

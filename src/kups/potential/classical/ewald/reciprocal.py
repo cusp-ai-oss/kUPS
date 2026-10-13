@@ -38,7 +38,7 @@ def _frequency_response(
 ) -> Array:
     """Per-particle ``q * [cos(k·r), sin(k·r)]``, shaped (particles, k-vectors, 2)."""
     exponent = einops.einsum(
-        kvecs[batch_mask.indices],
+        Table(batch_mask.keys, kvecs)[batch_mask],
         positions,
         "particles shifts dim, particles dim->particles shifts",
     )
@@ -242,12 +242,9 @@ def _structure_factor_full(
             k_chunk_size,
         ).astype(dtype)
     if not tiled and jax.default_backend() in {"gpu", "cuda", "rocm"}:
-        return segment_sum(
-            _frequency_response(positions, charges, kvecs, batch_mask),
-            batch_mask.indices,
-            ns,
-            mode="drop",
-        )
+        return batch_mask.sum_over(
+            _frequency_response(positions, charges, kvecs, batch_mask)
+        ).data
     return _structure_factor_tiled(
         positions,
         charges,
@@ -331,7 +328,7 @@ def _structure_factor_tiled(
     n, n_systems, n_k = len(positions), batch_mask.num_labels, kvecs.shape[1]
     dtype = jnp.result_type(positions, charges, kvecs)
     p_chunk, k_chunk = min(n, particle_chunk_size), min(n_k, k_chunk_size)
-    sys_ids = batch_mask.indices.astype(jnp.int32)
+    sys_ids = batch_mask.raw_indices.astype(jnp.int32)
     kvecs = jnp.pad(kvecs, ((0, 0), (0, -n_k % k_chunk), (0, 0)))
     pad = -n % p_chunk
     particle_tiles = (
@@ -350,8 +347,8 @@ def _structure_factor_tiled(
         kv = jax.lax.dynamic_slice_in_dim(kvecs, k_start, k_chunk, axis=1)
 
         def response(pos: Array, q: Array, ids: Array) -> Array:
-            safe_ids = Index(batch_mask.keys, jnp.minimum(ids, n_systems - 1))
-            return _frequency_response(pos, q, kv, safe_ids).astype(dtype)
+            system = Index(batch_mask.keys, ids)
+            return _frequency_response(pos, q, kv, system).astype(dtype)
 
         if particle_tiles is None:
             return segment_sum(

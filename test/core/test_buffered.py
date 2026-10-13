@@ -118,7 +118,7 @@ class TestSanitization:
         idx = Index.new(["x", "y", "z"])
         status = _make_status([True, False, True])
         buf = Buffered((0, 1, 2), D(idx=idx, status=status), lambda d: d.status)
-        assert buf.data.idx.indices[1] == 3
+        assert not buf.data.idx.valid_mask[1]
 
         # pytree with mixed types
         data = _pair([1.0, 2.0], [3.0, 4.0], [False, True])
@@ -150,13 +150,14 @@ class TestSelectFree:
         free = _jit_select_free(buf, 2)
         assert isinstance(free, Index)
         assert free.keys == (0, 1, 2, 3)
-        npt.assert_array_equal(free.indices, [1, 3])
+        npt.assert_array_equal(free.value, [1, 3])
 
         # fill value when fewer free
         data = _td([0.0] * 3, [True, False, True])
         buf = Buffered(tuple(range(3)), data, _view)
         free = _jit_select_free(buf, 3)
-        npt.assert_array_equal(free.indices, [1, 3, 3])
+        npt.assert_array_equal(free.valid_mask, [True, False, False])
+        assert free[0].value == 1
 
         # usable with at
         data = _td([1.0, 0.0, 3.0], [True, False, True])
@@ -471,7 +472,8 @@ class TestUpdate:
         )
         result = buf.update(Index((0, 1, 2), jnp.array([0, 2])), rows)
         npt.assert_array_equal(result.data.values, [50.0, 2.0, 0.0])
-        npt.assert_array_equal(result.data.system.indices, [0, 1, 3])
+        npt.assert_array_equal(result.data.system.valid_mask, [True, True, False])
+        npt.assert_array_equal(result.data.system[:2].value, [0, 1])
         npt.assert_array_equal(result.occupation, [True, True, False])
 
     def test_update_without_rows_under_jit(self):

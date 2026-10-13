@@ -36,7 +36,6 @@ from kups.core.neighborlist.types import (
 from kups.core.result import Result, as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-from kups.core.utils.ops import pad_axis
 
 
 @dataclass
@@ -149,6 +148,13 @@ def make_rh(
     return rh_indexed, queried_keys_idx
 
 
+def after[D](
+    lh: Table[ParticleId, Any], rh: Table[ParticleId, D]
+) -> Table[ParticleId, D]:
+    """``rh`` with particle ids following those of ``lh``, for bipartite queries."""
+    return Table(tuple(ParticleId(lh.size + i) for i in range(rh.size)), rh.data)
+
+
 def make_edges(
     lh_indices: Array,
     rh_indices: Array,
@@ -184,11 +190,10 @@ def make_pipeline_ctx(
     if cell is None:
         cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
     systems, _ = make_systems(cell, jnp.array([1.0]))
-    queried_keys_raw = (
-        queried_keys.indices_in(lh.keys) if queried_keys is not None else None
-    )
+    if queried_keys is not None:
+        queried_keys = queried_keys.update_labels(lh.keys)
     return PipelineContext(
-        keys=lh, queries=rh, systems=systems, queried_keys=queried_keys_raw
+        keys=lh, queries=rh, systems=systems, queried_keys=queried_keys
     )
 
 
@@ -212,11 +217,25 @@ def make_batch(
     )
 
 
-def valid_edge_set(edges: Edges, n_particles: int) -> set[tuple[int, int]]:
-    """Set of ``(i, j)`` edges with both endpoints below ``n_particles`` (non-padding)."""
-    raw = np.asarray(edges.indices.indices)
-    in_range = (raw[:, 0] < n_particles) & (raw[:, 1] < n_particles)
-    return {(int(a), int(b)) for a, b in raw[in_range]}
+def valid_ids(index: Index[ParticleId]) -> np.ndarray:
+    """Integer ids of the rows of ``index`` whose entries are all in bounds."""
+    valid = np.asarray(index.valid_mask).reshape(len(index), -1).all(axis=-1)
+    return np.asarray(index[valid]).astype(int).reshape(-1, *index.shape[1:])
+
+
+def valid_pairs(
+    key_idx: Index[ParticleId], query_idx: Index[ParticleId]
+) -> list[tuple[int, int]]:
+    """Integer id pairs of the candidates whose two sides are in bounds."""
+    return [
+        tuple(p)
+        for p in valid_ids(Index.concatenate(key_idx, query_idx).reshape(2, -1).T)
+    ]
+
+
+def valid_edge_set(edges: Edges) -> set[tuple[int, ...]]:
+    """Set of id tuples of the non-padding edges."""
+    return set(map(tuple, valid_ids(edges.indices).tolist()))
 
 
 @dataclass
@@ -272,30 +291,21 @@ def pad(
     are unchanged.
     """
     labels = tuple(range(n_systems))
-    n_pad = n_particles - lh.size
-
-    def pad_segments(index: Index[int]) -> Index[int]:
-        indices = jnp.concatenate([index.indices, jnp.full(n_pad, n_systems)])
-        return Index(labels, indices, max_count=index.max_count)
-
+    # Rows past ``lh`` gather out of bounds: zero positions, out-of-range indices.
+    rows = lh[Index(lh.keys, jnp.minimum(jnp.arange(n_particles), lh.size))]
     points = SamplePoints(
-        positions=pad_axis(lh.data.positions, (0, n_pad), axis=0),
-        system=pad_segments(lh.data.system),
-        inclusion=pad_segments(lh.data.inclusion),
-        exclusion=Index.integer(
-            jnp.concatenate(
-                [lh.data.exclusion.indices, jnp.arange(lh.size, n_particles)]
-            ),
-            n=n_particles,
-        ),
+        positions=rows.positions,
+        system=rows.system.update_labels(labels),
+        inclusion=rows.inclusion.update_labels(labels),
+        exclusion=rows.exclusion,
     )
     padded = Table(tuple(ParticleId(i) for i in range(n_particles)), points)
     if queried_keys is not None:
-        indices = queried_keys.indices
-        assert n_queried >= len(indices)
-        queried_keys = Index(
-            padded.keys,
-            jnp.concatenate([indices, jnp.full(n_queried - len(indices), n_particles)]),
+        n_missing = n_queried - len(queried_keys)
+        assert n_missing >= 0
+        queried_keys = Index.concatenate(
+            queried_keys.update_labels(padded.keys),
+            Index(padded.keys, jnp.full(n_missing, n_particles)),
         )
     system_keys = tuple(SystemId(i) for i in range(n_systems))
 

@@ -58,7 +58,7 @@ def _make_particles(
 ) -> Table[ParticleId, _PointData]:
     n_sys = max(1, int(system_ids.max()) + 1) if system_ids.size > 0 else 0
     system = Index.integer(system_ids, n=n_sys, label=SystemId)
-    inclusion = Index(system.keys, system.indices, _cls=SystemId)
+    inclusion = system
     if exclusion_ids is not None:
         exclusion = Index.integer(exclusion_ids, label=ParticleId)
     elif len(positions) > 0:
@@ -254,9 +254,9 @@ class TestHyperGraphSorted:
         npt.assert_array_equal(s.particles.data.positions, hg.particles.data.positions)
         npt.assert_array_equal(s.particles.data.species, hg.particles.data.species)
         npt.assert_array_equal(
-            s.particles.data.system.indices, hg.particles.data.system.indices
+            s.particles.data.system.value, hg.particles.data.system.value
         )
-        npt.assert_array_equal(s.edges.indices.indices, hg.edges.indices.indices)
+        npt.assert_array_equal(s.edges.indices.value, hg.edges.indices.value)
         npt.assert_array_equal(s.edges.shifts, hg.edges.shifts)
 
     def test_sorted_basic(self):
@@ -272,14 +272,14 @@ class TestHyperGraphSorted:
         )
         s = hg.sorted_by_system()
         # argsort([1,0,1,0], stable) = [1,3,0,2]; inverse = [2,0,3,1]
-        npt.assert_array_equal(s.particles.data.system.indices, [0, 0, 1, 1])
+        npt.assert_array_equal(s.particles.data.system.value, [0, 0, 1, 1])
         npt.assert_array_equal(
             s.particles.data.positions,
             [[2.0, 0.0, 0.0], [4.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
         )
         npt.assert_array_equal(s.particles.data.species, [20, 40, 10, 30])
         # Edge [0,1] → [2,0], edge [2,3] → [3,1]
-        npt.assert_array_equal(s.edges.indices.indices, [[2, 0], [3, 1]])
+        npt.assert_array_equal(s.edges.indices.value, [[2, 0], [3, 1]])
 
     def test_sorted_preserves_edge_shifts(self):
         shifts = jnp.array([[[1, 0, 0]], [[0, 1, 0]]])
@@ -326,7 +326,7 @@ class TestHyperGraphSorted:
         # Edge [0,2] → [2,3] (system 1), edge [1,3] → [0,1] (system 0)
         # Edge systems: [1, 0] → after edge sort: [0, 1]
         # So edge [0,1] (sys 0) comes first, then [2,3] (sys 1)
-        npt.assert_array_equal(s.edges.indices.indices, [[0, 1], [2, 3]])
+        npt.assert_array_equal(s.edges.indices.value, [[0, 1], [2, 3]])
         npt.assert_array_equal(s.edges.shifts, [[[0, 1, 0]], [[1, 0, 0]]])
 
 
@@ -391,7 +391,7 @@ class TestGraphConstructorFixedEdges:
 
         result = constructor(state, None)
         npt.assert_allclose(result.particles.data.positions, positions)
-        npt.assert_allclose(result.edges.indices.indices, edges.indices.indices)
+        npt.assert_array_equal(result.edges.indices.value, edges.indices.value)
         assert result.edges.shifts.shape == edges.shifts.shape
         assert result.edges.degree == degree
 
@@ -436,8 +436,8 @@ class TestGraphConstructorRadius:
         assert isinstance(graph, HyperGraph)
         assert graph.edges.degree == 2
         # Should find bidirectional edges between the two close particles
-        valid = graph.edges.indices.indices < 2
-        valid_edges = graph.edges.indices.indices[valid.all(-1)]
+        valid = graph.edges.indices.valid_mask
+        valid_edges = graph.edges.indices[valid.all(-1)].value
         edge_set = {tuple(e.tolist()) for e in valid_edges}
         assert (0, 1) in edge_set and (1, 0) in edge_set
 
@@ -446,7 +446,7 @@ class TestGraphConstructorRadius:
         # Cutoff too small — no edges
         state = self._make_state(positions, jnp.array([0, 0]), 0.1)
         graph = self._make_constructor()(state, None)
-        valid = graph.edges.indices.indices < 2
+        valid = graph.edges.indices.valid_mask
         assert not valid.all(-1).any()
 
     def test_multiple_systems(self):
@@ -612,15 +612,15 @@ def _make_probe_update(
     updated_data = _PointData(
         new_positions,
         d.species[idx_arr],
-        Index(d.system.keys, d.system.indices[idx_arr], _cls=d.system.cls),
-        Index(d.inclusion.keys, d.inclusion.indices[idx_arr], _cls=d.inclusion.cls),
-        Index(d.exclusion.keys, d.exclusion.indices[idx_arr], _cls=d.exclusion.cls),
+        d.system[idx_arr],
+        d.inclusion[idx_arr],
+        d.exclusion[idx_arr],
     )
     return WithIndices(Index(particles.keys, idx_arr), updated_data)
 
 
 class _RecordingNeighborList:
-    def __init__(self, edge_indices: jax.Array, shifts: jax.Array):
+    def __init__(self, edge_indices: Index[ParticleId], shifts: jax.Array):
         self.edge_indices = edge_indices
         self.shifts = shifts
         self.calls = []
@@ -629,7 +629,7 @@ class _RecordingNeighborList:
         del systems
         self.calls.append((queries, queried_keys))
         return Edges(
-            indices=Index(keys.keys, self.edge_indices),
+            indices=self.edge_indices.update_labels(keys.keys),
             shifts=self.shifts,
         )
 
@@ -639,7 +639,7 @@ class _RecordingNeighborList:
         assert queries is None
         assert queried_keys is not None
         assert queried_keys.keys == expected_queried_keys.keys
-        npt.assert_array_equal(queried_keys.indices, expected_queried_keys.indices)
+        npt.assert_array_equal(queried_keys.value, expected_queried_keys.value)
 
 
 class TestGraphConstructorEmptyWithPatch:
@@ -746,7 +746,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
     def _make_edge_probe(self, particles, edges, particle_idx, new_pos):
         update = _make_probe_update(particles, particle_idx, new_pos)
         nnlist = _RecordingNeighborList(
-            edges.indices.indices,
+            edges.indices,
             edges.shifts,
         )
 

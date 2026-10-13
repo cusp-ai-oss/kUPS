@@ -7,10 +7,11 @@ import jax.numpy as jnp
 
 from kups.core.capacity import FixedCapacity, LensCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
+from kups.core.data import Index
 from kups.core.neighborlist.dense import DenseNearestNeighborList, _dense_subselect
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems
+from ._builders import EvalState, cutoff_table, make_lh, make_systems, valid_pairs
 
 
 class TestDenseSubselect:
@@ -23,12 +24,11 @@ class TestDenseSubselect:
             jnp.array([1.0, 1.0]),
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(16))
-        sys_ids = lh.data.system.indices
-        for a, b in zip(
-            candidates.key_idx.indices.tolist(), candidates.query_idx.indices.tolist()
-        ):
-            if a < 4 and b < 4:
-                assert sys_ids[a] == sys_ids[b]
+        key_sys, query_sys = Index.match(
+            lh[candidates.key_idx].system, lh[candidates.query_idx].system
+        )
+        valid = candidates.key_idx.valid_mask & candidates.query_idx.valid_mask
+        assert bool(((key_sys == query_sys) | ~valid).all())
 
     def test_self_pairs_present(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
@@ -37,12 +37,7 @@ class TestDenseSubselect:
             jnp.array([1.0]),
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(8))
-        pairs = set(
-            zip(
-                candidates.key_idx.indices.tolist(),
-                candidates.query_idx.indices.tolist(),
-            )
-        )
+        pairs = set(valid_pairs(candidates.key_idx, candidates.query_idx))
         # Single system of 2 particles -> all 4 ordered pairs including self.
         assert {(0, 0), (0, 1), (1, 0), (1, 1)} <= pairs
 

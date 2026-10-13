@@ -31,7 +31,7 @@ from kups.core.neighborlist import (
 )
 from kups.core.typing import SystemId
 
-from .._builders import EvalState, make_lh, make_systems, pad, run_nl
+from .._builders import EvalState, make_lh, make_systems, pad, run_nl, valid_ids
 
 
 def _atoms_to_cell(atoms: ase.Atoms) -> Cell:
@@ -141,7 +141,6 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     fails. Returns ``(i, j, displacement)`` for valid (non-padding) directed edges.
     """
     atoms = _ensure_lower_triangular(atoms)
-    n = len(atoms)
     state, cutoff_table = _build_state(atoms, cutoff)
 
     result = None
@@ -155,10 +154,10 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     result.raise_assertion()
 
     edges = result.value
-    raw = np.asarray(edges.indices.indices)
+    ids = valid_ids(edges.indices)
     disp = np.asarray(edges.difference_vectors(state.particles, state.systems))[:, 0, :]
-    valid = (raw[:, 0] < n) & (raw[:, 1] < n)
-    return raw[valid, 0], raw[valid, 1], disp[valid]
+    valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
+    return ids[:, 0], ids[:, 1], disp[valid]
 
 
 def _ase_edges(atoms: ase.Atoms, cutoff: float):

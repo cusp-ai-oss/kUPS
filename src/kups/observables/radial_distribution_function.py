@@ -78,7 +78,7 @@ def _to_nnlist_points(
     """Wrap Indexed particle data to satisfy the NeighborListPoints protocol."""
     data = positions.data
     n = len(positions)
-    inclusion = Index.integer(data.system.indices, label=InclusionId)
+    inclusion = data.system.to_cls(InclusionId)
     exclusion = Index.integer(jnp.arange(n, dtype=int), label=ExclusionId)
     return Table(
         positions.keys,
@@ -133,9 +133,10 @@ def radial_distribution_function(
     bin_indices = jnp.ceil(dists / dr).astype(int)
     system_index = positions.data.system
     n_sys = system_index.num_labels
-    batch_id = system_index.indices[edge_result.indices.indices[:, 0]]
-    rdf = jnp.zeros((n_sys, bins + 1), dtype=dists.dtype)
-    rdf = rdf.at[batch_id, bin_indices].add(1, mode="drop")
+    edge_system = positions[edge_result.indices[:, 0]].system
+    edge_bin = Index.integer(jnp.minimum(bin_indices, bins + 1), n=bins + 1)
+    rdf = Index.combine(edge_system, edge_bin).counts.data
+    rdf = rdf.reshape(n_sys, bins + 1).astype(dists.dtype)
 
     rr = jnp.linspace(dr / 2, rmax - dr / 2, bins)
     segment_sizes = system_index.counts.data
