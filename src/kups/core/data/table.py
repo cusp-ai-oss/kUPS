@@ -35,7 +35,6 @@ from kups.core.utils.jax import (
     no_post_init,
     skip_post_init_if_disabled,
     tree_map,
-    tree_where_broadcast_last,
 )
 
 TKey = TypeVar("TKey", covariant=True, bound=SupportsSorting)
@@ -249,8 +248,13 @@ class Table(Batched, Generic[TKey, TData]):
             accept.at(self_idx, args={"mode": "fill", "fill_value": False}).get()
             | accept.at(data_idx, args={"mode": "fill", "fill_value": False}).get()
         )
-        to_write = tree_where_broadcast_last(mask, new_data, current_data)
-        return self.update(indices, to_write)
+        # Rejected rows point out of bounds, where the scatter drops them.
+        target = Index(
+            self.keys,
+            jnp.where(mask, indices.indices_in(self.keys), len(self.keys)),
+            _cls=self.cls,
+        )
+        return self.update(target, new_data)
 
     @overload
     def __getitem__[L1: SupportsSorting, L2: SupportsSorting, L3: SupportsSorting, D](
