@@ -20,7 +20,8 @@ from jax import Array
 
 from kups.core.data.index import Index, SupportsSorting
 from kups.core.data.table import Table
-from kups.core.lens import bind
+from kups.core.lens import View, bind
+from kups.core.utils.functools import identity
 from kups.core.utils.jax import (
     dataclass,
     field,
@@ -236,14 +237,19 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         return cast(Buffered[TLabel, D], out)
 
     @override
-    def update_if[D, L: SupportsSorting](
+    def update_if[D, F, L: SupportsSorting](
         self: Buffered[TLabel, D],
         accept: Table[L, Array],
         indices: Index[TLabel],
         new_data: D,
+        *,
+        only: View[D, F] = identity,
     ) -> Buffered[TLabel, D]:
         """Conditionally update rows, returning ``Buffered``."""
-        return cast(Buffered[TLabel, D], super().update_if(accept, indices, new_data))  # type: ignore
+        rows = _sanitize(new_data, self.view)
+        with no_post_init():
+            out = Table.update_if(self, accept, indices, rows, only=only)
+        return cast(Buffered[TLabel, D], out)
 
 
 _BufferGroup = (
