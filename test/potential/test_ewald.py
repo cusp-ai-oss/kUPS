@@ -42,7 +42,9 @@ from kups.potential.classical.ewald import (
     ewald_self_interaction_energy,
     ewald_short_range_energy,
     ewald_short_range_pair_kernel,
+    kvecs_from_kmax,
     prefactor,
+    reciprocal_grid_bound,
     reciprocal_grid_index,
     reciprocal_grid_shifts,
     structure_factor,
@@ -572,6 +574,34 @@ class TestEwaldParametersMake:
         inp = EwaldLongRangeInput(PointCloud(particles, systems), params)
         assert inp.kvecs.shape == params.reciprocal_lattice_shifts.data.shape
 
+    def test_interleaved_systems_ignore_buffered_rows(self, monkeypatch):
+        import kups.potential.classical.ewald.parameters as parameters_module
+
+        estimated = []
+        original = parameters_module.estimate_ewald_parameters
+
+        def recorded(charges, cell, **kwargs):
+            estimated.append(np.asarray(charges).tolist())
+            return original(charges, cell, **kwargs)
+
+        monkeypatch.setattr(parameters_module, "estimate_ewald_parameters", recorded)
+        charges = jnp.array([1.0, 2.0, -1.0, -2.0, 5.0, 0.5, -0.5])
+        sys_ids = jnp.array([0, 1, 0, 1, 2, 0, 0])
+        particles = Table.arange(
+            _make_particle_data(
+                jnp.zeros((7, 3)), charges, n_systems=2, system_ids=sys_ids
+            ),
+            label=ParticleId,
+        )
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix(jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 8.0]))
+        )
+        params = EwaldParameters.make(
+            particles, _make_systems(cell, jnp.array([4.0, 4.0])), real_cutoff=4.0
+        )
+        assert estimated == [[1.0, -1.0, 0.5, -0.5], [2.0, -2.0]]
+        assert params.alpha.data.shape == (2,)
+
     def test_custom_cutoff(self):
         """Explicit real_cutoff is respected."""
         positions = jnp.array([[0.0, 0.0, 0.0], [2.5, 2.5, 2.5]])
@@ -1074,6 +1104,32 @@ class TestReciprocalShifts:
         assert shifts.shape[1] < (bounds[0] + 1) * (2 * bounds[1] + 1) * (
             2 * bounds[2] + 1
         )
+
+    def test_grid_shifts_cover_the_half_space_x_major(self):
+        shifts = reciprocal_grid_shifts((1, 2, 0))
+        assert isinstance(shifts, np.ndarray)
+        assert shifts.shape == (2 * 5 * 1, 3)
+        npt.assert_array_equal(shifts[[0, 4, -1]], [[0, -2, 0], [0, 2, 0], [1, 2, 0]])
+        npt.assert_array_equal(reciprocal_grid_shifts(0), [[0, 0, 0]])
+
+    @pytest.mark.parametrize("kmax", [0.0, 1.0, 2.5])
+    def test_kvecs_from_kmax_match_brute_force_sphere(self, kmax):
+        matrix = jnp.array([[6.0, 0.0, 0.0], [1.5, 7.0, 0.0], [-1.0, 2.0, 9.0]])
+        cell = PeriodicCell(TriclinicFrame.from_matrix(matrix))
+        bound = reciprocal_grid_bound(cell, kmax)
+        assert isinstance(bound, int)
+        actual = kvecs_from_kmax(cell, kmax)
+        assert isinstance(actual, np.ndarray)
+        grid = np.stack(
+            np.meshgrid(
+                np.arange(9), np.arange(-8, 9), np.arange(-8, 9), indexing="ij"
+            ),
+            axis=-1,
+        ).reshape(-1, 3)
+        squared = ((grid @ (2 * np.pi * np.linalg.inv(matrix).T)) ** 2).sum(-1)
+        expected = grid[squared <= kmax**2]
+        assert np.abs(expected).max() <= bound
+        npt.assert_array_equal(actual, expected)
 
     @pytest.mark.parametrize("grid", [False, True])
     # Different k-grids per system, one holding only k = 0.

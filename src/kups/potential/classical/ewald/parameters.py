@@ -21,7 +21,6 @@ from kups.core.data import Table
 from kups.core.neighborlist import NeighborListPoints
 from kups.core.typing import HasCell, HasCharges, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, is_traced, no_jax_tracing
-from kups.core.utils.math import triangular_3x3_matmul
 
 type ReciprocalGridBound = tuple[int, int, int]
 
@@ -94,11 +93,12 @@ class EwaldParameters:
             Ewald parameters with stored integer shifts and reciprocal cutoffs.
         """
         n_systems = len(cell.keys)
-        sys_idx = charges.data.system.indices
+        sys_idx = np.asarray(charges.data.system.indices_in(cell.keys))
+        charge_values = np.asarray(charges.data.charges)
         cell_list = [cell.data.cell[i] for i in range(n_systems)]
         estimates = [
             estimate_ewald_parameters(
-                charges.data.charges[sys_idx == i],
+                charge_values[sys_idx == i],
                 u,
                 real_cutoff=real_cutoff,
                 epsilon_total=epsilon_total,
@@ -185,7 +185,7 @@ def _cutoff_for_error(
 
 @no_jax_tracing
 def estimate_ewald_parameters(
-    charges: Array,
+    charges: Array | np.ndarray,
     cell: Cell[AnyPeriodicity],
     /,
     real_cutoff: float | None = None,
@@ -216,7 +216,7 @@ def estimate_ewald_parameters(
         )
     volume = np.asarray(cell.volume)
     squared_charge = np.vdot(charges_np, charges_np)
-    n_particles = charges.size
+    n_particles = charges_np.size
     max_radius = float(np.min(cell.perpendicular_lengths, axis=0)) / 2
     target = epsilon_total / 2
     lattice_length = volume ** (1 / 3)
@@ -283,8 +283,13 @@ def estimate_ewald_parameters(
     )
 
 
+def _reciprocal_vectors(cell: Cell[AnyPeriodicity]) -> np.ndarray:
+    """Reciprocal lattice vectors (rows, including the 2π factor) on the host."""
+    return np.asarray(cell.inverse_vectors).mT * 2 * np.pi
+
+
 @no_jax_tracing
-def reciprocal_grid_bound(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
+def reciprocal_grid_bound(cell: Cell[AnyPeriodicity], kmax: float) -> int:
     """Uniform coefficient bound enclosing the reciprocal kmax sphere.
 
     Args:
@@ -292,14 +297,14 @@ def reciprocal_grid_bound(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
         kmax: Maximum reciprocal-vector magnitude in 1/Å.
 
     Returns:
-        Integer scalar bound enclosing the reciprocal cutoff sphere.
+        Integer bound enclosing the reciprocal cutoff sphere.
     """
-    rvecs = cell.inverse_vectors.mT * 2 * jnp.pi
-    min_length = jnp.min(jnp.linalg.svd(rvecs)[1])
-    return jnp.ceil(kmax / min_length).astype(int)
+    min_length = np.linalg.svd(_reciprocal_vectors(cell), compute_uv=False).min()
+    return int(np.ceil(kmax / min_length))
 
 
-def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
+@no_jax_tracing
+def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> np.ndarray:
     """Integer half-space lattice coefficients within the reciprocal kmax sphere.
 
     Args:
@@ -309,10 +314,9 @@ def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> Array:
     Returns:
         Integer half-space lattice coefficients shaped ``(n_kvecs, 3)``.
     """
-    rvecs = cell.inverse_vectors.mT * 2 * jnp.pi
-    vecs = reciprocal_grid_shifts(int(reciprocal_grid_bound(cell, kmax)))
-    kvecs = triangular_3x3_matmul(rvecs, vecs, lower=False)
-    return vecs[jnp.sum(kvecs**2, axis=-1) <= kmax**2]
+    vecs = reciprocal_grid_shifts(reciprocal_grid_bound(cell, kmax))
+    kvecs = vecs @ _reciprocal_vectors(cell)
+    return vecs[np.sum(kvecs**2, axis=-1) <= kmax**2]
 
 
 def reciprocal_grid_index(
@@ -336,7 +340,7 @@ def reciprocal_grid_index(
     )
 
 
-def reciprocal_grid_shifts(bound: int | ReciprocalGridBound) -> Array:
+def reciprocal_grid_shifts(bound: int | ReciprocalGridBound) -> np.ndarray:
     """Integer half-space grid: nonnegative x, signed y/z, x-major.
 
     Args:
@@ -348,11 +352,11 @@ def reciprocal_grid_shifts(bound: int | ReciprocalGridBound) -> Array:
     """
     bx, by, bz = (bound, bound, bound) if isinstance(bound, int) else bound
     axes = (
-        jnp.arange(0, bx + 1),
-        jnp.arange(-by, by + 1),
-        jnp.arange(-bz, bz + 1),
+        np.arange(0, bx + 1),
+        np.arange(-by, by + 1),
+        np.arange(-bz, bz + 1),
     )
-    return jnp.stack(jnp.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    return np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
 
 
 @no_jax_tracing
@@ -371,7 +375,9 @@ def prepare_reciprocal_shifts(
     if not shifts:
         return jnp.zeros((0, 0, 3), dtype=int), (0, 0, 0)
     capacity = max(map(len, shifts))
-    padded = jnp.stack([jnp.pad(s, ((0, capacity - len(s)), (0, 0))) for s in shifts])
+    padded = jnp.asarray(
+        np.stack([np.pad(s, ((0, capacity - len(s)), (0, 0))) for s in shifts])
+    )
     if not grid:
         return padded, (0, 0, 0)
     bx, by, bz = np.max([np.max(np.abs(s), axis=0) for s in shifts], axis=0)
