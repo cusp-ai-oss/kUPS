@@ -23,6 +23,7 @@ from kups.potential.classical.lennard_jones import (
     global_lennard_jones_tail_correction_energy,
     global_lennard_jones_tail_correction_pressure,
     lennard_jones_energy,
+    lennard_jones_pair_kernel,
     make_global_lennard_jones_tail_correction_pressure,
     pair_tail_corrected_lennard_jones_energy,
 )
@@ -312,6 +313,58 @@ class TestLennardJonesEnergy:
         assert jnp.all(jnp.isfinite(grad_epsilon))
         assert jnp.any(jnp.abs(grad_sigma) > 1e-10)
         assert jnp.any(jnp.abs(grad_epsilon) > 1e-10)
+
+    @pytest.mark.parametrize(
+        "n_species, n_queries, n_keys, reverse_labels",
+        [
+            (3, 2, 9, False),  # few queries: per-species row selection
+            (1, 2, 5, False),  # single species
+            (3, 2, 9, True),  # parameter labels ordered differently from atoms
+            (3, 4, 9, False),  # many queries: pair gather
+            (17, 1, 40, False),  # beyond MAX_SELECTED_SPECIES: pair gather
+        ],
+    )
+    def test_pair_kernel_matches_pair_gather(
+        self, n_species, n_queries, n_keys, reverse_labels
+    ):
+        """Every kernel path selects the mixing entry of each pair."""
+        labels = tuple(f"S{t:02d}" for t in range(n_species))
+        # Asymmetric tables expose swapped row and column selection.
+        n_entries = n_species * n_species
+        params = LennardJonesParameters(
+            labels=labels[::-1] if reverse_labels else labels,
+            sigma=jnp.linspace(2.8, 3.6, n_entries).reshape(n_species, n_species),
+            epsilon=jnp.linspace(20.0, 80.0, n_entries).reshape(n_species, n_species),
+            cutoff=_cutoff(12.0),
+        )
+        # Species index into the parameter labels.
+        species_i = (3 * jnp.arange(n_queries)[:, None] + 2) % n_species
+        species_j = (5 * jnp.arange(n_keys)[None, :] + 1) % n_species
+        r2 = jnp.linspace(9.0, 20.0, n_queries * n_keys).reshape(n_queries, n_keys)
+
+        def atom_labels(species):
+            return Index(labels, n_species - 1 - species if reverse_labels else species)
+
+        def energy(params):
+            return lennard_jones_pair_kernel(
+                params,
+                atom_labels(species_i),
+                atom_labels(species_j),
+                jnp.zeros((*r2.shape, 3)),
+                r2,
+                Index((SystemId(0),), jnp.zeros(n_queries, int)),
+            )
+
+        def expected(params):
+            sigma = params.sigma[species_i, species_j]
+            c6 = (sigma**2 / r2) ** 3
+            return 4 * params.epsilon[species_i, species_j] * (c6**2 - c6)
+
+        npt.assert_allclose(energy(params), expected(params), rtol=1e-12)
+        grads = jax.grad(lambda p: energy(p).sum())(params)
+        expected_grads = jax.grad(lambda p: expected(p).sum())(params)
+        npt.assert_allclose(grads.sigma, expected_grads.sigma, rtol=1e-12)
+        npt.assert_allclose(grads.epsilon, expected_grads.epsilon, rtol=1e-12)
 
 
 class TestPairTailCorrectedLennardJonesEnergy:
