@@ -126,6 +126,9 @@ conflicts = [[{ extra = "uma" }, { extra = "mace" }]]
 JAX_ENABLE_X64 = "True"
 JAX_PLATFORMS = { value = "cpu", "skip_if_set" = true }
 JAX_DISABLE_MOST_OPTIMIZATIONS = { value = "True", "skip_if_set" = true }
+JAX_COMPILATION_CACHE_DIR = { value = "/tmp/jax_cache", "skip_if_set" = true }
+JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS = { value = "0", "skip_if_set" = true }
+COVERAGE_CORE = { value = "sysmon", "skip_if_set" = true }
 
 [tool.pytest.ini_options]
 addopts = "-n auto --durations=10 --dist loadfile -v --color=yes --cov=kups"
