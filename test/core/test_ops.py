@@ -9,6 +9,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.utils.ops import (
+    compact_indices,
     expand_last_dims,
     first_true_indices,
     pad_axis,
@@ -122,3 +123,13 @@ def test_first_true_indices_edge_cases(
     mask = jnp.zeros(n, dtype=bool).at[jnp.array(positions, dtype=int)].set(True)
     expected = jnp.where(mask, size=size, fill_value=fill_value)[0]
     npt.assert_array_equal(first_true_indices(mask, size, fill_value), expected)
+
+
+@pytest.mark.parametrize("n", [0, 1, 31, 32, 33, 64, 100])
+@pytest.mark.parametrize("size", [0, 5, 40])
+def test_compact_indices_matches_nonzero(n: int, size: int) -> None:
+    fn = jax.jit(compact_indices, static_argnums=1)
+    for p in (0.0, 0.4, 1.0):
+        mask = jax.random.bernoulli(jax.random.key(n), p, (n,))
+        expected = jnp.nonzero(mask, size=size, fill_value=n)[0]
+        npt.assert_array_equal(fn(mask, size), expected)
