@@ -137,9 +137,12 @@ def random_select_groups(
         Index of particle IDs belonging to the selected groups.
     """
     particle_data = particles.data
-    groups_to_move = groups.data.system.select_per_label(
-        jax.random.bits(key, (particle_data.system.num_labels,), dtype=jnp.uint32)
-    )
+    system = groups.data.system
+    # The group holding its system's largest random key is a uniform choice.
+    bits = jax.random.bits(key, (len(groups),), dtype=jnp.uint32)
+    best = bits == system.max_over(bits)[system]
+    position = system.max_over(jnp.where(best, jnp.arange(len(groups)), -1)).data
+    groups_to_move = jnp.where(position >= 0, position, len(groups))
     groups_index = Index(particle_data.group.keys, groups_to_move)
     return Index(
         particles.keys,

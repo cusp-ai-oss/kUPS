@@ -204,6 +204,41 @@ class TestRandomSelectGroups:
             jnp.full((self.n_sys,), fill_value=self.max_group_size),
         )
 
+    def test_uniform_choice(self):
+        n_draws = 1200
+        counts = sum(
+            self.particle_data[
+                self.jit_select(
+                    key,
+                    self.group_system_ids,
+                    self.particle_data,
+                    capacity=self.capacity,
+                ).value
+            ].group.counts.data
+            for key in jax.random.split(jax.random.key(2), n_draws)
+        )
+        # Each group is drawn n_draws / n_groups_per_sys times; 5 sigma tolerance.
+        npt.assert_allclose(
+            counts / self.max_group_size, n_draws / self.n_groups_per_sys, atol=75
+        )
+
+    def test_system_without_groups(self):
+        system = self.group_system_ids.data.system
+        empty_last = Index(system.keys, jnp.minimum(system.raw_indices, self.n_sys - 2))
+        group_system_ids = (
+            bind(self.group_system_ids).focus(lambda x: x.data.system).set(empty_last)
+        )
+        index_result = self.jit_select(
+            jax.random.key(3),
+            group_system_ids,
+            self.particle_data,
+            capacity=self.capacity,
+        )
+        index_result.raise_assertion()
+        selected = self.particle_data[index_result.value].group.counts.data
+        picked = jnp.flatnonzero(selected)
+        npt.assert_array_equal(empty_last.raw_indices[picked], [0, 1])
+
     def test_insufficient_capacity(self):
         key = jax.random.key(0)
         chain = key_chain(key)
