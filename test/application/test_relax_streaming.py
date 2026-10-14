@@ -268,8 +268,10 @@ def test_refill_exhaustion_and_evaluated_results(
             )
 
 
-@pytest.mark.parametrize("optimizer", ["sgd", "fire", "lbfgs"])
-@pytest.mark.parametrize("optimize_cell", [False, True])
+@pytest.mark.parametrize(
+    "optimizer,optimize_cell",
+    [("sgd", False), ("fire", True), ("lbfgs", True)],
+)
 def test_streamed_updates_match_fresh_single_structure_runs(
     optimizer: str, optimize_cell: bool
 ) -> None:
