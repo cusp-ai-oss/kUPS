@@ -5,18 +5,21 @@
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
 from jax import Array
 
-from kups.application.relaxation.data import RelaxParticles, RelaxSystems
+from kups.application.relaxation.data import (
+    HasRelaxData,
+    RelaxParticles,
+    RelaxSystems,
+    relax_gradients,
+    relax_index_prefix,
+)
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
-from kups.core.typing import IsState, ParticleId, SystemId
+from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import stress_via_virial_theorem
-
-type HasRelaxData = IsState[RelaxParticles, RelaxSystems]
+from kups.relaxation.convergence import fmax_per_system
 
 
 @dataclass
@@ -44,7 +47,8 @@ class RelaxStepData:
     Attributes:
         atoms: Particle data at this step.
         potential_energy: Potential energy per system.
-        max_force: Maximum atomic force magnitude per system (eV/Å).
+        max_force: Maximum atomic force magnitude per system (eV/Å); non-finite
+            forces are reported as ``inf``.
         stress_tensor: Stress tensor per system, shape (..., 3, 3).
     """
 
@@ -56,17 +60,15 @@ class RelaxStepData:
     @staticmethod
     def from_state(state: HasRelaxData) -> RelaxStepData:
         """Extract per-step logging data from a relaxation state."""
-        forces = state.particles.data.forces
-        force_norms = jnp.linalg.norm(forces, axis=-1)
-        max_force = jax.ops.segment_max(
-            force_norms,
-            state.particles.data.system.indices,
-            state.particles.data.system.num_labels,
+        max_force = fmax_per_system(
+            relax_gradients(state),
+            relax_index_prefix(state.particles, state.systems),
+            include_cell=False,
         )
         return RelaxStepData(
             atoms=state.particles,
             potential_energy=state.systems.data.potential_energy,
-            max_force=max_force,
+            max_force=max_force.data,
             stress_tensor=stress_via_virial_theorem(
                 state.particles, state.systems
             ).data,
