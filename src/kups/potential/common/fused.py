@@ -3,7 +3,8 @@
 
 """Pair evaluation sharing neighbor selection across energy terms.
 
-Full evaluations use adaptive graphs; local updates reuse cached cell lists.
+Full evaluations sum a freshly built cell table in chunks; local updates reuse
+cached cell lists.
 """
 
 from __future__ import annotations
@@ -67,9 +68,7 @@ from kups.potential.common.graph import (
     POINTCLOUD_GEOMETRY,
     GraphInputConstructor,
     GraphPairEnergy,
-    HyperGraph,
     PointCloud,
-    graph_pair_energies,
 )
 from kups.potential.common.pair import PairBatch, PairEnergy, PairEnergySum, PairTerm
 
@@ -156,9 +155,7 @@ class FusedPotentialInput[Params, Part: NeighborListPoints, Feat]:
 class FusedFullInput[Params, Part: NeighborListPoints, Feat](
     FusedPotentialInput[Params, Part, Feat]
 ):
-    """Neighbors with the term's shared group masks applied before autodiff."""
-
-    batch: CandidateBatch[Literal[2]]
+    """All pairs of the cloud, evaluated through a freshly built cell table."""
 
 
 @dataclass
@@ -198,12 +195,12 @@ FUSED_GEOMETRY = lens(lambda inp: inp.cloud, cls=FusedPotentialInput).nest(
 
 @dataclass
 class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
-    """Evaluate shared pair terms over a full graph or local spatial chunks.
+    """Evaluate shared pair terms over a full cell table or local spatial chunks.
 
     ``pair`` defines the interaction and ``layout`` configures cell storage
     and traversal. A persistent ``cell_table_lens``
-    enables acceptance-conditional updates for local proposals. Full calls use
-    preselected graph edges; only the compacted interactions are differentiated.
+    enables acceptance-conditional updates for local proposals. Full calls
+    build a cell table and sum its rows in chunks.
 
     ``max_queries_per_system`` bounds active rows in each old/new local query
     (asserted). It keeps query-pair storage proportional to the batch size.
@@ -238,7 +235,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
 
     def _energies(
         self,
-        inp: FusedLocalInput[Params, Part, Feat],
+        inp: FusedPotentialInput[Params, Part, Feat],
         rows: CellRows[Feat],
         keys: CellRows[Feat] | None,
         index: Array,
@@ -492,18 +489,26 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
 
     def _sum_keys(
         self,
-        inp: FusedLocalInput[Params, Part, Feat],
+        inp: FusedPotentialInput[Params, Part, Feat],
+        table: CellListCache[Feat],
         rows: CellRows[Feat],
+        slots: Array,
         excluded: Array,
     ) -> Array:
-        table = inp.cell_table
         # Excluded slots drop out of the pairs as inactive keys.
         keys = bind(table.rows, lambda r: r.inclusion).apply(
             lambda inclusion: inclusion.apply_mask(~excluded)
         )
 
+        def own_slot_excluded(b: CandidateBatch[Literal[2]]) -> Array:
+            # cell_candidates indexes key slots, then query rows, in one vocabulary.
+            n_keys = len(b.key_idx.keys) - len(slots)
+            own = Index(b.key_idx.keys, jnp.concatenate([jnp.arange(n_keys), slots]))
+            own = Table(b.query_idx.keys, own)[b.query_idx]
+            return jnp.not_equal(*Index.match(b.key_idx, own)) | ~b.is_minimum_image
+
         def consume(index: Array) -> Array:
-            return self._energies(inp, rows, keys, index)
+            return self._energies(inp, rows, keys, index, own_slot_excluded)
 
         chunk_size = self.layout.key_chunk_size
         if self.layout.key_layout == "slots":
@@ -531,15 +536,17 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
 
     def _sum_environment(
         self,
-        inp: FusedLocalInput[Params, Part, Feat],
+        inp: FusedPotentialInput[Params, Part, Feat],
+        table: CellListCache[Feat],
         rows: CellRows[Feat],
+        slots: Array,
         excluded: Array,
         weights: Array,
         query_chunk_size: int,
     ) -> Array:
-        def consume(chunk: tuple[CellRows[Feat], Array]) -> Array:
-            rows, weights = chunk
-            energies = self._sum_keys(inp, rows, excluded)
+        def consume(chunk: tuple[CellRows[Feat], Array, Array]) -> Array:
+            rows, slots, weights = chunk
+            energies = self._sum_keys(inp, table, rows, slots, excluded)
             systems = inp.cloud.systems
             return rows.system.sum_over(energies * weights)[systems.index]
 
@@ -551,37 +558,28 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         )
         padding = -n % chunk_size
         if padding:
-            rows = rows.pad(padding, sentinel_cell=inp.cell_table.sentinel_cell)
+            rows = rows.pad(padding, sentinel_cell=table.sentinel_cell)
+            slots = jnp.pad(slots, (0, padding), constant_values=table.sentinel_slot)
             weights = jnp.pad(weights, (0, padding))
         return sum_chunks(
             consume,
-            (rows, weights),
+            (rows, slots, weights),
             chunk_size,
             active=lambda chunk: jnp.any(chunk[0].inclusion.valid_mask),
         )
 
     def _full(self, inp: FusedFullInput[Params, Part, Feat]) -> Array:
-        graph = HyperGraph(inp.cloud.particles, inp.cloud.systems, inp.batch.edges)
-        particles = graph.particles[graph.edges.indices]
-        inclusion = exclusion = jnp.ones(len(graph.edges), dtype=bool)
-        if not self.pair.inclusion:
-            inclusion = jnp.equal(
-                *Index.match(particles.inclusion[:, 0], particles.inclusion[:, 1])
-            )
-        if not self.pair.exclusion:
-            exclusion = (
-                jnp.not_equal(
-                    *Index.match(particles.exclusion[:, 0], particles.exclusion[:, 1])
-                )
-                | ~inp.batch.is_minimum_image
-            )
-        energies = graph_pair_energies(
-            self.pair, inp.parameters, graph, inclusion, exclusion
+        table = self.build_cell_list_cache(inp.parameters, inp.cloud)
+        n = table.sentinel_slot
+        return self._sum_environment(
+            inp,
+            table,
+            jax.tree.map(lambda x: x[:n], table.rows),
+            jnp.arange(n),
+            jnp.zeros(n + 1, bool),
+            jnp.full(n, 0.5),
+            n,
         )
-        system = graph.edge_batch_mask.update_labels(graph.systems.keys).to_cls(
-            graph.systems.cls
-        )
-        return system.sum_over(energies).data / 2
 
     def _local(
         self,
@@ -617,7 +615,9 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             return values, parts[-1], slots
         environment = self._sum_environment(
             inp,
+            table,
             rows,
+            jnp.full(n, table.sentinel_slot),
             removed,
             weights,
             # Separate halves let CPU skip empty work; GPU favors larger chunks.
@@ -685,7 +685,8 @@ class FusedInputConstructor[
 ](InputConstructor[State, FusedPotentialInput[Params, P, Feat], Ptch]):
     """Construct inputs for the same full/local sum plans used by graph potentials.
 
-    Full inputs contain compacted geometric neighbors selected before autodiff.
+    Full inputs carry the parameters and point cloud; evaluation builds its own
+    cell table.
     With a probe, restrict to its incident pairs against an initialized cell
     table and let ``LocalSumComposer`` handle old/new weights and the cached
     total. ``old_input`` selects the current state in either case.
@@ -713,19 +714,7 @@ class FusedInputConstructor[
         particles = self.particles(state)
         cloud = PointCloud(particles, self.systems(state))
         if patch is None:
-            neighbors = AdaptiveNeighborList.from_state(
-                state, self.pair.cutoffs(params)
-            )
-            return FusedFullInput(
-                params,
-                cloud,
-                neighbors.pair_candidates(
-                    particles,
-                    cloud.systems,
-                    inclusion=self.pair.inclusion,
-                    exclusion=self.pair.exclusion,
-                ),
-            )
+            return FusedFullInput(params, cloud)
         assert self.probe is not None
         update = self.probe(state, patch)
         old = particles.subset(update.indices)
