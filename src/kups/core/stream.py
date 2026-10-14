@@ -18,9 +18,9 @@ Slots are ordinary ``Table``/``Index`` relations: gather a slotted view with
   out of bounds. Per-slot state built on it, such as an optimizer's per-system
   reductions and resets, also covers rows a future system will occupy.
 - **[slot_rows_lens][kups.core.stream.slot_rows_lens]**: Reads each slot's
-  rows as a payload that does not name its slot, with the system index of
-  [slot_system_index][kups.core.stream.slot_system_index], and writes a
-  payload back into the slots.
+  rows with a slot-local system index
+  ([slot_system_index][kups.core.stream.slot_system_index]) and writes them
+  back to the slots.
 - **[RefillGate][kups.core.stream.RefillGate]**: Lets compiled code
   ask the host for new systems through a failing
   [runtime_assert][kups.core.assertion.runtime_assert]; its fix runs the
@@ -125,10 +125,10 @@ def slot_rows_lens[P: HasSystemIndex](
     bounds, and writes all of them with ``particles.update(slots.data, ...)``.
     Rows outside every reservation are left as they are.
 
-    The particles' system index must be keyed by ``slots.keys``, and ``set``
-    raises its ``max_count`` to at least the capacity. An index built from
-    ``slot_owners(slots).data`` has both, so ``set`` keeps the table's pytree
-    structure, as a loop carry needs.
+    The particles' system index must be keyed by ``slots.keys``. ``set``
+    increases its ``max_count`` to at least the capacity; an index built from
+    ``slot_owners(slots).data`` already has that bound, so ``set`` keeps the
+    table's pytree structure, as a loop carry needs.
 
     Raises:
         ValueError: When the lens is built, if the reservations are invalid

@@ -58,8 +58,7 @@ Relaxation converges when the maximum force on any atom drops below a configurab
 
 Streaming relaxation keeps a fixed number of *slots* on the device, one
 structure per slot, and refills a slot from the host once its structure has
-converged or used its step budget. It is assembled from the same propagators
-and runtime assertions as the other simulations.
+converged or used its step budget.
 [`kups.core.stream`][kups.core.stream] holds the parts that do not depend on
 relaxation: [`reserve_slots`][kups.core.stream.reserve_slots] reserves a fixed
 number of particle rows per slot,
@@ -127,18 +126,18 @@ while state.finished.data.any() or (state.ordinal >= 0).any():
 
 The block size (8 here) trades refill latency against dispatch overhead, since
 finished slots wait for the block to end; measure it and the slot count on the
-intended workload. Per-job results come out of the refill callback, keyed by
-their `ordinal`, rather than out of cycle logging. JIT a closure around
-`replace_slots` rather than the host callback, using `kups.core.utils.jax.jit`,
-which validates tables and indices when tracing instead of on every call.
+intended workload. Collect per-job results in the refill callback, keyed by
+their `ordinal`. JIT a closure around `replace_slots` with
+`kups.core.utils.jax.jit`, which validates tables and indices when tracing
+instead of on every call.
 
 The cycle donates its state, so copy results out (for example with
 `jax.device_get`) instead of keeping references to state arrays. A non-finite
-gradient in an occupied slot fails a runtime assertion that has no fix, rather
-than counting as converged: `propagate_and_fix` raises, the stream stops, and
-the slots still in flight are lost with the donated state. Screen structures
-before packing them (coincident atoms, for example, give non-finite gradients),
-and bound the step, for example with `MaxStepSize`, for strongly distorted ones.
+gradient in an occupied slot fails a runtime assertion that has no fix:
+`propagate_and_fix` raises, and the jobs still in flight are lost with the
+donated state. Screen structures before packing them (coincident atoms give
+non-finite gradients), and bound the step of strongly distorted ones, for
+example with `MaxStepSize`.
 
 The [streaming integration test](https://github.com/cusp-ai-oss/kUPS/blob/main/test/application/test_relax_streaming.py)
 shows a complete source, collector and refill callback.
