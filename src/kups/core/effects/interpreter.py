@@ -15,8 +15,8 @@ from jax.extend import source_info_util
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive
 from jax.interpreters import partial_eval as pe
 
-from kups.core.effects._compat import get_bind_params
 from kups.core.effects.environment import InterpreterEnvironment
+from kups.core.utils._jax_compat import get_bind_params
 
 type PyTreeDef = Any
 type TracerValue = Any

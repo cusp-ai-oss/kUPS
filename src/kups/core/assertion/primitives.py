@@ -22,7 +22,7 @@ from kups.core.assertion.runtime_assertion import (
     Fix,
     LoopMerge,
 )
-from kups.core.effects._compat import (
+from kups.core.utils._jax_compat import (
     manual_axes_kwarg,
     register_dce_rule,
 )

@@ -35,10 +35,10 @@ from kups.core.effects import (
     default_while_handler,
     reinterpret,
 )
-from kups.core.effects._compat import (
+from kups.core.lens import bind
+from kups.core.utils._jax_compat import (
     get_bind_params,
 )
-from kups.core.lens import bind
 from kups.core.utils.jax import dataclass
 
 

@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from kups.core.effects._compat import get_bind_params
 from kups.core.effects.util import split_sequence
+from kups.core.utils._jax_compat import get_bind_params
 
 
 class TestUtilities:

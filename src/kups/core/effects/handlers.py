@@ -12,13 +12,6 @@ from jax.core import AbstractValue
 from jax.extend.core import ClosedJaxpr, JaxprEqn, jaxpr_as_fun
 from jax.sharding import PartitionSpec
 
-from kups.core.effects._compat import (
-    get_bind_params,
-    manual_axes_kwarg,
-    shard_map_manual_axes,
-    split_scan_operands,
-    split_scan_results,
-)
 from kups.core.effects.interpreter import (
     HandlerResult,
     Interpreter,
@@ -26,6 +19,13 @@ from kups.core.effects.interpreter import (
     reinterpret,
 )
 from kups.core.effects.util import split_sequence
+from kups.core.utils._jax_compat import (
+    get_bind_params,
+    manual_axes_kwarg,
+    shard_map_manual_axes,
+    split_scan_operands,
+    split_scan_results,
+)
 
 
 def default_primitive_handler[Context](
