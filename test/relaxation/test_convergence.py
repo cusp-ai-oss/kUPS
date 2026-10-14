@@ -13,7 +13,7 @@ from kups.core.data import Index, Table
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
-from kups.relaxation.convergence import converged_per_system, max_dof_per_system
+from kups.relaxation.convergence import converged_per_system, fmax_per_system
 
 
 def _cubic(diagonal: jnp.ndarray) -> PeriodicCell:
@@ -32,19 +32,19 @@ def _gradients(
     return PositionsAndCell(positions, cells), prefix
 
 
-class TestMaxDofPerSystem:
+class TestFmaxPerSystem:
     def test_per_system_maximum_of_row_norms(self):
         rows = jnp.array([[3.0, 4.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.5]])
         grads, prefix = _gradients(2, rows, [0, 0, 1], jnp.zeros(2))
         npt.assert_allclose(
-            max_dof_per_system(grads, prefix, include_cell=False).data, [5.0, 0.5]
+            fmax_per_system(grads, prefix, include_cell=False).data, [5.0, 0.5]
         )
 
     def test_cell_gradients_take_part(self):
         rows = jnp.array([[0.1, 0.0, 0.0], [0.0, 0.0, 0.2]])
         grads, prefix = _gradients(2, rows, [0, 1], jnp.array([-7.0, 0.05]))
-        with_cell = max_dof_per_system(grads, prefix).data
-        without = max_dof_per_system(grads, prefix, include_cell=False).data
+        with_cell = fmax_per_system(grads, prefix).data
+        without = fmax_per_system(grads, prefix, include_cell=False).data
         npt.assert_allclose(with_cell, [7.0, 0.2])
         npt.assert_allclose(without, [0.1, 0.2])
 
@@ -52,7 +52,7 @@ class TestMaxDofPerSystem:
         # Row 2 is padding (OOB system); system 1 has no particles.
         rows = jnp.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [9.0, 0.0, 0.0]])
         grads, prefix = _gradients(2, rows, [0, 0, 2], jnp.zeros(2))
-        result = max_dof_per_system(grads, prefix, include_cell=False).data
+        result = fmax_per_system(grads, prefix, include_cell=False).data
         npt.assert_allclose(result[0], 2.0)
         assert result[1] == -jnp.inf
 

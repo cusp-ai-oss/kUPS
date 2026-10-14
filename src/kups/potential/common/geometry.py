@@ -37,14 +37,14 @@ class Geometry(NamedTuple):
     systems: Table[SystemId, Cell[AnyPeriodicity]]
 
 
-class PositionCellTree[P, C](NamedTuple):
+class PositionsAndCellTree[P, C](NamedTuple):
     """Shared pytree structure for coordinate, gradient, and index views."""
 
     positions: P
     cell: C
 
 
-PositionsAndCell = PositionCellTree[
+PositionsAndCell = PositionsAndCellTree[
     Table[ParticleId, Array], Table[SystemId, Cell[AnyPeriodicity]]
 ]
 """Optimizer DOFs / gradient payload of the standard cell filters.
@@ -52,11 +52,11 @@ PositionsAndCell = PositionCellTree[
 ``positions`` is a per-particle table of DOF coordinates (``∂E/∂r`` when this
 carries a gradient); ``cell`` is a per-system table of the cell (its frame
 parameters carrying ``∂E/∂h`` for a gradient). Values, gradients and their
-``PositionsAndCellIndex`` share one ``PositionCellTree`` class, so their tree
+``PositionsAndCellIndex`` share one ``PositionsAndCellTree`` class, so their tree
 structures match.
 """
 
-PositionsAndCellIndex = PositionCellTree[Index[SystemId], Index[SystemId]]
+PositionsAndCellIndex = PositionsAndCellTree[Index[SystemId], Index[SystemId]]
 """System assignment for the two branches of a positions-and-cell pytree."""
 
 

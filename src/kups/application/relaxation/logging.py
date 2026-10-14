@@ -8,7 +8,7 @@ from __future__ import annotations
 from jax import Array
 
 from kups.application.relaxation.data import (
-    IsRelaxData,
+    HasRelaxData,
     RelaxParticles,
     RelaxSystems,
     relax_gradients,
@@ -19,7 +19,7 @@ from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import stress_via_virial_theorem
-from kups.relaxation.convergence import max_dof_per_system
+from kups.relaxation.convergence import fmax_per_system
 
 
 @dataclass
@@ -35,7 +35,7 @@ class RelaxInitData:
     systems: Table[SystemId, RelaxSystems]
 
     @staticmethod
-    def from_state(state: IsRelaxData) -> RelaxInitData:
+    def from_state(state: HasRelaxData) -> RelaxInitData:
         """Extract initial snapshot from a relaxation state."""
         return RelaxInitData(atoms=state.particles, systems=state.systems)
 
@@ -58,9 +58,9 @@ class RelaxStepData:
     stress_tensor: Array
 
     @staticmethod
-    def from_state(state: IsRelaxData) -> RelaxStepData:
+    def from_state(state: HasRelaxData) -> RelaxStepData:
         """Extract per-step logging data from a relaxation state."""
-        max_force = max_dof_per_system(
+        max_force = fmax_per_system(
             relax_gradients(state),
             relax_index_prefix(state.particles, state.systems),
             include_cell=False,
@@ -79,9 +79,9 @@ class RelaxStepData:
 class RelaxLoggedData:
     """HDF5 writer configuration for relaxation simulations."""
 
-    init: WriterGroupConfig[IsRelaxData, RelaxInitData] = WriterGroupConfig(
+    init: WriterGroupConfig[HasRelaxData, RelaxInitData] = WriterGroupConfig(
         RelaxInitData.from_state, Once()
     )
-    step: WriterGroupConfig[IsRelaxData, RelaxStepData] = WriterGroupConfig(
+    step: WriterGroupConfig[HasRelaxData, RelaxStepData] = WriterGroupConfig(
         RelaxStepData.from_state, EveryNStep(1)
     )
