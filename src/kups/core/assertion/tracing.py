@@ -15,6 +15,7 @@ import jax.numpy as jnp
 from jax import Array
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, jaxpr_as_fun
 
+from kups.core.assertion.primitives import assertion_p, check_assertion_p
 from kups.core.assertion.runtime_assertion import (
     NO_ARGS,
     RuntimeAssertion,
@@ -294,6 +295,7 @@ def _contains_assertion_primitive[Context](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> bool:
+    """Whether ``eqn`` has a sub-jaxpr that records or checks assertions."""
     for leaf in jax.tree.leaves(
         eqn.params, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
     ):
@@ -305,7 +307,7 @@ def _contains_assertion_primitive[Context](
             continue
         assert isinstance(jaxpr, Jaxpr)
         for eqn in jaxpr.eqns:
-            if eqn.primitive.name == "assertion":
+            if eqn.primitive in (assertion_p, check_assertion_p):
                 return True
             # Recursively check for nested jaxprs
             if contains_subjaxprs(ctx, eqn, invals):

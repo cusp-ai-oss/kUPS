@@ -885,6 +885,28 @@ class TestAssertionValidation:
         with pytest.raises(AssertionError, match="x must be positive"):
             assertions[0].check()
 
+    @staticmethod
+    def _check_in_custom_jvp(x: Array) -> Array:
+        @jax.custom_jvp
+        def checked(x: Array) -> Array:
+            return check_assertions()
+
+        checked.defjvp(lambda primals, _: (checked(*primals), jnp.zeros((), bool)))
+        runtime_assert(x > 0, "x must be positive")
+        return checked(x)
+
+    def test_check_in_unhandled_primitive_raises(self):
+        """A check the interpreter cannot reach must not silently pass."""
+        with pytest.raises(NotImplementedError, match="custom_jvp_call"):
+            with_runtime_assertions(self._check_in_custom_jvp)(jnp.array(-1.0))
+
+    def test_check_in_unhandled_primitive_warns(self):
+        fn = with_runtime_assertions(
+            self._check_in_custom_jvp, policy=InterpreterPolicy.WARN
+        )
+        with pytest.warns(UserWarning, match="custom_jvp_call"):
+            fn(jnp.array(-1.0))
+
     def test_empty_assertions(self):
         """Test functions that don't contain any assertions."""
 
