@@ -181,7 +181,7 @@ def test_refill_is_serviced_once_per_host_cycle() -> None:
     npt.assert_array_equal(state.values, [20])
 
 
-def test_blocked_refill_preserves_progress_across_capacity_repair() -> None:
+def test_bounded_block_preserves_progress_across_capacity_repair() -> None:
     calls: list[int] = []
 
     def refill(s: State, mask: Table[SystemId, Array]) -> State:
@@ -346,7 +346,7 @@ def test_refill_after_block_rollback_fails_fast() -> None:
 
     def refill(s: State, mask: Table[SystemId, Array]) -> State:
         calls.append(1)
-        return bind(s).focus(lambda x: x.requested).set(mask.set_data(~mask.data))
+        return s
 
     def advance(key: Array, s: State) -> State:
         del key
