@@ -704,7 +704,7 @@ class TestBlockBounds:
             assert np.all(np.diff(level) >= 0) and np.all(steps % 3 == 0)
             assert level[-1] + 1 == min(2**depth, n_blocks)
         # Every leaf of the last split is a single block.
-        if levels:
+        if len(levels):
             sizes = np.bincount(levels[-1]) // 3
             assert np.all(sizes <= 2)
 
