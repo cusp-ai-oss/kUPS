@@ -12,9 +12,13 @@ import pytest
 from jax import Array
 
 from kups.core.assertion import (
+    ELEMENTWISE_MAX,
+    FIRST_FAILURE,
+    LAST_FAILURE,
     NO_ARGS,
     AssertionContext,
     InterpreterPolicy,
+    LoopMerge,
     RuntimeAssertion,
     check_assertions,
     runtime_assert,
@@ -1231,3 +1235,94 @@ class TestAssertionIntegrationWithJAXEcosystem:
 
         gradients = grad_fn(params, x)
         assert gradients.shape == params.shape
+
+
+# Failing values (x >= 3) are 5, 8 and 4: first 5, last 4, largest 8.
+_LOOP_XS = jnp.array([5, 8, 1, 4, 2], dtype=jnp.int32)
+
+
+def _assert_small(x: Array, **kwargs) -> None:
+    runtime_assert(
+        predicate=x < 3,
+        message="x={x} too large",
+        fmt_args={"x": x},
+        fix_args=10 * x,
+        **kwargs,
+    )
+
+
+def _scan_over(xs: Array, **kwargs) -> tuple[RuntimeAssertion, ...]:
+    def body(carry: Array, x: Array) -> tuple[Array, None]:
+        _assert_small(x, **kwargs)
+        return carry, None
+
+    _, assertions = with_runtime_assertions(lambda: jax.lax.scan(body, 0, xs))()
+    return assertions
+
+
+def _while_over(xs: Array, **kwargs) -> tuple[RuntimeAssertion, ...]:
+    def body(i: Array) -> Array:
+        _assert_small(xs[i], **kwargs)
+        return i + 1
+
+    _, assertions = with_runtime_assertions(
+        lambda: jax.lax.while_loop(lambda i: i < xs.shape[0], body, 0)
+    )()
+    return assertions
+
+
+class TestLoopMerge:
+    """Which iteration's fmt/fix args a failing loop assertion reports."""
+
+    @pytest.mark.parametrize("loop", [_scan_over, _while_over])
+    def test_default_keeps_largest(self, loop):
+        (a,) = loop(_LOOP_XS)
+        assert not a.predicate
+        assert a.fmt_args["x"] == 8
+        assert a.fix_args == 80
+        assert a.loop_merge is ELEMENTWISE_MAX
+
+    def test_default_ignores_passing_iterations(self):
+        def body(carry: Array, x: Array) -> tuple[Array, None]:
+            runtime_assert(x > 0, "x={x} not positive", fmt_args={"x": x})
+            return carry, None
+
+        xs = jnp.array([1.0, -2.0, 3.0])
+        _, (a,) = with_runtime_assertions(lambda: jax.lax.scan(body, 0, xs))()
+        assert a.fmt_args["x"] == -2.0
+
+    def test_default_starts_bools_false(self):
+        def body(carry: Array, x: Array) -> tuple[Array, None]:
+            runtime_assert(x < 3, "x too large", fmt_args={"huge": x > 100})
+            return carry, None
+
+        _, (a,) = with_runtime_assertions(lambda: jax.lax.scan(body, 0, _LOOP_XS))()
+        assert not a.fmt_args["huge"]
+
+    @pytest.mark.parametrize("loop", [_scan_over, _while_over])
+    def test_passing_loop_has_true_predicate(self, loop):
+        (a,) = loop(jnp.array([0, 1, 2], dtype=jnp.int32))
+        assert a.predicate
+
+    @pytest.mark.parametrize("loop", [_scan_over, _while_over])
+    @pytest.mark.parametrize(
+        ("loop_merge", "expected"),
+        [(FIRST_FAILURE, 5), (LAST_FAILURE, 4), (ELEMENTWISE_MAX, 8)],
+    )
+    def test_explicit_loop_merge(self, loop, loop_merge: LoopMerge, expected: int):
+        (a,) = loop(_LOOP_XS, loop_merge=loop_merge)
+        assert not a.predicate
+        assert a.fmt_args["x"] == expected
+        assert a.fix_args == 10 * expected
+
+    @pytest.mark.parametrize("loop", [_scan_over, _while_over])
+    def test_custom_loop_merge(self, loop):
+        """A caller-defined merge sees every iteration, passing or not."""
+        total = LoopMerge(jnp.zeros_like, lambda _op, old, _np, new: old + new)
+        (a,) = loop(_LOOP_XS, loop_merge=total)
+        assert a.fmt_args["x"] == int(_LOOP_XS.sum())
+        assert a.fix_args == 10 * int(_LOOP_XS.sum())
+
+    def test_loop_merge_is_kept_on_the_assertion(self):
+        (a,) = _scan_over(_LOOP_XS, loop_merge=FIRST_FAILURE)
+        assert a.loop_merge is FIRST_FAILURE
