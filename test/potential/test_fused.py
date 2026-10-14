@@ -468,7 +468,7 @@ class TestPotentialFusion:
             pytest.param(
                 4096,
                 dataclasses.replace(_PARAMS, cell_capacity=1024),
-                16,
+                64,
                 id="dense-cells",
             ),
             pytest.param(

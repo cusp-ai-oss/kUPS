@@ -870,8 +870,9 @@ def _gpu_query_chunk_size(layout: CellListCacheParameters, particle_count: int) 
     """Amortize GPU kernel launches while limiting padding and temporary storage.
 
     Larger query batches reduce launches in the chunked pair traversal. Cap
-    batches at 512 queries and target at most 2**19 candidate pairs including
-    periodic images. Dense cells and larger image windows thus use fewer queries.
+    batches at 512 queries and target at most 2**21 minimum-image candidate
+    pairs, which skip pipeline intermediates, or 2**19 pairs including periodic
+    images. Dense cells and larger image windows thus use fewer queries.
     These are workspace heuristics, not hardware limits. Round down to a power
     of two within the particle count to avoid padding small systems excessively,
     with a minimum chunk size of one even for empty inputs.
@@ -881,10 +882,11 @@ def _gpu_query_chunk_size(layout: CellListCacheParameters, particle_count: int) 
         * min(layout.cell_capacity, layout.key_chunk_size or layout.cell_capacity)
         * layout.max_images_per_pair
     )
+    budget = 2_097_152 if layout.max_images_per_pair == 1 else 524_288
     limit = min(
         512,
         max(1, particle_count),
-        max(1, 524_288 // candidate_images_per_query),
+        max(1, budget // candidate_images_per_query),
     )
     return 1 << (limit.bit_length() - 1)
 
