@@ -47,6 +47,7 @@ from kups.core.typing import (
 )
 from kups.core.utils.functools import constant, pipe
 from kups.core.utils.jax import (
+    astype_floating,
     dataclass,
     field,
     jit,
@@ -604,6 +605,10 @@ class _StructureFactorStatic(NamedTuple):
 def _structure_factor_args(
     inp: EwaldLongRangeInput[Any],
 ) -> tuple[tuple[Array, Array, Array, Array], _StructureFactorStatic]:
+    # Structure factors and their k-vectors are evaluated in reciprocal_dtype.
+    inp = bind(inp, lambda x: x.point_cloud).apply(
+        lambda cloud: astype_floating(cloud, inp.parameters.reciprocal_dtype)
+    )
     particles = inp.point_cloud.particles.data
     params = inp.parameters
     bound = params.reciprocal_shift_bound
@@ -642,7 +647,8 @@ def structure_factor_delta(inp: EwaldLongRangeInput[Any]) -> Array:
     changes = inp.changes_from_prev
     assert changes is not None, "Changed rows required for a delta"
     changes = WithIndices(
-        changes.indices.update_labels(inp.point_cloud.particles.keys), changes.data
+        changes.indices.update_labels(inp.point_cloud.particles.keys),
+        astype_floating(changes.data, inp.parameters.reciprocal_dtype),
     )
     primals, static = _structure_factor_args(inp)
     return _structure_factor_delta(*primals, *static, changes)
