@@ -124,10 +124,11 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
     """Positions of the first ``size`` true entries of a 1D ``mask``.
 
     Equivalent to ``jnp.where(mask, size=size, fill_value=fill_value)[0]``,
-    which lowers to a prefix sum over the whole mask. On CPU, a few positions
-    are found with one top-k over negated positions instead; long masks are
-    first reduced to per-block occupancy, so that only the first ``size``
-    occupied blocks are searched.
+    which lowers to a slow scan on accelerators; there, masks shorter than
+    ``2**24`` use ``compact_indices``. On CPU, a few positions are found with
+    one top-k over negated positions instead; long masks are first reduced to
+    per-block occupancy, so that only the first ``size`` occupied blocks are
+    searched.
 
     Args:
         mask: Boolean array of shape ``(n,)``.
@@ -138,11 +139,10 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
         Integer array of shape ``(size,)`` with increasing positions.
     """
     n = mask.shape[0]
-    if (
-        jax.default_backend() != "cpu"
-        or not 0 < size <= min(n, _FIRST_TRUE_MAX_SIZE)
-        or n >= _FIRST_TRUE_MAX_N
-    ):
+    if jax.default_backend() != "cpu" and n < _FIRST_TRUE_MAX_N:
+        found = compact_indices(mask, size)
+        return jnp.where(found < n, found, fill_value).astype(int)
+    if not 0 < size <= min(n, _FIRST_TRUE_MAX_SIZE) or n >= _FIRST_TRUE_MAX_N:
         return jnp.where(mask, size=size, fill_value=fill_value)[0]
     block = _FIRST_TRUE_BLOCK
     if n > _FIRST_TRUE_MAX_SIZE * block:
@@ -159,13 +159,26 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
     return jnp.where(values > -jnp.inf, found.astype(int), fill_value)
 
 
+def _inclusive_sum(x: Array) -> Array:
+    """Inclusive prefix sum of a 1D float array via blocked triangular products."""
+    n = x.shape[0]
+    width = min(32, max(n, 1))
+    blocks = jnp.pad(x, (0, -n % width)).reshape(-1, width)
+    upper = jnp.triu(jnp.ones((width, width), x.dtype))
+    # Exact float32 products: the default GPU precision rounds to TF32.
+    inner = jnp.matmul(blocks, upper, precision=jax.lax.Precision.HIGHEST)
+    if blocks.shape[0] > 1:
+        totals = inner[:, -1]
+        inner = inner + (_inclusive_sum(totals) - totals)[:, None]
+    return inner.reshape(-1)[:n]
+
+
 def compact_indices(mask: Array, size: int) -> Array:
     """Positions of the first ``size`` true entries of a 1D ``mask``.
 
     Equivalent to ``jnp.nonzero(mask, size=size, fill_value=len(mask))[0]``,
-    but the prefix sum uses blocked triangular matrix products, which are
-    faster than a scan for masks of up to a few thousand entries. Positions
-    are exact below ``2**24``.
+    but the prefix sum uses nested blocked triangular matrix products, which
+    are faster than a scan. Positions are exact below ``2**24``.
 
     Args:
         mask: Boolean array of shape ``(n,)``.
@@ -175,13 +188,7 @@ def compact_indices(mask: Array, size: int) -> Array:
         Integer array of shape ``(size,)``, padded with ``n``.
     """
     n = mask.shape[0]
-    width = min(32, max(n, 1))
-    padded = jnp.pad(mask, (0, -n % width)).reshape(-1, width)
-    inner = padded.astype(jnp.float32) @ jnp.triu(jnp.ones((width, width), jnp.float32))
-    totals = inner[:, -1]
-    rows = totals.shape[0]
-    offsets = jnp.tril(jnp.ones((rows, rows), jnp.float32), -1) @ totals
-    position = (inner + offsets[:, None]).reshape(-1)[:n].astype(jnp.int32) - 1
+    position = _inclusive_sum(mask.astype(jnp.float32)).astype(jnp.int32) - 1
     return (
         jnp.full(size, n, jnp.int32)
         .at[jnp.where(mask, position, size)]
