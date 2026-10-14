@@ -34,9 +34,10 @@ repos:
           test/relaxation/transforms/test_reset.py
           test/relaxation/test_propagator.py
           test/application/test_relax_data.py
+          test/core/test_stream.py
         language: system
         types: [python]
-        files: ^(src/|test/relaxation/transforms/test_reset\.py$|test/relaxation/test_propagator\.py$|test/application/test_relax_data\.py$)
+        files: ^(src/|test/relaxation/transforms/test_reset\.py$|test/relaxation/test_propagator\.py$|test/application/test_relax_data\.py$|test/core/test_stream\.py$)
         pass_filenames: false
 
       - id: clear-notebook-output

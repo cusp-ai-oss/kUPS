@@ -452,7 +452,11 @@ def assertion_handler(
     # Convert static_info back from hashable format
     static_info = dict(static_info_hashable)
 
-    pred = invals[0]
+    # invals[0] is the predicate. A constant predicate is a jaxpr literal, which
+    # the interpreter passes as its raw value (a NumPy/Python scalar, or JAX's
+    # TypedNdArray wrapper on newer JAX) rather than a jax.Array. Normalize it
+    # so every consumer of RuntimeAssertion.predicate gets the declared type.
+    pred = jnp.asarray(invals[0])
     num_fmt_args = len(fmt_arg_names)
     fmt_arg_values = invals[1 : 1 + num_fmt_args]
 
