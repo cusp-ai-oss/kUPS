@@ -366,6 +366,25 @@ class TestLennardJonesEnergy:
         npt.assert_allclose(grads.sigma, expected_grads.sigma, rtol=1e-12)
         npt.assert_allclose(grads.epsilon, expected_grads.epsilon, rtol=1e-12)
 
+    def test_pair_kernel_keeps_parameter_dtype(self):
+        """Per-species row selection does not promote float32 parameters."""
+        params = LennardJonesParameters(
+            labels=("A", "B"),
+            sigma=jnp.full((2, 2), 3.0, jnp.float32),
+            epsilon=jnp.full((2, 2), 50.0, jnp.float32),
+            cutoff=_cutoff(12.0),
+        )
+        r2 = jnp.full((1, 4), 16.0, jnp.float32)
+        energy = lennard_jones_pair_kernel(
+            params,
+            Index(("A", "B"), jnp.zeros((1, 1), int)),
+            Index(("A", "B"), jnp.array([[0, 1, 0, 1]])),
+            jnp.zeros((*r2.shape, 3), jnp.float32),
+            r2,
+            Index((SystemId(0),), jnp.zeros(1, int)),
+        )
+        assert energy.dtype == jnp.float32
+
 
 class TestPairTailCorrectedLennardJonesEnergy:
     @classmethod
