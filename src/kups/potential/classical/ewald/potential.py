@@ -3,8 +3,8 @@
 
 """Ewald energies, caches and potential construction.
 
-Incremental values use cached structure factors, while derivatives always
-include every current particle.
+Incremental values use cached structure factors and prefactors, while
+derivatives always include every current particle.
 """
 
 from __future__ import annotations
@@ -93,9 +93,10 @@ TO_STANDARD_UNITS = HARTREE * BOHR
 
 @dataclass
 class EwaldCache[Gradient, Hessian]:
-    """Compensated structure factors and component outputs for incremental updates."""
+    """Compensated structure factors, prefactors and component outputs for updates."""
 
     structure_factor: KahanSummand[Array]  # (n_groups, n_kvecs, 2)
+    prefactor: Array  # (n_groups, n_kvecs)
     short_range: KahanSummand[PotentialOut[Gradient, Hessian]]
     long_range: KahanSummand[PotentialOut[Gradient, Hessian]]
     self_interaction: KahanSummand[PotentialOut[Gradient, Hessian]]
@@ -116,7 +117,7 @@ class EwaldCache[Gradient, Hessian]:
             hessian: Template defining cached Hessian shapes.
 
         Returns:
-            Compensated structure-factor and component-output caches initialized to zero.
+            Structure-factor, prefactor and component-output caches set to zero.
         """
         out = PotentialOut(
             Table.arange(jnp.zeros(n_sys, dtype=float), label=SystemId),
@@ -125,6 +126,7 @@ class EwaldCache[Gradient, Hessian]:
         )
         return EwaldCache(
             KahanSummand.init(jnp.zeros((n_sys, n_kvecs, 2), dtype=float)),
+            jnp.zeros((n_sys, n_kvecs), dtype=float),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
@@ -135,9 +137,10 @@ class EwaldCache[Gradient, Hessian]:
 
 @dataclass
 class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
-    """Accept or reject each system's structure factor, including its compensation."""
+    """Accept or reject each system's structure factor and prefactor."""
 
     new_structure_factor: KahanSummand[Array]
+    new_prefactor: Array
     system_idx: Index[SystemId]
     lens: Lens[State, EwaldCache[Gradient, Hessian]] = field(static=True)
 
@@ -149,16 +152,15 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
             accept: Per-system acceptance mask.
 
         Returns:
-            State with accepted structure factors and their compensation updated.
+            State with accepted structure factors, their compensation and
+            prefactors updated.
         """
         mask = accept[self.system_idx]
-        new_sf = self.new_structure_factor
-        return self.lens.focus(lambda cache: cache.structure_factor).apply(
+        update = (self.new_structure_factor, self.new_prefactor)
+        return self.lens.focus(lambda c: (c.structure_factor, c.prefactor)).apply(
             state,
-            lambda old_sf: jax.tree.map(
-                lambda new, old: where_broadcast_last(mask, new, old),
-                new_sf,
-                old_sf,
+            lambda current: jax.tree.map(
+                lambda new, old: where_broadcast_last(mask, new, old), update, current
             ),
         )
 
@@ -319,14 +321,20 @@ def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy
     """Compute the unscaled reciprocal sum ``sum_k P(k) |S(k)|²``.
 
     Args:
-        inp: System cells and reciprocal-space parameters.
+        inp: System cells, reciprocal-space parameters and, for incremental
+            inputs, the cached prefactor.
         structure_factor: Real/imaginary structure factors, shaped ``(n_systems, n_kvecs, 2)``.
 
     Returns:
         Per-system reciprocal sums before ``TO_STANDARD_UNITS`` scaling,
         excluding the neutralizing-background correction.
     """
-    return jnp.sum(prefactor(inp) * jnp.sum(structure_factor**2, axis=-1), axis=-1)
+    if inp.changes_from_prev is None:
+        weights = prefactor(inp)
+    else:
+        assert inp.cache is not None, "Cache required for structure factor update"
+        weights = _cached_prefactor(inp.cache.prefactor, *_prefactor_args(inp))
+    return jnp.sum(weights * jnp.sum(structure_factor**2, axis=-1), axis=-1)
 
 
 def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
@@ -341,23 +349,51 @@ def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
     Returns:
         Weights shaped ``(n_systems, n_kvecs)``; zero for k=0 and masked vectors.
     """
+    return _prefactor(*_prefactor_args(inp))
+
+
+def _prefactor_args(
+    inp: EwaldLongRangeInput[Any],
+) -> tuple[Array, Array, Array, Array, Array]:
     sys_idx = inp.point_cloud.systems.index
-    alpha = inp.parameters.alpha[sys_idx]
-    shifts = inp.parameters.reciprocal_lattice_shifts[sys_idx]
-    kv = inp.kvecs
-    k_squared = jnp.sum(kv**2, axis=-1)
+    params = inp.parameters
+    return (
+        inp.kvecs,
+        params.alpha[sys_idx],
+        params.k_max[sys_idx],
+        inp.volume,
+        params.reciprocal_lattice_shifts[sys_idx][..., 0] == 0,
+    )
+
+
+def _prefactor(
+    kvecs: Array, alpha: Array, k_max: Array, volume: Array, leading_zero: Array
+) -> Array:
+    k_squared = jnp.sum(kvecs**2, axis=-1)
     mask = k_squared > 0
-    mask &= k_squared <= inp.parameters.k_max[sys_idx][:, None] ** 2
+    mask &= k_squared <= k_max[:, None] ** 2
     k_squared = jnp.where(mask, k_squared, 1)
     result = (
         (2 * jnp.pi)
-        / inp.volume[:, None]
+        / volume[:, None]
         * jnp.exp(-k_squared / (4 * alpha[:, None] ** 2))
         / k_squared
     )
-    leading_zero = shifts[..., 0] == 0
     result = (2 - leading_zero) * result
     return jnp.where(mask, result, 0.0)
+
+
+@jax.custom_jvp
+def _cached_prefactor(cached: Array, *args: Array) -> Array:
+    """Cached ``prefactor`` weights; the tangent is that of ``_prefactor(*args)``."""
+    return cached
+
+
+@_cached_prefactor.defjvp
+def _cached_prefactor_jvp(
+    primals: tuple[Array, ...], tangents: tuple[Array, ...]
+) -> tuple[Array, Array]:
+    return primals[0], jax.jvp(_prefactor, primals[1:], tangents[1:])[1]
 
 
 def _changed_particle_rows(
@@ -620,7 +656,7 @@ def _cache_patch[State](
         return IdPatch[State]()
     systems = inp.point_cloud.systems.index
     if isinstance(update, KahanSummand):
-        return EwaldCachePatch(update, systems, inp.cache_lens)
+        return EwaldCachePatch(update, prefactor(inp), systems, inp.cache_lens)
     return EwaldCacheDeltaPatch(update, systems, inp.cache_lens)
 
 
