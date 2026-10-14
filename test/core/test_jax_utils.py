@@ -24,6 +24,7 @@ from kups.core.utils.jax import (
     no_post_init,
     non_differentiable,
     sequential_vmap_with_vjp,
+    skip_on_cpu,
     skip_post_init_if_disabled,
     tree_concat,
     tree_stack,
@@ -813,3 +814,12 @@ class TestSkipIfDisabled:
         # Restored after context
         with pytest.raises(ValueError, match="non-negative"):
             Validated(x=-1)
+
+
+@pytest.mark.parametrize("backend, expected", [("cpu", 0), ("gpu", 2)])
+def test_skip_on_cpu_skips_only_on_cpu(
+    monkeypatch: pytest.MonkeyPatch, backend: str, expected: int
+) -> None:
+    monkeypatch.setattr(jax, "default_backend", lambda: backend)
+    out = skip_on_cpu(jnp.array(False), lambda x: x + 1, lambda x: x - 1, 1)
+    assert out == expected

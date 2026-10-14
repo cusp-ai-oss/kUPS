@@ -37,7 +37,14 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.patch import Accept, Patch
 from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing, tree_map
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    jit,
+    no_jax_tracing,
+    skip_on_cpu,
+    tree_map,
+)
 from kups.core.utils.segment import bincount
 
 AUTO_BLOCK_BATCH_HEADROOM = 1.25
@@ -787,7 +794,7 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
 
     Accepted rows refresh their coordinates and payload. Only rows changing
     cells are removed and reinserted (overflow asserted); moves within a cell
-    retain membership. An entirely rejected proposal skips both operations.
+    retain membership. On CPU, a wholly rejected proposal skips both operations.
     Slots retain their original row identity, so ``slot_of_row`` stays valid.
     Spatial sort order is not maintained after moves. Changed rows are grouped
     by destination cell to assign insertion ranks with linear storage.
@@ -848,7 +855,7 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                 position = jnp.where(insert, position, cells.shape[1])
                 return cells.at[target, position].set(self.slots, mode="drop")
 
-            cells = jax.lax.cond(
+            cells = skip_on_cpu(
                 jnp.any(relocate), move_cells, lambda cells: cells, table.cells
             )
 
@@ -890,5 +897,5 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                 )
             )
 
-        table = jax.lax.cond(jnp.any(ok), apply, lambda table: table, table)
+        table = skip_on_cpu(jnp.any(ok), apply, lambda table: table, table)
         return self.lens.set(state, table)
