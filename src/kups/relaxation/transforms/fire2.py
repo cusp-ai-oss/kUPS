@@ -367,5 +367,5 @@ class ScaleByFire2[Params](Resettable[Params, ScaleByFire2State]):
     def reset_layout(
         self,
     ) -> ResetLayout[ScaleByFire2State, Fire2ResetData, Fire2ResetIndices]:
-        """The FIRE fields plus the per-system warm-up counter ``n_total``."""
+        """The FIRE fields plus the per-system warmup counter ``n_total``."""
         return fire2_reset_layout()

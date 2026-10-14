@@ -114,17 +114,13 @@ class Optimizer[Params, OptState](Protocol):
 
 
 class Resettable[Params, OptState](Optimizer[Params, OptState]):
-    """Optimizer that knows which part of its state to reset per system.
+    """Optimizer that declares which part of its state to reset per system.
 
-    Implementers subclass ``Resettable`` explicitly. Membership is nominal, so
-    the type checker binds each ``reset_layout`` to the optimizer's own state,
-    and a subclass that omits the property cannot be instantiated. Every native
-    transform is resettable and a chain of them built with
-    [resettable_chain][kups.relaxation.optimizer.resettable_chain] composes its
-    members' layouts. Optax transforms are not, so code that resets per-system
-    state can require a ``Resettable`` and reject them statically;
-    [Stateless][kups.relaxation.optimizer.Stateless] adapts stateless ones and
-    rejects stateful ones when ``init`` runs.
+    Membership is nominal: subclassing fixes ``OptState``, and the type checker
+    validates ``reset_layout`` against it. A subclass without ``reset_layout``
+    cannot be instantiated. All transforms in ``kups.relaxation.transforms`` are
+    resettable. Optax transforms are not; wrap a stateless one in
+    [Stateless][kups.relaxation.optimizer.Stateless].
     """
 
     @property
@@ -200,14 +196,10 @@ def chain[Params](
 class Stateless(Resettable[Any, PyTree]):
     """A stateless Optax transform as a member of a resettable chain.
 
-    The transform keeps nothing between steps, so there is nothing to reset.
-    ``init`` raises ``ValueError`` for a transform whose state has any leaves,
-    since that state would go stale across resets. A leafless state, empty or a
-    composite of empty states such as ``optax.sgd``'s, is passed back to the
-    transform unchanged, and extra arguments are forwarded as in
-    [chain][kups.relaxation.optimizer.chain]. Optax transforms accept any
-    parameter pytree, so the adapter takes no type argument:
-    ``Stateless(optax.scale(-1.0))``.
+    ``init`` raises ``ValueError`` if the transform's state has any leaves,
+    because a reset would not restore them. Composite transforms with leafless
+    states, such as ``optax.sgd(0.1)``, are accepted. ``update`` forwards extra
+    arguments as [chain][kups.relaxation.optimizer.chain] does.
 
     Attributes:
         transform: The wrapped Optax transform.
@@ -251,9 +243,7 @@ class ResettableChain[Params](
     """Chain whose reset layout is composed from its members' layouts.
 
     Built by [resettable_chain][kups.relaxation.optimizer.resettable_chain].
-    Member ``i``'s layout applies to entry ``i`` of the chain state, so the
-    pairing holds by construction; the chain's data and index types are erased
-    to tuples.
+    Member ``i``'s layout applies to entry ``i`` of the chain state.
     """
 
     optimizers: tuple[Resettable[Params, Any], ...]
@@ -292,9 +282,8 @@ def resettable_chain[Params](
     """Chain optimizers that each declare their reset layout.
 
     Unlike [chain][kups.relaxation.optimizer.chain], every member must be
-    [Resettable][kups.relaxation.optimizer.Resettable], which the type checker
-    enforces: a bare Optax transform has no reset layout. Wrap a stateless one
-    in [Stateless][kups.relaxation.optimizer.Stateless], whose ``init`` raises
-    ``ValueError`` for a transform that keeps state.
+    [Resettable][kups.relaxation.optimizer.Resettable]; only the type checker
+    enforces this. Wrap a stateless Optax transform in
+    [Stateless][kups.relaxation.optimizer.Stateless].
     """
     return ResettableChain(optimizers)
