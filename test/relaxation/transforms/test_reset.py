@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Indexed state lenses: a reset system continues identically to a fresh run."""
+"""Reset layouts: a reset system continues identically to a fresh run."""
 
 from __future__ import annotations
 

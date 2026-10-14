@@ -26,23 +26,19 @@ from kups.core.utils.jax import dataclass, field
 
 @dataclass(kw_only=True)
 class ResetLayout[OptState, Data, Indices]:
-    """Describe which optimizer fields to reset and which systems own their rows.
+    """Optimizer state to reset per system, and the system that owns each row.
 
-    Fresh values come from ``Optimizer.init``; this layout only describes how to
-    select and mask them. Fields outside the lens, such as a shared history
-    cursor, survive replacement.
-
-    ``Data`` and ``Indices`` retain the concrete value and index-prefix types.
-    Their pytree alignment is checked by ``IndexLensPatch`` when applied. The
-    lens must select disjoint parts of the state, as for any inferred lens.
+    ``reset`` copies ``fields`` from a fresh ``init`` state into the systems
+    selected by ``mask``. State outside ``fields``, such as the L-BFGS ring
+    cursor ``count``, keeps its value.
 
     Attributes:
-        fields: Lens reading and writing the resettable part of optimizer state.
-        system_index: View returning a matching pytree prefix of ``Index`` objects.
-            Each index maps selected data rows to systems so ``IndexLensPatch``
-            can apply the refill mask. Include reserved particle rows even when
-            unoccupied. For FIRE, velocity uses particle-to-system indices;
-            dt, alpha and counters use system indices.
+        fields: Lens onto the resettable state. Its focus paths must not overlap.
+        system_index: View returning a pytree prefix of the ``fields`` value
+            whose ``Index`` leaves map each row to its system. For FIRE,
+            velocity rows are particles and ``dt`` rows are systems. Map padding
+            rows to their system too. ``reset`` raises if the two pytrees do not
+            align.
     """
 
     fields: Lens[OptState, Data] = field(static=True)
@@ -93,12 +89,12 @@ class Optimizer[Params, OptState](Protocol):
         | None = None,
         **kwargs: Any,
     ) -> tuple[Params, OptState]:
-        """One optimisation step.
+        """One optimization step.
 
-        Besides the optax arguments, :class:`kups.relaxation.propagator.RelaxationPropagator`
-        passes the raw gradient ``grad``, the per-system ``energies`` and a
-        ``value_and_grad_fn`` evaluating trial points; line searches consume
-        them, plain transforms ignore them.
+        [RelaxationPropagator][kups.relaxation.propagator.RelaxationPropagator]
+        also passes the raw gradient ``grad``, the per-system ``energies`` and
+        ``value_and_grad_fn``, which evaluates trial points. Line searches use
+        them; other transforms ignore them.
         """
         ...
 

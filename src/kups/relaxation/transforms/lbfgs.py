@@ -54,9 +54,9 @@ class ScaleByAseLbfgsState[Params]:
     Attributes:
         count: Total update steps taken so far (scalar int32); selects the ring
             slot written on each update.
-        steps: Per-system number of updates since that system was (re)initialised,
-            ``Table[K, Array]`` of shape ``(n_systems,)``; a system's first update
-            after a reset contributes an inert ``(0, 0, rho=0)`` pair.
+        steps: Per-system number of updates since ``init`` or the last reset,
+            ``Table[K, Array]`` of shape ``(n_systems,)``. A system's first
+            update (``steps == 0``) stores an inert ``(0, 0)`` pair with ``ρ = 0``.
         params: Last seen parameter leaves (flat list of arrays).
         updates: Last seen gradient/update leaves (flat list of arrays).
         diff_params_memory: Per leaf, stacked past parameter differences of
@@ -113,17 +113,15 @@ type LbfgsResetIndices = LbfgsReset[
 def lbfgs_reset_layout[Params]() -> ResetLayout[
     ScaleByAseLbfgsState[Params], LbfgsResetData, LbfgsResetIndices
 ]:
-    """Reset layout for L-BFGS.
+    """Reset layout for L-BFGS: a system's step counter and history.
 
-    Resets a system's history: its step counter ``steps``, the last seen
-    parameters and updates, the ``(s, y)`` difference memory and the matching
-    ``ρ`` weights. ``count``, which selects the history ring-buffer slot each
-    update writes, is shared by all systems and is left alone, so a reset system
-    resumes at the batch's current ring position rather than where a fresh run
-    would start. This is harmless: its blanked slots hold zero pairs with zero
-    weight, which the two-loop recursion ignores; its first update after the
-    reset (``steps == 0``) stores another such inert pair; and its later pairs
-    are visited in the same relative order as in a fresh run.
+    Resets ``steps``, the last parameters and updates, the ``(s, y)`` memory and
+    the ``ρ`` weights. The ring cursor ``count`` is shared by all systems and
+    kept, so a reset system resumes at the batch's current ring slot rather than
+    where a fresh run starts. Its trajectory still matches a fresh run: blanked
+    slots hold zero pairs with zero weight, which add nothing to the two-loop
+    recursion; its first update (``steps == 0``) stores another such pair; and
+    its later pairs keep their relative order.
     """
     fields = lens(
         lambda s: LbfgsReset(
