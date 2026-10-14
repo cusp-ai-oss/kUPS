@@ -57,7 +57,7 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
     Type Parameters:
         State: The simulation state type
         Params: Optimized parameters (must match the potential's gradient type).
-        OptState: Optimizer state preserved through initialization and updates.
+        OptState: State type of ``optimizer``.
         Indices: Index prefix returned by the optional update mask.
 
     Attributes:
@@ -69,8 +69,8 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
             the potential and applying its patch. Rejected rows are written back
             through ``property``, so they stay bit-identical only when
             ``property.set(s, property.get(s))`` round-trips exactly (under
-            ``FRECHET_FILTER`` positions move by round-off). Optimizer state still
-            advances; a reused slot must be reset before its next update.
+            ``FRECHET_FILTER`` positions move by round-off). The optimizer state
+            of rejected systems still advances; reset it before they update again.
 
     Example:
         ```python

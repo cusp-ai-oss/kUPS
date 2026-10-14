@@ -198,8 +198,8 @@ class TestCellRelaxation:
 
     def test_cell_gradients_enter_per_system_fmax(self, cell_step):
         _, stepped = cell_step
-        # Zero the position DOFs so only the DeformedFrame cell gradient remains;
-        # otherwise the positions dominate and hide a dropped cell term.
+        # Zero the position gradients so only the cell gradient remains; otherwise
+        # they dominate the maximum and hide a dropped cell term.
         stepped = (
             bind(stepped)
             .focus(lambda s: s.particles.data.position_gradients)

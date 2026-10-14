@@ -65,7 +65,7 @@ type IsStateWithParticlesAndCell = IsState[
 ]
 
 
-@no_type_check  # Potential caches use heterogeneous index prefixes, not value trees.
+@no_type_check  # patch_idx_view parameters are typed with the gradient type.
 def position_and_cell_idx_view(
     state: IsStateWithParticlesAndCell,
 ) -> PotentialOut[PositionsAndCellIndex, EmptyType]:
