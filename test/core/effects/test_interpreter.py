@@ -65,7 +65,7 @@ class TestContextThreading:
             return inner(x)
 
         f_rt = reinterpret(f, interpreter)
-        ctx = MockContext((), None, 0, ())
+        ctx = MockContext((), ())
         _, ctx2 = f_rt(ctx, jnp.array(1.0))
         assert {"jit", "sin"}.issubset(set(ctx2.metadata))
 
@@ -81,7 +81,7 @@ class TestContextThreading:
             return jax.lax.scan(body, 0, jnp.arange(5))
 
         f_rt = reinterpret(f, interpreter)
-        ctx = MockContext((), None, 0, ())
+        ctx = MockContext((), ())
         (carry, out), ctx2 = f_rt(ctx, jnp.array(1.0))
         assert carry == 5 and jnp.allclose(out, jnp.array([0, 2, 4, 6, 8]))
         assert "scan" in ctx2.metadata

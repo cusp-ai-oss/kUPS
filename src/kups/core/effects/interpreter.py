@@ -6,11 +6,10 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, Concatenate, NamedTuple, Protocol, Self
+from typing import Any, Concatenate, NamedTuple, Self
 
 import jax
 import jax.core
-from jax.core import AbstractValue
 from jax.extend import linear_util as lu
 from jax.extend import source_info_util
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive
@@ -31,26 +30,19 @@ class InterpreterPolicy(Enum):
     IGNORE = "ignore"
 
 
-class InterpreterContext(Protocol):
-    def push[T](self: T) -> T: ...
-    def pop[T](self: T) -> T: ...
-
-
-class HandlerResult[Context: InterpreterContext](NamedTuple):
+class HandlerResult[Context](NamedTuple):
     ctx: Context
     outvals: list[TracerValue]
 
 
-type Handler[Context: InterpreterContext] = Callable[
+type Handler[Context] = Callable[
     [Interpreter[Context], Context, JaxprEqn, list[TracerValue]], HandlerResult[Context]
 ]
 
-type MatchingRule[Context: InterpreterContext] = Callable[
-    [Context, JaxprEqn, list[TracerValue]], bool
-]
+type MatchingRule[Context] = Callable[[Context, JaxprEqn, list[TracerValue]], bool]
 
 
-def contains_subjaxprs[Context: InterpreterContext](
+def contains_subjaxprs[Context](
     ctx: Context,  # type: ignore
     eqn: JaxprEqn,
     invals: list[TracerValue],
@@ -61,7 +53,7 @@ def contains_subjaxprs[Context: InterpreterContext](
     return any(isinstance(leaf, (Jaxpr, ClosedJaxpr)) for leaf in leaves)
 
 
-class Dispatcher[Context: InterpreterContext]:
+class Dispatcher[Context]:
     _custom_matching_rules: list[MatchingRule[Context]]
     _handler_registry: dict[str, Handler[Context]]
 
@@ -119,14 +111,7 @@ class Dispatcher[Context: InterpreterContext]:
         return handler(interpreter, ctx, eqn, invals)
 
 
-class JaxprInterpreterResult(NamedTuple):
-    output_context_tree: PyTreeDef
-    jaxpr: ClosedJaxpr
-    extra_invals: tuple[AbstractValue, ...]
-    extra_outvals: tuple[AbstractValue, ...]
-
-
-class Interpreter[Context: InterpreterContext]:
+class Interpreter[Context]:
     policy: InterpreterPolicy
     dispatcher: Dispatcher[Context]
 
@@ -213,7 +198,7 @@ class Interpreter[Context: InterpreterContext]:
         return out, ctx
 
 
-def reinterpret[Context: InterpreterContext, **P, R](
+def reinterpret[Context, **P, R](
     fn: Callable[P, R], interpreter: Interpreter[Context]
 ) -> Callable[Concatenate[Context, P], tuple[R, Context]]:
     def inner(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> tuple[R, Context]:

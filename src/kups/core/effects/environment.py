@@ -22,19 +22,15 @@ class _HasDTypeAndShape(Protocol):
 class InterpreterEnvironment:
     env: dict[Var, Any]
     reference_counter: dict[Var, int]
-    use_reference_counting: bool
 
     def __init__(
         self,
         jaxpr: Jaxpr,
         consts: Sequence[Array],
         args: Any,
-        *,
-        use_reference_counting: bool = True,
     ):
         self.env = {}
         self.reference_counter = defaultdict(int)
-        self.use_reference_counting = use_reference_counting
         for v in jaxpr.invars + jaxpr.constvars:
             if isinstance(v, Literal):
                 continue
@@ -61,7 +57,7 @@ class InterpreterEnvironment:
             return var.val
         self.reference_counter[var] -= 1
         result = self.env[var]
-        if self.use_reference_counting and self.reference_counter[var] == 0:
+        if self.reference_counter[var] == 0:
             del self.env[var]
             del self.reference_counter[var]
         return result
@@ -78,7 +74,7 @@ class InterpreterEnvironment:
                 raise ValueError(
                     f"Shape mismatch when writing to env: var {var} has shape {var.aval.shape}, but value has shape {val.shape}"
                 )
-        if not self.use_reference_counting or self.reference_counter[var] > 0:
+        if self.reference_counter[var] > 0:
             self.env[var] = val
 
     def read_many(self, vars: Sequence[Atom]) -> list[Any]:

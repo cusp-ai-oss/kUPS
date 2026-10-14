@@ -35,9 +35,7 @@ from kups.core.effects import (
     Dispatcher,
     HandlerResult,
     Interpreter,
-    InterpreterContext,
     InterpreterPolicy,
-    ScanSemantics,
     TracerValue,
     contains_subjaxprs,
     default_checkpoint_handler,
@@ -411,12 +409,6 @@ class AssertionContext:
             )
         return jnp.array(True, dtype=jnp.bool)
 
-    def push(self: Self) -> Self:
-        return self
-
-    def pop(self: Self) -> Self:
-        return self
-
 
 def check_assertion_handler(
     interpreter: Interpreter[AssertionContext],
@@ -507,8 +499,7 @@ def cond_handler(
     # leaves (shape/dtype) are used to build placeholders for the other branches.
     n_in = len(ctx.assertions)
     suffix_templates = [
-        fn.trace(ctx.push(), *invals[1:]).out_info[1].assertions[n_in:]
-        for fn in branch_fns
+        fn.trace(ctx, *invals[1:]).out_info[1].assertions[n_in:] for fn in branch_fns
     ]
 
     def passing(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
@@ -587,7 +578,6 @@ def scan_handler(
         ctx,
         eqn,
         invals,
-        threading=ScanSemantics.CARRY,
         initializer=init_with_true,
         updater=update_on_fail,
     )
@@ -681,7 +671,7 @@ def shard_map_handler(
     )
 
 
-def _contains_assertion_primitive[Context: InterpreterContext](
+def _contains_assertion_primitive[Context](
     ctx: Context,  # type: ignore
     eqn: JaxprEqn,
     invals: list[TracerValue],

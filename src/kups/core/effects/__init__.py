@@ -17,7 +17,6 @@ performs an effect and `with_runtime_assertions` handles it.
 
 from kups.core.effects.environment import InterpreterEnvironment
 from kups.core.effects.handlers import (
-    ScanSemantics,
     Uninitialized,
     default_checkpoint_handler,
     default_cond_handler,
@@ -32,9 +31,7 @@ from kups.core.effects.interpreter import (
     Handler,
     HandlerResult,
     Interpreter,
-    InterpreterContext,
     InterpreterPolicy,
-    JaxprInterpreterResult,
     MatchingRule,
     TracerValue,
     contains_subjaxprs,
@@ -46,12 +43,9 @@ __all__ = [
     "Handler",
     "HandlerResult",
     "Interpreter",
-    "InterpreterContext",
     "InterpreterEnvironment",
     "InterpreterPolicy",
-    "JaxprInterpreterResult",
     "MatchingRule",
-    "ScanSemantics",
     "TracerValue",
     "Uninitialized",
     "contains_subjaxprs",
