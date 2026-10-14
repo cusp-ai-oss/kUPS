@@ -107,7 +107,7 @@ type Fire2ResetIndices = Fire2Reset[PyTree, Index[SupportsSorting]]
 def fire2_reset_layout() -> ResetLayout[
     ScaleByFire2State, Fire2ResetData, Fire2ResetIndices
 ]:
-    """Mutable FIRE2 fields, including the per-system warmup counter."""
+    """Reset layout for FIRE2: the FIRE fields plus the warmup counter ``n_total``."""
     return ResetLayout(
         fields=lens(
             lambda s: Fire2Reset(

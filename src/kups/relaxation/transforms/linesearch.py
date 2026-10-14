@@ -83,9 +83,9 @@ class LineSearchState:
     Attributes:
         index_prefix: Tree prefix whose leaves are ``Index`` objects, captured at
             init and used to take every reduction per system.
-        prev_phi0: Previous step's per-system energies, keyed by system and
-            ``NaN`` until a step records them. :class:`ScaleByBacktrackingLinesearch`
-            uses them for its Nocedal & Wright eq. 3.60 initial-step estimate;
+        prev_phi0: Previous step's per-system energies, ``NaN`` until a step
+            records them. :class:`ScaleByBacktrackingLinesearch` uses them for its
+            Nocedal & Wright eq. 3.60 initial-step estimate;
             :class:`ScaleByMoreThuenteLinesearch` leaves them untouched.
     """
 
@@ -107,7 +107,7 @@ def _init_state(parameters: PyTree, index_prefix: PyTree | None) -> LineSearchSt
 def linesearch_reset_layout() -> ResetLayout[
     LineSearchState, Table[SupportsSorting, Array], Index[SupportsSorting]
 ]:
-    """Previous energies, indexed by system; shared by both line searches."""
+    """Reset layout for both line searches: the previous energies ``prev_phi0``."""
     return ResetLayout(
         fields=lens(lambda s: s.prev_phi0), system_index=lambda s: s.prev_phi0.index
     )

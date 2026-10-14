@@ -9,8 +9,7 @@ reductions used by Optax transforms (``optax.tree.vdot``,
 ``jax.tree.reduce(maximum, ...)``) collapse all systems into a single
 scalar — the bug behind cusp-ai-oss/kUPS#94 for batched relaxation.
 
-This module provides system-aware helpers that operate per segment
-instead, all built directly on existing relational primitives:
+The helpers below operate per segment instead:
 
 * [tree_vdot][kups.core.utils.segmented_tree.tree_vdot] —
   per-segment inner product, summed across pytree leaves.

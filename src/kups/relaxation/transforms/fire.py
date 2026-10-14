@@ -106,7 +106,7 @@ type FireResetIndices = FireReset[PyTree, Index[SupportsSorting]]
 def fire_reset_layout() -> ResetLayout[
     ScaleByFireState, FireResetData, FireResetIndices
 ]:
-    """Mutable FIRE fields; initialization supplies the configured dt and alpha."""
+    """Reset layout for FIRE: velocity, ``dt``, ``alpha`` and ``n_pos``."""
     return ResetLayout(
         fields=lens(
             lambda s: FireReset(
