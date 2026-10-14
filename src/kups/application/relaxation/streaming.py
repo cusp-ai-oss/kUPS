@@ -1,10 +1,10 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pure slot packing, replacement, and batched relaxation.
+"""Streaming relaxation: slot packing, slot replacement and the relaxation step.
 
-Host input and output are supplied by the caller through RefillGate's
-fix callback. No device queue, file formats, or background workers live here.
+Host input and output live in the caller's ``refill`` callback of
+[RefillGate][kups.core.stream.RefillGate].
 """
 
 from __future__ import annotations
@@ -70,7 +70,15 @@ class OptReset[OptState](Protocol):
 
 @dataclass
 class RelaxPayload:
-    """Slot rows; particle leaves have shape (slots, capacity, ...)."""
+    """Slot contents, one row per slot or packed structure.
+
+    Leaves of ``particles`` and ``position_gradients`` have shape
+    ``(rows, capacity, ...)``; the other leaves have shape ``(rows, ...)``.
+
+    Attributes:
+        step: Number of optimizer updates of each row's job.
+        ordinal: Job ordinal of each row, ``-1`` for an idle row.
+    """
 
     particles: Particles
     position_gradients: Array
@@ -124,7 +132,7 @@ class StreamingRelaxState[OptState]:
 def slot_payload_lens[State: IsStreamingRelaxState[object]](
     slots: Table[SystemId, Index[ParticleId]],
 ) -> Lens[State, RelaxPayload]:
-    """Gather/scatter particle rows for the batch's systems, preserving vocabularies.
+    """Lens onto the batch as one payload row per slot.
 
     Particle rows go through [slot_rows_lens][kups.core.stream.slot_rows_lens].
     Reservations must be disjoint and have the same system keys as the batch.
@@ -187,10 +195,13 @@ def replace_slots[State, OptState](
     slots: Table[SystemId, Index[ParticleId]],
     reset: OptReset[OptState],
 ) -> State:
-    """Install selected slot rows, reset their optimizer, and acknowledge refill.
+    """Replace the slots selected by ``mask`` with their ``payload`` rows.
 
-    Supply idle payload rows (ordinal -1) when input is exhausted. Unselected
-    slots, including their optimizer history, are preserved.
+    ``payload`` has one row per slot. Resets the optimizer state of the replaced
+    slots and clears their refill requests; the other slots keep their rows and
+    optimizer state. Pass
+    [idle_payload][kups.application.relaxation.streaming.idle_payload] rows once
+    input is exhausted.
     """
     payload_lens: Lens[IsStreamingRelaxState[OptState], RelaxPayload] = (
         slot_payload_lens(slots)
@@ -213,14 +224,13 @@ def payload_from_structures(
 ) -> RelaxPayload:
     """Pack host structures into payload rows (leading axis ``len(structures)``).
 
-    Each structure is padded to ``capacity`` rows, its labels are remapped into
-    the fixed ``species`` vocabulary and its cell is wrapped in the relaxation
-    frame with ``cell_factor = n_atoms``. Cells must be unbatched and lower
-    triangular, in the same coordinate frame as their particles. Each is
-    rebuilt by [Cell.from_pbc][kups.core.cell.Cell.from_pbc] on a
-    TriclinicFrame, so jobs whose cells differ only in frame type or cell class
-    can mix. All structures of a stream, its idle rows included, must share
-    periodicity.
+    Pads each structure to ``capacity`` rows, remaps its labels into the fixed
+    ``species`` vocabulary and wraps its cell in the relaxation frame with
+    ``cell_factor = n_atoms``. Cells must be unbatched and lower triangular, in
+    the same coordinate frame as their particles. Each cell is rebuilt with
+    [Cell.from_pbc][kups.core.cell.Cell.from_pbc] on a ``TriclinicFrame``, so
+    cells that differ only in frame type or cell class can share a stream. All
+    structures of a stream, its idle rows included, must share periodicity.
 
     Raises:
         ValueError: If ``structures`` is empty or not as long as ``ordinals``,
@@ -242,7 +252,7 @@ def payload_from_structures(
         if cell.vectors.shape != (3, 3) or bool(
             jnp.any(jnp.triu(cell.vectors, 1) != 0)
         ):
-            raise ValueError("Each structure requires one lower-triangular cell.")
+            raise ValueError(f"Structure {ordinal} needs one lower-triangular cell.")
         if cell.periodic != periodic:
             raise ValueError(
                 f"Structures must share periodicity: structure {ordinal} has "
@@ -251,7 +261,7 @@ def payload_from_structures(
         if particles.data.system.num_labels != 1 or not bool(
             jnp.all(particles.data.system.valid_mask)
         ):
-            raise ValueError("Each structure must contain one complete system.")
+            raise ValueError(f"Structure {ordinal} must be one complete system.")
         cell = Cell.from_pbc(TriclinicFrame.from_matrix(cell.vectors), cell.periodic)
         n = len(particles.keys)
         if n > capacity:
@@ -301,8 +311,8 @@ def idle_payload(
 ) -> RelaxPayload:
     """An unoccupied slot (ordinal -1) in a finite cubic placeholder cell.
 
-    The cell side is ``2 * cutoff`` so a neighbor list sees one image per axis
-    and a handful of cells; a degenerate cell would produce NaNs or huge
+    The cell side is ``max(2 * cutoff, 1.0)``, so a neighbor list sees one image
+    per axis and a handful of cells; a degenerate cell would produce NaNs or huge
     candidate counts.
     """
     side = max(2.0 * float(cutoff), 1.0)
@@ -373,10 +383,15 @@ def estimate_neighborlist_params(
     [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate]
     are taken over ``sample`` as if it were one batch and scaled by the sample's
     mean slot occupancy, since padding rows count towards the buffers but
-    produce no candidates. Buffer size is the dominant per-step cost, so this
-    sizes for the typical batch; an unusually demanding batch grows the
-    capacities through the retry loop at the price of a recompile, which
-    ``multiplier`` trades against.
+    produce no candidates. Buffer size dominates the per-step cost, so this
+    sizes for the typical batch. A batch that overflows the buffers grows them
+    through the retry loop at the cost of a recompile; ``multiplier`` sets the
+    headroom.
+
+    Raises:
+        ValueError: If ``sample`` is empty or
+            [payload_from_structures][kups.application.relaxation.streaming.payload_from_structures]
+            cannot pack it.
     """
     if not sample:
         raise ValueError("Need at least one structure to size the neighbor list.")
@@ -405,12 +420,12 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
 ) -> tuple[Propagator[State], OptInit[OptState], OptReset[OptState]]:
     """Relax occupied slots and flag finished ones for refill.
 
-    Completed slots retain their evaluated geometry (up to the gradient
-    filter's round-off). Compose [RefillGate][kups.core.stream.RefillGate]
-    before this step to service finished slots through
-    [propagate_and_fix][kups.core.propagator.propagate_and_fix]. A final
-    evaluation after the last allowed update ensures that budget-exhausted
-    results also carry consistent energy and gradients.
+    A finished slot keeps its last evaluated geometry (up to the gradient
+    filter's round-off) with that geometry's energy and gradients. A job that
+    reaches ``max_steps`` is evaluated at its final geometry before it
+    finishes. Compose [RefillGate][kups.core.stream.RefillGate] before this
+    step to service finished slots through
+    [propagate_and_fix][kups.core.propagator.propagate_and_fix].
 
     Args:
         state_lens: Lens onto the streaming sub-state; pass the same lens to
