@@ -861,7 +861,7 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
             target = jnp.where(ok, self.slots, n_pad + 1)
 
             def write(current: Array, new: Array) -> Array:
-                return current.at[target].set(new, mode="drop")
+                return current.at[target].set(new.astype(current.dtype), mode="drop")
 
             def rewrite[Key: SupportsSorting](
                 current: Array | Index[Key], new: Array | Index[Key]
