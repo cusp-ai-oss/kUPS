@@ -6,25 +6,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from kups.core.effects.util import split_sequence
 from kups.core.utils._jax_compat import get_bind_params
-
-
-class TestUtilities:
-    def test_split_sequence_basic_and_multi(self):
-        seq = tuple(range(6))
-        first, rest = split_sequence(seq, (2,))
-        assert first == (0, 1) and rest == (2, 3, 4, 5)
-        a, b, c = split_sequence(seq, (2, 2))
-        assert a == (0, 1) and b == (2, 3) and c == (4, 5)
-
-    def test_split_sequence_arrays(self):
-        arrs = [jnp.array([1, 2]), jnp.array([3, 4]), jnp.array([5, 6])]
-        (p1,), (p2, p3) = split_sequence(arrs, (1,))
-        assert jnp.allclose(p1, jnp.array([1, 2]))
-        assert jnp.allclose(p2, jnp.array([3, 4])) and jnp.allclose(
-            p3, jnp.array([5, 6])
-        )
 
 
 class TestGetBindParams:

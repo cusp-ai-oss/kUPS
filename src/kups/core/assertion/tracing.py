@@ -13,7 +13,7 @@ from typing import Any, Self
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, jaxpr_as_fun
+from jax.extend.core import JaxprEqn, jaxpr_as_fun
 
 from kups.core.assertion.primitives import assertion_p, check_assertion_p
 from kups.core.assertion.runtime_assertion import (
@@ -21,12 +21,10 @@ from kups.core.assertion.runtime_assertion import (
     RuntimeAssertion,
 )
 from kups.core.effects import (
-    Dispatcher,
     HandlerResult,
     Interpreter,
     InterpreterPolicy,
     TracerValue,
-    contains_subjaxprs,
     default_checkpoint_handler,
     default_jit_handler,
     default_primitive_handler,
@@ -290,32 +288,6 @@ def shard_map_handler(
     )
 
 
-def _contains_assertion_primitive[Context](
-    ctx: Context,  # type: ignore
-    eqn: JaxprEqn,
-    invals: list[TracerValue],
-) -> bool:
-    """Whether ``eqn`` has a sub-jaxpr that records or checks assertions."""
-    for leaf in jax.tree.leaves(
-        eqn.params, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
-    ):
-        if isinstance(leaf, ClosedJaxpr):
-            jaxpr = leaf.jaxpr
-        elif isinstance(leaf, Jaxpr):
-            jaxpr = leaf
-        else:
-            continue
-        assert isinstance(jaxpr, Jaxpr)
-        for eqn in jaxpr.eqns:
-            if eqn.primitive in (assertion_p, check_assertion_p):
-                return True
-            # Recursively check for nested jaxprs
-            if contains_subjaxprs(ctx, eqn, invals):
-                if _contains_assertion_primitive(ctx, eqn, invals):
-                    return True
-    return False
-
-
 def with_runtime_assertions[**P, R](
     fn: Callable[P, R],
     policy: InterpreterPolicy = InterpreterPolicy.RAISE,
@@ -331,10 +303,9 @@ def with_runtime_assertions[**P, R](
 
     Args:
         fn: The function to wrap with assertion tracing capabilities
-        policy: Controls interpreter behavior on unhandled operations:
-            - RAISE: Raise exception on unknown operations (default, safest)
-            - WARN: Issue warning and continue with original function
-            - SKIP: Silently continue with original function
+        policy: What to do with assertions the interpreter cannot reach, e.g.
+            inside ``jax.custom_jvp``: RAISE (default), WARN or IGNORE (see
+            [InterpreterPolicy][kups.core.effects.interpreter.InterpreterPolicy]).
         context_sharding: Optional sharding specification for distributed contexts.
             When provided, assertion contexts are sharded according to this spec
             for multi-device computations.
@@ -400,20 +371,21 @@ def with_runtime_assertions[**P, R](
         control flow operations and maintain correct semantics under
         transformations.
     """
-    dispatcher = Dispatcher(
-        handlers={
-            "assertion": assertion_handler,
-            "check_assertion": check_assertion_handler,
+    interpreter = Interpreter(
+        {
+            assertion_p: assertion_handler,
+            check_assertion_p: check_assertion_handler,
             "jit": default_jit_handler,
             "remat2": default_checkpoint_handler,
             "scan": scan_handler,
             "while": while_handler,
             "cond": cond_handler,
             "shard_map": partial(shard_map_handler, context_sharding=context_sharding),
-        }
-    ).register_custom_matching_rule(_contains_assertion_primitive)
-
-    interpreter = Interpreter(dispatcher, policy=policy, label="assertion_interpreter")
+        },
+        effects=(assertion_p, check_assertion_p),
+        policy=policy,
+        label="assertion_interpreter",
+    )
 
     reinterpreted = reinterpret(fn, interpreter=interpreter)
 

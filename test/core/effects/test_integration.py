@@ -44,7 +44,9 @@ class TestIntegration:
         while_handler = handler_factory.create_while_handler("while")
         # Omit scan handler to exercise WARN fallback
         interpreter = create_test_interpreter(
-            {"jit": jit_handler, "while": while_handler}, policy=InterpreterPolicy.WARN
+            {"jit": jit_handler, "while": while_handler},
+            policy=InterpreterPolicy.WARN,
+            effects=frozenset({"sin"}),
         )
 
         def fn(x):
@@ -59,8 +61,10 @@ class TestIntegration:
                     return (a + 1, b + 1)
 
                 res = jax.lax.while_loop(cond, body, (0, 0))
-                # Unhandled scan triggers warning
-                _ = jax.lax.scan(lambda c, xi: (c + xi, c), 0, jnp.arange(3))
+                # Unhandled scan with an effect inside triggers the warning
+                _ = jax.lax.scan(
+                    lambda c, xi: (c + jnp.sin(xi), c), 0.0, jnp.arange(3.0)
+                )
                 return res
 
             return inner(x)

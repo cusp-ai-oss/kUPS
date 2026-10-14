@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterator, Mapping
 from enum import Enum
-from typing import Any, Concatenate, NamedTuple, Self
+from typing import Any, Concatenate, NamedTuple
 
 import jax
 import jax.core
@@ -18,16 +18,24 @@ from jax.interpreters import partial_eval as pe
 from kups.core.effects.environment import InterpreterEnvironment
 from kups.core.utils._jax_compat import get_bind_params
 
-type PyTreeDef = Any
 type TracerValue = Any
 
 
 class InterpreterPolicy(Enum):
+    """What to do with an effect the interpreter cannot reach.
+
+    That is an effect primitive without a handler, or an unhandled primitive
+    whose sub-jaxprs contain an effect primitive.
+    """
+
     RAISE = "raise"
+    """Raise ``NotImplementedError``."""
 
     WARN = "warn"
+    """Warn, then bind the primitive unchanged. Its effects are lost."""
 
     IGNORE = "ignore"
+    """Bind the primitive unchanged. Its effects are lost."""
 
 
 class HandlerResult[Context](NamedTuple):
@@ -39,117 +47,74 @@ type Handler[Context] = Callable[
     [Interpreter[Context], Context, JaxprEqn, list[TracerValue]], HandlerResult[Context]
 ]
 
-type MatchingRule[Context] = Callable[[Context, JaxprEqn, list[TracerValue]], bool]
+
+def _name(primitive: Primitive | str) -> str:
+    return primitive.name if isinstance(primitive, Primitive) else primitive
 
 
-def contains_subjaxprs[Context](
-    ctx: Context,  # type: ignore
-    eqn: JaxprEqn,
-    invals: list[TracerValue],
-) -> bool:
+def _sub_jaxprs(eqn: JaxprEqn) -> Iterator[Jaxpr]:
     leaves = jax.tree.leaves(
         eqn.params, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
     )
-    return any(isinstance(leaf, (Jaxpr, ClosedJaxpr)) for leaf in leaves)
+    for leaf in leaves:
+        if isinstance(leaf, ClosedJaxpr):
+            yield leaf.jaxpr
+        elif isinstance(leaf, Jaxpr):
+            yield leaf
 
 
-class Dispatcher[Context]:
-    _custom_matching_rules: list[MatchingRule[Context]]
-    _handler_registry: dict[str, Handler[Context]]
-
-    def __init__(self, handlers: dict[Primitive | str, Handler[Context]] | None = None):
-        self._custom_matching_rules = []
-        self._handler_registry = {}
-        if handlers:
-            for prim, handler in handlers.items():
-                self.register_handler(prim, handler)
-
-    def has_custom_matching_rule(self) -> bool:
-        return len(self._custom_matching_rules) > 0
-
-    def matches_custom_rule(
-        self, ctx: Context, eqn: JaxprEqn, invals: list[TracerValue]
-    ) -> bool:
-        return any(rule(ctx, eqn, invals) for rule in self._custom_matching_rules)
-
-    def register_custom_matching_rule(self, rule: MatchingRule[Context]) -> Self:
-        self._custom_matching_rules.append(rule)
-        return self
-
-    def register_handler(
-        self, prim: Primitive | str, handler: Handler[Context]
-    ) -> Self:
-        if isinstance(prim, Primitive):
-            prim = prim.name
-        self._handler_registry[prim] = handler
-        return self
-
-    def is_registered(self, prim: Primitive | str) -> bool:
-        if isinstance(prim, Primitive):
-            prim = prim.name
-        return prim in self._handler_registry
-
-    def unregister_handler(self, prim: Primitive | str) -> Self:
-        if isinstance(prim, Primitive):
-            prim = prim.name
-        if prim not in self._handler_registry:
-            raise KeyError(f"Primitive {prim} not registered")
-        del self._handler_registry[prim]
-        return self
-
-    def dispatch(
-        self,
-        interpreter: "Interpreter[Context]",
-        ctx: Context,
-        eqn: JaxprEqn,
-        invals: list[Any],
-    ) -> HandlerResult[Context]:
-        try:
-            handler = self._handler_registry[eqn.primitive.name]
-        except KeyError:
-            raise NotImplementedError(f"Primitive {eqn.primitive} not registered")
-        return handler(interpreter, ctx, eqn, invals)
+def bind_primitive(eqn: JaxprEqn, invals: list[TracerValue]) -> list[TracerValue]:
+    """Bind ``eqn``'s primitive to ``invals`` unchanged."""
+    subfuns, bind_params = get_bind_params(eqn)
+    outvals = eqn.primitive.bind(*subfuns, *invals, **bind_params)
+    return outvals if eqn.primitive.multiple_results else [outvals]
 
 
 class Interpreter[Context]:
-    policy: InterpreterPolicy
-    dispatcher: Dispatcher[Context]
+    """Evaluate a jaxpr while threading a context through effect handlers.
+
+    Args:
+        handlers: Handler per primitive. Every equation of a listed primitive
+            goes to its handler; all other primitives are bound unchanged.
+        effects: Primitives that perform effects. Applies ``policy`` when one is
+            not handled, directly or inside an unhandled primitive's sub-jaxpr.
+        policy: What to do with such an unreachable effect.
+        label: Name used in tracing debug info.
+    """
 
     def __init__(
         self,
-        dispatcher: Dispatcher[Context],
+        handlers: Mapping[Primitive | str, Handler[Context]],
+        *,
+        effects: Collection[Primitive | str] = (),
         policy: InterpreterPolicy = InterpreterPolicy.RAISE,
         label: str = "",
     ):
-        self.dispatcher = dispatcher
+        self.handlers: Mapping[str, Handler[Context]] = {
+            _name(p): h for p, h in handlers.items()
+        }
+        self.effects: frozenset[str] = frozenset(map(_name, effects))
         self.policy = policy
-        self._label = label
+        self.label = label
 
-    @property
-    def label(self) -> str:
-        return self._label
-
-    def _handle_default_primitive(
-        self,
-        ctx: Context,
-        eqn: JaxprEqn,
-        invals: list[TracerValue],
-    ) -> HandlerResult[Context]:
-        subfuns, bind_params = get_bind_params(eqn)
-        outvals = eqn.primitive.bind(*subfuns, *invals, **bind_params)
-        if not eqn.primitive.multiple_results:
-            outvals = [outvals]
-        return HandlerResult(ctx, outvals)
-
-    def _requires_dispatch(
-        self, ctx: Context, eqn: JaxprEqn, invals: list[Any]
-    ) -> bool:
-        return any(
-            (
-                self.dispatcher.matches_custom_rule(ctx, eqn, invals),
-                self.dispatcher.is_registered(eqn.primitive),
-            )
+    def _has_effect(self, eqn: JaxprEqn) -> bool:
+        """Whether ``eqn`` is an effect or has one in a sub-jaxpr."""
+        return eqn.primitive.name in self.effects or any(
+            self._has_effect(inner)
+            for jaxpr in _sub_jaxprs(eqn)
+            for inner in jaxpr.eqns
         )
+
+    def _handler(self, eqn: JaxprEqn) -> Handler[Context] | None:
+        handler = self.handlers.get(eqn.primitive.name)
+        if handler is not None or not self._has_effect(eqn):
+            return handler
+        message = f"No handler for {eqn.primitive}, which performs or contains effects."
+        if self.policy == InterpreterPolicy.RAISE:
+            raise NotImplementedError(message)
+        if self.policy == InterpreterPolicy.WARN:
+            warnings.warn(f"{message} Its effects are ignored.", stacklevel=2)
+        return None
 
     def __call__(
         self, jaxpr: ClosedJaxpr, ctx: Context, *args: Any
@@ -169,19 +134,11 @@ class Interpreter[Context]:
             with source_info_util.user_context(
                 eqn.source_info.traceback, name_stack=name_stack
             ):
-                if self._requires_dispatch(ctx, eqn, invals):
-                    try:
-                        ctx, outvals = self.dispatcher.dispatch(self, ctx, eqn, invals)
-                    except NotImplementedError:
-                        if self.policy == InterpreterPolicy.RAISE:
-                            raise
-                        elif self.policy == InterpreterPolicy.WARN:
-                            warnings.warn(
-                                f"Handling of {eqn.primitive} is not implemented. Potential sub expressions will thus be ignored."
-                            )
-                        ctx, outvals = self._handle_default_primitive(ctx, eqn, invals)
+                handler = self._handler(eqn)
+                if handler is None:
+                    outvals = bind_primitive(eqn, invals)
                 else:
-                    ctx, outvals = self._handle_default_primitive(ctx, eqn, invals)
+                    ctx, outvals = handler(self, ctx, eqn, invals)
 
             try:
                 env.write_many(eqn.outvars, outvals)

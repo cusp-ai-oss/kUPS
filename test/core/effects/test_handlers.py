@@ -1051,7 +1051,7 @@ class TestCheckpoint:
 class TestPolicies:
     def test_policy_raise_unimplemented(self):
         interpreter = create_test_interpreter(
-            {}, policy=InterpreterPolicy.RAISE, include_in_match=frozenset({"sin"})
+            {}, policy=InterpreterPolicy.RAISE, effects=frozenset({"sin"})
         )
 
         def fn(x: jax.Array):
@@ -1064,7 +1064,7 @@ class TestPolicies:
 
     def test_policy_warn_unimplemented(self):
         interpreter = create_test_interpreter(
-            {}, policy=InterpreterPolicy.WARN, include_in_match=frozenset({"sin"})
+            {}, policy=InterpreterPolicy.WARN, effects=frozenset({"sin"})
         )
 
         def fn(x: jax.Array):
@@ -1077,7 +1077,7 @@ class TestPolicies:
 
     def test_policy_ignore_unimplemented(self):
         interpreter = create_test_interpreter(
-            {}, policy=InterpreterPolicy.IGNORE, include_in_match=frozenset({"sin"})
+            {}, policy=InterpreterPolicy.IGNORE, effects=frozenset({"sin"})
         )
 
         def fn(x: jax.Array):
@@ -1091,14 +1091,14 @@ class TestPolicies:
 
 class TestErrorPaths:
     def test_scan_missing_handler_policy_warn(self):
-        # No scan handler; policy WARN should emit warning when scan encountered
+        # No scan handler; WARN should warn about the effect inside the scan.
         interpreter = create_test_interpreter(
-            {}, policy=InterpreterPolicy.WARN, include_in_match=frozenset({"scan"})
+            {}, policy=InterpreterPolicy.WARN, effects=frozenset({"sin"})
         )
 
         def fn(_: jax.Array):
             def body(c, x):
-                return c + 1, x
+                return c + 1, jnp.sin(x)
 
             return jax.lax.scan(body, 0, jnp.arange(2))
 

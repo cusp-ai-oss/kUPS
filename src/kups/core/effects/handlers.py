@@ -16,9 +16,9 @@ from kups.core.effects.interpreter import (
     HandlerResult,
     Interpreter,
     TracerValue,
+    bind_primitive,
     reinterpret,
 )
-from kups.core.effects.util import split_sequence
 from kups.core.utils._jax_compat import (
     get_bind_params,
     manual_axes_kwarg,
@@ -34,11 +34,7 @@ def default_primitive_handler[Context](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[Context]:
-    subfuns, bind_params = get_bind_params(eqn)
-    outvals = eqn.primitive.bind(*subfuns, *invals, **bind_params)
-    if not eqn.primitive.multiple_results:
-        outvals = [outvals]
-    return HandlerResult(ctx, outvals)
+    return HandlerResult(ctx, bind_primitive(eqn, invals))
 
 
 def default_jit_handler[Context](
@@ -187,9 +183,10 @@ def default_while_handler[Context](
     num_cond_consts = bind_params["cond_nconsts"]
     num_body_consts = bind_params["body_nconsts"]
 
-    cond_consts, body_consts, nonconst_invals = split_sequence(
-        invals, (num_cond_consts, num_body_consts)
-    )
+    n_consts = num_cond_consts + num_body_consts
+    cond_consts = invals[:num_cond_consts]
+    body_consts = invals[num_cond_consts:n_consts]
+    nonconst_invals = invals[n_consts:]
 
     _, ctx_out_tree = (
         jax.jit(partial(interpreter, body_jaxpr))

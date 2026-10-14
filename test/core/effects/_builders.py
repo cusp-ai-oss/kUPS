@@ -19,14 +19,12 @@ from kups.core.effects.handlers import (
     default_while_handler,
 )
 from kups.core.effects.interpreter import (
-    Dispatcher,
     Handler,
     HandlerResult,
     Interpreter,
     InterpreterPolicy,
     JaxprEqn,
     TracerValue,
-    contains_subjaxprs,
 )
 
 
@@ -354,20 +352,9 @@ class HandlerFactory:
         return handler
 
 
-def create_test_dispatcher(
-    handlers: dict[Any, Handler[MockContext]],
-) -> Dispatcher[MockContext]:
-    dispatcher = Dispatcher(handlers)
-    dispatcher.register_custom_matching_rule(contains_subjaxprs)
-    return dispatcher
-
-
 def create_test_interpreter(
     handlers: dict[Any, Handler[MockContext]],
     policy: InterpreterPolicy = InterpreterPolicy.WARN,
-    include_in_match: frozenset[str] = frozenset(),
+    effects: frozenset[str] = frozenset(),
 ) -> Interpreter[MockContext]:
-    dispatcher = create_test_dispatcher(handlers).register_custom_matching_rule(
-        lambda ctx, eqn, invals: eqn.primitive.name in include_in_match
-    )
-    return Interpreter(dispatcher=dispatcher, policy=policy)
+    return Interpreter(handlers, effects=effects, policy=policy)

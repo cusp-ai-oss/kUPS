@@ -9,43 +9,57 @@ import jax.numpy as jnp
 import pytest
 
 from kups.core.effects.interpreter import (
-    Dispatcher,
     Interpreter,
     InterpreterPolicy,
-    contains_subjaxprs,
+    reinterpret,
 )
 
 from ._builders import HandlerFactory, MockContext, create_test_interpreter
 
 
-class TestDispatcher:
-    def test_basic_registration_cycle(self, handler_factory: HandlerFactory):
-        dispatcher = Dispatcher({})
-        sin_handler = handler_factory.create_primitive_handler("sin")
-        assert not dispatcher.is_registered(jax.lax.sin_p)
-        dispatcher.register_handler(jax.lax.sin_p, sin_handler)
-        assert dispatcher.is_registered(jax.lax.sin_p)
-        dispatcher.unregister_handler(jax.lax.sin_p)
-        assert not dispatcher.is_registered(jax.lax.sin_p)
-        dispatcher.register_custom_matching_rule(contains_subjaxprs)
-        assert dispatcher.has_custom_matching_rule()
-        with pytest.raises(KeyError):
-            dispatcher.unregister_handler(jax.lax.sin_p)
+def _sin_inside_scan(x: jax.Array) -> jax.Array:
+    return jax.lax.scan(lambda c, xi: (c + jnp.sin(xi), None), x, jnp.arange(2.0))[0]
 
 
 class TestInterpreter:
-    def test_policy_and_label(self):
-        dispatcher = Dispatcher({})
-        assert Interpreter(dispatcher=dispatcher).policy == InterpreterPolicy.RAISE
-        assert (
-            Interpreter(dispatcher=dispatcher, policy=InterpreterPolicy.WARN).policy
-            == InterpreterPolicy.WARN
+    def test_defaults(self):
+        interpreter = Interpreter({"sin": lambda *_: None}, label="x")
+        assert interpreter.policy == InterpreterPolicy.RAISE
+        assert interpreter.label == "x"
+        assert set(interpreter.handlers) == {"sin"}
+
+    def test_keys_accept_primitives_and_names(self):
+        interpreter = Interpreter(
+            {jax.lax.sin_p: lambda *_: None}, effects=(jax.lax.cos_p, "exp")
         )
-        assert (
-            Interpreter(dispatcher=dispatcher, policy=InterpreterPolicy.IGNORE).policy
-            == InterpreterPolicy.IGNORE
+        assert set(interpreter.handlers) == {"sin"}
+        assert interpreter.effects == {"cos", "exp"}
+
+    def test_unhandled_primitive_without_effects_is_bound(self):
+        interpreter = create_test_interpreter({}, policy=InterpreterPolicy.RAISE)
+        out, _ = reinterpret(_sin_inside_scan, interpreter)(
+            MockContext((), ()), jnp.array(0.0)
         )
-        assert Interpreter(dispatcher=dispatcher, label="x").label == "x"
+        assert jnp.allclose(out, jnp.sin(0.0) + jnp.sin(1.0))
+
+    def test_effect_inside_unhandled_primitive_raises(self):
+        interpreter = create_test_interpreter(
+            {}, policy=InterpreterPolicy.RAISE, effects=frozenset({"sin"})
+        )
+        with pytest.raises(NotImplementedError, match="scan"):
+            reinterpret(_sin_inside_scan, interpreter)(
+                MockContext((), ()), jnp.array(0.0)
+            )
+
+    def test_handler_exceptions_are_not_swallowed(self):
+        def failing(*_):
+            raise NotImplementedError("from handler")
+
+        interpreter = create_test_interpreter(
+            {"sin": failing}, policy=InterpreterPolicy.IGNORE
+        )
+        with pytest.raises(NotImplementedError, match="from handler"):
+            reinterpret(jnp.sin, interpreter)(MockContext((), ()), jnp.array(0.0))
 
 
 class TestContextThreading:
@@ -55,7 +69,6 @@ class TestContextThreading:
         interpreter = create_test_interpreter(
             {"jit": jit_handler, jax.lax.sin_p: sin_handler}
         )
-        from kups.core.effects.interpreter import reinterpret
 
         def f(x):
             @jax.jit
@@ -72,7 +85,6 @@ class TestContextThreading:
     def test_scan_threads_carry_and_values(self, handler_factory: HandlerFactory):
         scan_handler = handler_factory.create_scan_handler("scan")
         interpreter = create_test_interpreter({"scan": scan_handler})
-        from kups.core.effects.interpreter import reinterpret
 
         def f(x):
             def body(carry, xi):

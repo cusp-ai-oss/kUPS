@@ -5,9 +5,8 @@
 
 Code performs an effect by binding a custom JAX primitive. An
 [Interpreter][kups.core.effects.interpreter.Interpreter] re-traces a function
-and passes each primitive matched by a
-[Dispatcher][kups.core.effects.interpreter.Dispatcher] to its handler. Handlers
-read and update a context that is carried through the whole program, including
+and passes each primitive it has a handler for to that handler. Handlers read
+and update a context that is carried through the whole program, including
 `jit`, `scan`, `while_loop`, `cond` and `shard_map`. All other primitives are
 bound unchanged.
 
@@ -27,28 +26,24 @@ from kups.core.effects.handlers import (
     default_while_handler,
 )
 from kups.core.effects.interpreter import (
-    Dispatcher,
     Handler,
     HandlerResult,
     Interpreter,
     InterpreterPolicy,
-    MatchingRule,
     TracerValue,
-    contains_subjaxprs,
+    bind_primitive,
     reinterpret,
 )
 
 __all__ = [
-    "Dispatcher",
     "Handler",
     "HandlerResult",
     "Interpreter",
     "InterpreterEnvironment",
     "InterpreterPolicy",
-    "MatchingRule",
     "TracerValue",
     "Uninitialized",
-    "contains_subjaxprs",
+    "bind_primitive",
     "default_checkpoint_handler",
     "default_cond_handler",
     "default_jit_handler",
