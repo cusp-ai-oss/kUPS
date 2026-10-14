@@ -32,6 +32,7 @@ from kups.core.propagator import (
     SequentialPropagator,
     StatePropertySum,
     SwitchPropagator,
+    _apply_selected,
     _cond_or_zeros,
     compose_propagators,
     propagate_and_fix,
@@ -1473,3 +1474,23 @@ class TestBakeConstantsPropagator:
             expected = propagate(key, expected)
         npt.assert_allclose(state.position, expected.position)
         npt.assert_allclose(state.velocity, expected.velocity)
+
+
+@pytest.mark.parametrize("backend", ["cpu", "gpu"])
+@pytest.mark.parametrize("which", [0, 1, 2])
+def test_apply_selected_updates_only_the_chosen_leaves(
+    monkeypatch: pytest.MonkeyPatch, backend: str, which: int
+) -> None:
+    monkeypatch.setattr(jax, "default_backend", lambda: backend)
+    state = {"a": jnp.zeros(3), "b": jnp.zeros(2), "c": jnp.ones(())}
+    schedulers = (
+        lambda s, x: {**s, "a": s["a"] + x},
+        lambda s, x: {**s, "b": s["b"] - x},
+        lambda s, x: s,
+    )
+    out = jax.jit(_apply_selected, static_argnums=1)(
+        jnp.array(which), schedulers, state, jnp.array(2.0)
+    )
+    npt.assert_array_equal(out["a"], jnp.full(3, 2.0 if which == 0 else 0.0))
+    npt.assert_array_equal(out["b"], jnp.full(2, -2.0 if which == 1 else 0.0))
+    npt.assert_array_equal(out["c"], 1.0)
