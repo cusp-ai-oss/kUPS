@@ -13,11 +13,10 @@ Slots are ordinary ``Table``/``Index`` relations: gather a slotted view with
 
 - **[reserve_slots][kups.core.stream.reserve_slots]**: Reserves one contiguous
   block of ``capacity`` rows per slot.
-- **[slot_owners][kups.core.stream.slot_owners]**: Maps each row back to the
-  slot that reserves it. Unlike a particle's ``system`` index, which marks
-  padding rows out of bounds, it does not depend on occupancy, so per-slot
-  state such as an optimizer's per-system reductions and resets also covers
-  rows a future system will occupy.
+- **[slot_owners][kups.core.stream.slot_owners]**: Maps each reserved row to
+  its slot, including padding rows, which a particle's ``system`` index marks
+  out of bounds. Per-slot state built on it, such as an optimizer's per-system
+  reductions and resets, also covers rows a future system will occupy.
 - **[RefillGate][kups.core.stream.RefillGate]**: Lets compiled code
   ask the host for new systems through a failing
   [runtime_assert][kups.core.assertion.runtime_assert]; its fix runs the
@@ -41,7 +40,7 @@ from kups.core.utils.jax import dataclass, field, is_traced
 
 
 def reserve_slots(n_slots: int, capacity: int) -> Table[SystemId, Index[ParticleId]]:
-    """Reserve ``capacity`` particle rows per system, including unused payload rows."""
+    """Reserve particle rows ``[i * capacity, (i + 1) * capacity)`` for slot ``i``."""
     if n_slots < 1 or capacity < 1:
         raise ValueError("n_slots and capacity must be positive.")
     return Table.arange(
@@ -58,10 +57,11 @@ def reserve_slots(n_slots: int, capacity: int) -> Table[SystemId, Index[Particle
 def slot_owners(
     slots: Table[SystemId, Index[ParticleId]],
 ) -> Table[ParticleId, Index[SystemId]]:
-    """Map reserved particle rows to systems, independent of payload occupancy.
+    """Map each reserved particle row to its slot, occupied or not.
 
-    Reservations must be disjoint, with shape ``(n_slots, capacity)``. They need
-    not be contiguous; unreserved rows receive an invalid system index.
+    Reservations have shape ``(n_slots, capacity)`` and must be disjoint. They
+    need not be contiguous; out-of-bounds entries reserve no row. Unreserved
+    rows map to an out-of-bounds slot index.
 
     Raises:
         ValueError: If reservations are not two-dimensional or, when concrete,
@@ -96,68 +96,62 @@ def slot_owners(
 
 @dataclass
 class RefillGate[State](Propagator[State]):
-    """Ask the host to refill slots, through a failing runtime assertion.
+    """Ask the host to refill slots through a failing runtime assertion.
 
-    Does no numerical work. Each call asserts that no slot is flagged in
-    ``requested``. While any slot is, the assertion fails and its fix runs
-    ``refill(state, requested(state))`` on the host; ``propagate_and_fix`` then
-    retries the cycle. ``refill`` must install new systems and clear every flag
-    it serviced, including for slots it leaves idle at end of input; otherwise
-    each retry fails again until ``propagate_and_fix`` runs out of tries.
+    Leaves the state unchanged. Each call asserts that no slot is flagged in
+    ``requested``. While any slot is, the assertion fails, its fix calls
+    ``refill(state, requested(state))`` on the host, and ``propagate_and_fix``
+    retries the cycle. ``refill`` must clear every flag, including those of
+    slots it leaves idle when the input is exhausted; otherwise every retry
+    fails again until ``propagate_and_fix`` runs out of tries.
 
-    Compose it at cycle level, before the numerical step's error recovery::
+    Compose it at cycle level, before the step's ``ResetOnErrorPropagator``::
 
         SequentialPropagator((RefillGate(...), ResetOnErrorPropagator(step)))
 
-    A pending request then fails the cycle before ``step`` commits:
-    ``ResetOnErrorPropagator`` rolls ``step`` back, the host refills, and the
-    retry runs ``step`` on the new systems. For a bounded block per cycle, loop
-    the wrapped step, ``LoopPropagator(ResetOnErrorPropagator(step), reps)``:
-    each iteration then rolls back on its own, so iterations committed before
-    a capacity failure survive its repair. Give the loop zero repetitions while
-    a request is pending, since every iteration of a repair-only attempt is
-    rolled back.
+    A pending request then makes ``ResetOnErrorPropagator`` roll ``step`` back,
+    and the retry runs ``step`` on the refilled slots. For a bounded block of
+    steps per cycle, loop the wrapped step,
+    ``LoopPropagator(ResetOnErrorPropagator(step), reps)``. Each iteration then
+    rolls back on its own, so steps committed before a capacity failure survive
+    its repair. Give the loop zero repetitions while a request is pending:
+    every iteration of that attempt rolls back.
 
-    Constraints, and why:
+    Constraints:
 
-    - One refill per host cycle. ``propagate_and_fix`` bounds its retries, so
-      refill is a single repair, not a loop. A request raised by the refilled
-      step is serviced next cycle. For the same reason the gate belongs outside
-      any ``LoopPropagator``: there, a request raised by a later iteration
-      fails the retry again.
-    - A request must survive to the end of the attempt. A driver that rolls
-      back several cycles as one unit (a scanned block checked once at the
-      end) discards the step that raised it, so the fix would find no flagged
-      slot; it raises ``RuntimeError`` instead of retrying in vain. Run the
-      gate one cycle per attempt.
-    - The request mask is re-read from state rather than carried in
-      ``fix_args`` (an empty tuple). State is the source of truth, and
-      assertion payloads leaving a ``while`` loop such as ``LoopPropagator``
-      are reduced by elementwise maximum (see ``assertion.while_handler``),
-      which turns a boolean mask all ``True``.
-    - ``refill`` runs on the host and is not transactional. If it raises, the
-      cycle aborts without undoing input consumed or output written. Validate
-      replacements before committing them, snapshot completed results before
-      overwriting a slot, and keep job identities separate from the reusable
-      slot keys.
+    - One refill per host cycle, since ``propagate_and_fix`` bounds its
+      retries. A request raised by ``step`` after a refill waits for the next
+      cycle. Keep the gate outside any ``LoopPropagator``: inside one, a later
+      iteration's request fails the retry again.
+    - One cycle per attempt. A driver that rolls back several cycles as one
+      unit, such as a scanned block checked once at its end, can discard the
+      cycle that raised a request; the fix then finds no flagged slot and
+      raises ``RuntimeError``.
+    - ``refill`` is not transactional. If it raises, the cycle aborts without
+      undoing consumed input or written output. Validate replacements before
+      committing them, copy finished results out before overwriting a slot,
+      and track jobs by their own identity, since slot keys are reused.
 
     Attributes:
-        requested: View returning one boolean per slot; ``True`` requests new
-            work for that slot.
-        refill: Host callback ``(state, requested) -> state`` that services the
-            flagged slots and clears their flags.
+        requested: View returning one boolean per slot; ``True`` requests a
+            refill of that slot.
+        refill: Host callback ``(state, requested) -> state`` that refills the
+            flagged slots.
     """
 
     requested: View[State, Table[SystemId, Array]] = field(static=True)
     refill: Fix[State, Table[SystemId, Array]] = field(static=True)
 
     def _fix(self, state: State, unused: tuple[()]) -> State:
+        # Read the mask from the state being repaired, not from fix_args: the
+        # driver may have rolled that state back, and assertion.while_handler
+        # max-reduces fix_args from a -inf sentinel, which sets every flag.
         requested = self.requested(state)
         if not bool(requested.data.any()):
             raise RuntimeError(
                 "Refill was requested, but no slot is flagged in the state passed "
                 "to the fix: the cycle that raised the request was rolled back. "
-                "Run the refill gate one cycle per propagate_and_fix attempt."
+                "Run the refill gate one cycle per attempt."
             )
         return self.refill(state, requested)
 
