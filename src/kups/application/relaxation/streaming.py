@@ -20,7 +20,6 @@ from jax.typing import DTypeLike
 from kups.application.relaxation.data import (
     RelaxParticles,
     RelaxSystems,
-    relax_cell,
     relax_gradients,
     relax_index_prefix,
     relax_particles,
@@ -87,13 +86,13 @@ class IsStreamingRelaxState[OptState](IsRelaxState[OptState], Protocol):
     slot's current job.
 
     Attributes:
-        slot_ordinal: Job id of each slot's system, ``-1`` while the slot is idle.
+        ordinal: Job ordinal of each slot, ``-1`` while the slot is idle.
         finished: Per-slot refill request, set when a job has converged or used
             its update budget and cleared when the slot is replaced.
     """
 
     @property
-    def slot_ordinal(self) -> Array: ...
+    def ordinal(self) -> Array: ...
     @property
     def finished(self) -> Table[SystemId, Array]: ...
 
@@ -109,7 +108,7 @@ class StreamingRelaxState[OptState]:
 
     Attributes:
         step: Per-slot count of the current job's optimizer updates.
-        slot_ordinal: Job id of each slot's system, ``-1`` while the slot is idle.
+        ordinal: Job ordinal of each slot, ``-1`` while the slot is idle.
         finished: Per-slot refill request.
     """
 
@@ -118,7 +117,7 @@ class StreamingRelaxState[OptState]:
     neighborlist_params: UniversalNeighborlistParameters
     opt_state: OptState
     step: Array
-    slot_ordinal: Array
+    ordinal: Array
     finished: Table[SystemId, Array]
 
 
@@ -151,10 +150,10 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
             position_gradients=p.position_gradients,
             systems=s.systems.data,
             step=s.step,
-            ordinal=s.slot_ordinal,
+            ordinal=s.ordinal,
         )
 
-    def set(s: State, /, value: RelaxPayload) -> State:
+    def put(s: State, /, value: RelaxPayload) -> State:
         assert s.systems.keys == slots.keys, (
             "Reservations must match the batch systems."
         )
@@ -165,7 +164,7 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
         )
         return (
             bind(s)
-            .focus(lambda x: (x.particles, x.systems.data, x.step, x.slot_ordinal))
+            .focus(lambda x: (x.particles, x.systems.data, x.step, x.ordinal))
             .set(
                 (
                     rows.set(s.particles, particles),
@@ -176,7 +175,7 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
             )
         )
 
-    return LambdaLens(get, set)
+    return LambdaLens(get, put)
 
 
 def replace_slots[State, OptState](
@@ -283,7 +282,7 @@ def payload_from_structures(
                     is_leaf=lambda x: isinstance(x, Index),
                 ),
                 position_gradients=jnp.zeros((1, capacity, 3), dtype),
-                systems=relax_systems(relax_cell(cell, jnp.asarray([n], dtype))),
+                systems=relax_systems(cell, jnp.asarray([n], dtype)),
                 step=jnp.zeros((1,), int),
                 ordinal=jnp.asarray([ordinal], int),
             )
@@ -355,12 +354,12 @@ def make_streaming_relax_state[OptState](
         neighborlist_params=neighborlist_params,
         opt_state=opt_init(particles, systems),
         step=jnp.zeros(len(slots), int),
-        slot_ordinal=jnp.full(len(slots), -1, int),
+        ordinal=jnp.full(len(slots), -1, int),
         finished=systems.set_data(jnp.ones(len(slots), bool)),
     )
 
 
-def estimate_stream_neighborlist(
+def estimate_neighborlist_params(
     sample: Sequence[Structure],
     capacity: int,
     species: Sequence[Label],
@@ -460,12 +459,12 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
             include_cell=include_cell,
         )
         return converged.set_data(
-            (sub.slot_ordinal >= 0) & (converged.data | (sub.step >= max_steps))
+            (sub.ordinal >= 0) & (converged.data | (sub.step >= max_steps))
         )
 
     def accept(s: State) -> Table[SystemId, Array]:
         done = finished(s)
-        return done.set_data((state_lens.get(s).slot_ordinal >= 0) & ~done.data)
+        return done.set_data((state_lens.get(s).ordinal >= 0) & ~done.data)
 
     owners = slot_owners(slots)
     step, init = make_relax_step(
@@ -479,11 +478,11 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
         ),
     )
 
-    def count(key: Array, s: State) -> State:
+    def count_and_flag(key: Array, s: State) -> State:
         del key
         sub = state_lens.get(s)
         done = finished(s)
-        advancing = (sub.slot_ordinal >= 0) & ~done.data
+        advancing = (sub.ordinal >= 0) & ~done.data
         return state_lens.focus(lambda x: (x.step, x.finished)).set(
             s, (sub.step + advancing.astype(sub.step.dtype), done)
         )
@@ -497,7 +496,7 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
         return optimizer.reset_layout.reset(opt_state, init(particles, systems), mask)
 
     return (
-        ResetOnErrorPropagator(SequentialPropagator((step, count))),
+        ResetOnErrorPropagator(SequentialPropagator((step, count_and_flag))),
         init,
         reset,
     )

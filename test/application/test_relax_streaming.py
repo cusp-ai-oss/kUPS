@@ -25,7 +25,7 @@ from kups.application.relaxation.streaming import (
     RelaxPayload,
     StreamingRelaxState,
     Structure,
-    estimate_stream_neighborlist,
+    estimate_neighborlist_params,
     idle_payload,
     make_streaming_relax_propagator,
     make_streaming_relax_state,
@@ -93,7 +93,7 @@ class Setup:
 
 def _setup(
     structures: Sequence[Structure],
-    slots: int,
+    n_slots: int,
     max_steps: int,
     tolerance: float,
     optimizer: str,
@@ -101,13 +101,13 @@ def _setup(
     reservations: Table[SystemId, Index[ParticleId]] | None = None,
 ) -> Setup:
     if reservations is None:
-        reservations = reserve_slots(slots, CAPACITY)
+        reservations = reserve_slots(n_slots, CAPACITY)
     state_lens = identity_lens(StreamingRelaxState[ChainOptState])
     gradient = FRECHET_FILTER if optimize_cell else POSITIONS_ONLY
     parameters = (
         bind(LJ)
         .focus(lambda p: p.cutoff)
-        .set(Table(reservations.keys, jnp.full(slots, 5.0)))
+        .set(Table(reservations.keys, jnp.full(n_slots, 5.0)))
     )
     potential = make_lennard_jones_from_state(
         state_lens, parameters=parameters, gradient=gradient
@@ -136,7 +136,7 @@ def _setup(
         max_steps=max_steps,
         include_cell=optimize_cell,
     )
-    nlp = estimate_stream_neighborlist(
+    nlp = estimate_neighborlist_params(
         structures, CAPACITY, SPECIES, LJ.cutoff, multiplier=2.0
     )
     return Setup(
@@ -152,7 +152,7 @@ def _setup(
 def _run(
     structures: Sequence[Structure],
     *,
-    slots: int = 2,
+    n_slots: int = 2,
     max_steps: int = 3,
     tolerance: float = 0.0,
     optimizer: str = "sgd",
@@ -161,7 +161,13 @@ def _run(
     reservations: Table[SystemId, Index[ParticleId]] | None = None,
 ) -> tuple[list[RelaxPayload], Setup]:
     setup = _setup(
-        structures, slots, max_steps, tolerance, optimizer, optimize_cell, reservations
+        structures,
+        n_slots,
+        max_steps,
+        tolerance,
+        optimizer,
+        optimize_cell,
+        reservations,
     )
     next_ordinal = 0
     completed: list[RelaxPayload] = []
@@ -186,7 +192,7 @@ def _run(
         requested, old = jax.device_get((mask.data, snapshot(s)))
         rows: list[RelaxPayload] = []
         emitted: list[RelaxPayload] = []
-        for i in range(slots):
+        for i in range(n_slots):
             if requested[i]:
                 if int(old.ordinal[i]) >= 0:
                     emitted.append(tree_map(lambda x: x[i : i + 1].copy(), old))
@@ -209,7 +215,7 @@ def _run(
     gate: RefillGate[Batch] = RefillGate(lambda s: s.finished, refill)
 
     def repetitions(s: Batch) -> Array:
-        run = ~s.finished.data.any() & (s.slot_ordinal >= 0).any()
+        run = ~s.finished.data.any() & (s.ordinal >= 0).any()
         return jnp.where(run, block_size, 0)
 
     cycle = make_cycle_function(
@@ -217,7 +223,7 @@ def _run(
     )
     for i in range(40):
         setup.state = propagate_and_fix(cycle, jax.random.key(i), setup.state)
-        if bool(jnp.all(setup.state.slot_ordinal < 0)):
+        if bool(jnp.all(setup.state.ordinal < 0)):
             break
     else:
         pytest.fail("Stream did not exhaust.")
@@ -274,7 +280,7 @@ def test_streamed_updates_match_fresh_single_structure_runs(
     for row in together:
         alone, _ = _run(
             [structures[int(row.ordinal[0])]],
-            slots=1,
+            n_slots=1,
             optimizer=optimizer,
             optimize_cell=optimize_cell,
         )
@@ -315,7 +321,7 @@ def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
         assert bool(moved > 1e-3) == (ordinal != 1)  # stepped jobs really moved
         alone, _ = _run(
             [structures[ordinal]],
-            slots=1,
+            n_slots=1,
             max_steps=max_steps,
             tolerance=tolerance,
             optimizer=optimizer,
@@ -399,7 +405,7 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
         reset=reset,
     )
     assert_type(state, WrappedState)
-    npt.assert_array_equal(state.batch.slot_ordinal, [0, -1])
+    npt.assert_array_equal(state.batch.ordinal, [0, -1])
     npt.assert_array_equal(state.batch.finished.data, [False, True])
     final = propagate_and_fix(make_cycle_function(step), jax.random.key(0), state)
     assert int(final.unrelated) == 17
