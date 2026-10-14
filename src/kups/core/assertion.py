@@ -31,27 +31,25 @@ from jax import Array
 from jax.core import ShapedArray
 from jax.extend.core import ClosedJaxpr, Jaxpr, JaxprEqn, Primitive, jaxpr_as_fun
 from jax.interpreters import ad, batching, mlir
-from slub.handlers import (
+
+from kups.core.effects import (
+    Dispatcher,
+    HandlerResult,
+    Interpreter,
+    InterpreterContext,
+    InterpreterPolicy,
     ScanSemantics,
+    TracerValue,
+    contains_subjaxprs,
     default_checkpoint_handler,
     default_jit_handler,
     default_primitive_handler,
     default_scan_handler,
     default_shard_map_handler,
     default_while_handler,
-)
-from slub.interpreter import (
-    Dispatcher,
-    HandlerResult,
-    Interpreter,
-    InterpreterContext,
-    InterpreterPolicy,
-    TracerValue,
-    contains_subjaxprs,
     reinterpret,
 )
-from slub.util import get_bind_params
-
+from kups.core.effects.util import get_bind_params
 from kups.core.lens import bind
 from kups.core.utils.jax import dataclass, field
 
