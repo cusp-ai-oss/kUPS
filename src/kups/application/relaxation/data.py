@@ -92,7 +92,7 @@ def relax_parameters(
     particles: Table[ParticleId, RelaxParticles],
     systems: Table[SystemId, RelaxSystems],
 ) -> PositionsAndCell:
-    """The optimizer DOF carrier ``(positions, cell)`` of a relaxation batch."""
+    """Raw ``(positions, cell)``, shaped like the optimizer DOFs."""
     return PositionsAndCell(
         particles.map_data(lambda p: p.positions), systems.map_data(lambda s: s.cell)
     )
@@ -136,15 +136,15 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
 
     ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
     cell-virial gradient against the per-atom forces in the joint optimiser.
+    Empty systems get factor 1, since a zero factor makes the cell NaN.
 
     Args:
-        cell: Cell(s) with a plain frame; a leading batch axis is added if the
-            frame is unbatched.
+        cell: Cells with a plain frame, one per system; an unbatched cell gains
+            a leading axis.
         n_atoms: Atom count per system, shape ``(n_systems,)``.
     """
     if cell.vectors.ndim == 2:
         cell = cell[None]
-    # An empty system (a streaming slot without work) keeps a finite factor.
     cell_factor = jnp.maximum(n_atoms, 1)
     cell = bind(cell, lambda x: x.frame).apply(
         lambda f: DeformedFrame.from_frame(
@@ -197,6 +197,10 @@ def relax_state_from_particles_and_cell(
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
+
+    Raises:
+        ValueError: If the system index does not have one entry per particle,
+            or ``cell`` does not hold one cell per system.
     """
     system = particles.data.system
     if system.shape != (len(particles),):
@@ -205,7 +209,10 @@ def relax_state_from_particles_and_cell(
     if cell.vectors.shape != expected_shape and not (
         system.num_labels == 1 and cell.vectors.shape == (3, 3)
     ):
-        raise ValueError(f"Expected cell vectors with shape {expected_shape}.")
+        raise ValueError(
+            f"Expected cell vectors with shape {expected_shape}, "
+            f"got {cell.vectors.shape}."
+        )
     n_atoms = system.counts.data.astype(particles.data.positions.dtype)
     return (
         particles.map_data(relax_particles),

@@ -110,8 +110,8 @@ def make_relax_step[State, OptState](
             row-to-slot mapping.
 
     Returns:
-        Tuple of ``(step, opt_init)``. ``step`` neither counts steps nor recovers
-        from capacity errors; see :func:`make_relax_propagator`.
+        Tuple of ``(step, opt_init)``. ``step`` does not count steps or roll back
+        on failed runtime assertions; :func:`make_relax_propagator` adds both.
     """
 
     def to_geometry(s: State) -> Geometry:
@@ -139,6 +139,10 @@ def make_relax_step[State, OptState](
             relax_parameters(particles, systems), index_prefix(particles, systems)
         )
 
+    def system_index(s: State) -> PositionsAndCellIndex:
+        sub = state_lens.get(s)
+        return index_prefix(sub.particles, sub.systems)
+
     step = RelaxationPropagator(
         potential=CachedPotential(
             potential,
@@ -148,14 +152,9 @@ def make_relax_step[State, OptState](
         property=lens(to_geometry).nest(gradient),
         opt_state=state_lens.focus(lambda x: x.opt_state),
         optimizer=optimizer,
-        mask=UpdateMask(
-            accept=accept,
-            system_index=lambda s: index_prefix(
-                state_lens.get(s).particles, state_lens.get(s).systems
-            ),
-        )
-        if accept is not None
-        else None,
+        mask=None
+        if accept is None
+        else UpdateMask(accept=accept, system_index=system_index),
     )
     return step, opt_init
 
@@ -177,20 +176,9 @@ def make_relax_propagator[State, OptState](
         optimisation step and *opt_init* initialises the optimizer state.
     """
 
-    step, init = make_relax_step(
-        state_lens,
-        potential,
-        optimizer,
-        gradient,
-    )
-    return ResetOnErrorPropagator(
-        SequentialPropagator(
-            (
-                step,
-                step_counter_propagator(state_lens.focus(lambda s: s.step)),
-            )
-        )
-    ), init
+    step, init = make_relax_step(state_lens, potential, optimizer, gradient)
+    count = step_counter_propagator(state_lens.focus(lambda s: s.step))
+    return ResetOnErrorPropagator(SequentialPropagator((step, count))), init
 
 
 def run_relax[State: IsRelaxState[object]](
@@ -206,6 +194,10 @@ def run_relax[State: IsRelaxState[object]](
 
     Returns:
         Final relaxation state after convergence or ``max_steps``.
+
+    Raises:
+        AssertionError: If a step leaves a non-finite position gradient, or a
+            non-finite cell gradient when ``config.optimize_cell`` is set.
     """
 
     @jit

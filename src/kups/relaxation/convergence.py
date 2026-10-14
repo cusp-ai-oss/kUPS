@@ -3,12 +3,10 @@
 
 """Per-system convergence criteria for gradient-based relaxation.
 
-ASE's ``fmax`` criterion generalised to a batch: every system converges on its
-own, judged by the largest norm of any of its DOF gradients. The helpers take
-the optimizer's ``PositionsAndCell`` gradient payload together with the
-matching ``index_prefix`` (per-particle ``system`` index and systems index)
-that the transforms in :mod:`kups.relaxation.transforms` use, so a batched run
-judges each system exactly as a single-system run would.
+ASE's ``fmax`` criterion per system: a system converges when its largest
+DOF-gradient norm is below the tolerance. The helpers take ``PositionsAndCell``
+gradients and a ``PositionsAndCellIndex`` that assigns each particle row and
+cell to its system, so each system in a batch is judged as if it ran alone.
 """
 
 from __future__ import annotations
@@ -40,17 +38,19 @@ def fmax_per_system(
 ) -> Table[SystemId, Array]:
     """Largest DOF-gradient norm of each system (ASE ``fmax``).
 
+    Non-finite gradients count as ``inf``. Rows with an out-of-bounds system
+    index (padding) are ignored.
+
     Args:
         gradients: DOF gradients ``∂E/∂u`` as the relaxation filter reports them.
         index_prefix: ``PositionsAndCellIndex(particles.data.system, systems.index)``.
         include_cell: Whether the cell DOF gradients take part in the maximum.
 
     Returns:
-        ``Table[SystemId, Array]`` of shape ``(n_systems,)``. A system without
-        particles evaluates to ``-inf`` when cell gradients are excluded.
+        Maximum per system, shape ``(n_systems,)``. A system without particles
+        is ``-inf`` when cell gradients are excluded.
     """
-    # Segment maxima can discard NaNs. Promote them to +inf before reducing,
-    # so invalid active rows cannot masquerade as convergence; OOB rows remain ignored.
+    # Segment max may drop NaNs, so map non-finite norms to inf first.
     norms = jax.tree.map(
         lambda x: jnp.where(jnp.isfinite(x), x, jnp.inf),
         _gradient_norm_per_row(gradients),
@@ -71,11 +71,11 @@ def converged_per_system(
     *,
     include_cell: bool = True,
 ) -> Table[SystemId, Array]:
-    """``Table[SystemId, bool]``: systems whose :func:`fmax_per_system` is below ``tolerance``.
+    """Flag systems whose :func:`fmax_per_system` is below ``tolerance``.
 
-    Records a runtime assertion if any active DOF gradient is non-finite; it
-    raises only under ``as_result_function``/``with_runtime_assertions`` (an
-    eager call just reports that system as not converged).
+    A non-finite gradient that takes part in the maximum fails a runtime
+    assertion. ``as_result_function`` and ``with_runtime_assertions`` collect
+    it; a plain call, jitted or not, only reports the system as not converged.
     """
     maximum = fmax_per_system(gradients, index_prefix, include_cell=include_cell)
     runtime_assert(
