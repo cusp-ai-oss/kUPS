@@ -111,7 +111,7 @@ from kups.core.stream import RefillGate
 # input/output adapter.
 def repetitions[OptState](state: StreamingRelaxState[OptState]) -> Array:
     # No steps while a refill is pending or once every slot is idle.
-    run = ~state.finished.data.any() & (state.slot_ordinal >= 0).any()
+    run = ~state.finished.data.any() & (state.ordinal >= 0).any()
     return jnp.where(run, 8, 0)
 
 cycle = make_cycle_function(SequentialPropagator((
@@ -120,7 +120,7 @@ cycle = make_cycle_function(SequentialPropagator((
 )))
 
 # The stream ends once a refill has left every slot idle.
-while state.finished.data.any() or (state.slot_ordinal >= 0).any():
+while state.finished.data.any() or (state.ordinal >= 0).any():
     key, subkey = jax.random.split(key)
     state = propagate_and_fix(cycle, subkey, state)
 ```
