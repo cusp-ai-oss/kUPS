@@ -32,7 +32,7 @@ from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
-from kups.relaxation.convergence import max_dof_per_system
+from kups.relaxation.convergence import fmax_per_system
 from kups.relaxation.optimizer import ChainOptState
 
 
@@ -210,9 +210,9 @@ class TestCellRelaxation:
         cell_max = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in leaves]))
         assert cell_max > 0
         gradients = relax_gradients(stepped)
-        npt.assert_allclose(max_dof_per_system(gradients, prefix).data, [cell_max])
+        npt.assert_allclose(fmax_per_system(gradients, prefix).data, [cell_max])
         npt.assert_array_equal(
-            max_dof_per_system(gradients, prefix, include_cell=False).data, [0.0]
+            fmax_per_system(gradients, prefix, include_cell=False).data, [0.0]
         )
 
     def test_stress_not_double_counted(self, cell_step):

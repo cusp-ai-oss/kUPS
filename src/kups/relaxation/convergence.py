@@ -24,7 +24,7 @@ from kups.core.utils.segmented_tree import tree_segment_max
 from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
 
 
-def dof_norm_per_row(gradients: PositionsAndCell) -> PositionsAndCell:
+def _gradient_norm_per_row(gradients: PositionsAndCell) -> PositionsAndCell:
     """Per-row gradient magnitudes: ``|∂E/∂r_i|`` per particle, ``|∂E/∂h|`` per cell entry."""
     return PositionsAndCell(
         gradients.positions.map_data(lambda g: jnp.linalg.norm(g, axis=-1)),
@@ -32,7 +32,7 @@ def dof_norm_per_row(gradients: PositionsAndCell) -> PositionsAndCell:
     )
 
 
-def max_dof_per_system(
+def fmax_per_system(
     gradients: PositionsAndCell,
     index_prefix: PositionsAndCellIndex,
     *,
@@ -52,7 +52,8 @@ def max_dof_per_system(
     # Segment maxima can discard NaNs. Promote them to +inf before reducing,
     # so invalid active rows cannot masquerade as convergence; OOB rows remain ignored.
     norms = jax.tree.map(
-        lambda x: jnp.where(jnp.isfinite(x), x, jnp.inf), dof_norm_per_row(gradients)
+        lambda x: jnp.where(jnp.isfinite(x), x, jnp.inf),
+        _gradient_norm_per_row(gradients),
     )
     result = index_prefix.positions.max_over(norms.positions.data)
     if include_cell:
@@ -70,13 +71,13 @@ def converged_per_system(
     *,
     include_cell: bool = True,
 ) -> Table[SystemId, Array]:
-    """``Table[SystemId, bool]``: systems whose :func:`max_dof_per_system` is below ``tolerance``.
+    """``Table[SystemId, bool]``: systems whose :func:`fmax_per_system` is below ``tolerance``.
 
     Records a runtime assertion if any active DOF gradient is non-finite; it
     raises only under ``as_result_function``/``with_runtime_assertions`` (an
     eager call just reports that system as not converged).
     """
-    maximum = max_dof_per_system(gradients, index_prefix, include_cell=include_cell)
+    maximum = fmax_per_system(gradients, index_prefix, include_cell=include_cell)
     runtime_assert(
         ~jnp.any(jnp.isposinf(maximum.data)), "Non-finite relaxation gradients."
     )

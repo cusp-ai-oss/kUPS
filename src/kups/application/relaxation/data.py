@@ -85,7 +85,7 @@ class RelaxState[OptState]:
     step: Array
 
 
-type IsRelaxData = IsState[RelaxParticles, RelaxSystems]
+type HasRelaxData = IsState[RelaxParticles, RelaxSystems]
 
 
 def relax_parameters(
@@ -106,7 +106,7 @@ def relax_index_prefix(
     return PositionsAndCellIndex(particles.data.system, systems.index)
 
 
-def relax_gradients(state: IsRelaxData) -> PositionsAndCell:
+def relax_gradients(state: HasRelaxData) -> PositionsAndCell:
     """The cached DOF gradients ``∂E/∂u`` held in a relaxation state."""
     return PositionsAndCell(
         state.particles.map_data(lambda p: p.position_gradients),
@@ -131,8 +131,8 @@ class RelaxRunConfig(BaseModel):
     """Whether to also relax lattice vectors."""
 
 
-def relax_cell(cell: Cell[AnyPeriodicity], n_atoms: Array) -> Cell[AnyPeriodicity]:
-    """Wrap cells in the relaxation's log-deformation frame, batching an unbatched cell.
+def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
+    """System rows with zeroed caches and cells in the log-deformation frame.
 
     ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
     cell-virial gradient against the per-atom forces in the joint optimiser.
@@ -146,15 +146,11 @@ def relax_cell(cell: Cell[AnyPeriodicity], n_atoms: Array) -> Cell[AnyPeriodicit
         cell = cell[None]
     # An empty system (a streaming slot without work) keeps a finite factor.
     cell_factor = jnp.maximum(n_atoms, 1)
-    return bind(cell, lambda x: x.frame).apply(
+    cell = bind(cell, lambda x: x.frame).apply(
         lambda f: DeformedFrame.from_frame(
             f, cell_factor=cell_factor, deformation=MatrixLogFrame
         )
     )
-
-
-def relax_systems(cell: Cell[AnyPeriodicity]) -> RelaxSystems:
-    """System rows with zeroed caches for a batched relaxation cell."""
     return RelaxSystems(
         cell=cell,
         cell_gradients=tree_zeros_like(cell),
@@ -189,7 +185,7 @@ def relax_particles(
     )
 
 
-def relax_state_from_particles(
+def relax_state_from_particles_and_cell(
     particles: Table[ParticleId, Particles], cell: Cell[AnyPeriodicity]
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system tables from plain particles and a cell.
@@ -213,7 +209,7 @@ def relax_state_from_particles(
     n_atoms = system.counts.data.astype(particles.data.positions.dtype)
     return (
         particles.map_data(relax_particles),
-        Table(system.keys, relax_systems(relax_cell(cell, n_atoms)), _cls=SystemId),
+        Table(system.keys, relax_systems(cell, n_atoms), _cls=SystemId),
     )
 
 
@@ -230,4 +226,4 @@ def relax_state_from_ase(
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
     """
     p, cell, _ = particles_from_ase(atoms)
-    return relax_state_from_particles(p, cell)
+    return relax_state_from_particles_and_cell(p, cell)

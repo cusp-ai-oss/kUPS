@@ -13,9 +13,9 @@ import pytest
 
 from kups.application.relaxation.data import (
     relax_index_prefix,
-    relax_state_from_particles,
+    relax_state_from_particles_and_cell,
 )
-from kups.application.relaxation.simulation import IndexPrefix
+from kups.application.relaxation.simulation import IndexPrefixFn
 from kups.application.utils.particles import particles_from_ase
 from kups.core.cell import DeformedFrame, MatrixLogFrame
 from kups.core.data import Index, Table
@@ -36,8 +36,8 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
     )
     if batched:
         cell = jax.tree.map(lambda x: jnp.repeat(x[None], 2, axis=0), cell)
-    relaxed, systems = relax_state_from_particles(particles, cell)
-    index_prefix: IndexPrefix = relax_index_prefix
+    relaxed, systems = relax_state_from_particles_and_cell(particles, cell)
+    index_prefix: IndexPrefixFn = relax_index_prefix
     prefix = index_prefix(particles=relaxed, systems=systems)
     assert_type(prefix, PositionsAndCellIndex)
     npt.assert_array_equal(prefix.positions.value, relaxed.data.system.value)
@@ -67,6 +67,6 @@ def test_builder_rejects_mismatched_cell_count() -> None:
     atoms = ase.Atoms("Ar", cell=[4, 5, 6], pbc=True)
     particles, cell, _ = particles_from_ase(atoms)
     with pytest.raises(ValueError, match="cell vectors"):
-        relax_state_from_particles(
+        relax_state_from_particles_and_cell(
             particles, jax.tree.map(lambda x: jnp.repeat(x[None], 2, axis=0), cell)
         )

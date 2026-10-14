@@ -70,7 +70,7 @@ class OptInit[OptState](Protocol):
     ) -> OptState: ...
 
 
-class IndexPrefix(Protocol):
+class IndexPrefixFn(Protocol):
     """Map the optimizer's particle and cell parameters to their owning systems."""
 
     def __call__(
@@ -87,7 +87,7 @@ def make_relax_step[State, OptState](
     gradient: Lens[Geometry, PositionsAndCell],
     *,
     accept: View[State, Table[SystemId, Array]] | None = None,
-    index_prefix: IndexPrefix = relax_index_prefix,
+    index_prefix: IndexPrefixFn = relax_index_prefix,
 ) -> tuple[Propagator[State], OptInit[OptState]]:
     """Wire one optimizer step and its optimizer-state initializer.
 
