@@ -177,7 +177,7 @@ def random_rotate_groups(
     """
     positions = particles.data.positions
     system = particles.data.system
-    cell = systems.data.cell
+    cell = systems.data.cell.materialize()
     chain = key_chain(key)
     rotations = systems.set_data(
         Quaternion.random(next(chain), (len(systems),)) ** step_width
@@ -215,7 +215,7 @@ def translate_groups(
     """
     system_ids = particles.data.system
     new_positions = particles.data.positions + translations[system_ids]
-    batched_cells = systems[system_ids].cell
+    batched_cells = Table(systems.keys, systems.data.cell.materialize())[system_ids]
     new_positions = batched_cells.wrap(new_positions)
     return new_positions
 

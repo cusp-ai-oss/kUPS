@@ -407,7 +407,9 @@ class BaseFrame(Frame, abc.ABC):
     @jit
     def materialize(self) -> MaterializedFrame:
         matrix = self.matrix
-        det, inv = matrix.det(), matrix.inverse()
+        # Otherwise XLA recomputes them inside every consumer, such as a
+        # per-particle gather.
+        det, inv = jax.lax.optimization_barrier((matrix.det(), matrix.inverse()))
         return MaterializedFrame(self.matrix, inv, jnp.abs(det))
 
     @override

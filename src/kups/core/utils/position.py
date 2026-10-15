@@ -60,6 +60,8 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     assert cells.vectors.shape[0] == num_groups, (
         f"Cells must match the number of groups. Got {cells.vectors.shape[0]} for {num_groups} groups."
     )
+    # Particles gather the materialized inverses instead of recomputing them.
+    cells = cells.materialize()
     batched_cells = Table(group.keys, cells)[group]
     # Index the first particle of each group
     ref_idx = group.select_per_label(jnp.zeros(num_groups, dtype=int))
@@ -108,6 +110,7 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
         ```
     """
     group = particles.data.group
+    cells = cells.materialize()
     if center_of_masses is None:
         center_of_masses = center_of_mass(particles, cells)
     rel_positions = (
@@ -143,6 +146,7 @@ def to_absolute_positions[P: HasPositionsAndGroupIndex](
         ```
     """
     group = particles.data.group
+    cells = cells.materialize()
     abs_positions = (
         particles.data.positions + Table(group.keys, center_of_masses)[group]
     )
