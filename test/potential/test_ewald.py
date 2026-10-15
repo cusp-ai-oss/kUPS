@@ -843,8 +843,8 @@ class TestReciprocalReduction:
         sk, _ = jax.jit(structure_factor)(inp)
         cache = bind(
             EwaldCache.make(len(inp.point_cloud.systems), sk.value.shape[1]),
-            lambda x: x.structure_factor,
-        ).set(sk)
+            lambda x: (x.structure_factor, x.prefactor),
+        ).set((sk, prefactor(inp)))
         return bind(
             inp,
             lambda x: (
