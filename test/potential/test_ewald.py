@@ -161,6 +161,7 @@ def _parameters(cell, alpha, cutoff, k_max):
         systems.set_data(jnp.asarray([alpha], dtype=cell.vectors.dtype)),
         systems.set_data(jnp.asarray([cutoff], dtype=cell.vectors.dtype)),
         systems.set_data(jnp.asarray([k_max], dtype=cell.vectors.dtype)),
+        reciprocal_dtype=cell.vectors.dtype,
     )
 
 
@@ -799,6 +800,7 @@ class TestReciprocalReduction:
             systems.set_data(jnp.asarray(k_max[:batch], dtype)),
             reciprocal_particle_chunk_size=chunks[0],
             reciprocal_k_chunk_size=chunks[1],
+            reciprocal_dtype=dtype,
         )
         if not grid:
             params = dataclasses.replace(params, reciprocal_shift_bound=(0, 0, 0))
@@ -894,6 +896,19 @@ class TestReciprocalReduction:
                     getattr(proposal.cache.structure_factor, name),
                 ),
             )
+
+    def test_float32_structure_factors_of_float64_inputs(self):
+        inp = self._input()
+        inp = bind(inp, lambda x: x.parameters).apply(
+            lambda p: dataclasses.replace(p, reciprocal_dtype=jnp.float32)
+        )
+        full, _ = jax.jit(structure_factor)(inp)
+        npt.assert_allclose(full.total, self._reference(inp), atol=5e-6, rtol=5e-6)
+        proposal = self._proposal(inp)
+        updated, _ = jax.jit(structure_factor)(proposal)
+        npt.assert_allclose(
+            updated.total, self._reference(proposal), atol=5e-6, rtol=5e-6
+        )
 
     @pytest.mark.parametrize("batch", [1, 4])
     def test_constant_grid_matches_traced(self, batch):
