@@ -1255,6 +1255,28 @@ def sequential_vmap_with_vjp[*P, R](func: Callable[[*P], R]) -> Callable[[*P], R
     return vmap_call
 
 
+def skip_on_cpu[T, R](
+    pred: Array, fn: Callable[[T], R], otherwise: Callable[[T], R], operand: T
+) -> R:
+    """``lax.cond`` on CPU; elsewhere always ``fn``.
+
+    Accelerator conditionals synchronize with the host and copy their operands,
+    which costs more than the skipped work.
+
+    Args:
+        pred: Scalar boolean selecting ``fn`` on CPU.
+        fn: Function applied when ``pred`` holds, and always off CPU.
+        otherwise: Cheaper equivalent of ``fn`` whenever ``pred`` is false.
+        operand: Argument of either function.
+
+    Returns:
+        The selected function's result.
+    """
+    if jax.default_backend() == "cpu":
+        return jax.lax.cond(pred, fn, otherwise, operand)
+    return fn(operand)
+
+
 def is_traced(x: Array) -> bool:
     """Return ``True`` if ``x`` is a JAX tracer (inside a transformation)."""
     return isinstance(x, jax.core.Tracer)

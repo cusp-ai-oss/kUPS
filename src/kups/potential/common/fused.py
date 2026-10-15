@@ -55,7 +55,14 @@ from kups.core.potential import (
     sum_potentials,
 )
 from kups.core.typing import DTypeLike, HasCell, ParticleId, SystemId
-from kups.core.utils.jax import astype_floating, dataclass, field, jit, tree_map
+from kups.core.utils.jax import (
+    astype_floating,
+    dataclass,
+    field,
+    jit,
+    skip_on_cpu,
+    tree_map,
+)
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.ops import compact_indices
 from kups.potential.common.energy import (
@@ -88,7 +95,7 @@ def sum_chunks[Rows](
     Keep the scan staged even when MCMC disables jit for patch composition.
 
     If ``active`` returns False for a whole chunk, its contribution is zero
-    and the consumer is skipped. It must return a scalar boolean.
+    and, on CPU, the consumer is skipped. It must return a scalar boolean.
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
@@ -109,7 +116,7 @@ def sum_chunks[Rows](
     def evaluate(chunk: Rows) -> Array:
         if active is None:
             return consume(chunk)
-        return jax.lax.cond(active(chunk), consume, lambda _: initial, chunk)
+        return skip_on_cpu(active(chunk), consume, lambda _: initial, chunk)
 
     if jax.tree.leaves(rows)[0].shape[0] == chunk_size:
         return evaluate(rows)
