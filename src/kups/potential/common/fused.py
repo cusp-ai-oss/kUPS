@@ -920,7 +920,7 @@ class FusedPotentialCache[Feat]:
                 cloud.particles,
                 cloud.systems,
                 pair.cutoffs(parameters),
-                key_chunk_size="auto" if on_cpu or on_gpu else None,
+                key_chunk_size="auto" if on_cpu else None,
                 key_layout="auto" if on_cpu else "cells",
             )
             if on_gpu:
