@@ -796,8 +796,8 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
     cells are removed and reinserted (overflow asserted); moves within a cell
     retain membership. On CPU, a wholly rejected proposal skips both operations.
     Slots retain their original row identity, so ``slot_of_row`` stays valid.
-    Spatial sort order is not maintained after moves. Changed rows are grouped
-    by destination cell to assign insertion ranks with linear storage.
+    Spatial sort order is not maintained after moves. Changed rows are ranked
+    within their destination cell by counting earlier rows bound for it.
 
     Attributes:
         slots: Slots of the changed rows, ``(k,)``.
@@ -837,19 +837,17 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                     relocate & (old_cell != n_cells), column, cells.shape[1]
                 )
                 cells = cells.at[old_cell, column].set(n_pad, mode="drop")
-                # Rank incoming rows per cell to assign distinct free columns.
+                # Rank incoming rows per cell to assign distinct free columns:
+                # count earlier rows bound for the same cell (changed rows are few).
                 insert = relocate & (self.new.cell != n_cells)
                 target = jnp.where(insert, self.new.cell, n_cells)
-                order = jnp.argsort(target, stable=True)
-                sorted_target = target[order]
-                sorted_rank = jnp.arange(target.size) - jnp.searchsorted(
-                    sorted_target, sorted_target, side="left"
-                )
-                rank = jnp.zeros_like(sorted_rank).at[order].set(sorted_rank)
-                free_count = jnp.cumsum(cells[target] == n_pad, axis=-1)
+                earlier = jnp.tri(target.size, k=-1, dtype=bool)
+                rank = (earlier & (target[:, None] == target[None])).sum(-1)
+                free = cells[target] == n_pad
+                free_count = jnp.cumsum(free, axis=-1)
                 position = jnp.argmax(free_count == (rank + 1)[:, None], axis=-1)
                 runtime_assert(
-                    ((free_count[:, -1] > rank) | ~insert).all(),
+                    ((free.sum(-1) > rank) | ~insert).all(),
                     "cell_capacity exceeded during cell table update; increase CellListCacheParameters.cell_capacity.",
                 )
                 position = jnp.where(insert, position, cells.shape[1])
