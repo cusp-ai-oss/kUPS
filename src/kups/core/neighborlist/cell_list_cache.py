@@ -559,8 +559,11 @@ class BlockBounds(NamedTuple):
         return (lowest <= index) & (index <= highest)
 
 
-def _bisection_levels(n_blocks: int, block_size: int) -> list[np.ndarray]:
-    """Static segment ids of each level of a balanced block bisection."""
+def _bisection_levels(n_blocks: int, block_size: int) -> np.ndarray:
+    """Segment ids of each level of a balanced block bisection.
+
+    Shaped ``(n_levels, n_blocks * block_size)``.
+    """
     segments = [(0, n_blocks)]
     levels: list[np.ndarray] = []
     while any(end - start > 1 for start, end in segments):
@@ -574,7 +577,7 @@ def _bisection_levels(n_blocks: int, block_size: int) -> list[np.ndarray]:
             else:
                 children.append((start, end))
         segments = children
-    return levels
+    return np.array(levels, dtype=int).reshape(len(levels), n_blocks * block_size)
 
 
 def _spatial_order(
@@ -608,19 +611,22 @@ def _spatial_order(
     offset = 4 * jnp.max(scale.data, initial=1.0) * system.indices_in(scale.keys)
     coords = jnp.where(active[:, None], coords + offset[:, None], jnp.inf)
     coords = jnp.concatenate([coords, jnp.full((n_slots - n, 3), jnp.inf)])
-    perm = jnp.arange(n_slots)
-    for level in _bisection_levels(n_slots // block_size, block_size):
-        segment = jnp.asarray(level)
-        n_segments = int(level[-1]) + 1
+    n_blocks = n_slots // block_size
+
+    def level(perm: Array, segment: Array) -> tuple[Array, None]:
         points = coords[perm]
         upper = jax.ops.segment_max(
-            jnp.where(points < jnp.inf, points, -jnp.inf), segment, n_segments
+            jnp.where(points < jnp.inf, points, -jnp.inf), segment, n_blocks
         )
-        lower = jax.ops.segment_min(points, segment, n_segments)
+        lower = jax.ops.segment_min(points, segment, n_blocks)
         axis = jnp.argmax(upper - lower, axis=-1)[segment]
         key = jnp.take_along_axis(points, axis[:, None], axis=1)[:, 0]
         # The sort is stable: inactive and padding rows keep their order last.
-        perm = perm[jnp.lexsort((key, segment))]
+        return perm[jnp.lexsort((key, segment))], None
+
+    perm, _ = jax.lax.scan(
+        level, jnp.arange(n_slots), jnp.asarray(_bisection_levels(n_blocks, block_size))
+    )
     return perm[:n]
 
 
