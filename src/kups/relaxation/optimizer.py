@@ -9,12 +9,66 @@ factory out of here avoids a circular import with
 :mod:`kups.relaxation.transforms`.
 """
 
-from typing import Any, Protocol, no_type_check, override
+from __future__ import annotations
+
+from typing import Any, Callable, Protocol, no_type_check, override
 
 import optax
+from jax import Array
 
-from kups.core.typing import PyTree
-from kups.core.utils.jax import dataclass
+from kups.core.data.index import SupportsSorting
+from kups.core.data.table import Table
+from kups.core.lens import Lens, View
+from kups.core.patch import IndexLensPatch
+from kups.core.typing import PyTree, SystemId
+from kups.core.utils.jax import dataclass, field
+
+
+@dataclass(kw_only=True)
+class ResetLayout[OptState, Data, Indices]:
+    """Optimizer state to reset per system, and the system that owns each row.
+
+    ``reset`` copies ``fields`` from a fresh ``init`` state into the systems
+    selected by ``mask``. State outside ``fields``, such as the L-BFGS ring
+    cursor ``count``, keeps its value.
+
+    Attributes:
+        fields: Lens onto the resettable state. Its focus paths must not overlap.
+        system_index: View returning a pytree prefix of the ``fields`` value
+            whose ``Index`` leaves map each row to its system. For FIRE,
+            velocity rows are particles and ``dt`` rows are systems. Map padding
+            rows to their system too. ``reset`` raises if the two pytrees do not
+            align.
+    """
+
+    fields: Lens[OptState, Data] = field(static=True)
+    system_index: View[OptState, Indices] = field(static=True)
+
+    def within[Outer](
+        self, outer: Lens[Outer, OptState]
+    ) -> ResetLayout[Outer, Data, Indices]:
+        """Lift this layout into a larger state holding ``OptState`` at ``outer``."""
+        return ResetLayout(
+            fields=outer.nest(self.fields),
+            system_index=lambda s: self.system_index(outer.get(s)),
+        )
+
+    def merge[Data2, Indices2](
+        self, other: ResetLayout[OptState, Data2, Indices2]
+    ) -> ResetLayout[OptState, tuple[Data, Data2], tuple[Indices, Indices2]]:
+        """Reset the fields of both layouts."""
+        return ResetLayout(
+            fields=self.fields.merge(other.fields),
+            system_index=lambda s: (self.system_index(s), other.system_index(s)),
+        )
+
+    def reset(
+        self, state: OptState, fresh: OptState, mask: Table[SystemId, Array]
+    ) -> OptState:
+        """Copy ``fresh`` field values into the systems selected by ``mask``."""
+        return IndexLensPatch(
+            self.fields.get(fresh), self.system_index(state), self.fields
+        )(state, mask)
 
 
 class Optimizer[Params, OptState](Protocol):
@@ -26,8 +80,23 @@ class Optimizer[Params, OptState](Protocol):
         updates: Params,
         state: OptState,
         params: Params | None = None,
+        *,
+        grad: Params | None = None,
+        energies: Table[SupportsSorting, Array] | None = None,
+        value_and_grad_fn: Callable[
+            [Params], tuple[Table[SupportsSorting, Array], Params]
+        ]
+        | None = None,
         **kwargs: Any,
-    ) -> tuple[Params, OptState]: ...
+    ) -> tuple[Params, OptState]:
+        """One optimization step.
+
+        [RelaxationPropagator][kups.relaxation.propagator.RelaxationPropagator]
+        also passes the raw gradient ``grad``, the per-system ``energies`` and
+        ``value_and_grad_fn``, which evaluates trial points. Line searches use
+        them; other transforms ignore them.
+        """
+        ...
 
 
 def apply_updates[Params](parameters: Params, updates: Params) -> Params:
