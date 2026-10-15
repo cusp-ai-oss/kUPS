@@ -302,7 +302,11 @@ def _cond_or_zeros[S, R](pred: Array, fn: Callable[[S], R], operand: S) -> R:
 def _apply_selected[S, I](
     which: Array, schedulers: tuple[Scheduler[S, I], ...], state: S, signal: I
 ) -> S:
-    """Apply only ``schedulers[which]``, switching over the leaves any one changes."""
+    """Apply ``schedulers[which]``, switching over the leaves any one changes.
+
+    On accelerators, where a switch synchronizes with the host and copies its
+    operands, all schedulers run and the selected results are kept instead.
+    """
     if len(schedulers) == 1:
         return schedulers[0](state, signal)
     leaves, treedef = jax.tree.flatten(state)
@@ -316,6 +320,12 @@ def _apply_selected[S, I](
         for i, value in zip(changed, values):
             out[i] = value
         return treedef.unflatten(out)
+
+    if jax.default_backend() != "cpu":
+        # Elementwise selects update the carried buffers in place.
+        return with_changed(
+            [jax.lax.select_n(which, *(c[i] for c in candidates)) for i in changed]
+        )
 
     def branch(sched: Scheduler[S, I]) -> Callable[[list[Array]], list[Array]]:
         def run(values: list[Array]) -> list[Array]:
