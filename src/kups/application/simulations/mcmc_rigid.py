@@ -86,6 +86,7 @@ from kups.core.typing import (
 )
 from kups.core.utils.jax import (
     dataclass,
+    enable_unrolled_threefry,
     key_chain,
     no_jax_tracing,
     tree_map,
@@ -118,6 +119,7 @@ from kups.potential.common.pair import PairEnergy, PairEnergySum
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
+enable_unrolled_threefry()
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",

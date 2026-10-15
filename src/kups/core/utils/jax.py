@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import importlib
 import math
 import threading
+import warnings
 from contextlib import AbstractContextManager, contextmanager
 from copy import copy
 from itertools import count
@@ -451,6 +453,35 @@ def tree_structure[T](
         A ``PyTreeDef`` that can flatten/unflatten matching pytrees.
     """
     return jax.tree_util.tree_structure(x, is_leaf=is_leaf)
+
+
+def enable_unrolled_threefry() -> None:
+    """Lower Threefry-2x32 random bits without a rolled loop on CPU.
+
+    JAX keeps a rolled loop on CPU to save compile time; the unrolled
+    lowering, the default on other backends, is much faster per draw but
+    compiles slower, so it pays off for long simulations rather than many
+    short programs. Applies process-wide to programs lowered afterwards;
+    random numbers are unchanged. Warns if the private JAX symbols moved.
+    """
+    try:
+        from jax._src.interpreters import mlir
+
+        try:
+            threefry = importlib.import_module("jax._src.random.threefry2x32")
+        except ImportError:  # JAX < 0.11
+            threefry = importlib.import_module("jax._src.prng")
+        mlir.register_lowering(
+            threefry.threefry2x32_p,
+            threefry._threefry2x32_lowering_rule,
+            platform="cpu",
+        )
+    except (ImportError, AttributeError):  # pragma: no cover - JAX internals moved
+        warnings.warn(
+            "Could not register the unrolled Threefry lowering on CPU; "
+            "random draws fall back to JAX's slower rolled loop.",
+            stacklevel=2,
+        )
 
 
 def key_chain(rng: Array, shape: tuple[int, ...] = ()) -> Generator[Array, None, None]:
