@@ -638,6 +638,17 @@ class TestFullEvaluation:
         ref = _graph_full(state, params, ewald_short_range_energy)
         npt.assert_allclose(pot(state).data.total_energies.data, ref, rtol=1e-10)
 
+    def test_float32_kernels_sum_in_float64(self):
+        state = _per_particle_exclusion(
+            _make_state(jax.random.PRNGKey(1), (24, 16), (12.0, 10.0), n_inactive=4)
+        )
+        params = _ewald_params(2, 3.5)
+        engine = FusedNeighborEnergy(_EWALD_PAIR, _PARAMS, dtype=jnp.float32)
+        actual = _potential(engine, params)(state).data.total_energies.data
+        ref = _graph_full(state, params, ewald_short_range_energy)
+        assert actual.dtype == jnp.float64
+        npt.assert_allclose(actual, ref, rtol=1e-4)
+
     def test_autodiff_gradients_match_graph(self):
         state = _make_state(jax.random.PRNGKey(2), (24, 16), (12.0, 10.0), n_inactive=4)
         params = _lj_params(2, 3.0)
