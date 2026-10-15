@@ -414,8 +414,8 @@ def triangular_3x3_matmul(
     """Optimized matrix-vector multiplication for triangular 3×3 matrices.
 
     Exploits triangular structure to avoid computing with known-zero elements
-    and supports broadcasting over leading dimensions. CPU uses scalar products;
-    accelerators retain vectorized dot products.
+    and supports broadcasting over leading dimensions. Scalar products fuse
+    with neighboring operations, unlike small batched dots.
 
     Args:
         L: Array of shape `(..., 3, 3)` containing triangular matrices.
@@ -440,29 +440,16 @@ def triangular_3x3_matmul(
     if side is MatmulSide.LEFT:
         L = jnp.swapaxes(L, -1, -2)
         lower = not lower
-    if jax.default_backend() == "cpu":
-        # Avoid small batched-dot temporaries on CPU.
-        return jnp.stack(
-            [
-                sum(
-                    L[..., j, i] * x[..., j]
-                    for j in (range(i, 3) if lower else range(i + 1))
-                )
-                for i in range(3)
-            ],
-            axis=-1,
-        )
-
-    @vectorize(signature="(3,3),(3)->(3)")
-    def inner(L: Array, x: Array) -> Array:
-        return jnp.stack(
-            [
-                L[i:, i] @ x[i:] if lower else L[: i + 1, i] @ x[: i + 1]
-                for i in range(3)
-            ]
-        )
-
-    return inner(L, x)
+    return jnp.stack(
+        [
+            sum(
+                L[..., j, i] * x[..., j]
+                for j in (range(i, 3) if lower else range(i + 1))
+            )
+            for i in range(3)
+        ],
+        axis=-1,
+    )
 
 
 @runtime_checkable
