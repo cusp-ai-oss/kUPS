@@ -75,10 +75,15 @@ def run(config: Config) -> None:
     potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
     propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
-    mb_key = next(chain) if config.md.initialize_momenta else None
+    n_files = len(config.inp_files)
+    mb_keys = (
+        list(jax.random.split(next(chain), n_files))
+        if config.md.initialize_momenta
+        else [None] * n_files
+    )
     all_particles: list[Table[ParticleId, MDParticles]] = []
     all_systems: list[Table[SystemId, MDSystems]] = []
-    for inp_file in config.inp_files:
+    for inp_file, mb_key in zip(config.inp_files, mb_keys):
         logging.info(f"Loading structure from {inp_file}")
         particles_i, systems_i = md_state_from_ase(inp_file, config.md, key=mb_key)
         all_particles.append(particles_i)
