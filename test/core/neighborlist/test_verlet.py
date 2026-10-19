@@ -12,6 +12,7 @@ build radius (``effective_build_radii``).
 from __future__ import annotations
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jax import Array
 
@@ -23,6 +24,7 @@ from kups.core.neighborlist import (
     effective_build_radii,
     skin_margin,
 )
+from kups.core.neighborlist.verlet import _sym3_min_eigenvalue
 from kups.core.typing import SystemId
 
 from ._builders import make_lh, make_systems
@@ -160,3 +162,15 @@ class TestEffectiveBuildRadii:
         cell = _cell(8.0 * jnp.eye(3), periodic=(False, False, False))
         radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
         assert float(radii[0]) == pytest.approx(5.0)
+
+
+def test_sym3_min_eigenvalue_matches_eigvalsh():
+    rng = np.random.default_rng(0)
+    m = rng.standard_normal((64, 3, 3))
+    gram = m @ np.swapaxes(m, -1, -2)
+    near_identity = np.eye(3) + 1e-7 * (gram[:8] + np.swapaxes(gram[:8], -1, -2))
+    a = np.concatenate([gram, near_identity, np.eye(3)[None] * 2.0])
+    expected = np.linalg.eigvalsh(a)[:, 0]
+    np.testing.assert_allclose(
+        _sym3_min_eigenvalue(jnp.asarray(a)), expected, rtol=1e-10, atol=1e-12
+    )
