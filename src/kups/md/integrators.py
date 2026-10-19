@@ -1125,8 +1125,8 @@ class CoupledMomentumStep[State](Propagator[State]):
     r"""B kick with cell coupling (Gao Algorithm lines 3 & 11).
 
     Solves $\dot{p}_i = F_i - h^{-\top}\dot{h}^{\top} p_i$ exactly over the
-    params time-step via :func:`solve_affine_ode`. In kUPS row-vector form
-    the coupling becomes $\dot{p}_{\text{row}} = F_{\text{row}} - p_{\text{row}}\cdot M^{\top}$
+    params time-step via :func:`solve_affine_ode` (one exponential per system). In kUPS
+    row-vector form the coupling becomes $\dot{p}_{\text{row}} = F_{\text{row}} - p_{\text{row}}\cdot M^{\top}$
     with $M = V^{-1}\dot{V}$ (lower-triangular); the equivalent column-vector
     ODE has $A = -M$.
 
@@ -1147,11 +1147,12 @@ class CoupledMomentumStep[State](Propagator[State]):
         params = sys.data.integrator_params
         V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
         M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
-        # Column-form A
-        A_per_p, dt_per_p = sys.set_data((-M_pos, params.time_step))[par.data.system]
-        dt_half_per_p = dt_per_p / 2
-        new_momenta = jax.vmap(solve_affine_ode)(
-            A_per_p, par.data.forces, par.data.momenta, dt_half_per_p
+        new_momenta = solve_affine_ode(
+            -M_pos,  # column-form A = -M
+            par.data.forces,
+            par.data.momenta,
+            params.time_step / 2,
+            segment=par.data.system.indices_in(sys.keys),
         )
         return par_lens.focus(lambda p: p.data.momenta).set(new_momenta)
 
@@ -1161,8 +1162,8 @@ class CoupledPositionStep[State](Propagator[State]):
     r"""A drift with cell coupling (Gao Algorithm lines 5 & 8).
 
     Solves $\dot{r}_i = p_i/m_i + \dot{h}h^{-1} r_i$ exactly over the params
-    time-step via :func:`solve_affine_ode`. In kUPS row-vector form the
-    coupling becomes $\dot{r}_{\text{row}} = v_{\text{row}} + r_{\text{row}}\cdot M$
+    time-step via :func:`solve_affine_ode` (one exponential per system). In kUPS row-vector
+    form the coupling becomes $\dot{r}_{\text{row}} = v_{\text{row}} + r_{\text{row}}\cdot M$
     with $M = V^{-1}\dot{V}$ (lower-triangular); the column-vector ODE has
     $A = M^{\top}$ (upper-triangular).
 
@@ -1183,14 +1184,13 @@ class CoupledPositionStep[State](Propagator[State]):
         params = sys.data.integrator_params
         V_dot = _cell_velocity(sys.data.cell_momentum, params.barostat_mass)
         M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
-        # Upper-triangular A
-        A_per_p, dt_per_p = sys.set_data(
-            (jnp.swapaxes(M_pos, -1, -2), params.time_step)
-        )[par.data.system]
-        dt_half_per_p = dt_per_p / 2
         v = par.data.momenta / par.data.masses[..., None]
-        new_positions = jax.vmap(solve_affine_ode)(
-            A_per_p, v, par.data.positions, dt_half_per_p
+        new_positions = solve_affine_ode(
+            jnp.swapaxes(M_pos, -1, -2),  # column-form A = Mᵀ (upper-tri)
+            v,
+            par.data.positions,
+            params.time_step / 2,
+            segment=par.data.system.indices_in(sys.keys),
         )
         return par_lens.focus(lambda p: p.data.positions).set(new_positions)
 
