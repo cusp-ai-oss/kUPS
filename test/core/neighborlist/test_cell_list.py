@@ -10,6 +10,7 @@ import pytest
 
 from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
+from kups.core.neighborlist import DenseNearestNeighborList
 from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
     _cell_list_subselect,
@@ -19,7 +20,15 @@ from kups.core.neighborlist.cell_list import (
 from kups.core.neighborlist.common import Candidates
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
-from ._builders import EvalState, cutoff_table, make_lh, make_systems, valid_pairs
+from ._builders import (
+    EvalState,
+    call_with_retry,
+    cutoff_table,
+    make_lh,
+    make_systems,
+    valid_edge_set,
+    valid_pairs,
+)
 
 
 class TestCellHashClampsAtBoundary:
@@ -196,3 +205,30 @@ class TestFromState:
         assert isinstance(nl.avg_candidates, LensCapacity)
         assert int(nl.cells.size) == 64
         assert int(nl.avg_candidates.size) == 32
+
+
+def test_skewed_cell_bins_follow_perpendicular_widths():
+    """Bins must be at least one cutoff wide on skewed cells (matches dense)."""
+    lattice = jnp.array(
+        [[10.913, 0.0, 0.0], [5.263, 9.006, 0.0], [-2.622, 4.34, 8.944]]
+    )
+    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice[None]))
+    n = 400
+    positions = jnp.asarray(np.random.default_rng(0).uniform(0, 1, (n, 3))) @ lattice
+    lh = make_lh(positions, jnp.zeros(n, dtype=int))
+    systems, cutoffs = make_systems(cell, jnp.array([2.59]))
+    cell_list = CellListNeighborList(
+        avg_candidates=FixedCapacity(400),
+        avg_edges=FixedCapacity(100),
+        cells=FixedCapacity(64),
+        avg_image_candidates=FixedCapacity(400),
+        cutoffs=cutoffs,
+    )
+    dense = DenseNearestNeighborList(
+        avg_candidates=FixedCapacity(n),
+        avg_edges=FixedCapacity(100),
+        avg_image_candidates=FixedCapacity(8 * n),
+        cutoffs=cutoffs,
+    )
+    edges = [call_with_retry(nl, lh, systems) for nl in (cell_list, dense)]
+    assert valid_edge_set(edges[0]) == valid_edge_set(edges[1])

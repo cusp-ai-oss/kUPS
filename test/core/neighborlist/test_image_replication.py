@@ -103,16 +103,6 @@ def _perp(matrix: Matrix) -> np.ndarray:
     return 1.0 / np.linalg.norm(np.linalg.inv(np.asarray(matrix)), axis=0)
 
 
-def _face_lengths(matrix: Matrix) -> np.ndarray:
-    """Cell-list binning length ``1/|row k of inv(A)|`` (what ``num_cells`` uses).
-
-    Differs from ``_perp`` (column norm) on skewed cells; a cutoff above
-    ``max(face)/2`` forces exactly one bin per axis, triggering the single-cell
-    fast path in ``_cell_list_subselect``.
-    """
-    return 1.0 / np.linalg.norm(np.linalg.inv(np.asarray(matrix)), axis=1)
-
-
 def _cutoff_for(matrix: Matrix, ratio: float) -> float:
     """Cutoff giving ``ratio`` on the shortest-perpendicular axis."""
     return float(ratio * _perp(matrix).min())
@@ -767,10 +757,10 @@ class TestCellListSingleCellPath:
     def test_single_cell_matches_multi_cell_and_is_all_pairs(
         self, cell_name, matrix, ratio
     ):
-        # cutoff > max(face)/2 -> exactly 1 bin/axis, so the single-cell fast path
+        # cutoff > max(perp)/2 -> exactly 1 bin/axis, so the single-cell fast path
         # applies. It must emit the same all-pairs candidate set as forcing a
         # larger cell capacity (the general stencil + dedup path).
-        cutoff = float(ratio * _face_lengths(matrix).max())
+        cutoff = float(ratio * _perp(matrix).max())
         systems, _ = make_systems(_make_cell(matrix), jnp.array([cutoff]))
         bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
         assert bins == 1, (
