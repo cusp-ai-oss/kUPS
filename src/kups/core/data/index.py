@@ -34,7 +34,7 @@ from kups.core.utils.jax import (
     no_jax_tracing,
     skip_post_init_if_disabled,
 )
-from kups.core.utils.ops import first_true_indices
+from kups.core.utils.ops import first_true_indices, segment_max
 from kups.core.utils.segment import bincount, segment_sum
 from kups.core.utils.subselect import offsets_from_counts, subselect
 
@@ -602,11 +602,8 @@ class Index[Key: SupportsSorting]:
         """
         from kups.core.data.table import Table
 
-        return Table(
-            self.keys,
-            jax.ops.segment_max(array, self._indices, self.num_labels, mode="drop"),
-            _cls=self._cls,
-        )
+        out = segment_max(array, self._indices, self.num_labels)
+        return Table(self.keys, out, _cls=self._cls)
 
     @staticmethod
     def find[L: SupportsSorting](obj: PyTree, cls: type[L]) -> Index[L]:
