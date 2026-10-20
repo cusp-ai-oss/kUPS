@@ -126,6 +126,15 @@ def test_first_true_indices_edge_cases(
     npt.assert_array_equal(first_true_indices(mask, size, fill_value), expected)
 
 
+@pytest.mark.parametrize("n", [17, 1000, 10000])
+def test_first_true_indices_returns_dtype(n: int) -> None:
+    mask = jnp.zeros(n, dtype=bool).at[jnp.array([1, n // 2])].set(True)
+    expected = jnp.where(mask, size=3, fill_value=n)[0]
+    out = first_true_indices(mask, 3, n, jnp.int16)
+    assert out.dtype == jnp.int16
+    npt.assert_array_equal(out, expected)
+
+
 @pytest.mark.parametrize("n", [0, 1, 31, 32, 33, 64, 100, 1025, 40000])
 @pytest.mark.parametrize("size", [0, 5, 40])
 def test_compact_indices_matches_nonzero(n: int, size: int) -> None:
