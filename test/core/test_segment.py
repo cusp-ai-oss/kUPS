@@ -183,7 +183,7 @@ class TestBincount:
             actual = bincount(values, length=length)
             expected = jnp.bincount(values.ravel(), length=length)
             npt.assert_array_equal(actual, expected)
-            assert actual.dtype == expected.dtype
+            assert actual.dtype == values.dtype
 
     @pytest.mark.parametrize("length", (0, 1, 3))
     def test_jit_and_vmap(self, length: int) -> None:
