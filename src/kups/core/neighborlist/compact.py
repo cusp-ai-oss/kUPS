@@ -6,7 +6,7 @@
 Compactor variants:
 
 - [`ReduceCompactor`][kups.core.neighborlist.compact.ReduceCompactor] —
-  compresses surviving candidate rows via ``jnp.where(keep, size=k)`` with a
+  compresses surviving candidate rows via ``first_true_indices`` with a
   capacity assertion, preserving the emitted edge degree.
 - [`MaskOnlyCompactor`][kups.core.neighborlist.compact.MaskOnlyCompactor] —
   preserves the candidate count, replacing failing entries with OOB indices
@@ -26,7 +26,7 @@ from kups.core.capacity import Capacity
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import CandidateBatch, Compactor, PipelineContext
 from kups.core.utils.jax import dataclass
-from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.ops import first_true_indices, where_broadcast_last
 
 
 @dataclass
@@ -54,8 +54,9 @@ class ReduceCompactor[D: int](Compactor[D]):
         ctx: PipelineContext,
     ) -> CandidateBatch[D]:
         """Compact edges together with the image flags needed by pair kernels."""
-        max_edges = self.avg_edges.generate_assertion(keep.sum())
-        sort_idxs = jnp.where(keep, size=max_edges.size, fill_value=keep.size)[0]
+        dtype = batch.edges.indices.raw_indices.dtype
+        max_edges = self.avg_edges.generate_assertion(keep.sum(dtype=dtype))
+        sort_idxs = first_true_indices(keep, max_edges.size, keep.size, dtype)
 
         def gather(values: Array) -> Array:
             if keep.size == 0:
