@@ -3,7 +3,7 @@
 
 from kups.core.data.batched import Batched, Sliceable
 from kups.core.data.buffered import Buffered
-from kups.core.data.index import Index, IndexSubselectResult
+from kups.core.data.index import Index, IndexSubselectResult, cast_indices
 from kups.core.data.table import Table
 from kups.core.data.wrappers import WithCache, WithIndices
 from kups.core.utils.subselect import subselect
@@ -18,5 +18,6 @@ __all__ = [
     "WithCache",
     "WithIndices",
     "WithIndices",
+    "cast_indices",
     "subselect",
 ]
