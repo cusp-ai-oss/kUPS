@@ -13,6 +13,7 @@ from kups.core.neighborlist.adaptive import (
     NeighborListCost,
     all_dense_cost,
     cell_list_cost,
+    cell_scan_cost,
     dense_cost,
 )
 from kups.core.neighborlist.all_connected import (
@@ -150,6 +151,7 @@ __all__ = [
     "build_cell_list_cache",
     "cell_candidates",
     "cell_list_cost",
+    "cell_scan_cost",
     "cell_rows",
     "dense_cost",
     "effective_build_radii",
