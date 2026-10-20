@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 from jax.tree_util import tree_map
-from jax.typing import ArrayLike
+from jax.typing import ArrayLike, DTypeLike
 
 
 def expand_last_dims(operand: Array, other: Array | tuple[int, ...]) -> Array:
@@ -148,7 +148,9 @@ _FIRST_TRUE_MAX_SIZE = 8
 _FIRST_TRUE_MAX_N = 2**24
 
 
-def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
+def first_true_indices(
+    mask: Array, size: int, fill_value: int, dtype: DTypeLike = int
+) -> Array:
     """Positions of the first ``size`` true entries of a 1D ``mask``.
 
     Equivalent to ``jnp.where(mask, size=size, fill_value=fill_value)[0]``,
@@ -162,6 +164,7 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
         mask: Boolean array of shape ``(n,)``.
         size: Number of positions to return.
         fill_value: Value used once fewer than ``size`` entries are true.
+        dtype: Integer dtype of the result.
 
     Returns:
         Integer array of shape ``(size,)`` with increasing positions.
@@ -169,9 +172,13 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
     n = mask.shape[0]
     if jax.default_backend() != "cpu" and n < _FIRST_TRUE_MAX_N:
         found = compact_indices(mask, size)
-        return jnp.where(found < n, found, fill_value).astype(int)
+        return jnp.where(found < n, found, fill_value).astype(dtype)
     if not 0 < size <= min(n, _FIRST_TRUE_MAX_SIZE) or n >= _FIRST_TRUE_MAX_N:
-        return jnp.where(mask, size=size, fill_value=fill_value)[0]
+        # jnp.where(mask, size=...) counts and scatters in JAX's default integer
+        slot = jnp.cumsum(mask, dtype=dtype) - 1
+        rows = jnp.arange(n, dtype=dtype)
+        out = jnp.full(size, fill_value, dtype=dtype)
+        return out.at[jnp.where(mask, slot, size)].set(rows, mode="drop")
     block = _FIRST_TRUE_BLOCK
     if n > _FIRST_TRUE_MAX_SIZE * block:
         n_blocks = -(-n // block)
@@ -181,10 +188,11 @@ def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
         rows = blocks.at[occupied].get(mode="fill", fill_value=False)
         local = first_true_indices(rows.reshape(-1), size, size * block)
         found = occupied.at[local // block].get(mode="fill", fill_value=0) * block
-        return jnp.where(local < size * block, found + local % block, fill_value)
+        found = jnp.where(local < size * block, found + local % block, fill_value)
+        return found.astype(dtype)
     keys = jnp.where(mask, -jnp.arange(n, dtype=jnp.float32), -jnp.inf)
     values, found = jax.lax.top_k(keys, size)
-    return jnp.where(values > -jnp.inf, found.astype(int), fill_value)
+    return jnp.where(values > -jnp.inf, found, fill_value).astype(dtype)
 
 
 def _inclusive_sum(x: Array) -> Array:

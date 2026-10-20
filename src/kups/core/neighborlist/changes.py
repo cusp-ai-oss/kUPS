@@ -28,7 +28,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import jit
-from kups.core.utils.ops import where_broadcast_last
+from kups.core.utils.ops import first_true_indices, where_broadcast_last
 
 
 class NeighborListChangesResult(NamedTuple):
@@ -97,14 +97,15 @@ def neighborlist_changes(
         )
 
     def _compact(mask: Array, label: str) -> Edges[Literal[2]]:
-        count = mask.sum()
+        dtype = remapped.raw_indices.dtype
+        count = mask.sum(dtype=dtype)
         runtime_assert(
             count <= capacity,
             f"neighborlist_changes: {label} edges ({{count}}) exceed "
             f"capacity ({{capacity}})",
             fmt_args={"count": count, "capacity": jnp.array(capacity)},
         )
-        sel: Array = jnp.where(mask, size=capacity, fill_value=n_total - 1)[0]
+        sel = first_true_indices(mask, capacity, n_total - 1, dtype)
         valid = mask.at[sel].get(mode="fill", fill_value=False)
         return _mask_only(valid, remapped[sel], shifts[sel])
 

@@ -107,7 +107,10 @@ class EmptyNeighborList[D: int]:
         del queries, systems, queried_keys
         shift_inner = self.degree - 1 if self.degree > 1 else 0
         return Edges(
-            indices=Index(keys.keys, jnp.zeros((0, self.degree), dtype=int)),
+            indices=Index(
+                keys.keys,
+                jnp.zeros((0, self.degree), keys.data.system.raw_indices.dtype),
+            ),
             shifts=jnp.zeros((0, shift_inner, 3), dtype=int),
         )
 
