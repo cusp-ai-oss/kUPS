@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, override
+from typing import Any, Callable, Literal, NamedTuple, override
 
 import ase
 import ase.data
@@ -25,6 +25,7 @@ from kups.core.data.buffered import Buffered
 from kups.core.data.index import SupportsSorting
 from kups.core.lens import bind, lens
 from kups.core.typing import (
+    DTypeLike,
     ExclusionId,
     GroupId,
     HasAtomicNumbers,
@@ -115,9 +116,17 @@ class AdsorbateConfig(BaseModel):
                 )
         return self
 
-    @property
-    def as_particles(self) -> Table[MotifParticleId, MotifParticles]:
-        """Convert this adsorbate config into indexed particles with motif data."""
+    def as_particles(
+        self, *, index_dtype: DTypeLike = int
+    ) -> Table[MotifParticleId, MotifParticles]:
+        """Convert this adsorbate config into indexed particles with motif data.
+
+        Args:
+            index_dtype: Integer dtype of the label and motif indices.
+
+        Returns:
+            One row per atom of the molecule.
+        """
         n = len(self.symbols)
         assert self.masses is not None
         assert self.atomic_numbers is not None
@@ -128,9 +137,9 @@ class AdsorbateConfig(BaseModel):
                 masses=jnp.asarray(self.masses),
                 atomic_numbers=jnp.asarray(self.atomic_numbers),
                 charges=jnp.asarray(self.charges),
-                labels=Index.new(list(map(Label, self.symbols))),
+                labels=Index.new(list(map(Label, self.symbols)), dtype=index_dtype),
                 motif=Index.integer(
-                    jnp.zeros(n, dtype=int),
+                    jnp.zeros(n, dtype=index_dtype),
                     label=MotifId,
                     max_count=len(self.positions),
                 ),
@@ -215,6 +224,8 @@ class RunConfig(BaseModel):
     """Ordered move sequence for the palindrome propagator."""
     seed: int | None = None
     """Random seed. ``None`` uses a time-based seed."""
+    index_dtype: Literal["int32", "int64"] = "int64"
+    """Integer dtype of all state indices. ``int32`` is faster on GPU."""
 
 
 class StressResult(NamedTuple):
@@ -356,6 +367,7 @@ def _make_molecule(
         Tuple of ``(particles, group)`` for the new molecule.
     """
     chain = key_chain(key)
+    dtype = motifs.data.motif.raw_indices.dtype
     motif_index = Index(motifs.keys, motifs.data.motif.where_flat(species_idx))
     com = jax.random.uniform(next(chain), (3,), minval=-0.5, maxval=0.5) @ cell.vectors
     rot = Quaternion.random(next(chain))
@@ -368,14 +380,15 @@ def _make_molecule(
             atomic_numbers=tpl.atomic_numbers,
             charges=tpl.charges,
             labels=tpl.labels,
-            system=Index.zeros(n_a, label=SystemId),
-            group=Index.zeros(n_a, label=GroupId, max_count=n_a),
+            system=Index.zeros(n_a, label=SystemId, dtype=dtype),
+            group=Index.zeros(n_a, label=GroupId, max_count=n_a, dtype=dtype),
             motif=motif_index,
         ),
         label=ParticleId,
     )
     group = Table.arange(
-        MCMCGroup(Index.zeros(1, label=SystemId), species_idx), label=GroupId
+        MCMCGroup(Index.zeros(1, label=SystemId, dtype=dtype), species_idx),
+        label=GroupId,
     )
     return particles, group
 
@@ -394,6 +407,8 @@ def mcmc_state_from_config(
     key: Array,
     host: HostConfig,
     adsorbates: tuple[AdsorbateConfig, ...],
+    *,
+    index_dtype: DTypeLike = int,
 ) -> tuple[
     Table[ParticleId, MCMCParticles],
     Table[GroupId, MCMCGroup],
@@ -410,11 +425,12 @@ def mcmc_state_from_config(
         key: JAX PRNG key for random adsorbate placement.
         host: Host configuration.
         adsorbates: Adsorbate species configurations.
+        index_dtype: Integer dtype of all indices.
 
     Returns:
         Tuple of ``(particles, groups, system, motifs)``.
     """
-    hp, cell, _ = particles_from_ase(host.cif_file)
+    hp, cell, _ = particles_from_ase(host.cif_file, index_dtype=index_dtype)
     assert is_3d_periodic(cell), (
         "Only 3D periodic cells are supported for MCMC simulations"
     )
@@ -426,7 +442,7 @@ def mcmc_state_from_config(
     n_ads = len(adsorbates)
 
     # Build motifs: concatenate with a MotifId group to assign unique species indices
-    ads_particles = [c.as_particles for c in adsorbates]
+    ads_particles = [c.as_particles(index_dtype=index_dtype) for c in adsorbates]
     motif_ids = [Table((MotifId(0),), jnp.zeros(1)) for _ in ads_particles]
     motifs, _ = Table.union(ads_particles, motif_ids)
 
@@ -462,18 +478,22 @@ def mcmc_state_from_config(
             atomic_numbers=p.atomic_numbers,
             charges=p.charges,
             labels=p.labels,
-            system=Index.zeros(n_host, label=SystemId),
-            group=Index.integer(jnp.zeros(n_host, dtype=int), n=0, label=GroupId),
+            system=Index.zeros(n_host, label=SystemId, dtype=index_dtype),
+            group=Index.integer(
+                jnp.zeros(n_host, dtype=index_dtype), n=0, label=GroupId
+            ),
             motif=Index.integer(
-                jnp.zeros(n_host, dtype=int), n=0, label=MotifParticleId
+                jnp.zeros(n_host, dtype=index_dtype), n=0, label=MotifParticleId
             ),
         ),
         label=ParticleId,
     )
     host_groups = Table.arange(
         MCMCGroup(
-            system=Index.zeros(0, label=SystemId),
-            motif=Index.integer(jnp.full(0, n_ads, dtype=int), n=n_ads, label=MotifId),
+            system=Index.zeros(0, label=SystemId, dtype=index_dtype),
+            motif=Index.integer(
+                jnp.full(0, n_ads, dtype=index_dtype), n=n_ads, label=MotifId
+            ),
         ),
         label=GroupId,
     )
@@ -482,7 +502,7 @@ def mcmc_state_from_config(
     ads_parts: list[Table[ParticleId, MCMCParticles]] = []
     ads_groups: list[Table[GroupId, MCMCGroup]] = []
     for motif_idx, n_init in enumerate(host.init_adsorbates):
-        idx = Index.integer(np.array([motif_idx]), label=MotifId)
+        idx = Index.integer(np.array([motif_idx]), label=MotifId, dtype=index_dtype)
         for _ in range(n_init):
             key, subkey = jax.random.split(key)
             mol_p, mol_g = _make_molecule(motifs, idx, cell, subkey)

@@ -219,9 +219,9 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
     calls: list[tuple[object, ...]] = []
 
     def fake_particles_from_ase(
-        atoms: ase.Atoms | str | Path,
+        atoms: ase.Atoms | str | Path, *, index_dtype: object
     ) -> tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity], object]:
-        calls.append(("adapter", atoms))
+        calls.append(("adapter", atoms, index_dtype))
         return particles, cell, object()
 
     def fake_md_state_from_particles_and_cell(
@@ -241,11 +241,11 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
         fake_md_state_from_particles_and_cell,
     )
 
-    actual = md_state_from_ase("input.cif", md_config, key=key)
+    actual = md_state_from_ase("input.cif", md_config, key=key, index_dtype=jnp.int32)
 
     assert actual is expected
     assert calls == [
-        ("adapter", "input.cif"),
+        ("adapter", "input.cif", jnp.int32),
         ("builder", particles, cell, md_config, key),
     ]
 

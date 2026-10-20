@@ -156,13 +156,13 @@ class TestAdsorbateConfig:
 
     def test_as_particles_shape(self):
         cfg = _co2_config()
-        motif = cfg.as_particles
+        motif = cfg.as_particles()
         assert motif.data.positions.shape == (3, 3)
         assert motif.data.masses.shape == (3,)
 
     def test_as_particles_labels(self):
         cfg = _co2_config()
-        motif = cfg.as_particles
+        motif = cfg.as_particles()
         assert Label("C_co2") in motif.data.labels.keys
         assert Label("O_co2") in motif.data.labels.keys
 
@@ -265,7 +265,7 @@ class TestMultipleSpecies:
 
 def _build_motifs(*configs: AdsorbateConfig):
     """Build motifs with unique MotifId per species via concatenate_indexed."""
-    ads = [c.as_particles for c in configs]
+    ads = [c.as_particles() for c in configs]
     dummies = [Table((MotifId(0),), jnp.zeros(1)) for _ in ads]
     result, _ = Table.union(ads, dummies)
     return result

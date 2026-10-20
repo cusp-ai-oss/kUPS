@@ -380,6 +380,14 @@ class TestParticlesFromArrays:
         npt.assert_array_equal(particles.data.charges, jnp.zeros(2))
         assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
 
+    def test_index_dtype(self):
+        particles, _, _ = particles_from_arrays(
+            **self._valid_inputs(), index_dtype=jnp.int32
+        )
+
+        assert particles.data.labels.raw_indices.dtype == jnp.int32
+        assert particles.data.system.raw_indices.dtype == jnp.int32
+
     def test_integer_masses_and_charges_are_promoted(self):
         inputs = self._valid_inputs()
         inputs["positions"] = np.array([[0, 1, 2], [1, 2, 3]], dtype=int)
