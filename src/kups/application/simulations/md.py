@@ -67,8 +67,15 @@ class Config(BaseModel):
     inp_files: tuple[str | Path, ...]
 
 
-def run(config: Config) -> None:
-    """Run a molecular-dynamics simulation for the configured force field."""
+def run(config: Config) -> MdState:
+    """Run a molecular-dynamics simulation for the configured force field.
+
+    Args:
+        config: Run, MD, potential and input configuration.
+
+    Returns:
+        The final state.
+    """
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
@@ -80,7 +87,9 @@ def run(config: Config) -> None:
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
         key = next(chain) if config.md.initialize_momenta else None
-        particles_i, systems_i = md_state_from_ase(inp_file, config.md, key=key)
+        particles_i, systems_i = md_state_from_ase(
+            inp_file, config.md, key=key, index_dtype=config.run.index_dtype
+        )
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
@@ -96,7 +105,7 @@ def run(config: Config) -> None:
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
     )
-    run_md(next(chain), propagator, state, config.run)
+    return run_md(next(chain), propagator, state, config.run)
 
 
 def main() -> None:

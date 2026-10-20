@@ -38,6 +38,7 @@ from kups.core.potential import (
     PotentialOut,
 )
 from kups.core.typing import (
+    DTypeLike,
     ExclusionId,
     GroupId,
     HasCell,
@@ -97,12 +98,15 @@ class BlockingSpheresParameters:
     @staticmethod
     def from_data(
         data: Sequence[Sequence[Sequence[BlockingSpheresConfig]]],
+        *,
+        index_dtype: DTypeLike = int,
     ) -> BlockingSpheresParameters:
         """Build parameters from a nested sequence of sphere configurations.
 
         Args:
             data: Nested sequence indexed as ``data[system_idx][motif_idx][sphere_idx]``,
                 yielding the sphere configurations for each (system, motif) pair.
+            index_dtype: Integer dtype of the system and motif indices.
 
         Returns:
             BlockingSpheresParameters with flattened arrays of radii, positions,
@@ -121,9 +125,11 @@ class BlockingSpheresParameters:
                     motif_list.append(MotifId(motif_idx))
         radii = jnp.array(radii_list)
         positions = jnp.array(positions_list).reshape(-1, 3)
-        system = Index.new(system_list, label=SystemId).populate_max_count()
-        motif = Index.new(motif_list, label=MotifId).populate_max_count()
-        return BlockingSpheresParameters(radii, positions, system, motif)
+        system = Index.new(system_list, label=SystemId, dtype=index_dtype)
+        motif = Index.new(motif_list, label=MotifId, dtype=index_dtype)
+        return BlockingSpheresParameters(
+            radii, positions, system.populate_max_count(), motif.populate_max_count()
+        )
 
 
 class _BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): ...
