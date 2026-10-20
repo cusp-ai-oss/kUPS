@@ -13,7 +13,7 @@ from jax import Array
 
 from kups.core.capacity import Capacity, CapacityError, LensCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
-from kups.core.data import WithIndices
+from kups.core.data import WithIndices, cast_indices
 from kups.core.data.buffered import Buffered, system_view
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -1346,6 +1346,23 @@ class TestDeleteRandomMotif:
         assert not result.groups.data.occupation.any()
         # Deletion is a real change even though its proposed occupancy is false.
         assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
+
+
+def test_exchange_branches_trace_with_int32_indices():
+    particles, groups, motifs, cell = cast_indices(_exchange_state(), jnp.int32)
+    cap = LensCapacity(1, lens(lambda x: x, cls=int))
+
+    @jax.jit
+    def propose(key: Array, insert: Array) -> ExchangeChanges:
+        # the GCMC propagator picks insertion or deletion with lax.cond
+        return jax.lax.cond(
+            insert,
+            lambda: insert_random_motif(key, motifs, particles, groups, cell, cap),
+            lambda: delete_random_motif(key, motifs, particles, groups, cap),
+        )
+
+    changes = propose(jax.random.key(0), jnp.array(True))
+    assert changes.particles.indices.raw_indices.dtype == jnp.int32
 
 
 def test_empty_exchange_changes_preserve_group_only_updates():
