@@ -37,7 +37,11 @@ from kups.core.utils.jax import (
 )
 from kups.core.utils.ops import first_true_indices, segment_max
 from kups.core.utils.segment import bincount, segment_sum
-from kups.core.utils.subselect import offsets_from_counts, subselect
+from kups.core.utils.subselect import (
+    argsort_indices,
+    offsets_from_counts,
+    subselect,
+)
 
 type PyTree = Any
 
@@ -367,7 +371,7 @@ class Index[Key: SupportsSorting]:
         else:
             # Stable grouping preserves occurrence order without a rows x keys
             # one-hot array, which grows quadratically for batched systems.
-            order = jnp.argsort(self._indices, stable=True).astype(self._indices.dtype)
+            order = argsort_indices(self._indices)
             result = order.at[offsets_from_counts(label_counts) + indices].get(
                 mode="fill", fill_value=len(self)
             )
@@ -391,7 +395,7 @@ class Index[Key: SupportsSorting]:
         dtype = self._indices.dtype
         lanes = jnp.arange(max_count, dtype=dtype)
         positions = starts[target_ids, None] + lanes
-        order = jnp.argsort(self._indices, stable=True).astype(dtype)
+        order = argsort_indices(self._indices)
         if self.size == 0:
             return jnp.full(positions.shape, len(self), dtype=dtype)
         found = order.at[positions].get(mode="fill", fill_value=len(self))

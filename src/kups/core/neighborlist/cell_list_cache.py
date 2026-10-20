@@ -46,6 +46,7 @@ from kups.core.utils.jax import (
     tree_map,
 )
 from kups.core.utils.segment import bincount
+from kups.core.utils.subselect import argsort_indices
 
 AUTO_BLOCK_BATCH_HEADROOM = 1.25
 """Factor on the estimated near-block count of one culled batch."""
@@ -433,16 +434,20 @@ class CellListCache[Data](NamedTuple):
             self.max_cells_per_system,
             ctx.systems.data.cell,
         )
+        dtype = self.slot_of_row.dtype
         slots = (
-            self.candidates(cell) if ctx.keys.size else jnp.zeros((query.size, 0), int)
+            self.candidates(cell)
+            if ctx.keys.size
+            else jnp.zeros((query.size, 0), dtype)
         )
-        row_of_slot = jnp.full(self.sentinel_slot + 1, ctx.keys.size, dtype=int)
-        row_of_slot = row_of_slot.at[self.slot_of_row].set(jnp.arange(ctx.keys.size))
+        row_of_slot = jnp.full(self.sentinel_slot + 1, ctx.keys.size, dtype=dtype)
+        rows = jnp.arange(ctx.keys.size, dtype=dtype)
+        row_of_slot = row_of_slot.at[self.slot_of_row].set(rows)
         return Candidates(
             Index(ctx.keys.keys, row_of_slot[slots].ravel(), _cls=ctx.keys.cls),
             Index(
                 query.keys,
-                jnp.repeat(jnp.arange(query.size), slots.shape[1]),
+                jnp.repeat(jnp.arange(query.size, dtype=dtype), slots.shape[1]),
                 _cls=query.cls,
             ),
         )
@@ -509,7 +514,10 @@ def cell_candidates[Data](
     )
     candidates = Candidates(
         Index(key_table.keys, index.ravel()),
-        Index(query_table.keys, jnp.repeat(jnp.arange(len(index)), index.shape[1])),
+        Index(
+            query_table.keys,
+            jnp.repeat(jnp.arange(len(index), dtype=index.dtype), index.shape[1]),
+        ),
     )
     if max_images_per_pair == 1:
         return make_batch_with_mic(candidates, key_table, query_table, systems), ctx
@@ -732,7 +740,8 @@ def build_cell_list_cache[Data](
         "max_images_per_pair exceeded; re-estimate CellListCacheParameters for "
         "the current cutoffs and cells.",
     )
-    bins = num_cells(systems.data, cutoff)
+    dtype = particles.data.system.raw_indices.dtype
+    bins = num_cells(systems.data, cutoff, dtype=dtype)
     runtime_assert(
         (jnp.prod(bins, axis=-1) <= max_cells).all(),
         "max_cells_per_system exceeded; increase CellListCacheParameters.max_cells_per_system.",
@@ -748,15 +757,16 @@ def build_cell_list_cache[Data](
         n_pad,
         block_size,
     )
-    slot_by_cell = jnp.argsort(rows.cell[order], stable=True)
+    slot_by_cell = argsort_indices(rows.cell[order])
     sorted_cell = rows.cell[order][slot_by_cell]
-    rank = jnp.arange(n) - jnp.searchsorted(sorted_cell, sorted_cell, side="left")
+    first = jnp.searchsorted(sorted_cell, sorted_cell, side="left")
+    rank = jnp.arange(n, dtype=dtype) - first.astype(dtype)
     runtime_assert(
         ((rank < parameters.cell_capacity) | (sorted_cell == n_cells)).all(),
         "cell_capacity exceeded; increase CellListCacheParameters.cell_capacity.",
     )
     cells = (
-        jnp.full((n_cells + 1, parameters.cell_capacity), n_pad, dtype=int)
+        jnp.full((n_cells + 1, parameters.cell_capacity), n_pad, dtype=dtype)
         .at[sorted_cell, rank]
         .set(slot_by_cell, mode="drop")
         # Inactive particles were scattered into the sentinel-cell row; reset it.
@@ -774,10 +784,10 @@ def build_cell_list_cache[Data](
     )
     return CellListCache(
         rows=padded_rows,
-        slot_of_row=jnp.zeros(n, dtype=order.dtype).at[order].set(jnp.arange(n)),
+        slot_of_row=jnp.zeros(n, dtype=dtype).at[order].set(jnp.arange(n, dtype=dtype)),
         cells=cells,
         stencil=neighbor_cells(
-            jnp.arange(n_cells + 1),
+            jnp.arange(n_cells + 1, dtype=dtype),
             bins,
             max_cells,
             systems.data.cell,
