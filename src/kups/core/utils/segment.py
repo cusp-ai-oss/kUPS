@@ -618,10 +618,11 @@ def bincount(x: Array, *, length: int) -> Array:
     """Count flattened integer indices into a fixed number of bins.
 
     As in ``jnp.bincount``, negative indices count in bin zero and indices at
-    or above `length` are dropped. Counts use JAX's default integer dtype.
+    or above `length` are dropped. Counts are in ``x``'s dtype, at least int32.
     Reuses ``segment_sum``'s reduction for a single bin.
     """
-    return segment_sum(jnp.ones(x.size, dtype=int), jnp.maximum(x.ravel(), 0), length)
+    ones = jnp.ones(x.size, jnp.promote_types(x.dtype, jnp.int32))
+    return segment_sum(ones, jnp.maximum(x.ravel(), 0), length)
 
 
 def segment_take(
