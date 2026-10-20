@@ -17,6 +17,7 @@ import numpy as np
 from jax import Array
 from jax.typing import ArrayLike
 
+from kups.config import index_dtype
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
@@ -179,13 +180,14 @@ def particles_from_ase(
         rotates Cartesian positions into the lower-triangular frame.
     """
     if isinstance(atoms, (str, Path)):
-        return _particles_from_path(atoms)
+        # The index dtype is part of the key: cached indices keep their dtype.
+        return _particles_from_path(atoms, index_dtype())
     return _particles_from_atoms(atoms)
 
 
 @cache
 def _particles_from_path(
-    path: str | Path,
+    path: str | Path, dtype: np.dtype
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:

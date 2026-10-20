@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, override
+from typing import Any, Callable, Literal, NamedTuple, override
 
 import ase
 import ase.data
@@ -215,6 +215,9 @@ class RunConfig(BaseModel):
     """Ordered move sequence for the palindrome propagator."""
     seed: int | None = None
     """Random seed. ``None`` uses a time-based seed."""
+    index_dtype: Literal["int32", "int64"] = "int64"
+    """Integer dtype of all state indices, set with ``kups.config.set_index_dtype``.
+    ``int32`` is faster on GPU."""
 
 
 class StressResult(NamedTuple):
