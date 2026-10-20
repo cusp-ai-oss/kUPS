@@ -18,6 +18,16 @@ the set is just appending another ``(implementation, cost)`` pair to
 ``implementations``; all implementations are built from one lens, so they share
 the ``UniversalNeighborlistParameters`` capacities.
 
+:class:`CellScanNeighborList` is not seeded: it needs finite cutoffs and a
+``stencil_radius`` covering the cutoff on periodic axes, which counts cannot
+check. Append it with :func:`cell_scan_cost` where those hold::
+
+    nl = AdaptiveNeighborList.from_state(state, cutoffs)
+    scan = CellScanNeighborList.from_state(state, cutoffs)
+    nl = AdaptiveNeighborList(
+        (*nl.implementations, NeighborListCandidate(scan, cell_scan_cost))
+    )
+
 Costs use coarse counts rather than cutoff or box geometry: counts are static at
 trace time, so the dispatch is a plain Python branch that compiles only the
 selected implementation.
@@ -35,6 +45,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
+from kups.core.neighborlist.cell_scan import triton_available
 from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.edges import Edges
@@ -95,6 +106,24 @@ def cell_list_cost(num_particles: int, num_systems: int) -> float:
     """Default cost for :class:`CellListNeighborList` (``O(N)`` with a large
     constant, crossing dense at ``_CELL_LIST_CROSSOVER`` particles per system)."""
     return _CELL_LIST_CROSSOVER * num_particles
+
+
+# Cell scan on an L4: a fixed cost (launches, sorts) that dense spends on about 4e5
+# candidate pairs, plus about 150 pairs per particle. Dense stays cheaper below about
+# 700 particles for one system and 250 per system for 16 systems.
+_CELL_SCAN_FIXED = 400_000
+_CELL_SCAN_PER_PARTICLE = 150
+
+
+def cell_scan_cost(num_particles: int, num_systems: int) -> float:
+    """Cost for :class:`CellScanNeighborList`: a fixed cost plus ``O(N)``.
+
+    ``inf`` where its kernel runs under the Pallas interpreter (no CUDA GPU of compute
+    capability 8.0+; see :func:`~kups.core.neighborlist.cell_scan.triton_available`).
+    """
+    if not triton_available():
+        return math.inf
+    return _CELL_SCAN_FIXED + _CELL_SCAN_PER_PARTICLE * num_particles
 
 
 def all_dense_cost(num_particles: int, num_systems: int) -> float:
