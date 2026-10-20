@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.config import index_dtype
 from kups.core.capacity import Capacity
 from kups.core.lens import bind
 from kups.core.utils.jax import (
@@ -134,6 +135,8 @@ class Index[Key: SupportsSorting]:
         if not isinstance(self._indices, Array):
             return
         assert jnp.issubdtype(self._indices.dtype, jnp.integer)
+        if self._indices.dtype != (dtype := index_dtype()):
+            object.__setattr__(self, "_indices", self._indices.astype(dtype))
         try:
             _check_index_keys(self.keys)
         except TypeError:
@@ -172,9 +175,8 @@ class Index[Key: SupportsSorting]:
             typ = type(label(0))
         else:
             typ = type(key_tuple[0]) if len(key_tuple) > 0 else None
-        return Index[T](
-            key_tuple, jnp.asarray(values).reshape(np_data.shape), max_count, _cls=typ
-        )
+        indices = jnp.asarray(values.reshape(np_data.shape), index_dtype())
+        return Index[T](key_tuple, indices, max_count, _cls=typ)
 
     @classmethod
     def arange[T: SupportsSorting](
@@ -218,7 +220,7 @@ class Index[Key: SupportsSorting]:
             n = int(ids.max()) + 1
         return Index(
             tuple(label(i) for i in range(n)),
-            jnp.asarray(ids),
+            jnp.asarray(ids, index_dtype()),
             max_count,
             _cls=type(label(0)),
         )
@@ -342,16 +344,17 @@ class Index[Key: SupportsSorting]:
         label_counts = self.counts.data
         indices = indices % jnp.maximum(label_counts, 1)
         if self.size == 0:
-            return jnp.zeros(len(self.keys), dtype=int)
+            return jnp.zeros(len(self.keys), dtype=self._indices.dtype)
         if len(self.keys) == 1:
             # One label needs only a linear scan, including over buffered rows.
             valid = self._indices == 0
-            rank = jnp.cumsum(valid) - 1
+            rank = jnp.cumsum(valid, dtype=self._indices.dtype) - 1
             result = jnp.argmax(valid & (rank == indices[0]))[None]
+            result = result.astype(self._indices.dtype)
         else:
             # Stable grouping preserves occurrence order without a rows x keys
             # one-hot array, which grows quadratically for batched systems.
-            order = jnp.argsort(self._indices, stable=True)
+            order = jnp.argsort(self._indices, stable=True).astype(self._indices.dtype)
             result = order.at[offsets_from_counts(label_counts) + indices].get(
                 mode="fill", fill_value=len(self)
             )
@@ -372,11 +375,12 @@ class Index[Key: SupportsSorting]:
         # Include the OOB label to preserve matching of explicit sentinel rows.
         counts = bincount(self._indices, length=len(self.keys) + 1)
         starts = offsets_from_counts(counts)
-        lanes = jnp.arange(max_count)
+        dtype = self._indices.dtype
+        lanes = jnp.arange(max_count, dtype=dtype)
         positions = starts[target_ids, None] + lanes
-        order = jnp.argsort(self._indices, stable=True)
+        order = jnp.argsort(self._indices, stable=True).astype(dtype)
         if self.size == 0:
-            return jnp.full(positions.shape, len(self), dtype=int)
+            return jnp.full(positions.shape, len(self), dtype=dtype)
         found = order.at[positions].get(mode="fill", fill_value=len(self))
         return jnp.where(lanes < counts[target_ids, None], found, len(self))
 
@@ -452,7 +456,8 @@ class Index[Key: SupportsSorting]:
                 (positions.get(key, len(tokens)) for key in self.keys),
                 dtype=int,
                 count=len(self.keys),
-            )
+            ),
+            self._indices.dtype,
         )
         return idx_map.at[self._indices].get(mode="fill", fill_value=len(tokens))
 
@@ -694,7 +699,8 @@ class Index[Key: SupportsSorting]:
             "Index shapes must match."
         )
         all_keys = tuple(sorted(product(*(idx.keys for idx in indices))))
-        flat_key = jnp.zeros(shape, dtype=jnp.int32)
+        dtype = jnp.result_type(*(idx._indices for idx in indices))
+        flat_key = jnp.zeros(shape, dtype=dtype)
         valid = jnp.ones(shape, dtype=bool)
         stride = 1
         for idx in reversed(indices):
