@@ -431,6 +431,48 @@ class TestMCMCPropagator:
         assert candidate.value != simple_state.value
         assert 0 < candidate.step < 48
 
+    def test_weights_read_from_state(self, simple_state):
+        def changes(key, state, /):
+            return jnp.array(1.0), Table.arange(jnp.zeros(2), label=SystemId)
+
+        def density(state, patch):
+            return WithPatch(Table.arange(jnp.zeros(2), label=SystemId), IdPatch())
+
+        def count(i):
+            return lambda state, accept: replace(
+                state, array_data=state.array_data.at[i].add(1)
+            )
+
+        traces = []
+
+        def weights(state):
+            traces.append(None)
+            return state.switch_probabilities
+
+        propagator = MCMCPropagator(
+            self._patch_fn,
+            (changes,) * 3,
+            density,
+            tuple(map(count, range(3))),
+            weights=weights,
+        )
+        step = jax.jit(propagator)
+
+        def run(probabilities):
+            state = replace(
+                simple_state,
+                array_data=jnp.zeros(3),
+                switch_probabilities=jnp.array(probabilities),
+            )
+            for key in jax.random.split(jax.random.key(0), 64):
+                state = step(key, state)
+            return state.array_data
+
+        selected = run([0.5, 0.0, 0.5])
+        assert selected[1] == 0 and selected[0] > 0 and selected[2] > 0
+        npt.assert_array_equal(run([0.0, 1.0, 0.0]), [0, 64, 0])
+        assert len(traces) == 1
+
     def test_noop_keeps_proposal_and_active_branch_assertions(
         self, simple_state, parameter_scheduler
     ):

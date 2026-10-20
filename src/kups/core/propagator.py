@@ -245,7 +245,7 @@ def propose_mixed[State, Changes](
     key: Array,
     state: State,
     propose_fns: tuple[ChangesFn[State, Changes], ...],
-    weights: tuple[float, ...] | None = None,
+    weights: tuple[float, ...] | Array | None = None,
 ) -> tuple[Changes, LogProbabilityRatio, Array]:
     """Select one proposal at random and evaluate only it.
 
@@ -258,8 +258,8 @@ def propose_mixed[State, Changes](
     if weights is None:
         which = jax.random.randint(next(chain), (), 0, len(propose_fns))
     else:
-        probs = jnp.array(weights) / sum(weights)
-        which = jax.random.choice(next(chain), len(propose_fns), p=probs)
+        probs = jnp.asarray(weights, dtype=float)
+        which = jax.random.choice(next(chain), len(propose_fns), p=probs / probs.sum())
     selected, log_ratio = jax.lax.switch(which, propose_fns, key, state)
     return selected, log_ratio, which
 
@@ -288,7 +288,8 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
         propose_fns: Tuple of change proposal functions.
         log_probability_ratio_fn: Computes target density ratio (e.g., Boltzmann).
         parameter_schedulers: One scheduler per propose_fn, updated selectively.
-        weights: Selection probabilities per move (unnormalized). None for uniform.
+        weights: Selection probabilities per move (unnormalized), constant or read
+            from the state (so they can change without recompiling). None for uniform.
         is_noop: Optional scalar predicate over ``(state, changes)``. True
             certifies that both patches leave the entire state unchanged and
             the target log probability ratio is zero. Their evaluation is then
@@ -305,7 +306,9 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
     parameter_schedulers: tuple[Scheduler[State, Table[SystemId, Array]], ...] = field(
         static=True
     )
-    weights: tuple[float, ...] | None = field(static=True, default=None)
+    weights: tuple[float, ...] | View[State, Array] | None = field(
+        static=True, default=None
+    )
     is_noop: Probe[State, Changes, Array] | None = field(static=True, default=None)
 
     @jit
@@ -322,8 +325,9 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
         # This allows us to skip many select_n calls.
         with jax.disable_jit():
             # Select and propose
+            weights = self.weights(state) if callable(self.weights) else self.weights
             changes, move_log_ratio, which = propose_mixed(
-                next(chain), state, self.propose_fns, self.weights
+                next(chain), state, self.propose_fns, weights
             )
             patch_key = next(chain)
             accept_key = next(chain)

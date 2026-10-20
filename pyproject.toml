@@ -66,6 +66,7 @@ cuda = ["jax[cuda]>=0.7.2; sys_platform == 'linux'"]
 hf = ["huggingface-hub>=1.11.0"]
 uma = ["fairchem-core>=2.20.0; python_version <= '3.14'"]
 mace = ["mace-torch>=0.3.16"]
+demo = ["cloudpickle>=3.1", "fastapi>=0.136", "uvicorn[standard]>=0.46"]  # demo/playground
 
 [project.urls]
 homepage = "https://github.com/cusp-ai-oss/kups"

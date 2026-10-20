@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kUPS Playground</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-method="md" class="offline">
+  <header>
+    <div class="brand">
+      <img class="kups" src="kups-logo.svg" alt="kUPS">
+      <span class="sub">playground</span>
+    </div>
+    <p class="tagline">Composable, differentiable molecular simulation on JAX</p>
+    <div id="warm" class="warm" hidden><span class="spinner small"></span><span></span></div>
+    <div class="vitals">
+      <div class="vital"><b id="rate">–</b><span id="rate-unit">steps/s</span></div>
+      <div class="vital"><b id="xval">0</b><span id="x-unit">ps</span></div>
+      <span id="conn-label"></span>
+      <span id="conn" class="dot" title="Live connection"></span>
+    </div>
+    <img class="cusp" src="cusp-logo.svg" alt="Cusp AI">
+  </header>
+
+  <main>
+    <section class="panel build" aria-label="Building blocks">
+      <div class="group">
+        <h2>Method <small>both stay live</small></h2>
+        <div id="method" class="seg big">
+          <button data-v="md">MD</button>
+          <button data-v="gcmc">GCMC</button>
+          <button data-v="hybrid">Hybrid</button>
+        </div>
+      </div>
+
+      <div class="md-only">
+        <div class="group">
+          <h2>Potential <small>swap mid-run</small></h2>
+          <div id="potentials" class="cards"></div>
+        </div>
+        <div class="group">
+          <h2>Integrator</h2>
+          <div class="field">
+            <span>Thermostat</span>
+            <div id="thermostat" class="seg">
+              <button data-v="none">None</button>
+              <button data-v="csvr">CSVR</button>
+              <button data-v="langevin">Langevin</button>
+            </div>
+          </div>
+          <div class="field">
+            <span>Barostat</span>
+            <div id="barostat" class="seg">
+              <button data-v="false">Off</button>
+              <button data-v="true">1 bar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gcmc-only">
+        <div class="group solo">
+          <h2>Potential <small>for GCMC</small></h2>
+          <div class="card static"><span>LJ + Ewald</span><span class="tag">JAX · incremental</span></div>
+        </div>
+        <div class="group">
+          <h2>Moves</h2>
+          <div id="moves" class="toggles">
+            <button data-move="translation">Translate</button>
+            <button data-move="rotation">Rotate</button>
+            <button data-move="reinsertion">Reinsert</button>
+            <button data-move="exchange" title="Insert and delete CO₂">Exchange</button>
+          </div>
+        </div>
+        <div class="group">
+          <h2>Pressure <small>data · no recompile</small></h2>
+          <div class="slider">
+            <input id="pressure" type="range" min="-2" max="1" step="0.05" aria-label="Pressure (log scale)">
+            <output id="pressure-out">–</output>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>Temperature <small>data · no recompile</small></h2>
+        <div class="slider">
+          <input id="temperature" type="range" min="10" max="600" step="5" aria-label="Temperature">
+          <output id="temperature-out">–</output>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="pause">Pause</button>
+        <button id="reset">Reset</button>
+        <button id="tour" class="primary">Play tour</button>
+      </div>
+    </section>
+
+    <section class="stage" aria-label="Live simulation">
+      <div id="viewer">
+        <div id="hud">
+          <div class="count"><b id="hud-n">–</b><span>CO₂ per unit cell</span></div>
+          <div id="hud-sub"></div>
+        </div>
+        <div id="legend">
+          <span><i class="dot-zr"></i>Zr</span><span><i class="dot-o"></i>O</span><span><i class="dot-c"></i>C</span><span><i class="dot-h"></i>H</span>
+          <span class="guest"><i class="dot-co2"></i>CO₂</span>
+        </div>
+        <div id="tiles"></div>
+        <button id="batch-toggle">Show ×8 batch</button>
+        <button id="spin" title="Space">Pause rotation</button>
+        <div id="caption" hidden></div>
+        <div id="toasts" aria-live="polite"></div>
+        <div id="busy" hidden><div class="spinner"></div><span></span></div>
+      </div>
+      <div class="pipeline">
+        <div class="pipeline-head"><code id="pipeline-head"></code><small>read from the running propagator</small></div>
+        <ol id="pipeline"></ol>
+      </div>
+    </section>
+
+    <section class="panel code" aria-label="Code">
+      <h2>This run <small>changed lines light up</small></h2>
+      <pre id="code-run" class="codebox"></pre>
+      <a id="repo" href="https://github.com/cusp-ai-oss/kUPS" target="_blank" rel="noopener">
+        <img src="github-qr.svg" alt="QR code for github.com/cusp-ai-oss/kUPS">
+        <span><b>Try kUPS</b>github.com/cusp-ai-oss/kUPS<small>pip install kups</small></span>
+      </a>
+    </section>
+
+    <section class="charts" id="charts" aria-label="Observables"></section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

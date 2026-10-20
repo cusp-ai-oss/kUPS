@@ -2160,6 +2160,11 @@ dependencies = [
 cuda = [
     { name = "jax", extra = ["cuda"], marker = "sys_platform == 'linux' or (extra == 'extra-4-kups-mace' and extra == 'extra-4-kups-uma')" },
 ]
+demo = [
+    { name = "cloudpickle" },
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 hf = [
     { name = "huggingface-hub" },
 ]
@@ -2204,9 +2209,11 @@ notebook = [
 [package.metadata]
 requires-dist = [
     { name = "ase", specifier = ">=3.24.0" },
+    { name = "cloudpickle", marker = "extra == 'demo'", specifier = ">=3.1" },
     { name = "einops", specifier = ">=0.8.1" },
     { name = "etils", specifier = ">=1.13.0" },
     { name = "fairchem-core", marker = "python_full_version < '3.15' and extra == 'uma'", specifier = ">=2.20.0" },
+    { name = "fastapi", marker = "extra == 'demo'", specifier = ">=0.136" },
     { name = "flatbuffers", specifier = ">=25.2.10" },
     { name = "h5py", specifier = ">=3.15.0" },
     { name = "hdf5plugin", specifier = ">=6.0.0" },
@@ -2224,8 +2231,9 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0" },
     { name = "slub", specifier = ">=0.1.1" },
     { name = "tqdm", specifier = ">=4.67.1" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'demo'", specifier = ">=0.46" },
 ]
-provides-extras = ["cuda", "hf", "uma", "mace"]
+provides-extras = ["cuda", "hf", "uma", "mace", "demo"]
 
 [package.metadata.requires-dev]
 cuda = [{ name = "jax", extras = ["cuda"], marker = "sys_platform == 'linux'", specifier = ">=0.7.2" }]
@@ -4874,7 +4882,7 @@ version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-4-kups-mace' and extra == 'extra-4-kups-uma')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cded50b7fe44e850315d039f28b15901ab44839e70b593/starlette-1.0.0.tar.gz", hash = "sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149", size = 2655289, upload-time = "2026-03-22T18:29:46.779Z" }
 wheels = [
@@ -5274,11 +5282,11 @@ wheels = [
 
 [package.optional-dependencies]
 standard = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-4-kups-mace' and extra == 'extra-4-kups-uma')" },
     { name = "httptools" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
+    { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'extra-4-kups-mace' and extra == 'extra-4-kups-uma') or (sys_platform == 'cygwin' and extra == 'extra-4-kups-mace' and extra == 'extra-4-kups-uma') or (sys_platform == 'win32' and extra == 'extra-4-kups-mace' and extra == 'extra-4-kups-uma')" },
     { name = "watchfiles" },
     { name = "websockets" },
 ]
