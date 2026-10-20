@@ -324,7 +324,12 @@ def evaluate_ewald_potential[
             point_cloud.particles,
             point_cloud.systems,
             Edges(
-                Index(pi_keys, jnp.zeros((0, 0), dtype=int)),
+                Index(
+                    pi_keys,
+                    jnp.zeros(
+                        (0, 0), point_cloud.particles.data.system.raw_indices.dtype
+                    ),
+                ),
                 jnp.zeros((0, 0, 3), dtype=int),
             ),
         ),

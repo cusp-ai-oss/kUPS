@@ -259,6 +259,23 @@ class TestHyperGraphSorted:
         npt.assert_array_equal(s.edges.indices.value, hg.edges.indices.value)
         npt.assert_array_equal(s.edges.shifts, hg.edges.shifts)
 
+    @pytest.mark.filterwarnings(
+        "error:scatter inputs have incompatible types:FutureWarning"
+    )
+    def test_sort_keeps_int32_indices(self, int32_indices):
+        hg = self._make_graph(
+            positions=jnp.array(
+                [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [4.0, 0.0, 0.0]]
+            ),
+            species=jnp.array([10, 20, 30, 40]),
+            system_ids=jnp.array([1, 0, 1, 0]),
+            edge_indices=jnp.array([[0, 2], [1, 3]]),
+            edge_shifts=jnp.array([[[1, 0, 0]], [[0, 1, 0]]]),
+        )
+        s = hg.sorted_by_system(sort_edges=True)
+        assert s.edges.indices.raw_indices.dtype == jnp.int32
+        npt.assert_array_equal(s.edges.indices.value, [[0, 1], [2, 3]])
+
     def test_sorted_basic(self):
         # Particles in unsorted system order: [1, 0, 1, 0]
         hg = self._make_graph(

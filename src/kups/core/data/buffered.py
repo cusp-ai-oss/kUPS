@@ -131,7 +131,10 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             If fewer than ``n`` free slots exist, excess entries use
             the OOB sentinel (``len(index)``).
         """
-        data = first_true_indices(~self.occupation, n, len(self.keys))
+        viewed = self.view(self.data)
+        data = first_true_indices(
+            ~self.occupation, n, len(self.keys), viewed.raw_indices.dtype
+        )
         return Index(self.keys, data)
 
     @classmethod

@@ -130,7 +130,7 @@ def radial_distribution_function(
     diffs = edge_result.difference_vectors(positions, systems)
     dists = jnp.linalg.norm(diffs, axis=(-2, -1))
     dr = rmax / bins
-    bin_indices = jnp.ceil(dists / dr).astype(int)
+    bin_indices = jnp.ceil(dists / dr).astype(edge_result.indices.raw_indices.dtype)
     system_index = positions.data.system
     n_sys = system_index.num_labels
     edge_system = positions[edge_result.indices[:, 0]].system

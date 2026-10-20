@@ -1348,6 +1348,23 @@ class TestDeleteRandomMotif:
         assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
 
 
+def test_exchange_branches_trace_with_int32_indices(int32_indices):
+    particles, groups, motifs, cell = _exchange_state()
+    cap = LensCapacity(1, lens(lambda x: x, cls=int))
+
+    @jax.jit
+    def propose(key: Array, insert: Array) -> ExchangeChanges:
+        # the GCMC propagator picks insertion or deletion with lax.cond
+        return jax.lax.cond(
+            insert,
+            lambda: insert_random_motif(key, motifs, particles, groups, cell, cap),
+            lambda: delete_random_motif(key, motifs, particles, groups, cap),
+        )
+
+    changes = propose(jax.random.key(0), jnp.array(True))
+    assert changes.particles.indices.raw_indices.dtype == jnp.int32
+
+
 def test_empty_exchange_changes_preserve_group_only_updates():
     particles, groups, motifs, _ = _exchange_state()
     cap = LensCapacity(1, lens(lambda x: x, cls=int))
