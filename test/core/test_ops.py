@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
-from kups.core.utils.ops import expand_last_dims, pad_axis, where_broadcast_last
+from kups.core.utils.ops import (
+    expand_last_dims,
+    first_true_indices,
+    pad_axis,
+    where_broadcast_last,
+)
 
 
 class TestExpandLastDims:
@@ -72,3 +79,46 @@ class TestPadAxis:
         x = jnp.array([1.0, 2.0], dtype=jnp.float32)
         result = pad_axis(x, (1, 1), axis=0)
         assert result.dtype == jnp.float32
+
+
+@pytest.mark.parametrize("n", [17, 1000])
+@pytest.mark.parametrize("size", [0, 1, 3, 4, 6])
+@pytest.mark.parametrize("n_true", [0, 2, 5])
+def test_first_true_indices_matches_where(n: int, size: int, n_true: int) -> None:
+    positions = jnp.array([1, 4, 8, 9, 16][:n_true], dtype=int) * (n // 17)
+    mask = jnp.zeros(n, dtype=bool).at[positions].set(True)
+    expected = jnp.where(mask, size=size, fill_value=n)[0]
+    fn = jax.jit(first_true_indices, static_argnums=(1, 2))
+    npt.assert_array_equal(fn(mask, size, n), expected)
+
+
+@pytest.mark.parametrize("n", [257, 1000, 10000])
+@pytest.mark.parametrize("size", [3, 8])
+def test_first_true_indices_matches_where_on_runs(n: int, size: int) -> None:
+    # Contiguous runs, several per block and in the ragged tail block; n > 8192
+    # takes the nested block path.
+    fn = jax.jit(first_true_indices, static_argnums=(1, 2))
+    for run in (slice(0, 300), slice(290, 296), slice(n - 5, n)):
+        mask = jnp.zeros(n, dtype=bool).at[run].set(True)
+        expected = jnp.where(mask, size=size, fill_value=n)[0]
+        npt.assert_array_equal(fn(mask, size, n), expected)
+
+
+@pytest.mark.parametrize(
+    ("n", "size", "positions", "fill_value"),
+    [
+        (1, 1, [0], 1),
+        (1, 1, [], 1),
+        (5, 8, [0, 1, 2, 3, 4], 5),  # size > n
+        (256, 8, list(range(256)), 256),  # longest unblocked mask, all true
+        (256, 9, [3, 255], 256),  # size above the top-k limit
+        (40, 2, [39], 99),
+        (257, 2, [256], 1000),  # lone hit in the ragged tail block
+    ],
+)
+def test_first_true_indices_edge_cases(
+    n: int, size: int, positions: list[int], fill_value: int
+) -> None:
+    mask = jnp.zeros(n, dtype=bool).at[jnp.array(positions, dtype=int)].set(True)
+    expected = jnp.where(mask, size=size, fill_value=fill_value)[0]
+    npt.assert_array_equal(first_true_indices(mask, size, fill_value), expected)

@@ -110,3 +110,50 @@ def select_n(which: Array, *cands: Array) -> Array:
     if all(c is cands[0] for c in cands[1:]):
         return cands[0]
     return jax.lax.select_n(which, *cands)
+
+
+# Block width when reducing long masks to per-block occupancy.
+_FIRST_TRUE_BLOCK = 32
+# Top-k beats the prefix sum only for a few positions.
+_FIRST_TRUE_MAX_SIZE = 8
+# Positions below this are exact in float32.
+_FIRST_TRUE_MAX_N = 2**24
+
+
+def first_true_indices(mask: Array, size: int, fill_value: int) -> Array:
+    """Positions of the first ``size`` true entries of a 1D ``mask``.
+
+    Equivalent to ``jnp.where(mask, size=size, fill_value=fill_value)[0]``,
+    which lowers to a prefix sum over the whole mask. On CPU, a few positions
+    are found with one top-k over negated positions instead; long masks are
+    first reduced to per-block occupancy, so that only the first ``size``
+    occupied blocks are searched.
+
+    Args:
+        mask: Boolean array of shape ``(n,)``.
+        size: Number of positions to return.
+        fill_value: Value used once fewer than ``size`` entries are true.
+
+    Returns:
+        Integer array of shape ``(size,)`` with increasing positions.
+    """
+    n = mask.shape[0]
+    if (
+        jax.default_backend() != "cpu"
+        or not 0 < size <= min(n, _FIRST_TRUE_MAX_SIZE)
+        or n >= _FIRST_TRUE_MAX_N
+    ):
+        return jnp.where(mask, size=size, fill_value=fill_value)[0]
+    block = _FIRST_TRUE_BLOCK
+    if n > _FIRST_TRUE_MAX_SIZE * block:
+        n_blocks = -(-n // block)
+        blocks = pad_axis(mask, (0, n_blocks * block - n), axis=0)
+        blocks = blocks.reshape(n_blocks, block)
+        occupied = first_true_indices(blocks.any(axis=1), size, n_blocks)
+        rows = blocks.at[occupied].get(mode="fill", fill_value=False)
+        local = first_true_indices(rows.reshape(-1), size, size * block)
+        found = occupied.at[local // block].get(mode="fill", fill_value=0) * block
+        return jnp.where(local < size * block, found + local % block, fill_value)
+    keys = jnp.where(mask, -jnp.arange(n, dtype=jnp.float32), -jnp.inf)
+    values, found = jax.lax.top_k(keys, size)
+    return jnp.where(values > -jnp.inf, found.astype(int), fill_value)
