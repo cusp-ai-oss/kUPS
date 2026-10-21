@@ -344,7 +344,7 @@ class TestMCMCPropagator:
         npt.assert_array_equal(result1.value, result2.value)
 
     @pytest.mark.parametrize("log_ratio", [0.0, -jnp.inf])
-    def test_noop_skips_evaluation_but_updates_acceptance(
+    def test_noop_skips_density_but_updates_acceptance(
         self, simple_state, parameter_scheduler, log_ratio
     ):
         calls = []
@@ -374,7 +374,7 @@ class TestMCMCPropagator:
         result = step(jax.random.key(0), empty)
         jax.block_until_ready(result)
         jax.effects_barrier()
-        assert calls == []
+        assert calls == ["patch"]
         npt.assert_array_equal(result.value, empty.value)
         npt.assert_array_equal(result.scheduler_params.data.history.index, [1, 1])
         npt.assert_array_equal(
@@ -385,7 +385,7 @@ class TestMCMCPropagator:
         result = step(jax.random.key(0), simple_state)
         jax.block_until_ready(result)
         jax.effects_barrier()
-        assert calls == ["patch", "density"]
+        assert calls == ["patch", "patch", "density"]
         npt.assert_array_equal(result.value, simple_state.value + (log_ratio == 0))
 
     def test_noop_preserves_mixed_move_trajectory(
@@ -431,6 +431,92 @@ class TestMCMCPropagator:
         assert candidate.value != simple_state.value
         assert 0 < candidate.step < 48
 
+    @pytest.mark.parametrize(
+        "bumped",
+        [
+            ("step", "cached_result", "array_data"),
+            ("step", "step", None),  # a shared leaf and a no-op scheduler
+            (None, None),  # no scheduler changes the state
+            ("step",),
+        ],
+    )
+    def test_only_selected_move_scheduler_runs(self, simple_state, bumped):
+        increments = (1.0, 2.0, 4.0)[: len(bumped)]
+
+        def propose(increment):
+            def changes(key, state, /):
+                return jnp.array(increment), Table.arange(jnp.zeros(2), label=SystemId)
+
+            return changes
+
+        def bump(name):
+            def scheduler(state, accept):
+                if name is None:
+                    return state
+                return replace(state, **{name: getattr(state, name) + 1})
+
+            return scheduler
+
+        def density(state, patch):
+            return WithPatch(Table.arange(jnp.zeros(2), label=SystemId), IdPatch())
+
+        step = jax.jit(
+            MCMCPropagator(
+                self._patch_fn,
+                tuple(map(propose, increments)),
+                density,
+                tuple(map(bump, bumped)),
+            )
+        )
+        state, taken = simple_state, set()
+        for key in jax.random.split(jax.random.key(5), 12):
+            new = step(key, state)
+            move = increments.index(float(new.value - state.value))
+            taken.add(move)
+            for name in ("step", "cached_result", "array_data"):
+                npt.assert_array_equal(
+                    getattr(new, name), getattr(state, name) + (bumped[move] == name)
+                )
+            state = new
+        assert taken == set(range(len(bumped)))
+
+    @pytest.mark.parametrize("guarded", [False, True])
+    @pytest.mark.parametrize("increment", [0.0, 1.0])
+    def test_density_patch_applies_per_system_acceptance(
+        self, simple_state, parameter_scheduler, guarded, increment
+    ):
+        @dataclass
+        class CountAccepted:
+            def __call__(self, state, accept):
+                return replace(
+                    state, array_data=state.array_data.at[:2].add(accept.data)
+                )
+
+        def changes(key, state, /):
+            return state.array_data[2], Table.arange(jnp.zeros(2), label=SystemId)
+
+        def density(state, patch):
+            # System 0 always accepts, system 1 always rejects.
+            log_ratio = Table.arange(jnp.array([0.0, -jnp.inf]), label=SystemId)
+            return WithPatch(log_ratio, CountAccepted())
+
+        propagator = MCMCPropagator(
+            self._patch_fn,
+            (changes,),
+            density,
+            (parameter_scheduler,),
+            is_noop=(lambda state, inc: inc == 0) if guarded else None,
+        )
+        state = replace(simple_state, array_data=jnp.array([0.0, 0.0, increment]))
+        result = jax.jit(propagator)(jax.random.key(0), state)
+        noop = guarded and increment == 0
+        npt.assert_array_equal(result.value, state.value + increment)
+        npt.assert_array_equal(result.array_data[:2], [0, 0] if noop else [1, 0])
+        # Skipped densities count as zero, so empty moves accept everywhere.
+        npt.assert_array_equal(
+            result.scheduler_params.data.history.values[:, 0], [True, noop]
+        )
+
     def test_noop_keeps_proposal_and_active_branch_assertions(
         self, simple_state, parameter_scheduler
     ):
@@ -439,10 +525,10 @@ class TestMCMCPropagator:
             return state.array_data[0], Table.arange(jnp.zeros(2), label=SystemId)
 
         def patch(key, state, increment):
-            runtime_assert(increment != 0, "empty patch evaluated")
             return ExamplePatch(increment)
 
         def density(state, patch):
+            runtime_assert(patch.increment != 0, "empty density evaluated")
             runtime_assert(patch.increment < 2, "invalid density")
             return WithPatch(Table.arange(jnp.zeros(2), label=SystemId), IdPatch())
 
