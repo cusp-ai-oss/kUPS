@@ -450,6 +450,9 @@ class TestSubset:
         npt.assert_array_equal(result2.data, [3.0, 1.0])
 
 
+_jit_update_if = jax.jit(lambda s, a, i, d: s.update_if(a, i, d))
+
+
 class TestUpdateIf:
     def test_update_if(self):
         sys_idx = Index.new([SystemId(0), SystemId(0), SystemId(1), SystemId(1)])
@@ -476,6 +479,33 @@ class TestUpdateIf:
             Table.arange(jnp.array([True, False]), label=SystemId), idx, new_data
         )
         npt.assert_array_equal(result3.data.positions, [10.0, 2.0, 3.0, 4.0])
+
+    @pytest.mark.parametrize(
+        "accept, positions, system",
+        [
+            ([True, False], [10.0, 40.0, 3.0, 4.0, 5.0], [0, 0, 0, 1, 1]),
+            ([False, True], [1.0, 40.0, 3.0, 4.0, 50.0], [0, 0, 0, 1, 1]),
+            ([False, False], [1.0, 2.0, 3.0, 4.0, 5.0], [0, 1, 0, 1, 1]),
+        ],
+    )
+    def test_update_if_interleaved_systems(self, accept, positions, system):
+        systems = (SystemId(0), SystemId(1))
+        data = ParticleData(
+            positions=jnp.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+            system=Index(systems, jnp.array([0, 1, 0, 1, 1])),
+        )
+        state = Table.arange(data, label=ParticleId)
+        # Particle 1 moves from system 1 to system 0; the third row is inactive.
+        idx = Index(state.keys, jnp.array([4, 0, 5, 1]))
+        new_data = ParticleData(
+            positions=jnp.array([50.0, 10.0, 99.0, 40.0]),
+            system=Index(systems, jnp.array([1, 0, 0, 0])),
+        )
+        result = _jit_update_if(
+            state, Table.arange(jnp.array(accept), label=SystemId), idx, new_data
+        )
+        npt.assert_array_equal(result.data.positions, positions)
+        npt.assert_array_equal(result.data.system.indices_in(systems), system)
 
 
 class TestJitCompatibility:
