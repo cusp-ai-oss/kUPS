@@ -25,11 +25,11 @@ import jax.numpy as jnp
 from kups.core.data.index import Index
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.relaxation.optimizer import Optimizer
-from kups.relaxation.transforms._segmented_tree import (
+from kups.core.utils.segmented_tree import (
     tree_scale_per_row,
     tree_segment_norm,
 )
+from kups.relaxation.optimizer import Optimizer
 
 
 @dataclass
