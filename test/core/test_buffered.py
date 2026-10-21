@@ -354,6 +354,37 @@ class TestUpdateIf:
         npt.assert_array_equal(result.occupation, occupation)
         npt.assert_array_equal(result.data.system.indices_in(systems), system)
 
+    @pytest.mark.parametrize(
+        ("accept", "expected"),
+        [
+            ([False, False], [1.0, 2.0, 3.0, 4.0]),
+            ([True, False], [90.0, 2.0, 3.0, 4.0]),
+            ([False, True], [1.0, 2.0, 3.0, 0.0]),
+        ],
+    )
+    def test_update_if_writes_only_selected_leaves(self, accept, expected):
+        # Interleaved systems; the second new row is unoccupied, so its
+        # values are sanitized to zero before the write.
+        data = TDSys(
+            values=jnp.array([1.0, 2.0, 3.0, 4.0]),
+            status=_make_status([True] * 4),
+            system=Index.integer(jnp.array([0, 1, 0, 1]), label=SystemId),
+        )
+        buf = Buffered((0, 1, 2, 3), data, lambda d: d.status)
+        idx = Index(buf.keys, jnp.array([0, 3]))
+        new_data = self._make_new([90.0, 91.0], [True, False], [0, 1])
+        acc = Table.arange(jnp.array(accept), label=SystemId)
+        full = buf.update_if(acc, idx, new_data)
+        result = buf.update_if(acc, idx, new_data, only=lambda d: d.values)
+        assert isinstance(result, Buffered)
+        npt.assert_array_equal(result.data.values, expected)
+        npt.assert_array_equal(result.data.values, full.data.values)
+        npt.assert_array_equal(result.occupation, buf.occupation)
+        keys = buf.data.system.keys
+        npt.assert_array_equal(
+            result.data.system.indices_in(keys), buf.data.system.indices_in(keys)
+        )
+
 
 class TestInheritedBehavior:
     def test_getitem_and_at_set(self):

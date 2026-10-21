@@ -507,6 +507,36 @@ class TestUpdateIf:
         npt.assert_array_equal(result.data.positions, positions)
         npt.assert_array_equal(result.data.system.indices_in(systems), system)
 
+    @pytest.mark.parametrize(
+        ("accept", "expected"),
+        [
+            ([False, False], [1.0, 2.0, 3.0, 4.0]),
+            ([True, False], [10.0, 2.0, 3.0, 40.0]),
+            ([False, True], [1.0, 2.0, 3.0, 40.0]),
+        ],
+    )
+    def test_update_if_only_writes_selected_leaves(self, accept, expected):
+        # Interleaved systems; particle 3 moves from system 1 to system 0, so
+        # either system accepts it; the last row targets the OOB sentinel.
+        system = Index.integer(jnp.array([0, 1, 0, 1]), label=SystemId)
+        state = Table.arange(
+            ParticleData(jnp.array([1.0, 2.0, 3.0, 4.0]), system), label=ParticleId
+        )
+        idx = Index(state.keys, jnp.array([3, 0, len(state.keys)]))
+        new_data = ParticleData(
+            jnp.array([40.0, 10.0, 50.0]),
+            Index.integer(jnp.array([0, 0, 1]), label=SystemId),
+        )
+        acc = Table.arange(jnp.array(accept), label=SystemId)
+        full = state.update_if(acc, idx, new_data)
+        result = state.update_if(acc, idx, new_data, only=lambda d: d.positions)
+        npt.assert_array_equal(result.data.positions, expected)
+        npt.assert_array_equal(result.data.positions, full.data.positions)
+        keys = state.data.system.keys
+        npt.assert_array_equal(
+            result.data.system.indices_in(keys), state.data.system.indices_in(keys)
+        )
+
 
 class TestJitCompatibility:
     def test_jit_getitem(self):

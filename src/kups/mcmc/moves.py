@@ -527,10 +527,13 @@ class ExchangeChanges:
     Attributes:
         particles: Target particle slots and buffered particle data.
         groups: Target group slots and buffered group data.
+        positions_only: Statically known to change only particle positions;
+            all other fields hold their current values.
     """
 
     particles: WithIndices[ParticleId, Buffered[ParticleId, ExchangeParticleData]]
     groups: WithIndices[GroupId, Buffered[GroupId, ExchangeGroupData]]
+    positions_only: bool = field(static=True, default=False, kw_only=True)
 
     def is_noop(self, groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
         """Whether no particle is targeted and group metadata stays unchanged.
@@ -1146,9 +1149,13 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
 
     Randomly picks translation, rotation, reinsertion, or exchange (insert/delete)
     at each step. Displacement proposals are lifted to ``ExchangeChanges`` via
-    ``exchange_changes_from_position_changes`` so all four branches share the
-    same Changes type. Empty proposals bypass patch and energy evaluation while
-    retaining acceptance and scheduler updates, for either potential backend.
+    ``exchange_changes_from_position_changes``: per branch, so that they share
+    the exchange move's Changes type, or once after the move selection with
+    ``positions_only`` set when ``exchange_weight <= 0``. With exchange, empty
+    proposals skip the energy evaluation while retaining acceptance and
+    scheduler updates. Displacement-only propagators always evaluate: empty
+    displacements only occur when no system holds a molecule, and the guard
+    would cost throughput on every step.
 
     Args:
         state: Lens into the sub-state satisfying ``IsGCMCState``.
@@ -1164,19 +1171,20 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
         all four move types.
     """
 
+    def _lift(s: State, pos_changes: ParticlePositionChanges) -> ExchangeChanges:
+        inner = state(s)
+        return exchange_changes_from_position_changes(
+            pos_changes, inner.particles, inner.groups
+        )
+
     def _lift_to_exchange(
         propose_pos: ChangesFn[State, ParticlePositionChanges],
     ) -> ChangesFn[State, ExchangeChanges]:
         def wrapper(
             key: Array, s: State, /
         ) -> tuple[ExchangeChanges, LogProbabilityRatio]:
-            inner = state(s)
             pos_changes, log_ratio = propose_pos(key, s)
-            return exchange_changes_from_position_changes(
-                pos_changes,
-                inner.particles,
-                inner.groups,
-            ), log_ratio
+            return _lift(s, pos_changes), log_ratio
 
         return wrapper
 
@@ -1259,6 +1267,23 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                 state.focus(lambda x: x.reinsertion_params),
             )
         )
+    if exchange_weight <= 0:
+        # Displacements only: lift once after the move selection. ``PatchFn``
+        # fixes the parameter name ``state``, which shadows the lens here.
+        def _patch(key: Array, state: State, proposal: ParticlePositionChanges) -> Move:
+            changes = (
+                bind(_lift(state, proposal)).focus(lambda c: c.positions_only).set(True)
+            )
+            return patch_fn(key, state, changes)
+
+        return MCMCPropagator(
+            _patch,
+            tuple(_symmetric(fn) for _, fn, _ in _moves),
+            probability_fn,
+            tuple(_sched(params_lens) for _, _, params_lens in _moves),
+            weights=tuple(w for w, _, _ in _moves),
+        )
+
     for w, fn, params_lens in _moves:
         propose_fns.append(_lift_to_exchange(_symmetric(fn)))
         wts.append(w)
