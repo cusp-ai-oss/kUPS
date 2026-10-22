@@ -18,7 +18,6 @@ from pathlib import Path
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")  # for torch backends
 
 import jax
-import jax.numpy as jnp
 import rich
 import rich.logging
 from nanoargs import NanoArgs
@@ -43,7 +42,7 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import SkinNeighborList
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -79,7 +78,9 @@ def run(config: Config) -> MdState:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
-    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
+    potential, cutoff = config.potential.build(
+        state_lens, POSITIONS_AND_CELL, neighborlist_factory=SkinNeighborList.from_state
+    )
     propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
     all_particles: list[Table[ParticleId, MDParticles]] = []
@@ -96,14 +97,8 @@ def run(config: Config) -> MdState:
 
     base = 1 if isinstance(config.potential, TojaxPotentialConfig) else 2
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, cutoff, base=base, multiplier=multiplier
-    )
-    state = MdState(
-        particles=particles,
-        systems=systems,
-        neighborlist_params=neighborlist_params,
-        step=jnp.array([0]),
+    state = MdState.create(
+        particles, systems, cutoff, config.md.skin, base=base, multiplier=multiplier
     )
     return run_md(next(chain), propagator, state, config.run)
 
