@@ -18,7 +18,6 @@ from pathlib import Path
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")  # for torch backends
 
 import jax
-import jax.numpy as jnp
 import rich
 import rich.logging
 from nanoargs import NanoArgs
@@ -41,7 +40,7 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import SkinNeighborList
 from kups.core.typing import ParticleId, SystemId
 from kups.relaxation.config import make_optimizer
 
@@ -64,13 +63,22 @@ class Config(BaseModel):
     inp_files: tuple[str | Path, ...]
 
 
-def run(config: Config) -> None:
-    """Run a structure relaxation for the configured force field."""
+def run(config: Config) -> RelaxState:
+    """Run a structure relaxation for the configured force field.
+
+    Args:
+        config: Run, potential and input configuration.
+
+    Returns:
+        The final state.
+    """
     key = jax.random.key(config.run.seed or time.time_ns())
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
-    potential, cutoff = config.potential.build(state_lens, gradient)
+    potential, cutoff = config.potential.build(
+        state_lens, gradient, neighborlist_factory=SkinNeighborList.from_state
+    )
     propagator, opt_init = make_relax_propagator(
         state_lens, potential, optimizer, gradient
     )
@@ -86,19 +94,17 @@ def run(config: Config) -> None:
 
     # Torch MLFF models need extra neighbor-list capacity headroom.
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, cutoff, multiplier=multiplier
-    )
     opt_state = opt_init(particles, systems)
-    state = RelaxState(
-        particles=particles,
-        systems=systems,
-        neighborlist_params=neighborlist_params,
-        opt_state=opt_state,
-        step=jnp.array([0]),
+    state = RelaxState.create(
+        particles,
+        systems,
+        cutoff,
+        config.run.skin,
+        opt_state,
+        multiplier=multiplier,
     )
     logging.info("Starting relaxation")
-    run_relax(key, propagator, state, config.run)
+    return run_relax(key, propagator, state, config.run)
 
 
 def main() -> None:

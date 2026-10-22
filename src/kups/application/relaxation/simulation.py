@@ -20,6 +20,7 @@ from kups.application.utils.propagate import make_cycle_function, run_simulation
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
+from kups.core.neighborlist import IsSkinListState
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
@@ -45,7 +46,7 @@ from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.propagator import RelaxationPropagator
 
 
-class IsRelaxState(IsState[RelaxParticles, RelaxSystems], Protocol):
+class IsRelaxState(IsState[RelaxParticles, RelaxSystems], IsSkinListState, Protocol):
     """Protocol for relaxation simulation states."""
 
     @property
@@ -71,6 +72,10 @@ def make_relax_propagator[State: IsRelaxState](
     gradient: Lens[Geometry, PositionsAndCell],
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
+
+    Each step applies the potential's patch, which stores the skin list the
+    potential read. Line-search trial points read the list without storing it. A
+    failed step keeps the skin list, since every read checks it again.
 
     Args:
         state_lens: Lens focusing on the relaxation sub-state.
@@ -134,7 +139,10 @@ def make_relax_propagator[State: IsRelaxState](
         optimizer=optimizer,
     )
     step_prop = step_counter_propagator(state_lens.focus(lambda x: x.step))
-    prop = ResetOnErrorPropagator(SequentialPropagator((relax_prop, step_prop)))
+    prop = ResetOnErrorPropagator(
+        SequentialPropagator((relax_prop, step_prop)),
+        keep=state_lens.focus(lambda x: x.skin_list),
+    )
     return prop, opt_init
 
 
