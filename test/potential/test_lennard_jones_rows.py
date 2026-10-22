@@ -57,7 +57,7 @@ def _setup() -> tuple[_State, LennardJonesParameters]:
     return _State(particles, systems, skin_list), params
 
 
-def _potentials(params: LennardJonesParameters):
+def _potentials(params: LennardJonesParameters, dtype=jnp.float64):
     n = sum(COUNTS)
     dense = DenseNearestNeighborList(
         FixedCapacity(n), FixedCapacity(128), FixedCapacity(32 * n), params.cutoff
@@ -68,6 +68,7 @@ def _potentials(params: LennardJonesParameters):
         lens(lambda s: s.skin_list, cls=_State),
         const_lens(params),
         ROW_GEOMETRY.nest(POSITIONS_AND_CELL),
+        dtype=dtype,
     )
     graph = make_lennard_jones_potential(
         view(lambda s: s.particles),
@@ -174,3 +175,21 @@ def test_proposals_raise():
     rows, _ = _potentials(params)
     with pytest.raises(ValueError, match="whole states"):
         rows(state, IdPatch())
+
+
+def test_float32_through_rebuilds(row_kernel):
+    state, params = _setup()
+    step = _step(params)
+    float32, _ = _potentials(params, jnp.float32)
+    float64, _ = _potentials(params)
+    rng = np.random.default_rng(2)
+    for i in range(6):
+        noise = rng.normal(0, 0.15, (state.particles.size, 3))
+        moved = _moved(state, state.particles.data.positions + noise)
+        state = propagate_and_fix(step, jax.random.key(i), moved)
+        a, b = jax.jit(lambda s: (float32(s).data, float64(s).data))(state)
+        for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b), strict=True):
+            x, y = np.asarray(x), np.asarray(y)
+            np.testing.assert_allclose(x, y, atol=2e-6 * np.abs(y).max())
+        assert not np.array_equal(a.total_energies.data, b.total_energies.data)
+    assert row_kernel is None or row_kernel

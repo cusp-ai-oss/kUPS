@@ -37,7 +37,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import Lens
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
-from kups.core.neighborlist.cell_scan import CellScanNeighborList, triton_available
+from kups.core.neighborlist.cell_scan import CellScanNeighborList
 from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.edges import Edges
@@ -60,7 +60,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.patch import Patch, WithPatch
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, triton_available
 
 
 class NeighborListCost(Protocol):
@@ -112,7 +112,7 @@ def cell_scan_cost(num_particles: int, num_systems: int) -> float:
     """Cost for :class:`CellScanNeighborList`: a fixed cost plus ``O(N)``.
 
     ``inf`` where its kernel runs under the Pallas interpreter (no CUDA GPU of compute
-    capability 8.0+; see :func:`~kups.core.neighborlist.cell_scan.triton_available`).
+    capability 8.0+; see :func:`~kups.core.utils.jax.triton_available`).
     """
     if not triton_available():
         return math.inf
