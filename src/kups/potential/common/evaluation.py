@@ -307,17 +307,10 @@ def evaluate_ewald_potential[
     sr_cloud: PointCloud[_EwaldRadiusGraphPointsImpl, HasCell[Periodic3D]] = PointCloud(
         sr_particles, point_cloud.systems
     )
-    sr_cutoffs = Table(
-        point_cloud.systems.keys,
-        jnp.broadcast_to(
-            jnp.array(parameters.cutoff),
-            (point_cloud.systems.size,),
-        ),
-    )
     sr_out = evaluate_radius_graph_potential(
         point_cloud=sr_cloud,
         parameters=parameters,
-        cutoffs=sr_cutoffs,
+        cutoffs=parameters.cutoff,
         energy_fn=ewald_short_range_energy,
         gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).focus(
             gradient_lens.get
