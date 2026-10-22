@@ -35,9 +35,12 @@ from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
     EmptyNeighborList,
     NeighborList,
+    SkinList,
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
+    EMPTY_LENS,
+    EmptyType,
     Energy,
     Potential,
     PotentialOut,
@@ -71,7 +74,11 @@ from kups.potential.common.graph import (
 )
 from kups.potential.common.pair import PairEnergy
 from kups.potential.common.rigid_body_composition import RigidBodyComposition
-from kups.potential.common.rows import RowPairEnergy, RowPotentialInput
+from kups.potential.common.rows import (
+    RowInputConstructor,
+    RowPairEnergy,
+    RowPotentialInput,
+)
 
 type MixingRule = Literal["lorentz_berthelot"]
 
@@ -468,6 +475,43 @@ lennard_jones_row_energy = RowPairEnergy[
     cutoffs=lambda p: p.cutoff,
 )
 """Lennard-Jones energy over a skin list's neighbor rows."""
+
+
+def make_lennard_jones_row_potential[State, Gradients](
+    particles_view: View[State, Table[ParticleId, IsLennardJonesParticles]],
+    systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
+    skin_list_view: View[State, SkinList],
+    parameter_view: View[State, LennardJonesParameters],
+    gradient_lens: Lens[LennardJonesRowInput, Gradients],
+) -> Potential[State, Gradients, EmptyType, Patch[Any]]:
+    """Create a Lennard-Jones potential over a skin list's neighbor rows.
+
+    Same energy as ``make_lennard_jones_potential`` on the skin list's pairs.
+    Inclusion and exclusion follow the skin list's build. Full evaluations only:
+    no proposals, caches, Hessians or parameter gradients.
+
+    Args:
+        particles_view: Particles with positions, labels and system index.
+        systems_view: Systems with their cells.
+        skin_list_view: Skin list built at a cutoff of at least the LJ cutoff.
+        parameter_view: LJ parameters.
+        gradient_lens: Differentiated inputs, e.g. ``ROW_GEOMETRY.nest(...)``.
+
+    Returns:
+        The potential.
+    """
+    constructor = RowInputConstructor(
+        particles_view, systems_view, skin_list_view, parameter_view
+    )
+    return PotentialFromEnergy(
+        composer=FullSumComposer(constructor),
+        energy_fn=lennard_jones_row_energy,
+        gradient_lens=gradient_lens,
+        hessian_lens=EMPTY_LENS,
+        hessian_idx_view=EMPTY_LENS,
+        cache_lens=None,
+        patch_idx_view=None,
+    )
 
 
 type PCLJInp = GraphPotentialInput[

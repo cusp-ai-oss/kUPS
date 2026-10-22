@@ -21,15 +21,15 @@ from jax import Array
 from kups.core.assertion import runtime_assert
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
-from kups.core.lens import View
+from kups.core.lens import View, lens
 from kups.core.neighborlist.rows import NeighborRows
 from kups.core.neighborlist.skin import SkinList, wraps_since_build
-from kups.core.patch import IdPatch, WithPatch
+from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Energy
-from kups.core.typing import HasCell, HasPositionsAndSystemIndex, SystemId
+from kups.core.typing import HasCell, HasPositionsAndSystemIndex, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit, non_differentiable
 from kups.core.utils.segment import segment_sum
-from kups.potential.common.graph import PointCloud
+from kups.potential.common.graph import POINTCLOUD_GEOMETRY, PointCloud
 
 
 class RowPairFunction(Protocol):
@@ -66,6 +66,47 @@ class RowPotentialInput[
     parameters: Params
     cloud: PointCloud[Part, Sys]
     skin_list: SkinList
+
+
+ROW_GEOMETRY = lens(lambda inp: inp.cloud, cls=RowPotentialInput).nest(
+    POINTCLOUD_GEOMETRY
+)
+"""Geometry adapter of row-potential inputs."""
+
+
+@dataclass
+class RowInputConstructor[
+    State,
+    Params,
+    Part: HasPositionsAndSystemIndex,
+    Sys: HasCell[AnyPeriodicity],
+]:
+    """Whole-state inputs of a row potential; proposals are not supported.
+
+    Attributes:
+        particles: View of the particles.
+        systems: View of the systems.
+        skin_list: View of the skin list.
+        parameter_view: View of the parameters.
+    """
+
+    particles: View[State, Table[ParticleId, Part]] = field(static=True)
+    systems: View[State, Table[SystemId, Sys]] = field(static=True)
+    skin_list: View[State, SkinList] = field(static=True)
+    parameter_view: View[State, Params] = field(static=True)
+
+    def __call__(
+        self, state: State, patch: Patch[State] | None, old_input: bool = False
+    ) -> RowPotentialInput[Params, Part, Sys]:
+        if patch is not None:
+            raise ValueError(
+                "Row potentials evaluate whole states; use a graph potential for "
+                "proposals."
+            )
+        cloud = PointCloud(self.particles(state), self.systems(state))
+        return RowPotentialInput(
+            self.parameter_view(state), cloud, self.skin_list(state)
+        )
 
 
 @dataclass
