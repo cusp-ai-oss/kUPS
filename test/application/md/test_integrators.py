@@ -1572,11 +1572,7 @@ class TestBNPTLPressureTensor:
         per_particle_ke = particle_kinetic_energy(
             state.particles.data.momenta, state.particles.data.masses
         )
-        ke = jax.ops.segment_sum(
-            per_particle_ke,
-            state.particles.data.system.indices,
-            state.particles.data.system.num_labels,
-        )
+        ke = state.particles.data.system.sum_over(per_particle_ke).data
         # Use stress_via_virial_theorem like the existing pressure observable does.
         from kups.observables.stress import stress_via_virial_theorem
 

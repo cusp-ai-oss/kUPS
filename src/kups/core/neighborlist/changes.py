@@ -27,7 +27,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
 )
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import isin, jit
+from kups.core.utils.jax import jit
 from kups.core.utils.ops import where_broadcast_last
 
 
@@ -63,9 +63,6 @@ def neighborlist_changes(
     Returns:
         ``NeighborListChangesResult(added, removed)``.
     """
-    N, k = lh.size, rh.data.size
-    p_idx = rh.indices.indices_in(lh.keys)
-
     # Build a single self-graph query with both old and proposed particles in
     # the key table. ``queried_keys`` enumerates edges incident to the changed
     # old slots and the proposed rows. Concatenating in the shifted key space
@@ -78,31 +75,28 @@ def neighborlist_changes(
     # single neighborlist call
     all_edges = neighborlist(keys_combined, systems, queried_keys=queried_keys)
 
-    # split into removed / added
-    raw = all_edges.indices.indices  # (n_edges, 2)
-    c0, c1 = raw[:, 0], raw[:, 1]
-    # Removed mask checks for edges that exist in the original set (both indices < N).
-    removed_mask = (c0 < N) & (c1 < N)
-
-    # is_stale mask checks that both edges need to be in the original set
-    # or one needs to be in the original set and the other needs to be in the new set.
-    is_stale = isin(c0, p_idx, N + k) & (c0 < N) | isin(c1, p_idx, N + k) & (c1 < N)
-    # Added mask checks for edges that involve at least one new particle.
-    added_mask = (c0 < N + k) & (c1 < N + k) & ((c0 >= N) | (c1 >= N)) & ~is_stale
-
-    # remap appended indices N+m -> p_idx[m]
-    remapped = jnp.where(raw >= N, p_idx[raw - N], raw)
+    # Each combined row stands for an ``lh`` particle: itself, or the one it replaces.
+    targets = Index.concatenate(lh.index, rh.indices.update_labels(lh.keys))
+    remapped = Table(keys_combined.keys, targets)[all_edges.indices]
+    old = all_edges.indices.update_labels(lh.keys, allow_missing=True)
+    # Removed edges exist in the original set (both endpoints are old rows).
+    removed_mask = old.valid_mask.all(-1)
+    # Stale edges touch a replaced old row; added edges touch a proposed row.
+    is_stale = old.isin(rh.indices).any(-1)
+    added_mask = all_edges.indices.valid_mask.all(-1) & ~removed_mask & ~is_stale
 
     # compact each output
-    n_total = raw.shape[0]
+    n_total = len(all_edges)
     shifts = all_edges.shifts
 
-    def _mask_only(mask: Array, indices: Array, shifts: Array) -> Edges[Literal[2]]:
-        idx = where_broadcast_last(mask, indices, N)
-        sh = where_broadcast_last(mask, shifts, 0)
-        return Edges(Index(lh.keys, idx), sh)
+    def _mask_only(
+        mask: Array, indices: Index[ParticleId], shifts: Array
+    ) -> Edges[Literal[2]]:
+        return Edges(
+            indices.apply_mask(mask[:, None]), where_broadcast_last(mask, shifts, 0)
+        )
 
-    def _compact(mask: Array, indices: Array, label: str) -> Edges[Literal[2]]:
+    def _compact(mask: Array, label: str) -> Edges[Literal[2]]:
         count = mask.sum()
         runtime_assert(
             count <= capacity,
@@ -112,7 +106,7 @@ def neighborlist_changes(
         )
         sel: Array = jnp.where(mask, size=capacity, fill_value=n_total - 1)[0]
         valid = mask.at[sel].get(mode="fill", fill_value=False)
-        return _mask_only(valid, indices[sel], shifts[sel])
+        return _mask_only(valid, remapped[sel], shifts[sel])
 
     if compaction >= 1.0:
         return NeighborListChangesResult(
@@ -122,6 +116,5 @@ def neighborlist_changes(
 
     capacity = int(n_total * compaction)
     return NeighborListChangesResult(
-        _compact(added_mask, remapped, "added"),
-        _compact(removed_mask, remapped, "removed"),
+        _compact(added_mask, "added"), _compact(removed_mask, "removed")
     )

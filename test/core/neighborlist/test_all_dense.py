@@ -31,10 +31,10 @@ class TestAllSubselect:
         )
         candidates = _all_subselect(lh, rh, systems)
         nptest.assert_array_equal(
-            np.asarray(candidates.key_idx.indices), np.array([0, 0, 1, 1, 2, 2])
+            np.asarray(candidates.key_idx), np.array([0, 0, 1, 1, 2, 2])
         )
         nptest.assert_array_equal(
-            np.asarray(candidates.query_idx.indices), np.array([0, 1, 0, 1, 0, 1])
+            np.asarray(candidates.query_idx), np.array([0, 1, 0, 1, 0, 1])
         )
 
 

@@ -72,20 +72,34 @@ class Index[Key: SupportsSorting]:
     """JAX-compatible foreign-key column referencing a set of unique keys.
 
     An ``Index[Key]`` stores a static key vocabulary (``keys``) and a JAX
-    integer array of positions into that vocabulary (``indices``).  This
-    makes the column compatible with ``jax.jit`` while preserving
-    categorical / relational semantics.
+    integer array of positions into that vocabulary.  This makes the column
+    compatible with ``jax.jit`` while preserving categorical / relational
+    semantics. Positions equal to ``len(keys)`` mark missing entries.
+
+    The positions are private: express intent with the Index API
+    (``indices_in``, ``valid_mask``, ``apply_mask``, ``sum_over``, ``isin``,
+    Table indexing, ...). Numeric kernels that need the raw integer array
+    (segment ops, gathers, custom JVPs) read ``raw_indices``.
 
     Attributes:
         keys: Unique sorted key vocabulary (stored as a static pytree field).
-        indices: Integer JAX array of positions into ``keys``.
+        _indices: Integer JAX array of positions into ``keys``.
         max_count: Optional upper bound on occurrences per key.
     """
 
     keys: tuple[Key, ...] = field(static=True)
-    indices: Array
+    _indices: Array
     max_count: int | None = field(static=True, default=None)
     _cls: type[Key] | None = field(static=True, default=None, kw_only=True)
+
+    @property
+    def raw_indices(self) -> Array:
+        """Raw integer positions into ``keys``, for numeric kernels only."""
+        return self._indices
+
+    def with_raw_indices(self, indices: Array) -> Index[Key]:
+        """Same keys and bounds with new raw positions, for numeric kernels."""
+        return Index(self.keys, indices, self.max_count, _cls=self._cls)
 
     @property
     def dtype(self) -> jnp.dtype:
@@ -93,15 +107,15 @@ class Index[Key: SupportsSorting]:
 
     @property
     def shape(self) -> tuple[int, ...]:
-        return self.indices.shape
+        return self._indices.shape
 
     @property
     def size(self) -> int:
-        return self.indices.size
+        return self._indices.size
 
     @property
     def ndim(self) -> int:
-        return self.indices.ndim
+        return self._indices.ndim
 
     @property
     def T(self) -> "Index[Key]":
@@ -117,9 +131,9 @@ class Index[Key: SupportsSorting]:
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
-        if not isinstance(self.indices, Array):
+        if not isinstance(self._indices, Array):
             return
-        assert jnp.issubdtype(self.indices.dtype, jnp.integer)
+        assert jnp.issubdtype(self._indices.dtype, jnp.integer)
         try:
             _check_index_keys(self.keys)
         except TypeError:
@@ -231,7 +245,7 @@ class Index[Key: SupportsSorting]:
     @cached_property
     def value(self) -> np.ndarray:
         """Decoded numpy array of key values (same shape as ``indices``)."""
-        return np.asarray(self.keys, dtype=object)[np.asarray(self.indices)]
+        return np.asarray(self.keys, dtype=object)[np.asarray(self._indices)]
 
     def __array__(self) -> np.ndarray:
         """Support ``np.asarray(index)`` by returning decoded keys."""
@@ -241,12 +255,12 @@ class Index[Key: SupportsSorting]:
         """Iterate over elements, yielding scalar ``Index`` per entry."""
         return (
             Index(self.keys, i, max_count=self.max_count, _cls=self.cls)
-            for i in self.indices
+            for i in self._indices
         )
 
     def __len__(self) -> int:
         """Number of elements along the first axis."""
-        return len(self.indices)
+        return len(self._indices)
 
     def __getitem__(self, item: Any) -> Index[Key]:
         """Index into the underlying integer array, preserving keys."""
@@ -272,7 +286,7 @@ class Index[Key: SupportsSorting]:
     def _forward_to_data(self, name: str, *args: Any, **kwargs: Any) -> Index[Key]:
         return Index(
             self.keys,
-            getattr(self.indices, name)(*args, **kwargs),
+            getattr(self._indices, name)(*args, **kwargs),
             self.max_count,
             _cls=self.cls,
         )
@@ -289,27 +303,27 @@ class Index[Key: SupportsSorting]:
 
         return Table(
             self.keys,
-            bincount(self.indices, length=len(self.keys)),
+            bincount(self._indices, length=len(self.keys)),
             _cls=self._cls,
         )
 
     @property
     def valid_mask(self) -> Array:
         """Boolean mask: ``True`` where the index is within bounds (not OOB)."""
-        return self.indices < len(self.keys)
+        return self._indices < len(self.keys)
 
     def apply_mask(self, mask: Array) -> Index[Key]:
         """Set entries where ``mask`` is ``False`` to the OOB sentinel.
 
         Args:
-            mask: Boolean array broadcastable to ``self.indices``.
+            mask: Boolean array broadcastable to ``self._indices``.
 
         Returns:
             New ``Index`` with masked-out entries replaced by ``len(keys)``.
         """
         return Index(
             self.keys,
-            jnp.where(mask, self.indices, len(self.keys)),
+            jnp.where(mask, self._indices, len(self.keys)),
             max_count=self.max_count,
             _cls=self._cls,
         )
@@ -331,13 +345,13 @@ class Index[Key: SupportsSorting]:
             return jnp.zeros(len(self.keys), dtype=int)
         if len(self.keys) == 1:
             # One label needs only a linear scan, including over buffered rows.
-            valid = self.indices == 0
+            valid = self._indices == 0
             rank = jnp.cumsum(valid) - 1
             result = jnp.argmax(valid & (rank == indices[0]))[None]
         else:
             # Stable grouping preserves occurrence order without a rows x keys
             # one-hot array, which grows quadratically for batched systems.
-            order = jnp.argsort(self.indices, stable=True)
+            order = jnp.argsort(self._indices, stable=True)
             result = order.at[offsets_from_counts(label_counts) + indices].get(
                 mode="fill", fill_value=len(self)
             )
@@ -356,11 +370,11 @@ class Index[Key: SupportsSorting]:
         """
         target_ids = target.indices_in(self.keys)
         # Include the OOB label to preserve matching of explicit sentinel rows.
-        counts = bincount(self.indices, length=len(self.keys) + 1)
+        counts = bincount(self._indices, length=len(self.keys) + 1)
         starts = offsets_from_counts(counts)
         lanes = jnp.arange(max_count)
         positions = starts[target_ids, None] + lanes
-        order = jnp.argsort(self.indices, stable=True)
+        order = jnp.argsort(self._indices, stable=True)
         if self.size == 0:
             return jnp.full(positions.shape, len(self), dtype=int)
         found = order.at[positions].get(mode="fill", fill_value=len(self))
@@ -380,7 +394,7 @@ class Index[Key: SupportsSorting]:
             with ``len(self)`` (OOB sentinel).
         """
         target_ids = target.indices_in(self.keys)
-        mask = isin(self.indices, target_ids, len(self.keys))
+        mask = isin(self._indices, target_ids, len(self.keys))
         required = mask.sum()
         if is_traced(required):
             assert capacity is not None, "Capacity must be set during tracing."
@@ -407,16 +421,22 @@ class Index[Key: SupportsSorting]:
                 ``tokens`` are mapped to the OOB sentinel instead of raising.
 
         Returns:
-            A JAX integer array (same shape as ``self.indices``) containing the
+            A JAX integer array (same shape as ``self._indices``) containing the
             corresponding indices into ``tokens``.
 
         Raises:
             AssertionError: If any key in ``self`` is missing from ``tokens``.
         """
         if self.keys == tokens:
-            return self.indices
-        if self.keys == tokens[: len(self.keys)]:
-            return jnp.where(self.indices == len(self.keys), len(tokens), self.indices)
+            return self._indices
+        # Prefix or suffix vocabularies, e.g. the sides of a bipartite query.
+        if (off := _offset_of(self.keys, tokens)) is not None:
+            return jnp.where(
+                self._indices == len(self.keys), len(tokens), self._indices + off
+            )
+        if allow_missing and (off := _offset_of(tokens, self.keys)) is not None:
+            inside = (self._indices >= off) & (self._indices < off + len(tokens))
+            return jnp.where(inside, self._indices - off, len(tokens))
         counts: dict[Key, int] = {}
         positions: dict[Key, int] = {}
         for position, token in enumerate(tokens):
@@ -426,7 +446,7 @@ class Index[Key: SupportsSorting]:
         if not allow_missing and len(missing) > 0:
             raise ValueError(f"Keys in self not found in target: {missing}")
         if len(tokens) == 0:
-            return jnp.full_like(self.indices, fill_value=0)
+            return jnp.full_like(self._indices, fill_value=0)
         idx_map = jnp.asarray(
             np.fromiter(
                 (positions.get(key, len(tokens)) for key in self.keys),
@@ -434,7 +454,7 @@ class Index[Key: SupportsSorting]:
                 count=len(self.keys),
             )
         )
-        return idx_map.at[self.indices].get(mode="fill", fill_value=len(tokens))
+        return idx_map.at[self._indices].get(mode="fill", fill_value=len(tokens))
 
     def update_labels(
         self, labels: tuple[Key, ...], *, allow_missing: bool = False
@@ -464,14 +484,14 @@ class Index[Key: SupportsSorting]:
         Args:
             needle: Index with target keys (must be a subset of ``self.keys``).
             capacity: Capacity controlling output buffer size.
-            is_sorted: Whether ``self.indices`` is already sorted by key.
+            is_sorted: Whether ``self._indices`` is already sorted by key.
 
         Returns:
             :class:`IndexSubselectResult` with scatter/gather as Index[Key].
         """
         result = subselect(
             needle.indices_in(self.keys),
-            self.indices,
+            self._indices,
             output_buffer_size=capacity,
             num_segments=len(self.keys),
             is_sorted=is_sorted,
@@ -479,12 +499,12 @@ class Index[Key: SupportsSorting]:
         return IndexSubselectResult(
             scatter=Index(
                 needle.keys,
-                needle.indices.at[result.scatter_idxs].get(**needle.scatter_args),
+                needle._indices.at[result.scatter_idxs].get(**needle.scatter_args),
                 _cls=needle.cls,
             ),
             gather=Index(
                 self.keys,
-                self.indices.at[result.gather_idxs].get(**self.scatter_args),
+                self._indices.at[result.gather_idxs].get(**self.scatter_args),
                 _cls=self.cls,
             ),
         )
@@ -496,7 +516,7 @@ class Index[Key: SupportsSorting]:
             other: Index whose keys define the membership set.
 
         Returns:
-            Boolean JAX array (same shape as ``self.indices``).
+            Boolean JAX array (same shape as ``self._indices``).
         """
         all_keys = _merge_keys(self.keys, other.keys)
         lh_idx = self.indices_in(all_keys)
@@ -513,12 +533,12 @@ class Index[Key: SupportsSorting]:
     def __repr__(self) -> str:
         keys_str = _format_keys(self.keys)
         try:
-            strings = np.asarray(self.keys + ("OOB",))[np.asarray(self.indices)]
+            strings = np.asarray(self.keys + ("OOB",))[np.asarray(self._indices)]
             arr_str = str(strings)
             return f"Index({arr_str}, cls={self.cls.__name__}, keys={keys_str}, shape={self.shape}, max_count={self.max_count})"
         except jax.errors.TracerArrayConversionError:
             return (
-                f"Index(cls={self.cls.__name__}, keys={keys_str}, data={self.indices})"
+                f"Index(cls={self.cls.__name__}, keys={keys_str}, data={self._indices})"
             )
 
     def __tree_match__(self, *others: Index[Key]) -> tuple[Index[Key], ...]:
@@ -549,7 +569,7 @@ class Index[Key: SupportsSorting]:
         assert len(self.keys) > 0 or isinstance(new, type)
         new_keys = tuple(map(new, self.keys))
         cls = new if isinstance(new, type) else None
-        return Index(new_keys, self.indices, max_count=self.max_count, _cls=cls)
+        return Index(new_keys, self._indices, max_count=self.max_count, _cls=cls)
 
     def sum_over(self, array: Array) -> Table[Key, Array]:
         """Sums ``array`` values grouped by this index via segment sum.
@@ -558,7 +578,7 @@ class Index[Key: SupportsSorting]:
         retaining ``array``'s dtype. Out-of-bounds entries contribute nothing.
 
         Args:
-            array: Array whose leading dimensions match ``self.indices``.
+            array: Array whose leading dimensions match ``self._indices``.
 
         Returns:
             A ``Table`` mapping each key to its summed values.
@@ -567,7 +587,7 @@ class Index[Key: SupportsSorting]:
 
         return Table(
             self.keys,
-            segment_sum(array, self.indices, self.num_labels),
+            segment_sum(array, self._indices, self.num_labels),
             _cls=self._cls,
         )
 
@@ -575,7 +595,7 @@ class Index[Key: SupportsSorting]:
         """Takes max of ``array`` values grouped by this index via segment max.
 
         Args:
-            array: Array with leading dimension matching ``self.indices``.
+            array: Array with leading dimension matching ``self._indices``.
 
         Returns:
             A ``Table`` mapping each key to its max values.
@@ -584,7 +604,7 @@ class Index[Key: SupportsSorting]:
 
         return Table(
             self.keys,
-            jax.ops.segment_max(array, self.indices, self.num_labels, mode="drop"),
+            jax.ops.segment_max(array, self._indices, self.num_labels, mode="drop"),
             _cls=self._cls,
         )
 
@@ -672,17 +692,19 @@ class Index[Key: SupportsSorting]:
         from itertools import product
 
         assert len(indices) > 0, "At least one index required."
-        shape = indices[0].indices.shape
-        assert all(idx.indices.shape == shape for idx in indices), (
+        shape = indices[0]._indices.shape
+        assert all(idx._indices.shape == shape for idx in indices), (
             "Index shapes must match."
         )
         all_keys = tuple(sorted(product(*(idx.keys for idx in indices))))
-        flat_key = jnp.zeros(indices[0].indices.size, dtype=jnp.int32)
+        flat_key = jnp.zeros(shape, dtype=jnp.int32)
+        valid = jnp.ones(shape, dtype=bool)
         stride = 1
         for idx in reversed(indices):
-            flat_key = flat_key + idx.indices.ravel() * stride
+            flat_key = flat_key + idx._indices * stride
+            valid &= idx.valid_mask
             stride *= idx.num_labels
-        return Index(all_keys, flat_key.reshape(shape))
+        return Index(all_keys, jnp.where(valid, flat_key, len(all_keys)))
 
     @overload
     @staticmethod
@@ -828,8 +850,8 @@ def _concatenate_shifted[Key: int](*indices: Index[Key]) -> Index[Key]:
     off = 0
     for idx in indices:
         all_keys.extend(idx.cls(int(k) + off) for k in idx.keys)
-        oob = idx.indices >= len(idx.keys)
-        parts.append(jnp.where(oob, total_keys, idx.indices + off))
+        oob = idx._indices >= len(idx.keys)
+        parts.append(jnp.where(oob, total_keys, idx._indices + off))
         off += len(idx.keys)
     mc = max((i.max_count for i in indices if i.max_count is not None), default=None)
     result_keys = tuple(all_keys)
@@ -864,6 +886,17 @@ def unify_keys_by_cls[T](tree: T) -> T:
         for (i, _), idx in zip(items, matched):
             vals[i] = idx
     return jax.tree.unflatten(tree_def, vals)
+
+
+def _offset_of[Key](part: tuple[Key, ...], whole: tuple[Key, ...]) -> int | None:
+    """Offset of ``part`` as a prefix or suffix of ``whole``, else ``None``."""
+    if len(part) > len(whole):
+        return None
+    if part == whole[: len(part)]:
+        return 0
+    if part == whole[len(whole) - len(part) :]:
+        return len(whole) - len(part)
+    return None
 
 
 def _merge_keys[Key: SupportsSorting](

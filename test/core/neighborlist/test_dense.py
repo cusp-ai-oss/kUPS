@@ -21,6 +21,7 @@ from ._builders import (
     make_systems,
     systems_from_lvecs,
     valid_edge_set,
+    valid_pairs,
 )
 
 
@@ -34,12 +35,11 @@ class TestDenseSubselect:
             jnp.array([1.0, 1.0]),
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(16))
-        sys_ids = lh.data.system.indices
-        for a, b in zip(
-            candidates.key_idx.indices.tolist(), candidates.query_idx.indices.tolist()
-        ):
-            if a < 4 and b < 4:
-                assert sys_ids[a] == sys_ids[b]
+        key_sys, query_sys = Index.match(
+            lh[candidates.key_idx].system, lh[candidates.query_idx].system
+        )
+        valid = candidates.key_idx.valid_mask & candidates.query_idx.valid_mask
+        assert bool(((key_sys == query_sys) | ~valid).all())
 
     def test_self_pairs_present(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
@@ -48,12 +48,7 @@ class TestDenseSubselect:
             jnp.array([1.0]),
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(8))
-        pairs = set(
-            zip(
-                candidates.key_idx.indices.tolist(),
-                candidates.query_idx.indices.tolist(),
-            )
-        )
+        pairs = set(valid_pairs(candidates.key_idx, candidates.query_idx))
         # Single system of 2 particles -> all 4 ordered pairs including self.
         assert {(0, 0), (0, 1), (1, 0), (1, 1)} <= pairs
 
@@ -94,7 +89,7 @@ class TestBipartiteQueryKeys:
         )
         system = Index.new([SystemId(query_system)])
         queries = Table(
-            (ParticleId(0),),
+            (ParticleId(2),),
             SamplePoints(
                 positions=jnp.array([[5.0, 5.0, 5.0]]),
                 system=system,
@@ -105,6 +100,4 @@ class TestBipartiteQueryKeys:
         nl = DenseNearestNeighborList(
             FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
         )
-        assert valid_edge_set(nl(lh, systems, queries=queries), 2) == {
-            (query_system, 0)
-        }
+        assert valid_edge_set(nl(lh, systems, queries=queries)) == {(query_system, 2)}

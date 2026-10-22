@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 from typing import Literal, Protocol, overload
 
+import jax.numpy as jnp
 from jax import Array
 
 from kups.core.data import Index, Table
@@ -203,7 +204,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
             # Always exclude a particle's zero-shift interaction with itself.
             masks.append(
                 lambda batch, ctx: (
-                    (batch.key_idx.indices != batch.query_idx.indices)
+                    jnp.not_equal(*Index.match(batch.key_idx, batch.query_idx))
                     | ~batch.is_minimum_image
                 )
             )

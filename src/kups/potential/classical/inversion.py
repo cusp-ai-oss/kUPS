@@ -140,7 +140,7 @@ def inversion_energy(
         Total inversion energy per system
     """
     graph = inp.graph
-    assert graph.edges.indices.indices.shape[1] == 4, (
+    assert graph.edges.indices.shape[1] == 4, (
         "Inversion potential requires 4-body interactions (order=4)."
     )
     edg = graph.particles[graph.edges.indices]

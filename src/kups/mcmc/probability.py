@@ -30,7 +30,7 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.constants import BOLTZMANN_CONSTANT
-from kups.core.data import Table
+from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
@@ -50,7 +50,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.functools import pipe
-from kups.core.utils.jax import dataclass, field, jit, vectorize
+from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.math import log_factorial_ratio
 
 
@@ -234,8 +234,7 @@ def motif_counts(groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
 
     Accumulates per-group species assignments into a 2D count matrix, where
     entry ``[i, j]`` is the number of groups of species ``j`` in system ``i``.
-    Groups whose species index falls outside ``[0, num_motifs)`` are silently
-    ignored (``mode="drop"``).
+    Groups with an out-of-bounds system or motif are not counted.
 
     Args:
         groups: Indexed collection of groups. Each group carries a ``system``
@@ -245,19 +244,9 @@ def motif_counts(groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
         Integer array of shape ``(n_systems, num_motifs)`` with species counts
         per system.
     """
-    num_systems = groups.data.system.num_labels
-    num_motifs = groups.data.motif.num_labels
-
-    @jit
-    @vectorize(signature="(n),(n)->(k,d)")
-    def _f(batch: Array, species: Array) -> Array:
-        return (
-            jnp.zeros((num_systems, num_motifs), dtype=int)
-            .at[batch, species]
-            .add(1, mode="drop")
-        )
-
-    return _f(groups.data.system.indices, groups.data.motif.indices)
+    system, motif = groups.data.system, groups.data.motif
+    counts = Index.combine(system, motif).counts.data
+    return counts.reshape(system.num_labels, motif.num_labels)
 
 
 class IsBoltzmannSystems(HasCompensatedPotentialEnergy, HasTemperature, Protocol): ...

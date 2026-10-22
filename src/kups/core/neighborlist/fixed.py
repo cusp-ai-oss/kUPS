@@ -50,12 +50,12 @@ class _FixedEdgesSelector[D: int]:
     indices: Index[ParticleId]
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[D]:
-        indices = self.indices.update_labels(ctx.keys.keys).indices
-        positions = ctx.keys.data.positions.at[indices].get(mode="fill", fill_value=0)
+        indices = self.indices.update_labels(ctx.keys.keys)
+        positions = ctx.keys[indices].positions
         deltas = positions[:, :1] - positions[:, 1:]
         shifts = ctx.systems.data.cell.minimum_image_shifts(deltas)
         return CandidateBatch(
-            edges=Edges(Index(ctx.keys.keys, indices), shifts),
+            edges=Edges(indices, shifts),
             is_minimum_image=jnp.ones((len(self.indices),), dtype=bool),
         )
 

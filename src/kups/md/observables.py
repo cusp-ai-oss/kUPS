@@ -57,10 +57,10 @@ def remove_center_of_mass_momentum(
     system index. This is the mass-metric projection for the canonical ensemble
     conditioned on zero total momentum.
     """
-    total_momentum = system.sum_over(momenta).data
+    total_momentum = system.sum_over(momenta)
     total_mass = system.sum_over(masses).data
-    com_velocity = total_momentum / total_mass[..., None]
-    return momenta - masses[..., None] * com_velocity[system.indices]
+    com_velocity = total_momentum.set_data(total_momentum.data / total_mass[..., None])
+    return momenta - masses[..., None] * com_velocity[system]
 
 
 def system_kinetic_energy(

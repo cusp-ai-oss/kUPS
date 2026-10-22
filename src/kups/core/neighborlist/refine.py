@@ -19,10 +19,7 @@ from jax import Array
 
 from kups.core.capacity import Capacity
 from kups.core.data import Index, Table
-from kups.core.neighborlist.common import (
-    Candidates,
-    make_batch_with_mic,
-)
+from kups.core.lens import bind
 from kups.core.neighborlist.compact import MaskOnlyCompactor, ReduceCompactor
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.masks import (
@@ -47,12 +44,11 @@ from kups.core.utils.jax import dataclass, field, jit
 class PrecomputedEdgesSelector:
     """Selector that wraps precomputed ``Edges`` for both refine variants.
 
-    Precomputed self-graph edges are already in ``keys`` space. A disjoint
-    bipartite ``queries`` call may still use query positions for the second
-    column, matching the edge convention of the original candidate set.
+    Precomputed edges index ``keys``, or for a bipartite ``queries`` call the
+    union of ``keys`` and ``queries``, matching the neighbor-list convention.
 
     Attributes:
-        candidates: Precomputed edges (indices in keys-space).
+        candidates: Precomputed edges.
         recompute_mic_shifts: When ``True``, drop the precomputed shifts and
             recompute minimum-image shifts on the current positions
             (``RefineCutoffNeighborList`` — the precomputed shifts may be
@@ -65,21 +61,21 @@ class PrecomputedEdgesSelector:
     recompute_mic_shifts: bool = field(static=True, default=False)
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
-        if self.recompute_mic_shifts:
-            indices = self.candidates.indices.indices
-            query = ctx.edge_query_table
-            raw_candidates = Candidates(
-                key_idx=Index(ctx.keys.keys, indices[:, 0]),
-                query_idx=Index(query.keys, indices[:, 1]),
-            )
-            return make_batch_with_mic(raw_candidates, ctx.keys, query, ctx.systems)
-        indices = self.candidates.indices.indices
-        edges = Edges(Index(ctx.keys.keys, indices), self.candidates.shifts)
-        return CandidateBatch(
+        edges = Edges(
+            self.candidates.indices.update_labels(ctx.edge_keys),
+            self.candidates.shifts,
+        )
+        batch = CandidateBatch(
             edges=edges,
             is_minimum_image=jnp.ones((len(self.candidates),), dtype=bool),
-            query_keys=ctx.edge_query_table.keys,
         )
+        if not self.recompute_mic_shifts:
+            return batch
+        key, query = ctx.endpoints(batch)
+        shifts = ctx.systems.data.cell.minimum_image_shifts(
+            key.positions - query.positions
+        )
+        return bind(batch, lambda b: b.edges.shifts).set(shifts[:, None])
 
 
 def _resolve_precomputed_inputs(

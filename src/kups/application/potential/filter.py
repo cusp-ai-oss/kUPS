@@ -45,23 +45,26 @@ while the DOF pytree matches the cell filters."""
 
 
 def _frechet_filter_get(g: Geometry) -> PositionsAndCell:
-    idx = g.particles.data.system.indices_in(g.systems.keys)
     cell = g.systems.data
-    reference = cell.frame.reference_vectors
-    s = jnp.einsum("ni,nij->nj", g.particles.data.positions, cell.inverse_vectors[idx])
-    q = jnp.einsum("ni,nij->nj", s, reference[idx])
+    inverse, reference = g.systems.set_data(
+        (cell.inverse_vectors, cell.frame.reference_vectors)
+    )[g.particles.data.system]
+    s = jnp.einsum("ni,nij->nj", g.particles.data.positions, inverse)
+    q = jnp.einsum("ni,nij->nj", s, reference)
     return PositionsAndCell(g.particles.set_data(q), g.systems)
 
 
 def _frechet_filter_set(g: Geometry, value: PositionsAndCell) -> Geometry:
-    idx = g.particles.data.system.indices
     cell = value.cell.data
     reference_inv = jax.lax.stop_gradient(jnp.linalg.inv(cell.frame.reference_vectors))
     m = jnp.array(cell.periodic)[:, None]
     h = cell.vectors
     h_eff = m * h + (1 - m) * jax.lax.stop_gradient(h)
-    s = jnp.einsum("ni,nij->nj", value.positions.data, reference_inv[idx])
-    positions = jnp.einsum("ni,nij->nj", s, h_eff[idx])
+    reference_inv, h_eff = value.cell.set_data((reference_inv, h_eff))[
+        g.particles.data.system
+    ]
+    s = jnp.einsum("ni,nij->nj", value.positions.data, reference_inv)
+    positions = jnp.einsum("ni,nij->nj", s, h_eff)
     particles = g.particles.map_data(
         lambda p: PositionsAndSystemIndex(positions, p.system)
     )

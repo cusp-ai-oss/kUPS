@@ -198,7 +198,7 @@ def tree_scale_per_row[P](
         tree: Pytree of arrays.
         scale: ``Table[K, Array]`` of shape ``(n_segments,)``.
         reduce_index: Pytree of ``Index[K]`` matching ``tree``.
-            Each leaf's row at position ``r`` is multiplied by ``scale[layout_leaf.indices[r]]``.
+            Each leaf row is multiplied by the ``scale`` of its segment.
 
     Returns:
         Pytree with the same structure as ``tree``.
@@ -219,9 +219,8 @@ def tree_clip_per_row[P](
 ) -> P:
     """Per-component clip of every leaf to ``±limit[segment]``.
 
-    For each leaf row at position ``r`` (segment ``layout_leaf.indices[r]``),
-    every element is clamped to ``[-limit[r], limit[r]]``. Pass ``inf`` for
-    any segment whose rows should be left untouched.
+    Every element of each leaf row is clamped to ``±limit`` of the row's
+    segment. Pass ``inf`` for any segment whose rows should be left untouched.
 
     Args:
         tree: Pytree of arrays.
@@ -249,9 +248,8 @@ def tree_where_per_row[P](
 ) -> P:
     """Per-component select between ``a`` and ``b`` based on a per-segment mask.
 
-    For each leaf row at position ``r`` (segment ``layout_leaf.indices[r]``),
-    every element is taken from ``a`` if ``mask[r]`` is truthy and from
-    ``b`` otherwise.
+    Every element of each leaf row is taken from ``a`` if the ``mask`` of the
+    row's segment is truthy and from ``b`` otherwise.
 
     Args:
         mask: ``Table[K, Array]`` of shape ``(n_segments,)``, used as a

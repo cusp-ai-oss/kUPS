@@ -510,7 +510,7 @@ def segment_sum(
     Example:
         ```python
         # Per-atom sums of float32 edge messages, accumulated in float64.
-        per_atom = segment_sum(messages, edges.indices.indices[:, 0], n_atoms)
+        per_atom = segment_sum(messages, edges.indices.raw_indices[:, 0], n_atoms)
         ```
     """
     if data.ndim == 0:
@@ -605,7 +605,7 @@ def segment_take(
     Example:
         ```python
         # Per-edge copies of atom features, whose gradient scatters back stably.
-        edge_emb = segment_take(node_emb, edges.indices.indices[:, 0])
+        edge_emb = segment_take(node_emb, edges.indices.raw_indices[:, 0])
         ```
     """
     if data.ndim == 0:

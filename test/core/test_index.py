@@ -40,15 +40,15 @@ class TestNew:
     def test_new(self):
         sa = Index.new(["C", "H", "O", "H", "C"])
         assert sa.keys == ("C", "H", "O")
-        npt.assert_array_equal(sa.indices, [0, 1, 2, 1, 0])
+        npt.assert_array_equal(sa.raw_indices, [0, 1, 2, 1, 0])
         # Single label
         sa2 = Index.new(["Ar", "Ar", "Ar"])
         assert sa2.keys == ("Ar",)
-        npt.assert_array_equal(sa2.indices, [0, 0, 0])
+        npt.assert_array_equal(sa2.raw_indices, [0, 0, 0])
         # 2D shape preserved
         sa3 = Index.new(np.array([["A", "B"], ["B", "A"]]))
         assert sa3.shape == (2, 2)
-        npt.assert_array_equal(sa3.indices, [[0, 1], [1, 0]])
+        npt.assert_array_equal(sa3.raw_indices, [[0, 1], [1, 0]])
         # Keys sorted
         assert Index.new(["Z", "A", "M"]).keys == ("A", "M", "Z")
 
@@ -102,11 +102,11 @@ class TestGetitem:
         # Slice
         result2 = sa[1:3]
         assert result2.shape == (2,)
-        npt.assert_array_equal(result2.indices, sa.indices[1:3])
+        npt.assert_array_equal(result2.raw_indices, sa.raw_indices[1:3])
         # Fancy index
         sa2 = Index.new(["A", "B", "C"])
         npt.assert_array_equal(
-            sa2[jnp.array([2, 0])].indices, sa2.indices[jnp.array([2, 0])]
+            sa2[jnp.array([2, 0])].raw_indices, sa2.raw_indices[jnp.array([2, 0])]
         )
 
 
@@ -118,14 +118,14 @@ class TestReshape:
         sa2 = Index.new(np.array([["a", "b"], ["c", "d"]]))
         assert sa2.ravel().shape == (4,)
         assert sa2.transpose().shape == (2, 2)
-        npt.assert_array_equal(sa2.transpose().indices, sa2.indices.T)
-        npt.assert_array_equal(sa2.T.indices, sa2.transpose().indices)
+        npt.assert_array_equal(sa2.transpose().raw_indices, sa2.raw_indices.T)
+        npt.assert_array_equal(sa2.T.raw_indices, sa2.transpose().raw_indices)
 
 
 class TestIndicesIn:
     def test_same_different_subset(self):
         sa = Index.new(["A", "B", "A"])
-        npt.assert_array_equal(sa.indices_in(("A", "B")), sa.indices)
+        npt.assert_array_equal(sa.indices_in(("A", "B")), sa.raw_indices)
         # Different order
         sa2 = Index.new(["H", "O"])
         decoded = np.asarray(("H", "O", "Si"))[
@@ -190,7 +190,7 @@ class TestApplyMask:
         assert (
             result.valid_mask[0] and not result.valid_mask[1] and result.valid_mask[2]
         )
-        npt.assert_array_equal(result.indices[1], len(result.keys))
+        npt.assert_array_equal(result.raw_indices[1], len(result.keys))
         # Preserves keys and max_count
         idx2 = Index(("X", "Y"), jnp.array([0, 1, 0]), max_count=5)
         result2 = idx2.apply_mask(jnp.array([False, True, True]))
@@ -209,7 +209,7 @@ class TestStr:
             output["s"] = str(Index(sa2.keys, data))
             return data
 
-        jax.make_jaxpr(capture_str)(sa2.indices)
+        jax.make_jaxpr(capture_str)(sa2.raw_indices)
         assert "Index" in output["s"] and "keys" in output["s"]
 
 
@@ -217,8 +217,8 @@ class TestMatchIndices:
     def test_match_indices(self):
         # Same keys
         i, j = Index.match(Index.new(["H", "O", "H"]), Index.new(["H", "O"]))
-        npt.assert_array_equal(i, Index.new(["H", "O", "H"]).indices)
-        npt.assert_array_equal(j, Index.new(["H", "O"]).indices)
+        npt.assert_array_equal(i, Index.new(["H", "O", "H"]).raw_indices)
+        npt.assert_array_equal(j, Index.new(["H", "O"]).raw_indices)
         # Disjoint
         i2, j2 = Index.match(Index.new(["H", "H"]), Index.new(["O"]))
         npt.assert_array_equal(i2, [0, 0])
@@ -255,7 +255,7 @@ class TestConcatenate:
         assert result.keys == ("X",)
         assert result.cls is str
         assert result.max_count == 1
-        npt.assert_array_equal(result.indices, [1, 1, 0, 1])
+        npt.assert_array_equal(result.raw_indices, [1, 1, 0, 1])
         npt.assert_array_equal(result.valid_mask, [False, False, True, False])
 
     def test_same_disjoint_overlapping(self):
@@ -263,7 +263,7 @@ class TestConcatenate:
         b = Index(("H", "O"), jnp.array([1, 1]))
         result = Index.concatenate(a, b)
         assert set(result.keys) == {"H", "O"}
-        assert [result.keys[int(i)] for i in result.indices] == [
+        assert result.value.tolist() == [
             "H",
             "O",
             "H",
@@ -274,12 +274,17 @@ class TestConcatenate:
         result2 = Index.concatenate(
             Index(("H",), jnp.array([0, 0])), Index(("O",), jnp.array([0]))
         )
-        assert [result2.keys[int(i)] for i in result2.indices] == ["H", "H", "O"]
+        assert result2.value.tolist() == ["H", "H", "O"]
         # Overlapping
         result3 = Index.concatenate(
             Index(("H", "O"), jnp.array([0, 1])), Index(("C", "O"), jnp.array([1, 0]))
         )
-        assert [result3.keys[int(i)] for i in result3.indices] == ["H", "O", "O", "C"]
+        assert result3.value.tolist() == [
+            "H",
+            "O",
+            "O",
+            "C",
+        ]
         # max_count + single input
         assert (
             Index.concatenate(
@@ -291,7 +296,7 @@ class TestConcatenate:
         a3 = Index(("A", "B"), jnp.array([1, 0, 1]))
         result4 = Index.concatenate(a3)
         assert result4.keys == a3.keys
-        npt.assert_array_equal(result4.indices, a3.indices)
+        npt.assert_array_equal(result4.value, a3.value)
 
     def test_offset_concatenate(self):
         # Basic
@@ -301,7 +306,7 @@ class TestConcatenate:
             shift_keys=True,
         )
         assert result.keys == (ParticleId(0), ParticleId(1), ParticleId(2))
-        npt.assert_array_equal(result.indices, [0, 1, 2])
+        npt.assert_array_equal(result.raw_indices, [0, 1, 2])
         # Three items
         result2 = Index.concatenate(
             Index((SystemId(0),), jnp.array([0, 0])),
@@ -310,7 +315,7 @@ class TestConcatenate:
             shift_keys=True,
         )
         assert result2.keys == (SystemId(0), SystemId(1), SystemId(2))
-        npt.assert_array_equal(result2.indices, [0, 0, 1, 2, 2, 2])
+        npt.assert_array_equal(result2.raw_indices, [0, 0, 1, 2, 2, 2])
         # Keys strictly increasing
         result3 = Index.concatenate(
             Index((ParticleId(0), ParticleId(1)), jnp.array([0])),
@@ -334,7 +339,7 @@ class TestConcatenate:
             Index((ParticleId(0),), jnp.array([0, 1])),
             shift_keys=True,
         )
-        npt.assert_array_equal(result5.indices, [0, 3, 1, 2, 3])
+        npt.assert_array_equal(result5.raw_indices, [0, 3, 1, 2, 3])
         # Non-increasing input raises
         with pytest.raises(ValueError, match="Keys must be unique and sorted"):
             Index((ParticleId(1), ParticleId(0)), jnp.array([0, 1]))
@@ -385,11 +390,11 @@ class TestCombineIndices:
             (ParticleId(1), SystemId(0)),
             (ParticleId(1), SystemId(1)),
         )
-        npt.assert_array_equal(result.indices, [0, 2, 1])
+        npt.assert_array_equal(result.raw_indices, [0, 2, 1])
         # Single
         result2 = Index.combine(Index.new([SystemId(1), SystemId(0)]))
         assert result2.keys == ((SystemId(0),), (SystemId(1),))
-        npt.assert_array_equal(result2.indices, [1, 0])
+        npt.assert_array_equal(result2.raw_indices, [1, 0])
         # Three
         result3 = Index.combine(
             Index.new([ParticleId(0), ParticleId(0)]),
@@ -412,7 +417,17 @@ class TestCombineIndices:
             (SystemId(0), ParticleId(0)),
             (SystemId(1), ParticleId(0)),
         )
-        npt.assert_array_equal(result4.indices, [0, 0, 1])
+        npt.assert_array_equal(result4.raw_indices, [0, 0, 1])
+
+    def test_combine_preserves_out_of_bounds(self):
+        system = Index.new([SystemId(0), SystemId(1), SystemId(0)])
+        motif = Index.new([ParticleId(0), ParticleId(1), ParticleId(1)])
+        result = Index.combine(
+            system.apply_mask(jnp.array([True, True, False])),
+            motif.apply_mask(jnp.array([True, False, True])),
+        )
+        npt.assert_array_equal(result.raw_indices, [0, 4, 4])
+        npt.assert_array_equal(result.counts.data, [1, 0, 0, 0])
 
 
 class TestSumOver:
@@ -489,7 +504,7 @@ class TestToCls:
         idx = Index((0, 1, 2), jnp.array([2, 0, 1]))
         result = idx.to_cls(ParticleId)
         assert result.keys == (ParticleId(0), ParticleId(1), ParticleId(2))
-        npt.assert_array_equal(result.indices, [2, 0, 1])
+        npt.assert_array_equal(result.raw_indices, [2, 0, 1])
         assert result.cls is ParticleId
         # max_count
         assert (
@@ -586,7 +601,7 @@ class TestWhereAndSubselect:
         sub4 = _jit_subselect(
             Index.new(["A", "B", "A"]), Index.new(["B"]), capacity=FixedCapacity(3)
         )
-        assert int((sub4.scatter.indices < len(sub4.scatter.keys)).sum()) == 1
+        assert int(sub4.scatter.valid_mask.sum()) == 1
         # Iter unpacking
         scatter, gather = _jit_subselect(
             Index.new(["A", "B", "A"]), Index.new(["A"]), capacity=FixedCapacity(2)
@@ -615,7 +630,7 @@ class TestValueArrayAndJit:
 
         result = f(sa)
         assert isinstance(result, Index) and result.keys == sa.keys
-        npt.assert_array_equal(result.indices, sa.indices[jnp.array([2, 0, 1])])
+        npt.assert_array_equal(result.raw_indices, sa.raw_indices[jnp.array([2, 0, 1])])
 
 
 class TestUnifyKeysByCls:
@@ -623,8 +638,8 @@ class TestUnifyKeysByCls:
         # Same cls
         a, b = unify_keys_by_cls((Index.new(["H", "O"]), Index.new(["O", "N"])))
         assert a.keys == b.keys and set(a.keys) == {"H", "N", "O"}
-        npt.assert_array_equal(a.indices, [0, 2])
-        npt.assert_array_equal(b.indices, [2, 1])
+        npt.assert_array_equal(a.raw_indices, [0, 2])
+        npt.assert_array_equal(b.raw_indices, [2, 1])
         # Different cls independent
         p, s = unify_keys_by_cls(
             (
@@ -660,7 +675,7 @@ class TestFactoryAndLabels:
         # zeros
         idx3 = Index.zeros(5)
         assert idx3.shape == (5,) and idx3.num_labels == 1
-        npt.assert_array_equal(idx3.indices, [0, 0, 0, 0, 0])
+        npt.assert_array_equal(idx3.raw_indices, [0, 0, 0, 0, 0])
         assert Index.zeros((2, 3)).shape == (2, 3)
         idx_s = Index.zeros(3, label=SystemId)
         assert idx_s.keys == (SystemId(0),) and idx_s.cls is SystemId
@@ -668,7 +683,7 @@ class TestFactoryAndLabels:
         # integer
         idx4 = Index.integer([0, 1, 0, 2], n=3)
         assert idx4.num_labels == 3
-        npt.assert_array_equal(idx4.indices, [0, 1, 0, 2])
+        npt.assert_array_equal(idx4.raw_indices, [0, 1, 0, 2])
         assert Index.integer([0, 1, 2]).num_labels == 3
         idx5 = Index.integer([0, 0, 1], n=2, label=ParticleId)
         assert idx5.keys == (ParticleId(0), ParticleId(1)) and idx5.cls is ParticleId

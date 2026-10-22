@@ -5,6 +5,7 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from kups.core.capacity import FixedCapacity
@@ -67,16 +68,17 @@ def _make_cell(n_systems: int, box_size: float = 1000.0):
 def create_test_edges(
     particles: Table[ParticleId, ParticleData], indices: list[list[int]]
 ) -> Edges:
-    """Build Edges with zero shifts from a list of [particle_idx, sphere_idx] pairs."""
-    if not indices:
-        return Edges(
-            indices=Index(particles.keys, jnp.zeros((0, 2), dtype=int)),
-            shifts=jnp.zeros((0, 1, 3)),
-        )
-    indices_array = jnp.array(indices)
-    n_edges = indices_array.shape[0]
-    shifts = jnp.zeros((n_edges, 1, 3))
-    return Edges(indices=Index(particles.keys, indices_array), shifts=shifts)
+    """Edges with zero shifts from ``[particle, sphere]`` pairs.
+
+    Sphere ids follow the particle ids, as in the blocking-sphere query.
+    """
+    pairs = np.array(indices, dtype=int).reshape(-1, 2)
+    n, n_spheres = len(particles), int(pairs[:, 1].max(initial=-1)) + 1
+    keys = particles.keys + tuple(ParticleId(n + i) for i in range(n_spheres))
+    return Edges(
+        indices=Index(keys, jnp.asarray(pairs + np.array([0, n]))),
+        shifts=jnp.zeros((len(pairs), 1, 3)),
+    )
 
 
 _jit_blocking_spheres_energy = jax.jit(blocking_spheres_energy)
@@ -456,8 +458,8 @@ class TestBlockingSpheresParametersFromData:
         ]
         params = BlockingSpheresParameters.from_data(data)
         assert params.radii.tolist() == [1.0, 0.5, 2.0, 1.5]
-        assert params.system.indices.tolist() == [0, 0, 0, 1]
-        assert params.motif.indices.tolist() == [0, 0, 1, 0]
+        assert params.system.value.tolist() == [0, 0, 0, 1]
+        assert params.motif.value.tolist() == [0, 0, 1, 0]
         assert params.positions.shape == (4, 3)
 
 

@@ -175,13 +175,11 @@ def _prepare(
             queries_frame.to_fractional
         )
 
-    queried_keys_raw: Array | None = (
-        queried_keys.indices_in(keys.keys) if queried_keys is not None else None
-    )
-
     return PipelineContext(
         keys=keys,
         queries=queries,
         systems=systems,
-        queried_keys=queried_keys_raw,
+        queried_keys=(
+            queried_keys.update_labels(keys.keys) if queried_keys is not None else None
+        ),
     )

@@ -51,22 +51,23 @@ class InclusionGroupSelector:
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         query = ctx.query_table
-        ngraphs = ctx.keys.data.inclusion.num_labels
+        inclusion = ctx.keys.data.inclusion
         selection_result = subselect(
-            ctx.keys.data.inclusion.indices,
-            query.data.inclusion.indices,
+            *Index.match(
+                inclusion,
+                query.data.inclusion.update_labels(inclusion.keys, allow_missing=True),
+            ),
             output_buffer_size=self.capacity,
-            num_segments=ngraphs,
+            num_segments=inclusion.num_labels,
         )
         candidates = Candidates(
             key_idx=Index(ctx.keys.keys, selection_result.scatter_idxs),
             query_idx=Index(query.keys, selection_result.gather_idxs),
         )
         candidates = lift_query_candidates(candidates, ctx)
-        query_tbl = ctx.edge_query_table
         deltas = (
-            ctx.keys.data.positions[candidates.key_idx.indices]
-            - query_tbl.data.positions[candidates.query_idx.indices]
+            ctx.keys[candidates.key_idx].positions
+            - ctx.edge_query_table[candidates.query_idx].positions
         )
         shifts = jnp.round(deltas).astype(int)
         return candidates_to_batch(

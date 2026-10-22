@@ -809,7 +809,7 @@ class TestReciprocalReduction:
         kv = np.asarray(inp.kvecs, dtype=np.float64)
         result = np.zeros((*kv.shape[:2], 2))
         for s in range(len(kv)):
-            mask = np.asarray(p.system.indices) == s
+            mask = np.asarray(p.system.isin(Index(p.system.keys, jnp.array([s]))))
             phase = np.asarray(p.positions, dtype=np.float64)[mask] @ kv[s].T
             q = np.asarray(p.charges, dtype=np.float64)[mask, None]
             result[s] = np.stack(
@@ -829,8 +829,14 @@ class TestReciprocalReduction:
             (
                 p.data.positions.at[jnp.array([0, 2, 3, 5])].add(0.05).at[18].set(1.0),
                 p.data.charges.at[3].set(0.7).at[18].set(-0.6),
-                bind(p.data.system, lambda x: x.indices).set(
-                    p.data.system.indices.at[0].set(1).at[2].set(4).at[18].set(2)
+                bind(p.data.system)
+                .at(jnp.array([0, 2, 18]))
+                .set(
+                    Index(
+                        p.data.system.keys,
+                        jnp.array([1, 4, 2]),
+                        p.data.system.max_count,
+                    )
                 ),
             )
         )
@@ -898,7 +904,7 @@ class TestReciprocalReduction:
         if batch > 1:
             # Parameters for every system, a point cloud holding only system 2.
             p = inp.point_cloud.particles.data
-            rows = np.flatnonzero(np.asarray(p.system.indices) == 2)
+            rows = np.flatnonzero(p.system.isin(Index.new([SystemId(2)])))
             p = jax.tree.map(lambda a: a[rows], p)
             system = Index((SystemId(2),), jnp.zeros(len(rows), int))
             p = bind(p, lambda x: x.system).set(system)
@@ -1160,8 +1166,8 @@ class TestReciprocalShifts:
                 atol=2e-15,
             )
             active = inside & (squared > 0)
-            q = np.asarray(p.charges)[np.asarray(p.system.indices) == s]
-            pos = np.asarray(p.positions)[np.asarray(p.system.indices) == s]
+            mask = np.asarray(p.system.isin(Index.new([SystemId(s)])))
+            q, pos = np.asarray(p.charges)[mask], np.asarray(p.positions)[mask]
             sf = (q[:, None] * np.exp(1j * (pos @ vectors[active].T))).sum(0)
             k2 = squared[active]
             weights = (2 - (shifts[active, 0] == 0)) * 2 * np.pi / np.linalg.det(cell)

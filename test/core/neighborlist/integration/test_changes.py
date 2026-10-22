@@ -29,6 +29,7 @@ from .._builders import (
     make_rh,
     make_systems,
     valid_edge_set,
+    valid_ids,
 )
 
 _EdgeKey = tuple[int, int, tuple[int, ...]]
@@ -37,15 +38,14 @@ _EdgeKey = tuple[int, int, tuple[int, ...]]
 _changes = jax.jit(neighborlist_changes, static_argnames="compaction")
 
 
-def _edge_counts(edges: Edges[Literal[2]], n_particles: int) -> Counter[_EdgeKey]:
-    """Count occurrences of each ``(i, j, shift)`` edge with both ends in range."""
-    raw = np.asarray(edges.indices.indices)
-    shifts = np.asarray(jnp.round(edges.shifts[:, 0, :]).astype(int))
-    counts: Counter[_EdgeKey] = Counter()
-    for (a, b), s in zip(raw, shifts):
-        if a < n_particles and b < n_particles:
-            counts[(int(a), int(b), tuple(int(x) for x in s))] += 1
-    return counts
+def _edge_counts(edges: Edges[Literal[2]]) -> Counter[_EdgeKey]:
+    """Count occurrences of each non-padding ``(i, j, shift)`` edge."""
+    valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
+    shifts = np.asarray(jnp.round(edges.shifts[valid, 0, :]).astype(int))
+    return Counter(
+        (int(a), int(b), tuple(map(int, s)))
+        for (a, b), s in zip(valid_ids(edges.indices), shifts)
+    )
 
 
 class TestNeighborlistChanges:
@@ -93,10 +93,10 @@ class TestNeighborlistChanges:
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems)
 
-        added_set = valid_edge_set(result.added, N)
-        removed_set = valid_edge_set(result.removed, N)
-        ref_after_set = valid_edge_set(ref_after, N)
-        ref_removed_set = valid_edge_set(ref_removed, N)
+        added_set = valid_edge_set(result.added)
+        removed_set = valid_edge_set(result.removed)
+        ref_after_set = valid_edge_set(ref_after)
+        ref_removed_set = valid_edge_set(ref_removed)
 
         assert added_set == ref_after_set, (
             f"added mismatch:\n  extra={added_set - ref_after_set}\n"
@@ -131,8 +131,8 @@ class TestNeighborlistChanges:
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems)
 
-        removed = valid_edge_set(result.removed, 3)
-        added = valid_edge_set(result.added, 3)
+        removed = valid_edge_set(result.removed)
+        added = valid_edge_set(result.added)
 
         assert (0, 1) in removed
         assert (1, 0) in removed
@@ -170,7 +170,7 @@ class TestNeighborlistChanges:
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems)
 
-        added = valid_edge_set(result.added, 4)
+        added = valid_edge_set(result.added)
         assert (0, 1) in added
         assert (1, 0) in added
         assert (1, 2) not in added
@@ -211,7 +211,7 @@ class TestNeighborlistChanges:
         rh_table, queried_keys = make_rh(lh, new_pos, rh_batch, changed_idx)
         result = _changes(nl, lh, WithIndices(queried_keys, rh_table), systems)
 
-        counts = _edge_counts(result.added, N)
+        counts = _edge_counts(result.added)
         assert (1, 2, (0, 0, 0)) in counts, "expected the moved particle's new edge"
         duplicates = {e: c for e, c in counts.items() if c > 1}
         assert not duplicates, f"duplicated added edges: {duplicates}"
@@ -235,8 +235,8 @@ class TestNeighborlistChanges:
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems, compaction=compaction)
 
-        removed = valid_edge_set(result.removed, 3)
-        added = valid_edge_set(result.added, 3)
+        removed = valid_edge_set(result.removed)
+        added = valid_edge_set(result.added)
         assert (0, 1) in removed and (1, 0) in removed
         assert (1, 2) in added and (2, 1) in added
 
@@ -269,5 +269,5 @@ class TestNeighborlistChanges:
         )
         result = _changes(nl, lh, WithIndices(queried_keys, rh_table), systems)
 
-        assert valid_edge_set(result.added, N) == valid_edge_set(ref_after, N)
-        assert valid_edge_set(result.removed, N) == valid_edge_set(ref_removed, N)
+        assert valid_edge_set(result.added) == valid_edge_set(ref_after)
+        assert valid_edge_set(result.removed) == valid_edge_set(ref_removed)

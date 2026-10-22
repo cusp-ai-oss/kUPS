@@ -56,7 +56,6 @@ from kups.core.utils.jax import (
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.math import erfc_over, triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
-from kups.core.utils.segment import segment_sum
 from kups.potential.classical.coulomb import (
     _pairwise_coulomb_energy,
     coulomb_pair_energy,
@@ -256,12 +255,9 @@ def ewald_self_interaction_energy(
     """
     sys_idx = inp.graph.systems.index
     energies = _self_energy(
-        segment_sum(
-            inp.graph.particles.data.charges**2,
-            inp.graph.particles.data.system.indices,
-            inp.graph.batch_size,
-            mode="drop",
-        ),
+        inp.graph.particles.data.system.sum_over(inp.graph.particles.data.charges**2)[
+            sys_idx
+        ],
         inp.parameters.alpha[sys_idx],
     )
     return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
@@ -1122,7 +1118,7 @@ def _exclusion_coefficients[State](
     distance = jnp.linalg.norm(
         templates.positions[:, None] - templates.positions[None, :], axis=-1
     )
-    same_motif = motif.indices[:, None] == motif.indices[None, :]
+    same_motif = jnp.equal(*Index.match(motif[:, None], motif[None, :]))
     diameter = jnp.where(same_motif, distance, 0).max(initial=0)
     fixed_exclusions = (
         composition.fixed_system.valid_mask & particles.exclusion.valid_mask

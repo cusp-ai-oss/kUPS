@@ -165,17 +165,17 @@ def test_frechet_pullback_matches_total_lattice_gradient(name: str):
     )
     np.testing.assert_allclose(g_u.positions.data, g_r, atol=1e-9)
 
+    system = geom.particles.data.system
     s0 = jnp.einsum(
         "ni,nij->nj",
         geom.particles.data.positions,
-        cell.inverse_vectors[geom.particles.data.system.indices],
+        Table(system.keys, cell.inverse_vectors)[system],
     )
-    idx = geom.particles.data.system.indices
 
     def e_total(tril: Array) -> Array:
         f = DeformedFrame(frame.base, LogTriclinicFrame(tril, deformation.cell_factor))
         h = f.vectors
-        r = jnp.einsum("ni,nij->nj", s0, h[idx])
+        r = jnp.einsum("ni,nij->nj", s0, Table(system.keys, h)[system])
         return jnp.sum(g_r * r) + jnp.sum(dE_dh * h)
 
     truth = jax.grad(e_total)(deformation.tril)

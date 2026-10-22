@@ -258,7 +258,7 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
     n_sys = graph.systems.data.cell.vectors.shape[0]
     positions = graph.particles.data.positions
     atomic_numbers = graph.particles.data.atomic_numbers
-    batch = graph.particles.data.system.indices
+    batch = graph.particles.data.system.raw_indices
     cell = graph.systems.data.cell.vectors
     pbc = jnp.broadcast_to(
         jnp.asarray(graph.systems.data.cell.periodic, dtype=bool), (n_sys, 3)

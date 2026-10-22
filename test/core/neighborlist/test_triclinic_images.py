@@ -24,7 +24,14 @@ from kups.core.data.index import Index
 from kups.core.neighborlist.common import Candidates, candidate_image_counts
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 
-from ._builders import cutoff_table, make_lh, make_systems, replicate, run_nl
+from ._builders import (
+    cutoff_table,
+    make_lh,
+    make_systems,
+    replicate,
+    run_nl,
+    valid_ids,
+)
 
 # (name, lattice matrix [rows = lattice vectors], cutoff). Cover the orthogonal
 # baseline, strong monoclinic skew, an acute 35-degree cell (where round-based
@@ -91,12 +98,11 @@ def _dense_nl_edges(real: jax.Array, matrix: Matrix, cutoff: float, n: int) -> E
     result = run_nl(nl, lh, systems)
     result.raise_assertion()
     edges = result.value
-    raw = np.asarray(edges.indices.indices)
+    keep = np.asarray(edges.indices.valid_mask.all(axis=-1))
     shifts = np.asarray(edges.shifts[:, 0, :])
-    keep = (raw[:, 0] < n) & (raw[:, 1] < n)
     return {
         (int(i), int(j), tuple(int(s) for s in sh))
-        for (i, j), sh in zip(raw[keep], shifts[keep])
+        for (i, j), sh in zip(valid_ids(edges.indices), shifts[keep])
     }
 
 
@@ -134,14 +140,14 @@ def test_minimum_image_flag_is_true_closest(name: str, matrix: Matrix, cutoff: f
         FixedCapacity(n * n * _MAX_IMAGES),
     )
 
-    raw = np.asarray(batch.edges.indices.indices)
-    shifts = np.asarray(batch.edges.shifts[:, 0, :])
-    is_min = np.asarray(batch.is_minimum_image)
+    keep = np.asarray(batch.edges.indices.valid_mask.all(axis=-1))
+    shifts = np.asarray(batch.edges.shifts[:, 0, :])[keep]
+    is_min = np.asarray(batch.is_minimum_image)[keep]
     f, A = np.asarray(frac), np.asarray(matrix)
 
     flagged: dict[tuple[int, int], list[np.ndarray]] = {}
-    for (i, j), sh, m in zip(raw, shifts, is_min):
-        if i < n and j < n and m:
+    for (i, j), sh, m in zip(valid_ids(batch.edges.indices), shifts, is_min):
+        if m:
             flagged.setdefault((int(i), int(j)), []).append(sh)
 
     for i in range(n):

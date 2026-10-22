@@ -102,14 +102,14 @@ class TestNeighborListAcrossPeriodicities:
         L = 10.0
         positions = jnp.array([[0.5, 5.0, 5.0], [9.5, 5.0, 5.0]])
         edges = _run_cell_list(positions, self._bulk_cell(L), cutoff=2.0)
-        assert valid_edge_set(edges, 2) == {(0, 1), (1, 0)}
+        assert valid_edge_set(edges) == {(0, 1), (1, 0)}
 
     def test_vacuum_excludes_cross_boundary_pair(self):
         """The same atoms under ``VacuumCell`` should NOT connect."""
         L = 10.0
         positions = jnp.array([[0.5, 5.0, 5.0], [9.5, 5.0, 5.0]])
         edges = _run_cell_list(positions, self._vacuum_cell(L), cutoff=2.0)
-        assert valid_edge_set(edges, 2) == set()
+        assert valid_edge_set(edges) == set()
 
     def test_2d_slab_wraps_xy_not_z(self):
         """Slab (T, T, F): the cross-x pair wraps; the cross-z pair does not."""
@@ -119,8 +119,8 @@ class TestNeighborListAcrossPeriodicities:
         z_pair = jnp.array([[5.0, 5.0, 1.0], [5.0, 5.0, 9.0]])
         x_edges = _run_cell_list(x_pair, cell, cutoff=2.5)
         z_edges = _run_cell_list(z_pair, cell, cutoff=2.5)
-        assert valid_edge_set(x_edges, 2) == {(0, 1), (1, 0)}
-        assert valid_edge_set(z_edges, 2) == set()
+        assert valid_edge_set(x_edges) == {(0, 1), (1, 0)}
+        assert valid_edge_set(z_edges) == set()
 
     def test_1d_wire_wraps_x_not_yz(self):
         """1D wire (T, F, F): cross-x connects, cross-y and cross-z do not."""
@@ -129,9 +129,9 @@ class TestNeighborListAcrossPeriodicities:
         x_pair = jnp.array([[1.0, 5.0, 5.0], [9.0, 5.0, 5.0]])
         y_pair = jnp.array([[5.0, 1.0, 5.0], [5.0, 9.0, 5.0]])
         z_pair = jnp.array([[5.0, 5.0, 1.0], [5.0, 5.0, 9.0]])
-        assert valid_edge_set(_run_cell_list(x_pair, cell, 2.5), 2) == {(0, 1), (1, 0)}
-        assert valid_edge_set(_run_cell_list(y_pair, cell, 2.5), 2) == set()
-        assert valid_edge_set(_run_cell_list(z_pair, cell, 2.5), 2) == set()
+        assert valid_edge_set(_run_cell_list(x_pair, cell, 2.5)) == {(0, 1), (1, 0)}
+        assert valid_edge_set(_run_cell_list(y_pair, cell, 2.5)) == set()
+        assert valid_edge_set(_run_cell_list(z_pair, cell, 2.5)) == set()
 
     @pytest.mark.parametrize(
         "cell_factory",
@@ -157,4 +157,4 @@ class TestNeighborListAcrossPeriodicities:
         cutoff = 3.5
         cl_edges = _run_cell_list(positions, cell, cutoff)
         dn_edges = _run_dense(positions, cell, cutoff)
-        assert valid_edge_set(cl_edges, 30) == valid_edge_set(dn_edges, 30)
+        assert valid_edge_set(cl_edges) == valid_edge_set(dn_edges)

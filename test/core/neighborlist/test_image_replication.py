@@ -60,7 +60,16 @@ from kups.core.neighborlist.common import (
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.types import NeighborList
 
-from ._builders import cutoff_table, make_lh, make_systems, pad, replicate, run_nl
+from ._builders import (
+    cutoff_table,
+    make_lh,
+    make_systems,
+    pad,
+    replicate,
+    run_nl,
+    valid_ids,
+    valid_pairs,
+)
 
 # --------------------------------------------------------------------------- #
 # Cell zoo: (name, 3x3 matrix rows=lattice vectors, is_triclinic-only?)
@@ -442,10 +451,9 @@ def _replicate_edges(frac: np.ndarray, matrix: Matrix, cutoff: float, pbc):
         FixedCapacity(n * n * _image_bucket(images)),
     )
     # Padding rows carry the out-of-range index n; every other row is an image.
-    raw = np.asarray(batch.edges.indices.indices)
-    real = raw[:, 0] < n
+    real = np.asarray(batch.edges.indices.valid_mask.all(axis=-1))
     assert real.sum() == n * n * images
-    raw = raw[real]
+    raw = valid_ids(batch.edges.indices)
     shifts = np.rint(np.asarray(batch.edges.shifts[:, 0, :])[real]).astype(int)
     is_min = np.asarray(batch.is_minimum_image)[real]
 
@@ -602,12 +610,11 @@ def _nl_edge_list(
     result = run_nl(nl, lh, systems, queried_keys)
     result.raise_assertion()
     edges = result.value
-    raw = np.asarray(edges.indices.indices)
+    keep = np.asarray(edges.indices.valid_mask.all(axis=-1))
     shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)
-    keep = (raw[:, 0] < n) & (raw[:, 1] < n)
     return [
         (int(i), int(j), tuple(int(s) for s in sh))
-        for (i, j), sh in zip(raw[keep], shifts[keep])
+        for (i, j), sh in zip(valid_ids(edges.indices), shifts[keep])
     ]
 
 
@@ -755,11 +762,7 @@ class TestCellListSingleCellPath:
             max_num_cells=max_cells,
             max_num_candidates=FixedCapacity(self.n * self.n * 2),
         )
-        return {
-            (int(a), int(b))
-            for a, b in zip(c.key_idx.indices.tolist(), c.query_idx.indices.tolist())
-            if a < self.n and b < self.n
-        }
+        return set(valid_pairs(c.key_idx, c.query_idx))
 
     def test_single_cell_matches_multi_cell_and_is_all_pairs(
         self, cell_name, matrix, ratio
@@ -813,7 +816,7 @@ def _x_window(box: float, cutoff: float, sep: float) -> set[int]:
         cutoff_table(jnp.array([cutoff])),
         FixedCapacity(_X_WINDOW_IMAGES),
     )
-    real = np.asarray(batch.edges.indices.indices[:, 0]) < 2
+    real = np.asarray(batch.edges.indices.valid_mask[:, 0])
     shifts = np.asarray(batch.edges.shifts[:, 0, :])[real]
     return {int(s[0]) for s in np.rint(shifts).astype(int)}
 

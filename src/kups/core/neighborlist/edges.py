@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import override
 
-import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity
@@ -60,13 +59,8 @@ class Edges[Degree: int](Sliceable):
     shifts: Array  # (n_edges, Degree - 1, 3)
 
     def __post_init__(self) -> None:
-        # Resolve the underlying array for validation
-        raw = self.indices.indices if isinstance(self.indices, Index) else self.indices
-        if not isinstance(raw, Array):
+        if not isinstance(self.shifts, Array):
             return
-        assert jnp.issubdtype(raw.dtype, jnp.integer), (
-            f"Indices must be of integer type, got {raw.dtype}"
-        )
         target_shape = (
             *self.indices.shape[:-1],
             self.indices.shape[-1] - 1 if self.indices.shape[-1] > 1 else 0,
