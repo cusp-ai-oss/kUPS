@@ -1,12 +1,28 @@
 name: "Setup"
 description: "Setup kUPS environment"
+inputs:
+  jax-cache-key:
+    description: "Restore the newest JAX compilation cache saved under this key (empty: one cache per uv.lock)"
+    default: ""
+outputs:
+  jax-cache-key:
+    description: "Key under which to save this commit's JAX compilation cache"
+    value: ${{ steps.jax-cache-restore.outputs.cache-primary-key }}
 runs:
   using: "composite"
   steps:
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - if: inputs.jax-cache-key == ''
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: /tmp/jax_cache
         key: ${{ runner.os }}-${{ github.job }}-jax-${{ hashFiles('**/uv.lock') }}
+    - id: jax-cache-restore
+      if: inputs.jax-cache-key != ''
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /tmp/jax_cache
+        key: ${{ runner.os }}-${{ github.job }}-${{ inputs.jax-cache-key }}-jax-${{ github.sha }}
+        restore-keys: ${{ runner.os }}-${{ github.job }}-${{ inputs.jax-cache-key }}-jax-
     - name: Install uv
       uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       with:
