@@ -3,11 +3,11 @@
 
 """Cell-list neighbor list whose candidate stage is a scan kernel.
 
-Keys are sorted by cell. For each query, a Pallas kernel scans a window of
-``2 * stencil_radius + 1`` cells per axis and emits only pairs within the cutoff,
-so the pipeline masks see about 7x fewer candidates than in ``CellListNeighborList``.
-The window wraps on periodic axes and each pair carries its image shift.
-``stencil_radius`` must cover ``cutoff / cell width`` (checked at runtime).
+Keys are sorted by cell. For each query, a Pallas kernel scans a window of cells
+around the query's cell and emits only pairs within the cutoff, so the pipeline masks
+see about 7x fewer candidates than in ``CellListNeighborList``. The window covers the
+cutoff on each axis (one cell per side unless the cutoff exceeds the cell), wraps on
+periodic axes and each pair carries its image shift. Infinite cutoffs need open axes.
 
 Triton kernel on CUDA GPUs with compute capability 8.0+, Pallas interpreter
 elsewhere. The kernel uses int32 and float32.
@@ -45,7 +45,7 @@ from kups.core.neighborlist.types import (
     PipelineContext,
 )
 from kups.core.typing import DTypeLike, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, jit
+from kups.core.utils.jax import dataclass, jit
 from kups.core.utils.subselect import argsort_indices
 
 BLOCK, WARPS = 16, 1  # flat on an L4 for BLOCK 8-64, WARPS 1-4
@@ -66,9 +66,9 @@ def _scan_kernel(
     korder_ref: jax.Ref, start_ref: jax.Ref,
     qx_ref: jax.Ref, qy_ref: jax.Ref, qz_ref: jax.Ref, qnx_ref: jax.Ref, qny_ref: jax.Ref, qnz_ref: jax.Ref,
     qsys_ref: jax.Ref, qcell_ref: jax.Ref, qoffset_ref: jax.Ref,
-    frame_ref: jax.Ref, rc2_ref: jax.Ref, bins_ref: jax.Ref,
+    frame_ref: jax.Ref, rc2_ref: jax.Ref, bins_ref: jax.Ref, radius_ref: jax.Ref,
     *out_refs: jax.Ref,
-    periodic: tuple[bool, ...], max_cells: int, radius: int, write: bool,
+    periodic: tuple[bool, ...], max_cells: int, write: bool,
 ) -> None:  # fmt: skip
     """Count (``write=False``) or write the in-cutoff keys in query ``q``'s window of cells.
 
@@ -84,15 +84,10 @@ def _scan_kernel(
     qpos = (qx_ref[q], qy_ref[q], qz_ref[q])
     qn = (qnx_ref[q], qny_ref[q], qnz_ref[q])
     qcell = [qcell_ref[q, a] for a in range(3)]  # negative: inactive query
-    width = 2 * radius + 1
+    radius = [radius_ref[s, a] for a in range(3)]
     base = qoffset_ref[q] if write else 0
 
-    def scan_cell(t: Array, n_found: Array) -> Array:
-        offset = (
-            t % width - radius,
-            t // width % width - radius,
-            t // (width * width) - radius,
-        )
+    def scan_cell(offset: tuple[Array, ...], n_found: Array) -> Array:
         coord: list[Array] = []
         image: list[Array] = []
         inside = qcell[0] >= 0
@@ -158,9 +153,18 @@ def _scan_kernel(
         n_chunks = (end - start + BLOCK - 1) // BLOCK
         return jax.lax.fori_loop(0, n_chunks, chunk_body, n_found)
 
-    n_found = jax.lax.fori_loop(
-        jnp.int32(0), jnp.int32(width**3), scan_cell, jnp.zeros((), jnp.int32)
-    )
+    def scan_axis(axis: int, offset: tuple[Array, ...], n_found: Array) -> Array:
+        """Visit window offsets ``-radius..radius`` on ``axis`` and the axes below it."""
+        if axis < 0:
+            return scan_cell(offset, n_found)
+        return jax.lax.fori_loop(
+            -radius[axis],
+            radius[axis] + 1,
+            lambda d, n: scan_axis(axis - 1, (d, *offset), n),
+            n_found,
+        )
+
+    n_found = scan_axis(2, (), jnp.zeros((), jnp.int32))
     if not write:
         out_refs[0][q] = n_found
 
@@ -203,7 +207,6 @@ class CellScanSelector:
     cutoffs: Table[SystemId, Array]
     max_cells: Capacity[int]
     max_candidates: Capacity[int]
-    stencil_radius: int = field(default=1, static=True)
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
         keys, queries, systems = ctx.keys, ctx.query_table, ctx.systems
@@ -223,17 +226,15 @@ class CellScanSelector:
         width = cell.perpendicular_lengths
         bins = num_cells(systems.data, cutoffs, dtype=dtype)
         max_cells = self.max_cells.generate_assertion(bins.prod(axis=-1).max()).size
+        # cells scanned on each side: enough to cover the cutoff; on open axes at most the grid
+        reach = jnp.ceil(cutoffs[:, None] * bins / width)
+        is_periodic = jnp.asarray(periodic)
         runtime_assert(
-            jnp.all(jnp.isfinite(cutoffs)),
-            "CellScanNeighborList needs finite cutoffs; use a dense neighbor list for all pairs",
+            jnp.all(jnp.isfinite(reach) | ~is_periodic),
+            "CellScanNeighborList needs finite cutoffs on periodic axes; use a dense neighbor list",
         )
-        runtime_assert(
-            jnp.all(
-                (self.stencil_radius * width / bins >= cutoffs[:, None])
-                | ~jnp.asarray(periodic)
-            ),
-            "CellScanNeighborList: stencil_radius too small for a cutoff wider than the cell",
-        )
+        reach = jnp.where(is_periodic, reach, jnp.minimum(reach, bins - 1))
+        radius = jnp.where(jnp.isfinite(reach), reach, 0).astype(jnp.int32)
 
         def assign(points: NeighborListPoints) -> tuple[Array, Array, Array]:
             system = points.system.indices_in(systems.keys)
@@ -278,6 +279,7 @@ class CellScanSelector:
             f32(cell.vectors.reshape(-1, 9)),
             f32((cutoffs + SLACK) ** 2),
             i32(bins),
+            radius,
         )
         n_q = queries.size
         call = partial(
@@ -290,7 +292,6 @@ class CellScanSelector:
             _scan_kernel,
             periodic=periodic,
             max_cells=max_cells,
-            radius=self.stencil_radius,
         )
         # pass 1 counts hits per query; their prefix sum gives each query its
         # write offset and the total sizes the output; pass 2 writes
@@ -330,9 +331,10 @@ class CellScanSelector:
         )
         shifts = jnp.where(filled[:, None], jnp.stack([sx, sy, sz], -1), 0.0)
         shifts = shifts.astype(keys.data.positions.dtype)
-        # a pair has several copies only where the window wraps onto itself; then its
-        # minimum image is the closest copy (exact also on skewed cells), else every copy is
-        revisits = jnp.any((bins < 2 * self.stencil_radius + 1) & jnp.asarray(periodic))
+        # copies of a pair lie a lattice vector apart, so two fall within the cutoff
+        # only where a periodic width is at most twice the cutoff; then the minimum
+        # image is the closest copy (exact also on skewed cells), else every copy is
+        revisits = jnp.any((width <= 2 * (cutoffs[:, None] + SLACK)) & is_periodic)
         is_min = jax.lax.cond(
             revisits,
             lambda: _closest_copy(
@@ -353,14 +355,11 @@ class CellScanNeighborList:
         avg_edges: Capacity per query for the final edges and the in-cutoff candidates.
         cells: Capacity for the cell hash table.
         cutoffs: Per-system cutoff distances.
-        stencil_radius: Cells scanned on each side of a query's cell; 1 unless the cutoff
-            exceeds the cell width.
     """
 
     avg_edges: Capacity[int]
     cells: Capacity[int]
     cutoffs: Table[SystemId, Array]
-    stencil_radius: int = field(default=1, static=True, kw_only=True)
 
     @classmethod
     def new[S](
@@ -368,14 +367,12 @@ class CellScanNeighborList:
         state: S,
         lens: Lens[S, IsCellListParams],
         cutoffs: Table[SystemId, Array],
-        stencil_radius: int = 1,
     ) -> CellScanNeighborList:
         params = lens.get(state)
         return CellScanNeighborList(
             avg_edges=LensCapacity(params.avg_edges, lens.focus(lambda x: x.avg_edges)),
             cells=LensCapacity(params.cells, lens.focus(lambda x: x.cells)),
             cutoffs=cutoffs,
-            stencil_radius=stencil_radius,
         )
 
     @classmethod
@@ -393,7 +390,6 @@ class CellScanNeighborList:
             cutoffs=Table.broadcast_to(self.cutoffs, systems),
             max_cells=self.cells,
             max_candidates=self.avg_edges.multiply(query_size),
-            stencil_radius=self.stencil_radius,
         )
 
     @overload
