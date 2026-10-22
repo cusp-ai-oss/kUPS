@@ -36,7 +36,7 @@ from jax.tree_util import PyTreeDef
 
 from kups.core.assertion import check_assertions
 from kups.core.data.table import Table
-from kups.core.lens import Lens, Update, View
+from kups.core.lens import Lens, Update, View, const_lens
 from kups.core.patch import Accept, Addable, Patch, Probe, WithPatch
 from kups.core.result import Result, as_result_function
 from kups.core.schedule import IncrementSchedule, Schedule, Scheduler
@@ -628,6 +628,8 @@ class ResetOnErrorPropagator[State](Propagator[State]):
 
     Attributes:
         propagator: Base propagator to wrap with error handling
+        keep: Part of the state that keeps its new value on failure, e.g. a cache
+            that stays valid for its own inputs. Nothing by default.
 
     Example:
         ```python
@@ -644,12 +646,14 @@ class ResetOnErrorPropagator[State](Propagator[State]):
     """
 
     propagator: Propagator[State] = field(static=True)
+    keep: Lens[State, object] = field(static=True, default=const_lens(()))
 
     def __call__(self, key: Array, state: State) -> State:
         new_state = self.propagator(key, state)
         mask = check_assertions(jax.tree.leaves(new_state)[0])
-        result_state = tree_where_broadcast_last(mask, new_state, state)
-        return result_state
+        # kept leaves are the same arrays on both sides, so no select is emitted
+        old_state = self.keep.set(state, self.keep.get(new_state))
+        return tree_where_broadcast_last(mask, new_state, old_state)
 
 
 @dataclass
