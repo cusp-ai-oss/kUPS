@@ -44,7 +44,7 @@ from kups.core.typing import (
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, tree_map, vectorize
 from kups.core.utils.math import solve_affine_ode
-from kups.core.utils.random import sample_like
+from kups.core.utils.random import sample_like, segment_chi_squared
 from kups.md.observables import (
     instantaneous_pressure,
     instantaneous_pressure_tensor,
@@ -604,11 +604,8 @@ class CSVRStep[State](Propagator[State]):
         gaussian_noise = jax.random.normal(key1, dtype=float)
 
         # R₂ ~ χ²(N_dof-1) [dimensionless]
-        dof_minus_one = degrees_of_freedom - 1
-        chi_squared_noise = jnp.where(
-            dof_minus_one > 0,
-            jax.random.chisquare(key2, df=dof_minus_one, dtype=float),
-            0.0,
+        chi_squared_noise = segment_chi_squared(
+            key2, particles.data.system, degrees_of_freedom - 1
         )
 
         # CSVR scaling coefficients
