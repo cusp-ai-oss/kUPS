@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import dataclasses
+import weakref
 from collections.abc import Callable
 from functools import partial
 from typing import Any, Self
@@ -22,6 +23,7 @@ from kups.core.assertion.runtime_assertion import (
     RuntimeAssertion,
 )
 from kups.core.effects import (
+    Handler,
     HandlerResult,
     Interpreter,
     InterpreterPolicy,
@@ -29,13 +31,14 @@ from kups.core.effects import (
     default_checkpoint_handler,
     default_jit_handler,
     default_primitive_handler,
-    default_scan_handler,
     default_shard_map_handler,
     reinterpret,
 )
 from kups.core.lens import bind
 from kups.core.utils._jax_compat import (
     get_bind_params,
+    split_scan_operands,
+    split_scan_results,
 )
 from kups.core.utils.jax import PyTreeDef, dataclass
 
@@ -182,19 +185,40 @@ class _AssertionPacker:
         return tuple(out)
 
 
-def _contains_primitive(jaxprs: object, name: str) -> bool:
-    """Whether any (nested) jaxpr in ``jaxprs`` binds the primitive ``name``."""
-    for leaf in jax.tree.leaves(
-        jaxprs, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
-    ):
-        if isinstance(leaf, ClosedJaxpr):
-            leaf = leaf.jaxpr
-        if not isinstance(leaf, Jaxpr):
-            continue
-        for eqn in leaf.eqns:
-            if eqn.primitive.name == name or _contains_primitive(eqn.params, name):
-                return True
-    return False
+_primitive_names_cache: weakref.WeakKeyDictionary[Jaxpr, frozenset[str]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _sub_jaxprs(params: Any) -> list[Jaxpr]:
+    """The jaxprs among the leaves of ``params``, unwrapping closed jaxprs."""
+    leaves = jax.tree.leaves(
+        params, is_leaf=lambda x: isinstance(x, (Jaxpr, ClosedJaxpr))
+    )
+    return [
+        leaf.jaxpr if isinstance(leaf, ClosedJaxpr) else leaf
+        for leaf in leaves
+        if isinstance(leaf, (Jaxpr, ClosedJaxpr))
+    ]
+
+
+def _primitive_names(jaxpr: Jaxpr) -> frozenset[str]:
+    """Names of the primitives bound in ``jaxpr`` or any nested jaxpr."""
+    if (names := _primitive_names_cache.get(jaxpr)) is None:
+        names = frozenset(eqn.primitive.name for eqn in jaxpr.eqns).union(
+            *(
+                _primitive_names(sub)
+                for eqn in jaxpr.eqns
+                for sub in _sub_jaxprs(eqn.params)
+            )
+        )
+        _primitive_names_cache[jaxpr] = names
+    return names
+
+
+def _contains_primitive(jaxprs: object, *names: str) -> bool:
+    """Whether any (nested) jaxpr in ``jaxprs`` binds one of ``names``."""
+    return any(not _primitive_names(j).isdisjoint(names) for j in _sub_jaxprs(jaxprs))
 
 
 def _passing(a: RuntimeAssertion[Any, Any]) -> RuntimeAssertion[Any, Any]:
@@ -281,14 +305,6 @@ def _initialize_loop_assertion(
     )
 
 
-def _loop_initializer(old: AssertionContext, new: AssertionContext) -> AssertionContext:
-    """Seed the assertions a loop body appends: passing, with initial args."""
-    appended = new.assertions[len(old.assertions) :]
-    return AssertionContext(
-        old.assertions + tuple(map(_initialize_loop_assertion, appended))
-    )
-
-
 def _merge_loop_assertion(
     old: RuntimeAssertion[Any, Any], new: RuntimeAssertion[Any, Any]
 ) -> RuntimeAssertion[Any, Any]:
@@ -306,27 +322,48 @@ def _merge_loop_assertion(
     )
 
 
-def _loop_updater(old: AssertionContext, new: AssertionContext) -> AssertionContext:
-    """Fold one iteration's assertions into those accumulated so far."""
-    return AssertionContext(
-        tuple(map(_merge_loop_assertion, old.assertions, new.assertions))
-    )
-
-
 def scan_handler(
     interpreter: Interpreter[AssertionContext],
     ctx: AssertionContext,
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
-    return default_scan_handler(
-        interpreter,
-        ctx,
-        eqn,
-        invals,
-        initializer=_loop_initializer,
-        updater=_loop_updater,
+    """Carry only the body's assertions through the scan.
+
+    Each iteration folds the new assertions into the accumulated ones with their
+    ``loop_merge``. Assertions created before the scan stay outside it. The body
+    is traced once: the dry run that discovers its assertions is reused by the
+    scan.
+    """
+    _, bind_params = get_bind_params(eqn)
+    consts, carry, xs = split_scan_operands(bind_params, invals)
+    n_in = len(ctx.assertions)
+    body = jax.jit(partial(interpreter, bind_params["jaxpr"]))
+    _, ctx_out_tree = body.trace(ctx, *consts, *carry, *(x[0] for x in xs)).out_info
+    init = tuple(map(_initialize_loop_assertion, ctx_out_tree.assertions[n_in:]))
+
+    def step(
+        state: tuple[tuple[RuntimeAssertion[Any, Any], ...], list[Any]],
+        x: list[Any],
+    ) -> tuple[tuple[tuple[RuntimeAssertion[Any, Any], ...], list[Any]], list[Any]]:
+        kept, args = state
+        out, new_ctx = body(ctx, *consts, *args, *x)
+        kept = tuple(
+            _merge_loop_assertion(old, new)
+            for old, new in zip(kept, new_ctx.assertions[n_in:], strict=True)
+        )
+        carry_out, ys = split_scan_results(bind_params, out)
+        return (kept, carry_out), ys
+
+    (kept, carry), ys = jax.lax.scan(
+        step,
+        (init, carry),
+        xs,
+        length=bind_params["length"],
+        unroll=bind_params["unroll"],
+        reverse=bind_params["reverse"],
     )
+    return HandlerResult(AssertionContext(ctx.assertions + kept), [*carry, *ys])
 
 
 def while_handler(
@@ -349,11 +386,8 @@ def while_handler(
     body_consts = invals[num_cond_consts:n_consts]
     nonconst_invals = invals[n_consts:]
     n_in = len(ctx.assertions)
-    _, ctx_out_tree = (
-        jax.jit(partial(interpreter, body_jaxpr))
-        .trace(ctx, *body_consts, *nonconst_invals)
-        .out_info
-    )
+    body = jax.jit(partial(interpreter, body_jaxpr))
+    _, ctx_out_tree = body.trace(ctx, *body_consts, *nonconst_invals).out_info
     templates = ctx_out_tree.assertions[n_in:]
     packer = _AssertionPacker(templates)
 
@@ -371,7 +405,7 @@ def while_handler(
         carry: tuple[list[Array], list[Any]],
     ) -> tuple[list[Array], list[Any]]:
         packed, args = carry
-        out, new_ctx = interpreter(body_jaxpr, ctx, *body_consts, *args)
+        out, new_ctx = body(ctx, *body_consts, *args)
         merged = map(
             _merge_loop_assertion, packer.unpack(packed), new_ctx.assertions[n_in:]
         )
@@ -408,6 +442,24 @@ def shard_map_handler(
         if context_sharding is not None
         else None,
     )
+
+
+def _only_with_assertions(
+    handler: Handler[AssertionContext],
+) -> Handler[AssertionContext]:
+    """Bind ``eqn`` unchanged unless its sub-jaxprs create or read assertions."""
+
+    def wrapped(
+        interpreter: Interpreter[AssertionContext],
+        ctx: AssertionContext,
+        eqn: JaxprEqn,
+        invals: list[TracerValue],
+    ) -> HandlerResult[AssertionContext]:
+        if _contains_primitive(eqn.params, assertion_p.name, check_assertion_p.name):
+            return handler(interpreter, ctx, eqn, invals)
+        return default_primitive_handler(interpreter, ctx, eqn, invals)
+
+    return wrapped
 
 
 def with_runtime_assertions[**P, R](
@@ -497,11 +549,12 @@ def with_runtime_assertions[**P, R](
         {
             assertion_p: assertion_handler,
             check_assertion_p: check_assertion_handler,
+            # Re-tracing jit and cond bodies yields slightly faster CPU programs.
             "jit": default_jit_handler,
-            "remat2": default_checkpoint_handler,
-            "scan": scan_handler,
-            "while": while_handler,
             "cond": cond_handler,
+            "remat2": default_checkpoint_handler,
+            "scan": _only_with_assertions(scan_handler),
+            "while": _only_with_assertions(while_handler),
             "shard_map": partial(shard_map_handler, context_sharding=context_sharding),
         },
         effects=(assertion_p, check_assertion_p),
