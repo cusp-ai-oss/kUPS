@@ -48,6 +48,7 @@ from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_tail_correction_from_state,
 )
 from kups.application.potential.filter import POSITIONS_AND_CELL
+from kups.application.utils.propagate import make_cycle_function
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
@@ -76,7 +77,6 @@ from kups.core.propagator import (
     StateProperty,
     propagate_and_fix,
 )
-from kups.core.result import as_result_function
 from kups.core.typing import (
     GroupId,
     Label,
@@ -596,7 +596,7 @@ def run(config: Config) -> MCMCState:
     chain = key_chain(jax.random.key(seed))
     state = init_state(next(chain), config)
     init_prop, propagator = make_propagator(state, config.run)
-    state = propagate_and_fix(as_result_function(init_prop), next(chain), state)
+    state = propagate_and_fix(make_cycle_function(init_prop), next(chain), state)
     logged_data = make_mcmc_logged_data(
         state, make_guest_stress(state) if config.compute_stress else None
     )
