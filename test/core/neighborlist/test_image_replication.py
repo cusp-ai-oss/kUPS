@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import collections
 import itertools
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -40,7 +41,13 @@ import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, OrthogonalFrame, PeriodicCell, TriclinicFrame
+from kups.core.cell import (
+    AnyPeriodicity,
+    Cell,
+    OrthogonalFrame,
+    PeriodicCell,
+    TriclinicFrame,
+)
 from kups.core.data.index import Index
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList, _cell_list_subselect
@@ -49,12 +56,11 @@ from kups.core.neighborlist.common import (
     _generate_image_offsets,
     candidate_image_counts,
     num_cells,
-    replicate_for_images,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
-from kups.core.result import as_result_function
+from kups.core.neighborlist.types import NeighborList
 
-from ._builders import cutoff_table, make_lh, make_systems
+from ._builders import cutoff_table, make_lh, make_systems, pad, replicate, run_nl
 
 # --------------------------------------------------------------------------- #
 # Cell zoo: (name, 3x3 matrix rows=lattice vectors, is_triclinic-only?)
@@ -386,34 +392,19 @@ class TestGenerateImageOffsets:
 # seeded positions, cell, cutoff), so memoize the result to compute each
 # (cell, cutoff, positions) once instead of twice.
 _REPLICATE_CACHE: dict = {}
-# ``replicate_for_images`` under jit: cutoff and positions are runtime inputs, so
-# one compile per (particle count, image count, periodicity) serves every cell,
-# cutoff and seed sharing that signature (the capacity must stay static). Layer 3
-# uses generic non-integer ratios, so no float32 anchor boundary is in play and
-# the jitted result is bit-identical to eager for these inputs.
-_REPLICATE_COMPILED: dict = {}
+# ``replicate_for_images`` under jit: cutoff and positions are runtime inputs and
+# the capacity is either exact for the minimum-image path or covers every
+# replicating geometry, so one compile per (particle count, periodicity, path)
+# serves every cell, cutoff and seed. Layer 3 uses generic non-integer ratios, so
+# no float32 anchor boundary is in play and the jitted result is bit-identical to
+# eager for these inputs.
+_MAX_IMAGES = 256
 
 
-def _replicate_core(n: int, images: int, pbc):
-    key = (n, images, tuple(pbc))
-    fn = _REPLICATE_COMPILED.get(key)
-    if fn is None:
-        cap = FixedCapacity(n * n * images)
-
-        @jax.jit
-        def fn(lh, systems, cutoffs, gi, gj):
-            candidates = Candidates(
-                key_idx=Index(lh.keys, gi), query_idx=Index(lh.keys, gj)
-            )
-            batch = replicate_for_images(candidates, lh, lh, systems, cutoffs, cap)
-            return (
-                batch.edges.indices.indices,
-                batch.edges.shifts[:, 0, :],
-                batch.is_minimum_image,
-            )
-
-        _REPLICATE_COMPILED[key] = fn
-    return fn
+def _image_bucket(images: int) -> int:
+    """Images per pair to allocate: exact for the minimum image, else the bound."""
+    assert images <= _MAX_IMAGES
+    return 1 if images == 1 else _MAX_IMAGES
 
 
 def _replicate_edges(frac: np.ndarray, matrix: Matrix, cutoff: float, pbc):
@@ -438,17 +429,25 @@ def _replicate_edges(frac: np.ndarray, matrix: Matrix, cutoff: float, pbc):
     systems, _ = make_systems(cell, jnp.array([cutoff]))
     images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
     gi, gj = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
-    # Exact capacity -> no padding rows, so every emitted row is a real image.
-    raw, shifts, is_min = _replicate_core(n, images, pbc)(
+    candidates = Candidates(
+        key_idx=Index(lh.keys, jnp.asarray(gi.ravel())),
+        query_idx=Index(lh.keys, jnp.asarray(gj.ravel())),
+    )
+    batch = replicate(
+        candidates,
+        lh,
         lh,
         systems,
         cutoff_table(jnp.array([cutoff])),
-        jnp.asarray(gi.ravel()),
-        jnp.asarray(gj.ravel()),
+        FixedCapacity(n * n * _image_bucket(images)),
     )
-    raw = np.asarray(raw)
-    shifts = np.rint(np.asarray(shifts)).astype(int)
-    is_min = np.asarray(is_min)
+    # Padding rows carry the out-of-range index n; every other row is an image.
+    raw = np.asarray(batch.edges.indices.indices)
+    real = raw[:, 0] < n
+    assert real.sum() == n * n * images
+    raw = raw[real]
+    shifts = np.rint(np.asarray(batch.edges.shifts[:, 0, :])[real]).astype(int)
+    is_min = np.asarray(batch.is_minimum_image)[real]
 
     edge_set: set[Edge] = set()
     flag_by_pair: dict[tuple[int, int], list[Vec3]] = {}
@@ -537,67 +536,84 @@ class TestReplicatePartialPeriodicity:
 # force, with a boundary guard band (kups masks in float32; the exact
 # under-replication direction is already pinned by layer 3's superset test).
 # ============================================================================ #
-# The neighbor-list matrix (cell) and positions are runtime inputs to the jitted
-# pipeline, so one XLA compile serves every geometry that shares the same static
-# signature (nl class, particle count, buffer capacities, periodicity, and the
-# closed-over cutoff). Caching the jitted callable lets the module-scoped
-# ``clear_cache`` fixture reuse compilations across every test in the file —
-# without it each call rebuilt a fresh ``jax.jit`` wrapper and recompiled.
-_NL_COMPILED: dict = {}
+# Cutoff, cell and positions are runtime inputs to the jitted pipeline, and the
+# capacities depend only on the static path (minimum image or replicated images;
+# single or multiple cells), so geometries sharing a particle count, periodicity
+# and path reuse one compiled program.
+_MAX_BINS = 64
 
 
-def _compiled_nl(nl_cls, n: int, images: int, bins: int, pbc, cutoff: float):
-    key = (nl_cls.__name__, n, images, bins, tuple(pbc), round(float(cutoff), 10))
-    fn = _NL_COMPILED.get(key)
-    if fn is None:
-        edge_cap = FixedCapacity(max(n * images, n))
-        image_cap = FixedCapacity(max(n * images, n))
-        cutoffs = cutoff_table(jnp.array([cutoff]))
-        if nl_cls is CellListNeighborList:
-            nl = CellListNeighborList(
-                avg_candidates=FixedCapacity(n),
-                avg_edges=edge_cap,
-                cells=FixedCapacity(max(bins, 1)),
-                avg_image_candidates=image_cap,
-                cutoffs=cutoffs,
-            )
-        elif nl_cls is AllDenseNearestNeighborList:
-            nl = AllDenseNearestNeighborList(
-                avg_edges=edge_cap, avg_image_candidates=image_cap, cutoffs=cutoffs
-            )
-        else:
-            nl = DenseNearestNeighborList(
-                avg_candidates=FixedCapacity(n),
-                avg_edges=edge_cap,
-                avg_image_candidates=image_cap,
-                cutoffs=cutoffs,
-            )
-        fn = jax.jit(as_result_function(nl))
-        _NL_COMPILED[key] = fn
-    return fn
+type _NeighborListClass = (
+    type[CellListNeighborList]
+    | type[AllDenseNearestNeighborList]
+    | type[DenseNearestNeighborList]
+)
 
 
-def _nl_edges(
-    nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, pbc, n: int
-) -> set[Edge]:
-    """Run a neighbor list and return its ``(i, j, integer-shift)`` edge set."""
-    cell = _make_cell(matrix, pbc)
+def _neighbor_list(
+    nl_cls: _NeighborListClass, n: int, images: int, bins: int, cutoff: float
+) -> NeighborList[Literal[2]]:
+    assert bins <= _MAX_BINS
+    cap = FixedCapacity(n * _image_bucket(images))
+    cutoffs = cutoff_table(jnp.array([cutoff]))
+    if nl_cls is CellListNeighborList:
+        return CellListNeighborList(
+            avg_candidates=FixedCapacity(n),
+            avg_edges=cap,
+            cells=FixedCapacity(1 if bins <= 1 else _MAX_BINS),
+            avg_image_candidates=cap,
+            cutoffs=cutoffs,
+        )
+    if nl_cls is AllDenseNearestNeighborList:
+        return AllDenseNearestNeighborList(
+            avg_edges=cap, avg_image_candidates=cap, cutoffs=cutoffs
+        )
+    return DenseNearestNeighborList(
+        avg_candidates=FixedCapacity(n),
+        avg_edges=cap,
+        avg_image_candidates=cap,
+        cutoffs=cutoffs,
+    )
+
+
+# Particle count every end-to-end case is padded to with inactive particles.
+_PADDED = 6
+
+
+def _nl_edge_list(
+    nl_cls: _NeighborListClass,
+    real: jax.Array,
+    cell: Cell[AnyPeriodicity],
+    cutoff: float,
+    queried: bool = False,
+) -> list[Edge]:
+    """Run a neighbor list and list its ``(i, j, integer-shift)`` edges.
+
+    With ``queried``, every real particle is a queried key.
+    """
+    n = real.shape[0]
     lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
-    systems, _ = make_systems(cell, jnp.array([cutoff]))
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
     images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
     bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
-    result = _compiled_nl(nl_cls, n, images, bins, pbc, cutoff)(
-        keys=lh, systems=systems
-    )
+    lh, systems, _, _ = pad(lh, systems, cutoffs, n_particles=_PADDED, n_systems=1)
+    queried_keys = Index(lh.keys, jnp.arange(n)) if queried else None
+    nl = _neighbor_list(nl_cls, _PADDED, images, bins, cutoff)
+    result = run_nl(nl, lh, systems, queried_keys)
     result.raise_assertion()
     edges = result.value
     raw = np.asarray(edges.indices.indices)
     shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)
     keep = (raw[:, 0] < n) & (raw[:, 1] < n)
-    return {
+    return [
         (int(i), int(j), tuple(int(s) for s in sh))
         for (i, j), sh in zip(raw[keep], shifts[keep])
-    }
+    ]
+
+
+def _nl_edges(nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, pbc) -> set[Edge]:
+    """Run a neighbor list and return its ``(i, j, integer-shift)`` edge set."""
+    return set(_nl_edge_list(nl_cls, real, _make_cell(matrix, pbc), cutoff))
 
 
 def _assert_matches_with_band(
@@ -645,7 +661,7 @@ class TestEndToEndDenseBruteForce:
         cutoff = _cutoff_for(matrix, ratio)
         frac = np.asarray(jax.random.uniform(jax.random.key(seed), (self.n, 3)))
         real = jnp.asarray(frac) @ jnp.asarray(matrix)
-        got = _nl_edges(DenseNearestNeighborList, real, matrix, cutoff, pbc, self.n)
+        got = _nl_edges(DenseNearestNeighborList, real, matrix, cutoff, pbc)
         return frac, cutoff, got
 
     def test_matches_brute_force(self, cell_name, matrix, ratio):
@@ -673,7 +689,7 @@ class TestEndToEndDenseBruteForce:
         frac[0] += np.array([2.0, -1.0, 3.0])  # translate atom 0 by (2,-1,3) cells
         real = jnp.asarray(frac) @ jnp.asarray(matrix)
         got = _nl_edges(
-            DenseNearestNeighborList, real, matrix, cutoff, (True, True, True), self.n
+            DenseNearestNeighborList, real, matrix, cutoff, (True, True, True)
         )
         _assert_matches_with_band(got, frac, matrix, cutoff, (True, True, True))
 
@@ -692,9 +708,7 @@ class TestEndToEndPartialPeriodicity:
         # Keep positions inside the box so open axes are well-defined.
         frac = np.asarray(jax.random.uniform(jax.random.key(5), (self.n, 3)))
         real = jnp.asarray(frac) @ jnp.asarray(self.matrix)
-        got = _nl_edges(
-            DenseNearestNeighborList, real, self.matrix, cutoff, pbc, self.n
-        )
+        got = _nl_edges(DenseNearestNeighborList, real, self.matrix, cutoff, pbc)
         _assert_matches_with_band(got, frac, self.matrix, cutoff, pbc)
 
 
@@ -716,7 +730,7 @@ class TestEndToEndOtherSelectors:
         cutoff = _cutoff_for(matrix, ratio)
         frac = np.asarray(jax.random.uniform(jax.random.key(11), (self.n, 3)))
         real = jnp.asarray(frac) @ jnp.asarray(matrix)
-        got = _nl_edges(nl_cls, real, matrix, cutoff, (True, True, True), self.n)
+        got = _nl_edges(nl_cls, real, matrix, cutoff, (True, True, True))
         _assert_matches_with_band(got, frac, matrix, cutoff, (True, True, True))
 
 
@@ -774,40 +788,34 @@ class TestCellListSingleCellPath:
 # DistanceCutoffMask treats ambiguously anyway), so no image with a distance
 # safely below the cutoff is ever missed.
 # ============================================================================ #
-# Cutoff and positions are runtime inputs to the jitted replication, so one XLA
-# compile per distinct image-count serves every (ratio, separation). Running it
-# under jit also matches production, where ``replicate_for_images`` is jitted.
-_XWINDOW_COMPILED: dict = {}
-
-
-def _x_window_core(images: int):
-    fn = _XWINDOW_COMPILED.get(images)
-    if fn is None:
-        cap = FixedCapacity(images)
-
-        @jax.jit
-        def fn(lh, systems, cutoffs):
-            candidates = Candidates(
-                key_idx=Index(lh.keys, jnp.array([1])),
-                query_idx=Index(lh.keys, jnp.array([0])),
-            )
-            batch = replicate_for_images(candidates, lh, lh, systems, cutoffs, cap)
-            return batch.edges.shifts[:, 0, :]
-
-        _XWINDOW_COMPILED[images] = fn
-    return fn
+# Covers the image count of every box/cutoff ratio below.
+_X_WINDOW_IMAGES = 1000
 
 
 def _x_window(box: float, cutoff: float, sep: float) -> set[int]:
     """Emitted x-axis integer shifts for one pair separated by ``sep`` in x
-    (cubic box, so perp = box). Runs the real float32 ``replicate_for_images``."""
+    (cubic box, so perp = box). Runs the real float32 ``replicate_for_images``
+    under jit, as in production, with one capacity for every ratio."""
     cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
     frac = jnp.array([[0.0, 0.3, 0.7], [sep, 0.3, 0.7]])  # query, key
     lh = make_lh(frac, jnp.zeros(2, dtype=int))
     systems, _ = make_systems(cell, jnp.array([cutoff]))
-    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
-    shifts = _x_window_core(images)(lh, systems, cutoff_table(jnp.array([cutoff])))
-    return {int(s[0]) for s in np.rint(np.asarray(shifts)).astype(int)}
+    images = candidate_image_counts(cell, jnp.array([cutoff])).prod()
+    assert 1 < images <= _X_WINDOW_IMAGES
+    candidates = Candidates(
+        key_idx=Index(lh.keys, jnp.array([1])), query_idx=Index(lh.keys, jnp.array([0]))
+    )
+    batch = replicate(
+        candidates,
+        lh,
+        lh,
+        systems,
+        cutoff_table(jnp.array([cutoff])),
+        FixedCapacity(_X_WINDOW_IMAGES),
+    )
+    real = np.asarray(batch.edges.indices.indices[:, 0]) < 2
+    shifts = np.asarray(batch.edges.shifts[:, 0, :])[real]
+    return {int(s[0]) for s in np.rint(shifts).astype(int)}
 
 
 class TestFloat32AnchorBoundary:
@@ -866,7 +874,7 @@ class TestFloat32AnchorBoundary:
         frac = np.array([[x, 0.13, 0.57] for x in xs])
         real = jnp.asarray(frac) * box
         got = _nl_edges(
-            DenseNearestNeighborList, real, matrix, cutoff, (True, True, True), n
+            DenseNearestNeighborList, real, matrix, cutoff, (True, True, True)
         )
         # Oracle from the float32-rounded positions the pipeline actually saw.
         rf = np.asarray(real, dtype=np.float64) / box
@@ -894,27 +902,8 @@ def _queried_nl_multiset(
     nl_cls, real: jax.Array, matrix: Matrix, cutoff: float, queried: bool
 ):
     """Edge multiset ``Counter[(i, j, shift)]`` of a full or queried-keys run."""
-    n = real.shape[0]
-    cell = _make_cell(matrix)
-    lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
-    systems, _ = make_systems(cell, jnp.array([cutoff]))
-    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
-    bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
-    fn = _compiled_nl(nl_cls, n, images, bins, (True, True, True), cutoff)
-    if queried:
-        result = fn(
-            keys=lh, systems=systems, queried_keys=Index(lh.keys, jnp.arange(n))
-        )
-    else:
-        result = fn(keys=lh, systems=systems)
-    result.raise_assertion()
-    edges = result.value
-    raw = np.asarray(edges.indices.indices)
-    shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)
-    keep = (raw[:, 0] < n) & (raw[:, 1] < n)
     return collections.Counter(
-        (int(i), int(j), tuple(int(s) for s in sh))
-        for (i, j), sh in zip(raw[keep], shifts[keep])
+        _nl_edge_list(nl_cls, real, _make_cell(matrix), cutoff, queried)
     )
 
 

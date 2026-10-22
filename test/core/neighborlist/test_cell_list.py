@@ -3,6 +3,7 @@
 
 """Unit tests for ``kups.core.neighborlist.cell_list`` internals + constructors."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from kups.core.neighborlist.cell_list import (
     cell_hash,
     cell_stencil,
 )
+from kups.core.neighborlist.common import Candidates
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 
 from ._builders import EvalState, cutoff_table, make_lh, make_systems
@@ -175,25 +177,26 @@ class TestCellListSubselect:
             jnp.array([1.0]),
         )
 
-        def run(cutoff: float):
-            return as_result_function(
-                lambda: _cell_list_subselect(
-                    lh,
-                    lh,
-                    systems,
-                    cutoffs=jnp.array([cutoff]),
-                    max_num_cells=FixedCapacity(128),
-                    max_num_candidates=FixedCapacity(64),
-                    promise_unique_cells=True,
-                )
-            )()
+        # The cutoff is a runtime input, so both cases share one program.
+        @jax.jit
+        @as_result_function
+        def run(cutoff: jax.Array) -> Candidates:
+            return _cell_list_subselect(
+                lh,
+                lh,
+                systems,
+                cutoffs=cutoff[None],
+                max_num_cells=FixedCapacity(128),
+                max_num_candidates=FixedCapacity(64),
+                promise_unique_cells=True,
+            )
 
         # 4 A box, cutoff 2.0 -> 2 bins/axis: stencil offsets wrap onto the
         # same cell, so the promise is broken.
         with pytest.raises(AssertionError):
-            run(2.0).raise_assertion()
+            run(jnp.array(2.0)).raise_assertion()
         # cutoff 1.0 -> 4 bins/axis satisfies the promise.
-        run(1.0).raise_assertion()
+        run(jnp.array(1.0)).raise_assertion()
 
 
 class TestFromState:

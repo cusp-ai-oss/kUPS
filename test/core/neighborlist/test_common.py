@@ -22,9 +22,7 @@ from kups.core.neighborlist.common import (
     make_batch_with_mic,
     num_cells,
     real_distance_sq,
-    replicate_for_images,
 )
-from kups.core.result import as_result_function
 from kups.core.typing import SystemId
 
 from ._builders import (
@@ -32,6 +30,7 @@ from ._builders import (
     make_lh,
     make_pipeline_ctx,
     make_systems,
+    replicate,
     systems_from_lvecs,
 )
 
@@ -168,7 +167,7 @@ class TestReplicateForImages:
         candidates, lh, systems = self._one_candidate(
             box=10.0, cutoff=2.0, p0=[0.1, 0.0, 0.0], p1=[0.9, 0.0, 0.0]
         )
-        batch = replicate_for_images(
+        batch = replicate(
             candidates, lh, lh, systems, cutoff_table(jnp.array([2.0])), None
         )
         assert len(batch.edges) == 1
@@ -180,7 +179,7 @@ class TestReplicateForImages:
         candidates, lh, systems = self._one_candidate(
             box=1.0, cutoff=0.8, p0=[0.0, 0.0, 0.0], p1=[0.3, 0.0, 0.0]
         )
-        batch = replicate_for_images(
+        batch = replicate(
             candidates,
             lh,
             lh,
@@ -203,7 +202,7 @@ class TestReplicateForImages:
         candidates, lh, systems = self._one_candidate(
             box=1.0, cutoff=0.8, p0=[0.0, 0.0, 0.0], p1=[0.3, 0.0, 0.0]
         )
-        batch = replicate_for_images(
+        batch = replicate(
             candidates,
             lh,
             lh,
@@ -221,7 +220,7 @@ class TestReplicateForImages:
         candidates, lh, systems = self._one_candidate(
             box=1.0, cutoff=0.8, p0=[0.1, 0.0, 0.0], p1=[0.9, 0.0, 0.0]
         )
-        batch = replicate_for_images(
+        batch = replicate(
             candidates,
             lh,
             lh,
@@ -254,7 +253,7 @@ class TestReplicateForImages:
             key_idx=Index(lh.keys, jnp.array([0, 2])),
             query_idx=Index(lh.keys, jnp.array([1, 3])),
         )
-        batch = replicate_for_images(
+        batch = replicate(
             candidates,
             lh,
             lh,
@@ -286,7 +285,7 @@ class TestReplicateForImages:
             key_idx=Index(lh.keys, jnp.array([0])),
             query_idx=Index(rh.keys, jnp.array([0])),
         )
-        batch = replicate_for_images(
+        batch = replicate(
             candidates, lh, rh, systems, cutoff_table(jnp.array([2.0])), None
         )
         npt.assert_array_equal(np.asarray(batch.edges.shifts), [[[-1.0, 0.0, 0.0]]])
@@ -298,13 +297,8 @@ class TestReplicateForImages:
         candidates, lh, systems = self._one_candidate(
             box=1.0, cutoff=0.8, p0=[0.0, 0.0, 0.0], p1=[0.3, 0.0, 0.0]
         )
-        result = as_result_function(
-            lambda: replicate_for_images(
-                candidates, lh, lh, systems, cutoff_table(jnp.array([0.8])), None
-            )
-        )()
         with pytest.raises(CapacityError):
-            result.raise_assertion()
+            replicate(candidates, lh, lh, systems, cutoff_table(jnp.array([0.8])), None)
 
 
 class TestMakeBatchWithMic:

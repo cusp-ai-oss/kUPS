@@ -21,15 +21,10 @@ import pytest
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
-from kups.core.neighborlist.common import (
-    Candidates,
-    candidate_image_counts,
-    replicate_for_images,
-)
+from kups.core.neighborlist.common import Candidates, candidate_image_counts
 from kups.core.neighborlist.dense import DenseNearestNeighborList
-from kups.core.result import as_result_function
 
-from ._builders import cutoff_table, make_lh, make_systems
+from ._builders import cutoff_table, make_lh, make_systems, replicate, run_nl
 
 # (name, lattice matrix [rows = lattice vectors], cutoff). Cover the orthogonal
 # baseline, strong monoclinic skew, an acute 35-degree cell (where round-based
@@ -76,19 +71,24 @@ def _brute_force(real: jax.Array, matrix: Matrix, cutoff: float) -> EdgeSet:
     return edges
 
 
+# Every cell replicates images; one capacity covering all of them lets the cells
+# share compiled programs (cutoff and geometry are runtime inputs).
+_MAX_IMAGES = 64
+
+
 def _dense_nl_edges(real: jax.Array, matrix: Matrix, cutoff: float, n: int) -> EdgeSet:
     """Run the dense neighbor list and return its ``(i, j, shift)`` edge set."""
     cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(matrix)[None]))
     lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
     systems, _ = make_systems(cell, jnp.array([cutoff]))
-    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
+    assert 1 < candidate_image_counts(cell, jnp.array([cutoff])).prod() <= _MAX_IMAGES
     nl = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(n),
-        avg_edges=FixedCapacity(n * images),
-        avg_image_candidates=FixedCapacity(n * images),
+        avg_edges=FixedCapacity(n * _MAX_IMAGES),
+        avg_image_candidates=FixedCapacity(n * _MAX_IMAGES),
         cutoffs=cutoff_table(jnp.array([cutoff])),
     )
-    result = jax.jit(as_result_function(nl))(keys=lh, systems=systems)
+    result = run_nl(nl, lh, systems)
     result.raise_assertion()
     edges = result.value
     raw = np.asarray(edges.indices.indices)
@@ -124,14 +124,14 @@ def test_minimum_image_flag_is_true_closest(name: str, matrix: Matrix, cutoff: f
         key_idx=Index(lh.keys, jnp.asarray(grid_i.ravel())),
         query_idx=Index(lh.keys, jnp.asarray(grid_j.ravel())),
     )
-    per_pair = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
-    batch = replicate_for_images(
+    assert 1 < candidate_image_counts(cell, jnp.array([cutoff])).prod() <= _MAX_IMAGES
+    batch = replicate(
         candidates,
         lh,
         lh,
         systems,
         cutoff_table(jnp.array([cutoff])),
-        FixedCapacity(n * n * per_pair),
+        FixedCapacity(n * n * _MAX_IMAGES),
     )
 
     raw = np.asarray(batch.edges.indices.indices)
