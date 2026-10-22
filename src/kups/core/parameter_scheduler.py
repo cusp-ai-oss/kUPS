@@ -175,10 +175,13 @@ def acceptance_target_schedule(
         Updated scheduler state with adjusted value and updated history.
     """
     history = current.history
-    n_systems, history_size = history.values.shape
+    history_size = history.values.shape[1]
     idx = history.index
 
-    new_history_values = history.values.at[jnp.arange(n_systems), idx].set(input)
+    # Elementwise, so selects over the result update the history in place.
+    slot = jnp.arange(history_size) == idx[:, None]
+    value = input.astype(history.values.dtype)[:, None]
+    new_history_values = jnp.where(slot, value, history.values)
     new_indices = (idx + 1) % history_size
     avg_acceptance = jnp.mean(new_history_values, axis=-1)
 
