@@ -20,39 +20,46 @@ from kups.core.data import Table
 from kups.core.neighborlist.common import candidate_image_counts, num_cells
 from kups.core.neighborlist.types import NeighborListSystems
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, field, no_jax_tracing, no_post_init
+from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing
 from kups.core.utils.math import next_higher_power
 
 
-@no_jax_tracing
-def _estimate_avg_num_edges(
-    num_particles: int | Array,
-    volume: float | Array,
-    cutoff: float | Array,
-    base: float = 2.0,
-    multiplier: float = 1.0,
-) -> int:
-    """Estimate average number of neighbors per particle for neighbor list allocation.
+@jit
+def _capacity_estimates(
+    systems: NeighborListSystems,
+    num_particles: Array,
+    cutoffs: Array,
+    base: float,
+    multiplier: float,
+) -> tuple[Array, Array, Array, Array]:
+    """Per-particle candidate, image-candidate and edge capacities, and max cells.
 
-    Calculates expected neighbors within cutoff radius based on particle density,
-    with tolerance factor for small systems. Result is rounded up to next power of base.
-
-    Args:
-        num_particles: Total number of particles in the system.
-        volume: Total volume of the simulation box.
-        cutoff: Cutoff radius for neighbor interactions.
-        base: Base for power rounding (default 2.0).
-        multiplier: Multiplied with the estimate to create a buffer (default 1.0).
-
-    Returns:
-        Conservative estimate rounded to next power of base for array allocation.
+    Edges assume a uniform density within each system's cutoff sphere and are
+    rounded up to the next power of ``base`` per system before averaging.
     """
-    # avg_edges ≈ (N/V) * (4π/3 * r³), i.e. uniform-density sphere of radius cutoff
-    avg_particle_density = num_particles / volume
-    cutoff_volume = 4 / 3 * jnp.pi * cutoff**3
-    avg_particles_in_cutoff = cutoff_volume * avg_particle_density
-    estimate = multiplier * avg_particles_in_cutoff
-    return int(next_higher_power(jnp.array(estimate), base=base))
+    n_bins = num_cells(systems, cutoffs).prod(axis=-1)
+    candidates = jnp.minimum(num_particles / n_bins * (3**3), num_particles)
+    # A cutoff reaching past perp/2 replicates each candidate once per
+    # periodic image (product of per-axis image counts). Summing per
+    # system keeps the estimate tight for heterogeneous cutoffs instead
+    # of assuming every system replicates at the maximum rate.
+    images = candidate_image_counts(systems.cell, cutoffs).prod(axis=-1)
+    in_cutoff = 4 / 3 * jnp.pi * cutoffs**3 * num_particles / systems.cell.volume
+    edges = next_higher_power(multiplier * in_cutoff, base=base)
+    n = num_particles.shape[0]
+
+    def next_power(total: Array) -> Array:
+        return next_higher_power(total / n * multiplier, base=base)
+
+    return (
+        next_power(candidates.sum()),
+        # Apply headroom and rounding once, just as for candidates. In the
+        # minimum-image regime both capacities must stay equal; spare image
+        # capacity would select the replication pipeline.
+        next_power((candidates * images).sum()),
+        edges.sum() // n,
+        n_bins.max(),
+    )
 
 
 @dataclass
@@ -104,34 +111,13 @@ class UniversalNeighborlistParameters:
         Returns:
             A ``UniversalNeighborlistParameters`` instance with estimated values.
         """
-
-        def _next_power(total: float | Array) -> int:
-            return int(next_higher_power(jnp.array(total * multiplier), base=base))
-
         sys = Table.join(systems, particles_per_system, cutoffs)
-        total_candidates = total_image_candidates = total_edges = max_cells = 0
-        with no_post_init():
-            for _, (s, n_p, c) in sys:
-                n_bins = num_cells(s, c).prod()
-                candidates = min(n_p / n_bins * (3**3), n_p)
-                # A cutoff reaching past perp/2 replicates each candidate once per
-                # periodic image (product of per-axis image counts). Summing per
-                # system keeps the estimate tight for heterogeneous cutoffs instead
-                # of assuming every system replicates at the maximum rate.
-                images = candidate_image_counts(s.cell, c).prod()
-                total_candidates += candidates
-                # Apply headroom and rounding once, just as for candidates. In
-                # the minimum-image regime both capacities must stay equal;
-                # spare image capacity would select the replication pipeline.
-                total_image_candidates += candidates * images
-                total_edges += _estimate_avg_num_edges(
-                    n_p, s.cell.volume, c, base, multiplier
-                )
-                max_cells = max(n_bins, max_cells)
-
+        candidates, image_candidates, edges, cells = map(
+            int, _capacity_estimates(*sys.data, base, multiplier)
+        )
         return UniversalNeighborlistParameters(
-            avg_edges=int(total_edges // sys.size),
-            avg_candidates=_next_power(total_candidates / sys.size),
-            avg_image_candidates=_next_power(total_image_candidates / sys.size),
-            cells=int(max_cells),
+            avg_edges=edges,
+            avg_candidates=candidates,
+            avg_image_candidates=image_candidates,
+            cells=cells,
         )

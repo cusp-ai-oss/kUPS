@@ -37,7 +37,7 @@ from kups.core.neighborlist.types import (
 )
 from kups.core.patch import Accept, Patch
 from kups.core.typing import ExclusionId, HasCell, InclusionId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, no_jax_tracing, tree_map
+from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing, tree_map
 from kups.core.utils.segment import bincount
 
 AUTO_BLOCK_BATCH_HEADROOM = 1.25
@@ -157,27 +157,26 @@ class CellListCacheParameters:
             Static parameters for the table.
         """
         cutoff = Table.broadcast_to(cutoffs, systems).data
-        bins = num_cells(systems.data, cutoff)
-        images = candidate_image_counts(systems.data.cell, cutoff)
-        max_cells = int(jnp.prod(bins, axis=-1).max())
-        n_cells = systems.size * max_cells
-        cell = cell_rows(particles, systems, bins, max_cells, ()).cell
-        counts = bincount(cell, length=n_cells + 1)[:n_cells]
-        max_occupancy = int(counts.max())
-        stencil_width = int(jnp.prod(jnp.minimum(bins, 3), axis=-1).max())
-        cell_chunk_size = max(32, -(-max_occupancy // 32) * 32)
-        system_active = np.asarray(counts.reshape(systems.size, max_cells).sum(-1))
+        bins, images = _cell_grid(systems.data, cutoff)
+        bins_np, images = np.asarray(bins), np.asarray(images)
+        max_cells = int(bins_np.prod(axis=-1).max())
+        max_occupancy, system_active = _occupancy(
+            particles, systems, bins, max_cells=max_cells
+        )
+        max_occupancy, system_active = int(max_occupancy), np.asarray(system_active)
         active = int(system_active.sum())
+        stencil_width = int(np.minimum(bins_np, 3).prod(axis=-1).max())
+        cell_chunk_size = max(32, -(-max_occupancy // 32) * 32)
         occupancy = active + occupancy_headroom
         slot_chunk_size = max(128, -(-occupancy // 128) * 128)
         max_images = int(images.prod(axis=-1).max())
         # Slot blocks are culled only in the minimum-image regime.
         culled = max_images == 1
         if key_layout == "auto":
-            limits = jnp.where(jnp.asarray(systems.data.cell.periodic), 3, 2)
+            limits = np.where(np.asarray(systems.data.cell.periodic), 3, 2)
             key_layout = (
                 "slots"
-                if bool((bins <= limits).all())
+                if bool((bins_np <= limits).all())
                 and (
                     culled
                     or systems.size == 1
@@ -205,6 +204,26 @@ class CellListCacheParameters:
             max_images_per_pair=max_images,
             key_block_size=key_block_size,
         )
+
+
+@jit
+def _cell_grid(systems: HasCell[AnyPeriodicity], cutoff: Array) -> tuple[Array, Array]:
+    """Per-system bin counts and periodic-image window widths."""
+    return num_cells(systems, cutoff), candidate_image_counts(systems.cell, cutoff)
+
+
+@jit(static_argnames="max_cells")
+def _occupancy(
+    particles: Table[ParticleId, NeighborListPoints],
+    systems: Table[SystemId, HasCell[AnyPeriodicity]],
+    bins: Array,
+    max_cells: int,
+) -> tuple[Array, Array]:
+    """Largest cell occupancy and binned (active) rows per system."""
+    cell = cell_rows(particles, systems, bins, max_cells, ()).cell
+    n_cells = systems.size * max_cells
+    counts = bincount(cell, length=n_cells + 1)[:n_cells]
+    return counts.max(), counts.reshape(systems.size, max_cells).sum(-1)
 
 
 def _estimate_block_batch(
