@@ -49,6 +49,18 @@ class Particles:
         return self.system.to_cls(InclusionId)
 
 
+def fixed_atoms_mask(n_atoms: int, indices: Sequence[int]) -> Array:
+    """Boolean mask over ``n_atoms`` atoms, ``True`` at ``indices`` (ASE ``FixAtoms``).
+
+    Raises:
+        ValueError: If an index is out of range.
+    """
+    for i in indices:
+        if not 0 <= i < n_atoms:
+            raise ValueError(f"fixed atom index {i} out of range for {n_atoms} atoms")
+    return jnp.zeros(n_atoms, dtype=bool).at[jnp.asarray(indices, dtype=int)].set(True)
+
+
 def default_exclusion(n: int) -> Index[ExclusionId]:
     """Build a default per-particle exclusion index (each atom excludes itself).
 

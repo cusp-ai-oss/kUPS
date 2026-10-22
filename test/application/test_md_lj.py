@@ -6,13 +6,24 @@
 import tempfile
 
 import ase.build
+import jax
 import jax.numpy as jnp
+import numpy.testing as npt
 import pytest
 
 from kups.application.md.analysis import analyze_md_file
-from kups.application.md.data import MdParameters, MdRunConfig
+from kups.application.md.data import (
+    MdParameters,
+    MdRunConfig,
+    MdState,
+    md_state_from_ase,
+)
+from kups.application.md.simulation import make_md_propagator
+from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
+from kups.core.lens import bind, identity_lens
+from kups.core.neighborlist import UniversalNeighborlistParameters
 
 
 def _ar_cif(rattle: float = 0.0) -> str:
@@ -57,7 +68,7 @@ def _tmp_h5() -> str:
     return f.name
 
 
-def _config(out_file: str, inp_file: str) -> Config:
+def _config(out_file: str, inp_file: str, integrator: str = "baoab_langevin") -> Config:
     return Config(
         run=MdRunConfig(out_file=out_file, num_steps=5, num_warmup_steps=0, seed=42),
         md=MdParameters(
@@ -69,7 +80,7 @@ def _config(out_file: str, inp_file: str) -> Config:
             pressure_coupling_time=1.0e10,
             compressibility=4.5e-5,
             minimum_scale_factor=1.0,
-            integrator="baoab_langevin",
+            integrator=integrator,  # type: ignore[arg-type]
             initialize_momenta=True,
         ),
         potential=LjPotentialConfig(
@@ -97,3 +108,57 @@ class TestRun:
         assert jnp.isfinite(result.total_energy.mean).all().item()
         assert jnp.isfinite(result.temperature.mean).all().item()
         assert (result.temperature.mean >= 0.0).all().item()
+
+
+class TestFixedAtoms:
+    """Fixed atoms keep position and zero momentum under every integrator."""
+
+    fixed = jnp.arange(8) < 2  # the 2x2x2 primitive fcc-Ar cell has 8 atoms
+
+    @pytest.mark.parametrize(
+        "integrator", ["verlet", "baoab_langevin", "csvr", "csvr_npt"]
+    )
+    def test_fixed_atoms_do_not_move(self, integrator: str) -> None:
+        config = _config(_tmp_h5(), _ar_cif(rattle=0.1), integrator)
+        state_lens = identity_lens(MdState)
+        potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
+        prop = make_md_propagator(
+            state_lens, config.md.integrator, potential, self.fixed
+        )
+        particles, systems = md_state_from_ase(
+            config.inp_files[0], config.md, key=jax.random.key(1)
+        )
+        particles = bind(particles, lambda p: p.data.momenta).set(
+            jnp.where(self.fixed[:, None], 0.0, particles.data.momenta)
+        )
+        nlp = UniversalNeighborlistParameters.estimate(
+            particles.data.system.counts, systems, cutoff, base=2
+        )
+        state = MdState(particles, systems, nlp, jnp.array([0]))
+        stepped = state
+        for i in range(5):
+            stepped = prop(jax.random.key(i), stepped)
+        r0, r1 = state.particles.data.positions, stepped.particles.data.positions
+        npt.assert_array_equal(r1[self.fixed], r0[self.fixed])
+        npt.assert_array_equal(stepped.particles.data.momenta[self.fixed], 0.0)
+        assert not jnp.allclose(r1[~self.fixed], r0[~self.fixed])
+        assert jnp.all(
+            jnp.linalg.norm(stepped.particles.data.momenta[~self.fixed], axis=-1) > 0
+        )
+
+    def test_run_with_fixed_atoms(self) -> None:
+        out = _tmp_h5()
+        run(
+            _config(out, _ar_cif(), "csvr").model_copy(
+                update={"fixed_atoms": ((0, 1),)}
+            )
+        )
+        result = next(iter(analyze_md_file(out, n_blocks=2).values()))
+        assert jnp.isfinite(result.temperature.mean).all().item()
+
+    def test_run_rejects_bad_fixed_atoms(self) -> None:
+        config = _config(_tmp_h5(), _ar_cif())
+        with pytest.raises(ValueError, match="out of range"):
+            run(config.model_copy(update={"fixed_atoms": ((8,),)}))
+        with pytest.raises(ValueError, match="entries"):
+            run(config.model_copy(update={"fixed_atoms": ((0,), (1,))}))

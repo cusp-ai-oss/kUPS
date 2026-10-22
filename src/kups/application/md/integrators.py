@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, overload, override
 
+from jax import Array
+
 from kups.core.cell import Periodic3D, require_periodic_3d_triclinic
 from kups.core.data import Table
-from kups.core.lens import BaseLens, Lens, bind
+from kups.core.lens import BaseLens, Lens, View, bind
 from kups.core.propagator import Propagator
 from kups.core.typing import HasCell, IsState, SystemId
 from kups.core.utils.jax import dataclass, field
@@ -168,6 +170,7 @@ def make_md_step_from_state[State](
     integrator: Integrator,
     *,
     parameters: Any = None,
+    degrees_of_freedom: View[State, Array] | None = None,
 ) -> Propagator[State]: ...
 
 
@@ -177,6 +180,7 @@ def make_md_step_from_state[State](
     integrator: Integrator,
     *,
     parameters: Any = None,
+    degrees_of_freedom: View[State, Array] | None = None,
 ) -> Propagator[State]:
     """Build a single MD integration step from a typed state.
 
@@ -214,6 +218,8 @@ def make_md_step_from_state[State](
         parameters: Constant integrator parameters. When given they are overlaid
             onto the systems view with a constant lens, so the state need not
             carry ``integrator_params`` on each system.
+        degrees_of_freedom: Per-system degrees of freedom for the CSVR
+            thermostats; ``None`` means ``3N - 3``.
 
     Returns:
         [Propagator][kups.core.propagator.Propagator] that advances the
@@ -245,11 +251,19 @@ def make_md_step_from_state[State](
             )
         case "csvr":
             return make_csvr_step(
-                particles_lens, systems_lens, derivative_computation, flow
+                particles_lens,
+                systems_lens,
+                derivative_computation,
+                flow,
+                degrees_of_freedom,
             )
         case "csvr_npt":
             return make_csvr_npt_step(
-                particles_lens, systems_lens, derivative_computation, flow
+                particles_lens,
+                systems_lens,
+                derivative_computation,
+                flow,
+                degrees_of_freedom,
             )
         case "baoab_npt_langevin":
             return make_baoab_npt_langevin_step(

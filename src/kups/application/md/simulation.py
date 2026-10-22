@@ -4,6 +4,7 @@
 import logging
 from typing import Any, Protocol
 
+import jax.numpy as jnp
 from jax import Array
 
 from kups.application.md.data import (
@@ -20,7 +21,7 @@ from kups.application.utils.propagate import (
 )
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
-from kups.core.lens import Lens, lens
+from kups.core.lens import LambdaLens, Lens, View, bind, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.potential import (
     EMPTY,
@@ -86,10 +87,40 @@ def potential_map(
     )
 
 
+def fix_atoms[State: IsMdState](
+    state_lens: Lens[State, State], fixed: Array
+) -> Lens[State, State]:
+    """Hold the masked atoms fixed (ASE ``FixAtoms``) for every write through the lens.
+
+    ``set`` keeps the current positions and momenta of the masked atoms, so no
+    integrator or thermostat step moves them or gives them momentum. Positions
+    are pinned in Cartesian coordinates, so under a barostat fixed atoms do not
+    follow the cell (as with ASE's ``FixAtoms``).
+
+    Args:
+        state_lens: Lens the integrator steps write through.
+        fixed: Boolean mask over the particles, ``True`` to hold fixed.
+    """
+
+    def _set(state: State, /, value: State) -> State:
+        old = state_lens.get(state).particles.data
+        new = value.particles.data
+        value = bind(value, lambda s: s.particles.data.positions).set(
+            jnp.where(fixed[:, None], old.positions, new.positions)
+        )
+        value = bind(value, lambda s: s.particles.data.momenta).set(
+            jnp.where(fixed[:, None], old.momenta, new.momenta)
+        )
+        return state_lens.set(state, value)
+
+    return LambdaLens(state_lens.get, _set)
+
+
 def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     state_lens: Lens[State, State],
     integrator: Integrator,
     potential: Potential[State, Grad, EmptyType, Any],
+    fixed: Array | None = None,
 ) -> Propagator[State]:
     """Build a single MD propagator step with error recovery and step counting.
 
@@ -97,6 +128,9 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         state_lens: Lens focusing on the MD sub-state within the full state.
         integrator: Integration algorithm for equations of motion.
         potential: Potential energy function providing forces and gradients.
+        fixed: Optional boolean mask over the particles; masked atoms keep their
+            positions and momenta, and the CSVR thermostats count only the free
+            atoms' degrees of freedom (``3N_free``, momentum is not conserved).
 
     Returns:
         Propagator that advances the state by one MD step.
@@ -123,8 +157,23 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
             ),
         )
     )
+    step_lens = state_lens
+    degrees_of_freedom: View[State, Array] | None = None
+    if fixed is not None:
+        step_lens = fix_atoms(state_lens, fixed)
+
+        def free_degrees_of_freedom(s: State) -> Array:
+            system = state_lens.get(s).particles.data.system
+            n_fixed = system.sum_over(fixed.astype(int)).data
+            return 3 * (system.counts.data - n_fixed) - 3 * (n_fixed == 0)
+
+        degrees_of_freedom = free_degrees_of_freedom
+
     md_propagator = make_md_step_from_state(
-        state_lens, derivative_computation, integrator
+        step_lens,
+        derivative_computation,
+        integrator,
+        degrees_of_freedom=degrees_of_freedom,
     )
     step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
     propagator = ResetOnErrorPropagator(

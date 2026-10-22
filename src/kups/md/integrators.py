@@ -564,6 +564,8 @@ class CSVRStep[State](Propagator[State]):
 
     particles: Lens[State, Table[ParticleId, IsCSVRParticleData]] = field(static=True)
     systems: View[State, Table[SystemId, IsCSVRParams]] = field(static=True)
+    degrees_of_freedom: View[State, Array] | None = field(static=True, default=None)
+    """Per-system degrees of freedom; ``None`` means ``3N - 3`` (momentum conserved)."""
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply CSVR stochastic velocity rescaling.
@@ -585,8 +587,10 @@ class CSVRStep[State](Propagator[State]):
         # τ: thermostat time constant [time]
         thermostat_timescale = system.data.thermostat_time_constant
         # N_dof: degrees of freedom [dimensionless]
-        # TODO: Update once we have constraints that could limit the degrees of freedom
-        degrees_of_freedom = particles.data.system.counts.data * 3 - 3
+        if self.degrees_of_freedom is None:
+            degrees_of_freedom = particles.data.system.counts.data * 3 - 3
+        else:
+            degrees_of_freedom = self.degrees_of_freedom(state)
 
         # Compute current kinetic energy from particles
         per_particle_ke = particle_kinetic_energy(
@@ -647,6 +651,7 @@ def make_csvr_step[State](
     systems: View[State, Table[SystemId, HasIntegratorParams[IsCSVRParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
+    degrees_of_freedom: View[State, Array] | None = None,
 ) -> SequentialPropagator[State]:
     r"""Create CSVR integrator for canonical (NVT) ensemble sampling.
 
@@ -683,7 +688,7 @@ def make_csvr_step[State](
     params_half_time = pipe(systems, _half_time_params)
     return SequentialPropagator(
         (
-            CSVRStep(particles, params),
+            CSVRStep(particles, params, degrees_of_freedom),
             MomentumStep(particles, params_half_time),
             PositionStep(particles, params, flow),
             derivative_computation,
@@ -885,6 +890,7 @@ def make_csvr_npt_step[State](
     systems: Lens[State, Table[SystemId, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
+    degrees_of_freedom: View[State, Array] | None = None,
 ) -> SequentialPropagator[State]:
     r"""Create NPT integrator for isothermal-isobaric (NPT) ensemble sampling.
 
@@ -933,7 +939,7 @@ def make_csvr_npt_step[State](
     )
     return SequentialPropagator(
         (
-            CSVRStep(particles, params),
+            CSVRStep(particles, params, degrees_of_freedom),
             MomentumStep(particles, params_half),
             PositionStep(particles, params, flow),
             derivative_computation,

@@ -13,6 +13,7 @@ The geometric-view types live in [kups.potential.common.geometry][].
 
 import jax
 import jax.numpy as jnp
+from jax import Array
 
 from kups.core.lens import LambdaLens, Lens, lens
 from kups.potential.common.geometry import (
@@ -87,3 +88,30 @@ its ``base``, so ``q`` is reference-cartesian (ASE ``FrechetCellFilter`` conditi
 any other frame returns the identity, so ``q`` is fractional (ASE ``UnitCellFilter``
 conditioning).
 """
+
+
+def fix_atoms(
+    filt: Lens[Geometry, PositionsAndCell], fixed: Array
+) -> Lens[Geometry, PositionsAndCell]:
+    """Hold the masked atoms fixed under ``filt`` (ASE ``FixAtoms``).
+
+    ``set`` keeps the current DOF row of every masked atom and writes the rest.
+    The potential differentiates through ``set``, so masked atoms get a zero
+    gradient: the optimizer never moves them and ``fmax`` ignores them. Under a
+    cell filter the pinned row is the filter's own coordinate, so a fixed atom
+    rides the cell at constant fractional position; the cell gradient still
+    counts every atom.
+
+    Args:
+        filt: Filter selecting the optimizer DOFs.
+        fixed: Boolean mask over the geometry's particles, ``True`` to hold fixed.
+    """
+
+    def _set(g: Geometry, value: PositionsAndCell) -> Geometry:
+        current = filt.get(g).positions.data
+        pinned = jnp.where(fixed[:, None], current, value.positions.data)
+        return filt.set(
+            g, PositionsAndCell(value.positions.set_data(pinned), value.cell)
+        )
+
+    return LambdaLens(filt.get, _set)
