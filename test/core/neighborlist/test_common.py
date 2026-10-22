@@ -33,6 +33,7 @@ from ._builders import (
     make_systems,
     replicate,
     systems_from_lvecs,
+    valid_ids,
 )
 
 
@@ -299,6 +300,39 @@ class TestReplicateForImages:
         )
         with pytest.raises(CapacityError):
             replicate(candidates, lh, lh, systems, cutoff_table(jnp.array([0.8])), None)
+
+
+class TestReplicateMixedBatch:
+    """A small cell batched with a large one, and padding in the candidates. 16 rows
+    would hold the 9 images, but a buffer as large as the candidates keeps one row
+    per candidate, so the check asks for one row more."""
+
+    def _inputs(self):
+        lvecs = jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 1.0])
+        systems, cutoffs = systems_from_lvecs(lvecs, jnp.array([2.0, 0.8]))
+        positions = jnp.array(
+            [[1.0, 1.0, 1.0], [2.0, 1.0, 1.0], [0.0, 0.0, 0.0], [0.3, 0.0, 0.0]]
+        )
+        lh = make_lh(positions, jnp.array([0, 0, 1, 1]))
+        # two real candidates (1 and 8 images) and 14 padding rows
+        padding = [4] * 14
+        candidates = Candidates(
+            key_idx=Index(lh.keys, jnp.array([0, 2, *padding])),
+            query_idx=Index(lh.keys, jnp.array([1, 3, *padding])),
+        )
+        return candidates, lh, systems, cutoffs
+
+    def test_buffer_as_large_as_the_candidates_fails(self):
+        candidates, lh, systems, cutoffs = self._inputs()
+        with pytest.raises(CapacityError):
+            replicate(candidates, lh, lh, systems, cutoffs, FixedCapacity(16))
+
+    def test_small_cell_keeps_every_image(self):
+        candidates, lh, systems, cutoffs = self._inputs()
+        # one row more than the 16 candidates
+        batch = replicate(candidates, lh, lh, systems, cutoffs, FixedCapacity(17))
+        keys = valid_ids(batch.key_idx)
+        assert (keys == 2).sum() == 8  # 2 images per axis
 
 
 class TestMakeBatchWithMic:
