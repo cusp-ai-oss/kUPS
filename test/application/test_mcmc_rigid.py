@@ -180,6 +180,7 @@ def _build_state() -> MCMCState:
         ),
         EwaldCache(
             structure_factor=KahanSummand.init(jnp.zeros((1, 1, 2))),
+            prefactor=jnp.zeros((1, 1)),
             short_range=KahanSummand.init(
                 PotentialOut(
                     Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
