@@ -54,8 +54,8 @@ from kups.core.potential import (
     empty_patch_idx_view,
     sum_potentials,
 )
-from kups.core.typing import HasCell, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, jit, tree_map
+from kups.core.typing import DTypeLike, HasCell, ParticleId, SystemId
+from kups.core.utils.jax import astype_floating, dataclass, field, jit, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.ops import compact_indices
 from kups.potential.common.energy import (
@@ -202,6 +202,10 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     enables acceptance-conditional updates for local proposals. Full calls
     build a cell table and sum its rows in chunks.
 
+    ``dtype`` is the precision of pair geometry and kernels; energies are
+    summed in the wider of it and the inputs' precision. ``float32`` is much
+    faster on GPUs with slow double precision.
+
     ``max_queries_per_system`` bounds active rows in each old/new local query
     (asserted). It keeps query-pair storage proportional to the batch size.
     Without a bound, the total query count is used conservatively. Rigid MCMC
@@ -214,6 +218,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         static=True, default=None
     )
     max_queries_per_system: int | None = field(static=True, default=None, kw_only=True)
+    dtype: DTypeLike = field(static=True, default=jnp.float64, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.max_queries_per_system is not None and self.max_queries_per_system < 1:
@@ -233,6 +238,11 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             self.layout,
         )
 
+    def _sum_dtype(self, inp: FusedPotentialInput[Params, Part, Feat]) -> jnp.dtype:
+        """Wider of the kernel and input precision, in which energies are summed."""
+        positions = inp.cloud.particles.data.positions
+        return jnp.result_type(self.dtype, positions, *jax.tree.leaves(inp.parameters))
+
     def _energies(
         self,
         inp: FusedPotentialInput[Params, Part, Feat],
@@ -242,13 +252,17 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         mask: View[CandidateBatch[Literal[2]], Array] | None = None,
     ) -> Array:
         """Energies of query ``rows`` against ``keys``, or against each other."""
+        dtype = self._sum_dtype(inp)
+        parameters, systems, rows, keys = astype_floating(
+            (inp.parameters, inp.cloud.systems, rows, keys), self.dtype
+        )
         key_rows = rows if keys is None else keys
         batch, ctx = cell_candidates(
             key_rows,
             None if keys is None else rows,
             index,
-            inp.cloud.systems,
-            self.pair.cutoffs(inp.parameters),
+            systems,
+            self.pair.cutoffs(parameters),
             self.layout.max_images_per_pair,
         )
         multiple_images = self.layout.max_images_per_pair > 1
@@ -261,15 +275,16 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             key, query = cast(
                 tuple[CellRows[Feat], CellRows[Feat]], ctx.endpoints(batch)
             )
-            energies = self.pair.evaluate(inp.parameters, query.data, key.data, pairs)
+            energies = self.pair.evaluate(parameters, query.data, key.data, pairs)
             query_idx = batch.query_idx.update_labels(
                 ctx.edge_query_table.keys, allow_missing=True
             )
-            return query_idx.sum_over(energies).data
+            return query_idx.sum_over(energies.astype(dtype)).data
         pairs = tree_map(lambda x: x.reshape(*index.shape, *x.shape[1:]), pairs)
         left = tree_map(lambda x: x[:, None], rows.data)
         right = tree_map(lambda x: x[index], key_rows.data)
-        return self.pair.evaluate(inp.parameters, left, right, pairs).sum(-1)
+        energies = self.pair.evaluate(parameters, left, right, pairs)
+        return energies.astype(dtype).sum(-1)
 
     def _block_energies(
         self,
@@ -290,6 +305,10 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         is markedly faster on CPU.
         """
         systems = inp.cloud.systems
+        dtype = self._sum_dtype(inp)
+        parameters, rows, keys, matrix = astype_floating(
+            (inp.parameters, rows, keys, matrix), self.dtype
+        )
         key_system, query_system = Index.match(keys.system, rows.system)
         valid = (
             usable
@@ -322,7 +341,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             key_exclusion[None] != query_exclusion[:, None],
         )
         left = jax.tree.map(lambda x: x[:, None], rows.data)
-        return self.pair.evaluate(inp.parameters, left, keys.data, pairs).sum(-1)
+        energies = self.pair.evaluate(parameters, left, keys.data, pairs)
+        return energies.astype(dtype).sum(-1)
 
     def _sum_blocks(
         self,
@@ -456,7 +476,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         cell = systems.data.cell
         cutoff = Table.broadcast_to(self.pair.cutoffs(inp.parameters), systems).data
         # Absorb roundoff between the bounds and the evaluated distances.
-        limit = cutoff * (1 + 1e-9) + 1e-9
+        margin = max(1e-9, 4 * jnp.finfo(self.dtype).eps)
+        limit = cutoff * (1 + margin) + margin
         n = rows.frac.shape[0]
         # A single system broadcasts instead of gathering and segment-summing.
         if systems.size == 1:
@@ -835,11 +856,12 @@ def _gpu_query_chunk_size(layout: CellListCacheParameters, particle_count: int) 
 
 @dataclass
 class FusedPotentialCache[Feat]:
-    """Persistent neighbor table, combined energy, and the layout used to build it."""
+    """Persistent neighbor table, combined energy, layout and kernel precision."""
 
     table: CellListCache[Feat]
     energy: KahanSummand[PotentialOut[EmptyType, EmptyType]]
     layout: CellListCacheParameters = field(static=True)
+    dtype: DTypeLike = field(static=True, default=jnp.float64, kw_only=True)
 
     @staticmethod
     def create[Params, Part: NeighborListPoints, Data](
@@ -847,8 +869,12 @@ class FusedPotentialCache[Feat]:
         parameters: Params,
         cloud: PointCloud[Part, HasCell[AnyPeriodicity]],
         layout: CellListCacheParameters | None = None,
+        dtype: DTypeLike = jnp.float64,
     ) -> FusedPotentialCache[Data]:
-        """Build a shared table and empty energy cache before creating a state."""
+        """Build a shared table and empty energy cache before creating a state.
+
+        ``dtype`` is the kernel precision of the fused evaluator.
+        """
         if layout is None:
             backend = jax.default_backend()
             on_cpu = backend == "cpu"
@@ -872,7 +898,7 @@ class FusedPotentialCache[Feat]:
                 cloud.systems.set_data(jnp.zeros(cloud.systems.size)), EMPTY, EMPTY
             )
         )
-        return FusedPotentialCache(table, energy, layout)
+        return FusedPotentialCache(table, energy, layout, dtype=dtype)
 
 
 def _check_pair_neighborlist(
@@ -979,6 +1005,7 @@ def fuse_pair_potentials[
         initial_cache.layout,
         cache.focus(lambda x: x.table),
         max_queries_per_system=max_queries_per_system,
+        dtype=initial_cache.dtype,
     )
     fused = make_fused_potential(
         engine,

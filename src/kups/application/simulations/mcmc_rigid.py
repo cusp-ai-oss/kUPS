@@ -78,6 +78,7 @@ from kups.core.propagator import (
     propagate_and_fix,
 )
 from kups.core.typing import (
+    DTypeLike,
     GroupId,
     Label,
     MotifParticleId,
@@ -169,6 +170,8 @@ class Config(BaseModel):
     lj: LJConfig
     ewald: EwaldConfig
     compute_stress: bool = False
+    kernel_dtype: Literal["float64", "float32"] = "float64"
+    """Precision of the pair kernels; energies are summed in float64."""
 
 
 @dataclass
@@ -361,6 +364,7 @@ def init_cell_tables(
     systems: Table[SystemId, MCMCSystems],
     lj_parameters: GlobalTailCorrectedLennardJonesParameters,
     ewald_parameters: EwaldParameters,
+    dtype: DTypeLike = jnp.float64,
 ) -> FusedPotentialCache[tuple[Index[Label] | Array, ...]]:
     """Initialize the shared pair cache from the simulation's input data."""
     lj: PairEnergy[
@@ -378,8 +382,11 @@ def init_cell_tables(
             ),
             parameters,
             cloud,
+            dtype=dtype,
         )
-    return FusedPotentialCache.create(PairEnergySum.from_term(lj), parameters, cloud)
+    return FusedPotentialCache.create(
+        PairEnergySum.from_term(lj), parameters, cloud, dtype=dtype
+    )
 
 
 def make_propagator(
@@ -488,7 +495,9 @@ def init_state(key: Array, config: Config) -> MCMCState:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
     logging.info(f"Estimated neighbor list parameters: {neighborlist_params}")
     min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
-    cell_tables = init_cell_tables(particles, motifs, system, lj_params, ewald_params)
+    cell_tables = init_cell_tables(
+        particles, motifs, system, lj_params, ewald_params, config.kernel_dtype
+    )
     return MCMCState(
         particles=particles,
         groups=groups,

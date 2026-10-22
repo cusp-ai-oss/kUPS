@@ -44,6 +44,7 @@ import jax.core
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.typing import DTypeLike
 
 from kups.core.utils.ops import where_broadcast_last
 
@@ -482,6 +483,14 @@ def enable_unrolled_threefry() -> None:
             "random draws fall back to JAX's slower rolled loop.",
             stacklevel=2,
         )
+
+
+def astype_floating[T](tree: T, dtype: DTypeLike) -> T:
+    """Cast the floating-point leaves of ``tree`` to ``dtype``."""
+    return jax.tree.map(
+        lambda x: x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x,
+        tree,
+    )
 
 
 def key_chain(rng: Array, shape: tuple[int, ...] = ()) -> Generator[Array, None, None]:
