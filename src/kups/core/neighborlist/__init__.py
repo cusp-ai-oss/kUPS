@@ -71,6 +71,7 @@ from kups.core.neighborlist.refine import (
     RefineCutoffNeighborList,
     RefineMaskNeighborList,
 )
+from kups.core.neighborlist.rows import NeighborRows, neighbor_rows
 from kups.core.neighborlist.types import (
     CandidateBatch,
     CandidateSelector,
@@ -134,6 +135,7 @@ __all__ = [
     "NeighborListFactory",
     "NeighborListPoints",
     "NeighborListSystems",
+    "NeighborRows",
     "Pipeline",
     "PipelineContext",
     "Postprocessor",
@@ -155,6 +157,7 @@ __all__ = [
     "cell_rows",
     "dense_cost",
     "effective_build_radii",
+    "neighbor_rows",
     "neighborlist_changes",
     "skin_margin",
 ]
