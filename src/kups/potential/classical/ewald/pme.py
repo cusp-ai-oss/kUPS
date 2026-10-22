@@ -21,15 +21,33 @@ from jax import Array
 
 from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Table
-from kups.core.patch import IdPatch, WithPatch
-from kups.core.potential import Energy
+from kups.core.lens import Lens, View, lens
+from kups.core.neighborlist import EmptyNeighborList, NeighborList
+from kups.core.patch import IdPatch, Patch, WithPatch
+from kups.core.potential import EMPTY_LENS, Energy, Potential, PotentialOut
 from kups.core.typing import DTypeLike, HasCell, ParticleId, SystemId
+from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing
 from kups.core.utils.segment import segment_sum
-from kups.potential.common.graph import GraphPotentialInput
+from kups.potential.common.energy import FullSumComposer, PotentialFromEnergy
+from kups.potential.common.graph import (
+    GraphConstructor,
+    GraphInputConstructor,
+    GraphPotentialInput,
+    PointCloud,
+)
 
 from .parameters import IsEwaldPointData, estimate_ewald_parameters
-from .potential import TO_STANDARD_UNITS, _influence
+from .potential import (
+    TO_STANDARD_UNITS,
+    EwaldPotential,
+    _ewald_particle_table,
+    _influence,
+    make_ewald_exclusion_correction_potential,
+    make_ewald_net_charge_potential,
+    make_ewald_self_interaction_potential,
+    make_ewald_short_range_potential,
+)
 
 # a_m of the P3M force error estimate per spline order, Deserno and Holm, J. Chem.
 # Phys. 109, 7694 (1998), for ik differentiation and the optimal influence function
@@ -284,6 +302,105 @@ def pme_long_range_energy(
     influence = _influence(k_squared, alpha, volume)
     energy = jnp.sum(influence * weights * power, axis=(1, 2, 3)) * TO_STANDARD_UNITS
     return WithPatch(systems.set_data(energy.astype(dtype)), IdPatch[Any]())
+
+
+def make_pme_long_range_potential[State, Ptch: Patch[Any], Gradients, Hessians](
+    particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
+    systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
+    parameter_view: View[State, PMEParameters],
+    gradient_lens: Lens[
+        PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients
+    ] = EMPTY_LENS,
+    hessian_lens: Lens[Gradients, Hessians] = EMPTY_LENS,
+    hessian_idx_view: View[State, Hessians] = EMPTY_LENS,
+    patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
+) -> Potential[State, Gradients, Hessians, Ptch]:
+    """Create the PME reciprocal-space potential; it evaluates whole systems.
+
+    Args:
+        particles_view: View of the particle table.
+        systems_view: View of the system table and periodic cells.
+        parameter_view: View of PME parameters.
+        gradient_lens: Lens selecting point-cloud variables to differentiate.
+        hessian_lens: Lens selecting gradient entries to differentiate again.
+        hessian_idx_view: View supplying Hessian row and column indices.
+        patch_idx_view: Optional view supplying indices for output-cache updates.
+
+    Returns:
+        Reciprocal potential without probe or cache.
+    """
+    graph = GraphConstructor(
+        particles=particles_view,
+        systems=systems_view,
+        neighborlist=lambda _: EmptyNeighborList[Literal[0]](),
+        probe=None,
+    )
+    return PotentialFromEnergy(
+        energy_fn=pme_long_range_energy,
+        composer=FullSumComposer(GraphInputConstructor(graph, parameter_view)),
+        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+        hessian_lens=hessian_lens,
+        hessian_idx_view=hessian_idx_view,
+        cache_lens=None,
+        patch_idx_view=patch_idx_view,
+    )
+
+
+def make_pme_potential[State, Ptch: Patch[Any], Gradients, Hessians](
+    particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
+    systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
+    neighborlist_view: View[State, NeighborList[Literal[2]]],
+    parameter_view: View[State, PMEParameters],
+    gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
+    hessian_lens: Lens[Gradients, Hessians],
+    hessian_idx_view: View[State, Hessians],
+    patch_idx_view: View[State, PotentialOut[Gradients, Hessians]] | None = None,
+    include_exclusion_mask: bool = False,
+) -> EwaldPotential[State, Gradients, Hessians, Ptch]:
+    """Combine the Ewald real-space, self and background terms with the PME term.
+
+    Args:
+        particles_view: View of particles with charges and inclusion/exclusion groups.
+        systems_view: View of the system table and periodic cells.
+        neighborlist_view: View of the real-space pair neighbor list.
+        parameter_view: View of PME parameters.
+        gradient_lens: Lens selecting point-cloud variables to differentiate.
+        hessian_lens: Lens selecting gradient entries to differentiate again.
+        hessian_idx_view: View supplying Hessian row and column indices.
+        patch_idx_view: Optional view supplying indices for output-cache updates.
+        include_exclusion_mask: Whether to subtract molecular-exclusion pair energies.
+
+    Returns:
+        Potential with the components of ``make_ewald_potential``: four, or five
+        with exclusions.
+    """
+    atomic_view = pipe(particles_view, _ewald_particle_table)
+    derivatives = (gradient_lens, hessian_lens, hessian_idx_view, patch_idx_view)
+    components = (
+        make_ewald_short_range_potential(
+            atomic_view,
+            systems_view,
+            neighborlist_view,
+            parameter_view,
+            None,
+            *derivatives,
+        ),
+        make_pme_long_range_potential(
+            atomic_view, systems_view, parameter_view, *derivatives
+        ),
+        make_ewald_self_interaction_potential(
+            atomic_view, systems_view, parameter_view, *derivatives
+        ),
+        make_ewald_net_charge_potential(
+            atomic_view, systems_view, parameter_view, *derivatives
+        ),
+    )
+    if include_exclusion_mask:
+        exclusions = make_ewald_exclusion_correction_potential(
+            particles_view, systems_view, None, *derivatives
+        )
+        components = (*components, exclusions)
+    return EwaldPotential(components)
 
 
 def _bspline_weights(frac: Array, order: int) -> Array:

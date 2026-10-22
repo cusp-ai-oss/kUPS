@@ -12,7 +12,7 @@ neighbor lists.
 
 - **[Lennard-Jones][kups.potential.classical.lennard_jones]**: Van der Waals interactions with optional tail corrections
 - **[Coulomb][kups.potential.classical.coulomb]**: Electrostatic interactions
-- **[Ewald][kups.potential.classical.ewald]**: Long-range electrostatics via Ewald summation
+- **[Ewald][kups.potential.classical.ewald]**: Long-range electrostatics, direct or particle-mesh reciprocal sum
 - **[Harmonic][kups.potential.classical.harmonic]**: Bonded interactions (bonds, angles)
 - **[Cosine Angle][kups.potential.classical.cosine_angle]**: UFF-style cosine angle bending
 - **[Morse][kups.potential.classical.morse]**: Anharmonic bond stretching with proper dissociation
@@ -29,7 +29,13 @@ from .cosine_angle import (
     make_cosine_angle_potential,
 )
 from .dihedral import DihedralParameters, make_dihedral_potential
-from .ewald import EwaldParameters, ewald_short_range_pair, make_ewald_potential
+from .ewald import (
+    EwaldParameters,
+    PMEParameters,
+    ewald_short_range_pair,
+    make_ewald_potential,
+    make_pme_potential,
+)
 from .harmonic import (
     HarmonicAngleParameters,
     HarmonicBondParameters,
@@ -56,6 +62,7 @@ __all__ = [
     "make_cosine_angle_potential",
     "make_dihedral_potential",
     "make_ewald_potential",
+    "make_pme_potential",
     "ewald_short_range_pair",
     "lennard_jones_pair",
     "make_harmonic_angle_potential",
@@ -69,6 +76,7 @@ __all__ = [
     "cosine_angle_energy",
     "DihedralParameters",
     "EwaldParameters",
+    "PMEParameters",
     "HarmonicAngleParameters",
     "HarmonicBondParameters",
     "InversionParameters",
