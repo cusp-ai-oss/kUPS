@@ -1221,7 +1221,15 @@ class TestFusedPairIntegration:
         )
         state = initial = init_state(jax.random.key(71), config)
         initialize, cycle = make_propagator(state, config.run)
-        reference = jax.jit(_make_potential(state))
+        # The unfused reference grows its own neighbor lists as molecules move.
+        unfused = jax.jit(
+            as_result_function(PotentialAsPropagator(_make_potential(state)))
+        )
+
+        def reference(state: MCMCState) -> jax.Array:
+            state = propagate_and_fix(unfused, jax.random.key(70), state)
+            return state.systems.data.potential_energy.total
+
         cycle_step = jax.jit(as_result_function(cycle))
 
         state = propagate_and_fix(
@@ -1230,14 +1238,14 @@ class TestFusedPairIntegration:
         for key in jax.random.split(jax.random.key(73), 3):
             npt.assert_allclose(
                 state.systems.data.potential_energy.total,
-                reference(state).data.total_energies.data,
+                reference(state),
                 rtol=1e-9,
                 atol=1e-10,
             )
             state = propagate_and_fix(cycle_step, key, state)
         npt.assert_allclose(
             state.systems.data.potential_energy.total,
-            reference(state).data.total_energies.data,
+            reference(state),
             rtol=1e-9,
             atol=1e-10,
         )
