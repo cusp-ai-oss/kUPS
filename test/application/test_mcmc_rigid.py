@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
-import tempfile
 from dataclasses import replace
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -16,19 +14,12 @@ from kups.application.mcmc import (
     MCMCParticles,
     MCMCSystems,
 )
-from kups.application.mcmc.analysis import analyze_mcmc_file
 from kups.application.mcmc.data import (
-    AdsorbateConfig,
     BlockingSphereConfig,
-    HostConfig,
     MotifParticles,
     RunConfig,
 )
-from kups.application.mcmc.logging import (
-    MCMCLoggedData,
-    MCMCStepData,
-    make_mcmc_logged_data,
-)
+from kups.application.mcmc.logging import make_mcmc_logged_data
 from kups.application.mcmc.rigid_body_composition import make_rigid_body_composition
 from kups.application.potential.classical.blocking import (
     make_blocking_spheres_from_state,
@@ -40,8 +31,6 @@ from kups.application.potential.classical.lennard_jones import (
 )
 from kups.application.simulations.mcmc_rigid import (
     Config,
-    EwaldConfig,
-    LJConfig,
     MCMCState,
     MCMCStateUpdate,
     _make_potential,
@@ -50,7 +39,6 @@ from kups.application.simulations.mcmc_rigid import (
     init_state,
     make_guest_stress,
     make_propagator,
-    run,
 )
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Table, WithCache, WithIndices
@@ -71,7 +59,6 @@ from kups.core.potential import (
     ScaledPotential,
     sum_potentials,
 )
-from kups.core.storage import HDF5StorageReader
 from kups.core.typing import (
     GroupId,
     Label,
@@ -103,6 +90,15 @@ from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
 )
 from kups.potential.common.graph import POINTCLOUD_GEOMETRY, PointCloud
+
+from ._rigid_configs import (
+    BOX,
+    EMPTY_CIF,
+    batched_co2_config,
+    co2,
+    co2_config,
+    tmp_file,
+)
 
 L = 15.0  # box side (Ang)
 N_MAX = 3  # max molecules (2 real + 1 empty slot for exchange)
@@ -483,106 +479,9 @@ class TestMakeGuestStress:
         npt.assert_array_equal(off.tail_correction, jnp.zeros_like(off.tail_correction))
 
 
-# --- End-to-end smoke tests for the rigid-body MCMC entry point ---
-
-_BOX = 14.0  # box side (Å); cutoff 5.0 < box/2 for minimum image
-
-# Hand-written empty-box CIF with one pseudo "X" host atom (no LJ params),
-# i.e. CO2 adsorbing into vacuum; small enough to compile fast.
-_EMPTY_CIF = f"""data_cell
-_cell_length_a    {_BOX}
-_cell_length_b    {_BOX}
-_cell_length_c    {_BOX}
-_cell_angle_alpha 90.0
-_cell_angle_beta  90.0
-_cell_angle_gamma 90.0
-_symmetry_space_group_name_H-M 'P 1'
-_symmetry_Int_Tables_number 1
-loop_
-_atom_site_label
-_atom_site_type_symbol
-_atom_site_fract_x
-_atom_site_fract_y
-_atom_site_fract_z
-X1 X 0.0 0.0 0.0
-"""
-
-
-def _tmp_file(suffix: str, content: str | None = None) -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode="w")
-    if content is not None:
-        f.write(content)
-    f.close()
-    return f.name
-
-
-def _co2() -> AdsorbateConfig:
-    # Three-site charged CO2 (TraPPE): exercises Ewald + rigid rotation.
-    return AdsorbateConfig(
-        critical_temperature=303.75,
-        critical_pressure=7.84e6,
-        acentric_factor=0.22394,
-        positions=((0.0, 0.0, 0.0), (-1.16, 0.0, 0.0), (1.16, 0.0, 0.0)),
-        symbols=("C_co2", "O_co2", "O_co2"),
-        charges=(0.7, -0.35, -0.35),
-    )
-
-
-def _config(*, exchange_prob: float, init_adsorbates: tuple[int, ...]) -> Config:
-    return Config(
-        adsorbates=(_co2(),),
-        hosts=(
-            HostConfig(
-                cif_file=_tmp_file(".cif", _EMPTY_CIF),
-                pressure=1e4,
-                temperature=298.15,
-                init_adsorbates=init_adsorbates,
-                cell_replication=1,
-            ),
-        ),
-        run=RunConfig(
-            out_file=_tmp_file(".h5"),
-            num_cycles=2,
-            num_warmup_cycles=0,
-            min_cycle_length=1,
-            exchange_prob=exchange_prob,
-            seed=42,
-        ),
-        lj=LJConfig(
-            cutoff=5.0,
-            tail_correction=True,
-            mixing_rule="lorentz_berthelot",
-            # (sigma [Å], epsilon [eV]); X1 is the host pseudo-type (no LJ).
-            parameters={
-                "O_co2": (3.05, 0.0068077),
-                "C_co2": (2.8, 0.0023267),
-                "X1": (None, None),
-            },
-        ),
-        ewald=EwaldConfig(real_cutoff=5.0, precision=1e-3),
-        max_num_adsorbates=4,
-    )
-
-
-def _assert_readable(out_file: str) -> None:
-    results = analyze_mcmc_file(out_file, n_blocks=2)
-    assert len(results) == 1
-    result = next(iter(results.values()))
-    assert jnp.isfinite(result.energy.mean).all().item()
-    assert jnp.isfinite(result.loading.mean).all().item()
-    assert (result.loading.mean >= 0.0).all().item()
-
-
-def _batched_config(n_hosts: int, init_adsorbates: tuple[int, ...]) -> Config:
-    """A multi-host (batched) CO2 config; each host is an independent system."""
-    base = _config(exchange_prob=0.5, init_adsorbates=init_adsorbates)
-    host = base.hosts[0]
-    return base.model_copy(update={"hosts": tuple(host for _ in range(n_hosts))})
-
-
 class TestRequiredLJTypes:
     def test_keeps_empty_guest_templates_and_drops_unused_types(self):
-        config = _config(exchange_prob=0.5, init_adsorbates=(0,))
+        config = co2_config(exchange_prob=0.5, init_adsorbates=(0,))
         config = config.model_copy(
             update={
                 "lj": config.lj.model_copy(
@@ -609,7 +508,7 @@ class TestRequiredLJTypes:
             npt.assert_array_equal(actual, full[indices[:, None], indices])
 
     def test_missing_guest_parameters_fail_at_initialization(self):
-        config = _config(exchange_prob=0.5, init_adsorbates=(0,))
+        config = co2_config(exchange_prob=0.5, init_adsorbates=(0,))
         config = config.model_copy(
             update={
                 "lj": config.lj.model_copy(
@@ -627,11 +526,16 @@ class TestRequiredLJTypes:
             init_state(jax.random.key(92), config)
 
 
+type _Corrections = tuple[
+    tuple[jax.stages.Wrapped, ...], tuple[jax.stages.Wrapped, ...]
+]
+
+
 class TestRigidCorrections:
     @pytest.fixture(scope="class")
     def mixture(self) -> MCMCState:
-        config = _batched_config(2, (1, 2))
-        second = _co2().model_copy(
+        config = batched_co2_config(2, (1, 2))
+        second = co2().model_copy(
             update={
                 "symbols": ("C_alt", "O_alt", "O_alt"),
                 "charges": (0.5, -0.2, -0.2),
@@ -639,7 +543,7 @@ class TestRigidCorrections:
         )
         config = config.model_copy(
             update={
-                "adsorbates": (_co2(), second),
+                "adsorbates": (co2(), second),
                 "hosts": tuple(
                     host.model_copy(
                         update={
@@ -676,13 +580,14 @@ class TestRigidCorrections:
             lambda q: jnp.where(host, 0.3, q)
         )
 
-    @staticmethod
-    def _potentials(state: MCMCState):
+    @pytest.fixture(scope="class")
+    def potentials(self, mixture: MCMCState) -> _Corrections:
+        """Jitted rigid-prepared corrections and their generic references."""
         sl = identity_lens(MCMCState)
         composition = make_rigid_body_composition(
-            state,
-            PointCloud(state.particles, state.systems),
-            state.motifs,
+            mixture,
+            PointCloud(mixture.particles, mixture.systems),
+            mixture.motifs,
             sl.focus(lambda s: s.groups),
         )
         prepared_ewald = make_ewald_from_state(
@@ -793,9 +698,9 @@ class TestRigidCorrections:
 
     @pytest.mark.parametrize("move", ["translation", "rotation", "reinsertion"])
     def test_rigid_moves_leave_corrections_unchanged(
-        self, mixture: MCMCState, move: str
+        self, mixture: MCMCState, potentials: _Corrections, move: str
     ):
-        actual, reference = self._potentials(mixture)
+        actual, reference = potentials
         args = (jax.random.key(94), mixture.particles, mixture.groups, mixture.systems)
         if move == "reinsertion":
             changes = propose_reinsertion(*args, mixture.move_capacity)
@@ -818,8 +723,10 @@ class TestRigidCorrections:
                 proposed, full(moved).data.total_energies.data, rtol=1e-12, atol=1e-12
             )
 
-    def test_exchange_and_rejection_match_full_recomputation(self, mixture: MCMCState):
-        actual, reference = self._potentials(mixture)
+    def test_exchange_and_rejection_match_full_recomputation(
+        self, mixture: MCMCState, potentials: _Corrections
+    ):
+        actual, reference = potentials
         state = mixture
         for candidate in actual:
             state = PotentialAsPropagator(candidate)(jax.random.key(96), state)
@@ -953,8 +860,8 @@ class TestRigidCorrections:
         )
 
     def test_large_template_retains_geometric_periodic_exclusions(self) -> None:
-        config = _config(exchange_prob=0.5, init_adsorbates=(1,))
-        template = _co2().model_copy(
+        config = co2_config(exchange_prob=0.5, init_adsorbates=(1,))
+        template = co2().model_copy(
             update={"positions": ((0.0, 0.0, 0.0), (-5.0, 0.0, 0.0), (5.0, 0.0, 0.0))}
         )
         config = config.model_copy(update={"adsorbates": (template,)})
@@ -985,8 +892,9 @@ class TestRigidCorrections:
             .at(rows)
             .set((positions - 7.0) @ rotation + 7.0)
         )
-        old_exclusion = ewald.exclusion_correction(state).data.total_energies.data
-        new_exclusion = ewald.exclusion_correction(rotated).data.total_energies.data
+        exclusion = jax.jit(ewald.exclusion_correction)
+        old_exclusion = exclusion(state).data.total_energies.data
+        new_exclusion = exclusion(rotated).data.total_energies.data
         assert float(jnp.abs(new_exclusion - old_exclusion).max()) > 0.1
         for configuration in (state, rotated):
             npt.assert_allclose(
@@ -1003,7 +911,7 @@ class TestInitStateBlockingSpheres:
     @staticmethod
     def _mixed_batch() -> Config:
         """Two-host config where only the first host defines a blocking sphere."""
-        base = _batched_config(2, init_adsorbates=(1,))
+        base = batched_co2_config(2, init_adsorbates=(1,))
         blocked = base.hosts[0].model_copy(
             update={
                 "blocking_spheres": (
@@ -1023,7 +931,9 @@ class TestInitStateBlockingSpheres:
         assert params.avg_candidates > 0 and params.cells > 0
 
     def test_no_spheres_leaves_capacities_empty(self):
-        state = init_state(jax.random.key(0), _batched_config(2, init_adsorbates=(1,)))
+        state = init_state(
+            jax.random.key(0), batched_co2_config(2, init_adsorbates=(1,))
+        )
         assert not state.has_blocking_spheres
         assert state.blocking_spheres_neighborlist_params == (
             UniversalNeighborlistParameters(0, 0, 0, 0)
@@ -1040,25 +950,36 @@ class TestExchangeEnergyConsistency:
     Checked here for a deletion on a batched (multi-system) charged system.
     """
 
-    @staticmethod
-    def _full_potential():
+    @pytest.fixture(scope="class")
+    def primed(self) -> tuple[MCMCState, jax.stages.Wrapped]:
+        """A batched charged state with caches populated by a full evaluation."""
         sl = identity_lens(MCMCState)
-        return sum_potentials(
-            make_lennard_jones_from_state(sl, _probe),
-            make_lennard_jones_tail_correction_from_state(sl),
-            make_ewald_from_state(sl, _probe, include_exclusion_mask=True),
+        pot = jax.jit(
+            sum_potentials(
+                make_lennard_jones_from_state(sl, _probe),
+                make_lennard_jones_tail_correction_from_state(sl),
+                make_ewald_from_state(sl, _probe, include_exclusion_mask=True),
+            )
         )
+        state = init_state(
+            jax.random.key(0), batched_co2_config(4, init_adsorbates=(2,))
+        )
+        return jax.jit(PotentialAsPropagator(pot))(jax.random.key(1), state), pot
 
-    def test_batched_deletion_matches_full(self):
-        config = _batched_config(n_hosts=4, init_adsorbates=(2,))
-        state = init_state(jax.random.key(0), config)
-        pot = jax.jit(self._full_potential())
+    @staticmethod
+    def _apply(
+        state: MCMCState, pot: jax.stages.Wrapped, proposal: ExchangeChanges
+    ) -> tuple[MCMCState, jax.Array]:
+        """Accept ``proposal`` everywhere; return the new state and its incremental energy."""
+        update = jax.jit(MCMCStateUpdate.from_changes)(
+            jax.random.key(3), state, proposal
+        )
+        out = pot(state, patch=update)
+        accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
+        return out.patch(update(state, accept), accept), out.data.total_energies.data
 
-        # Populate caches with a full evaluation.
-        prop = jax.jit(PotentialAsPropagator(pot))
-        state = prop(jax.random.key(1), state)
-
-        # Force a deletion of one molecule per system via the real move machinery.
+    def test_batched_deletion_matches_full(self, primed):
+        state, pot = primed
         proposal = jax.jit(delete_random_motif)(
             jax.random.key(2),
             state.motifs,
@@ -1066,31 +987,13 @@ class TestExchangeEnergyConsistency:
             state.groups,
             state.move_capacity,
         )
-        update = jax.jit(MCMCStateUpdate.from_changes)(
-            jax.random.key(3), state, proposal
-        )
-
-        # Energy the propagator would use to accept/reject (incremental).
-        out = pot(state, patch=update)
-        e_incr = out.data.total_energies.data
-
-        # Apply the deletion and recompute the energy from scratch.
-        accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
-        new_state = out.patch(update(state, accept), accept)
+        new_state, e_incr = self._apply(state, pot, proposal)
         n_after = new_state.groups.data.system.counts.data
         assert int(n_after.max()) < 2, "deletion did not reduce molecule count"
-        e_full = pot(new_state).data.total_energies.data
-        npt.assert_allclose(e_incr, e_full, atol=1e-3)
+        npt.assert_allclose(e_incr, pot(new_state).data.total_energies.data, atol=1e-3)
 
-    def test_batched_insertion_matches_full(self):
-        config = _batched_config(n_hosts=4, init_adsorbates=(2,))
-        state = init_state(jax.random.key(0), config)
-        pot = jax.jit(self._full_potential())
-
-        # Populate caches with a full evaluation.
-        state = PotentialAsPropagator(pot)(jax.random.key(1), state)
-
-        # Force an insertion of one molecule per system via the real move machinery.
+    def test_batched_insertion_matches_full(self, primed):
+        state, pot = primed
         proposal = jax.jit(insert_random_motif)(
             jax.random.key(2),
             state.motifs,
@@ -1099,21 +1002,12 @@ class TestExchangeEnergyConsistency:
             state.systems.map_data(lambda s: s.cell),
             state.move_capacity,
         )
-        update = jax.jit(MCMCStateUpdate.from_changes)(
-            jax.random.key(3), state, proposal
-        )
-
-        # Energy the propagator would use to accept/reject (incremental).
-        out = pot(state, patch=update)
-        e_incr = out.data.total_energies.data
-
-        # Apply the insertion and recompute the energy from scratch.
-        accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
-        new_state = out.patch(update(state, accept), accept)
+        new_state, e_incr = self._apply(state, pot, proposal)
         n_after = new_state.groups.data.system.counts.data
         assert int(n_after.max()) > 2, "insertion did not add a molecule"
-        e_full = pot(new_state).data.total_energies.data
-        npt.assert_allclose(e_incr, e_full, rtol=1e-5, atol=1e-3)
+        npt.assert_allclose(
+            e_incr, pot(new_state).data.total_energies.data, rtol=1e-5, atol=1e-3
+        )
 
 
 def test_reinsertion_onto_colliding_particle_matches_full(state: MCMCState):
@@ -1197,121 +1091,12 @@ class TestBlockingSpheresPatch:
         assert jnp.isinf(pot(blocked, movement_update_pid0).data.total_energies.data[0])
 
 
-class TestRunNVT:
-    """Canonical (fixed-N) MCMC: exchange disabled, host pre-loaded."""
-
-    init_adsorbates = (2,)
-
-    @pytest.fixture(scope="class")
-    def run_result(self) -> tuple[MCMCState, str]:
-        config = _config(exchange_prob=0.0, init_adsorbates=self.init_adsorbates)
-        return run(config), str(config.run.out_file)
-
-    def test_loading_is_conserved(self, run_result):
-        state, _ = run_result
-        # exchange_prob=0 keeps the molecule count fixed at the initial loading.
-        counts = state.groups.data.system.counts.data
-        npt.assert_array_equal(counts, self.init_adsorbates)
-
-    def test_analyzer_reads_back_physical_outputs(self, run_result):
-        _, out_file = run_result
-        _assert_readable(out_file)
-
-    def test_no_free_slots_without_insertions(self, run_result):
-        state, _ = run_result
-        # Without exchange moves no molecule can be inserted: buffers hold
-        # exactly the initial molecules.
-        assert len(state.groups) == sum(self.init_adsorbates)
-        assert len(state.particles) == int(state.particles.occupation.sum())
-
-    def test_empty_host_keeps_one_slot_and_runs(self):
-        # At zero pressure the reservoir estimate is 0; one slot is still kept.
-        base = _config(exchange_prob=0.0, init_adsorbates=(0,))
-        host = base.hosts[0].model_copy(update={"pressure": 0.0})
-        config = base.model_copy(update={"hosts": (host,)})
-        state = init_state(jax.random.key(7), config)
-        assert len(state.groups) == 1
-        assert int(state.groups.occupation.sum()) == 0
-        final = run(config)
-        assert int(final.groups.data.system.counts.data[0]) == 0
-
-    @pytest.mark.parametrize(
-        ("exchange_prob", "loadings", "free_groups"),
-        [(0.0, (0, 2), 0), (0.0, (0, 0), 1), (0.5, (0, 2), None)],
-    )
-    def test_batched_free_slots(self, exchange_prob, loadings, free_groups):
-        base = _config(exchange_prob=exchange_prob, init_adsorbates=(0,))
-        hosts = tuple(
-            base.hosts[0].model_copy(update={"init_adsorbates": (n,)}) for n in loadings
-        )
-        state = init_state(jax.random.key(7), base.model_copy(update={"hosts": hosts}))
-        npt.assert_array_equal(state.groups.data.system.counts.data, loadings)
-        free = len(state.groups) - int(state.groups.occupation.sum())
-        free_particles = len(state.particles) - int(state.particles.occupation.sum())
-        if free_groups is None:
-            assert free > 0
-        else:
-            assert free == free_groups
-        # Each free molecule slot carries one CO2 worth of particle slots.
-        assert free_particles == 3 * free
-
-
-class TestRunGCMC:
-    """Grand-canonical (µVT) MCMC with insertions/deletions and initial loading."""
-
-    @pytest.fixture(scope="class")
-    def run_result(self) -> tuple[MCMCState, str]:
-        config = _config(exchange_prob=0.5, init_adsorbates=(2,))
-        return run(config), str(config.run.out_file)
-
-    def test_state_has_finite_energy(self, run_result):
-        state, _ = run_result
-        assert jnp.isfinite(state.systems.data.potential_energy.total[0]).item()
-
-    def test_analyzer_reads_back_physical_outputs(self, run_result):
-        _, out_file = run_result
-        _assert_readable(out_file)
-
-
-@pytest.mark.parametrize("compute_stress", [False, True])
-def test_blocked_gcmc_preserves_every_saved_frame(
-    tmp_path: Path, compute_stress: bool
-) -> None:
-    config = _config(exchange_prob=0.5, init_adsorbates=(2,))
-    config = config.model_copy(update={"compute_stress": compute_stress})
-    frames: list[MCMCStepData] = []
-    for block_size in (1, 4):
-        output = tmp_path / f"cycles-{block_size}.h5"
-        blocked = config.model_copy(
-            update={
-                "run": config.run.model_copy(
-                    update={
-                        "out_file": output,
-                        "num_warmup_cycles": 3,
-                        "num_cycles": 11,
-                        "cycles_per_call": block_size,
-                    }
-                )
-            }
-        )
-        run(blocked)
-        with HDF5StorageReader[MCMCLoggedData[MCMCStepData]](output) as reader:
-            sample = reader.focus_group(lambda cfg: cfg.per_step)[:]
-            assert sample.systems.data.potential_energy.shape[0] == 11
-            assert reader.file.attrs["actual_steps"] == 11
-            frames.append(sample)
-    for expected, actual in zip(
-        jax.tree.leaves(frames[0]), jax.tree.leaves(frames[1]), strict=True
-    ):
-        npt.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
-
-
 class TestFusedPairIntegration:
     def test_empty_and_occupied_systems_match_without_noop_guard(self):
         from kups.core.propagator import propagate_and_fix
         from kups.core.result import as_result_function
 
-        config = _batched_config(n_hosts=2, init_adsorbates=(1,))
+        config = batched_co2_config(n_hosts=2, init_adsorbates=(2,))
         config = config.model_copy(
             update={
                 "hosts": (
@@ -1335,13 +1120,21 @@ class TestFusedPairIntegration:
         state = propagate_and_fix(
             jax.jit(as_result_function(initializer)), jax.random.key(82), state
         )
-        npt.assert_array_equal(state.groups.data.system.counts.data, [0, 1])
+        npt.assert_array_equal(state.groups.data.system.counts.data, [0, 2])
         reference = candidate = state
         baseline_step = jax.jit(as_result_function(baseline))
         guarded_step = jax.jit(as_result_function(guarded))
+        full_energy = jax.jit(_make_potential(state))
         for key in jax.random.split(jax.random.key(83), 8):
             reference = propagate_and_fix(baseline_step, key, reference)
             candidate = propagate_and_fix(guarded_step, key, candidate)
+            # Also the charged, single-image (5 Å) case of the cycle checks below.
+            npt.assert_allclose(
+                candidate.systems.data.potential_energy.total,
+                full_energy(candidate).data.total_energies.data,
+                rtol=1e-9,
+                atol=1e-10,
+            )
             for (path, a), b in zip(
                 jax.tree_util.tree_leaves_with_path(candidate),
                 jax.tree.leaves(reference),
@@ -1353,40 +1146,38 @@ class TestFusedPairIntegration:
                     a, b, rtol=0, atol=1e-30, err_msg=jax.tree_util.keystr(path)
                 )
 
-    # Two hosts: GCMC over interleaved systems.
-    @pytest.mark.parametrize("n_hosts", [1, 2])
-    def test_default_layout_culls_blocks_exactly(self, n_hosts):
+    # One host: the charged, single-image case without exchange (no free slots)
+    # of the cycle checks below. Two hosts: GCMC over interleaved systems.
+    @pytest.mark.parametrize("n_hosts,exchange_prob", [(1, 0.0), (2, 0.5)])
+    def test_default_layout_culls_blocks_exactly(self, n_hosts, exchange_prob):
         from kups.core.propagator import propagate_and_fix
         from kups.core.result import as_result_function
 
-        config = _config(exchange_prob=0.5, init_adsorbates=(40,))
-        cif = _tmp_file(".cif", _EMPTY_CIF.replace(str(_BOX), "19.0"))
-        config = config.model_copy(
-            update={
-                "hosts": (config.hosts[0].model_copy(update={"cif_file": cif}),)
-                * n_hosts,
-                "max_num_adsorbates": 44 * n_hosts,
-            }
-        )
+        config = co2_config(exchange_prob=exchange_prob, init_adsorbates=(40,))
+        cif = tmp_file(".cif", EMPTY_CIF.replace(str(BOX), "19.0"))
+        host = config.hosts[0].model_copy(update={"cif_file": cif})
+        config = config.model_copy(update={"hosts": (host,) * n_hosts})
         state = init_state(jax.random.key(74), config)
+        assert len(state.groups) >= 40 * n_hosts
         layout = state.cell_tables.layout
         assert layout.key_layout == "slots"
         assert layout.max_images_per_pair == 1
         initialize, cycle = make_propagator(state, config.run)
-        reference = _make_potential(state)
+        reference = jax.jit(_make_potential(state))
+        cycle_step = jax.jit(as_result_function(cycle))
 
-        def apply(propagator, key, state):
-            return propagate_and_fix(as_result_function(propagator), key, state)
-
-        state = apply(initialize, jax.random.key(75), state)
-        for key in jax.random.split(jax.random.key(76), 3):
-            state = apply(cycle, key, state)
+        state = propagate_and_fix(
+            jax.jit(as_result_function(initialize)), jax.random.key(75), state
+        )
+        for key in [None, *jax.random.split(jax.random.key(76), 3)]:
+            if key is not None:
+                state = propagate_and_fix(cycle_step, key, state)
             npt.assert_allclose(
                 state.systems.data.potential_energy.total,
                 reference(state).data.total_energies.data,
                 rtol=1e-9,
                 # Insertions cancel Ewald terms of ~1e7 down to ~1e-1.
-                atol=1e-10 if n_hosts == 1 else 1e-7,
+                atol=1e-10 if exchange_prob == 0 else 1e-7,
             )
         # Some query skips a block that holds active rows.
         table = state.cell_tables.table
@@ -1404,15 +1195,10 @@ class TestFusedPairIntegration:
         active = table.rows.cell != table.sentinel_cell
         assert jnp.any(active[:, None] & occupied & ~near)
 
+    # Cutoff 8 exceeds half the 14 Å box, so pairs interact through several images.
     @pytest.mark.parametrize(
-        ("cutoff", "charged", "exchange_prob", "loadings"),
-        [
-            (5.0, False, 0.5, (2,)),
-            (5.0, True, 0.5, (2,)),
-            (8.0, False, 0.5, (2,)),
-            (8.0, True, 0.5, (2,)),
-            (5.0, True, 0.0, (0, 2)),
-        ],
+        ("charged", "cutoff", "exchange_prob", "loadings"),
+        [(False, 5.0, 0.5, (2,)), (True, 8.0, 0.5, (2,)), (True, 5.0, 0.0, (0, 2))],
     )
     def test_cycles_match_full_recomputation(
         self, charged, cutoff, exchange_prob, loadings
@@ -1420,7 +1206,9 @@ class TestFusedPairIntegration:
         from kups.core.propagator import propagate_and_fix
         from kups.core.result import as_result_function
 
-        config = _config(exchange_prob=exchange_prob, init_adsorbates=(2,))
+        config = co2_config(
+            exchange_prob=exchange_prob, init_adsorbates=(2,), charged=charged
+        )
         host = config.hosts[0]
         config = config.model_copy(
             update={
@@ -1431,19 +1219,14 @@ class TestFusedPairIntegration:
                 "ewald": config.ewald.model_copy(update={"real_cutoff": cutoff}),
             }
         )
-        if not charged:
-            adsorbate = config.adsorbates[0].model_copy(
-                update={"charges": (0.0, 0.0, 0.0)}
-            )
-            config = config.model_copy(update={"adsorbates": (adsorbate,)})
         state = initial = init_state(jax.random.key(71), config)
         initialize, cycle = make_propagator(state, config.run)
-        reference = _make_potential(state)
+        reference = jax.jit(_make_potential(state))
+        cycle_step = jax.jit(as_result_function(cycle))
 
-        def apply(propagator, key, state):
-            return propagate_and_fix(as_result_function(propagator), key, state)
-
-        state = apply(initialize, jax.random.key(72), state)
+        state = propagate_and_fix(
+            jax.jit(as_result_function(initialize)), jax.random.key(72), state
+        )
         for key in jax.random.split(jax.random.key(73), 3):
             npt.assert_allclose(
                 state.systems.data.potential_energy.total,
@@ -1451,7 +1234,7 @@ class TestFusedPairIntegration:
                 rtol=1e-9,
                 atol=1e-10,
             )
-            state = apply(cycle, key, state)
+            state = propagate_and_fix(cycle_step, key, state)
         npt.assert_allclose(
             state.systems.data.potential_energy.total,
             reference(state).data.total_energies.data,
