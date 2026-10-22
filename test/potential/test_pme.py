@@ -19,6 +19,7 @@ from kups.potential.classical.ewald import (
     EwaldLongRangeInput,
     EwaldParameters,
     PMEParameters,
+    estimate_pme_mesh,
     ewald_long_range_energy,
     pme_long_range_energy,
 )
@@ -201,3 +202,108 @@ def test_invalid_order_raises(order, mesh):
     alpha = Table((SystemId(0),), jnp.array([ALPHA]))
     with pytest.raises(ValueError, match="even spline order"):
         PMEParameters(alpha, alpha, mesh, order)
+
+
+def _random_batch(seed: int, counts: tuple[int, int]) -> tuple[Table, Table]:
+    """Two neutral random systems in skewed cells."""
+    key = random.key(seed)
+    ids = np.repeat(np.arange(2), counts)
+    matrices = np.array(
+        [
+            [[14.0, 0.0, 0.0], [2.0, 13.0, 0.0], [-1.5, 1.0, 15.0]],
+            [[11.0, 0.0, 0.0], [-1.0, 12.5, 0.0], [0.5, -2.0, 10.0]],
+        ]
+    )
+    frac = np.asarray(random.uniform(key, (ids.size, 3)))
+    positions = np.einsum("ni,nij->nj", frac, matrices[ids])
+    charges = np.array(random.normal(random.fold_in(key, 1), (ids.size,)))
+    for s in range(2):
+        charges[ids == s] -= charges[ids == s].mean()
+    particles = Table.arange(
+        _make_particle_data(
+            jnp.asarray(positions), jnp.asarray(charges), 2, system_ids=jnp.asarray(ids)
+        ),
+        label=ParticleId,
+    )
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(matrices)))
+    return particles, _make_systems(cell, jnp.full(2, 6.0))
+
+
+def _reciprocal_forces(energy, particles: Table, systems: Table) -> np.ndarray:
+    def total(positions: Array) -> Array:
+        return energy(
+            bind(particles, lambda p: p.data.positions).set(positions), systems
+        ).sum()
+
+    return np.asarray(jax.jit(jax.grad(total))(particles.data.positions))
+
+
+@pytest.mark.parametrize("counts", [(120, 80), (30, 20)], ids=["dense", "dilute"])
+@pytest.mark.parametrize("precision", [1e-4, 1e-6])
+def test_make_is_as_accurate_as_direct_ewald(counts, precision):
+    particles, systems = _random_batch(0, counts)
+    ewald = EwaldParameters.make(particles, systems, precision, real_cutoff=6.0)
+    pme = PMEParameters.make(particles, systems, precision, real_cutoff=6.0)
+    np.testing.assert_allclose(pme.alpha.data, ewald.alpha.data)
+    tight = EwaldParameters.from_cutoffs(
+        systems, ewald.alpha, ewald.cutoff, ewald.alpha.map_data(lambda a: 12 * a)
+    )
+
+    def direct(params: EwaldParameters):
+        def energy(particles: Table, systems: Table) -> Array:
+            inp = EwaldLongRangeInput(PointCloud(particles, systems), params)
+            return ewald_long_range_energy(inp).data.data
+
+        return energy
+
+    reference = _reciprocal_forces(direct(tight), particles, systems)
+    error_ewald = _reciprocal_forces(direct(ewald), particles, systems) - reference
+
+    def mesh(particles: Table, systems: Table) -> Array:
+        edges = Edges(
+            Index(particles.keys, jnp.zeros((0, 0), int), _cls=ParticleId),
+            jnp.zeros((0, 0, 3)),
+        )
+        graph = HyperGraph(particles, systems, edges)
+        return pme_long_range_energy(GraphPotentialInput(pme, graph)).data.data
+
+    error_pme = _reciprocal_forces(mesh, particles, systems) - reference
+    assert np.sqrt(np.mean(error_pme**2)) <= 2 * np.sqrt(np.mean(error_ewald**2))
+
+
+def test_mesh_sizes():
+    particles, systems = _random_batch(1, (120, 80))
+    charges = np.asarray(particles.data.charges)
+    ids = np.asarray(particles.data.system.raw_indices)
+    ewald = EwaldParameters.make(particles, systems, 1e-6, real_cutoff=6.0)
+    pme = PMEParameters.make(particles, systems, 1e-6, real_cutoff=6.0)
+    meshes = [
+        estimate_pme_mesh(charges[ids == i], systems.data.cell[i], a, k, pme.order)
+        for i, (a, k) in enumerate(zip(ewald.alpha.data, ewald.k_max.data))
+    ]
+    assert pme.mesh == tuple(np.max(meshes, axis=0).tolist())
+    for size in np.ravel(meshes):
+        rest = int(size)
+        for prime in (2, 3, 5):
+            while rest % prime == 0:
+                rest //= prime
+        assert rest == 1 and size >= pme.order
+
+
+def test_mesh_shrinks_with_looser_precision():
+    particles, systems = _random_batch(2, (120, 80))
+    meshes = [
+        np.prod(PMEParameters.make(particles, systems, p, real_cutoff=6.0).mesh)
+        for p in (1e-8, 1e-6, 1e-4)
+    ]
+    assert meshes[0] > meshes[1] > meshes[2]
+
+
+def test_make_ignores_inactive_rows():
+    particles, systems = _input()
+    loud = bind(particles, lambda p: p.data.charges).apply(
+        lambda q: jnp.where(jnp.isnan(q), 100.0, q)
+    )
+    a = PMEParameters.make(particles, systems, real_cutoff=3.0)
+    b = PMEParameters.make(loud, systems, real_cutoff=3.0)
+    assert (a.mesh, a.order) == (b.mesh, b.order)
