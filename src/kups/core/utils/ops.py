@@ -76,6 +76,34 @@ def where_broadcast_last(
     return jnp.where(expanded_condition, x, y)
 
 
+def segment_max(data: Array, segment_ids: Array, num_segments: int) -> Array:
+    """Per-segment maximum, ``jax.ops.segment_max`` with out-of-range ids dropped.
+
+    One segment reduces with ``jnp.max``: a one-segment ``segment_max`` is a fully
+    contended atomic on GPU.
+
+    Args:
+        data: Values, segmented along the leading axis.
+        segment_ids: Segment of each row of ``data``.
+        num_segments: Number of segments.
+
+    Returns:
+        Maximum per segment, shape ``(num_segments, *data.shape[1:])``. Empty
+        segments hold the dtype's lowest value (``-inf`` for floats, ``False``
+        for booleans).
+    """
+    if num_segments != 1:
+        return jax.ops.segment_max(data, segment_ids, num_segments, mode="drop")
+    if jnp.issubdtype(data.dtype, jnp.floating):
+        lowest = -jnp.inf
+    elif data.dtype == jnp.bool_:
+        lowest = False
+    else:
+        lowest = jnp.iinfo(data.dtype).min
+    valid = expand_last_dims(segment_ids == 0, data)
+    return jnp.max(jnp.where(valid, data, lowest), axis=0, initial=lowest)[None]
+
+
 def pad_axis(operand: Array, to_pad: tuple[int, int], axis: int) -> Array:
     """Pad a single axis of an array with zeros.
 

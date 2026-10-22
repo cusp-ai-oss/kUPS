@@ -13,6 +13,7 @@ from kups.core.utils.ops import (
     expand_last_dims,
     first_true_indices,
     pad_axis,
+    segment_max,
     where_broadcast_last,
 )
 
@@ -133,3 +134,18 @@ def test_compact_indices_matches_nonzero(n: int, size: int) -> None:
         mask = jax.random.bernoulli(jax.random.key(n), p, (n,))
         expected = jnp.nonzero(mask, size=size, fill_value=n)[0]
         npt.assert_array_equal(fn(mask, size), expected)
+
+
+@pytest.mark.parametrize("num_segments", [1, 3])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.int32, jnp.bool_])
+def test_segment_max_matches_jax(num_segments, dtype):
+    # id 3 is out of range; with one segment, ids 1 and 2 are too
+    ids = jnp.array([0, 2, 3, 0, 1, 2])
+    data = jnp.array([[1, -2], [3, -5], [9, 9], [2, -1], [-4, 7], [0, 0]], dtype=dtype)
+    expected = jax.ops.segment_max(data, ids, num_segments, mode="drop")
+    npt.assert_array_equal(segment_max(data, ids, num_segments), expected)
+
+
+def test_segment_max_empty_segment():
+    out = segment_max(jnp.ones((2, 3)), jnp.array([1, 1]), 1)
+    npt.assert_array_equal(out, jnp.full((1, 3), -jnp.inf))
