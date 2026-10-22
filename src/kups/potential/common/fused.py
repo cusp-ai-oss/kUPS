@@ -8,8 +8,9 @@ Full evaluations use adaptive graphs; local updates reuse cached cell lists.
 
 from __future__ import annotations
 
+from itertools import accumulate
 from operator import itemgetter
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Literal, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +30,7 @@ from kups.core.neighborlist.cell_list_cache import (
     CellRows,
     build_cell_list_cache,
     cell_candidates,
+    near_blocks,
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.types import (
@@ -54,6 +56,7 @@ from kups.core.potential import (
 from kups.core.typing import HasCell, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit, tree_map
 from kups.core.utils.kahan import KahanSummand
+from kups.core.utils.ops import compact_indices
 from kups.potential.common.energy import (
     FullSumComposer,
     InputConstructor,
@@ -118,6 +121,27 @@ def sum_chunks[Rows](
 
     total, _ = jax.lax.scan(body, initial, chunks)
     return total
+
+
+class _QueryGeometry(NamedTuple):
+    """Per-query lattice vectors, perpendicular widths and culling radius."""
+
+    matrix: Array
+    perpendicular: Array
+    limit: Array
+
+
+MAX_UNROLLED_QUERY_ROWS = 16
+"""Largest query phase whose near-block masks are unrolled per row.
+
+Unrolled rows fuse into one pass over the block bounds; larger phases
+vmap over rows to bound trace size."""
+MAX_DENSE_QUERY_ROWS = 64
+"""Largest local evaluation, in query rows summed over phases and systems,
+that uses culled block traversal.
+
+Mutual pairs of the query rows are then evaluated densely, which grows
+quadratically with this count."""
 
 
 @dataclass
@@ -232,7 +256,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         pairs = PairBatch.from_candidates(
             batch, ctx, query_lanes=None if multiple_images else index.shape[1]
         )
-        pairs = pairs._replace(valid=pairs.valid & mask(batch))
+        pairs = bind(pairs, lambda p: p.valid).apply(lambda v: v & mask(batch))
         if multiple_images:
             key_index = batch.key_idx.indices
             query_index = batch.query_idx.indices
@@ -249,6 +273,212 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         left = tree_map(lambda x: x[:, None], rows.data)
         right = tree_map(lambda x: x[index], keys.data)
         return self.pair.evaluate(inp.parameters, left, right, pairs).sum(-1)
+
+    def _block_energies(
+        self,
+        inp: FusedLocalInput[Params, Part, Feat],
+        rows: CellRows[Feat],
+        keys: CellRows[Feat],
+        usable: Array,
+        matrix: Array,
+    ) -> Array:
+        """Minimum-image energies of query rows against a flat batch of keys.
+
+        ``usable`` selects pairs, broadcastable to ``(q, k)``; ``matrix`` holds
+        the queries' lattice vectors as rows, ``(q, 3, 3)``.
+
+        Unlike ``_energies``, which gathers every query-key candidate through
+        the neighbor pipeline, all queries share the batch of keys here: each
+        key is gathered once and separations broadcast over the queries, which
+        is markedly faster on CPU.
+        """
+        systems = inp.cloud.systems
+        key_system, query_system = Index.match(keys.system, rows.system)
+        valid = (
+            usable
+            & keys.inclusion.valid_mask[None]
+            & rows.inclusion.valid_mask[:, None]
+            & (key_system[None] == query_system[:, None])
+        )
+        delta: list[Array] = []
+        for axis, periodic in enumerate(systems.data.cell.periodic):
+            d = keys.frac[None, :, axis] - rows.frac[:, axis, None]
+            if periodic:
+                d = d - jnp.round(d)
+            delta.append(jnp.where(valid, d, 0.0))
+        real = [
+            delta[0] * matrix[:, 0, j, None]
+            + delta[1] * matrix[:, 1, j, None]
+            + delta[2] * matrix[:, 2, j, None]
+            for j in range(3)
+        ]
+        r2 = real[0] * real[0] + real[1] * real[1] + real[2] * real[2]
+        rij = jnp.stack(real, axis=-1)
+        key_inclusion, query_inclusion = Index.match(keys.inclusion, rows.inclusion)
+        key_exclusion, query_exclusion = Index.match(keys.exclusion, rows.exclusion)
+        pairs = PairBatch(
+            rij,
+            r2,
+            jax.tree.map(lambda x: jnp.broadcast_to(x[None], valid.shape), keys.system),
+            valid,
+            key_inclusion[None] == query_inclusion[:, None],
+            key_exclusion[None] != query_exclusion[:, None],
+        )
+        left = jax.tree.map(lambda x: x[:, None], rows.data)
+        return self.pair.evaluate(inp.parameters, left, keys.data, pairs).sum(-1)
+
+    def _sum_blocks(
+        self,
+        inp: FusedLocalInput[Params, Part, Feat],
+        rows: CellRows[Feat],
+        excluded: Array,
+        geometry: _QueryGeometry,
+        phases: tuple[int, ...],
+        dtype: jnp.dtype,
+    ) -> Array:
+        """Environment energies of query rows from the slot blocks near them.
+
+        ``excluded`` masks the slots of removed rows, ``(n_slots + 1,)``. Rows
+        form consecutive ``phases`` (sizes). Blocks of a row's own system near
+        any row of a phase are compacted and gathered in batches of
+        ``key_chunk_size`` slots. Each active phase is traversed on its own
+        and inactive ones skip. ``dtype`` is the energy dtype.
+
+        Returns:
+            Per-row energies, ``(n,)``.
+        """
+        table = inp.cell_table
+        bounds, size = table.block_bounds, table.block_size
+        lower, upper, _ = bounds
+        n_blocks = lower.shape[1]
+        batch = min(n_blocks, max(1, (self.layout.key_chunk_size or 0) // size))
+        batch_rows = batch * size
+        n_batches = -(-n_blocks // batch)
+        periodic = inp.cloud.systems.data.cell.periodic
+        multiple = inp.cloud.systems.size > 1
+        valid = rows.inclusion.valid_mask
+        removed = excluded[: table.sentinel_slot].reshape(n_blocks, size)
+        ends = list(accumulate(phases, initial=0))
+        spans = [slice(a, b) for a, b in zip(ends[:-1], ends[1:])]
+
+        def near(span: slice) -> Array:
+            n_rows = span.stop - span.start
+
+            def row(i: int | Array) -> Array:
+                near = valid[i] & near_blocks(
+                    rows.frac[i],
+                    lower,
+                    upper,
+                    geometry.matrix[i],
+                    geometry.perpendicular[i],
+                    geometry.limit[i],
+                    periodic,
+                )
+                if multiple:
+                    near &= bounds.holds(rows.system[i])
+                return near
+
+            if n_rows <= MAX_UNROLLED_QUERY_ROWS:
+                mask = jnp.zeros(n_blocks, bool)
+                for i in range(span.start, span.stop):
+                    mask |= row(i)
+                return mask
+            return jnp.any(jax.vmap(row)(jnp.arange(span.start, span.stop)), axis=0)
+
+        def traverse(span: slice, mask: Array) -> Array:
+            sub = jax.tree.map(lambda x: x[span], rows)
+            matrix = geometry.matrix[span]
+            blocks = compact_indices(mask, n_batches * batch)
+
+            def evaluate(i: int | Array) -> Array:
+                chunk = jax.lax.dynamic_slice(blocks, (i * batch,), (batch,))
+                present = chunk < n_blocks
+                chunk = jnp.minimum(chunk, n_blocks - 1)
+                keys = jax.tree.map(
+                    lambda x: x.reshape(batch_rows, *x.shape[2:]),
+                    table.block_rows(chunk),
+                )
+                usable = (present[:, None] & ~removed[chunk]).reshape(1, -1)
+                return self._block_energies(inp, sub, keys, usable, matrix)
+
+            total = evaluate(0)
+            if n_batches == 1:
+                return total
+            # The loop costs throughput even without iterations.
+            return jax.lax.cond(
+                blocks[batch] < n_blocks,
+                lambda: jax.lax.fori_loop(
+                    1,
+                    (jnp.sum(mask) + batch - 1) // batch,
+                    lambda i, total: total + evaluate(i),
+                    total,
+                ),
+                lambda: total,
+            )
+
+        masks = [near(span) for span in spans]
+        actives = [jnp.any(valid[span]) for span in spans]
+
+        return jnp.concatenate(
+            [
+                jax.lax.cond(
+                    active,
+                    lambda span=span, mask=mask: traverse(span, mask),
+                    lambda span=span: jnp.zeros(span.stop - span.start, dtype),
+                )
+                for span, mask, active in zip(spans, masks, actives)
+            ]
+        )
+
+    def _local_blocks(
+        self,
+        inp: FusedLocalInput[Params, Part, Feat],
+        rows: CellRows[Feat],
+        phase: Array,
+        weights: Array,
+        removed: Array,
+        phases: tuple[int, ...],
+    ) -> Array:
+        """Culled local evaluation: one traversal per query phase plus mutual pairs.
+
+        Query geometry is computed once and shared by all phases; phases
+        without active rows skip traversal.
+        """
+        systems = inp.cloud.systems
+        cell = systems.data.cell
+        cutoff = Table.broadcast_to(self.pair.cutoffs(inp.parameters), systems).data
+        # Absorb roundoff between the bounds and the evaluated distances.
+        limit = cutoff * (1 + 1e-9) + 1e-9
+        n = rows.frac.shape[0]
+        # A single system broadcasts instead of gathering and segment-summing.
+        if systems.size == 1:
+            geometry = _QueryGeometry(
+                jnp.broadcast_to(cell.vectors, (n, 3, 3)),
+                jnp.broadcast_to(cell.perpendicular_lengths, (n, 3)),
+                jnp.broadcast_to(limit, (n,)),
+            )
+        else:
+            system = rows.system.indices_in(systems.keys)
+            geometry = _QueryGeometry(
+                cell.vectors[system], cell.perpendicular_lengths[system], limit[system]
+            )
+        index = jnp.arange(n)
+        mutual = self._block_energies(
+            inp,
+            rows,
+            rows,
+            (phase[:, None] == phase[None]) & (index[:, None] != index[None]),
+            geometry.matrix,
+        )
+        environment = self._sum_blocks(
+            inp, rows, removed, geometry, phases, mutual.dtype
+        )
+        values = (environment + mutual / 2) * weights
+        if systems.size == 1:
+            return values.sum(keepdims=True)
+        return jax.ops.segment_sum(
+            values, rows.system.indices_in(systems.keys), num_segments=systems.size
+        )
 
     def _sum_keys(
         self,
@@ -364,6 +594,15 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         )
         removed = jnp.zeros(table.sentinel_slot + 1, bool).at[slots].set(True)
         n = rows.frac.shape[0]
+        if (
+            self.layout.key_layout == "slots"
+            and self.layout.max_images_per_pair == 1
+            and len(queries) * max(q.size for q in queries) <= MAX_DENSE_QUERY_ROWS
+        ):
+            values = self._local_blocks(
+                inp, rows, phase, weights, removed, tuple(q.size for q in queries)
+            )
+            return values, parts[-1], slots
         environment = self._sum_environment(
             inp,
             rows,
