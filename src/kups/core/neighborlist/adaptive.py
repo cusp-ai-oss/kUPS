@@ -13,20 +13,12 @@ so a single object routes differently across calls.
 The :meth:`AdaptiveNeighborList.new` / :meth:`AdaptiveNeighborList.from_state`
 classmethods seed the tuple with the library implementations
 (:class:`DenseNearestNeighborList`, :class:`CellListNeighborList`,
-:class:`AllDenseNearestNeighborList`) and their default cost guesses. Augmenting
-the set is just appending another ``(implementation, cost)`` pair to
-``implementations``; all implementations are built from one lens, so they share
-the ``UniversalNeighborlistParameters`` capacities.
-
-:class:`CellScanNeighborList` is not seeded: it needs finite cutoffs and a
-``stencil_radius`` covering the cutoff on periodic axes, which counts cannot
-check. Append it with :func:`cell_scan_cost` where those hold::
-
-    nl = AdaptiveNeighborList.from_state(state, cutoffs)
-    scan = CellScanNeighborList.from_state(state, cutoffs)
-    nl = AdaptiveNeighborList(
-        (*nl.implementations, NeighborListCandidate(scan, cell_scan_cost))
-    )
+:class:`AllDenseNearestNeighborList`, :class:`CellScanNeighborList`) and their
+default cost guesses. Augmenting the set is just appending another
+``(implementation, cost)`` pair to ``implementations``; all implementations are
+built from one lens, so they share the ``UniversalNeighborlistParameters``
+capacities. Cell scan is chosen only on GPUs with Triton and needs finite cutoffs on
+periodic axes (a runtime assertion; counts cannot check it).
 
 Costs use coarse counts rather than cutoff or box geometry: counts are static at
 trace time, so the dispatch is a plain Python branch that compiles only the
@@ -45,7 +37,7 @@ from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
-from kups.core.neighborlist.cell_scan import triton_available
+from kups.core.neighborlist.cell_scan import CellScanNeighborList, triton_available
 from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.edges import Edges
@@ -173,7 +165,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
             cutoffs: Per-system cutoffs bound onto each implementation.
 
         Returns:
-            An ``AdaptiveNeighborList`` over dense, cell-list, and all-dense.
+            An ``AdaptiveNeighborList`` over dense, cell-list, all-dense and cell scan.
         """
         return cls(
             (
@@ -186,6 +178,9 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
                 NeighborListCandidate(
                     AllDenseNearestNeighborList.new(state, lens, cutoffs),
                     all_dense_cost,
+                ),
+                NeighborListCandidate(
+                    CellScanNeighborList.new(state, lens, cutoffs), cell_scan_cost
                 ),
             )
         )

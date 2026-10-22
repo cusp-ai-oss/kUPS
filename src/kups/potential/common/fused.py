@@ -33,6 +33,7 @@ from kups.core.neighborlist.cell_list_cache import (
     cell_candidates,
     near_blocks,
 )
+from kups.core.neighborlist.cell_scan import CellScanNeighborList
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.types import (
     CandidateBatch,
@@ -953,6 +954,7 @@ def _check_pair_neighborlist(
     if not isinstance(neighbors, SelectableNeighborList) or type(neighbors) not in (
         AllDenseNearestNeighborList,
         CellListNeighborList,
+        CellScanNeighborList,
         DenseNearestNeighborList,
     ):
         raise TypeError(
