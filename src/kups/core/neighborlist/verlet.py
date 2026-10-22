@@ -92,6 +92,28 @@ class SkinMargin:
         return self.budget - self.consumed
 
 
+def _sym3_min_eigenvalue(a: Array) -> Array:
+    """Smallest eigenvalue of symmetric 3x3 matrices in closed form (Smith 1961).
+
+    ``jnp.linalg.eigvalsh`` dispatches to an iterative GPU solver whose launch
+    and sync overhead (~1 ms for a single 3x3) dominates the per-step margin check.
+    """
+    q = jnp.trace(a, axis1=-2, axis2=-1) / 3
+    off = a[..., 0, 1] ** 2 + a[..., 0, 2] ** 2 + a[..., 1, 2] ** 2
+    diag = jnp.diagonal(a, axis1=-2, axis2=-1) - q[..., None]
+    p = jnp.sqrt((jnp.sum(diag**2, axis=-1) + 2 * off) / 6)
+    safe_p = jnp.where(p > 0, p, 1.0)
+    b = (a - q[..., None, None] * jnp.eye(3, dtype=a.dtype)) / safe_p[..., None, None]
+    det = (
+        b[..., 0, 0] * (b[..., 1, 1] * b[..., 2, 2] - b[..., 1, 2] * b[..., 2, 1])
+        - b[..., 0, 1] * (b[..., 1, 0] * b[..., 2, 2] - b[..., 1, 2] * b[..., 2, 0])
+        + b[..., 0, 2] * (b[..., 1, 0] * b[..., 2, 1] - b[..., 1, 1] * b[..., 2, 0])
+    )
+    r = jnp.clip(det / 2, -1.0, 1.0)
+    smallest = q + 2 * p * jnp.cos(jnp.arccos(r) / 3 + 2 * jnp.pi / 3)
+    return jnp.where(p > 0, smallest, q)  # p == 0: a multiple of the identity
+
+
 def skin_margin(
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
     systems: Table[SystemId, NeighborListSystems],
@@ -154,10 +176,10 @@ def skin_margin(
     residual = systems[system].cell.wrap(particles.data.positions - co_moved)
     u_max = particles.data.system.max_over(jnp.linalg.norm(residual, axis=-1)).data
     u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
-    # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ
-    # (cheaper than an SVD; the clamp guards eigvalsh's tiny negative noise).
+    # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ (the
+    # clamp guards tiny negative rounding noise).
     gram = deform @ jnp.swapaxes(deform, -1, -2)
-    sigma_min = jnp.sqrt(jnp.maximum(jnp.linalg.eigvalsh(gram)[..., 0], 0.0))
+    sigma_min = jnp.sqrt(jnp.maximum(_sym3_min_eigenvalue(gram), 0.0))
     r_build = effective_build_radii(cutoff_values, skin, reference.cell)
     consumed = 2.0 * u_max + r_build * jnp.maximum(0.0, 1.0 - sigma_min)
     return Table(systems.keys, SkinMargin(consumed, r_build - cutoff_values))
