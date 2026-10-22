@@ -171,7 +171,8 @@ class Config(BaseModel):
     ewald: EwaldConfig
     compute_stress: bool = False
     kernel_dtype: Literal["float64", "float32"] = "float64"
-    """Precision of the pair kernels; energies are summed in float64."""
+    """Precision of the pair kernels and Ewald structure factors; energies are
+    summed in float64."""
 
 
 @dataclass
@@ -475,6 +476,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
         system,
         epsilon_total=config.ewald.precision,
         real_cutoff=config.ewald.real_cutoff,
+        reciprocal_dtype=config.kernel_dtype,
     )
     n_kvecs = ewald_params.reciprocal_lattice_shifts.data.shape[1]
 

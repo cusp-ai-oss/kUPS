@@ -19,7 +19,7 @@ from scipy.special import erfc
 from kups.core.cell import AnyPeriodicity, Cell, Periodic3D
 from kups.core.data import Table
 from kups.core.neighborlist import NeighborListPoints
-from kups.core.typing import HasCell, HasCharges, ParticleId, SystemId
+from kups.core.typing import DTypeLike, HasCell, HasCharges, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, is_traced, no_jax_tracing
 
 type ReciprocalGridBound = tuple[int, int, int]
@@ -51,7 +51,8 @@ class EwaldParameters:
     ``(0, 0, 0)`` selects explicit sums over the shifts; other bounds select
     factored phase grids over that box, from which the shifts are gathered.
     Rebuild parameters and the structure-factor cache when changing the cell
-    or cutoff.
+    or cutoff. ``reciprocal_dtype`` is the precision of structure-factor
+    evaluations; ``float32`` is much faster on GPUs with slow double precision.
     """
 
     alpha: Table[SystemId, Array]  # (n_graphs,)
@@ -65,6 +66,7 @@ class EwaldParameters:
     reciprocal_k_chunk_size: int = field(
         static=True, default=_DEFAULT_RECIPROCAL_K_CHUNK
     )
+    reciprocal_dtype: DTypeLike = field(static=True, default=jnp.float64)
 
     @classmethod
     @no_jax_tracing
@@ -77,6 +79,7 @@ class EwaldParameters:
         *,
         reciprocal_particle_chunk_size: int | None = None,
         reciprocal_k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
+        reciprocal_dtype: DTypeLike = jnp.float64,
     ) -> EwaldParameters:
         """Estimate each system's parameters and prepare its reciprocal shifts.
 
@@ -88,6 +91,7 @@ class EwaldParameters:
             reciprocal_particle_chunk_size: Maximum particles per response tile;
                 defaults to 8192 on GPU and 1024 elsewhere.
             reciprocal_k_chunk_size: Maximum explicit k-vectors per tile; also sets the grid workspace budget.
+            reciprocal_dtype: Precision of structure-factor evaluations.
 
         Returns:
             Ewald parameters with stored integer shifts and reciprocal cutoffs.
@@ -112,6 +116,7 @@ class EwaldParameters:
             k_max=cell.set_data(jnp.asarray([est.k_max for est in estimates])),
             reciprocal_particle_chunk_size=reciprocal_particle_chunk_size,
             reciprocal_k_chunk_size=reciprocal_k_chunk_size,
+            reciprocal_dtype=reciprocal_dtype,
         )
 
     @classmethod
@@ -125,6 +130,7 @@ class EwaldParameters:
         *,
         reciprocal_particle_chunk_size: int | None = None,
         reciprocal_k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
+        reciprocal_dtype: DTypeLike = jnp.float64,
     ) -> EwaldParameters:
         """Prepare reciprocal shifts once from supplied physical cutoffs.
 
@@ -136,6 +142,7 @@ class EwaldParameters:
             reciprocal_particle_chunk_size: Maximum particles per response tile;
                 defaults to 8192 on GPU and 1024 elsewhere.
             reciprocal_k_chunk_size: Maximum k-vectors per tile.
+            reciprocal_dtype: Precision of structure-factor evaluations.
 
         Returns:
             Parameters with stored integer shifts and reciprocal cutoffs.
@@ -155,6 +162,7 @@ class EwaldParameters:
             reciprocal_shift_bound=bound,
             reciprocal_particle_chunk_size=reciprocal_particle_chunk_size,
             reciprocal_k_chunk_size=reciprocal_k_chunk_size,
+            reciprocal_dtype=reciprocal_dtype,
         )
 
 
