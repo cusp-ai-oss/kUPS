@@ -188,7 +188,8 @@ def lennard_jones_pair_kernel(
         epsilon_rows = parameters.epsilon[species_i]
         sigma_rows = parameters.sigma[species_i]
         # A where chain: jnp.select's argmax over the matches is slower here.
-        epsilon = sigma = jnp.zeros(())
+        epsilon = jnp.zeros((), epsilon_rows.dtype)
+        sigma = jnp.zeros((), sigma_rows.dtype)
         for t in range(n_species):
             match = species_j == t
             epsilon = jnp.where(match, epsilon_rows[..., t], epsilon)
