@@ -295,7 +295,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
 
     def _block_energies(
         self,
-        inp: FusedLocalInput[Params, Part, Feat],
+        inp: FusedPotentialInput[Params, Part, Feat],
         rows: CellRows[Feat],
         keys: CellRows[Feat],
         usable: Array,
@@ -350,6 +350,31 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         left = jax.tree.map(lambda x: x[:, None], rows.data)
         energies = self.pair.evaluate(parameters, left, keys.data, pairs)
         return energies.astype(dtype).sum(-1)
+
+    def _row_energies(
+        self,
+        inp: FusedPotentialInput[Params, Part, Feat],
+        rows: CellRows[Feat],
+        keys: CellRows[Feat],
+        index: Array,
+        usable: Array,
+    ) -> Array:
+        """Minimum-image energies of each query row against its own key slots.
+
+        ``index`` and ``usable`` hold each row's key slots and pair mask,
+        ``(q, k)``. Separations are formed directly instead of through the
+        neighbor pipeline, which keeps the evaluation in few fused kernels.
+        """
+        matrix = inp.cloud.systems[rows.system].cell.vectors
+        gathered = jax.tree.map(lambda x: x[index], keys)
+
+        def row(
+            query: CellRows[Feat], key: CellRows[Feat], usable: Array, matrix: Array
+        ) -> Array:
+            query = jax.tree.map(lambda x: x[None], query)
+            return self._block_energies(inp, query, key, usable[None], matrix[None])[0]
+
+        return jax.vmap(row)(rows, gathered, usable, matrix)
 
     def _sum_blocks(
         self,
@@ -536,6 +561,9 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             return jnp.not_equal(*Index.match(b.key_idx, own)) | ~b.is_minimum_image
 
         def consume(index: Array) -> Array:
+            if self.layout.max_images_per_pair == 1:
+                own = index == slots[:, None]
+                return self._row_energies(inp, rows, keys, index, ~own)
             return self._energies(inp, rows, keys, index, own_slot_excluded)
 
         chunk_size = self.layout.key_chunk_size
