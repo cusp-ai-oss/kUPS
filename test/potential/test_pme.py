@@ -9,22 +9,32 @@ import numpy as np
 import pytest
 from jax import Array, random
 
+from kups.application.potential.filter import POSITIONS_AND_CELL
+from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table, cast_indices
-from kups.core.lens import bind
-from kups.core.neighborlist import Edges
+from kups.core.lens import bind, const_lens, view
+from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
+from kups.core.potential import EMPTY_LENS
 from kups.core.typing import ParticleId, SystemId
-from kups.core.utils.jax import astype_floating
+from kups.core.utils.jax import astype_floating, dataclass
 from kups.potential.classical.ewald import (
     EwaldLongRangeInput,
     EwaldParameters,
     PMEParameters,
     estimate_pme_mesh,
     ewald_long_range_energy,
+    make_ewald_potential,
+    make_pme_potential,
     pme_long_range_energy,
 )
 from kups.potential.classical.ewald.pme import _bspline_weights, _euler_factors
-from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
+from kups.potential.common.graph import (
+    POINTCLOUD_GEOMETRY,
+    GraphPotentialInput,
+    HyperGraph,
+    PointCloud,
+)
 
 from .test_ewald import _make_particle_data, _make_systems
 
@@ -307,3 +317,67 @@ def test_make_ignores_inactive_rows():
     a = PMEParameters.make(particles, systems, real_cutoff=3.0)
     b = PMEParameters.make(loud, systems, real_cutoff=3.0)
     assert (a.mesh, a.order) == (b.mesh, b.order)
+
+
+@dataclass
+class _State:
+    particles: Table
+    systems: Table
+
+
+@pytest.mark.parametrize("exclusions", [False, True])
+def test_potential_matches_make_ewald_potential(exclusions):
+    particles, systems = _random_batch(3, (60, 45))
+    if exclusions:  # molecules of three
+        n = particles.size
+        ids = np.asarray(particles.data.system.raw_indices)
+        particles = Table.arange(
+            _make_particle_data(
+                particles.data.positions,
+                particles.data.charges + 0.1,  # net charge
+                2,
+                system_ids=jnp.asarray(ids),
+                exclusion_ids=jnp.asarray(np.arange(n) // 3),
+                exclusion_max_count=3,
+            ),
+            label=ParticleId,
+        )
+    state = _State(particles, systems)
+    alpha = systems.set_data(jnp.full(2, 0.45))
+    cutoff = systems.map_data(lambda s: s.cutoff)
+    k_max = alpha.map_data(lambda a: 12 * a)
+    n = particles.size
+    neighbors = AllDenseNearestNeighborList(FixedCapacity(n), FixedCapacity(n), cutoff)
+    views = (
+        view(lambda s: s.particles),
+        view(lambda s: s.systems),
+        lambda s: neighbors,
+    )
+    derivatives = (POINTCLOUD_GEOMETRY.nest(POSITIONS_AND_CELL), EMPTY_LENS, EMPTY_LENS)
+    ewald = make_ewald_potential(
+        *views,
+        const_lens(EwaldParameters.from_cutoffs(systems, alpha, cutoff, k_max)),
+        None,
+        None,
+        *derivatives,
+        include_exclusion_mask=exclusions,
+    )
+    pme = make_pme_potential(
+        *views,
+        const_lens(PMEParameters(alpha, cutoff, (48, 48, 48))),
+        *derivatives,
+        include_exclusion_mask=exclusions,
+    )
+    a, b = jax.jit(lambda s: (pme(s).data, ewald(s).data))(state)
+    np.testing.assert_allclose(a.total_energies.data, b.total_energies.data, rtol=1e-7)
+    rms = np.sqrt(np.mean(np.asarray(b.gradients.positions.data) ** 2))
+    np.testing.assert_allclose(
+        a.gradients.positions.data, b.gradients.positions.data, atol=1e-6 * rms
+    )
+    np.testing.assert_allclose(
+        a.gradients.cell.data.vectors, b.gradients.cell.data.vectors, atol=1e-5
+    )
+    for name in ("short_range", "self_interaction", "net_charge"):
+        x, y = (getattr(p, name)(state).data.total_energies.data for p in (pme, ewald))
+        np.testing.assert_allclose(x, y, rtol=1e-12)
+    assert len(pme.potentials) == len(ewald.potentials) == 4 + exclusions
