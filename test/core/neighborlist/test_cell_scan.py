@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import PeriodicCell, TriclinicFrame
+from kups.core.cell import Cell, OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.neighborlist import CellScanNeighborList, DenseNearestNeighborList
 from kups.core.result import as_result_function
@@ -45,9 +45,11 @@ def _both(cutoffs, capacity, image_capacity=None):
     return scan, dense
 
 
-def _triclinic(scale):
-    lvecs = jnp.array([[1.0, 0.0, 0.0], [0.3, 0.9, 0.0], [-0.2, 0.25, 1.1]]) * scale
-    return PeriodicCell(TriclinicFrame.from_matrix(lvecs[None]))
+def _triclinic(*scales):
+    lvecs = jnp.array([[1.0, 0.0, 0.0], [0.3, 0.9, 0.0], [-0.2, 0.25, 1.1]])
+    return PeriodicCell(
+        TriclinicFrame.from_matrix(lvecs * jnp.array(scales)[:, None, None])
+    )
 
 
 def test_batched_skewed_systems_match_dense():
@@ -109,20 +111,28 @@ def test_empty_queries():
 
 
 @pytest.mark.parametrize(
-    ("cutoff", "stencil_radius", "message"),
-    [(3.0, 1, "stencil_radius too small"), (jnp.inf, 1, "finite cutoffs")],
+    ("periodic", "cutoff"),
+    [((False, False, False), jnp.inf), ((True, True, False), 3.0), ((False,) * 3, 3.0)],
 )
-def test_runtime_guards(cutoff, stencil_radius, message):
+def test_open_axes_match_dense(periodic, cutoff):
+    rng = np.random.default_rng(4)
+    keys = make_lh(jnp.asarray(rng.uniform(0, 6.0, (40, 3))), jnp.zeros(40, int))
+    cell = Cell(OrthogonalFrame(jnp.full((1, 3), 6.0)), periodic=periodic)
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    scan, dense = _both(cutoffs, 400)
+    assert _edges_with_shifts(scan, keys, systems) == _edges_with_shifts(
+        dense, keys, systems
+    )
+
+
+def test_infinite_cutoff_on_periodic_axes_fails():
     keys = make_lh(jnp.ones((4, 3)), jnp.zeros(4, int))
-    systems, cutoffs = make_systems(_triclinic(2.0), jnp.array([cutoff]))
+    systems, cutoffs = make_systems(_triclinic(2.0), jnp.array([jnp.inf]))
     scan = CellScanNeighborList(
-        avg_edges=FixedCapacity(64),
-        cells=FixedCapacity(8),
-        cutoffs=cutoffs,
-        stencil_radius=stencil_radius,
+        avg_edges=FixedCapacity(64), cells=FixedCapacity(8), cutoffs=cutoffs
     )
     result = jax.jit(as_result_function(scan))(keys=keys, systems=systems)
-    with pytest.raises(Exception, match=message):
+    with pytest.raises(Exception, match="finite cutoffs"):
         result.raise_assertion()
 
 
@@ -138,32 +148,43 @@ def test_bipartite_queries_match_dense():
     assert expected and _edges_with_shifts(scan, keys, systems, queries) == expected
 
 
-def test_exclusions_keep_non_minimum_images():
-    """Excluded pairs drop only their minimum image; in a box narrower than twice the
-    cutoff the other images survive, so ``is_minimum_image`` must be exact."""
+@pytest.mark.parametrize("scale", [4.0, 8.0])
+def test_exclusions_keep_non_minimum_images(scale):
+    """Excluded pairs drop only their minimum image, so ``is_minimum_image`` must be
+    exact, with (4 Å: narrower than twice the cutoff) and without repeated copies."""
     rng = np.random.default_rng(1)
     n = 24
-    positions = jnp.asarray(rng.uniform(0, 4.0, (n, 3)))
+    positions = jnp.asarray(rng.uniform(0, scale, (n, 3)))
     molecules = jnp.arange(n) // 3  # exclusion groups of three
     keys = make_lh(positions, jnp.zeros(n, int), molecules)
-    systems, cutoffs = make_systems(_triclinic(4.0), jnp.array([3.0]))
+    systems, cutoffs = make_systems(_triclinic(scale), jnp.array([3.0]))
     scan, dense = _both(cutoffs, 400)
     assert _edges_with_shifts(scan, keys, systems) == _edges_with_shifts(
         dense, keys, systems
     )
 
 
-def test_cutoff_wider_than_cell_with_larger_stencil():
+def test_cutoff_wider_than_cell():
+    """Window radius (2, 3, 2) next to (1, 1, 1) in one call."""
     rng = np.random.default_rng(2)
-    keys = make_lh(jnp.asarray(rng.uniform(0, 2.0, (6, 3))), jnp.zeros(6, int))
-    systems, cutoffs = make_systems(_triclinic(2.0), jnp.array([3.0]))
-    _, dense = _both(cutoffs, 2000, image_capacity=200_000)
-    scan = CellScanNeighborList(
-        avg_edges=FixedCapacity(2000),
-        cells=FixedCapacity(512),
-        cutoffs=cutoffs,
-        stencil_radius=3,
+    positions = np.concatenate(
+        [rng.uniform(0, 2.0, (6, 3)), rng.uniform(0, 10.0, (30, 3))]
     )
+    keys = make_lh(jnp.asarray(positions), jnp.array([0] * 6 + [1] * 30))
+    systems, cutoffs = make_systems(_triclinic(2.0, 10.0), jnp.array([3.6, 3.0]))
+    scan, dense = _both(cutoffs, 2000, image_capacity=20_000)
+    assert _edges_with_shifts(scan, keys, systems) == _edges_with_shifts(
+        dense, keys, systems
+    )
+
+
+def test_zero_cutoff_matches_dense():
+    rng = np.random.default_rng(5)
+    keys = make_lh(
+        jnp.asarray(rng.uniform(0, 10.0, (40, 3))), jnp.array([0] * 20 + [1] * 20)
+    )
+    systems, cutoffs = make_systems(_triclinic(10.0, 10.0), jnp.array([3.0, 0.0]))
+    scan, dense = _both(cutoffs, 200)
     assert _edges_with_shifts(scan, keys, systems) == _edges_with_shifts(
         dense, keys, systems
     )
