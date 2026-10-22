@@ -648,6 +648,10 @@ class TestFullEvaluation:
         ref = _graph_full(state, params, ewald_short_range_energy)
         assert actual.dtype == jnp.float64
         npt.assert_allclose(actual, ref, rtol=1e-4)
+        cloud = PointCloud(state.particles, state.systems)
+        assert (
+            engine.build_cell_list_cache(params, cloud).rows.frac.dtype == jnp.float32
+        )
 
     def test_autodiff_gradients_match_graph(self):
         state = _make_state(jax.random.PRNGKey(2), (24, 16), (12.0, 10.0), n_inactive=4)

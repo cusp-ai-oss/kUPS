@@ -209,9 +209,9 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     enables acceptance-conditional updates for local proposals. Full calls
     build a cell table and sum its rows in chunks.
 
-    ``dtype`` is the precision of pair geometry and kernels; energies are
-    summed in the wider of it and the inputs' precision. ``float32`` is much
-    faster on GPUs with slow double precision.
+    ``dtype`` is the precision of pair geometry, kernels and the cell table
+    they read; energies are summed in the wider of it and the inputs'
+    precision. ``float32`` is much faster on GPUs with slow double precision.
 
     ``max_queries_per_system`` bounds active rows in each old/new local query
     (asserted). It keeps query-pair storage proportional to the batch size.
@@ -237,13 +237,15 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         parameters: Params,
         cloud: PointCloud[Part, HasCell[AnyPeriodicity]],
     ) -> CellListCache[Feat]:
-        return build_cell_list_cache(
+        table = build_cell_list_cache(
             cloud.particles,
             cloud.systems,
             self.pair.cutoffs(parameters),
             self.pair.features(cloud.particles.data),
             self.layout,
         )
+        # Kernels read the table in their own precision.
+        return astype_floating(table, self.dtype)
 
     def _sum_dtype(self, inp: FusedPotentialInput[Params, Part, Feat]) -> jnp.dtype:
         """Wider of the kernel and input precision, in which energies are summed."""
@@ -927,7 +929,7 @@ class FusedPotentialCache[Feat]:
                 layout = bind(layout, lambda x: x.chunk_size).set(
                     _gpu_query_chunk_size(layout, cloud.particles.size)
                 )
-        table = FusedNeighborEnergy(pair, layout).build_cell_list_cache(
+        table = FusedNeighborEnergy(pair, layout, dtype=dtype).build_cell_list_cache(
             parameters, cloud
         )
         energy = KahanSummand.init(
