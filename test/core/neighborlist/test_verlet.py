@@ -3,10 +3,9 @@
 
 """Unit tests for the Verlet-skin margin bound (kups.core.neighborlist.verlet).
 
-Covers the pure pieces: the deformation-aware ``skin_margin`` bound (motion
-threshold, compression, expansion, pure shear, triclinic boundary crossing,
-non-periodic axes, per-system accounting) and the single-image clamp on the
-build radius (``effective_build_radii``).
+Covers the deformation-aware ``skin_margin`` bound: motion threshold,
+compression, expansion, pure shear, triclinic boundary crossing, non-periodic
+axes, per-system accounting and cells narrower than twice the build radius.
 """
 
 from __future__ import annotations
@@ -18,12 +17,7 @@ from jax import Array
 
 from kups.core.cell import Cell, TriclinicFrame
 from kups.core.data import Table
-from kups.core.neighborlist import (
-    SkinMargin,
-    SkinReference,
-    effective_build_radii,
-    skin_margin,
-)
+from kups.core.neighborlist import SkinMargin, SkinReference, skin_margin
 from kups.core.neighborlist.verlet import _sym3_min_eigenvalue
 from kups.core.typing import SystemId
 
@@ -47,15 +41,16 @@ def _margins(
     cell_ref: Cell,
     system: Array | None = None,
     cutoff: float = CUTOFF,
-    skin: float = SKIN,
+    skin: float | Array = SKIN,
 ) -> Table[SystemId, SkinMargin]:
     if system is None:
         system = jnp.zeros(positions.shape[0], dtype=int)
     n_sys = int(jnp.max(system)) + 1
     particles = make_lh(positions, system)
     systems, cutoffs = make_systems(cell_now, jnp.full((n_sys,), cutoff))
+    skins = cutoffs.set_data(jnp.broadcast_to(skin, (n_sys,)))
     reference = SkinReference(reference_positions, cell_ref)
-    return skin_margin(particles, systems, reference, cutoffs, skin)
+    return skin_margin(particles, systems, reference, cutoffs, skins)
 
 
 def _margin_fires(*args, **kwargs) -> bool:
@@ -135,6 +130,19 @@ class TestSkinMargin:
         assert float(margin.consumed[1]) == pytest.approx(1.2)
         assert bool(margin.headroom[0] >= 0.0) and bool(margin.headroom[1] < 0.0)
 
+    def test_skin_per_system(self):
+        """Each system's budget is its own skin."""
+        cell = _cell(20.0 * jnp.eye(3), n_sys=2)
+        pos = jnp.array(
+            [[1.0, 1.0, 1.0], [5.0, 5.0, 5.0], [1.0, 1.0, 1.0], [5.0, 5.0, 5.0]]
+        )
+        system = jnp.array([0, 0, 1, 1])
+        moved = pos.at[0, 0].add(0.6).at[2, 0].add(0.6)  # consumes 1.2 in both
+        skin = jnp.array([1.0, 1.5])
+        margin = _margins(moved, pos, cell, cell, system=system, skin=skin).data
+        np.testing.assert_allclose(margin.budget, skin)
+        assert bool(margin.headroom[0] < 0.0) and bool(margin.headroom[1] >= 0.0)
+
     def test_nonperiodic_axes_are_not_unwrapped(self):
         """In a vacuum cell nothing wraps, so a large real move must trigger even
         when a periodic un-wrap of the bounding box would shrink it below the
@@ -145,23 +153,14 @@ class TestSkinMargin:
         # 2 * 6 >= 10 triggers; the misread 2 * 4 would not.
         assert _margin_fires(pos_new, pos_ref, cell, cell, cutoff=1.0, skin=10.0)
 
-
-class TestEffectiveBuildRadii:
-    def test_unclamped_below_the_limit(self):
-        """A radius inside the single-image regime passes through untouched."""
-        cell = _cell(8.0 * jnp.eye(3))
-        radii = effective_build_radii(jnp.array([2.0]), 1.5, cell)
-        assert float(radii[0]) == pytest.approx(3.5)  # 2 + 1.5 < 8 / 2
-
-    def test_clamped_to_half_perpendicular_length(self):
-        cell = _cell(8.0 * jnp.eye(3))
-        radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
-        assert float(radii[0]) == pytest.approx(4.0)  # min(3+2, 8/2)
-
-    def test_unclamped_in_vacuum(self):
-        cell = _cell(8.0 * jnp.eye(3), periodic=(False, False, False))
-        radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
-        assert float(radii[0]) == pytest.approx(5.0)
+    def test_budget_is_the_skin_in_small_cells(self):
+        """Images are followed, so a cell narrower than ``2 (cutoff + skin)`` keeps the
+        whole skin."""
+        cell = _cell(6.0 * jnp.eye(3))
+        pos = jnp.array([[1.0, 1.0, 1.0]])
+        margin = _margins(pos, pos, cell, cell).data
+        np.testing.assert_allclose(margin.budget, [SKIN])
+        np.testing.assert_allclose(margin.consumed, [0.0])
 
 
 def test_sym3_min_eigenvalue_matches_eigvalsh():
