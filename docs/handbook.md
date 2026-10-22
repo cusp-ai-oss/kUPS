@@ -63,31 +63,32 @@ class MdState:
     particles: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
+    skin_list: SkinList
     step: Array
 ```
 
-The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `neighborlist_params` is resized by the retry loop on overflow.
+The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `skin_list` keeps the neighbor pairs across steps ([Neighbor Lists](notebooks/neighborlist.md)). `neighborlist_params` and the skin list's capacities are resized by the retry loop on overflow.
 
 **Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens and the gradient filter; factories fan the lens out to the fields they need.
 
 ```python
 state_lens = identity_lens(MdState)
-potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
+potential, cutoff = config.potential.build(
+    state_lens, POSITIONS_AND_CELL, neighborlist_factory=SkinNeighborList.from_state
+)
 propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 ```
 
-For the LJ backend, `build` delegates to [make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state], wiring particles, systems, and the LJ parameters through the state lens and returning the cutoff used to size the neighbor list. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
+For the LJ backend, `build` delegates to [make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state], wiring particles, systems, and the LJ parameters through the state lens and returning the cutoff used to size the neighbor list. The potential reads its pairs through [SkinNeighborList][kups.core.neighborlist.SkinNeighborList]. It checks the skin list at every force evaluation, rebuilds it when a pair may be missing, and returns a patch that stores the list it read. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator] that applies this patch with the forces, the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] that keeps the skin list when a step fails, inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
 
-**State construction.** Read a standard file, build the two tables, pick initial capacities.
+**State construction.** Read a standard file, build the two tables, seed the rest from them.
 
 ```python
 particles, systems = md_state_from_ase(config.inp_files[0], config.md, key=mb_key)
-neighborlist_params = UniversalNeighborlistParameters.estimate(
-    particles.data.system.counts, systems, cutoff
-)
+state = MdState.create(particles, systems, cutoff, config.md.skin)
 ```
 
-`md_state_from_ase` accepts xyz, cif, or lammps input. [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] guesses initial capacities from geometry; it does not have to be exact, because warmup grows what is too small.
+`md_state_from_ase` accepts xyz, cif, or lammps input. `MdState.create` guesses initial capacities from geometry with [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] and builds the skin list; the estimate does not have to be exact, because warmup grows what is too small.
 
 **Running.** The loop lives on the host side.
 
