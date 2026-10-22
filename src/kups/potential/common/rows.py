@@ -6,7 +6,8 @@
 [`RowPairEnergy`][kups.potential.common.rows.RowPairEnergy] sums a pair function over
 a skin list's [`NeighborRows`][kups.core.neighborlist.rows.NeighborRows]. Rows are
 symmetric, so a particle's gradient and its share of the cell gradient are sums over
-its own row: one pass computes them with the energy.
+its own row: one pass computes them with the energy. In float32 on CUDA GPUs of
+compute capability 8.0+, a Pallas kernel runs one program per row.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from typing import Any, Protocol
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import triton as plgpu
 
 from kups.core.assertion import runtime_assert
 from kups.core.cell import AnyPeriodicity
@@ -26,18 +29,37 @@ from kups.core.neighborlist.rows import NeighborRows
 from kups.core.neighborlist.skin import SkinList, wraps_since_build
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Energy
-from kups.core.typing import HasCell, HasPositionsAndSystemIndex, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, jit, non_differentiable
+from kups.core.typing import (
+    DTypeLike,
+    HasCell,
+    HasPositionsAndSystemIndex,
+    ParticleId,
+    SystemId,
+)
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    jit,
+    non_differentiable,
+    triton_available,
+)
 from kups.core.utils.segment import segment_sum
 from kups.potential.common.graph import POINTCLOUD_GEOMETRY, PointCloud
+
+# One warp walks a row 32 slots per step: 32-64 equal on an L4, rows hold ~90 slots
+# at 9.5 Å in argon.
+BLOCK, WARPS = 32, 1
+# Positions and cells split into multiples of 1/8 Å, exact in float32 below 2**21 Å,
+# and remainders, so pair vectors keep their dtype's precision at any coordinate.
+COARSE = 8.0
 
 
 class RowPairFunction(Protocol):
     """Pair energy at squared distances ``r2`` from per-pair coefficients.
 
-    Elementwise ``jax.numpy`` only, with coefficients from species-pair tables
-    instead of a ``PairKernel``'s parameters, so that a kernel can evaluate it per
-    row. Its derivative in ``r2`` comes from ``jax.jvp``.
+    Elementwise ``jax.numpy`` only: it also runs inside a Pallas kernel, which reads
+    coefficients from species-pair tables instead of calling a ``PairKernel``. Its
+    derivative in ``r2`` comes from ``jax.jvp``.
     """
 
     def __call__(self, r2: Array, coefficients: tuple[Array, ...], /) -> Array: ...
@@ -124,12 +146,19 @@ class RowPairEnergy[Params, Part: HasPositionsAndSystemIndex]:
         tables: Species-pair coefficient tables, each symmetric.
         species: Table row of each particle.
         cutoffs: Cutoffs (Å) per system, or one for all; at most the skin list's.
+        dtype: Precision of the pair terms. ``float32`` is much faster on GPUs with
+            slow double precision and runs a Pallas kernel on CUDA GPUs of compute
+            capability 8.0+; pairs within about 2e-7 of the cutoff (relative) may
+            then fall on either side. Each row is summed in it; system totals use
+            the wider of it and the inputs' precision, and energies come out in
+            that of the positions and cells.
     """
 
     function: RowPairFunction = field(static=True)
     tables: View[Params, tuple[Array, ...]] = field(static=True)
     species: RowSpecies[Params, Part] = field(static=True)
     cutoffs: View[Params, Table[SystemId, Array]] = field(static=True)
+    dtype: DTypeLike = field(static=True, default=jnp.float64, kw_only=True)
 
     @jit
     def __call__(
@@ -158,22 +187,26 @@ class RowPairEnergy[Params, Part: HasPositionsAndSystemIndex]:
         wraps = jax.lax.stop_gradient(
             jnp.where((ids < systems.size)[:, None], wraps, 0)
         )
+        vectors = systems.data.cell.vectors
         energies = _energies(
             self.function,
+            jnp.dtype(self.dtype),
             positions + frames.to_real(wraps),
-            systems.data.cell.vectors,
+            vectors,
             tables,
             self.species(params, particles.data),
             ids,
             cutoffs,
             skin_list.rows,
         )
-        return WithPatch(systems.set_data(energies), IdPatch[Any]())
+        dtype = jnp.result_type(positions, vectors)
+        return WithPatch(systems.set_data(energies.astype(dtype)), IdPatch[Any]())
 
 
-@functools.partial(jax.custom_jvp, nondiff_argnums=(0,))
+@functools.partial(jax.custom_jvp, nondiff_argnums=(0, 1))
 def _energies(
     function: RowPairFunction,
+    dtype: jnp.dtype,
     positions: Array,
     vectors: Array,
     tables: tuple[Array, ...],
@@ -183,7 +216,7 @@ def _energies(
     rows: NeighborRows,
 ) -> Array:
     terms = _system_terms(
-        function, positions, vectors, tables, species, system, cutoffs, rows
+        function, dtype, positions, vectors, tables, species, system, cutoffs, rows
     )
     return terms[0]
 
@@ -191,18 +224,20 @@ def _energies(
 @_energies.defjvp
 def _energies_jvp(
     function: RowPairFunction,
+    dtype: jnp.dtype,
     primals: tuple[Array, Array, tuple[Array, ...], Array, Array, Array, NeighborRows],
     tangents: tuple[Array, Array, tuple[Array, ...], Array, Array, Array, NeighborRows],
 ) -> tuple[Array, Array]:
     # tables, species, system, cutoffs and rows are constants
     system = primals[4]
-    energies, gradients, cell_gradients = _system_terms(function, *primals)
+    energies, gradients, cell_gradients = _system_terms(function, dtype, *primals)
     tangent = segment_sum((gradients * tangents[0]).sum(-1), system, len(energies))
     return energies, tangent + (cell_gradients * tangents[1]).sum((-2, -1))
 
 
 def _system_terms(
     function: RowPairFunction,
+    dtype: jnp.dtype,
     positions: Array,
     vectors: Array,
     tables: tuple[Array, ...],
@@ -212,9 +247,14 @@ def _system_terms(
     rows: NeighborRows,
 ) -> tuple[Array, Array, Array]:
     """Energy and cell gradient of each system, gradient of each particle."""
-    energy, gradient, cell = _row_terms(
-        function, positions, vectors, tables, species, system, cutoffs, rows
-    )
+    args = (function, positions, vectors, tables, species, system, cutoffs, rows)
+    if dtype == jnp.float32 and _use_kernel() and len(rows.order):
+        terms = _rows_pallas(*args)
+    else:
+        terms = _rows_xla(*args, dtype)
+    # system totals in the wider dtype
+    sum_dtype = jnp.result_type(dtype, positions, vectors, *tables)
+    energy, gradient, cell = (term.astype(sum_dtype) for term in terms)
     row_system = system[rows.order]
     return (
         segment_sum(energy, row_system, len(vectors)),
@@ -223,7 +263,12 @@ def _system_terms(
     )
 
 
-def _row_terms(
+def _use_kernel() -> bool:
+    """Whether float32 pair terms run in the Pallas kernel (interpreted off Triton)."""
+    return triton_available()
+
+
+def _rows_xla(
     function: RowPairFunction,
     positions: Array,
     vectors: Array,
@@ -232,6 +277,7 @@ def _row_terms(
     system: Array,
     cutoffs: Array,
     rows: NeighborRows,
+    dtype: jnp.dtype,
 ) -> tuple[Array, Array, Array]:
     """Per row: half its pair energies, their gradient in the row's particle and in
     its system's cell vectors, flattened to 9."""
@@ -241,21 +287,27 @@ def _row_terms(
     # them all into one row
     row = rows.centers
     slot_system = system[rows.order].at[row].get(mode="fill", fill_value=len(vectors))
-    n_ = rows.shifts.astype(positions.dtype)
-    y = positions[rows.order]
-    h = vectors.at[slot_system].get(mode="fill", fill_value=0)
-    # r = y_j - y_i + n h, with explicit products: a batched matmul would not fuse
-    r = y.at[rows.neighbors].get(mode="fill", fill_value=0)
-    r -= y.at[row].get(mode="fill", fill_value=0)
-    r += n_[:, :1] * h[:, 0] + n_[:, 1:2] * h[:, 1] + n_[:, 2:] * h[:, 2]
+    n_ = rows.shifts.astype(dtype)
+
+    def part(y: Array, h: Array) -> Array:
+        """``y_j - y_i + n h`` of one part of the split."""
+        h = h.at[slot_system].get(mode="fill", fill_value=0)
+        r = y.at[rows.neighbors].get(mode="fill", fill_value=0)
+        r -= y.at[row].get(mode="fill", fill_value=0)
+        # explicit products: a batched matmul would not fuse
+        return r + n_[:, :1] * h[:, 0] + n_[:, 1:2] * h[:, 1] + n_[:, 2:] * h[:, 2]
+
+    coarse, fine = _split(positions[rows.order], dtype)
+    vectors_coarse, vectors_fine = _split(vectors, dtype)
+    r = part(coarse, vectors_coarse) + part(fine, vectors_fine)
     r2 = (r**2).sum(-1)
-    rc2 = (cutoffs**2).at[slot_system].get(mode="fill", fill_value=0)
+    rc2 = (cutoffs**2).astype(dtype).at[slot_system].get(mode="fill", fill_value=0)
     inside = r2 < rc2
     r = jnp.where(inside[:, None], r, 0.0)
     row_species = species[rows.order]
     left = row_species.at[row].get(mode="clip")
     right = row_species.at[rows.neighbors].get(mode="clip")
-    coefficients = tuple(table[left, right] for table in tables)
+    coefficients = tuple(table.astype(dtype)[left, right] for table in tables)
     u, du = jax.jvp(
         lambda t: function(t, coefficients),
         (jnp.where(inside, r2, 1.0),),
@@ -270,3 +322,119 @@ def _row_terms(
         segment_sum(-2 * du[:, None] * r, row, n),
         segment_sum(cell, row, n),
     )
+
+
+def _rows_pallas(
+    function: RowPairFunction,
+    positions: Array,
+    vectors: Array,
+    tables: tuple[Array, ...],
+    species: Array,
+    system: Array,
+    cutoffs: Array,
+    rows: NeighborRows,
+) -> tuple[Array, Array, Array]:
+    """``_rows_xla`` in float32 as a Pallas kernel, one program per row."""
+    n, n_sys = len(rows.order), len(vectors)
+    n_species = max((table.shape[0] for table in tables), default=1)
+    coarse, fine = _split(positions[rows.order], jnp.float32)
+    cells = jnp.concatenate(_split(vectors.reshape(n_sys, 9), jnp.float32), axis=1)
+    kernel = functools.partial(
+        _row_kernel, function=function, n_tables=len(tables), n_species=n_species
+    )
+    out = jax.ShapeDtypeStruct((n,), jnp.float32)
+    energy, *terms = pl.pallas_call(
+        kernel,
+        out_shape=(out,) * (1 + 3 + 9),  # energy, gradient, cell gradient
+        grid=(n,),
+        compiler_params=plgpu.CompilerParams(num_warps=WARPS, num_stages=1),
+        interpret=not triton_available(),
+    )(
+        *coarse.T,
+        *fine.T,
+        jnp.clip(system[rows.order], 0, n_sys - 1).astype(jnp.int32),
+        jnp.clip(species[rows.order], 0, n_species - 1).astype(jnp.int32),
+        rows.offsets,
+        rows.neighbors,
+        rows.shifts.reshape(-1),
+        cells,
+        (cutoffs**2).astype(jnp.float32),
+        *(table.astype(jnp.float32).ravel() for table in tables),
+    )
+    return (
+        energy,
+        jnp.stack(terms[:3], -1),
+        jnp.stack(terms[3:], -1),
+    )
+
+
+def _split(x: Array, dtype: DTypeLike) -> tuple[Array, Array]:
+    """``x`` as a multiple of ``1 / COARSE``, exact in ``dtype``, and a remainder."""
+    coarse = jnp.round(x * COARSE) / COARSE
+    return coarse.astype(dtype), (x - coarse).astype(dtype)
+
+
+def _row_kernel(
+    cx_ref: jax.Ref, cy_ref: jax.Ref, cz_ref: jax.Ref, fx_ref: jax.Ref, fy_ref: jax.Ref, fz_ref: jax.Ref,
+    system_ref: jax.Ref, species_ref: jax.Ref, offsets_ref: jax.Ref, neighbors_ref: jax.Ref,
+    shifts_ref: jax.Ref, cell_ref: jax.Ref, rc2_ref: jax.Ref,
+    *refs: jax.Ref,
+    function: RowPairFunction, n_tables: int, n_species: int,
+) -> None:  # fmt: skip
+    """Energy, gradient and cell-gradient terms of row ``pl.program_id(0)``.
+
+    Per slot, ``c = (yc_j - yc_i) + n h_c`` is exact and ``f = (yf_j - yf_i) + n h_f``
+    rounds; ``r = c + f``. Masked lanes take a safe ``r²`` and contribute zero.
+    """
+    table_refs, out_refs = refs[:n_tables], refs[n_tables:]
+    coarse, fine = (cx_ref, cy_ref, cz_ref), (fx_ref, fy_ref, fz_ref)
+    i = pl.program_id(0)
+    s = system_ref[i]
+    hc, hf = [cell_ref[s, k] for k in range(9)], [cell_ref[s, 9 + k] for k in range(9)]
+    yc, yf = [ref[i] for ref in coarse], [ref[i] for ref in fine]
+    pair_row = species_ref[i] * n_species
+    start, end = offsets_ref[i], offsets_ref[i + 1]
+
+    def chunk_body(chunk: Array, acc: tuple[Array, ...]) -> tuple[Array, ...]:
+        slot = start + chunk * BLOCK + jnp.arange(BLOCK, dtype=jnp.int32)
+        valid = slot < end
+        j = plgpu.load(neighbors_ref.at[slot], mask=valid, other=0)
+        n = [
+            plgpu.load(shifts_ref.at[3 * slot + a], mask=valid, other=0).astype(
+                jnp.float32
+            )
+            for a in range(3)
+        ]
+
+        def component(b: int) -> Array:
+            c = plgpu.load(coarse[b].at[j], mask=valid, other=0.0) - yc[b]
+            f = plgpu.load(fine[b].at[j], mask=valid, other=0.0) - yf[b]
+            c += n[0] * hc[b] + n[1] * hc[3 + b] + n[2] * hc[6 + b]
+            f += n[0] * hf[b] + n[1] * hf[3 + b] + n[2] * hf[6 + b]
+            return c + f
+
+        r = [component(b) for b in range(3)]
+        r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2]
+        inside = valid & (r2 < rc2_ref[s])
+        pair = pair_row + plgpu.load(species_ref.at[j], mask=valid, other=0)
+        coefficients = tuple(
+            plgpu.load(ref.at[pair], mask=valid, other=0.0) for ref in table_refs
+        )
+        u, du = jax.jvp(
+            lambda t: function(t, coefficients),
+            (jnp.where(inside, r2, 1.0),),
+            (jnp.ones_like(r2),),
+        )
+        u, du = jnp.where(inside, u, 0.0), jnp.where(inside, du, 0.0)
+        terms = (
+            u / 2,
+            *(-2 * du * r[b] for b in range(3)),
+            *(du * n[a] * r[b] for a in range(3) for b in range(3)),
+        )
+        return tuple(total + jnp.sum(term) for total, term in zip(acc, terms))
+
+    n_chunks = (end - start + BLOCK - 1) // BLOCK
+    zero = jnp.zeros((), jnp.float32)
+    totals = jax.lax.fori_loop(0, n_chunks, chunk_body, (zero,) * len(out_refs))
+    for ref, total in zip(out_refs, totals):
+        ref[i] = total
