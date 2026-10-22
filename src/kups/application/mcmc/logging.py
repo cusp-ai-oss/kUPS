@@ -169,7 +169,8 @@ def make_mcmc_logged_data[S: IsMCMCState](
             potential_energy=state.systems.data.potential_energy.total,
             lj_energy=state.lj_parameters.cache.total.total_energies.data,
             ewald_short_range_energy=ewald.short_range.total.total_energies.data,
-            ewald_long_range_energy=ewald.long_range.total.total_energies.data,
+            ewald_long_range_energy=ewald.long_range.total.total_energies.data
+            + ewald.net_charge.total.total_energies.data,
             ewald_self_energy=ewald.self_interaction.total.total_energies.data,
             ewald_exclusion_energy=ewald.exclusion.total.total_energies.data,
             translation_step_width=state.translation_params.map_data(

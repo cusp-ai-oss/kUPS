@@ -39,6 +39,7 @@ from .potential import (
     long_range,
     make_ewald_exclusion_correction_potential,
     make_ewald_long_range_potential,
+    make_ewald_net_charge_potential,
     make_ewald_potential,
     make_ewald_self_interaction_potential,
     make_ewald_short_range_potential,
@@ -79,6 +80,7 @@ __all__ = [
     "make_ewald_exclusion_correction_potential",
     "make_ewald_short_range_potential",
     "make_ewald_long_range_potential",
+    "make_ewald_net_charge_potential",
     "make_ewald_self_interaction_potential",
     "make_ewald_potential",
 ]

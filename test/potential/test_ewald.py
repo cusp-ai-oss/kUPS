@@ -307,6 +307,7 @@ class TestEwald:
                 EwaldLongRangeInput(PointCloud(all_particles, systems), params, None)
             ).data.data[0]
             + ewald_self_interaction_energy(sr_inp).data.data[0]
+            + ewald_net_charge_energy(sr_inp).data.data[0]
         )
 
         # 2. Vacuum Coulomb of the excluded (bonded) pairs via manual edges
@@ -387,8 +388,14 @@ class TestEwald:
         lr_input = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
         lr_result = ewald_long_range_energy(lr_input)
         self_result = ewald_self_interaction_energy(sr_input)
+        net_result = ewald_net_charge_energy(sr_input)
 
-        total_energy = sr_result.data.data + lr_result.data.data + self_result.data.data
+        total_energy = (
+            sr_result.data.data
+            + lr_result.data.data
+            + self_result.data.data
+            + net_result.data.data
+        )
         npt.assert_allclose(
             MADELUNG_CONSTANT * (REPEATS**3) * 4,
             total_energy[0] / TO_STANDARD_UNITS,
@@ -406,9 +413,10 @@ class TestEwald:
         pdata = _make_particle_data(positions, charges, n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
         systems = _make_systems(cell[None], jnp.array([5.0]))
-        inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+        edges = _build_neighborlist(particles, systems, len(charges))
+        graph = HyperGraph(particles=particles, systems=systems, edges=edges)
 
-        e_net = ewald_net_charge_energy(inp).data[0]
+        e_net = ewald_net_charge_energy(GraphPotentialInput(params, graph)).data.data[0]
         Q, V = 2.5, L**3
         expected = -jnp.pi / (2 * V * alpha**2) * Q**2 * TO_STANDARD_UNITS
         npt.assert_allclose(e_net, expected, rtol=1e-6)
@@ -455,6 +463,7 @@ class TestEwald:
                 ewald_short_range_energy(sr_inp).data.data[0]
                 + ewald_long_range_energy(lr_inp).data.data[0]
                 + ewald_self_interaction_energy(sr_inp).data.data[0]
+                + ewald_net_charge_energy(sr_inp).data.data[0]
             )
 
         e_lo = total_energy(0.5)
@@ -617,22 +626,24 @@ class TestStructureFactorCache:
             changes: WithIndices[ParticleId, PointCloudParticles] | None = None,
         ) -> EwaldLongRangeInput[Any]:
             patched = bind(particles).focus(lambda p: p.data.positions).set(pos)
+            rows = (
+                None
+                if changes is None
+                else WithIndices(
+                    changes.indices, (changes.data, patched[changes.indices])
+                )
+            )
             return EwaldLongRangeInput(
-                PointCloud(patched, systems), params, cache, None, changes
+                PointCloud(patched, systems), params, cache, None, rows
             )
 
         return particles, make_input
 
     def _cache(self, summand: KahanSummand[Array]) -> EwaldCache[Any, Any]:
         """Wrap a structure factor accumulator in an otherwise-zero cache."""
-        zeros = EwaldCache.make(1, summand.value.shape[1])
-        return EwaldCache(
-            summand,
-            zeros.short_range,
-            zeros.long_range,
-            zeros.self_interaction,
-            zeros.exclusion,
-        )
+        return bind(
+            EwaldCache.make(1, summand.value.shape[1]), lambda c: c.structure_factor
+        ).set(summand)
 
     def _walk(self, compensated: bool) -> tuple[Array, Array]:
         """Run a chain of single-particle moves, returning final S(k) and positions.
@@ -700,13 +711,9 @@ class TestReciprocalReduction:
     """Uneven batches, bounded tiles, and the full-energy derivative of a cache."""
 
     @pytest.mark.parametrize("grid", [False, True])
-    @pytest.mark.parametrize(
-        "previous_systems", ["original", "relabelled", "negative_inactive"]
-    )
+    @pytest.mark.parametrize("previous_systems", ["original", "relabelled"])
     def test_incremental_probe_with_subset_vocabulary(
-        self,
-        grid: bool,
-        previous_systems: Literal["original", "relabelled", "negative_inactive"],
+        self, grid: bool, previous_systems: Literal["original", "relabelled"]
     ):
         proposal = self._proposal(self._input(grid=grid))
         previous = proposal.changes_from_prev
@@ -716,19 +723,13 @@ class TestReciprocalReduction:
             tuple(keys[i] for i in (0, 2, 3, 5, 18)),
             jnp.array([0, 1, 2, 3, 4, 5, 5]),
         )
-        old = previous.data
+        old, _ = previous.data
         if previous_systems != "original":
             # Preserve inactive rows while changing the system vocabulary.
-            system = old.system.apply_mask(old.system.indices >= 0).update_labels(
-                (SystemId(-1), *old.system.keys)
-            )
-            if previous_systems == "negative_inactive":
-                system = bind(system, lambda idx: idx.indices).set(
-                    jnp.where(old.system.indices >= 0, system.indices, -1)
-                )
+            system = old.system.update_labels((SystemId(-1), *old.system.keys))
             old = bind(old, lambda p: p.system).set(system)
         proposal = bind(proposal, lambda p: p.changes_from_prev).set(
-            WithIndices(subset, old)
+            WithIndices(subset, (old, proposal.point_cloud.particles[subset]))
         )
         actual, _ = structure_factor(proposal)
         expected, _ = structure_factor(
@@ -798,10 +799,10 @@ class TestReciprocalReduction:
     def _proposal(self, inp):
         p = inp.point_cloud.particles
         idx = Index.integer(
-            jnp.array([0, 2, 3, 5, 18, 19, -1]), n=len(p), label=ParticleId
+            jnp.array([0, 2, 3, 5, 18, 19, 19]), n=len(p), label=ParticleId
         )
-        # The two invalid probe rows deliberately carry real old data: neither
-        # may subtract a particle or wrap around to the last particle slot.
+        # The two out-of-bounds probe rows deliberately carry real old data:
+        # neither may subtract a particle.
         old = jax.tree.map(lambda a: a[jnp.array([0, 2, 3, 5, 18, 0, 0])], p.data)
         new = bind(p.data, lambda x: (x.positions, x.charges, x.system)).set(
             (
@@ -830,7 +831,7 @@ class TestReciprocalReduction:
                 bind(inp.point_cloud, lambda x: x.particles).set(p.set_data(new)),
                 cache,
                 lens(lambda c: c),
-                WithIndices(idx, old),
+                WithIndices(idx, (old, p.set_data(new)[idx])),
             )
         )
 
@@ -981,6 +982,38 @@ class TestReciprocalReduction:
             with pytest.raises(AssertionError):
                 evaluate(proposal)
 
+    def test_incremental_energy_reads_only_changed_rows(self):
+        """Energy-only evaluation takes changed rows from ``changes_from_prev``."""
+        inp = self._input()
+        proposal = self._proposal(inp)
+        stale = bind(proposal, lambda x: x.point_cloud).set(inp.point_cloud)
+        energy = jax.jit(lambda x: ewald_long_range_energy(x).data.data)
+        npt.assert_allclose(energy(stale), energy(proposal), rtol=1e-12)
+
+    @pytest.mark.parametrize("batch", [1, 4])
+    def test_net_charge_energy_per_system(self, batch):
+        """Interleaved, inactive and empty systems sum only their own charges."""
+        inp = self._input(batch=batch)
+        particles, systems = inp.point_cloud.particles, inp.point_cloud.systems
+        edges = Edges(
+            Index(particles.keys, jnp.zeros((0, 0), int)), jnp.zeros((0, 0, 3), int)
+        )
+        graph = HyperGraph(particles, systems, edges)
+        energy = jax.jit(ewald_net_charge_energy)(
+            GraphPotentialInput(inp.parameters, graph)
+        ).data.data
+        p = particles.data
+        net_charge = np.array(
+            [
+                np.where(p.system.isin(Index.new([key])), p.charges, 0).sum()
+                for key in systems.keys
+            ]
+        )
+        alpha, volume = inp.parameters.alpha.data, systems.data.cell.volume
+        expected = -np.pi / (2 * volume * alpha**2) * net_charge**2 * TO_STANDARD_UNITS
+        npt.assert_allclose(energy, expected, rtol=1e-12)
+        assert np.all((energy != 0) == (net_charge != 0))
+
     @pytest.mark.parametrize("empty", ["particles", "kvecs", "changes"])
     def test_empty_inputs(self, empty):
         inp = self._input()
@@ -1078,13 +1111,13 @@ class TestReciprocalShifts:
             )
         energy = jax.jit(ewald_long_range_energy)(inp).data.data
         npt.assert_allclose(
-            energy - ewald_net_charge_energy(inp).data,
+            energy,
             reference_energy,
             atol=2e-13,
             rtol=2e-13,
         )
 
-    def test_zero_cutoff_has_only_background_energy(self):
+    def test_zero_cutoff_has_no_reciprocal_energy(self):
         inp = TestReciprocalReduction()._input()
         parameters = EwaldParameters.from_cutoffs(
             inp.point_cloud.systems,
@@ -1096,9 +1129,7 @@ class TestReciprocalShifts:
         inp = bind(inp, lambda x: x.parameters).set(parameters)
         npt.assert_array_equal(jax.jit(prefactor)(inp), 0)
         npt.assert_allclose(
-            jax.jit(ewald_long_range_energy)(inp).data.data,
-            ewald_net_charge_energy(inp).data,
-            atol=2e-13,
+            jax.jit(ewald_long_range_energy)(inp).data.data, 0, atol=2e-13
         )
 
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
