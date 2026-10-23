@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
+import jax.numpy as jnp
 from jax import Array
 
 from kups.core.cell import AnyPeriodicity
@@ -26,10 +27,10 @@ from kups.core.lens import Lens, const_lens, identity_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     IsNeighborListState,
-    IsSkinListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
+    SkinList,
 )
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
@@ -40,6 +41,7 @@ from kups.core.potential import (
     empty_patch_idx_view,
 )
 from kups.core.typing import (
+    DTypeLike,
     HasCache,
     HasCell,
     HasLabels,
@@ -50,11 +52,13 @@ from kups.core.typing import (
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
+    IsLennardJonesParticles,
     IsLJGraphParticles,
     LennardJonesParameters,
     make_global_lennard_jones_tail_correction_potential,
     make_global_lennard_jones_tail_correction_pressure,
     make_lennard_jones_potential,
+    make_lennard_jones_row_potential,
 )
 from kups.potential.common.geometry import (
     Geometry,
@@ -63,6 +67,7 @@ from kups.potential.common.geometry import (
 )
 from kups.potential.common.graph import GRAPH_GEOMETRY, IsParticleProbe
 from kups.potential.common.rigid_body_composition import RigidBodyComposition
+from kups.potential.common.rows import ROW_GEOMETRY
 
 
 class HasLJParticlesAndSystems(
@@ -78,8 +83,11 @@ class IsLJGraphState(
     """Particles, systems, and neighbor list for an LJ graph (no parameters)."""
 
 
-class IsLJSkinListState(IsLJGraphState, IsSkinListState, Protocol):
-    """:class:`IsLJGraphState` whose pairs come from a skin list."""
+class IsLJRowState(IsState[IsLennardJonesParticles, HasCell[AnyPeriodicity]], Protocol):
+    """Particles, systems, and a skin list for LJ over its rows (no parameters)."""
+
+    @property
+    def skin_list(self) -> SkinList: ...
 
 
 class IsLJState[Params](IsLJGraphState, Protocol):
@@ -267,6 +275,37 @@ def make_lennard_jones_from_state(
         EMPTY_LENS,
         patch_idx_view,
         cache_view,
+    )
+
+
+def make_lennard_jones_row_from_state[State](
+    state: Lens[State, IsLJRowState],
+    *,
+    parameters: LennardJonesParameters,
+    gradient: Lens[Geometry, PositionsAndCell],
+    dtype: DTypeLike = jnp.float64,
+) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]:
+    """Create a LJ potential over the neighbor rows of the state's skin list.
+
+    Args:
+        state: Lens into the sub-state providing particles, systems, and a skin list
+            built at a cutoff of at least the LJ cutoff.
+        parameters: Constant LJ parameters, bound with a constant lens.
+        gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
+            optimizer DOFs. Composed with ``ROW_GEOMETRY`` into the potential's
+            gradient lens.
+        dtype: Precision of the pair terms, see ``RowPairEnergy``.
+
+    Returns:
+        Configured Lennard-Jones potential.
+    """
+    return make_lennard_jones_row_potential(
+        state.focus(lambda x: x.particles),
+        state.focus(lambda x: x.systems),
+        state.focus(lambda x: x.skin_list),
+        const_lens(parameters),
+        ROW_GEOMETRY.nest(gradient),
+        dtype=dtype,
     )
 
 

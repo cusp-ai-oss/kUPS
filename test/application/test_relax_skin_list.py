@@ -1,14 +1,17 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Relaxation on the skin list sees the same pairs as with per-step builds."""
+"""Relaxation on the skin list sees the same pairs as with per-step builds, through
+the graph path of the MLFF backends and through LJ's neighbor rows."""
 
+from functools import partial
 from typing import Any
 
 import ase.build
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
@@ -16,6 +19,7 @@ from kups.application.potential.classical.lennard_jones import (
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
 from kups.application.relaxation.data import RelaxState, relax_state_from_ase
 from kups.application.relaxation.simulation import make_relax_propagator
+from kups.application.simulations.potentials import LjPotentialConfig
 from kups.core.assertion import check_assertions, runtime_assert
 from kups.core.data import Table
 from kups.core.lens import identity_lens
@@ -27,8 +31,11 @@ from kups.core.utils.jax import dataclass, field
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 
-_LJ = LennardJonesParameters.from_dict(
+_ROWS = LjPotentialConfig(
     cutoff=5.0, parameters={"Ar": (3.405, 0.010326)}, mixing_rule="lorentz_berthelot"
+)
+_LJ = LennardJonesParameters.from_dict(
+    _ROWS.cutoff, _ROWS.parameters, _ROWS.mixing_rule
 )
 _LBFGS = [
     {"transform": "scale_by_ase_lbfgs", "memory_size": 10, "alpha": 70},
@@ -65,7 +72,7 @@ class _Checked:
 
 
 def _built(factory, gradient) -> tuple:
-    """Graph LJ over ``factory``'s pairs."""
+    """Graph LJ over ``factory``'s pairs, as the MLFF backends evaluate them."""
     potential = make_lennard_jones_from_state(
         identity_lens(RelaxState),
         parameters=_LJ,
@@ -98,20 +105,33 @@ def _relax(potential, cutoff, optimizer, gradient, steps: int = 12) -> RelaxStat
     return state
 
 
-def test_relaxation_matches_per_step_builds():
+# the skin list's pairs as the MLFF backends read them, and LJ's rows
+_SKIN_PATHS = pytest.mark.parametrize(
+    "skin_path",
+    [
+        partial(_built, SkinNeighborList.from_state),
+        partial(_ROWS.build, identity_lens(RelaxState)),
+    ],
+    ids=["graph", "rows"],
+)
+
+
+@_SKIN_PATHS
+def test_relaxation_matches_per_step_builds(skin_path):
     skin, per_step = (
-        _relax(*_built(factory, POSITIONS_ONLY), _LBFGS, POSITIONS_ONLY)
-        for factory in (SkinNeighborList.from_state, AdaptiveNeighborList.from_state)
+        _relax(*built(POSITIONS_ONLY), _LBFGS, POSITIONS_ONLY)
+        for built in (skin_path, partial(_built, AdaptiveNeighborList.from_state))
     )
     np.testing.assert_allclose(
         skin.particles.data.positions, per_step.particles.data.positions, atol=1e-8
     )
 
 
-def test_line_search_evaluations_match_per_step_builds():
+@_SKIN_PATHS
+def test_line_search_evaluations_match_per_step_builds(skin_path):
     """A line search turns round-off into other trial points, so paths that sum pairs
     in another order diverge. Every evaluation, trial points included, is checked
     against per-step builds instead."""
-    skin, cutoff = _built(SkinNeighborList.from_state, FRECHET_FILTER)
+    skin, cutoff = skin_path(FRECHET_FILTER)
     per_step, _ = _built(AdaptiveNeighborList.from_state, FRECHET_FILTER)
     _relax(_Checked(skin, per_step), cutoff, _LBFGS_LINESEARCH, FRECHET_FILTER)

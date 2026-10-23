@@ -1,7 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""MD on the skin list follows the same trajectories as with per-step builds."""
+"""MD on the skin list follows the same trajectories as with per-step builds, through
+the graph path of the MLFF backends and through LJ's neighbor rows."""
 
 import json
 import zipfile
@@ -23,6 +24,7 @@ from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.potential.mliap.tojax import make_tojaxed_from_state
 from kups.application.simulations.potentials import (
     BuiltPotential,
+    LjPotentialConfig,
     TojaxPotentialConfig,
 )
 from kups.core.data import Table
@@ -34,8 +36,11 @@ from kups.core.utils.msgpack import serialize as msgpack_serialize
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.potential.mliap.tojax import TojaxedMliap
 
-_LJ = LennardJonesParameters.from_dict(
+_ROWS = LjPotentialConfig(
     cutoff=8.0, parameters={"Ar": (3.405, 0.010326)}, mixing_rule="lorentz_berthelot"
+)
+_LJ = LennardJonesParameters.from_dict(
+    _ROWS.cutoff, _ROWS.parameters, _ROWS.mixing_rule
 )
 
 
@@ -63,7 +68,7 @@ def _argon(n: int, seed: int) -> ase.Atoms:
 
 
 def _graph(factory) -> BuiltPotential:
-    """Graph LJ over ``factory``'s pairs."""
+    """Graph LJ over ``factory``'s pairs, as the MLFF backends evaluate them."""
     potential = make_lennard_jones_from_state(
         identity_lens(MdState),
         parameters=_LJ,
@@ -71,6 +76,21 @@ def _graph(factory) -> BuiltPotential:
         neighborlist_factory=factory,
     )
     return potential, _LJ.cutoff
+
+
+def _rows(dtype: str = "float64") -> BuiltPotential:
+    """LJ over the skin list's rows, as the app config builds it."""
+    config = _ROWS.model_copy(update={"kernel_dtype": dtype})
+    return config.build(identity_lens(MdState), POSITIONS_AND_CELL)
+
+
+def _paths() -> list[BuiltPotential]:
+    """Per-step builds (the reference), the skin list's pairs and its rows."""
+    return [
+        _graph(AdaptiveNeighborList.from_state),
+        _graph(SkinNeighborList.from_state),
+        _rows(),
+    ]
 
 
 def _state(md: MdParameters, built: BuiltPotential, atoms: list[ase.Atoms]) -> tuple:
@@ -103,11 +123,9 @@ def test_trajectory_matches_per_step_builds(integrator):
     """Two systems; the 15.9 Å one is narrower than twice the cutoff, so pairs
     appear through several images. A small skin makes the run rebuild often."""
     atoms = [_argon(4, 0), _argon(3, 1)]
-    per_step, skin = (
-        _run(_md(integrator), _graph(factory), atoms)
-        for factory in (AdaptiveNeighborList.from_state, SkinNeighborList.from_state)
-    )
-    np.testing.assert_allclose(skin, per_step, atol=1e-8)
+    per_step, *skin = (_run(_md(integrator), built, atoms) for built in _paths())
+    for positions in skin:
+        np.testing.assert_allclose(positions, per_step, atol=1e-8)
 
 
 def test_margin_is_checked_where_forces_are_evaluated():
@@ -117,9 +135,9 @@ def test_margin_is_checked_where_forces_are_evaluated():
     )
     atoms.pbc = True
     forces = []
-    for factory in (SkinNeighborList.from_state, AdaptiveNeighborList.from_state):
+    for built in _paths():
         md = _md("verlet").model_copy(update={"initialize_momenta": False})
-        state, step = _state(md, _graph(factory), [atoms])
+        state, step = _state(md, built, [atoms])
         masses = state.particles.data.masses[:, None]
         time_step = state.systems.data.integrator_params.time_step[0]
         velocity = jnp.array([[0.3, 0.0, 0.0], [-0.3, 0.0, 0.0]]) / time_step
@@ -127,8 +145,21 @@ def test_margin_is_checked_where_forces_are_evaluated():
         result = jax.jit(as_result_function(step))(jax.random.key(0), state)
         result.raise_assertion()
         forces.append(np.asarray(result.value.particles.data.forces))
-    assert np.abs(forces[1]).max() > 0
-    np.testing.assert_allclose(forces[0], forces[1], rtol=1e-10)
+    assert np.abs(forces[0]).max() > 0
+    for skin in forces[1:]:
+        np.testing.assert_allclose(skin, forces[0], rtol=1e-10)
+
+
+def test_float32_rows_follow_float64(row_kernel):
+    """Float32 pair terms, in the Pallas kernel or in XLA, stay within float32
+    round-off of float64 over a block."""
+    md, atoms = _md("baoab_langevin"), [_argon(3, 0), _argon(2, 1)]
+    float64, float32 = (
+        _run(md, _rows(dtype), atoms, blocks=1) for dtype in ("float64", "float32")
+    )
+    assert row_kernel is None or row_kernel
+    assert not np.array_equal(float32, float64)
+    np.testing.assert_allclose(float32, float64, atol=1e-6)
 
 
 def _pair_model(path) -> None:
