@@ -40,7 +40,6 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import SkinNeighborList
 from kups.core.typing import ParticleId, SystemId
 from kups.relaxation.config import make_optimizer
 
@@ -76,9 +75,7 @@ def run(config: Config) -> RelaxState:
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
-    potential, cutoff = config.potential.build(
-        state_lens, gradient, neighborlist_factory=SkinNeighborList.from_state
-    )
+    potential, cutoff = config.potential.build(state_lens, gradient)
     propagator, opt_init = make_relax_propagator(
         state_lens, potential, optimizer, gradient
     )
