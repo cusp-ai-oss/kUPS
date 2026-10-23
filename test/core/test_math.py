@@ -1,11 +1,15 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Iterator
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
+from jax.extend.core import ClosedJaxpr, Jaxpr
 
 from kups.core.utils.math import (
     DiagonalSquareMatrix,
@@ -304,6 +308,17 @@ class TestTriangular3x3:
                 npt.assert_allclose(inv, jnp.linalg.inv(A), atol=1e-12)
 
 
+def _primitives(jaxpr: Jaxpr) -> Iterator[str]:
+    """Names of the primitives in `jaxpr` and in every jaxpr nested in it."""
+    for eqn in jaxpr.eqns:
+        yield eqn.primitive.name
+        for sub in jax.tree.leaves(eqn.params):
+            if isinstance(sub, ClosedJaxpr):
+                sub = sub.jaxpr
+            if isinstance(sub, Jaxpr):
+                yield from _primitives(sub)
+
+
 class TestTriangular3x3Matmul:
     @pytest.fixture(
         params=[
@@ -352,6 +367,44 @@ class TestTriangular3x3Matmul:
         gradients = jax.jit(jax.grad(actual, (0, 1)))(matrix, vectors)
         for left, right in zip(gradients, expected):
             npt.assert_allclose(left, right, rtol=1e-10, atol=1e-12)
+
+    def test_derivatives_match_dense_product(self, matmul_params):
+        """Tangents, gradients and second order match the dense product.
+
+        The gradient in L for integer x, as edge shifts are, pads no product.
+        """
+        lower, side = matmul_params["lower"], matmul_params["side"]
+        keys = jax.random.split(jax.random.key(14), 4)
+        matrices = jax.random.normal(keys[0], (5, 3, 3))
+        vectors = jax.random.normal(keys[1], (4, 3))
+        shifts = jnp.round(3 * vectors).astype(int)
+        tangents = (
+            jax.random.normal(keys[2], (3, 3)),
+            jax.random.normal(keys[3], (4, 3)),
+        )
+
+        def reference(matrix: jax.Array, x: jax.Array) -> jax.Array:
+            matrix = jnp.tril(matrix) if lower else jnp.triu(matrix)
+            return x @ (matrix.T if side is MatmulSide.LEFT else matrix)
+
+        def actual(matrix: jax.Array, x: jax.Array) -> jax.Array:
+            return triangular_3x3_matmul(matrix, x, **matmul_params)
+
+        def loss(fn, matrix: jax.Array, x: jax.Array) -> jax.Array:
+            return jnp.sum(fn(matrix, x) ** 3)
+
+        def derivatives(fn) -> list[jax.Array]:
+            cubed = partial(loss, fn)
+            return [
+                jax.jvp(fn, (matrices[0], vectors), tangents)[1],
+                jax.vmap(jax.grad(cubed), in_axes=(0, None))(matrices, shifts),
+                *jax.tree.leaves(jax.hessian(cubed, (0, 1))(matrices[0], vectors)),
+            ]
+
+        for left, right in zip(derivatives(actual), derivatives(reference)):
+            npt.assert_allclose(left, right, rtol=1e-10, atol=1e-12)
+        gradient = jax.make_jaxpr(jax.grad(partial(loss, actual)))(matrices[0], shifts)
+        assert "pad" not in set(_primitives(gradient.jaxpr))
 
 
 class TestLogm:
