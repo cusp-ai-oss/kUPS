@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -288,6 +290,67 @@ class TestGetitem:
         single = Table.arange(jnp.asarray([[1.0, 2.0]], jnp.float32), label=ParticleId)
         oob = Index.integer([0, 1], n=1, label=ParticleId)
         npt.assert_array_equal(single[oob], [[1.0, 2.0], [1.0, 2.0]])
+
+    def test_single_row_grad_is_the_wide_sum_of_in_range_ids(self):
+        """One row sums its in-range cotangents once in a wider float, as many do."""
+        single = Table.arange(jnp.zeros((1, 3), jnp.float32), label=ParticleId)
+        edges = Index.integer(jnp.asarray([0] * 10 + [1]), n=1, label=ParticleId)
+        cotangent = jnp.asarray([1e8, *[1.0] * 8, -1e8, jnp.nan], jnp.float32)
+
+        def loss(row: jax.Array) -> jax.Array:
+            return jnp.sum(single.set_data(row)[edges] * cotangent[:, None])
+
+        npt.assert_array_equal(jax.grad(loss)(single.data), [[8.0, 8.0, 8.0]])
+
+    @pytest.mark.parametrize("rows", [0, 1, 3])
+    def test_float_derivatives_ignore_out_of_range_ids(self, rows: int):
+        """Derivatives match a one-hot gather, whatever out-of-range ids read."""
+        keys = jax.random.split(jax.random.key(5), 3)
+        table = Table.arange(jax.random.normal(keys[0], (rows, 3)), label=ParticleId)
+        # In-range ids and the sentinel `rows`, then -1 and an id far past it.
+        ids = jnp.arange(16).reshape(8, 2) % (rows + 1)
+        ids = ids.at[-1].set(jnp.asarray([-1, rows + 5]))
+        index = Index.integer(ids, n=rows, label=ParticleId)
+        weights = jax.random.normal(keys[1], (8, 2, 3))
+        tangent = jax.random.normal(keys[2], (rows, 3))
+
+        def gather(data: jax.Array) -> jax.Array:
+            return table.set_data(data)[index]
+
+        def one_hot(data: jax.Array) -> jax.Array:
+            return jax.nn.one_hot(ids, rows, dtype=data.dtype) @ data
+
+        def derivatives(fn: Callable[[jax.Array], jax.Array]) -> list[jax.Array]:
+            def loss(data: jax.Array) -> jax.Array:
+                return jnp.sum(fn(data) ** 3 * weights)
+
+            def directional(data: jax.Array) -> jax.Array:
+                return jnp.sum(jax.grad(loss)(data) * tangent)
+
+            return [
+                jax.grad(loss)(table.data),
+                jax.jvp(fn, (table.data,), (tangent,))[1],
+                jax.grad(directional)(table.data),
+                jax.vmap(jax.grad(loss))(jnp.stack([table.data, 2 * table.data])),
+            ]
+
+        values = one_hot(table.data)
+        if rows == 1:  # Out of range, one row reads its row; others read zero.
+            values = jnp.broadcast_to(table.data, values.shape)
+        npt.assert_array_equal(gather(table.data), values)
+        for actual, expected in zip(derivatives(gather), derivatives(one_hot)):
+            npt.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
+    @pytest.mark.parametrize("rows", [1, 3])
+    def test_weak_and_integer_leaves_keep_plain_indexing(self, rows: int):
+        """Weakly typed floats and integers clamp out of bounds and keep their type."""
+        ids = jnp.asarray([0, rows])
+        index = Index.integer(ids, n=rows, label=ParticleId)
+        for leaf in (jnp.full((rows, 2), 1.5), jnp.arange(2 * rows).reshape(rows, 2)):
+            gathered = Table.arange(leaf, label=ParticleId)[index]
+            npt.assert_array_equal(gathered, leaf.at[ids].get())
+            assert gathered.dtype == leaf.dtype
+            assert gathered.weak_type == leaf.weak_type
 
     def test_out_of_bounds_reads_zero_but_keeps_index_sentinels(self):
         """A float leaf reads zero out of bounds; an ``Index`` leaf keeps the sentinel."""
