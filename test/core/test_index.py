@@ -345,6 +345,23 @@ class TestConcatenate:
             Index((ParticleId(1), ParticleId(0)), jnp.array([0, 1]))
 
 
+class TestStack:
+    def test_merges_keys_along_new_axis(self):
+        a = Index(("H", "O"), jnp.array([0, 1, 2]))
+        b = Index(("C", "O"), jnp.array([1, 0, 2]))
+        result = Index.stack(a, b, axis=-1)
+        assert result.keys == ("C", "H", "O")
+        assert result[:2].value.tolist() == [["H", "O"], ["O", "C"]]
+        npt.assert_array_equal(result.valid_mask[2], [False, False])
+        npt.assert_array_equal(Index.stack(a, b).raw_indices, result.raw_indices.T)
+
+    def test_sums_max_count(self):
+        a = Index(("X",), jnp.array([0]), max_count=3)
+        b = Index(("X",), jnp.array([0]), max_count=7)
+        assert Index.stack(a, b).max_count == 10
+        assert Index.stack(a, Index(("X",), jnp.array([0]))).max_count is None
+
+
 class TestSelectPerLabel:
     @pytest.mark.parametrize("n_labels", [1, 4, 128])
     def test_buffered_shuffled_labels(self, n_labels: int):
