@@ -14,6 +14,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 from jax import Array
+from jax.interpreters import mlir
 from jax.typing import ArrayLike, DTypeLike
 
 from kups.core.utils.segment import bincount, segment_sum, segment_take
@@ -154,6 +155,19 @@ def _max_ulp_error(out: ArrayLike, exact: np.ndarray) -> float:
     return float(np.max(np.abs(np.asarray(out, np.float64) - exact) / ulp))
 
 
+def _scatter_rows(lowered: jax.stages.Lowered) -> list[int]:
+    """Rows of the operand of every scatter in `lowered`."""
+    rows: list[int] = []
+
+    def visit(op: mlir.ir.Operation) -> mlir.ir.WalkResult:
+        if op.name == "stablehlo.scatter":
+            rows.append(mlir.ir.RankedTensorType(op.operands[0].type).shape[0])
+        return mlir.ir.WalkResult.ADVANCE
+
+    lowered.compiler_ir("stablehlo").operation.walk(visit)
+    return rows
+
+
 class TestBincount:
     @pytest.mark.parametrize("length", (0, 1, 3))
     @pytest.mark.parametrize("shape", ((), (0,), (6,), (2, 3)))
@@ -243,6 +257,22 @@ class TestSegmentSum:
         assert _max_ulp_error(out, _reference(data, ids, num_segments)) <= 0.5
         jitted = jax.jit(segment_sum, static_argnums=2)(data, ids, num_segments)
         npt.assert_array_equal(out, jitted)
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_few_bins_round_once_over_copies(self, mode: str) -> None:
+        """Many sorted contributions into two bins, spread over copies, round once."""
+        keys = jax.random.split(jax.random.key(1))
+        data = jnp.exp(3 * jax.random.normal(keys[0], (1 << 14, 3), jnp.float32))
+        ids = jnp.sort(jax.random.randint(keys[1], (1 << 14,), -1, 3))
+        summed = partial(segment_sum, num_segments=2, mode=mode)
+        out = summed(data, ids)
+        assert _max_ulp_error(out, _reference(data, ids, 2, mode)) <= 0.5
+        npt.assert_array_equal(
+            jax.vmap(summed)(jnp.stack([data] * 2), jnp.stack([ids] * 2)), [out] * 2
+        )
+        # 1 << 14 updates into two bins make 128 copies, 64 updates per bin.
+        lowered = jax.jit(summed).trace(data, ids).lower(lowering_platforms=("cpu",))
+        assert _scatter_rows(lowered) == [128 * 2]
 
     def test_out_of_range_dropped(self) -> None:
         """Negative ids, `num_segments` itself, and larger ids contribute nothing."""
@@ -601,6 +631,32 @@ class TestSegmentTake:
 
         grad = jax.grad(loss)(jnp.zeros(1, jnp.float32))
         npt.assert_array_equal(grad, [8.0])
+
+    @pytest.mark.parametrize("rows", [1, 3])
+    def test_grad_over_copies(self, rows: int) -> None:
+        """Many ids into few rows sum their cotangents over copies, rounding once."""
+        keys = jax.random.split(jax.random.key(2), 3)
+        ids = jnp.sort(jax.random.randint(keys[0], (1 << 13,), -1, rows + 1))
+        valid = ((ids >= 0) & (ids < rows))[:, None]
+        data = jnp.exp(3 * jax.random.normal(keys[1], (1 << 13, 2), jnp.float32))
+        cotangent = jnp.where(valid, data, jnp.nan)
+        gathered = partial(segment_take, segment_ids=ids)
+        (grad,) = jax.vjp(gathered, jnp.zeros((rows, 2), jnp.float32))[1](cotangent)
+        assert _max_ulp_error(grad, _reference(data, ids, rows)) <= 0.5
+        with _x64(True):
+            table = jax.random.normal(keys[2], (rows, 2), jnp.float64)
+            weights = jnp.asarray(data, jnp.float64)
+
+            def ours(t: Array) -> Array:
+                return jnp.sum(segment_take(t, ids) ** 3 * weights)
+
+            def ref(t: Array) -> Array:
+                return jnp.sum(_masked_take(t, ids) ** 3 * weights)
+
+            npt.assert_allclose(jax.grad(ours)(table), jax.grad(ref)(table), rtol=1e-10)
+            npt.assert_allclose(
+                _hvp(ours, table)(table), _hvp(ref, table)(table), rtol=1e-10
+            )
 
     @pytest.mark.parametrize("mode", MODES)
     def test_forward_mode_and_second_order(self, mode: str) -> None:
