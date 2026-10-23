@@ -6,8 +6,8 @@
 A discriminated [PotentialConfig][kups.application.simulations.potentials.PotentialConfig]
 selects a force field; each config's ``build`` constructs the corresponding
 [Potential][kups.core.potential.Potential] directly with its parameters (so the
-parameters need not live on the simulation state) and returns the per-system
-cutoff used to size the neighbor list.
+parameters need not live on the simulation state) over the state's skin list and
+returns the per-system cutoff the skin list serves.
 
 The torch backends (MACE/UMA) import torch lazily inside ``build`` so importing
 this module never requires the optional ``torch`` dependency.
@@ -22,17 +22,17 @@ from jax import Array
 from pydantic import BaseModel, Field
 
 from kups.application.potential.classical.lennard_jones import (
-    IsLJGraphState,
+    IsLJSkinListState,
     make_lennard_jones_from_state,
 )
 from kups.application.potential.mliap.tojax import (
-    IsTojaxedGraphState,
+    IsTojaxedSkinListState,
     make_tojaxed_from_state,
 )
 from kups.application.utils.path import get_model_path
 from kups.core.data import Table
 from kups.core.lens import Lens
-from kups.core.neighborlist import AdaptiveNeighborList, NeighborListFactory
+from kups.core.neighborlist import SkinNeighborList
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import SystemId
@@ -43,7 +43,7 @@ from kups.potential.mliap.tojax import TojaxedMliap
 if TYPE_CHECKING:
     # Type-only: referencing this in annotations never triggers a torch import
     # (annotations are lazy strings via ``from __future__ import annotations``).
-    from kups.application.potential.mliap.torch import IsTorchMliapGraphState
+    from kups.application.potential.mliap.torch import IsTorchMliapSkinListState
 
 # Inlined here (not imported from kups.potential.mliap.torch.uma) so this module
 # stays importable without the optional ``torch`` dependency.
@@ -53,7 +53,7 @@ type UMAInferenceSettings = Literal["default", "turbo", "turbo_f64"]
 type BuiltPotential[State] = tuple[
     Potential[State, PositionsAndCell, EmptyType, Patch[Any]], Table[SystemId, Array]
 ]
-"""``(potential, cutoff)`` where ``cutoff`` sizes the neighbor list."""
+"""``(potential, cutoff)``; the skin list is built at ``cutoff + skin``."""
 
 
 class LjPotentialConfig(BaseModel):
@@ -64,13 +64,10 @@ class LjPotentialConfig(BaseModel):
     parameters: dict[str, tuple[float | None, float | None]]
     mixing_rule: MixingRule
 
-    def build[State, Focus: IsLJGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsLJSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the LJ potential with its parameters bound in."""
         params = LennardJonesParameters.from_dict(
@@ -82,7 +79,7 @@ class LjPotentialConfig(BaseModel):
             state_lens,
             parameters=params,
             gradient=gradient,
-            neighborlist_factory=neighborlist_factory,
+            neighborlist_factory=SkinNeighborList.from_state,
         )
         return potential, params.cutoff
 
@@ -93,13 +90,10 @@ class TojaxPotentialConfig(BaseModel):
     backend: Literal["tojax"] = "tojax"
     model_path: str | Path
 
-    def build[State, Focus: IsTojaxedGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsTojaxedSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the jaxified potential from the exported model."""
         model = TojaxedMliap.from_zip_file(get_model_path(self.model_path))
@@ -107,7 +101,7 @@ class TojaxPotentialConfig(BaseModel):
             state_lens,
             parameters=model,
             gradient=gradient,
-            neighborlist_factory=neighborlist_factory,
+            neighborlist_factory=SkinNeighborList.from_state,
         )
         return potential, model.cutoff
 
@@ -120,13 +114,10 @@ class MaceConfig(BaseModel):
     device: Literal["cpu", "cuda"] = "cuda"
     dtype: Literal["float32", "float64"] = "float32"
 
-    def build[State, Focus: IsTorchMliapGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsTorchMliapSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Load the MACE checkpoint and build the potential (lazy torch import)."""
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
@@ -142,7 +133,7 @@ class MaceConfig(BaseModel):
             state_lens,
             parameters=model,
             gradient=gradient,
-            neighborlist_factory=neighborlist_factory,
+            neighborlist_factory=SkinNeighborList.from_state,
         )
         return potential, model.cutoff
 
@@ -156,13 +147,10 @@ class UmaConfig(BaseModel):
     task_name: UMATaskName = "omat"
     inference_settings: UMAInferenceSettings = "default"
 
-    def build[State, Focus: IsTorchMliapGraphState](
+    def build[State](
         self,
-        state_lens: Lens[State, Focus],
+        state_lens: Lens[State, IsTorchMliapSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
-        neighborlist_factory: NeighborListFactory[
-            Focus
-        ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Load the UMA checkpoint and build the potential (lazy torch import)."""
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
@@ -179,7 +167,7 @@ class UmaConfig(BaseModel):
             state_lens,
             parameters=model,
             gradient=gradient,
-            neighborlist_factory=neighborlist_factory,
+            neighborlist_factory=SkinNeighborList.from_state,
         )
         return potential, model.cutoff
 

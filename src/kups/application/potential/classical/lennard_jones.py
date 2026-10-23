@@ -26,6 +26,7 @@ from kups.core.lens import Lens, const_lens, identity_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     IsNeighborListState,
+    IsSkinListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
@@ -75,6 +76,10 @@ class IsLJGraphState(
     Protocol,
 ):
     """Particles, systems, and neighbor list for an LJ graph (no parameters)."""
+
+
+class IsLJSkinListState(IsLJGraphState, IsSkinListState, Protocol):
+    """:class:`IsLJGraphState` whose pairs come from a skin list."""
 
 
 class IsLJState[Params](IsLJGraphState, Protocol):

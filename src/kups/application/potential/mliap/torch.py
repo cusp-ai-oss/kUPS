@@ -22,6 +22,7 @@ from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     IsNeighborListState,
+    IsSkinListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
@@ -43,6 +44,10 @@ class IsTorchMliapGraphState(
     Protocol,
 ):
     """Particles, systems, and neighbor list for a torch MLFF graph (no model)."""
+
+
+class IsTorchMliapSkinListState(IsTorchMliapGraphState, IsSkinListState, Protocol):
+    """:class:`IsTorchMliapGraphState` whose pairs come from a skin list."""
 
 
 class IsTorchMliapState(IsTorchMliapGraphState, Protocol):
