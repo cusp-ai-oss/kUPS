@@ -10,10 +10,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from kups.application.potential.classical.lennard_jones import (
+    make_lennard_jones_from_state,
+)
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
 from kups.application.relaxation.data import RelaxState, relax_state_from_ase
 from kups.application.relaxation.simulation import make_relax_propagator
-from kups.application.simulations.potentials import LjPotentialConfig
 from kups.core.assertion import check_assertions, runtime_assert
 from kups.core.data import Table
 from kups.core.lens import identity_lens
@@ -22,9 +24,10 @@ from kups.core.potential import Potential
 from kups.core.propagator import propagate_and_fix
 from kups.core.result import as_result_function
 from kups.core.utils.jax import dataclass, field
+from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 
-_LJ = LjPotentialConfig(
+_LJ = LennardJonesParameters.from_dict(
     cutoff=5.0, parameters={"Ar": (3.405, 0.010326)}, mixing_rule="lorentz_berthelot"
 )
 _LBFGS = [
@@ -62,7 +65,14 @@ class _Checked:
 
 
 def _built(factory, gradient) -> tuple:
-    return _LJ.build(identity_lens(RelaxState), gradient, neighborlist_factory=factory)
+    """Graph LJ over ``factory``'s pairs."""
+    potential = make_lennard_jones_from_state(
+        identity_lens(RelaxState),
+        parameters=_LJ,
+        gradient=gradient,
+        neighborlist_factory=factory,
+    )
+    return potential, _LJ.cutoff
 
 
 def _relax(potential, cutoff, optimizer, gradient, steps: int = 12) -> RelaxState:

@@ -42,7 +42,6 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import SkinNeighborList
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -78,9 +77,7 @@ def run(config: Config) -> MdState:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
-    potential, cutoff = config.potential.build(
-        state_lens, POSITIONS_AND_CELL, neighborlist_factory=SkinNeighborList.from_state
-    )
+    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
     propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
     all_particles: list[Table[ParticleId, MDParticles]] = []
