@@ -68,24 +68,24 @@ def make_pme_from_state[State](
 
 
 @overload
-def make_pme_from_state[State](
-    state: Lens[State, IsEwaldGraphState],
+def make_pme_from_state[State, Focus: IsEwaldGraphState](
+    state: Lens[State, Focus],
     *,
     parameters: PMEParameters,
     gradient: None = None,
     include_exclusion_mask: bool = False,
-    neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_pme_from_state[State](
-    state: Lens[State, IsEwaldGraphState],
+def make_pme_from_state[State, Focus: IsEwaldGraphState](
+    state: Lens[State, Focus],
     *,
     parameters: PMEParameters,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
-    neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 

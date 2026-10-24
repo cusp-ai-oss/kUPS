@@ -18,27 +18,45 @@ this module never requires the optional ``torch`` dependency.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 
+import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from pydantic import BaseModel, Field
 
+from kups.application.potential.classical.ewald import (
+    IsEwaldSkinListState,
+    make_ewald_from_state,
+)
 from kups.application.potential.classical.lennard_jones import (
     IsLJRowState,
     make_lennard_jones_row_from_state,
 )
+from kups.application.potential.classical.pme import make_pme_from_state
 from kups.application.potential.mliap.tojax import (
     IsTojaxedSkinListState,
     make_tojaxed_from_state,
 )
 from kups.application.utils.path import get_model_path
+from kups.core.cell import Periodic3D, require_periodic_3d
 from kups.core.data import Table
 from kups.core.lens import Lens
-from kups.core.neighborlist import SkinNeighborList
+from kups.core.neighborlist import IsSkinListState, SkinNeighborList
 from kups.core.patch import Patch
-from kups.core.potential import EmptyType, Potential
-from kups.core.typing import ParticleId, SystemId
-from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
+from kups.core.potential import EmptyType, Potential, sum_potentials
+from kups.core.typing import HasCell, IsState, ParticleId, SystemId
+from kups.core.utils.jax import astype_floating, tree_map
+from kups.potential.classical.ewald import (
+    EwaldParameters,
+    IsEwaldPointData,
+    PMEParameters,
+)
+from kups.potential.classical.lennard_jones import (
+    IsLennardJonesParticles,
+    LennardJonesParameters,
+    MixingRule,
+)
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.tojax import TojaxedMliap
 
@@ -90,6 +108,96 @@ class LjPotentialConfig(BaseModel):
             state_lens, parameters=params, gradient=gradient, dtype=self.kernel_dtype
         )
         return potential, params.cutoff
+
+
+class CoulombConfig(BaseModel):
+    """Coulomb interactions of the input charges, split by Ewald screening."""
+
+    method: Literal["ewald", "pme"] = "pme"
+    """Reciprocal sum on a particle mesh (``pme``) or over k-vectors (``ewald``,
+    faster only for cells of up to a few hundred atoms)."""
+    precision: float = Field(default=1e-6, gt=0, lt=1)
+    """Target error of the real- and reciprocal-space sums."""
+
+    def build[State](
+        self,
+        state_lens: Lens[State, IsEwaldSkinListState],
+        gradient: Lens[Geometry, PositionsAndCell],
+        particles: Table[ParticleId, IsEwaldPointData],
+        systems: Table[SystemId, HasCell[Periodic3D]],
+        cutoff: float,
+    ) -> BuiltPotential[State]:
+        """Build the Coulomb terms over the skin list's pairs."""
+        require_periodic_3d(systems.data.cell)
+        charged = particles.data.system.max_over(jnp.abs(particles.data.charges))
+        uncharged = np.flatnonzero(~(np.asarray(charged.data) > 0)).tolist()
+        if uncharged:
+            raise ValueError(
+                f"Systems {uncharged} have no charges. Give them as _atom_site_charge "
+                "or _atom_type_partial_charge in CIF files, or as the atoms' initial "
+                "charges, as extxyz files store them."
+            )
+        dtype = particles.data.positions.dtype
+        match self.method:
+            case "ewald":
+                ewald = EwaldParameters.make(
+                    particles, systems, self.precision, cutoff, reciprocal_dtype=dtype
+                )
+                ewald = astype_floating(ewald, dtype)
+                potential = make_ewald_from_state(
+                    state_lens,
+                    parameters=ewald,
+                    gradient=gradient,
+                    neighborlist_factory=SkinNeighborList.from_state,
+                )
+                return potential, ewald.cutoff
+            case "pme":
+                pme = PMEParameters.make(
+                    particles, systems, self.precision, cutoff, reciprocal_dtype=dtype
+                )
+                pme = astype_floating(pme, dtype)
+                potential = make_pme_from_state(
+                    state_lens,
+                    parameters=pme,
+                    gradient=gradient,
+                    neighborlist_factory=SkinNeighborList.from_state,
+                )
+                return potential, pme.cutoff
+
+
+class _IsLjCoulombParticles(IsLennardJonesParticles, IsEwaldPointData, Protocol):
+    """Particles with species labels and charges."""
+
+
+class _IsLjCoulombState(
+    IsState[_IsLjCoulombParticles, HasCell[Periodic3D]], IsSkinListState, Protocol
+):
+    """Charged particles in periodic systems, and a skin list."""
+
+
+class LjCoulombPotentialConfig(BaseModel):
+    """Lennard-Jones plus the Coulomb interactions of the input charges."""
+
+    backend: Literal["lj_coulomb"] = "lj_coulomb"
+    lj: LjPotentialConfig
+    """Lennard-Jones terms; ``lj.cutoff`` is also the real-space Coulomb cutoff."""
+    coulomb: CoulombConfig
+
+    def build[State](
+        self,
+        state_lens: Lens[State, _IsLjCoulombState],
+        gradient: Lens[Geometry, PositionsAndCell],
+        particles: Table[ParticleId, IsEwaldPointData],
+        systems: Table[SystemId, HasCell[Periodic3D]],
+    ) -> BuiltPotential[State]:
+        """Build LJ over the skin list's neighbor rows and Coulomb over its pairs."""
+        lj, lj_cutoff = self.lj.build(state_lens, gradient, particles, systems)
+        coulomb, coulomb_cutoff = self.coulomb.build(
+            state_lens, gradient, particles, systems, self.lj.cutoff
+        )
+        # In float32, the Coulomb cutoff can round up past the LJ one.
+        cutoff = tree_map(jnp.maximum, lj_cutoff, coulomb_cutoff)
+        return sum_potentials(lj, coulomb), cutoff
 
 
 class TojaxPotentialConfig(BaseModel):
@@ -190,6 +298,10 @@ class UmaConfig(BaseModel):
 
 
 type PotentialConfig = Annotated[
-    LjPotentialConfig | TojaxPotentialConfig | MaceConfig | UmaConfig,
+    LjPotentialConfig
+    | LjCoulombPotentialConfig
+    | TojaxPotentialConfig
+    | MaceConfig
+    | UmaConfig,
     Field(discriminator="backend"),
 ]

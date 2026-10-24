@@ -3,9 +3,9 @@
 
 """Unified structure-relaxation entry point.
 
-The force field is selected by the ``potential`` config (LJ / tojax-MLFF /
-torch-MLFF). The potential is built directly with its parameters, so a single
-force-field-agnostic ``RelaxState`` and driver serve every backend.
+The force field is selected by the ``potential`` config (LJ / LJ plus Coulomb /
+tojax-MLFF / torch-MLFF). The potential is built directly with its parameters, so
+a single force-field-agnostic ``RelaxState`` and driver serve every backend.
 """
 
 from __future__ import annotations
