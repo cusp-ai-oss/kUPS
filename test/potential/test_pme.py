@@ -349,10 +349,10 @@ class _State:
     systems: Table
 
 
-@pytest.mark.parametrize("exclusions", [False, True])
-def test_potential_matches_make_ewald_potential(exclusions):
+def _molecules(exclusions: bool) -> _State:
+    """The random batch; with ``exclusions`` in molecules of three, with a net charge."""
     particles, systems = _random_batch(3, (60, 45))
-    if exclusions:  # molecules of three
+    if exclusions:
         n = particles.size
         ids = np.asarray(particles.data.system.raw_indices)
         particles = Table.arange(
@@ -366,8 +366,13 @@ def test_potential_matches_make_ewald_potential(exclusions):
             ),
             label=ParticleId,
         )
-    state = _State(particles, systems)
-    alpha = systems.set_data(jnp.full(2, 0.45))
+    return _State(particles, systems)
+
+
+def _ewald_and_pme(state: _State, exclusions: bool) -> tuple:
+    """Ewald and PME with every term, from the same float64 screening."""
+    particles, systems = state.particles, state.systems
+    alpha = systems.set_data(jnp.full(2, 0.45, jnp.float64))
     cutoff = systems.map_data(lambda s: s.cutoff)
     k_max = alpha.map_data(lambda a: 12 * a)
     n = particles.size
@@ -392,6 +397,13 @@ def test_potential_matches_make_ewald_potential(exclusions):
         *derivatives,
         include_exclusion_mask=exclusions,
     )
+    return ewald, pme
+
+
+@pytest.mark.parametrize("exclusions", [False, True])
+def test_potential_matches_make_ewald_potential(exclusions):
+    state = _molecules(exclusions)
+    ewald, pme = _ewald_and_pme(state, exclusions)
     a, b = jax.jit(lambda s: (pme(s).data, ewald(s).data))(state)
     np.testing.assert_allclose(a.total_energies.data, b.total_energies.data, rtol=1e-7)
     rms = np.sqrt(np.mean(np.asarray(b.gradients.positions.data) ** 2))
@@ -405,3 +417,13 @@ def test_potential_matches_make_ewald_potential(exclusions):
         x, y = (getattr(p, name)(state).data.total_energies.data for p in (pme, ewald))
         np.testing.assert_allclose(x, y, rtol=1e-12)
     assert len(pme.potentials) == len(ewald.potentials) == 4 + exclusions
+
+
+@pytest.mark.parametrize("exclusions", [False, True])
+def test_float64_parameters_keep_float32_outputs(exclusions):
+    """Float64 screening and reciprocal sums do not promote any term of float32
+    positions, cells and charges."""
+    state = astype_floating(_molecules(exclusions), jnp.float32)
+    for potential in _ewald_and_pme(state, exclusions):
+        out = jax.jit(lambda s, p=potential: p(s).data)(state)
+        assert all(x.dtype == jnp.float32 for x in jax.tree.leaves(out))

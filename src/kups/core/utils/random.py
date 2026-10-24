@@ -9,6 +9,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import DTypeLike
 
 from kups.core.data import Index
 
@@ -45,7 +46,11 @@ def sample_like[PyTree](sampler: Sampler, key: Key, tree: PyTree) -> PyTree:
 
 
 def segment_chi_squared(
-    key: Key, segment: Index[Any], dof: Array, slots_per_row: int = 3
+    key: Key,
+    segment: Index[Any],
+    dof: Array,
+    slots_per_row: int = 3,
+    dtype: DTypeLike = float,
 ) -> Array:
     """Per-segment ``χ²(dof)`` samples, exact and without loops.
 
@@ -59,6 +64,7 @@ def segment_chi_squared(
         dof: Degrees of freedom per segment, at most ``slots_per_row`` times the
             segment's row count. ``dof <= 0`` gives 0.
         slots_per_row: Normals per row (3 for momenta).
+        dtype: Float dtype of the samples.
 
     Returns:
         One sample per segment, shape ``(num_labels,)``.
@@ -71,5 +77,5 @@ def segment_chi_squared(
     rank = jnp.zeros_like(rows).at[order].set(rows - start)
     slot = rank[:, None] * slots_per_row + jnp.arange(slots_per_row)
     limit = dof.at[ids].get(mode="fill", fill_value=0)[:, None]
-    squares = jax.random.normal(key, slot.shape, dtype=float) ** 2
+    squares = jax.random.normal(key, slot.shape, dtype) ** 2
     return segment.sum_over(jnp.where(slot < limit, squares, 0.0).sum(-1)).data

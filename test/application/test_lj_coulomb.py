@@ -15,13 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from kups.application.md.data import (
-    MdParameters,
-    MdRunConfig,
-    MdState,
-    md_state_from_ase,
-)
-from kups.application.md.simulation import make_md_propagator
+from kups.application.md.data import MdParameters, MdRunConfig, MdState
 from kups.application.potential.classical.ewald import make_ewald_from_state
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
@@ -55,6 +49,8 @@ from kups.core.utils.jax import astype_floating
 from kups.potential.classical.ewald import EwaldParameters, PMEParameters
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
+
+from ._builders import Build, md_tables, state_and_step
 
 # The parameters are synthetic, and the rock salt below is near zero pressure.
 # 6.3 rounds up in float32, so a float32 state's Coulomb cutoff exceeds the
@@ -122,22 +118,19 @@ def _md(integrator: str) -> MdParameters:
     )
 
 
-def _tables(md_parameters: MdParameters, atoms: list[ase.Atoms]) -> tuple:
-    tables = [
-        md_state_from_ase(a, md_parameters, key=jax.random.key(i))
-        for i, a in enumerate(atoms)
-    ]
-    return Table.union([p for p, _ in tables], [s for _, s in tables])
-
-
-def _md_state(md_parameters: MdParameters, build, tables) -> tuple:
-    particles, systems = tables
+def _md_builds(method: str) -> tuple[Build, Build]:
+    """The MD build of the config and of the per-step reference."""
     lens = identity_lens(MdState)
-    potential, cutoff = build(lens, POSITIONS_AND_CELL, particles, systems)
-    return MdState.create(particles, systems, cutoff, md_parameters.skin), potential
+    return (
+        partial(_config(method).build, lens, POSITIONS_AND_CELL),
+        partial(_per_step, method, lens, POSITIONS_AND_CELL),
+    )
 
 
-def _evaluate(state, potential):
+def _evaluate(md_parameters: MdParameters, build: Build, tables: tuple):
+    """Energies and gradients of the potential on the state of the tables."""
+    potential, cutoff = build(*tables)
+    state = MdState.create(*tables, cutoff, md_parameters.skin)
     result = jax.jit(as_result_function(lambda s: potential(s).data))(state)
     result.raise_assertion()
     return result.value
@@ -150,14 +143,9 @@ def test_md_matches_per_step_builds(method, integrator):
     it."""
     md_parameters = _md(integrator)
     positions = []
-    for build, reads_the_list in (
-        (_config(method).build, True),
-        (partial(_per_step, method), False),
-    ):
-        state, potential = _md_state(
-            md_parameters, build, _tables(md_parameters, _batch())
-        )
-        step = make_md_propagator(identity_lens(MdState), integrator, potential)
+    for build, reads_the_list in zip(_md_builds(method), (True, False), strict=True):
+        tables = md_tables(md_parameters, _batch())
+        state, step = state_and_step(md_parameters, build, *tables)
         reference = state.skin_list.reference.positions
         cycle = jax.jit(as_result_function(LoopPropagator(step, 10)))
         for i in range(6):
@@ -173,9 +161,9 @@ def test_lj_and_coulomb_store_the_same_list(method):
     """Within the skin neither term rebuilds the list, and beyond it both terms
     rebuild it to the same list."""
     md_parameters = _md("baoab_langevin")
-    state, potential = _md_state(
-        md_parameters, _config(method).build, _tables(md_parameters, _batch())
-    )
+    tables = md_tables(md_parameters, _batch())
+    potential, cutoff = _md_builds(method)[0](*tables)
+    state = MdState.create(*tables, cutoff, md_parameters.skin)
     steps = [
         jax.jit(as_result_function(PotentialAsPropagator(term)))
         for term in potential.potentials
@@ -201,10 +189,9 @@ def test_lj_and_coulomb_store_the_same_list(method):
 def test_pme_matches_ewald():
     """Energies, forces and cell gradients agree within the target error."""
     md_parameters = _md("baoab_npt_langevin")
-    tables = _tables(md_parameters, _batch())
+    tables = md_tables(md_parameters, _batch())
     ewald, pme = (
-        _evaluate(*_md_state(md_parameters, _config(m).build, tables))
-        for m in ("ewald", "pme")
+        _evaluate(md_parameters, _md_builds(m)[0], tables) for m in ("ewald", "pme")
     )
     np.testing.assert_allclose(
         pme.total_energies.data, ewald.total_energies.data, rtol=1e-6
@@ -222,13 +209,12 @@ def test_pme_matches_ewald():
 @pytest.mark.parametrize("method", ["ewald", "pme"])
 def test_float32_state_stays_float32(method):
     md_parameters = _md("baoab_langevin")
-    tables = _tables(md_parameters, _batch())
-    out = {}
-    for dtype in (jnp.float64, jnp.float32):
-        state, potential = _md_state(
-            md_parameters, _config(method).build, astype_floating(tables, dtype)
-        )
-        out[dtype] = _evaluate(state, potential)
+    tables = md_tables(md_parameters, _batch())
+    build, _ = _md_builds(method)
+    out = {
+        dtype: _evaluate(md_parameters, build, astype_floating(tables, dtype))
+        for dtype in (jnp.float64, jnp.float32)
+    }
     for leaf in jax.tree.leaves(out[jnp.float32]):
         assert leaf.dtype == jnp.float32
     a, b = out[jnp.float32], out[jnp.float64]
@@ -244,7 +230,9 @@ def test_open_cells_raise():
     atoms.pbc = False
     md_parameters = _md("verlet")
     with pytest.raises(TypeError, match="PeriodicCell"):
-        _md_state(md_parameters, _config("pme").build, _tables(md_parameters, [atoms]))
+        state_and_step(
+            md_parameters, _md_builds("pme")[0], *md_tables(md_parameters, [atoms])
+        )
 
 
 def test_uncharged_systems_raise():
@@ -252,7 +240,9 @@ def test_uncharged_systems_raise():
     del atoms[1].info["_atom_site_charge"]
     md_parameters = _md("verlet")
     with pytest.raises(ValueError, match=r"Systems \[1\] have no charges"):
-        _md_state(md_parameters, _config("pme").build, _tables(md_parameters, atoms))
+        state_and_step(
+            md_parameters, _md_builds("pme")[0], *md_tables(md_parameters, atoms)
+        )
 
 
 def _salt_cif(path: Path, seed: int) -> Path:
