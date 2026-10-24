@@ -17,7 +17,7 @@ from jax import Array
 
 from kups.core.lens import Lens
 from kups.core.potential import Potential
-from kups.core.propagator import Propagator
+from kups.core.propagator import IdentityPropagator, Propagator
 from kups.core.utils.jax import dataclass, field
 from kups.relaxation.optimizer import Optimizer, apply_updates
 
@@ -48,6 +48,9 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         property: Lens to get/set the property being optimized
         opt_state: Lens to get/set the optimizer state
         optimizer: Gradient transformation
+        refresh: Runs before every potential evaluation, including line-search
+            trial points, e.g. a ``SkinListPropagator``. A trial point's refreshed
+            state is not kept.
 
     Example:
         ```python
@@ -84,13 +87,14 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
     property: Lens[State, PyTree] = field(static=True)
     opt_state: Lens[State, OptState] = field(static=True)
     optimizer: Optimizer[PyTree, OptState] = field(static=True)
+    refresh: Propagator[State] = field(static=True, default=IdentityPropagator())
 
     def __call__(self, key: Array, state: State) -> State:
-        del key
+        state = self.refresh(key, state)
         params = self.property.get(state)
 
         def value_and_grad_fn(p: PyTree) -> tuple[Any, PyTree]:
-            out = self.potential(self.property.set(state, p)).data
+            out = self.potential(self.refresh(key, self.property.set(state, p))).data
             return out.total_energies, out.gradients
 
         potential_out = self.potential(state)

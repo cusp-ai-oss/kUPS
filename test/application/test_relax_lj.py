@@ -26,7 +26,6 @@ from kups.application.relaxation.simulation import make_relax_propagator
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
@@ -133,11 +132,8 @@ def _build_propagator(optimize_cell: bool):
         state_lens, potential, optimizer, gradient
     )
     particles, systems = relax_state_from_ase(config.inp_files[0])
-    nlp = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, lj.cutoff
-    )
     opt_state = opt_init(particles, systems)
-    state = RelaxState(particles, systems, nlp, opt_state, jnp.array([0]))
+    state = RelaxState.create(particles, systems, lj.cutoff, 1.0, opt_state)
     return propagator, state
 
 
