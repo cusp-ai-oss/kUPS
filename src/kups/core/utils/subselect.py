@@ -43,7 +43,7 @@ def offsets_from_counts(counts: Array) -> Array:
     """
     if counts.size == 0:
         return jnp.array([], dtype=counts.dtype)
-    return jnp.cumulative_sum(counts, include_initial=True)[:-1]
+    return jnp.cumulative_sum(counts, include_initial=True, dtype=counts.dtype)[:-1]
 
 
 @jit(static_argnames=("num_segments", "is_sorted"))
@@ -69,14 +69,16 @@ def subselect(
         is_sorted: Whether segment_ids is already sorted by segment.
 
     Returns:
-        SubselectResult containing scatter_idxs and gather_idxs for indexing operations.
+        SubselectResult containing scatter_idxs and gather_idxs for indexing
+        operations, in ``segment_ids``' dtype.
     """
     num_occurrences = bincount(segment_ids, length=num_segments)
     target_num_occ = num_occurrences.at[target_ids].get(mode="fill", fill_value=0)
     total_occurrences = jnp.sum(target_num_occ)
     output_buffer_size = output_buffer_size.generate_assertion(total_occurrences)
     # Compute gather indices for extracting matching elements
-    gather_idxs = jnp.arange(output_buffer_size.size) + jnp.repeat(
+    dtype = segment_ids.dtype
+    gather_idxs = jnp.arange(output_buffer_size.size, dtype=dtype) + jnp.repeat(
         offsets_from_counts(num_occurrences)[target_ids]
         - offsets_from_counts(target_num_occ),
         target_num_occ,
@@ -84,12 +86,13 @@ def subselect(
     )
     # JAX cannot deal with indexing of zero-length arrays
     if gather_idxs.size == 0:
-        return SubselectResult(jnp.array([], dtype=int), jnp.array([], dtype=int))
+        empty = jnp.array([], dtype=dtype)
+        return SubselectResult(empty, empty)
     if not is_sorted:
-        gather_idxs = jnp.argsort(segment_ids)[gather_idxs]
+        gather_idxs = jnp.argsort(segment_ids).astype(dtype)[gather_idxs]
     # Compute scatter indices for organizing results
     scatter_idxs = jnp.repeat(
-        jnp.arange(len(target_ids)),
+        jnp.arange(len(target_ids), dtype=dtype),
         target_num_occ,
         total_repeat_length=output_buffer_size.size,
     )

@@ -22,6 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from jax.typing import DTypeLike
 
 from kups.core.capacity import Capacity
 from kups.core.lens import bind
@@ -147,6 +148,7 @@ class Index[Key: SupportsSorting]:
         *,
         max_count: int | None = None,
         label: Callable[[int], T] | None = None,
+        dtype: DTypeLike = int,
     ) -> Index[T]:
         """Create an ``Index`` from a sequence of keys.
 
@@ -154,6 +156,7 @@ class Index[Key: SupportsSorting]:
             data: Input keys (any shape supported by ``np.asarray``).
             max_count: Optional upper bound on occurrences per key.
                 If provided, validated against the actual data.
+            dtype: Integer dtype of the indices.
 
         Returns:
             A new ``Index`` with deduplicated sorted keys and
@@ -172,9 +175,8 @@ class Index[Key: SupportsSorting]:
             typ = type(label(0))
         else:
             typ = type(key_tuple[0]) if len(key_tuple) > 0 else None
-        return Index[T](
-            key_tuple, jnp.asarray(values).reshape(np_data.shape), max_count, _cls=typ
-        )
+        indices = jnp.asarray(values.reshape(np_data.shape), dtype)
+        return Index[T](key_tuple, indices, max_count, _cls=typ)
 
     @classmethod
     def arange[T: SupportsSorting](
@@ -182,6 +184,7 @@ class Index[Key: SupportsSorting]:
         n: int,
         label: Callable[[int], T] = int,
         max_count: int | None = None,
+        dtype: DTypeLike = int,
     ) -> Index[T]:
         """Create an ``Index`` with ``n`` unique keys, each appearing once.
 
@@ -191,8 +194,11 @@ class Index[Key: SupportsSorting]:
             n: Number of keys (and elements).
             label: Callable mapping ``int`` to key values (default: ``int``).
             max_count: Optional upper bound on occurrences per key.
+            dtype: Integer dtype of the indices.
         """
-        return cls.integer(np.arange(n), n=n, label=label, max_count=max_count)
+        return cls.integer(
+            np.arange(n), n=n, label=label, max_count=max_count, dtype=dtype
+        )
 
     @classmethod
     def integer[T: SupportsSorting](
@@ -202,6 +208,7 @@ class Index[Key: SupportsSorting]:
         n: int | None = None,
         label: Callable[[int], T] = int,
         max_count: int | None = None,
+        dtype: DTypeLike | None = None,
     ) -> Index[T]:
         """Create an ``Index`` with keys ``label(0), ..., label(n-1)``.
 
@@ -211,6 +218,8 @@ class Index[Key: SupportsSorting]:
                 ``int(ids.max()) + 1``.
             label: Callable mapping ``int`` to key values (default: ``int``).
             max_count: Optional upper bound on occurrences per key.
+            dtype: Integer dtype of the indices; ``None`` keeps the dtype of an
+                array ``ids`` and uses JAX's default integer for a sequence.
         """
         if not isinstance(ids, Array):
             ids = np.asarray(ids)
@@ -218,7 +227,7 @@ class Index[Key: SupportsSorting]:
             n = int(ids.max()) + 1
         return Index(
             tuple(label(i) for i in range(n)),
-            jnp.asarray(ids),
+            jnp.asarray(ids, dtype),
             max_count,
             _cls=type(label(0)),
         )
@@ -230,6 +239,7 @@ class Index[Key: SupportsSorting]:
         *,
         label: Callable[[int], T] = int,
         max_count: int | None = None,
+        dtype: DTypeLike = int,
     ) -> Index[T]:
         """Create an ``Index`` filled with a single key (the zeroth).
 
@@ -237,9 +247,14 @@ class Index[Key: SupportsSorting]:
             shape: Shape of the resulting index array.
             label: Callable mapping ``int`` to key values (default: ``int``).
             max_count: Optional upper bound on occurrences per key.
+            dtype: Integer dtype of the indices.
         """
         return cls.integer(
-            np.zeros(shape, dtype=int), n=1, label=label, max_count=max_count
+            np.zeros(shape, dtype=int),
+            n=1,
+            label=label,
+            max_count=max_count,
+            dtype=dtype,
         )
 
     @cached_property
@@ -342,16 +357,17 @@ class Index[Key: SupportsSorting]:
         label_counts = self.counts.data
         indices = indices % jnp.maximum(label_counts, 1)
         if self.size == 0:
-            return jnp.zeros(len(self.keys), dtype=int)
+            return jnp.zeros(len(self.keys), dtype=self._indices.dtype)
         if len(self.keys) == 1:
             # One label needs only a linear scan, including over buffered rows.
             valid = self._indices == 0
-            rank = jnp.cumsum(valid) - 1
+            rank = jnp.cumsum(valid, dtype=self._indices.dtype) - 1
             result = jnp.argmax(valid & (rank == indices[0]))[None]
+            result = result.astype(self._indices.dtype)
         else:
             # Stable grouping preserves occurrence order without a rows x keys
             # one-hot array, which grows quadratically for batched systems.
-            order = jnp.argsort(self._indices, stable=True)
+            order = jnp.argsort(self._indices, stable=True).astype(self._indices.dtype)
             result = order.at[offsets_from_counts(label_counts) + indices].get(
                 mode="fill", fill_value=len(self)
             )
@@ -372,11 +388,12 @@ class Index[Key: SupportsSorting]:
         # Include the OOB label to preserve matching of explicit sentinel rows.
         counts = bincount(self._indices, length=len(self.keys) + 1)
         starts = offsets_from_counts(counts)
-        lanes = jnp.arange(max_count)
+        dtype = self._indices.dtype
+        lanes = jnp.arange(max_count, dtype=dtype)
         positions = starts[target_ids, None] + lanes
-        order = jnp.argsort(self._indices, stable=True)
+        order = jnp.argsort(self._indices, stable=True).astype(dtype)
         if self.size == 0:
-            return jnp.full(positions.shape, len(self), dtype=int)
+            return jnp.full(positions.shape, len(self), dtype=dtype)
         found = order.at[positions].get(mode="fill", fill_value=len(self))
         return jnp.where(lanes < counts[target_ids, None], found, len(self))
 
@@ -452,7 +469,8 @@ class Index[Key: SupportsSorting]:
                 (positions.get(key, len(tokens)) for key in self.keys),
                 dtype=int,
                 count=len(self.keys),
-            )
+            ),
+            self._indices.dtype,
         )
         return idx_map.at[self._indices].get(mode="fill", fill_value=len(tokens))
 
@@ -694,7 +712,8 @@ class Index[Key: SupportsSorting]:
             "Index shapes must match."
         )
         all_keys = tuple(sorted(product(*(idx.keys for idx in indices))))
-        flat_key = jnp.zeros(shape, dtype=jnp.int32)
+        dtype = jnp.result_type(*(idx._indices for idx in indices))
+        flat_key = jnp.zeros(shape, dtype=dtype)
         valid = jnp.ones(shape, dtype=bool)
         stride = 1
         for idx in reversed(indices):
@@ -871,6 +890,25 @@ def _concatenate_shifted[Key: int](*indices: Index[Key]) -> Index[Key]:
         f"Keys must be strictly increasing after offset shift, got {result_keys}"
     )
     return Index(result_keys, jnp.concatenate(parts), mc, _cls=indices[0].cls)
+
+
+def cast_indices[T](tree: T, dtype: DTypeLike) -> T:
+    """Cast the indices of every ``Index`` in a pytree to ``dtype``.
+
+    Args:
+        tree: Pytree with ``Index`` leaves, e.g. a simulation state.
+        dtype: Integer dtype of the new indices, e.g. ``jnp.int32``.
+
+    Returns:
+        ``tree`` with every ``Index`` cast; other leaves are unchanged.
+    """
+
+    def cast(x: Any) -> Any:
+        if not isinstance(x, Index):
+            return x
+        return x.with_raw_indices(x.raw_indices.astype(dtype))
+
+    return jax.tree.map(cast, tree, is_leaf=lambda x: isinstance(x, Index))
 
 
 def unify_keys_by_cls[T](tree: T) -> T:
