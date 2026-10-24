@@ -31,7 +31,7 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, View
+from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
     EmptyNeighborList,
     NeighborList,
@@ -47,6 +47,7 @@ from kups.core.potential import (
 )
 from kups.core.propagator import StateProperty
 from kups.core.typing import (
+    DTypeLike,
     HasCell,
     HasExclusionIndex,
     HasInclusionIndex,
@@ -483,6 +484,8 @@ def make_lennard_jones_row_potential[State, Gradients](
     skin_list_view: View[State, SkinList],
     parameter_view: View[State, LennardJonesParameters],
     gradient_lens: Lens[LennardJonesRowInput, Gradients],
+    *,
+    dtype: DTypeLike = jnp.float64,
 ) -> Potential[State, Gradients, EmptyType, Patch[Any]]:
     """Create a Lennard-Jones potential over a skin list's neighbor rows.
 
@@ -496,6 +499,7 @@ def make_lennard_jones_row_potential[State, Gradients](
         skin_list_view: Skin list built at a cutoff of at least the LJ cutoff.
         parameter_view: LJ parameters.
         gradient_lens: Differentiated inputs, e.g. ``ROW_GEOMETRY.nest(...)``.
+        dtype: Precision of the pair terms, see ``RowPairEnergy``.
 
     Returns:
         The potential.
@@ -505,7 +509,7 @@ def make_lennard_jones_row_potential[State, Gradients](
     )
     return PotentialFromEnergy(
         composer=FullSumComposer(constructor),
-        energy_fn=lennard_jones_row_energy,
+        energy_fn=bind(lennard_jones_row_energy, lambda e: e.dtype).set(dtype),
         gradient_lens=gradient_lens,
         hessian_lens=EMPTY_LENS,
         hessian_idx_view=EMPTY_LENS,

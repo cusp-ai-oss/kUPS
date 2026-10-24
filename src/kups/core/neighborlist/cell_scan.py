@@ -45,20 +45,13 @@ from kups.core.neighborlist.types import (
     PipelineContext,
 )
 from kups.core.typing import DTypeLike, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, jit
+from kups.core.utils.jax import dataclass, jit, triton_available
 from kups.core.utils.subselect import argsort_indices
 
 BLOCK, WARPS = 16, 1  # flat on an L4 for BLOCK 8-64, WARPS 1-4
 # Å added to the kernel's float32 cutoff test, so it keeps every pair the exact
 # (float64) DistanceCutoffMask keeps
 SLACK = 1e-3
-
-
-def triton_available() -> bool:
-    """Whether the scan kernel runs on Triton: a CUDA GPU of compute capability 8.0+."""
-    device = jax.devices()[0]
-    capability = float(getattr(device, "compute_capability", 0) or 0)
-    return device.platform == "gpu" and capability >= 8.0
 
 
 def _scan_kernel(
