@@ -78,8 +78,8 @@ inputs and committed per-case kUPS-format YAML stats under `lammps/`.
 Generated `.dat` output tables live under `lammps/outputs/` and are ignored.
 The YAML SEMs use the same fixed 5-block average
 calculation as kUPS expected-value generation. LAMMPS `press` is converted
-from total pressure to the configurational pressure currently stored as kUPS MD
-`pressure` by subtracting the kinetic contribution, then converted from bar to
+from bar. Like kUPS MD `pressure`, it is the total pressure (kinetic plus
+virial), and both are in Pa, the unit of `md.target_pressure`, rather than
 kUPS internal pressure units. CI compares the committed LAMMPS YAML stats to
 the kUPS MD NVE, NVT, and NPT references without requiring LAMMPS or `.dat`
 tables to be present.

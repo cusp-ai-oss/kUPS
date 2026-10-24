@@ -13,7 +13,7 @@ import pytest
 from jax import Array
 
 from kups.application.md.analysis import analyze_md, analyze_md_file
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core.constants import BOLTZMANN_CONSTANT, PASCAL
 from kups.core.data import Index, Table
 from kups.core.lens import view
 from kups.core.storage import EveryNStep, HDF5StorageWriter, Once, WriterGroupConfig
@@ -160,19 +160,23 @@ class TestAnalyzeMD:
         )
 
     def test_pressure(self):
-        """Pressure equals trace of diagonal stress / 3."""
-        n_steps = 100
-        p_val = 2.0
+        """Pressure is the kinetic term 2K/(3V) plus a third of the virial stress's
+        trace, in Pa."""
+        n_steps, p_val, ke_val, volume = 100, 2e-3, 0.3, 50.0
         stress = jnp.tile(jnp.eye(3) * p_val, (n_steps, 1, 1, 1))
-
         pe = jnp.zeros((n_steps, 1))
-        ke = jnp.zeros((n_steps, 1))
+        ke = jnp.full((n_steps, 1), ke_val)
 
-        results = analyze_md(_make_init(), _make_step(pe, ke, stress), n_blocks=10)
+        results = analyze_md(
+            _make_init(),
+            _make_step(pe, ke, stress, volume=jnp.full((n_steps, 1), volume)),
+            n_blocks=10,
+        )
         r = results[SystemId(0)]
 
-        assert r.pressure.mean == pytest.approx(p_val, rel=1e-6)
-        assert r.pressure.sem == pytest.approx(0.0, abs=1e-12)
+        expected = (2 * ke_val / (3 * volume) + p_val) / PASCAL
+        assert r.pressure.mean == pytest.approx(expected, rel=1e-6)
+        assert r.pressure.sem == pytest.approx(0.0, abs=1e-3)
 
     def test_energy_drift(self):
         """Linearly increasing PE gives matching drift slope."""

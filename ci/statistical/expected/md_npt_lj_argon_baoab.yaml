@@ -2,20 +2,20 @@ simulation_type: md
 hdf5_output: md_npt_lj_argon_baoab.h5
 observables:
   potential_energy:
-    expected_mean: -17.174086925580934
-    expected_sem: 0.09706561509595772
+    expected_mean: -17.391070457707524
+    expected_sem: 0.03545607637827512
   kinetic_energy:
-    expected_mean: 3.2966030111993705
-    expected_sem: 0.009319044784062152
+    expected_mean: 3.289583462090669
+    expected_sem: 0.004937666784119784
   total_energy:
-    expected_mean: -13.87748391438157
-    expected_sem: 0.1026691400080169
+    expected_mean: -14.10148699561686
+    expected_sem: 0.03573455339136078
   temperature:
-    expected_mean: 100.01438527541825
-    expected_sem: 0.28272695628369865
+    expected_mean: 99.80142184408233
+    expected_sem: 0.1498019950934033
   pressure:
-    expected_mean: 6.285861177106019e-05
-    expected_sem: 8.68014383943641e-06
+    expected_mean: 44055685.57849965
+    expected_sem: 1723940.1723321422
   volume:
-    expected_mean: 10928.26555568507
-    expected_sem: 43.515410305055894
+    expected_mean: 10824.546618528013
+    expected_sem: 22.91082438109809

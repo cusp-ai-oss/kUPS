@@ -14,8 +14,8 @@ observables:
     expected_mean: 100.00248082505014
     expected_sem: 0.14260264520543553
   pressure:
-    expected_mean: 0.0017819690053888606
-    expected_sem: 1.5208872097334304e-06
+    expected_mean: 323303405.6247944
+    expected_sem: 263690.9662002333
   volume:
     expected_mean: 9314.020864
     expected_sem: 0.0
