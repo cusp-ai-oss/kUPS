@@ -1049,12 +1049,17 @@ def _wrap(
     input_space: CoordinateSpace,
     output_space: CoordinateSpace,
 ) -> Array:
-    """Fold coordinates into ``[-0.5, 0.5)`` along periodic axes."""
+    """Fold coordinates into ``[-0.5, 0.5)`` along periodic axes.
+
+    The integer image shift is subtracted, so coordinates inside come back unchanged.
+    """
     frac = frame.to_fractional(r) if input_space is CoordinateSpace.REAL else r
-    wrapped = (frac + 0.5) % 1 - 0.5
-    mask = jnp.array(periodic)
-    out = jnp.where(mask, wrapped, frac)
-    return frame.to_real(out) if output_space is CoordinateSpace.REAL else out
+    shift = jnp.where(jnp.array(periodic), jnp.floor(frac + 0.5), 0.0)
+    if output_space is CoordinateSpace.FRACTIONAL:
+        return frac - shift
+    if input_space is CoordinateSpace.FRACTIONAL:
+        return frame.to_real(frac - shift)
+    return r - frame.to_real(shift)
 
 
 @dataclass
