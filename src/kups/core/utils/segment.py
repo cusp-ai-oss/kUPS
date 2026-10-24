@@ -244,6 +244,56 @@ segment_sum_p.def_impl(partial(xla.apply_primitive, segment_sum_p))
 segment_take_p.def_impl(partial(xla.apply_primitive, segment_take_p))
 
 
+def _copies(num_updates: int, num_segments: int) -> int:
+    """Copies of the bins that a scatter of `num_updates` rows adds into.
+
+    Update ``i`` adds into copy ``i % copies``, so neighboring updates, which a
+    GPU issues together, hit different addresses rather than queueing their
+    atomic adds on a few bins. Each bin of each copy still takes on average at
+    least 64 updates, so summing the copies stays cheap next to the scatter,
+    and the copies hold at most 4096 bins in all, enough to spread the atomics:
+    on an L4, 512 bins were 10% slower and 32768 no faster.
+
+    Args:
+        num_updates: Rows of contributions.
+        num_segments: Number of output bins.
+
+    Returns:
+        Number of copies, one when the bins are already many.
+    """
+    bins = max(num_segments, 1)
+    return max(1, min(num_updates // (64 * bins), 4096 // bins))
+
+
+def _spread(segment_ids: Array, *, num_segments: int, copies: int) -> Array:
+    """Bin of each update among the copies, out-of-range ids past all of them.
+
+    Args:
+        segment_ids: Bin index per update, shape ``(num_updates,)``.
+        num_segments: Number of output bins.
+        copies: Copies of the bins.
+
+    Returns:
+        Index into ``copies * num_segments`` bins.
+    """
+    ids = _widen(segment_ids, copies * num_segments)
+    copy = (jnp.arange(len(ids), dtype=jnp.int32) % copies).astype(ids.dtype)
+    valid = (ids >= 0) & (ids < num_segments)
+    return jnp.where(valid, ids + copy * num_segments, copies * num_segments)
+
+
+def _add_body(region: Any, scalar: Any) -> None:
+    """Give a scatter's or a reduction's `region` the scalar addition.
+
+    Args:
+        region: MLIR region combining two scalars.
+        scalar: MLIR type of the scalars.
+    """
+    block = region.blocks.append(scalar, scalar)
+    with mlir.ir.InsertionPoint(block):
+        stablehlo.return_([stablehlo.add(block.arguments[0], block.arguments[1])])
+
+
 def _segment_sum_lowering(
     ctx: mlir.LoweringRuleContext,
     data: Any,
@@ -252,6 +302,9 @@ def _segment_sum_lowering(
     num_segments: int,
 ) -> list[Any]:
     """Scatter-add into a wider accumulator, converted back on exit.
+
+    Few bins taking many updates are spread over copies (see `_copies`), which
+    are summed in the wider accumulator before the conversion.
 
     Args:
         ctx: Lowering context carrying the input and output avals.
@@ -262,7 +315,6 @@ def _segment_sum_lowering(
     Returns:
         Single-element list holding the binned MLIR value in the input's dtype.
     """
-    del num_segments
     data_aval = cast(ShapedArray, ctx.avals_in[0])
     ids_aval = cast(ShapedArray, ctx.avals_in[1])
     out_aval = cast(ShapedArray, ctx.avals_out[0])
@@ -270,14 +322,21 @@ def _segment_sum_lowering(
     wide_dtype = _accumulator_dtype(narrow_dtype)
     widen = wide_dtype != narrow_dtype
     wide = mlir.dtype_to_ir_type(wide_dtype)
+    copies = _copies(data_aval.shape[0], num_segments)
+    if copies > 1:
+        spread = partial(_spread, num_segments=num_segments, copies=copies)
+        (segment_ids,) = mlir.lower_fun(spread, multiple_results=False)(
+            ctx.replace(avals_in=[ids_aval]), segment_ids
+        )
+    bins = (copies * num_segments, *out_aval.shape[1:])
     operand = stablehlo.broadcast_in_dim(
-        _tensor(out_aval.shape, wide),
+        _tensor(bins, wide),
         mlir.ir_constant(np.zeros((), wide_dtype)),
         mlir.dense_int_array([]),
     )
     updates = stablehlo.convert(_tensor(data_aval.shape, wide), data) if widen else data
     op = stablehlo.ScatterOp(
-        [_tensor(out_aval.shape, wide)],
+        [_tensor(bins, wide)],
         [operand],
         segment_ids,
         [updates],
@@ -293,13 +352,21 @@ def _segment_sum_lowering(
         unique_indices=mlir.ir.BoolAttr.get(False),
     )
     scalar = _tensor((), wide)
-    block = op.update_computation.blocks.append(scalar, scalar)
-    with mlir.ir.InsertionPoint(block):
-        stablehlo.return_([stablehlo.add(block.arguments[0], block.arguments[1])])
+    _add_body(op.update_computation, scalar)
+    result = op.results[0]
+    if copies > 1:
+        reduce = stablehlo.ReduceOp(
+            [_tensor(out_aval.shape, wide)],
+            [stablehlo.reshape(_tensor((copies, *out_aval.shape), wide), result)],
+            [mlir.ir_constant(np.zeros((), wide_dtype))],
+            mlir.dense_int_array([0]),
+        )
+        _add_body(reduce.body, scalar)
+        result = reduce.results[0]
     if not widen:
-        return [op.results[0]]
+        return [result]
     narrow = mlir.dtype_to_ir_type(narrow_dtype)
-    return [stablehlo.convert(_tensor(out_aval.shape, narrow), op.results[0])]
+    return [stablehlo.convert(_tensor(out_aval.shape, narrow), result)]
 
 
 mlir.register_lowering(segment_sum_p, _segment_sum_lowering)
@@ -476,8 +543,10 @@ def segment_sum(
     and retains `data`'s dtype; float32 is not promoted to float64. Otherwise,
     the scatter accumulates one float wider than `data` and converts back once,
     f32 in f64 and f16 or bf16 in f32, so a bin taking ``k`` contributions rounds
-    once rather than ``k`` times. With multiple segments, integer data and empty
-    inputs use the plain scatter. `segment_ids` may additionally
+    once rather than ``k`` times. Few bins taking many contributions add into
+    several copies of the bins, summed before the conversion, so a GPU's atomic
+    adds do not queue on the same addresses. With multiple segments, integer
+    data and empty inputs use the plain scatter. `segment_ids` may additionally
     cover several leading axes of `data` rather than only the first, which
     ``jax.ops.segment_sum`` rejects.
 
