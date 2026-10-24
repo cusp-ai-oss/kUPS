@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import ase
 import jax
@@ -23,7 +23,7 @@ from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
 from kups.core.neighborlist import UniversalNeighborlistParameters
-from kups.core.typing import ExclusionId, ParticleId, SystemId
+from kups.core.typing import DTypeLike, ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
 from kups.md.observables import particle_kinetic_energy, remove_center_of_mass_momentum
@@ -155,7 +155,7 @@ class MDParticles(Particles):
         position_gradients: Energy gradient w.r.t. positions, shape ``(n_atoms, 3)``.
         momenta: Particle momenta, shape ``(n_atoms, 3)``.
         exclusion: Per-particle exclusion index (defaults to one group per
-            atom via :func:`default_exclusion` if not supplied).
+            atom via :func:`default_exclusion`, in the dtype of ``system``).
     """
 
     position_gradients: Array
@@ -164,7 +164,9 @@ class MDParticles(Particles):
 
     def __post_init__(self) -> None:
         if self.exclusion is None:
-            object.__setattr__(self, "exclusion", default_exclusion(len(self.charges)))
+            dtype = self.system.raw_indices.dtype
+            exclusion = default_exclusion(len(self.charges), dtype)
+            object.__setattr__(self, "exclusion", exclusion)
 
     @property
     def forces(self) -> Array:
@@ -239,6 +241,8 @@ class MdRunConfig(BaseModel):
     each block is saved, so the trajectory has num_steps // block_size frames."""
     seed: int | None
     """Random seed for reproducibility. None for time-based."""
+    index_dtype: Literal["int32", "int64"] = "int64"
+    """Integer dtype of all state indices. ``int32`` is faster on GPU."""
 
 
 class MdParameters(BaseModel):
@@ -360,6 +364,7 @@ def md_state_from_ase(
     config: MdParameters,
     *,
     key: Array | None = None,
+    index_dtype: DTypeLike = int,
 ) -> tuple[Table[ParticleId, MDParticles], Table[SystemId, MDSystems]]:
     """Build MD particles and system data from an ASE Atoms object or file.
 
@@ -370,11 +375,12 @@ def md_state_from_ase(
             parameters.
         key: JAX PRNG key for Maxwell-Boltzmann momenta initialisation. If None,
             momenta are set to zero.
+        index_dtype: Integer dtype of the particle indices.
 
     Returns:
         Tuple of (particles, systems) ready for use with MD integrators.
     """
-    particles, cell, _ = particles_from_ase(atoms)
+    particles, cell, _ = particles_from_ase(atoms, index_dtype=index_dtype)
     return md_state_from_particles_and_cell(particles, cell, config, key=key)
 
 

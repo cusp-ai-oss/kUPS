@@ -430,7 +430,9 @@ def init_state(key: Array, config: Config) -> MCMCState:
     """Initialize the full MCMC state from configuration."""
     chain = key_chain(key)
     host_states = [
-        mcmc_state_from_config(next(chain), host, config.adsorbates)
+        mcmc_state_from_config(
+            next(chain), host, config.adsorbates, index_dtype=config.run.index_dtype
+        )
         for host in config.hosts
     ]
     if not host_states:
@@ -458,7 +460,8 @@ def init_state(key: Array, config: Config) -> MCMCState:
         particles.data.labels.keys + motifs.data.labels.keys
     )
     blocking_spheres = BlockingSpheresParameters.from_data(
-        [host.blocking_spheres for host in config.hosts]
+        [host.blocking_spheres for host in config.hosts],
+        index_dtype=config.run.index_dtype,
     )
     max_motif_size = motifs.data.motif.max_count
     assert max_motif_size is not None

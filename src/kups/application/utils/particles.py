@@ -19,7 +19,14 @@ from jax.typing import ArrayLike
 
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
-from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
+from kups.core.typing import (
+    DTypeLike,
+    ExclusionId,
+    InclusionId,
+    Label,
+    ParticleId,
+    SystemId,
+)
 from kups.core.utils.jax import dataclass
 
 
@@ -49,16 +56,17 @@ class Particles:
         return self.system.to_cls(InclusionId)
 
 
-def default_exclusion(n: int) -> Index[ExclusionId]:
+def default_exclusion(n: int, dtype: DTypeLike = int) -> Index[ExclusionId]:
     """Build a default per-particle exclusion index (each atom excludes itself).
 
     Args:
         n: Number of particles.
+        dtype: Integer dtype of the indices.
 
     Returns:
         Index mapping each particle to a unique ExclusionId.
     """
-    return Index.integer(jnp.arange(n), n=n, label=ExclusionId)
+    return Index.arange(n, label=ExclusionId, dtype=dtype)
 
 
 def particles_from_arrays(
@@ -72,6 +80,7 @@ def particles_from_arrays(
     atomic_numbers: ArrayLike,
     labels: Sequence[str],
     charges: ArrayLike | None = None,
+    index_dtype: DTypeLike = int,
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
@@ -91,6 +100,7 @@ def particles_from_arrays(
         labels: Non-string sequence of string labels, one per particle.
         charges: Partial charges in elementary-charge units, shape ``(n,)``.
             Omitted charges default to floating zeros.
+        index_dtype: Integer dtype of the label and system indices.
 
     Returns:
         Tuple of ``(particles, cell, uc_transform)`` where ``uc_transform``
@@ -158,11 +168,14 @@ def particles_from_arrays(
         atomic_numbers=atomic_numbers_array,
         charges=charges_array,
         labels=list(map(Label, label_values)),
+        index_dtype=index_dtype,
     )
 
 
 def particles_from_ase(
     atoms: ase.Atoms | str | Path,
+    *,
+    index_dtype: DTypeLike = int,
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
@@ -173,24 +186,26 @@ def particles_from_ase(
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
+        index_dtype: Integer dtype of the label and system indices.
 
     Returns:
         Tuple of (particles, cell, uc_transform) where uc_transform
         rotates Cartesian positions into the lower-triangular frame.
     """
     if isinstance(atoms, (str, Path)):
-        return _particles_from_path(atoms)
-    return _particles_from_atoms(atoms)
+        return _particles_from_path(atoms, index_dtype)
+    return _particles_from_atoms(atoms, index_dtype)
 
 
 @cache
 def _particles_from_path(
-    path: str | Path,
+    path: str | Path, index_dtype: DTypeLike
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+    atoms = next(ase.io.iread(path, index=-1, store_tags=True))
+    return _particles_from_atoms(atoms, index_dtype)
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:
@@ -267,6 +282,7 @@ def _build_particles_and_cell(
     atomic_numbers: Array,
     charges: Array,
     labels: list[Label],
+    index_dtype: DTypeLike,
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
@@ -281,8 +297,8 @@ def _build_particles_and_cell(
             masses=masses,
             atomic_numbers=atomic_numbers,
             charges=charges,
-            labels=Index.new(labels),
-            system=Index.integer(jnp.zeros(n_atoms, dtype=int), label=SystemId),
+            labels=Index.new(labels, dtype=index_dtype),
+            system=Index.integer(jnp.zeros(n_atoms, dtype=index_dtype), label=SystemId),
         ),
         label=ParticleId,
     )
@@ -290,7 +306,7 @@ def _build_particles_and_cell(
 
 
 def _particles_from_atoms(
-    atoms: ase.Atoms,
+    atoms: ase.Atoms, index_dtype: DTypeLike
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
@@ -317,4 +333,5 @@ def _particles_from_atoms(
         atomic_numbers=atomic_numbers,
         charges=charges,
         labels=labels,
+        index_dtype=index_dtype,
     )
