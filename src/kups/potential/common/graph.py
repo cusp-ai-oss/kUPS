@@ -47,6 +47,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.jax import dataclass, field, jit, tree_map
+from kups.core.utils.subselect import argsort_indices
 from kups.potential.common.energy import InputConstructor
 from kups.potential.common.geometry import Geometry, PositionsAndSystemIndex
 from kups.potential.common.pair import PairBatch, PairEnergy, PairTerm
@@ -132,7 +133,7 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
             return_sort_order: If True, also return the sort permutation.
         """
         n = len(self.particles)
-        sort_order = jnp.argsort(self.particles.data.system.raw_indices, stable=True)
+        sort_order = argsort_indices(self.particles.data.system.raw_indices)
         sorted_data = bind(self.particles.data).at((sort_order,)).get()
         sorted_particles = Table(
             self.particles.keys, sorted_data, _cls=self.particles.cls
@@ -142,7 +143,9 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
             self.particles.keys,
             Index(
                 self.particles.keys,
-                jnp.zeros_like(sort_order).at[sort_order].set(jnp.arange(n)),
+                jnp.zeros_like(sort_order)
+                .at[sort_order]
+                .set(jnp.arange(n, dtype=sort_order.dtype)),
                 max_count=self.edges.indices.max_count,
                 _cls=self.particles.cls,
             ),
@@ -150,8 +153,8 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
         remapped_indices = inverse_order[self.edges.indices]
         sorted_edges = Edges(indices=remapped_indices, shifts=self.edges.shifts)
         if sort_edges:
-            edge_systems = sorted_particles[remapped_indices[:, 0]].system
-            edge_order = jnp.argsort(edge_systems.raw_indices, stable=True)
+            edge_systems = sorted_particles[remapped_indices[:, 0]].system.raw_indices
+            edge_order = argsort_indices(edge_systems)
             sorted_edges = Edges(
                 indices=remapped_indices[edge_order],
                 shifts=sorted_edges.shifts[edge_order],

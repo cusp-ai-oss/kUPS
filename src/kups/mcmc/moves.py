@@ -568,6 +568,7 @@ def exchange_changes_from_position_changes(
         groups: Current buffered group metadata.
     """
     n_sys = particles.data.system.num_labels
+    dtype = particles.data.system.raw_indices.dtype
     selected = particles[changes.particle_ids]
 
     p_data = ExchangeParticleData(
@@ -580,7 +581,7 @@ def exchange_changes_from_position_changes(
     p_changes = WithIndices(changes.particle_ids, p_buf)
 
     # One group per system (same shape as insert/delete) — just re-assert existing groups
-    group_idx = Index(groups.keys, jnp.zeros(n_sys, dtype=int))
+    group_idx = Index(groups.keys, jnp.zeros(n_sys, dtype=dtype))
     grps = groups[group_idx]
     g_data = ExchangeGroupData(motif=grps.motif, system=grps.system)
     g_buf = Buffered.arange(g_data, label=GroupId)
@@ -610,13 +611,14 @@ def insert_random_motif(
         Exchange changes describing the insertion.
     """
     n_sys = particles.data.system.num_labels
+    dtype = particles.data.system.raw_indices.dtype
     max_sys_count = particles.data.system.max_count
     n_motifs = motifs.data.motif.num_labels
     motif_max_seg = motifs.data.motif.max_count
     n_motif_particles = len(motifs)
     chain = key_chain(key)
     selected_motifs = jax.random.choice(
-        next(chain), jnp.arange(n_motifs), shape=(n_sys,)
+        next(chain), jnp.arange(n_motifs, dtype=dtype), shape=(n_sys,)
     )
     selected = Index(motifs.data.motif.keys, selected_motifs)
     ins_system_ids, particle_idx = subselect(
@@ -658,10 +660,16 @@ def insert_random_motif(
     ins_particle_data = ExchangeParticleData(
         new_positions=new_positions,
         system=Index.integer(
-            ins_system_ids, n=n_sys, label=SystemId, max_count=max_sys_count
+            ins_system_ids,
+            n=n_sys,
+            label=SystemId,
+            max_count=max_sys_count,
+            dtype=dtype,
         ),
         group=bind(ins_group, lambda g: g.max_count).set(motif_max_seg),
-        motif=Index.integer(particle_idx, n=n_motif_particles, label=MotifParticleId),
+        motif=Index.integer(
+            particle_idx, n=n_motif_particles, label=MotifParticleId, dtype=dtype
+        ),
     )
     ins_particles = WithIndices(
         p_idx,
@@ -675,6 +683,7 @@ def insert_random_motif(
             n=n_sys,
             label=SystemId,
             max_count=groups.data.system.max_count,
+            dtype=dtype,
         ),
     )
     ins_groups = WithIndices(
@@ -705,13 +714,16 @@ def delete_random_motif(
     """
     chain = key_chain(key)
     n_sys = particles.data.system.num_labels
+    dtype = particles.data.system.raw_indices.dtype
     max_sys_count = particles.data.system.max_count
     n_motifs = motifs.data.motif.num_labels
     motif_max_seg = motifs.data.motif.max_count
     n_motif_particles = len(motifs)
 
     # Randomly select a motif to delete for each system
-    motifs_to_delete = jax.random.choice(next(chain), n_motifs, shape=(n_sys,))
+    motifs_to_delete = jax.random.choice(
+        next(chain), jnp.arange(n_motifs, dtype=dtype), shape=(n_sys,)
+    )
     # Mark groups whose label matches selected motif and belong to correct system
     group_system = groups.data.system
     selected_motif = Table(
@@ -739,17 +751,20 @@ def delete_random_motif(
             n=n_sys,
             label=SystemId,
             max_count=max_sys_count,
+            dtype=dtype,
         ),
         group=Index.integer(
             jnp.full(n_deleted, len(groups)),
             n=len(groups),
             label=GroupId,
             max_count=motif_max_seg,
+            dtype=dtype,
         ),
         motif=Index.integer(
             jnp.full(n_deleted, n_motif_particles),
             n=n_motif_particles,
             label=MotifParticleId,
+            dtype=dtype,
         ),
     )
     del_particles = WithIndices(
@@ -761,12 +776,15 @@ def delete_random_motif(
     g_idx = deleted_group.update_labels(groups.keys)
     g_idx = bind(g_idx, lambda g: g.max_count).set(None)
     del_group_data = ExchangeGroupData(
-        motif=Index.integer(jnp.full(n_sys, n_motifs), n=n_motifs, label=MotifId),
+        motif=Index.integer(
+            jnp.full(n_sys, n_motifs), n=n_motifs, label=MotifId, dtype=dtype
+        ),
         system=Index.integer(
             jnp.full(n_sys, n_sys),
             n=n_sys,
             label=SystemId,
             max_count=groups.data.system.max_count,
+            dtype=dtype,
         ),
     )
     del_groups = WithIndices(
