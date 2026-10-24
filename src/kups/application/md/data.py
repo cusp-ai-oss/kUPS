@@ -278,6 +278,10 @@ class MdRunConfig(BaseModel):
     """Random seed for reproducibility. None for time-based."""
     index_dtype: Literal["int32", "int64"] = "int64"
     """Integer dtype of all state indices. ``int32`` is faster on GPU."""
+    float_dtype: Literal["float32", "float64"] = "float64"
+    """Float dtype of the particle and system tables: positions, momenta, cells and
+    their other floats. ``float32`` is faster on GPUs with slow double precision;
+    give Lennard-Jones a ``float32`` ``kernel_dtype`` too."""
 
 
 class MdParameters(BaseModel):
@@ -321,7 +325,8 @@ def md_state_from_particles_and_cell(
 
     The supplied particles and cell must already describe the same system in
     the same kUPS coordinate frame. This function does not transform geometry;
-    it only adds the system dimension to the cell.
+    it only adds the system dimension to the cell. Momenta, gradients, energies
+    and integrator parameters take the float dtype of the positions.
 
     Args:
         particles: Non-empty particle table for exactly one complete system.
@@ -363,13 +368,16 @@ def md_state_from_particles_and_cell(
             f"cell.vectors must have shape (3, 3); got {cell.vectors.shape}."
         )
 
+    dtype = p.positions.dtype
     if key is not None:
-        # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT))
+        # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT)), drawn in
+        # the default float dtype, so that float32 states start from the same momenta
         std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
         momenta = jax.random.normal(key, (n_particles, 3)) * std[:, None]
         momenta = remove_center_of_mass_momentum(momenta, p.masses, p.system)
+        momenta = momenta.astype(dtype)
     else:
-        momenta = jnp.zeros((n_particles, 3))
+        momenta = jnp.zeros((n_particles, 3), dtype)
 
     md_particles = particles.set_data(
         MDParticles(
@@ -391,8 +399,8 @@ def md_state_from_particles_and_cell(
             cell=batched_cell,
             integrator_params=_build_integrator_params(config, batched_cell),
             cell_gradients=tree_zeros_like(batched_cell),
-            cell_momentum=jnp.zeros(batched_cell.vectors.shape),
-            potential_energy=jnp.array([0.0]),
+            cell_momentum=jnp.zeros(batched_cell.vectors.shape, dtype),
+            potential_energy=jnp.zeros(1, dtype),
         ),
     )
 
@@ -405,6 +413,7 @@ def md_state_from_ase(
     *,
     key: Array | None = None,
     index_dtype: DTypeLike = int,
+    float_dtype: DTypeLike = float,
 ) -> tuple[Table[ParticleId, MDParticles], Table[SystemId, MDSystems]]:
     """Build MD particles and system data from an ASE Atoms object or file.
 
@@ -416,11 +425,14 @@ def md_state_from_ase(
         key: JAX PRNG key for Maxwell-Boltzmann momenta initialisation. If None,
             momenta are set to zero.
         index_dtype: Integer dtype of the particle indices.
+        float_dtype: Float dtype of the particle and system tables.
 
     Returns:
         Tuple of (particles, systems) ready for use with MD integrators.
     """
-    particles, cell, _ = particles_from_ase(atoms, index_dtype=index_dtype)
+    particles, cell, _ = particles_from_ase(
+        atoms, index_dtype=index_dtype, float_dtype=float_dtype
+    )
     return md_state_from_particles_and_cell(particles, cell, config, key=key)
 
 
@@ -458,9 +470,14 @@ def _gao_barostat_mass(
 def _build_integrator_params(
     config: MdParameters, cell: Cell[AnyPeriodicity]
 ) -> IntegratorParams:
-    """Construct the concrete integrator-params dataclass matching ``config.integrator``."""
-    time_step = jnp.array([config.time_step * FEMTO_SECOND])
-    temperature = jnp.array([config.temperature])
+    """Integrator parameters matching ``config.integrator``, one row per cell, in the
+    float dtype of the cells."""
+
+    def per_system(value: float) -> Array:
+        return jnp.full(cell.volume.shape, value, cell.vectors.dtype)
+
+    time_step = per_system(config.time_step * FEMTO_SECOND)
+    temperature = per_system(config.temperature)
     match config.integrator:
         case "verlet":
             return VerletParams(time_step=time_step)
@@ -468,36 +485,36 @@ def _build_integrator_params(
             return BAOABLangevinParams(
                 time_step=time_step,
                 temperature=temperature,
-                friction_coefficient=jnp.array(
-                    [config.friction_coefficient / FEMTO_SECOND]
+                friction_coefficient=per_system(
+                    config.friction_coefficient / FEMTO_SECOND
                 ),
             )
         case "csvr":
             return CSVRParams(
                 time_step=time_step,
                 temperature=temperature,
-                thermostat_time_constant=jnp.array(
-                    [config.thermostat_time_constant * FEMTO_SECOND]
+                thermostat_time_constant=per_system(
+                    config.thermostat_time_constant * FEMTO_SECOND
                 ),
             )
         case "csvr_npt":
             return CSVRNPTParams(
                 time_step=time_step,
                 temperature=temperature,
-                thermostat_time_constant=jnp.array(
-                    [config.thermostat_time_constant * FEMTO_SECOND]
+                thermostat_time_constant=per_system(
+                    config.thermostat_time_constant * FEMTO_SECOND
                 ),
-                target_pressure=jnp.array([config.target_pressure * PASCAL]),
-                pressure_coupling_time=jnp.array(
-                    [config.pressure_coupling_time * FEMTO_SECOND]
+                target_pressure=per_system(config.target_pressure * PASCAL),
+                pressure_coupling_time=per_system(
+                    config.pressure_coupling_time * FEMTO_SECOND
                 ),
-                compressibility=jnp.array([config.compressibility / PASCAL]),
-                minimum_scale_factor=jnp.array([config.minimum_scale_factor]),
+                compressibility=per_system(config.compressibility / PASCAL),
+                minimum_scale_factor=per_system(config.minimum_scale_factor),
             )
         case "baoab_npt_langevin":
-            tau_P = jnp.array([config.pressure_coupling_time * FEMTO_SECOND])
-            kappa = jnp.array([config.compressibility / PASCAL])
-            gamma = jnp.array([config.friction_coefficient / FEMTO_SECOND])
+            tau_P = per_system(config.pressure_coupling_time * FEMTO_SECOND)
+            kappa = per_system(config.compressibility / PASCAL)
+            gamma = per_system(config.friction_coefficient / FEMTO_SECOND)
             barostat_mass = _gao_barostat_mass(cell.vectors, kappa, tau_P)
             barostat_friction = jnp.tril(
                 jnp.broadcast_to(gamma[..., None, None], barostat_mass.shape)
@@ -506,7 +523,7 @@ def _build_integrator_params(
                 time_step=time_step,
                 temperature=temperature,
                 friction_coefficient=gamma,
-                target_pressure=jnp.array([config.target_pressure * PASCAL]),
+                target_pressure=per_system(config.target_pressure * PASCAL),
                 pressure_coupling_time=tau_P,
                 compressibility=kappa,
                 barostat_mass=barostat_mass,

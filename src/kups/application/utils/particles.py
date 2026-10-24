@@ -28,7 +28,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import astype_floating, dataclass
 
 
 @dataclass
@@ -177,6 +177,7 @@ def particles_from_ase(
     atoms: ase.Atoms | str | Path,
     *,
     index_dtype: DTypeLike = int,
+    float_dtype: DTypeLike = float,
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
@@ -190,19 +191,20 @@ def particles_from_ase(
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
         index_dtype: Integer dtype of the label and system indices.
+        float_dtype: Float dtype of the positions, masses, charges and cell.
 
     Returns:
         Tuple of (particles, cell, uc_transform) where uc_transform
         rotates Cartesian positions into the lower-triangular frame.
     """
     if isinstance(atoms, (str, Path)):
-        return _particles_from_path(atoms, index_dtype)
-    return _particles_from_atoms(atoms, index_dtype)
+        return _particles_from_path(atoms, index_dtype, float_dtype)
+    return _particles_from_atoms(atoms, index_dtype, float_dtype)
 
 
 @cache
 def _particles_from_path(
-    path: str | Path, index_dtype: DTypeLike
+    path: str | Path, index_dtype: DTypeLike, float_dtype: DTypeLike
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
@@ -212,7 +214,7 @@ def _particles_from_path(
         frames = ase.io.iread(path, index=-1, store_tags=True)
     else:
         frames = ase.io.iread(path, index=-1)
-    return _particles_from_atoms(next(frames), index_dtype)
+    return _particles_from_atoms(next(frames), index_dtype, float_dtype)
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:
@@ -313,11 +315,12 @@ def _build_particles_and_cell(
 
 
 def _particles_from_atoms(
-    atoms: ase.Atoms, index_dtype: DTypeLike
+    atoms: ase.Atoms, index_dtype: DTypeLike, float_dtype: DTypeLike
 ) -> tuple[
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
-    """Build particle data and cell from an ASE Atoms object."""
+    """Build particle data and cell from an ASE Atoms object; floats are stored in
+    ``float_dtype`` after the rotation into the lower-triangular frame."""
     cell_vectors = jnp.asarray(atoms.cell.array)
     pbc = (bool(atoms.pbc[0]), bool(atoms.pbc[1]), bool(atoms.pbc[2]))
     positions = jnp.asarray(atoms.positions)
@@ -332,7 +335,7 @@ def _particles_from_atoms(
     labels = list(
         map(Label, atoms.info.get("_atom_site_label", atoms.get_chemical_symbols()))
     )
-    return _build_particles_and_cell(
+    particles, cell, uc_transform = _build_particles_and_cell(
         positions=positions,
         cell_vectors=cell_vectors,
         periodicity=pbc,
@@ -342,3 +345,5 @@ def _particles_from_atoms(
         labels=labels,
         index_dtype=index_dtype,
     )
+    particles, cell = astype_floating((particles, cell), float_dtype)
+    return particles, cell, uc_transform

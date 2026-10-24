@@ -9,6 +9,7 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
+import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
@@ -22,6 +23,7 @@ from kups.core.utils.block_average import (
     block_average,
     optimal_block_average,
 )
+from kups.core.utils.jax import astype_floating
 from kups.md.observables import instantaneous_pressure
 
 
@@ -52,7 +54,7 @@ class IsMDStepData(HasPotentialEnergy, HasStressTensor, Protocol):
 
 @plain_dataclass
 class MDAnalysisResult:
-    """Results from MD simulation analysis for a single system.
+    """Results from MD simulation analysis for a single system, averaged in float64.
 
     Attributes:
         potential_energy: Average potential energy with SEM (eV).
@@ -155,6 +157,18 @@ def _analyze_md_systems(
     Returns:
         Per-system analysis results keyed by ``SystemId``.
     """
+    potential_energy, kinetic_energy, internal_kinetic_energy, stress_tensor, volume = (
+        astype_floating(
+            (
+                potential_energy,
+                kinetic_energy,
+                internal_kinetic_energy,
+                stress_tensor,
+                volume,
+            ),
+            jnp.float64,
+        )
+    )
     n_atoms_per_system = system.counts.data
     return {
         sys_id: _analyze_single_system(

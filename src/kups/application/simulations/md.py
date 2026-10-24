@@ -84,7 +84,11 @@ def run(config: Config) -> MdState:
         logging.info(f"Loading structure from {inp_file}")
         key = next(chain) if config.md.initialize_momenta else None
         particles_i, systems_i = md_state_from_ase(
-            inp_file, config.md, key=key, index_dtype=config.run.index_dtype
+            inp_file,
+            config.md,
+            key=key,
+            index_dtype=config.run.index_dtype,
+            float_dtype=config.run.float_dtype,
         )
         all_particles.append(particles_i)
         all_systems.append(systems_i)

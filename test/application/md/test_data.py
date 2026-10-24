@@ -34,6 +34,7 @@ from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, Label, ParticleId, SystemId
+from kups.core.utils.jax import astype_floating
 
 
 @pytest.fixture
@@ -219,9 +220,9 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
     calls: list[tuple[object, ...]] = []
 
     def fake_particles_from_ase(
-        atoms: ase.Atoms | str | Path, *, index_dtype: object
+        atoms: ase.Atoms | str | Path, *, index_dtype: object, float_dtype: object
     ) -> tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity], object]:
-        calls.append(("adapter", atoms, index_dtype))
+        calls.append(("adapter", atoms, index_dtype, float_dtype))
         return particles, cell, object()
 
     def fake_md_state_from_particles_and_cell(
@@ -241,11 +242,17 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
         fake_md_state_from_particles_and_cell,
     )
 
-    actual = md_state_from_ase("input.cif", md_config, key=key, index_dtype=jnp.int32)
+    actual = md_state_from_ase(
+        "input.cif",
+        md_config,
+        key=key,
+        index_dtype=jnp.int32,
+        float_dtype=jnp.float32,
+    )
 
     assert actual is expected
     assert calls == [
-        ("adapter", "input.cif", jnp.int32),
+        ("adapter", "input.cif", jnp.int32, jnp.float32),
         ("builder", particles, cell, md_config, key),
     ]
 
@@ -415,6 +422,29 @@ def test_key_alone_controls_momentum_initialization(
         sampled_particles.data.momenta.sum(axis=0),
         jnp.zeros(3),
         atol=1e-12,
+    )
+
+
+@pytest.mark.parametrize(
+    "integrator", ["verlet", "baoab_langevin", "csvr", "csvr_npt", "baoab_npt_langevin"]
+)
+def test_floats_follow_the_positions(md_config: MdParameters, integrator: str) -> None:
+    """Momenta, gradients, energies and integrator parameters take the float dtype of
+    float32 positions and cells."""
+    config = md_config.model_copy(update={"integrator": integrator})
+    particles = _particles(Index((SystemId(0),), jnp.zeros(3, dtype=int)))
+    md_particles, systems = md_state_from_particles_and_cell(
+        astype_floating(particles, jnp.float32),
+        astype_floating(_cell(), jnp.float32),
+        config,
+        key=jax.random.key(0),
+    )
+    leaves = jax.tree.leaves((md_particles, systems))
+    floats = {x.dtype for x in leaves if jnp.issubdtype(x.dtype, jnp.floating)}
+    assert floats == {jnp.dtype(jnp.float32)}
+    npt.assert_array_equal(
+        systems.data.integrator_params.time_step,
+        [np.float32(config.time_step * FEMTO_SECOND)],
     )
 
 

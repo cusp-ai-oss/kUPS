@@ -200,11 +200,14 @@ def main() -> int:
     else:
         expected_files = sorted(EXPECTED_DIR.glob("*.yaml"))
 
-    # Load all specs
+    # Load all specs; a spec with a reference takes that case's observables
     specs: list[tuple[str, dict]] = []
     for expected_file in expected_files:
         with open(expected_file) as f:
             spec = yaml.safe_load(f)
+        if "reference" in spec:
+            with open(EXPECTED_DIR / f"{spec['reference']}.yaml") as f:
+                spec["observables"] = yaml.safe_load(f)["observables"]
         specs.append((expected_file.stem, spec))
 
     # Run all simulations in parallel

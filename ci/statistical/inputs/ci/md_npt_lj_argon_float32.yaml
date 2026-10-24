@@ -1,0 +1,31 @@
+inp_files:
+  - ../host/argon_fcc.cif
+
+run:
+  out_file: ../../md_npt_lj_argon_float32.h5
+  num_warmup_steps: 5_000
+  num_steps: 5_000
+  seed: 42
+  float_dtype: float32
+
+md:
+  temperature: 100.0
+  time_step: 2.0
+  friction_coefficient: 0.01
+  thermostat_time_constant: 100.0
+  # Total pressure at NVT equilibrium density: P_kin + P_config ≈ 420 bar
+  target_pressure: 42000000.0
+  pressure_coupling_time: 1000.0
+  # Liquid argon kappa_T at 100K (NIST, Tegeler et al. 1999, DOI: 10.1063/1.556037)
+  compressibility: 5.4e-10
+  minimum_scale_factor: 0.9
+  integrator: csvr_npt
+  initialize_momenta: true
+
+potential:
+  backend: lj
+  cutoff: 10.0
+  mixing_rule: lorentz_berthelot
+  kernel_dtype: float32
+  parameters:
+    Ar: [3.405, 0.01032356174398622]
