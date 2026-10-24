@@ -72,6 +72,13 @@ from kups.core.neighborlist.refine import (
     RefineMaskNeighborList,
 )
 from kups.core.neighborlist.rows import NeighborRows, neighbor_rows
+from kups.core.neighborlist.skin import (
+    IsSkinListState,
+    SkinList,
+    SkinListPropagator,
+    SkinNeighborList,
+    wraps_since_build,
+)
 from kups.core.neighborlist.types import (
     CandidateBatch,
     CandidateSelector,
@@ -80,6 +87,7 @@ from kups.core.neighborlist.types import (
     IsUniversalNeighborlistParams,
     Mask,
     NeighborList,
+    NeighborListBuilder,
     NeighborListFactory,
     NeighborListPoints,
     NeighborListSystems,
@@ -90,7 +98,6 @@ from kups.core.neighborlist.types import (
 from kups.core.neighborlist.verlet import (
     SkinMargin,
     SkinReference,
-    effective_build_radii,
     skin_margin,
 )
 
@@ -146,6 +153,11 @@ __all__ = [
     "RefineMaskNeighborList",
     "QueriedKeysDedupMask",
     "SkinMargin",
+    "IsSkinListState",
+    "NeighborListBuilder",
+    "SkinList",
+    "SkinListPropagator",
+    "SkinNeighborList",
     "SkinReference",
     "UniversalNeighborlistParameters",
     "all_connected_neighborlist",
@@ -156,8 +168,8 @@ __all__ = [
     "cell_scan_cost",
     "cell_rows",
     "dense_cost",
-    "effective_build_radii",
     "neighbor_rows",
     "neighborlist_changes",
     "skin_margin",
+    "wraps_since_build",
 ]

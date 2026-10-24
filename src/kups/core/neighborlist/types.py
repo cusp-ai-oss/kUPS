@@ -28,6 +28,7 @@ from jax import Array
 from kups.core.capacity import Capacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
+from kups.core.lens import Lens
 from kups.core.neighborlist.edges import Edges
 from kups.core.typing import (
     HasCell,
@@ -312,6 +313,22 @@ class NeighborListFactory[State](Protocol):
         self,
         state: State,
         cutoffs: Table[SystemId, Array],
+    ) -> NeighborList[Literal[2]]: ...
+
+
+class NeighborListBuilder(Protocol):
+    """Builds a pair neighbor list at given cutoffs, with capacities behind a lens.
+
+    The ``new`` of every library neighbor list qualifies, e.g.
+    ``CellListNeighborList.new``.
+    """
+
+    def __call__[S](
+        self,
+        state: S,
+        lens: Lens[S, IsUniversalNeighborlistParams],
+        cutoffs: Table[SystemId, Array],
+        /,
     ) -> NeighborList[Literal[2]]: ...
 
 
