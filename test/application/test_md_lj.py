@@ -19,13 +19,13 @@ from kups.application.simulations.potentials import LjPotentialConfig
 from kups.core.data import Index
 
 
-def _ar_cif(rattle: float = 0.0) -> str:
-    """Write a small fcc-argon supercell (32 atoms, ~10.6 Å cube) as a P1 CIF.
+def _ar_cif(rattle: float = 0.0, repeat: int = 2) -> str:
+    """Write ``repeat**3`` primitive fcc-argon cells (one atom each) as a P1 CIF.
 
     Labels are kept uniform (``Ar``) so they match the LJ parameter table;
     ASE's CIF writer would otherwise uniquify them to ``Ar1``, ``Ar2``, ...
     """
-    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
+    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (repeat, repeat, repeat)
     if rattle:
         atoms.rattle(rattle, seed=1)
     a, b, c, al, be, ga = atoms.cell.cellpar()
@@ -135,4 +135,22 @@ def test_int32_indices_match_default() -> None:
         states[0].particles.data.positions,
         rtol=1e-10,
         atol=1e-10,
+    )
+
+
+def test_skin_does_not_change_results() -> None:
+    """``md.skin`` changes how often neighbors are listed, not the trajectory."""
+    states = []
+    for skin in (0.05, 1.5):
+        # a fresh input file per run: particles_from_ase caches by path and the
+        # MD cycle donates the cached buffers
+        config = _config(_tmp_h5(), _ar_cif(rattle=0.1, repeat=4))
+        md = config.md.model_copy(update={"skin": skin, "integrator": "verlet"})
+        states.append(run(config.model_copy(update={"md": md})))
+    small, large = (np.asarray(s.skin_list.reference.positions) for s in states)
+    assert not np.array_equal(small, large)  # the small skin was listed again
+    np.testing.assert_allclose(
+        states[1].particles.data.positions,
+        states[0].particles.data.positions,
+        atol=1e-8,
     )
