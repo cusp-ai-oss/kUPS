@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import ase
 import jax
@@ -21,12 +21,18 @@ from kups.application.utils.particles import (
 )
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
-from kups.core.data import Index, Table
+from kups.core.data import Index, Table, cast_indices
+from kups.core.lens import bind
 from kups.core.neighborlist import SkinList, UniversalNeighborlistParameters
+from kups.core.storage import HDF5StorageReader
 from kups.core.typing import DTypeLike, ExclusionId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, tree_zeros_like
+from kups.core.utils.jax import astype_floating, dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
 from kups.md.observables import particle_kinetic_energy, remove_center_of_mass_momentum
+
+if TYPE_CHECKING:
+    # logging imports this module
+    from kups.application.md.logging import MDLoggedData
 
 
 @dataclass
@@ -330,6 +336,9 @@ class MdParameters(BaseModel):
     """Integration algorithm to use."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
+    rescale_to_mean_volume: bool = False
+    """Scale each cell of a previous ``kups_md`` run given as input, and its
+    positions, to the mean volume of that run's rows."""
     skin: float = 1.0
     """Verlet skin (Å) of the neighbor list. Pairs within cutoff + skin are listed
     once and listed again when atom motion or cell deformation could have brought a
@@ -393,12 +402,7 @@ def md_state_from_particles_and_cell(
 
     dtype = p.positions.dtype
     if key is not None:
-        # Sample momenta from Maxwell-Boltzmann: p_i ~ N(0, sqrt(m_i * kT)), drawn in
-        # the default float dtype, so that float32 states start from the same momenta
-        std = jnp.sqrt(p.masses * config.temperature * BOLTZMANN_CONSTANT)
-        momenta = jax.random.normal(key, (n_particles, 3)) * std[:, None]
-        momenta = remove_center_of_mass_momentum(momenta, p.masses, p.system)
-        momenta = momenta.astype(dtype)
+        momenta = _maxwell_boltzmann_momenta(key, p, config.temperature)
     else:
         momenta = jnp.zeros((n_particles, 3), dtype)
 
@@ -452,11 +456,99 @@ def md_state_from_ase(
 
     Returns:
         Tuple of (particles, systems) ready for use with MD integrators.
+
+    Raises:
+        ValueError: If ``config.rescale_to_mean_volume`` is set.
     """
+    if config.rescale_to_mean_volume:
+        raise ValueError(
+            "md.rescale_to_mean_volume applies to previous kups_md runs, not to "
+            f"structures such as {atoms}."
+        )
     particles, cell, _ = particles_from_ase(
         atoms, index_dtype=index_dtype, float_dtype=float_dtype
     )
     return md_state_from_particles_and_cell(particles, cell, config, key=key)
+
+
+def md_state_from_run(
+    path: str | Path,
+    config: MdParameters,
+    *,
+    key: Array | None = None,
+    index_dtype: DTypeLike = int,
+    float_dtype: DTypeLike = float,
+) -> tuple[Table[ParticleId, MDParticles], Table[SystemId, MDSystems]]:
+    """Build MD particles and systems from the final state of a ``kups_md`` run.
+
+    Particles keep their order, positions and momenta, and systems their cells;
+    integrator parameters come from ``config``. With
+    ``config.rescale_to_mean_volume``, each cell and its positions are scaled to
+    the mean volume of the run's rows, which keeps fractional coordinates, and cell
+    momenta are reset.
+
+    Args:
+        path: Output file of a finished ``kups_md`` run.
+        config: MD configuration of the new run.
+        key: JAX PRNG key for new Maxwell-Boltzmann momenta. If None, the run's
+            momenta are kept.
+        index_dtype: Integer dtype of the particle and system indices.
+        float_dtype: Float dtype of the particle and system tables.
+
+    Returns:
+        Tuple of (particles, systems) ready for use with MD integrators.
+
+    Raises:
+        ValueError: If the file holds no final state of a finished run, or no rows
+            to average the volume over.
+    """
+    reader: HDF5StorageReader[MDLoggedData]
+    with HDF5StorageReader(path) as reader:
+        # killed runs have no actual_steps, and runs without steps no final state
+        done = reader.file.attrs.get("actual_steps", 0)
+        if done < 1 or done != reader.file.attrs.get("total_steps"):
+            raise ValueError(f"{path} holds no final state of a finished kups_md run.")
+        final = reader.focus_group(lambda s: s.final)[...]
+        volumes = reader.focus_group(lambda s: s.step).read(select=lambda d: d.volume)
+    # in the dtypes of this run, which may differ from those of the earlier one
+    particles, systems = astype_floating(
+        cast_indices(
+            jax.tree.map(jnp.asarray, (final.atoms, final.systems)), index_dtype
+        ),
+        float_dtype,
+    )
+    if config.rescale_to_mean_volume:
+        if len(volumes) == 0:
+            raise ValueError(f"{path} has no rows to average the volume over.")
+        cell = systems.data.cell
+        mean = jnp.mean(volumes, axis=0, dtype=jnp.float64)
+        scale = ((mean / cell.volume) ** (1 / 3)).astype(cell.volume.dtype)
+        particle_scale = systems.set_data(scale)[particles.data.system]
+        particles = bind(particles, lambda t: t.data.positions).apply(
+            lambda positions: positions * particle_scale[:, None]
+        )
+        systems = bind(systems, lambda t: t.data.cell).set(cell * scale)
+        systems = bind(systems, lambda t: t.data.cell_momentum).apply(jnp.zeros_like)
+    if key is not None:
+        momenta = _maxwell_boltzmann_momenta(key, particles.data, config.temperature)
+        particles = bind(particles, lambda t: t.data.momenta).set(momenta)
+    params = _build_integrator_params(config, systems.data.cell)
+    return particles, bind(systems, lambda t: t.data.integrator_params).set(params)
+
+
+def _maxwell_boltzmann_momenta(
+    key: Array, particles: Particles, temperature: float
+) -> Array:
+    """Momenta drawn from the Maxwell-Boltzmann distribution at ``temperature``,
+    p_i ~ N(0, sqrt(m_i k T)), without center-of-mass motion, in the dtype of the
+    positions. They are drawn in the default float dtype, so that float32 states
+    start from the same momenta."""
+    std = jnp.sqrt(particles.masses * temperature * BOLTZMANN_CONSTANT)
+    momenta = jax.random.normal(key, (len(particles.masses), 3)) * std[:, None]
+    momenta = remove_center_of_mass_momentum(
+        momenta, particles.masses, particles.system
+    )
+    return momenta.astype(particles.positions.dtype)
 
 
 def _gao_barostat_mass(
@@ -567,4 +659,5 @@ __all__ = [
     "IntegratorParams",
     "md_state_from_particles_and_cell",
     "md_state_from_ase",
+    "md_state_from_run",
 ]

@@ -17,6 +17,7 @@ from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")  # for torch backends
 
+import h5py
 import jax
 import rich
 import rich.logging
@@ -31,6 +32,7 @@ from kups.application.md.data import (
     MdState,
     MDSystems,
     md_state_from_ase,
+    md_state_from_run,
 )
 from kups.application.md.simulation import make_md_propagator, run_md
 from kups.application.potential.filter import POSITIONS_AND_CELL
@@ -69,6 +71,7 @@ class Config(BaseModel):
     md: MdParameters
     potential: PotentialConfig
     inp_files: tuple[str | Path, ...]
+    """Structure files read with ASE, or outputs of earlier ``kups_md`` runs."""
 
 
 def run(config: Config) -> MdState:
@@ -89,7 +92,8 @@ def run(config: Config) -> MdState:
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
         key = next(chain) if config.md.initialize_momenta else None
-        particles_i, systems_i = md_state_from_ase(
+        load = md_state_from_run if h5py.is_hdf5(inp_file) else md_state_from_ase
+        particles_i, systems_i = load(
             inp_file,
             config.md,
             key=key,

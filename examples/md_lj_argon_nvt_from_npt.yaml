@@ -1,0 +1,34 @@
+# NVT Molecular Dynamics continuing md_lj_argon_npt.yaml (run it first)
+# The cell and positions are scaled to the mean volume of the NPT run; a CSVR
+# thermostat keeps the temperature, and frames every 2 steps give velocities
+# every 4 fs.
+
+run:
+  out_file: md_nvt_from_npt_lj_argon.h5
+  num_steps: 10_000
+  num_warmup_steps: 1_000      # Relaxes the rescaled structure
+  block_size: 2
+  frames_every: 2
+  seed: 42
+
+md:
+  temperature: 100.0           # Target temperature (K)
+  time_step: 2.0               # Timestep (fs)
+  friction_coefficient: 0.01
+  thermostat_time_constant: 100.0
+  target_pressure: 4.2e7
+  pressure_coupling_time: 1000.0
+  compressibility: 5.4e-10
+  minimum_scale_factor: 0.9
+  integrator: "csvr"
+  rescale_to_mean_volume: true # Start at the mean volume of the NPT run
+
+potential:
+  backend: lj
+  cutoff: 10.0
+  parameters:
+    Ar: [3.405, 0.010326]  # (sigma [A], epsilon [eV]) -- 119.8 K = 0.010326 eV
+  mixing_rule: "lorentz_berthelot"
+
+inp_files:
+  - md_npt_lj_argon.h5         # Output of md_lj_argon_npt.yaml

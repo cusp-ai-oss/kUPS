@@ -92,6 +92,8 @@ state = MdState.create(particles, systems, cutoff, config.md.skin)
 
 `md_state_from_ase` accepts xyz, cif, or lammps input. `MdState.create` guesses initial capacities from geometry with [UniversalNeighborlistParameters.estimate][kups.core.neighborlist.UniversalNeighborlistParameters.estimate] and builds the skin list; the estimate does not have to be exact, because warmup grows what is too small.
 
+`run` loads `kups_md` output files with `md_state_from_run`, which starts from the final state of the earlier run.
+
 **Running.** The loop lives on the host side.
 
 ```python
