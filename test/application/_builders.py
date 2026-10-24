@@ -143,7 +143,7 @@ def state_and_step(
 ) -> tuple[MdState, Propagator[MdState]]:
     """State with a skin list at the cutoff of ``build``'s potential, and its step."""
     potential, cutoff = build(particles, systems)
-    step = make_md_propagator(identity_lens(MdState), md.integrator, potential)
+    _, step = make_md_propagator(identity_lens(MdState), md.integrator, potential)
     return MdState.create(particles, systems, cutoff, md.skin), step
 
 

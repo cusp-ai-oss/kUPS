@@ -93,12 +93,13 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     state_lens: Lens[State, State],
     integrator: Integrator,
     potential: Potential[State, Grad, EmptyType, Any],
-) -> Propagator[State]:
-    """Build a single MD propagator step with error recovery and step counting.
+) -> tuple[Propagator[State], Propagator[State]]:
+    """Build the MD force evaluation and one MD step with step counting.
 
     Every force evaluation applies the potential's patch, which stores the skin list
-    the potential read. A failed step keeps the skin list, since every read checks it
-    again.
+    the potential read. A failed evaluation or step keeps the skin list, since every
+    read checks it again. States start without forces, so evaluate them once before
+    the first step.
 
     Args:
         state_lens: Lens focusing on the MD sub-state within the full state.
@@ -107,7 +108,8 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
             ``SkinNeighborList.from_state``.
 
     Returns:
-        Propagator that advances the state by one MD step.
+        The force evaluation, and the propagator that advances the state by one
+        MD step.
     """
     mapped_potential = LinearMappedPotential(potential, potential_map)
     derivative_computation = PotentialAsPropagator(
@@ -135,11 +137,14 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         state_lens, derivative_computation, integrator
     )
     step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
-    propagator = ResetOnErrorPropagator(
-        SequentialPropagator((md_propagator, step_count_propagator)),
-        keep=state_lens.focus(lambda x: x.skin_list),
+    skin_list = state_lens.focus(lambda x: x.skin_list)
+    return (
+        ResetOnErrorPropagator(derivative_computation, keep=skin_list),
+        ResetOnErrorPropagator(
+            SequentialPropagator((md_propagator, step_count_propagator)),
+            keep=skin_list,
+        ),
     )
-    return propagator
 
 
 def run_md[State: IsMdState](
@@ -149,8 +154,8 @@ def run_md[State: IsMdState](
 
     Args:
         key: JAX PRNG key.
-        propagator: MD propagator produced by `make_md_propagator`.
-        state: Initial simulation state.
+        propagator: MD step produced by `make_md_propagator`.
+        state: Initial simulation state, with its forces evaluated.
         config: Run configuration (steps, output file and intervals, seed).
 
     Returns:
