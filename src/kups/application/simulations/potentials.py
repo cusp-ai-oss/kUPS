@@ -22,8 +22,8 @@ from jax import Array
 from pydantic import BaseModel, Field
 
 from kups.application.potential.classical.lennard_jones import (
-    IsLJSkinListState,
-    make_lennard_jones_from_state,
+    IsLJRowState,
+    make_lennard_jones_row_from_state,
 )
 from kups.application.potential.mliap.tojax import (
     IsTojaxedSkinListState,
@@ -63,23 +63,26 @@ class LjPotentialConfig(BaseModel):
     cutoff: float
     parameters: dict[str, tuple[float | None, float | None]]
     mixing_rule: MixingRule
+    kernel_dtype: Literal["float64", "float32"] = "float64"
+    """Precision of the pair terms and of each atom's sums; per-system energies and
+    stress are summed in float64. ``float32`` runs a Pallas kernel on CUDA GPUs of
+    compute capability 8.0+. With ``float32``, pairs within about 2e-7 (relative) of
+    the cutoff may fall on either side of it, and the energies carry round-off that
+    line searches see near convergence, so keep ``float64`` for tight relaxations."""
 
     def build[State](
         self,
-        state_lens: Lens[State, IsLJSkinListState],
+        state_lens: Lens[State, IsLJRowState],
         gradient: Lens[Geometry, PositionsAndCell],
     ) -> BuiltPotential[State]:
-        """Build the LJ potential with its parameters bound in."""
+        """Build LJ over the skin list's neighbor rows with its parameters bound in."""
         params = LennardJonesParameters.from_dict(
             cutoff=self.cutoff,
             parameters=self.parameters,
             mixing_rule=self.mixing_rule,
         )
-        potential = make_lennard_jones_from_state(
-            state_lens,
-            parameters=params,
-            gradient=gradient,
-            neighborlist_factory=SkinNeighborList.from_state,
+        potential = make_lennard_jones_row_from_state(
+            state_lens, parameters=params, gradient=gradient, dtype=self.kernel_dtype
         )
         return potential, params.cutoff
 
