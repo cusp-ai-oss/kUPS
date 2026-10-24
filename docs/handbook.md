@@ -69,11 +69,13 @@ class MdState:
 
 The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `skin_list` keeps the neighbor pairs across steps ([Neighbor Lists](notebooks/neighborlist.md)). `neighborlist_params` and the skin list's capacities are resized by the retry loop on overflow.
 
-**Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens and the gradient filter; factories fan the lens out to the fields they need.
+**Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens, the gradient filter, and the particle and system tables, from which a config can size parameters that depend on the input; factories fan the lens out to the fields they need. `run` reads the input into the tables first (see State construction below).
 
 ```python
 state_lens = identity_lens(MdState)
-potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
+potential, cutoff = config.potential.build(
+    state_lens, POSITIONS_AND_CELL, particles, systems
+)
 propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 ```
 

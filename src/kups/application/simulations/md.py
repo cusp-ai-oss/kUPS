@@ -77,8 +77,6 @@ def run(config: Config) -> MdState:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
-    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
     all_particles: list[Table[ParticleId, MDParticles]] = []
     all_systems: list[Table[SystemId, MDSystems]] = []
@@ -91,6 +89,10 @@ def run(config: Config) -> MdState:
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
+    potential, cutoff = config.potential.build(
+        state_lens, POSITIONS_AND_CELL, particles, systems
+    )
+    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
     base = 1 if isinstance(config.potential, TojaxPotentialConfig) else 2
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
