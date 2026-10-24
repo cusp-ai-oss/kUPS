@@ -192,6 +192,25 @@ class TestParticlesFromAse:
         assert len(particles) == 1
         npt.assert_array_equal(particles.data.atomic_numbers, jnp.array([18]))
 
+    @pytest.mark.parametrize("name", ["test.xyz", "test.traj", "test.vasp"])
+    def test_from_files_of_other_formats(self, tmp_path, name):
+        """Files that are not CIF load the same structure."""
+        from ase import Atoms
+        from ase.io import write
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "ArKr", positions=[[0, 0, 0], [1.5, 2, 2.5]], cell=[10, 11, 12], pbc=True
+        )
+        path = tmp_path / name
+        write(str(path), atoms)
+        particles, cell, _ = particles_from_ase(path)
+        expected, expected_cell, _ = particles_from_ase(atoms)
+        npt.assert_allclose(particles.data.positions, expected.data.positions)
+        npt.assert_array_equal(particles.data.atomic_numbers, [18, 36])
+        npt.assert_allclose(cell.vectors, expected_cell.vectors)
+
     def test_uc_transform_produces_lower_triangular(self):
         from ase.build import bulk
 
