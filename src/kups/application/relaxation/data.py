@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import ase
 import jax.numpy as jnp
@@ -61,7 +62,7 @@ class RelaxParticles(Particles):
 class RelaxSystems:
     """System-level data for structure relaxation."""
 
-    cell: Cell[AnyPeriodicity]
+    cell: Cell[Any]
     """Cell geometry, batched with shape (1,)."""
     cell_gradients: Cell[AnyPeriodicity]
     """Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the relaxation filter's output),
