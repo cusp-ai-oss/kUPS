@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -313,6 +314,61 @@ class TestLennardJonesEnergy:
         assert jnp.all(jnp.isfinite(grad_epsilon))
         assert jnp.any(jnp.abs(grad_sigma) > 1e-10)
         assert jnp.any(jnp.abs(grad_epsilon) > 1e-10)
+
+    @pytest.mark.parametrize("n_systems", [1, 3])
+    def test_position_and_cell_gradients_match_plain_indexing(self, n_systems):
+        """Forces and cell gradients match plain gathers and a dense shift product."""
+        keys = jax.random.split(jax.random.key(7), 3)
+        lattice = jnp.tril(
+            6.0 * jnp.eye(3) + jax.random.uniform(keys[0], (n_systems, 3, 3))
+        )
+        # A jittered 2x2x2 grid per cell keeps close contacts away.
+        grid = np.stack(np.meshgrid(*[np.arange(2) / 2] * 3), -1).reshape(-1, 3)
+        frac = grid + 0.04 * jax.random.normal(keys[1], (n_systems, 8, 3))
+        positions = jnp.einsum("snj,sji->sni", frac, lattice).reshape(-1, 3)
+        system_ids = np.repeat(np.arange(n_systems), 8)
+        species = np.arange(8 * n_systems) % 2
+        # Every ordered pair within a system under three image shifts, then padding.
+        pairs = np.argwhere(~np.eye(8, dtype=bool))
+        pairs = np.concatenate([pairs + 8 * s for s in range(n_systems)] * 3)
+        edges = np.concatenate([pairs, np.full((4, 2), 8 * n_systems)])
+        shifts = jax.random.randint(keys[2], (len(edges), 1, 3), -1, 2)
+        params = LennardJonesParameters(
+            labels=_LABELS,
+            sigma=self.sigma,
+            epsilon=self.epsilon,
+            cutoff=_cutoff(*[100.0] * n_systems),
+        )
+
+        def energy(positions, lattice):
+            graph = _make_graph(
+                positions,
+                [_LABELS[s] for s in species],
+                jnp.asarray(system_ids),
+                lattice,
+                jnp.full(n_systems, 100.0),
+                jnp.asarray(edges),
+                shifts,
+            )
+            return lennard_jones_energy(
+                GraphPotentialInput(params, graph)
+            ).data.data.sum()
+
+        def reference(positions, lattice):
+            first, second = pairs.T
+            # The triclinic frame keeps the lower triangle of the lattice.
+            cells = jnp.tril(lattice)[system_ids[first]]
+            rij = positions[second] - positions[first]
+            rij += jnp.einsum("ek,ekl->el", shifts[: len(pairs), 0], cells)
+            pair_species = species[first], species[second]
+            c6 = (self.sigma[pair_species] ** 2 / (rij**2).sum(-1)) ** 3
+            # Each directed edge contributes half of the pair energy.
+            return jnp.sum(4 * self.epsilon[pair_species] * (c6**2 - c6)) / 2
+
+        actual = jax.grad(energy, (0, 1))(positions, lattice)
+        expected = jax.grad(reference, (0, 1))(positions, lattice)
+        for a, b in zip(actual, expected):
+            npt.assert_allclose(a, b, rtol=1e-12, atol=1e-15)
 
     @pytest.mark.parametrize(
         "n_species, n_queries, n_keys, reverse_labels",
