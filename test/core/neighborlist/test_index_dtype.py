@@ -15,6 +15,7 @@ from kups.core.data import Index, Table
 from kups.core.neighborlist import (
     AllDenseNearestNeighborList,
     CellListNeighborList,
+    CellScanNeighborList,
     DenseNearestNeighborList,
 )
 from kups.core.result import as_result_function
@@ -68,6 +69,9 @@ def _neighbor_lists(cutoffs):
         "all_dense": AllDenseNearestNeighborList(
             avg_edges=cap(60), avg_image_candidates=cap(256), cutoffs=cutoffs
         ),
+        "cell_scan": CellScanNeighborList(
+            avg_edges=cap(60), cells=cap(64), cutoffs=cutoffs
+        ),
     }
 
 
@@ -88,7 +92,7 @@ def _int64_heavy_ops(jaxpr: Jaxpr) -> list[str]:
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
-@pytest.mark.parametrize("name", ["cell_list", "dense", "all_dense"])
+@pytest.mark.parametrize("name", ["cell_list", "dense", "all_dense", "cell_scan"])
 def test_int32_build_matches_default(name):
     points, systems, cutoffs = _inputs()
 

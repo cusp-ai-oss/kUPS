@@ -38,6 +38,7 @@ from kups.core.neighborlist.cell_list_cache import (
     cell_candidates,
     cell_rows,
 )
+from kups.core.neighborlist.cell_scan import CellScanNeighborList, CellScanSelector
 from kups.core.neighborlist.changes import (
     NeighborListChangesResult,
     neighborlist_changes,
@@ -99,6 +100,8 @@ __all__ = [
     "CandidateSelector",
     "CellListNeighborList",
     "CellListSelector",
+    "CellScanNeighborList",
+    "CellScanSelector",
     "CellRows",
     "CellListCache",
     "CellListCacheParameters",
