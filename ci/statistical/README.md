@@ -61,6 +61,11 @@ ci/statistical/
    uv run python ci/statistical/validate.py
    ```
 
+A variant of an existing case, such as the float32 runs of the argon cases, needs
+only `inputs/ci/<name>.yaml` and an `expected/<name>.yaml` with `simulation_type`,
+`hdf5_output` and `reference: <case>`. It is validated against the expected values
+of `<case>`.
+
 ## Validation Logic
 
 The validator compares measured values against expected values using a statistical tolerance (default: 5 sigma). A test passes if:

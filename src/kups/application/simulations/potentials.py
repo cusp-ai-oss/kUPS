@@ -85,10 +85,11 @@ class LjPotentialConfig(BaseModel):
     mixing_rule: MixingRule
     kernel_dtype: Literal["float64", "float32"] = "float64"
     """Precision of the pair terms and of each atom's sums; per-system energies and
-    stress are summed in float64. ``float32`` runs a Pallas kernel on CUDA GPUs of
-    compute capability 8.0+. With ``float32``, pairs within about 2e-7 (relative) of
-    the cutoff may fall on either side of it, and the energies carry round-off that
-    line searches see near convergence, so keep ``float64`` for tight relaxations."""
+    stress are summed in float64 and come back in the float dtype of the state.
+    ``float32`` runs a Pallas kernel on CUDA GPUs of compute capability 8.0+. With
+    ``float32``, pairs within about 2e-7 (relative) of the cutoff may fall on either
+    side of it, and the energies carry round-off that line searches see near
+    convergence, so keep ``float64`` for tight relaxations."""
 
     def build[State](
         self,

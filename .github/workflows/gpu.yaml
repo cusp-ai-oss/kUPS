@@ -30,6 +30,12 @@ jobs:
       - name: Validate NPT ensemble (BAOAB-NPT-Langevin)
         run: uv run --no-default-groups --group cuda python validate_npt_physics.py md_npt_lj_argon_baoab.h5 --pressure-sem 3.4e6
         working-directory: ci/statistical
+      - name: Validate NVE ensemble (float32)
+        run: uv run --no-default-groups --group cuda python validate_nve_physics.py md_nve_lj_argon_float32.h5
+        working-directory: ci/statistical
+      - name: Validate NPT ensemble (CSVR-NPT, float32)
+        run: uv run --no-default-groups --group cuda python validate_npt_physics.py md_npt_lj_argon_float32.h5
+        working-directory: ci/statistical
       - name: MACE torch-bridge e2e
         # Random ``ScaleShiftMACE`` checkpoint built at test time, so no
         # external download is needed. The test file self-skips via
