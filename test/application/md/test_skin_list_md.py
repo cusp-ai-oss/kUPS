@@ -6,6 +6,8 @@ the graph path of the MLFF backends and through LJ's neighbor rows."""
 
 import json
 import zipfile
+from collections.abc import Callable
+from functools import partial
 
 import ase
 import ase.build
@@ -43,6 +45,9 @@ _LJ = LennardJonesParameters.from_dict(
     _ROWS.cutoff, _ROWS.parameters, _ROWS.mixing_rule
 )
 
+type Build = Callable[[Table, Table], BuiltPotential]
+"""Builds a potential for the loaded particle and system tables."""
+
 
 def _md(integrator: str, skin: float = 0.3) -> MdParameters:
     # NPT settings of the CI argon runs (compressibility in 1/Pa)
@@ -67,7 +72,7 @@ def _argon(n: int, seed: int) -> ase.Atoms:
     return atoms
 
 
-def _graph(factory) -> BuiltPotential:
+def _graph(factory) -> Build:
     """Graph LJ over ``factory``'s pairs, as the MLFF backends evaluate them."""
     potential = make_lennard_jones_from_state(
         identity_lens(MdState),
@@ -75,16 +80,16 @@ def _graph(factory) -> BuiltPotential:
         gradient=POSITIONS_AND_CELL,
         neighborlist_factory=factory,
     )
-    return potential, _LJ.cutoff
+    return lambda *_: (potential, _LJ.cutoff)
 
 
-def _rows(dtype: str = "float64") -> BuiltPotential:
+def _rows(dtype: str = "float64") -> Build:
     """LJ over the skin list's rows, as the app config builds it."""
     config = _ROWS.model_copy(update={"kernel_dtype": dtype})
-    return config.build(identity_lens(MdState), POSITIONS_AND_CELL)
+    return partial(config.build, identity_lens(MdState), POSITIONS_AND_CELL)
 
 
-def _paths() -> list[tuple[BuiltPotential, bool]]:
+def _paths() -> list[tuple[Build, bool]]:
     """Per-step builds (the reference), the skin list's pairs and its rows, each with
     whether it reads the skin list."""
     return [
@@ -94,24 +99,24 @@ def _paths() -> list[tuple[BuiltPotential, bool]]:
     ]
 
 
-def _state(md: MdParameters, built: BuiltPotential, atoms: list[ase.Atoms]) -> tuple:
-    potential, cutoff = built
+def _state(md: MdParameters, build: Build, atoms: list[ase.Atoms]) -> tuple:
     tables = [
         md_state_from_ase(a, md, key=jax.random.key(i)) for i, a in enumerate(atoms)
     ]
     particles, systems = Table.union([p for p, _ in tables], [s for _, s in tables])
+    potential, cutoff = build(particles, systems)
     step = make_md_propagator(identity_lens(MdState), md.integrator, potential)
     return MdState.create(particles, systems, cutoff, md.skin), step
 
 
 def _run(
     md: MdParameters,
-    built: BuiltPotential,
+    build: Build,
     atoms: list[ase.Atoms],
     reads_the_list: bool,
     blocks: int = 6,
 ) -> np.ndarray:
-    state, step = _state(md, built, atoms)
+    state, step = _state(md, build, atoms)
     reference = state.skin_list.reference.positions
     cycle = jax.jit(as_result_function(LoopPropagator(step, 10)))
     for i in range(blocks):
@@ -131,8 +136,8 @@ def test_trajectory_matches_per_step_builds(integrator):
     the runs that read the list rebuild it."""
     atoms = [_argon(4, 0), _argon(3, 1)]
     per_step, *skin = (
-        _run(_md(integrator), built, atoms, reads_the_list=reads_the_list)
-        for built, reads_the_list in _paths()
+        _run(_md(integrator), build, atoms, reads_the_list=reads_the_list)
+        for build, reads_the_list in _paths()
     )
     for positions in skin:
         np.testing.assert_allclose(positions, per_step, atol=1e-8)
@@ -145,9 +150,9 @@ def test_margin_is_checked_where_forces_are_evaluated():
     )
     atoms.pbc = True
     forces = []
-    for built, _ in _paths():
+    for build, _ in _paths():
         md = _md("verlet").model_copy(update={"initialize_momenta": False})
-        state, step = _state(md, built, [atoms])
+        state, step = _state(md, build, [atoms])
         masses = state.particles.data.masses[:, None]
         time_step = state.systems.data.integrator_params.time_step[0]
         velocity = jnp.array([[0.3, 0.0, 0.0], [-0.3, 0.0, 0.0]]) / time_step
@@ -253,8 +258,8 @@ def test_tojax_config_reads_the_skin_list(tmp_path):
     config = TojaxPotentialConfig(model_path=path)
     md, atoms = _md("baoab_langevin"), [_argon(3, 0)]
     reference = _run(
-        md, (per_step, model.cutoff), atoms, reads_the_list=False, blocks=4
+        md, lambda *_: (per_step, model.cutoff), atoms, reads_the_list=False, blocks=4
     )
-    built = config.build(identity_lens(MdState), POSITIONS_AND_CELL)
-    skin = _run(md, built, atoms, reads_the_list=True, blocks=4)
+    build = partial(config.build, identity_lens(MdState), POSITIONS_AND_CELL)
+    skin = _run(md, build, atoms, reads_the_list=True, blocks=4)
     np.testing.assert_allclose(skin, reference, atol=1e-8)

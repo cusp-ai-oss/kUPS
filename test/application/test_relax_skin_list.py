@@ -71,7 +71,19 @@ class _Checked:
         return out
 
 
-def _built(factory, gradient) -> tuple:
+def _tables() -> tuple[Table, Table]:
+    # the 2 x 2 x 2 primitive cell is narrower than twice the cutoff
+    atoms = [
+        ase.build.bulk("Ar", "fcc", a=5.0, cubic=True) * (3, 3, 3),
+        ase.build.bulk("Ar", "fcc", a=5.0) * (2, 2, 2),
+    ]
+    for seed, a in enumerate(atoms):
+        a.rattle(0.3, seed=seed)
+    tables = [relax_state_from_ase(a) for a in atoms]
+    return Table.union([p for p, _ in tables], [s for _, s in tables])
+
+
+def _built(factory, gradient, *_) -> tuple:
     """Graph LJ over ``factory``'s pairs, as the MLFF backends evaluate them."""
     potential = make_lennard_jones_from_state(
         identity_lens(RelaxState),
@@ -85,15 +97,7 @@ def _built(factory, gradient) -> tuple:
 def _relax(
     potential, cutoff, optimizer, gradient, reads_the_list: bool, steps: int = 12
 ) -> RelaxState:
-    # the 2 x 2 x 2 primitive cell is narrower than twice the cutoff
-    atoms = [
-        ase.build.bulk("Ar", "fcc", a=5.0, cubic=True) * (3, 3, 3),
-        ase.build.bulk("Ar", "fcc", a=5.0) * (2, 2, 2),
-    ]
-    for seed, a in enumerate(atoms):
-        a.rattle(0.3, seed=seed)
-    tables = [relax_state_from_ase(a) for a in atoms]
-    particles, systems = Table.union([p for p, _ in tables], [s for _, s in tables])
+    particles, systems = _tables()
     propagator, opt_init = make_relax_propagator(
         identity_lens(RelaxState), potential, make_optimizer(optimizer), gradient
     )
@@ -125,7 +129,7 @@ def test_relaxation_matches_per_step_builds(skin_path):
     it."""
     skin, per_step = (
         _relax(
-            *built(POSITIONS_ONLY),
+            *built(POSITIONS_ONLY, *_tables()),
             _LBFGS,
             POSITIONS_ONLY,
             reads_the_list=reads_the_list,
@@ -145,7 +149,7 @@ def test_line_search_evaluations_match_per_step_builds(skin_path):
     """A line search turns round-off into other trial points, so paths that sum pairs
     in another order diverge. Every evaluation, trial points included, is checked
     against per-step builds instead."""
-    skin, cutoff = skin_path(FRECHET_FILTER)
+    skin, cutoff = skin_path(FRECHET_FILTER, *_tables())
     per_step, _ = _built(AdaptiveNeighborList.from_state, FRECHET_FILTER)
     _relax(
         _Checked(skin, per_step),
