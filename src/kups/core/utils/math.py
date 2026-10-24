@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Protocol, overload, override, runtime_checkable
 
 import jax
@@ -407,6 +408,41 @@ class MatmulSide(StrEnum):
     RIGHT = "right"
 
 
+@partial(jax.custom_jvp, nondiff_argnums=(2,))
+def _triangular_matmul(L: Array, x: Array, lower: bool) -> Array:
+    """``x @ L`` for triangular ``L`` from the triangle's scalar products."""
+    return jnp.stack(
+        [
+            sum(
+                L[..., j, i] * x[..., j]
+                for j in (range(i, 3) if lower else range(i + 1))
+            )
+            for i in range(3)
+        ],
+        axis=-1,
+    )
+
+
+@partial(_triangular_matmul.defjvp, symbolic_zeros=True)
+def _triangular_matmul_jvp(  # pyright: ignore[reportUnusedFunction]
+    lower: bool, primals: tuple[Array, Array], tangents: tuple[Array, Array]
+) -> tuple[Array, Array]:
+    """Tangent in ``L`` as one masked product.
+
+    Its transpose, the gradient in ``L``, is one masked outer product, where
+    that of the scalar products pads each product to a 3×3 and sums the pads.
+    """
+    L, x = primals
+    dL, dx = tangents
+    terms: list[Array] = []
+    if not isinstance(dL, jax.custom_derivatives.SymbolicZero):
+        triangle = jnp.tri(3, dtype=bool) if lower else jnp.tri(3, dtype=bool).T
+        terms.append(jnp.sum(jnp.where(triangle, dL, 0) * x[..., :, None], axis=-2))
+    if not isinstance(dx, jax.custom_derivatives.SymbolicZero):
+        terms.append(_triangular_matmul(L, dx, lower))
+    return _triangular_matmul(L, x, lower), sum(terms[1:], start=terms[0])
+
+
 @jit(static_argnames=("lower", "side"))
 def triangular_3x3_matmul(
     L: Array, x: Array, *, lower: bool = True, side: MatmulSide | str = MatmulSide.RIGHT
@@ -415,7 +451,8 @@ def triangular_3x3_matmul(
 
     Exploits triangular structure to avoid computing with known-zero elements
     and supports broadcasting over leading dimensions. Scalar products fuse
-    with neighboring operations, unlike small batched dots.
+    with neighboring operations, unlike small batched dots; the gradient in `L`
+    is one masked outer product.
 
     Args:
         L: Array of shape `(..., 3, 3)` containing triangular matrices.
@@ -440,16 +477,7 @@ def triangular_3x3_matmul(
     if side is MatmulSide.LEFT:
         L = jnp.swapaxes(L, -1, -2)
         lower = not lower
-    return jnp.stack(
-        [
-            sum(
-                L[..., j, i] * x[..., j]
-                for j in (range(i, 3) if lower else range(i + 1))
-            )
-            for i in range(3)
-        ],
-        axis=-1,
-    )
+    return _triangular_matmul(L, x, lower)
 
 
 @runtime_checkable
