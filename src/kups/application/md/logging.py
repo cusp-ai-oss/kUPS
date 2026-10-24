@@ -9,7 +9,8 @@ from typing import Protocol
 
 from jax import Array
 
-from kups.application.md.data import MDParticles, MDSystems
+from kups.application.md.data import MDParticles, MdRunConfig, MDSystems
+from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
@@ -23,31 +24,40 @@ class HasMDData(Protocol):
 
     particles: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
+    step: Array
 
 
 @dataclass
-class InitData:
-    """Snapshot of initial MD state logged once at step 0.
+class MDSnapshot:
+    """Particle and system tables of one state.
 
     Attributes:
-        atoms: Indexed particle data (positions, momenta, etc.).
-        systems: Indexed system data (cell, temperature, etc.).
+        atoms: Particle data (positions, momenta, masses, ...).
+        systems: System data (cell, integrator parameters, ...).
     """
 
     atoms: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
 
     @staticmethod
-    def from_state(state: HasMDData) -> InitData:
-        return InitData(atoms=state.particles, systems=state.systems)
+    def from_state(state: HasMDData) -> MDSnapshot:
+        """Snapshot of a state.
+
+        Args:
+            state: MD state.
+
+        Returns:
+            Its particle and system tables.
+        """
+        return MDSnapshot(state.particles, state.systems)
 
 
 @dataclass
-class MDStepData:
-    """Per-step MD data logged at each production step.
+class MDThermoData:
+    """Energies, stress and volume of one logged step.
 
     Attributes:
-        atoms: Indexed particle data.
+        step: MD steps done, warmup included, shape ``(1,)``.
         potential_energy: Potential energy per system.
         kinetic_energy: Total kinetic energy per system.
         internal_kinetic_energy: Kinetic energy per system with center-of-mass
@@ -56,7 +66,7 @@ class MDStepData:
         volume: Cell volume per system (A^3).
     """
 
-    atoms: Table[ParticleId, MDParticles]
+    step: Array
     potential_energy: Array
     kinetic_energy: Array
     internal_kinetic_energy: Array
@@ -64,12 +74,20 @@ class MDStepData:
     volume: Array
 
     @staticmethod
-    def from_state(state: HasMDData) -> MDStepData:
+    def from_state(state: HasMDData) -> MDThermoData:
+        """Energies, stress and volumes of a state.
+
+        Args:
+            state: MD state.
+
+        Returns:
+            Its row.
+        """
         particles = state.particles
         system = particles.data.system
         momenta, masses = particles.data.momenta, particles.data.masses
-        return MDStepData(
-            atoms=particles,
+        return MDThermoData(
+            step=state.step,
             potential_energy=state.systems.data.potential_energy,
             kinetic_energy=system_kinetic_energy(momenta, masses, system),
             internal_kinetic_energy=system_kinetic_energy(
@@ -81,17 +99,73 @@ class MDStepData:
 
 
 @dataclass
-class MDLoggedData:
-    """Configuration for MD simulation logging groups.
+class MDFrameData:
+    """Positions, momenta and cells of one logged step.
 
     Attributes:
-        init: Logs initial state once at step 0.
-        step: Logs thermodynamic data every step.
+        step: MD steps done, warmup included, shape ``(1,)``.
+        positions: Positions (A) wrapped into the cell, shape ``(n_atoms, 3)``.
+        momenta: Momenta, shape ``(n_atoms, 3)``.
+        cell: Cell of each system.
     """
 
-    init: WriterGroupConfig[HasMDData, InitData] = WriterGroupConfig(
-        InitData.from_state, Once()
-    )
-    step: WriterGroupConfig[HasMDData, MDStepData] = WriterGroupConfig(
-        MDStepData.from_state, EveryNStep(1)
-    )
+    step: Array
+    positions: Array
+    momenta: Array
+    cell: Cell[AnyPeriodicity]
+
+    @staticmethod
+    def from_state(state: HasMDData) -> MDFrameData:
+        """Frame of a state.
+
+        Args:
+            state: MD state.
+
+        Returns:
+            Its positions, momenta and cells.
+        """
+        particles = state.particles.data
+        return MDFrameData(
+            state.step, particles.positions, particles.momenta, state.systems.data.cell
+        )
+
+
+@dataclass
+class MDLoggedData:
+    """Output groups of an MD run.
+
+    Attributes:
+        init: Tables after the first block.
+        step: Energies, stress and volume every ``run.thermo_every`` steps.
+        frames: Positions, momenta and cells every ``run.frames_every`` steps.
+        final: Tables after the last block.
+    """
+
+    init: WriterGroupConfig[HasMDData, MDSnapshot]
+    step: WriterGroupConfig[HasMDData, MDThermoData]
+    frames: WriterGroupConfig[HasMDData, MDFrameData]
+    final: WriterGroupConfig[HasMDData, MDSnapshot]
+
+    @staticmethod
+    def create(config: MdRunConfig) -> MDLoggedData:
+        """Output groups of a run that logs once per block.
+
+        Args:
+            config: Run configuration with the block size and output intervals.
+
+        Returns:
+            The output groups, with rows and frames at the end of each interval.
+        """
+        blocks = config.num_steps // config.block_size
+        thermo = config.thermo_every // config.block_size
+        frames = config.frames_every // config.block_size
+        return MDLoggedData(
+            init=WriterGroupConfig(MDSnapshot.from_state, Once()),
+            step=WriterGroupConfig(
+                MDThermoData.from_state, EveryNStep(thermo, start=thermo - 1)
+            ),
+            frames=WriterGroupConfig(
+                MDFrameData.from_state, EveryNStep(frames, start=frames - 1)
+            ),
+            final=WriterGroupConfig(MDSnapshot.from_state, Once(blocks - 1)),
+        )

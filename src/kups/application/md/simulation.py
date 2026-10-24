@@ -151,7 +151,7 @@ def run_md[State: IsMdState](
         key: JAX PRNG key.
         propagator: MD propagator produced by `make_md_propagator`.
         state: Initial simulation state.
-        config: Run configuration (steps, output file, seed).
+        config: Run configuration (steps, output file and intervals, seed).
 
     Returns:
         Final simulation state after production run.
@@ -163,13 +163,14 @@ def run_md[State: IsMdState](
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
-    # Each cycle fuses block_size steps into one dispatch and saves its final frame, so the
-    # trajectory keeps num_steps // block_size frames (block_size=1 = one step per cycle).
+    # each cycle fuses block_size steps into one dispatch; output is logged per cycle
     cycle_fn = make_cycle_function(LoopPropagator(propagator, config.block_size))
     num_cycles = config.num_steps // config.block_size
     logger = CompositeLogger(
         TqdmLogger(num_cycles),
-        HDF5StorageWriter(config.out_file, MDLoggedData(), state, num_cycles),
+        HDF5StorageWriter(
+            config.out_file, MDLoggedData.create(config), state, num_cycles
+        ),
     )
     state = run_simulation_cycles(next(chain), cycle_fn, state, num_cycles, logger)
     return state

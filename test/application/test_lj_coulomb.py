@@ -50,7 +50,7 @@ from kups.potential.classical.ewald import EwaldParameters, PMEParameters
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 
-from ._builders import Build, md_tables, state_and_step
+from ._builders import Build, md_tables, state_and_step, write_cif
 
 # The parameters are synthetic, and the rock salt below is near zero pressure.
 # 6.3 rounds up in float32, so a float32 state's Coulomb cutoff exceeds the
@@ -245,44 +245,10 @@ def test_uncharged_systems_raise():
         )
 
 
-def _salt_cif(path: Path, seed: int) -> Path:
-    """Rattled 2 x 2 x 2 rock salt as a P1 CIF with ``_atom_site_charge``."""
-    atoms = _salt(2, seed)
-    rows = "\n".join(
-        f"{s} {s} {x:.6f} {y:.6f} {z:.6f} {q:+.1f}"
-        for s, (x, y, z), q in zip(
-            atoms.get_chemical_symbols(),
-            atoms.get_scaled_positions(),
-            atoms.info["_atom_site_charge"],
-            strict=True,
-        )
-    )
-    cif = f"""data_nacl
-_cell_length_a {atoms.cell.lengths()[0]:.6f}
-_cell_length_b {atoms.cell.lengths()[1]:.6f}
-_cell_length_c {atoms.cell.lengths()[2]:.6f}
-_cell_angle_alpha 90
-_cell_angle_beta 90
-_cell_angle_gamma 90
-_symmetry_space_group_name_H-M 'P 1'
-_symmetry_Int_Tables_number 1
-loop_
-_atom_site_label
-_atom_site_type_symbol
-_atom_site_fract_x
-_atom_site_fract_y
-_atom_site_fract_z
-_atom_site_charge
-{rows}
-"""
-    path.write_text(cif)
-    return path
-
-
-def _inputs(directory: Path) -> tuple[Path, Path]:
-    """Two rock salt CIFs, new for each run: particles_from_ase caches by path."""
+def _inputs(directory: Path) -> tuple[Path, ...]:
+    """Two rock salt CIFs with charges, new for each run."""
     directory.mkdir()
-    return _salt_cif(directory / "0.cif", 0), _salt_cif(directory / "1.cif", 1)
+    return tuple(write_cif(_salt(2, i), directory / f"{i}.cif") for i in (0, 1))
 
 
 def _app(directory: Path, method: str, index_dtype: str = "int64") -> md.Config:

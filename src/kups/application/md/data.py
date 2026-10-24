@@ -12,7 +12,7 @@ import ase
 import jax
 import jax.numpy as jnp
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from kups.application.utils.particles import (
     Particles,
@@ -268,12 +268,18 @@ class MdRunConfig(BaseModel):
     out_file: str | Path
     """Path to the output HDF5 file."""
     num_steps: int
-    """Number of production steps."""
+    """Number of production steps, a multiple of ``block_size``."""
     num_warmup_steps: int
     """Number of warmup steps before production."""
-    block_size: int = 1
-    """Production steps fused per on-device dispatch (1 = per-step). Only the last frame of
-    each block is saved, so the trajectory has num_steps // block_size frames."""
+    block_size: int = Field(default=1, ge=1)
+    """Production steps fused per on-device dispatch (1 = per-step). Output is written
+    after whole blocks."""
+    thermo_every: int = Field(default_factory=lambda data: data["block_size"], ge=1)
+    """Steps between rows of energies, stress and volume, a multiple of ``block_size``.
+    Defaults to ``block_size``."""
+    frames_every: int = Field(default_factory=lambda data: data["block_size"], ge=1)
+    """Steps between frames (positions, momenta, cells), a multiple of ``block_size``.
+    Defaults to ``block_size``."""
     seed: int | None
     """Random seed for reproducibility. None for time-based."""
     index_dtype: Literal["int32", "int64"] = "int64"
@@ -282,6 +288,23 @@ class MdRunConfig(BaseModel):
     """Float dtype of the particle and system tables: positions, momenta, cells and
     their other floats. ``float32`` is faster on GPUs with slow double precision;
     give Lennard-Jones a ``float32`` ``kernel_dtype`` too."""
+
+    @model_validator(mode="after")
+    def _check_whole_blocks(self) -> MdRunConfig:
+        """Reject a production length or output intervals that are not whole blocks."""
+        steps = {
+            "num_steps": self.num_steps,
+            "thermo_every": self.thermo_every,
+            "frames_every": self.frames_every,
+        }
+        for name, value in steps.items():
+            if value % self.block_size:
+                raise ValueError(
+                    f"run.{name} ({value} steps) must be a multiple of run.block_size "
+                    f"({self.block_size} steps): production and output run in whole "
+                    "blocks."
+                )
+        return self
 
 
 class MdParameters(BaseModel):
