@@ -709,6 +709,11 @@ class TestSegmentTake:
             segment_take(table, POISON, fill_value=7), [1, 7, 3, 2, 7, 7, 7]
         )
 
+    def test_narrow_index_dtype(self) -> None:
+        """int8 ids widen for the appended zero row of a longer table."""
+        ids = jnp.array([127, -1], jnp.int8)
+        npt.assert_array_equal(segment_take(jnp.arange(200.0), ids), [127.0, 0.0])
+
     def test_rejects_bad_arguments(self) -> None:
         """Scalar tables, scalar ids, unsupported modes, and a nonzero clipped fill."""
         table = jnp.arange(4, dtype=jnp.float32)
