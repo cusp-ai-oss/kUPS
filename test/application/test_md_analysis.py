@@ -44,6 +44,7 @@ class MockInitData:
 class MockStepData:
     """Mock satisfying IsMDStepData (per-step thermodynamic scalars)."""
 
+    step: Array
     potential_energy: Array
     kinetic_energy: Array
     stress_tensor: Array
@@ -88,9 +89,12 @@ def _make_step(
     stress: Array,
     volume: Array | None = None,
     internal_ke: Array | None = None,
+    step: Array | None = None,
 ) -> MockStepData:
-    """Create mock step data; internal KE defaults to the logged KE."""
+    """Create mock step data; one row per step and internal KE equal to the logged
+    KE by default."""
     return MockStepData(
+        step=jnp.arange(1, len(pe) + 1)[:, None] if step is None else step,
         potential_energy=pe,
         kinetic_energy=ke,
         stress_tensor=stress,
@@ -180,14 +184,17 @@ class TestAnalyzeMD:
         assert r.pressure.sem == pytest.approx(0.0, abs=1e-3)
 
     def test_energy_drift(self):
-        """Linearly increasing PE gives matching drift slope."""
+        """The drift is per MD step, also for rows logged every 5 steps."""
         n_steps = 100
         slope = 0.01
-        pe = (jnp.arange(n_steps, dtype=jnp.float64) * slope)[:, None]
+        step = 5 * jnp.arange(1, n_steps + 1)[:, None]
+        pe = step * slope
         ke = jnp.zeros((n_steps, 1))
         stress = jnp.zeros((n_steps, 1, 3, 3))
 
-        results = analyze_md(_make_init(), _make_step(pe, ke, stress), n_blocks=10)
+        results = analyze_md(
+            _make_init(), _make_step(pe, ke, stress, step=step), n_blocks=10
+        )
         r = results[SystemId(0)]
 
         assert r.energy_drift == pytest.approx(slope, rel=1e-6)
@@ -225,6 +232,7 @@ def _trajectory(
     base = jnp.arange(n_systems, dtype=jnp.float64)
     steps = [
         MockStepData(
+            step=jnp.array([2 * t]),
             potential_energy=base + 0.1 * t,
             kinetic_energy=0.5 * base + 0.01 * t + 1.0,
             stress_tensor=jnp.eye(3) * (0.2 * t + base[:, None, None]),
@@ -239,6 +247,7 @@ def _trajectory(
 def _stack_steps(steps: list[MockStepData]) -> MockStepData:
     """Stack per-step states into one trajectory object (leading time axis)."""
     return MockStepData(
+        step=jnp.stack([s.step for s in steps]),
         potential_energy=jnp.stack([s.potential_energy for s in steps]),
         kinetic_energy=jnp.stack([s.kinetic_energy for s in steps]),
         stress_tensor=jnp.stack([s.stress_tensor for s in steps]),
