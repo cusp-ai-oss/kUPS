@@ -22,7 +22,11 @@ from kups.core.cell import (
     VacuumCell,
 )
 from kups.core.data.table import Table
-from kups.core.neighborlist import CellListNeighborList, DenseNearestNeighborList
+from kups.core.neighborlist import (
+    CellListNeighborList,
+    CellScanNeighborList,
+    DenseNearestNeighborList,
+)
 from kups.core.typing import ParticleId, SystemId
 
 from .._builders import (
@@ -65,6 +69,17 @@ def _run_cell_list(positions, cell, cutoff):
         cells=FixedCapacity(512),
         avg_image_candidates=_CAPACITY,
         cutoffs=cutoffs,
+    )
+    result = run_nl(nl, lh, systems)
+    result.raise_assertion()
+    return result.value
+
+
+def _run_cell_scan(positions, cell, cutoff):
+    """Run ``CellScanNeighborList`` on the same fixture."""
+    lh, systems, cutoffs = _padded_inputs(positions, cell, cutoff)
+    nl = CellScanNeighborList(
+        avg_edges=_CAPACITY, cells=FixedCapacity(512), cutoffs=cutoffs
     )
     result = run_nl(nl, lh, systems)
     result.raise_assertion()
@@ -158,3 +173,31 @@ class TestNeighborListAcrossPeriodicities:
         cl_edges = _run_cell_list(positions, cell, cutoff)
         dn_edges = _run_dense(positions, cell, cutoff)
         assert valid_edge_set(cl_edges) == valid_edge_set(dn_edges)
+
+    @pytest.mark.parametrize(
+        "cell_factory",
+        [
+            ("bulk", lambda self, L: self._bulk_cell(L)),
+            ("vacuum", lambda self, L: self._vacuum_cell(L)),
+            ("slab", lambda self, L: self._slab_cell(L, (True, True, False))),
+            ("wire", lambda self, L: self._slab_cell(L, (True, False, False))),
+        ],
+        ids=lambda x: x[0],
+    )
+    @pytest.mark.parametrize("outliers", [False, True], ids=["inside", "outliers"])
+    def test_cell_scan_matches_dense(self, cell_factory, outliers):
+        """``CellScanNeighborList`` matches the dense reference on every periodicity
+        shape, including atoms outside the box along non-periodic axes (boundary bins)."""
+        _, factory = cell_factory
+        L = 12.0
+        rng = np.random.default_rng(7)
+        low, high = (-3.0, L + 3.0) if outliers else (1.0, L - 1.0)
+        positions = jnp.asarray(rng.uniform(low, high, size=(_PADDED, 3)))
+        cell = factory(self, L)
+        if outliers:  # only non-periodic axes may leave the box
+            periodic = jnp.asarray(cell.periodic)
+            positions = jnp.where(periodic, positions % L, positions)
+        cutoff = 3.5
+        scan_edges = _run_cell_scan(positions, cell, cutoff)
+        dn_edges = _run_dense(positions, cell, cutoff)
+        assert valid_edge_set(scan_edges) == valid_edge_set(dn_edges)
