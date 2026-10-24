@@ -17,6 +17,8 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble with `kups_
 cd examples
 kups_md md_lj_argon_nvt.yaml
 kups_md md_lj_argon_nve.yaml
+kups_md md_lj_argon_npt.yaml
+kups_md md_lj_argon_nvt_from_npt.yaml  # continues the NPT run
 kups_md md_mace.yaml
 kups_md md_orb.yaml
 ```
@@ -63,6 +65,17 @@ with HDF5StorageReader[MDLoggedData]("md_nvt_lj_argon.h5") as reader:
     frames = reader.focus_group(lambda s: s.frames)[:]
     masses = reader.focus_group(lambda s: s.init).read(select=lambda d: d.atoms.data.masses)
 velocities = frames.momenta / masses[:, None] * FEMTO_SECOND  # Å/fs
+```
+
+**Continuing a run:** an `inp_files` entry may be the output of an earlier `kups_md` run. The new run starts from its final state, the positions, momenta and cells of all its systems in the same particle order, and takes everything else, the index and float dtypes included, from its own settings; forces are evaluated again before the first step. `md.rescale_to_mean_volume: true` first scales each cell and its positions to the mean volume of the earlier run's rows, which keeps the cell shape and the fractional coordinates. The mean covers all rows, so equilibrate in `run.num_warmup_steps` of the earlier run. `md.initialize_momenta: true` draws new momenta. Otherwise a Verlet run continues the earlier one to round-off; stochastic integrators draw new noise, and BAOAB NPT derives its barostat mass from the starting cell, as for a structure file. To run NVT at the mean density of an NPT run (`md_lj_argon_npt.yaml`, then `md_lj_argon_nvt_from_npt.yaml` in `examples/`):
+
+```yaml
+md:
+  integrator: csvr
+  rescale_to_mean_volume: true
+
+inp_files:
+  - md_npt_lj_argon.h5
 ```
 
 ## Geometry Optimization
