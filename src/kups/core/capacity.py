@@ -278,9 +278,10 @@ class MultipliedCapacity[Value]:
 
     def generate_assertion(self, required_capacity: Array) -> Capacity[Value]:
         """Generate assertion by delegating to base with scaled requirement."""
+        # ceiling division, exact for integer requirements of any dtype
+        per_factor = -(-required_capacity // self.factor)
         return MultipliedCapacity(
-            self.base_capacity.generate_assertion(required_capacity / self.factor),
-            self.factor,
+            self.base_capacity.generate_assertion(per_factor), self.factor
         )
 
 

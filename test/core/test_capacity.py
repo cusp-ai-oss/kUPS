@@ -56,6 +56,12 @@ class TestMultipliedCapacity:
         repaired = capacity.generate_assertion(jnp.array(2048**2))
         assert repaired.size >= 2048**2
 
+    def test_int32_requirement_divides_exactly(self):
+        # float32 would round (2**25 + 1) / 2**19 down to 64
+        capacity = make_base_capacity(64).multiply(2**19)
+        repaired = capacity.generate_assertion(jnp.array(2**25 + 1, jnp.int32))
+        assert repaired.size >= 2**25 + 1
+
     def test_multiplied_capacity(self):
         """Merged: size, nested, assertion_scales, assertion_resize."""
         base = make_base_capacity(100)
