@@ -109,7 +109,9 @@ class EwaldParameters:
         n_systems = len(cell.keys)
         sys_idx = np.asarray(charges.data.system.indices_in(cell.keys))
         charge_values = np.asarray(charges.data.charges)
-        cell_list = [cell.data.cell[i] for i in range(n_systems)]
+        # Frames whose parameters differ in shape, such as relaxation cells, cannot
+        # drop the batch axis, so each system's cell is a one-row slice.
+        cell_list = [cell.data.cell[i : i + 1] for i in range(n_systems)]
         estimates = [
             estimate_ewald_parameters(
                 charge_values[sys_idx == i],
@@ -216,7 +218,7 @@ def estimate_ewald_parameters(
 
     Args:
         charges: Charges in e for one system, shaped ``(n_particles,)``.
-        cell: Single simulation cell.
+        cell: Single simulation cell, also as a batch of one.
         real_cutoff: Optional fixed real-space cutoff in Å; otherwise optimized.
         alpha: Optional screening parameter in 1/Å; ignored with a fixed real cutoff.
         epsilon_total: Target combined real-space and reciprocal-space error.
@@ -232,10 +234,10 @@ def estimate_ewald_parameters(
             "the neutralizing-background correction will be applied.",
             stacklevel=2,
         )
-    volume = np.asarray(cell.volume)
+    volume = float(np.asarray(cell.volume).squeeze())
     squared_charge = np.vdot(charges_np, charges_np)
     n_particles = charges_np.size
-    max_radius = float(np.min(cell.perpendicular_lengths, axis=0)) / 2
+    max_radius = float(np.min(cell.perpendicular_lengths)) / 2
     target = epsilon_total / 2
     lattice_length = volume ** (1 / 3)
 
@@ -303,7 +305,7 @@ def estimate_ewald_parameters(
 
 def _reciprocal_vectors(cell: Cell[AnyPeriodicity]) -> np.ndarray:
     """Reciprocal lattice vectors (rows, including the 2π factor) on the host."""
-    return np.asarray(cell.inverse_vectors).mT * 2 * np.pi
+    return np.asarray(cell.inverse_vectors).reshape(3, 3).T * 2 * np.pi
 
 
 @no_jax_tracing
@@ -311,7 +313,7 @@ def reciprocal_grid_bound(cell: Cell[AnyPeriodicity], kmax: float) -> int:
     """Uniform coefficient bound enclosing the reciprocal kmax sphere.
 
     Args:
-        cell: Cell defining the reciprocal lattice.
+        cell: Cell defining the reciprocal lattice, also as a batch of one.
         kmax: Maximum reciprocal-vector magnitude in 1/Å.
 
     Returns:
@@ -326,7 +328,7 @@ def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> np.ndarray:
     """Integer half-space lattice coefficients within the reciprocal kmax sphere.
 
     Args:
-        cell: Cell defining the reciprocal lattice.
+        cell: Cell defining the reciprocal lattice, also as a batch of one.
         kmax: Maximum reciprocal-vector magnitude in 1/Å.
 
     Returns:
@@ -389,7 +391,7 @@ def prepare_reciprocal_shifts(
     cutoffs = np.asarray(k_max)
     if np.any(~np.isfinite(cutoffs)) or np.any(cutoffs < 0):
         raise ValueError("Reciprocal cutoffs must be finite and nonnegative")
-    shifts = [kvecs_from_kmax(cells[i], k) for i, k in enumerate(cutoffs)]
+    shifts = [kvecs_from_kmax(cells[i : i + 1], k) for i, k in enumerate(cutoffs)]
     if not shifts:
         return jnp.zeros((0, 0, 3), dtype=int), (0, 0, 0)
     capacity = max(map(len, shifts))
