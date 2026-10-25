@@ -57,3 +57,10 @@ docs/reference
 *.log
 *.dat
 
+# local development
+.bedrock/
+plans/
+bench/
+benchmarks/
+.vscode-annotator/
+.mcp.json
