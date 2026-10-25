@@ -30,7 +30,12 @@ from kups.core.cell import (
 )
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, identity_lens, lens
-from kups.core.neighborlist import CellListNeighborList, UniversalNeighborlistParameters
+from kups.core.neighborlist import (
+    CellListNeighborList,
+    SkinList,
+    SkinNeighborList,
+    UniversalNeighborlistParameters,
+)
 from kups.core.result import as_result_function
 from kups.core.typing import (
     ExclusionId,
@@ -47,7 +52,7 @@ from kups.potential.classical.ewald import EwaldParameters
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.potential.mliap.local import LocalMLIAPCache, LocalMLIAPData
 
-N_PARTICLES, BOX, CUTOFF = 48, 9.0, 3.5
+N_PARTICLES, BOX, CUTOFF, SKIN = 48, 9.0, 3.5, 0.5
 TINY = UniversalNeighborlistParameters(1, 1, 1, 1)
 
 
@@ -79,6 +84,11 @@ class State[P: AnyPeriodicity]:
     systems: Table[SystemId, Systems[P]]
     groups: Table[GroupId, Groups]
     neighborlist_params: UniversalNeighborlistParameters
+
+
+@dataclass
+class SkinState[P: AnyPeriodicity](State[P]):
+    skin_list: SkinList
 
 
 @dataclass
@@ -168,13 +178,24 @@ def _repaired[S](potential: Any, state: S) -> tuple[Any, S]:
     raise AssertionError("capacity repair did not converge")
 
 
-def _assert_nested_repair_matches[P: AnyPeriodicity](
-    bind: Binding, cell: Cell[P]
-) -> None:
-    expected, _ = _repaired(bind(identity_lens(State)), _state(cell))
-    actual, repaired = _repaired(
-        bind(lens(lambda s: s.inner, cls=Outer)), Outer(_state(cell))
+def _with_skin_list[P: AnyPeriodicity](state: State[P]) -> SkinState[P]:
+    cutoffs = Table.arange(jnp.array([CUTOFF]), label=SystemId)
+    skin = Table.arange(jnp.array([SKIN]), label=SystemId)
+    skin_list = SkinList.create(state.particles, state.systems, cutoffs, skin)
+    return SkinState(
+        state.particles,
+        state.systems,
+        state.groups,
+        state.neighborlist_params,
+        skin_list,
     )
+
+
+def _assert_nested_repair_matches[P: AnyPeriodicity](
+    bind: Binding, state: State[P]
+) -> None:
+    expected, _ = _repaired(bind(identity_lens(State)), state)
+    actual, repaired = _repaired(bind(lens(lambda s: s.inner, cls=Outer)), Outer(state))
     assert repaired.inner.neighborlist_params.avg_edges > TINY.avg_edges
     for a, e in zip(jax.tree.leaves(actual), jax.tree.leaves(expected)):
         np.testing.assert_allclose(a, e, rtol=1e-10, atol=1e-12)
@@ -182,7 +203,8 @@ def _assert_nested_repair_matches[P: AnyPeriodicity](
 
 @pytest.mark.parametrize("name", BINDINGS)
 def test_default_factory_repairs_through_a_nested_state_lens(name: str) -> None:
-    _assert_nested_repair_matches(*BINDINGS[name])
+    bind, cell = BINDINGS[name]
+    _assert_nested_repair_matches(bind, _state(cell))
 
 
 def test_injected_factory_repairs_through_a_nested_state_lens() -> None:
@@ -193,5 +215,17 @@ def test_injected_factory_repairs_through_a_nested_state_lens() -> None:
             gradient=POSITIONS_AND_CELL,
             neighborlist_factory=CellListNeighborList.from_state,
         ),
-        PERIODIC,
+        _state(PERIODIC),
+    )
+
+
+def test_skin_list_repairs_through_a_nested_state_lens() -> None:
+    _assert_nested_repair_matches(
+        lambda s: make_lennard_jones_from_state(
+            s,
+            parameters=LJ,
+            gradient=POSITIONS_AND_CELL,
+            neighborlist_factory=SkinNeighborList.from_state,
+        ),
+        _with_skin_list(_state(PERIODIC)),
     )
