@@ -23,7 +23,7 @@ from jax import Array
 
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, to_lower_triangular
 from kups.core.data.table import Table
-from kups.core.lens import bind
+from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import (
     CellListNeighborList,
     CellScanNeighborList,
@@ -132,7 +132,9 @@ def _neighbor_list(
 ) -> _NeighborList:
     key = (nl_cls, state.neighborlist_params)
     if key not in _NEIGHBOR_LISTS:
-        _NEIGHBOR_LISTS[key] = nl_cls.from_state(state, cutoffs)
+        _NEIGHBOR_LISTS[key] = nl_cls.from_state(
+            state, identity_lens(EvalState), cutoffs
+        )
     return bind(_NEIGHBOR_LISTS[key], lambda nl: nl.cutoffs).set(cutoffs)
 
 
@@ -397,7 +399,11 @@ def test_small_cell_batched_with_a_large_one_matches_ase(nl_cls):
     )
     state = EvalState(particles=particles, systems=systems, neighborlist_params=params)
     while (
-        result := run_nl(nl_cls.from_state(state, cutoffs), particles, systems)
+        result := run_nl(
+            nl_cls.from_state(state, identity_lens(EvalState), cutoffs),
+            particles,
+            systems,
+        )
     ).failed_assertions:
         state = result.fix_or_raise(state)
     edges = result.value

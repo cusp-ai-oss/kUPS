@@ -10,6 +10,7 @@ import pytest
 
 from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
+from kups.core.lens import identity_lens
 from kups.core.neighborlist import DenseNearestNeighborList
 from kups.core.neighborlist.cell_list import (
     CellListNeighborList,
@@ -200,7 +201,9 @@ class TestFromState:
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        nl = CellListNeighborList.from_state(state, cutoff_table(jnp.array([2.0])))
+        nl = CellListNeighborList.from_state(
+            state, identity_lens(EvalState), cutoff_table(jnp.array([2.0]))
+        )
 
         assert isinstance(nl.cells, LensCapacity)
         assert isinstance(nl.avg_candidates, LensCapacity)
@@ -218,7 +221,9 @@ class TestFromState:
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=8
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        nl = CellListNeighborList.from_state(state, cutoff_table(jnp.array([2.0])))
+        nl = CellListNeighborList.from_state(
+            state, identity_lens(EvalState), cutoff_table(jnp.array([2.0]))
+        )
         state = run_nl(nl, lh, systems).fix_or_raise(state)
         # 5 bins per axis need 125 cells
         assert state.neighborlist_params.cells == 128

@@ -16,7 +16,7 @@ from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table, subselect
-from kups.core.lens import Lens, lens
+from kups.core.lens import Lens
 from kups.core.neighborlist.common import (
     Candidates,
     lift_query_candidates,
@@ -305,7 +305,7 @@ class CellListNeighborList:
         nl = CellListNeighborList.new(state, lens(lambda s: s.nl_params), cutoffs)
 
         # Or, if the state implements IsNeighborListState:
-        nl = CellListNeighborList.from_state(state, cutoffs)
+        nl = CellListNeighborList.from_state(state, identity_lens(State), cutoffs)
 
         edges = nl(particles, systems)
         ```
@@ -340,12 +340,14 @@ class CellListNeighborList:
         )
 
     @classmethod
-    def from_state(
+    def from_state[S](
         cls,
-        state: IsNeighborListState[IsCellListParams],
+        state: S,
+        lens: Lens[S, IsNeighborListState[IsCellListParams]],
         cutoffs: Table[SystemId, Array],
     ) -> CellListNeighborList:
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        """Seed from the ``neighborlist_params`` of the state at ``lens``."""
+        return cls.new(state, lens.focus(lambda s: s.neighborlist_params), cutoffs)
 
     def selector(
         self, query_size: int, systems: Table[SystemId, NeighborListSystems]

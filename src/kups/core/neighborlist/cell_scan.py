@@ -27,7 +27,7 @@ from jax.experimental.pallas import triton as plgpu
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, lens
+from kups.core.lens import Lens
 from kups.core.neighborlist.cell_list import IsCellListParams, assign_cells
 from kups.core.neighborlist.common import (
     Candidates,
@@ -376,12 +376,14 @@ class CellScanNeighborList:
         )
 
     @classmethod
-    def from_state(
+    def from_state[S](
         cls,
-        state: IsNeighborListState[IsCellListParams],
+        state: S,
+        lens: Lens[S, IsNeighborListState[IsCellListParams]],
         cutoffs: Table[SystemId, Array],
     ) -> CellScanNeighborList:
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        """Seed from the ``neighborlist_params`` of the state at ``lens``."""
+        return cls.new(state, lens.focus(lambda s: s.neighborlist_params), cutoffs)
 
     def selector(
         self, query_size: int, systems: Table[SystemId, NeighborListSystems]

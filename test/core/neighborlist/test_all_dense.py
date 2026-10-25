@@ -11,6 +11,7 @@ import numpy.testing as nptest
 
 from kups.core.capacity import FixedCapacity, LensCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
+from kups.core.lens import identity_lens
 from kups.core.neighborlist.all_dense import (
     AllDenseNearestNeighborList,
     _all_subselect,
@@ -70,7 +71,7 @@ class TestFromState:
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
         nl = AllDenseNearestNeighborList.from_state(
-            state, cutoff_table(jnp.array([2.0]))
+            state, identity_lens(EvalState), cutoff_table(jnp.array([2.0]))
         )
 
         assert isinstance(nl.avg_edges, LensCapacity)

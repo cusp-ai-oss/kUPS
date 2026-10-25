@@ -43,7 +43,7 @@ from jax import Array
 
 from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Index, Table
-from kups.core.lens import View
+from kups.core.lens import View, identity_lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     NeighborList,
@@ -300,7 +300,9 @@ def offline_radial_distribution_function(
     params = UniversalNeighborlistParameters.estimate(
         particles_per_system, systems, cutoffs
     )
-    capacity = DenseNearestNeighborList.from_state(_NeighborListState(params), cutoffs)
+    capacity = DenseNearestNeighborList.from_state(
+        _NeighborListState(params), identity_lens(_NeighborListState), cutoffs
+    )
     while (out := rdf_with_capacity(capacity)).failed_assertions:
         capacity = out.fix_or_raise(capacity)
     result = out.value

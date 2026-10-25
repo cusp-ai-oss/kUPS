@@ -11,7 +11,7 @@ from jax import Array
 
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table, subselect
-from kups.core.lens import Lens, lens
+from kups.core.lens import Lens
 from kups.core.neighborlist.common import (
     Candidates,
     lift_query_candidates,
@@ -113,7 +113,7 @@ class DenseNearestNeighborList:
         nl = DenseNearestNeighborList.new(state, lens(lambda s: s.nl_params), cutoffs)
 
         # Or, if the state implements IsNeighborListState:
-        nl = DenseNearestNeighborList.from_state(state, cutoffs)
+        nl = DenseNearestNeighborList.from_state(state, identity_lens(State), cutoffs)
 
         edges = nl(particles, systems)
         ```
@@ -145,12 +145,14 @@ class DenseNearestNeighborList:
         )
 
     @classmethod
-    def from_state(
+    def from_state[S](
         cls,
-        state: IsNeighborListState[IsDenseNeighborlistParams],
+        state: S,
+        lens: Lens[S, IsNeighborListState[IsDenseNeighborlistParams]],
         cutoffs: Table[SystemId, Array],
     ) -> DenseNearestNeighborList:
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        """Seed from the ``neighborlist_params`` of the state at ``lens``."""
+        return cls.new(state, lens.focus(lambda s: s.neighborlist_params), cutoffs)
 
     def selector(
         self, query_size: int, systems: Table[SystemId, NeighborListSystems]
