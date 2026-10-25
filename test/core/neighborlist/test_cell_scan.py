@@ -25,7 +25,7 @@ def _edges_with_shifts(nl, keys, systems, queries=None):
         keys=keys, systems=systems, queries=queries
     )
     result.raise_assertion()
-    edges = result.value
+    edges = result.value.data
     valid = np.asarray(edges.indices.valid_mask).all(-1)
     raw = np.asarray(edges.indices.raw_indices)[valid]
     shifts = np.asarray(edges.shifts)[valid, 0]

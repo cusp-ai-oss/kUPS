@@ -93,22 +93,23 @@ class DirectPotential[
                 compensated total
 
         Returns:
-            Potential output with the cache update patch composed
+            Potential output whose patch applies the composer's patch, then the
+            cache update, then the model's patches
         """
-        dp_plan = self.composer(state, patch)
-        assert len(dp_plan) > 0, "At least one configuration must be added."
+        plan = self.composer(state, patch)
+        assert len(plan.data) > 0, "At least one configuration must be added."
 
         outs: list[PotentialOut[Gradients, Hessians]] = []
         patches: list[Patch[State]] = []
 
-        for inp, weight in dp_plan:
+        for inp, weight in plan.data:
             result = self.direct_potential_fn(inp)
             outs.append(weight * result.data)
             patches.append(result.patch)
 
         # Fold the weighted deltas into the cached running summand, carrying the
         # Kahan compensation across calls. A full recompute starts a fresh summand.
-        if dp_plan.add_previous_total:
+        if plan.data.add_previous_total:
             assert self.cache_lens is not None
             summand = self.cache_lens.get(state)
             for out in outs:
@@ -127,7 +128,7 @@ class DirectPotential[
         else:
             cache_patch = IdPatch[State]()
 
-        out_patch = ComposedPatch((cache_patch, *patches))
+        out_patch = ComposedPatch((plan.patch, cache_patch, *patches))
         if include_compensate:
             return WithPatch(summand, out_patch)
         return WithPatch(summand.total, out_patch)

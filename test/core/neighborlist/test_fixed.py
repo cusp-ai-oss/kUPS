@@ -37,19 +37,19 @@ class TestEmptyNeighborList:
 
     def test_degree_zero_returns_empty_pointcloud(self):
         nl = EmptyNeighborList[Literal[0]](degree=0)
-        edges = nl(_simple_lh(4), _simple_systems())
+        edges = nl(_simple_lh(4), _simple_systems()).data
         assert edges.indices.shape == (0, 0)
         assert edges.shifts.shape == (0, 0, 3)
 
     def test_degree_two_returns_pair_shaped_empty(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
-        edges = nl(_simple_lh(4), _simple_systems())
+        edges = nl(_simple_lh(4), _simple_systems()).data
         assert edges.indices.shape == (0, 2)
         assert edges.shifts.shape == (0, 1, 3)
 
     def test_degree_three_returns_triple_shaped_empty(self):
         nl = EmptyNeighborList[Literal[3]](degree=3)
-        edges = nl(_simple_lh(4), _simple_systems())
+        edges = nl(_simple_lh(4), _simple_systems()).data
         assert edges.indices.shape == (0, 3)
         assert edges.shifts.shape == (0, 2, 3)
 
@@ -59,8 +59,8 @@ class TestEmptyNeighborList:
         systems = _simple_systems()
         rh = _simple_lh(2)
         queried_keys = Index(lh.keys, jnp.array([0, 2]))
-        assert nl(lh, systems, queries=rh).indices.shape == (0, 2)
-        assert nl(lh, systems, queried_keys=queried_keys).indices.shape == (
+        assert nl(lh, systems, queries=rh).data.indices.shape == (0, 2)
+        assert nl(lh, systems, queried_keys=queried_keys).data.indices.shape == (
             0,
             2,
         )
@@ -81,14 +81,14 @@ class TestEmptyNeighborList:
     def test_keys_come_from_lh(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _simple_lh(5)
-        edges = nl(lh, _simple_systems())
+        edges = nl(lh, _simple_systems()).data
         assert edges.indices.keys == lh.keys
 
     def test_jit_compiles(self):
         nl = EmptyNeighborList[Literal[2]](degree=2)
         lh = _simple_lh(4)
         systems = _simple_systems()
-        edges = jax.jit(lambda l, s: nl(l, s))(lh, systems)
+        edges = jax.jit(lambda l, s: nl(l, s).data)(lh, systems)
         assert edges.indices.shape == (0, 2)
 
 
@@ -101,7 +101,7 @@ class TestFixedEdgesNeighborList:
     def test_full_call_roundtrip_indices(self):
         stored = self._edges()
         nl = FixedEdgesNeighborList[Literal[2]](indices=stored.indices)
-        out = nl(_simple_lh(4), _simple_systems())
+        out = nl(_simple_lh(4), _simple_systems()).data
         npt.assert_array_equal(np.asarray(out.indices), np.asarray(stored.indices))
         npt.assert_array_equal(out.shifts, jnp.zeros_like(stored.shifts))
 
@@ -112,7 +112,7 @@ class TestFixedEdgesNeighborList:
             jnp.array([[9.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), jnp.zeros(2, dtype=int)
         )
         systems = _simple_systems()
-        out = nl(lh, systems)
+        out = nl(lh, systems).data
         npt.assert_allclose(out.shifts, jnp.array([[[1.0, 0.0, 0.0]]]))
         npt.assert_allclose(
             out.difference_vectors(lh, systems), jnp.array([[[2.0, 0.0, 0.0]]])
@@ -125,7 +125,7 @@ class TestFixedEdgesNeighborList:
         )
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys).data
         npt.assert_array_equal(np.asarray(out.indices), [[1, 2], [2, 3]])
 
     def test_queried_keys_returns_touched_edges(self):
@@ -135,7 +135,7 @@ class TestFixedEdgesNeighborList:
         )
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys).data
         npt.assert_array_equal(np.asarray(out.indices), [[1, 2], [2, 3]])
         npt.assert_array_equal(out.shifts, jnp.zeros((2, 1, 3), dtype=int))
 
@@ -146,7 +146,7 @@ class TestFixedEdgesNeighborList:
         )
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([2]))
-        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys).data
         npt.assert_array_equal(valid_ids(out.indices), [[1, 2], [2, 3]])
         npt.assert_array_equal(out.indices.valid_mask.any(-1), [True, True, False])
         npt.assert_array_equal(out.shifts[-1], jnp.zeros((1, 3), dtype=int))
@@ -158,7 +158,7 @@ class TestFixedEdgesNeighborList:
         )
         lh = _simple_lh(4)
         queried_keys = Index(lh.keys, jnp.array([0, 3]))
-        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys).data
         npt.assert_array_equal(valid_ids(out.indices), [[0, 1], [2, 3]])
         npt.assert_array_equal(
             out.indices.valid_mask.any(-1), [True, True, False, False]
@@ -192,7 +192,7 @@ class TestFixedEdgesNeighborList:
         )
         lh = _simple_lh(5)
         queried_keys = Index(lh.keys, jnp.array([0]))
-        out = nl(lh, _simple_systems(), queried_keys=queried_keys)
+        out = nl(lh, _simple_systems(), queried_keys=queried_keys).data
         npt.assert_array_equal(valid_ids(out.indices), [[0, 1, 2], [0, 4, 3]])
         npt.assert_array_equal(out.indices.valid_mask.any(-1), [True, True, False])
         npt.assert_array_equal(out.shifts[-1], jnp.zeros((2, 3), dtype=int))

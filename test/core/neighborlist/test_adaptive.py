@@ -202,7 +202,7 @@ class TestAdaptiveNeighborList:
             0 if inclusion else 10
         )
         if inclusion and exclusion:
-            normal = neighbors(particles, systems)
+            normal = neighbors(particles, systems).data
             npt.assert_array_equal(*Index.match(edges, normal.indices))
             npt.assert_array_equal(batch.edges.shifts, normal.shifts)
 

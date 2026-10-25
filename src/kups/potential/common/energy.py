@@ -89,13 +89,18 @@ class SumComposer[State, Input, StatePatch: Patch[Any]](Protocol):
     2. Add energy of new configuration (weight=1)
     3. Reuse previous total (add_previous_total=True)
 
+    The returned patch stores any cache that building the inputs refreshed. It
+    applies to ``state``, which makes the protocol invariant in ``State``.
+
     Type Parameters:
         State: Simulation state type
         Input: Energy function input type
         StatePatch: Patch type for state updates
     """
 
-    def __call__(self, state: State, patch: StatePatch | None) -> Sum[Input]:
+    def __call__(
+        self, state: State, patch: StatePatch | None
+    ) -> WithPatch[Sum[Input], Patch[State]]:
         """Generate incremental update plan.
 
         Args:
@@ -103,20 +108,26 @@ class SumComposer[State, Input, StatePatch: Patch[Any]](Protocol):
             patch: Proposed changes (or None for full computation)
 
         Returns:
-            Sum of weighted configurations to evaluate
+            Sum of weighted configurations to evaluate, and the patch that stores
+            any cache its inputs refreshed
         """
         ...
 
 
 class InputConstructor[State, Input, StatePatch: Patch[Any]](Protocol):
-    """Construct a full input, or an old/new input affected by a proposal."""
+    """Construct a full input, or an old/new input affected by a proposal.
+
+    ``patch`` is the proposed change, or ``None`` for the state as it is. The
+    returned patch stores any cache that constructing the input refreshed. It
+    applies to ``state``, which makes the protocol invariant in ``State``.
+    """
 
     def __call__(
         self,
         state: State,
         patch: StatePatch | None,
         old_input: bool = False,
-    ) -> Input: ...
+    ) -> WithPatch[Input, Patch[State]]: ...
 
 
 @dataclass
@@ -132,20 +143,24 @@ class LocalSumComposer[State, Input, StatePatch: Patch[Any]]:
         static=True, default=None, kw_only=True
     )
 
-    def __call__(self, state: State, patch: StatePatch | None) -> Sum[Input]:
+    def __call__(
+        self, state: State, patch: StatePatch | None
+    ) -> WithPatch[Sum[Input], Patch[State]]:
         if patch is None:
-            return Sum(Summand(self.constructor(state, None)))
+            return self.constructor(state, None).map_data(lambda x: Sum(Summand(x)))
         previous = self.constructor(state, patch, old_input=True)
         proposed = self.constructor(state, patch)
+        # The proposed input's patch goes last, so the cache it refreshed is stored.
+        refreshed = ComposedPatch((previous.patch, proposed.patch))
         if self.difference is not None:
-            return Sum(
-                Summand(self.difference(previous, proposed)), add_previous_total=True
-            )
-        return Sum(
-            Summand(previous, -1),
-            Summand(proposed, 1),
+            change = Summand(self.difference(previous.data, proposed.data))
+            return WithPatch(Sum(change, add_previous_total=True), refreshed)
+        plan = Sum(
+            Summand(previous.data, -1),
+            Summand(proposed.data, 1),
             add_previous_total=True,
         )
+        return WithPatch(plan, refreshed)
 
 
 @dataclass
@@ -154,8 +169,10 @@ class FullSumComposer[State, Input, StatePatch: Patch[Any]]:
 
     constructor: InputConstructor[State, Input, StatePatch] = field(static=True)
 
-    def __call__(self, state: State, patch: StatePatch | None) -> Sum[Input]:
-        return Sum(Summand(self.constructor(state, patch)))
+    def __call__(
+        self, state: State, patch: StatePatch | None
+    ) -> WithPatch[Sum[Input], Patch[State]]:
+        return self.constructor(state, patch).map_data(lambda x: Sum(Summand(x)))
 
 
 @dataclass
@@ -165,10 +182,12 @@ class IdentityComposer[Input](SumComposer[Input, Input, Patch[Any]]):
     Used for potentials without incremental update support (always full recomputation).
     """
 
-    def __call__(self, state: Input, patch: Patch[Any] | None) -> Sum[Input]:
+    def __call__(
+        self, state: Input, patch: Patch[Any] | None
+    ) -> WithPatch[Sum[Input], IdPatch[Input]]:
         if patch is not None:
             raise ValueError("IdentityComposer does not support patches.")
-        return Sum(Summand(state))
+        return WithPatch(Sum(Summand(state)), IdPatch[Input]())
 
 
 # We need this union since while IdPatch is assignable to Patch[State], pyright does not
@@ -322,14 +341,15 @@ class PotentialFromEnergy[
                 compensated total
 
         Returns:
-            Potential output with the cache update patch composed
+            Potential output whose patch applies the composer's patch, then the
+            cache update, then the energy function's patches
         """
-        dp_plan = self.composer(state, patch)
-        assert len(dp_plan) > 0, "At least one configuration must be added."
+        plan = self.composer(state, patch)
+        assert len(plan.data) > 0, "At least one configuration must be added."
         outs: list[PotentialOut[Gradients, Hessians]] = []
         h_idx = self.hessian_idx_view(state)
         patches: list[Patch[State]] = []
-        for inp, weight in dp_plan:
+        for inp, weight in plan.data:
             # Prepare inputs
             g_inp = self.gradient_lens.get(inp)
             if not jax.tree.leaves(g_inp):
@@ -403,7 +423,7 @@ class PotentialFromEnergy[
 
         # Fold the weighted deltas into the cached running summand, carrying the
         # Kahan compensation across calls. A full recompute starts a fresh summand.
-        if dp_plan.add_previous_total:
+        if plan.data.add_previous_total:
             assert self.cache_lens is not None, (
                 "Cache lens must be set for caching previous total potential."
             )
@@ -425,7 +445,7 @@ class PotentialFromEnergy[
             )
         else:
             cache_patch = IdPatch[State]()
-        out_patch = ComposedPatch((cache_patch, *patches))
+        out_patch = ComposedPatch((plan.patch, cache_patch, *patches))
         if include_compensate:
             return WithPatch(summand, out_patch)
         return WithPatch(summand.total, out_patch)

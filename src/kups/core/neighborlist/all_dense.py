@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal, Protocol, overload
+from typing import Any, Literal, Protocol, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -28,6 +28,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
 )
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
 
@@ -104,7 +105,7 @@ class AllDenseNearestNeighborList:
         # Or, if the state implements IsNeighborListState:
         nl = AllDenseNearestNeighborList.from_state(state, identity_lens(State), cutoffs)
 
-        edges = nl(particles, systems)
+        edges = nl(particles, systems).data
         ```
     """
 
@@ -155,7 +156,7 @@ class AllDenseNearestNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
     @overload
     def __call__(
         self,
@@ -163,7 +164,7 @@ class AllDenseNearestNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
     @jit
     def __call__(
         self,
@@ -172,13 +173,14 @@ class AllDenseNearestNeighborList:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
         if keys.data.inclusion.num_labels >= 2:
             logging.warning(
                 "AllDenseNearestNeighborList is intended for single-system simulations. "
                 "Performance may be degraded when using multiple systems. "
                 "Consider using DenseNearestNeighborList or CellListNeighborList instead."
             )
-        return build_radius_graph(
+        edges = build_radius_graph(
             self, keys, systems, queries=queries, queried_keys=queried_keys
         )
+        return WithPatch(edges, IdPatch[Any]())

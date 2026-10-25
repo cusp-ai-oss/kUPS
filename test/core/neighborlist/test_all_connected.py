@@ -53,7 +53,7 @@ class TestAllConnectedNeighborlist:
             exclusion_ids=jnp.array([0, 1, 2]),
             inclusion_max_count=3,
         )
-        edges = all_connected_neighborlist(lh, _systems())
+        edges = all_connected_neighborlist(lh, _systems()).data
         assert valid_edge_set(edges) == {
             (0, 1),
             (0, 2),
@@ -71,7 +71,7 @@ class TestAllConnectedNeighborlist:
             exclusion_ids=jnp.array([0, 0, 1]),
             inclusion_max_count=3,
         )
-        edges = all_connected_neighborlist(lh, _systems())
+        edges = all_connected_neighborlist(lh, _systems()).data
         assert valid_edge_set(edges) == {(0, 2), (2, 0), (1, 2), (2, 1)}
 
     def test_separate_inclusion_segments_do_not_connect(self):
@@ -81,7 +81,7 @@ class TestAllConnectedNeighborlist:
             exclusion_ids=jnp.array([0, 1, 2, 3]),
             inclusion_max_count=2,
         )
-        edges = all_connected_neighborlist(lh, _systems(n=2))
+        edges = all_connected_neighborlist(lh, _systems(n=2)).data
         # Only within-segment pairs: {0,1} and {2,3}.
         assert valid_edge_set(edges) == {(0, 1), (1, 0), (2, 3), (3, 2)}
 
@@ -99,7 +99,7 @@ class TestAllConnectedNeighborlist:
         )
         edges = all_connected_neighborlist(
             lh, _systems(), queried_keys=Index(lh.keys, jnp.array([0]))
-        )
+        ).data
         # Every surviving edge must touch particle 0.
         valid = valid_edge_set(edges)
         assert valid == {(0, 1), (1, 0), (0, 2), (2, 0)}

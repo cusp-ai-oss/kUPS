@@ -103,4 +103,5 @@ class TestBipartiteQueryKeys:
         nl = DenseNearestNeighborList(
             FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
         )
-        assert valid_edge_set(nl(lh, systems, queries=queries)) == {(query_system, 2)}
+        edges = nl(lh, systems, queries=queries).data
+        assert valid_edge_set(edges) == {(query_system, 2)}
