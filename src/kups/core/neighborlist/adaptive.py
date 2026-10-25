@@ -34,7 +34,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, lens
+from kups.core.lens import Lens
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
 from kups.core.neighborlist.cell_list import CellListNeighborList
 from kups.core.neighborlist.cell_scan import CellScanNeighborList, triton_available
@@ -143,7 +143,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
 
     Example:
         ```python
-        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        nl = AdaptiveNeighborList.from_state(state, identity_lens(State), cutoffs)
         edges = nl(particles, systems)
         ```
     """
@@ -186,13 +186,23 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
         )
 
     @classmethod
-    def from_state(
+    def from_state[S](
         cls,
-        state: IsNeighborListState[IsUniversalNeighborlistParams],
+        state: S,
+        lens: Lens[S, IsNeighborListState[IsUniversalNeighborlistParams]],
         cutoffs: Table[SystemId, Array],
     ) -> AdaptiveNeighborList:
-        """Seed from a state exposing ``neighborlist_params``."""
-        return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
+        """Seed from the ``neighborlist_params`` of the state at ``lens``.
+
+        Args:
+            state: Root state that runtime-assertion fixes apply to.
+            lens: Lens from ``state`` to a state exposing ``neighborlist_params``.
+            cutoffs: Per-system cutoffs bound onto each implementation.
+
+        Returns:
+            An ``AdaptiveNeighborList`` whose capacity lenses start at ``state``.
+        """
+        return cls.new(state, lens.focus(lambda s: s.neighborlist_params), cutoffs)
 
     def _choose(self, num_particles: int, num_systems: int) -> NeighborList[Literal[2]]:
         """Return the cheapest implementation for the given counts."""

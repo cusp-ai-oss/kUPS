@@ -9,6 +9,7 @@ import pytest
 from kups.core.capacity import FixedCapacity, LensCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
+from kups.core.lens import identity_lens
 from kups.core.neighborlist.dense import DenseNearestNeighborList, _dense_subselect
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
@@ -66,7 +67,9 @@ class TestFromState:
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
         cutoffs = cutoff_table(jnp.array([2.5]))
 
-        nl = DenseNearestNeighborList.from_state(state, cutoffs)
+        nl = DenseNearestNeighborList.from_state(
+            state, identity_lens(EvalState), cutoffs
+        )
 
         assert isinstance(nl.avg_candidates, LensCapacity)
         assert isinstance(nl.avg_edges, LensCapacity)

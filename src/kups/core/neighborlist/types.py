@@ -28,6 +28,7 @@ from jax import Array
 from kups.core.capacity import Capacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
+from kups.core.lens import Lens
 from kups.core.neighborlist.edges import Edges
 from kups.core.typing import (
     HasCell,
@@ -293,33 +294,37 @@ class IsUniversalNeighborlistParams(Protocol):
     def cells(self) -> int: ...
 
 
-class NeighborListFactory[State](Protocol):
-    """Constructs a pair :class:`NeighborList` for a given state and cutoffs.
+class NeighborListFactory[Focus](Protocol):
+    """Constructs a pair :class:`NeighborList` from a root state, a lens and cutoffs.
 
     Used by radius-based potential factories so the construction strategy
     can be swapped without coupling the potential to a concrete
-    neighbor-list class. The library default is
-    :meth:`kups.core.neighborlist.AdaptiveNeighborList.from_state`,
-    which is contravariant-compatible with any state satisfying
-    :class:`IsNeighborListState`.
+    neighbor-list class. ``lens`` leads from ``state`` to the part the list
+    reads. The ``from_state`` of every library list, including the default
+    :meth:`kups.core.neighborlist.AdaptiveNeighborList.from_state`, reads the
+    ``neighborlist_params`` of the state at ``lens``. Runtime-assertion fixes
+    apply to ``state``.
 
-    The ``State`` type parameter is contravariant (it appears only in
-    input position in ``__call__``), so a factory written against a
-    broader state protocol can be passed where a narrower one is expected.
+    The ``Focus`` type parameter is contravariant, because the lens is an input
+    and ``Lens`` is covariant in its target. A factory written against a
+    broader state protocol can therefore be passed where a narrower one is
+    expected.
     """
 
-    def __call__(
+    def __call__[S](
         self,
-        state: State,
+        state: S,
+        lens: Lens[S, Focus],
         cutoffs: Table[SystemId, Array],
+        /,
     ) -> NeighborList[Literal[2]]: ...
 
 
 class IsNeighborListState[P](Protocol):
     """Protocol for states that expose neighbor list parameters.
 
-    A state satisfying this protocol can be passed to ``from_state()`` on any
-    neighbor list class. The type parameter ``P`` determines which neighbor
+    The ``from_state()`` of any neighbor list class takes a lens to a state
+    satisfying this protocol. The type parameter ``P`` determines which neighbor
     list types the state can construct (e.g., ``IsAllDenseNeighborListParams``,
     ``IsDenseNeighborlistParams``, ``IsCellListParams``, or
     ``IsUniversalNeighborlistParams``).

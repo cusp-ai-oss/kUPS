@@ -17,6 +17,7 @@ import numpy as np
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell
 from kups.core.data import Table
+from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
     NeighborList,
@@ -60,7 +61,7 @@ class TestAdaptiveNeighborListEndToEnd:
         """The factory returns an adaptive object whose AUTO dispatch (dense for
         the small fixture) matches a forced ``DenseNearestNeighborList``."""
         state, lh, systems, cutoffs = _fixture()
-        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        nl = AdaptiveNeighborList.from_state(state, identity_lens(EvalState), cutoffs)
         assert isinstance(nl, AdaptiveNeighborList)
 
         ref = DenseNearestNeighborList(
@@ -74,7 +75,7 @@ class TestAdaptiveNeighborListEndToEnd:
     def test_seeded_implementations_agree(self):
         """Every seeded implementation yields the same edge set on one fixture."""
         state, lh, systems, cutoffs = _fixture()
-        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        nl = AdaptiveNeighborList.from_state(state, identity_lens(EvalState), cutoffs)
         edge_sets = [_run(c.neighborlist, lh, systems) for c in nl.implementations]
         assert all(edges == edge_sets[0] for edges in edge_sets)
         assert edge_sets[0]  # non-empty
