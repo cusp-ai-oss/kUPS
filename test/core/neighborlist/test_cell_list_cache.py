@@ -69,7 +69,7 @@ def _evaluate(
     **kwargs: Table[ParticleId, SamplePoints] | Index[ParticleId],
 ) -> list[Edges[Literal[2]]]:
     """Evaluate several neighbor lists in one compiled program."""
-    return [nl(points, systems, **kwargs) for nl in neighborlists]
+    return [nl(points, systems, **kwargs).data for nl in neighborlists]
 
 
 class TestCachedCellList:
@@ -113,7 +113,9 @@ class TestCachedCellList:
         neighborlist = _neighborlist(cache if cached else None, cutoffs, layout, 2)
         result = jax.jit(as_result_function(neighborlist))(points, systems)
         result.raise_assertion()
-        assert _edge_rows(result.value) == Counter([(0, 1, 0, 0, 0), (1, 0, 0, 0, 0)])
+        assert _edge_rows(result.value.data) == Counter(
+            [(0, 1, 0, 0, 0), (1, 0, 0, 0, 0)]
+        )
 
     # Pairwise covering of periodicity, cutoff (one or several images) and mode.
     @pytest.mark.parametrize(
@@ -252,7 +254,7 @@ class TestCachedCellList:
             },
         )(points, systems, **kwargs)
         result.raise_assertion()
-        assert not _edge_rows(result.value)
+        assert not _edge_rows(result.value.data)
 
     def test_selector_reuses_an_updated_table(self):
         points = make_lh(
@@ -277,7 +279,7 @@ class TestCachedCellList:
         neighborlist = _neighborlist(updated.value, cutoffs, layout, 6)
         result = jax.jit(as_result_function(neighborlist))(moved, systems)
         result.raise_assertion()
-        assert _edge_rows(result.value) == Counter(
+        assert _edge_rows(result.value.data) == Counter(
             (i, j, 0, 0, 0) for i in range(3) for j in range(3) if i != j
         )
 
@@ -805,7 +807,7 @@ class TestBlockBounds:
         expected = jax.jit(as_result_function(dense))(points, systems)
         actual.raise_assertion()
         expected.raise_assertion()
-        assert _edge_rows(actual.value) == _edge_rows(expected.value)
+        assert _edge_rows(actual.value.data) == _edge_rows(expected.value.data)
 
 
 class TestBlockCulling:

@@ -192,6 +192,8 @@ class GraphConstructor[
 ]:
     """Constructs graphs from a degree-parametrized neighbor list.
 
+    A call returns the graph and the patch of the neighbor list it read.
+
     Attributes:
         particles: View extracting ``Indexed[ParticleId, P]``.
         systems: View extracting ``Indexed[SystemId, S]`` (cell).
@@ -207,7 +209,7 @@ class GraphConstructor[
     @jit(static_argnames=("old_graph",))
     def __call__(
         self, state: State, patch: Ptch | None, old_graph: bool = False
-    ) -> HyperGraph[P, S, Degree]:
+    ) -> WithPatch[HyperGraph[P, S, Degree], Patch[State]]:
         keys = self.particles(state)
         systems = self.systems(state)
 
@@ -221,7 +223,7 @@ class GraphConstructor[
 
         if patch is None:
             nnlist = self.neighborlist(state)
-            edges = nnlist(keys, systems)
+            result = nnlist(keys, systems)
         else:
             assert self.probe is not None, "Expected probe to be set."
             probe = self.probe(state, patch)
@@ -235,8 +237,8 @@ class GraphConstructor[
                 )
             else:
                 nnlist = self.neighborlist(state)
-            edges = nnlist(keys, systems, queried_keys=indices)
-        return HyperGraph(keys, systems, edges)
+            result = nnlist(keys, systems, queried_keys=indices)
+        return result.map_data(lambda edges: HyperGraph(keys, systems, edges))
 
 
 class GraphPotentialInput(NamedTuple, Generic[Params, Part, Sys, Degree]):
@@ -366,7 +368,7 @@ class GraphInputConstructor[
         state: State,
         patch: Ptch | None,
         old_input: bool = False,
-    ) -> GraphPotentialInput[Params, P, S, Degree]:
+    ) -> WithPatch[GraphPotentialInput[Params, P, S, Degree], Patch[State]]:
         if patch is not None and self.graph_constructor.probe is None:
             if not old_input:
                 systems = self.graph_constructor.systems(state)
@@ -374,7 +376,6 @@ class GraphInputConstructor[
                     state, systems.set_data(jnp.ones(len(systems), dtype=jnp.bool_))
                 )
             patch = None
-        return GraphPotentialInput(
-            self.parameter_view(state),
-            self.graph_constructor(state, patch, old_graph=old_input),
-        )
+        parameters = self.parameter_view(state)
+        result = self.graph_constructor(state, patch, old_graph=old_input)
+        return result.map_data(lambda graph: GraphPotentialInput(parameters, graph))

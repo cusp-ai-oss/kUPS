@@ -260,7 +260,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
 
     def __call__(
         self, state: State, patch: Ptch | None
-    ) -> Sum[BlockingSpheresPotentialInput]:  # type: ignore[reportReturnType]
+    ) -> WithPatch[Sum[BlockingSpheresPotentialInput], Patch[State]]:
         changed: Index[ParticleId] | None = None
         if patch is not None:
             # The patch is always applied; a probe only narrows the sphere query
@@ -309,16 +309,13 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         )
 
         neighborlist = neighborlist_factory(cutoffs)
-        edges = neighborlist(nnlist_particles, systems, queries=spheres)
+        result = neighborlist(nnlist_particles, systems, queries=spheres)
         cell = systems.map_data(lambda s: s.cell)
         groups = self.groups_view(state)
-        return Sum(
-            Summand(
-                BlockingSpheresPotentialInput(
-                    parameters, particles, groups, cell, edges
-                )
-            )
+        inp = BlockingSpheresPotentialInput(
+            parameters, particles, groups, cell, result.data
         )
+        return WithPatch(Sum(Summand(inp)), result.patch)
 
 
 def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch[Any]](

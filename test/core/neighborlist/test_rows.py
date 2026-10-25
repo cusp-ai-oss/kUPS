@@ -89,7 +89,7 @@ def test_rows_hold_each_particles_pairs(builder, periodic):
         nl = _dense(cutoffs)
     else:
         nl = CellScanNeighborList(FixedCapacity(128), FixedCapacity(512), cutoffs)
-    edges = nl(particles, systems)
+    edges = nl(particles, systems).data
     rows = neighbor_rows(edges, particles, systems)
     expected = _edge_rows(edges, particles.size)
     assert _row_sets(rows) == expected
@@ -99,7 +99,7 @@ def test_rows_hold_each_particles_pairs(builder, periodic):
 
 def test_centers_name_each_slots_row():
     particles, systems, cutoffs = _tables()
-    rows = neighbor_rows(_dense(cutoffs)(particles, systems), particles, systems)
+    rows = neighbor_rows(_dense(cutoffs)(particles, systems).data, particles, systems)
     offsets, centers = np.asarray(rows.offsets), np.asarray(rows.centers)
     filled = np.repeat(np.arange(particles.size), np.diff(offsets))
     np.testing.assert_array_equal(centers[: offsets[-1]], filled)
@@ -110,7 +110,7 @@ def test_centers_name_each_slots_row():
 
 def test_rows_are_symmetric_with_several_images():
     particles, systems, cutoffs = _tables()
-    rows = neighbor_rows(_dense(cutoffs)(particles, systems), particles, systems)
+    rows = neighbor_rows(_dense(cutoffs)(particles, systems).data, particles, systems)
     sets = _row_sets(rows)
     for i, row in enumerate(sets):
         for j, *s in row:
@@ -122,7 +122,7 @@ def test_rows_are_symmetric_with_several_images():
 
 def test_edge_order_does_not_change_rows():
     particles, systems, cutoffs = _tables()
-    edges = _dense(cutoffs)(particles, systems)
+    edges = _dense(cutoffs)(particles, systems).data
     perm = np.random.default_rng(1).permutation(len(edges))
     shuffled = Edges(edges.indices[perm], edges.shifts[perm])
     a = neighbor_rows(edges, particles, systems)
@@ -147,14 +147,14 @@ def test_spatial_order_is_z_order_within_systems():
     )
     cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 8.0))
     systems, cutoffs = make_systems(cell, jnp.array([1.0]))
-    rows = neighbor_rows(_dense(cutoffs)(particles, systems), particles, systems)
+    rows = neighbor_rows(_dense(cutoffs)(particles, systems).data, particles, systems)
     code = sum(
         ((grid[:, a] >> b) & 1) << (3 * b + a) for b in range(2) for a in range(3)
     )
     np.testing.assert_array_equal(rows.order, np.argsort(code, kind="stable"))
     # several systems: grouped by system, rank inverts order
     particles, systems, cutoffs = _tables()
-    rows = neighbor_rows(_dense(cutoffs)(particles, systems), particles, systems)
+    rows = neighbor_rows(_dense(cutoffs)(particles, systems).data, particles, systems)
     system = np.asarray(particles.data.system.raw_indices)[np.asarray(rows.order)]
     assert np.all(np.diff(system) >= 0)
     np.testing.assert_array_equal(
@@ -164,9 +164,11 @@ def test_spatial_order_is_z_order_within_systems():
 
 def test_int32_indices_give_the_same_rows():
     particles, systems, cutoffs = _tables()
-    a = neighbor_rows(_dense(cutoffs)(particles, systems), particles, systems)
+    a = neighbor_rows(_dense(cutoffs)(particles, systems).data, particles, systems)
     particles32, systems32 = cast_indices((particles, systems), jnp.int32)
-    b = neighbor_rows(_dense(cutoffs)(particles32, systems32), particles32, systems32)
+    b = neighbor_rows(
+        _dense(cutoffs)(particles32, systems32).data, particles32, systems32
+    )
     np.testing.assert_array_equal(a.order, b.order)
     assert _row_sets(a) == _row_sets(b)
 
@@ -178,7 +180,7 @@ def test_shifts_beyond_int8_fail():
     far = bind(particles, lambda p: p.data.positions).apply(
         lambda x: x.at[0].add(130 * lattice[0])
     )
-    edges = _dense(cutoffs)(far, systems)
+    edges = _dense(cutoffs)(far, systems).data
     result = jax.jit(as_result_function(neighbor_rows))(edges, far, systems)
     with pytest.raises(AssertionError, match="exceed int8"):
         result.raise_assertion()

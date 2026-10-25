@@ -317,6 +317,15 @@ def pad(
     )
 
 
+def _edges(
+    nl: NeighborList[Literal[2]],
+    keys: Table[ParticleId, SamplePoints],
+    systems: Table[SystemId, SampleSystems],
+    queried_keys: Index[ParticleId] | None,
+) -> Edges[Literal[2]]:
+    return nl(keys, systems, queried_keys=queried_keys).data
+
+
 @jax.jit
 def _run_nl(
     nl: NeighborList[Literal[2]],
@@ -324,7 +333,7 @@ def _run_nl(
     systems: Table[SystemId, SampleSystems],
     queried_keys: Index[ParticleId] | None,
 ) -> Result[Any, Edges[Literal[2]]]:
-    return as_result_function(nl)(keys=keys, systems=systems, queried_keys=queried_keys)
+    return as_result_function(_edges)(nl, keys, systems, queried_keys)
 
 
 def run_nl(
@@ -333,7 +342,7 @@ def run_nl(
     systems: Table[SystemId, SampleSystems],
     queried_keys: Index[ParticleId] | None = None,
 ) -> Result[Any, Edges[Literal[2]]]:
-    """Run a neighbor list under jit, with its cutoffs as runtime inputs.
+    """Run a neighbor list under jit for its edges, with its cutoffs as runtime inputs.
 
     Calls with equal capacities, shapes and labels share one compiled program;
     passing every argument positionally keeps them on one cache entry.

@@ -14,7 +14,7 @@ from kups.application.mcmc.data import (
 )
 from kups.core.data import Buffered, Table
 from kups.core.lens import Lens
-from kups.core.patch import Patch
+from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.typing import GroupId, MotifParticleId, SystemId
 from kups.mcmc.probability import motif_counts
 from kups.potential.common.graph import PointCloud
@@ -33,13 +33,12 @@ def make_rigid_body_composition[State](
 
     def counts(
         state: State, patch: Patch[State] | None, old_input: bool = False
-    ) -> Table[SystemId, Array]:
+    ) -> WithPatch[Table[SystemId, Array], IdPatch[State]]:
         if patch is not None and not old_input:
             state = patch(state, accept)
         values = motif_counts(groups(state))
-        return systems.set_data(
-            jnp.concatenate((jnp.ones((len(systems), 1)), values), axis=1)
-        )
+        rows = jnp.concatenate((jnp.ones((len(systems), 1)), values), axis=1)
+        return WithPatch(systems.set_data(rows), IdPatch[State]())
 
     particles = cloud.particles.data
     return RigidBodyComposition(

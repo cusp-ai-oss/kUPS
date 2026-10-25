@@ -269,7 +269,7 @@ def _graph_full[Params: _Parameters](
     ],
 ) -> jax.Array:
     """Ground truth: materialized-edge full evaluation, per-system energies."""
-    edges = _neighborlist(params)(state.particles, state.systems)
+    edges = _neighborlist(params)(state.particles, state.systems).data
     graph = HyperGraph(state.particles, state.systems, edges)
     return energy_fn(GraphPotentialInput(params, graph)).data.data
 
@@ -615,7 +615,7 @@ class TestFullEvaluation:
                 _lj_params(s.systems.size, 3.0), PointCloud(s.particles, s.systems)
             ),
         )
-        inp = constructor(state, move, old_input=old_input)
+        inp = constructor(state, move, old_input=old_input).data
         expected = state.particles.data.positions
         if not old_input:
             expected = expected.at[0].add(0.5)
@@ -656,7 +656,7 @@ class TestFullEvaluation:
     def test_autodiff_gradients_match_graph(self):
         state = _make_state(jax.random.PRNGKey(2), (24, 16), (12.0, 10.0), n_inactive=4)
         params = _lj_params(2, 3.0)
-        edges = _neighborlist(params)(state.particles, state.systems)
+        edges = _neighborlist(params)(state.particles, state.systems).data
 
         def moved(positions: jax.Array) -> Table[ParticleId, _Points]:
             return _with_points(state, positions=positions).particles
@@ -763,7 +763,7 @@ class TestPeriodicImages:
                 avg_image_candidates=FixedCapacity(n * images),
                 cutoffs=parameters.cutoff,
             )
-            edges = neighborlist(points.particles, points.systems)
+            edges = neighborlist(points.particles, points.systems).data
             graph = HyperGraph(points.particles, points.systems, edges)
             return energy(GraphPotentialInput(parameters, graph)).data.data
 
@@ -1151,7 +1151,7 @@ class TestPersistentCellListCache:
             graph = HyperGraph(
                 current.particles,
                 current.systems,
-                dense(current.particles, current.systems),
+                dense(current.particles, current.systems).data,
             )
             return lennard_jones_energy(GraphPotentialInput(params, graph)).data.data
 
@@ -1525,9 +1525,9 @@ class TestAdditivePairEnergy:
                 _PARAMS, key_layout=key_layout, key_chunk_size=key_chunk_size
             ),
         )
-        edges_lj = _neighborlist(params[0])(state.particles, state.systems)
+        edges_lj = _neighborlist(params[0])(state.particles, state.systems).data
         atomic = _per_particle_exclusion(state)
-        edges_ew = _neighborlist(params[1])(atomic.particles, state.systems)
+        edges_ew = _neighborlist(params[1])(atomic.particles, state.systems).data
 
         def energy(positions: jax.Array, vectors: jax.Array, fused: bool):
             moved = _with_points(state, positions=positions)

@@ -17,6 +17,7 @@ from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import view
 from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.radial_distribution_function import (
@@ -64,23 +65,23 @@ class RDFTestState(NamedTuple):
 class MockNeighborList:
     """Mock neighbor list returning two reciprocal pairs."""
 
-    def __call__(self, *args, **kwargs) -> Edges[Literal[2]]:
+    def __call__(self, *args, **kwargs) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
         indices = Index(
             (ParticleId(0), ParticleId(1)),
             jnp.array([[0, 1], [1, 0]]),
         )
         shifts = jnp.zeros((2, 1, 3))
-        return Edges(indices, shifts)
+        return WithPatch(Edges(indices, shifts), IdPatch[Any]())
 
 
 @dataclass
 class EmptyNeighborList:
     """Mock neighbor list returning no pairs."""
 
-    def __call__(self, *args, **kwargs) -> Edges[Literal[2]]:
+    def __call__(self, *args, **kwargs) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
         indices = Index((ParticleId(0),), jnp.empty((0, 2), dtype=int))
         shifts = jnp.empty((0, 1, 3))
-        return Edges(indices, shifts)
+        return WithPatch(Edges(indices, shifts), IdPatch[Any]())
 
 
 def _box10() -> Cell:
@@ -203,13 +204,15 @@ class TestRadialDistributionFunction:
 
         @dataclass
         class MultiSystemNeighborList:
-            def __call__(self, *args, **kwargs) -> Edges[Literal[2]]:
+            def __call__(
+                self, *args, **kwargs
+            ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
                 indices = Index(
                     tuple(map(ParticleId, range(4))),
                     jnp.array([[0, 1], [1, 0], [2, 3], [3, 2]]),
                 )
                 shifts = jnp.zeros((4, 1, 3))
-                return Edges(indices, shifts)
+                return WithPatch(Edges(indices, shifts), IdPatch[Any]())
 
         result = radial_distribution_function(
             positions, systems, rmax, bins, MultiSystemNeighborList()
