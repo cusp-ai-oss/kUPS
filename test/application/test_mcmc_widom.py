@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import tempfile
+import types
 
 import jax
 import jax.numpy as jnp
@@ -18,6 +19,7 @@ from kups.application.mcmc.data import (
     BlockingSphereConfig,
     HostConfig,
 )
+from kups.application.simulations import mcmc_widom
 from kups.application.simulations.mcmc_rigid import EwaldConfig, LJConfig
 from kups.application.simulations.mcmc_widom import (
     Config,
@@ -234,3 +236,13 @@ class TestRun:
         assert jnp.isfinite(result.heat_of_adsorption.mean).item()
         assert float(result.henry_coefficient.mean) > 0.0
         assert float(result.henry_coefficient.sem) >= 0.0
+
+
+def test_seed_zero_is_not_time_based(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` is a fixed seed and does not read the clock."""
+    clock = types.SimpleNamespace(time_ns=lambda: pytest.fail("seed 0 read the clock"))
+    monkeypatch.setattr(mcmc_widom, "time", clock)
+    for name in ("run_warmup_cycles", "run_simulation_cycles"):
+        monkeypatch.setattr(mcmc_widom, name, lambda key, cycle_fn, state, *_: state)
+    config = _config(_host(_write_cubic_ar_cif()))
+    run(config.model_copy(update={"run": config.run.model_copy(update={"seed": 0})}))

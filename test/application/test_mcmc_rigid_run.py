@@ -3,6 +3,7 @@
 
 """End-to-end runs of the rigid-body MCMC entry point."""
 
+import types
 from pathlib import Path
 
 import jax
@@ -11,6 +12,7 @@ import numpy.testing as npt
 import pytest
 
 from kups.application.mcmc.logging import MCMCLoggedData, MCMCStepData
+from kups.application.simulations import mcmc_rigid
 from kups.application.simulations.mcmc_rigid import MCMCState, init_state, run
 from kups.core.data import Index
 from kups.core.storage import HDF5StorageReader
@@ -158,3 +160,14 @@ def test_gcmc_with_int32_indices_matches_default() -> None:
         rtol=1e-10,
         atol=1e-10,
     )
+
+
+def test_seed_zero_is_not_time_based(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` is a fixed seed and does not read the clock."""
+    clock = types.SimpleNamespace(time_ns=lambda: pytest.fail("seed 0 read the clock"))
+    monkeypatch.setattr(mcmc_rigid, "time", clock)
+    monkeypatch.setattr(
+        mcmc_rigid, "run_mcmc", lambda key, propagator, state, *_: state
+    )
+    config = co2_config(exchange_prob=0.0, init_adsorbates=(2,), charged=False)
+    run(config.model_copy(update={"run": config.run.model_copy(update={"seed": 0})}))

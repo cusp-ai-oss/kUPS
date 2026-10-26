@@ -4,6 +4,7 @@
 """End-to-end smoke test for the Lennard-Jones MD entry point."""
 
 import tempfile
+import types
 
 import ase.build
 import ase.io
@@ -116,6 +117,15 @@ def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> No
     run(_config(_tmp_h5(), inp).model_copy(update={"inp_files": (inp, inp)}))
     first, second = np.split(np.asarray(captured["s"].particles.data.momenta), 2)
     assert not np.allclose(first, second)
+
+
+def test_seed_zero_is_not_time_based(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` is a fixed seed and does not read the clock."""
+    clock = types.SimpleNamespace(time_ns=lambda: pytest.fail("seed 0 read the clock"))
+    monkeypatch.setattr(md, "time", clock)
+    monkeypatch.setattr(md, "run_md", lambda key, propagator, state, *_: state)
+    config = _config(_tmp_h5(), _ar_cif())
+    run(config.model_copy(update={"run": config.run.model_copy(update={"seed": 0})}))
 
 
 def test_first_step_uses_initial_forces() -> None:
