@@ -5,6 +5,7 @@
 
 import dataclasses
 import tempfile
+import types
 
 import ase.build
 import jax
@@ -23,6 +24,7 @@ from kups.application.relaxation.data import (
     relax_state_from_ase,
 )
 from kups.application.relaxation.simulation import make_relax_propagator
+from kups.application.simulations import relax
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
 from kups.core.lens import identity_lens
@@ -111,6 +113,15 @@ class TestRun:
         assert jnp.isfinite(jnp.asarray(result.final_energy)).item()
         assert jnp.isfinite(jnp.asarray(result.final_max_force)).item()
         assert result.n_steps >= 1
+
+
+def test_seed_zero_is_not_time_based(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` is a fixed seed and does not read the clock."""
+    clock = types.SimpleNamespace(time_ns=lambda: pytest.fail("seed 0 read the clock"))
+    monkeypatch.setattr(relax, "time", clock)
+    monkeypatch.setattr(relax, "run_relax", lambda key, propagator, state, *_: state)
+    config = _config(_tmp_h5(), _ar_cif(rattle=0.1))
+    run(config.model_copy(update={"run": config.run.model_copy(update={"seed": 0})}))
 
 
 def _build_propagator(optimize_cell: bool):

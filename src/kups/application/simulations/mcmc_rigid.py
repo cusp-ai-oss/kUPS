@@ -605,7 +605,7 @@ def make_guest_stress(
 
 def run(config: Config) -> MCMCState:
     set_index_dtype(config.run.index_dtype)
-    seed = config.run.seed or time.time_ns()
+    seed = time.time_ns() if config.run.seed is None else config.run.seed
     chain = key_chain(jax.random.key(seed))
     state = init_state(next(chain), config)
     init_prop, propagator = make_propagator(state, config.run)
