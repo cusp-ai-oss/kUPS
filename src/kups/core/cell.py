@@ -628,10 +628,9 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
             ``A``, shape ``(..., 6)``.
         cell_factor: Stiffening factor (ASE's ``exp_cell_factor``) so that
             ``vectors = expm(A / cell_factor)`` and the gradient w.r.t. ``A``
-            carries a ``1 / cell_factor`` factor. A stop-gradient leaf broadcast
-            to ``tril``'s shape (equal per slot) so every leaf shares ``tril``'s
-            leading dimension inside batched containers; read the per-system value
-            through ``factor``.
+            carries a ``1 / cell_factor`` factor. A stop-gradient leaf that shares
+            ``tril``'s leading axis and broadcasts against it, ``(B, 1)`` for ``B``
+            systems.
     """
 
     tril: Array
@@ -706,21 +705,16 @@ class MatrixLogFrame(BaseFrame, Sliceable):
     [`vectors_gradient`][kups.core.cell.Frame.vectors_gradient] are exact with no
     custom rule.
 
-    Used as both the base and the deformation of a
-    [DeformedFrame][kups.core.cell.DeformedFrame] (build with
-    [from_frame][kups.core.cell.DeformedFrame.from_frame] passing
-    ``deformation=MatrixLogFrame``) to express the full-``3x3`` Frechet basis: every
-    leaf is ``(..., 3, 3)``, so a per-system
-    [Batched][kups.core.data.batched.Batched] slice yields all-``(3, 3)`` leaves
-    that share a leading axis (a ``(6,)`` tril base would fail).
+    Used as the deformation of a [DeformedFrame][kups.core.cell.DeformedFrame]
+    (build with [from_frame][kups.core.cell.DeformedFrame.from_frame] passing
+    ``deformation=MatrixLogFrame``) to express the full-``3x3`` Frechet basis.
 
     Attributes:
         log_matrix: Generator ``A``, shape ``(..., 3, 3)``.
         cell_factor: Stiffening factor (ASE's ``exp_cell_factor``) so that
-            ``vectors = expm(A / cell_factor)``. A stop-gradient leaf broadcast to
-            ``log_matrix``'s shape (equal per slot) so it shares the leading axis;
-            read the per-system value through
-            [`factor`][kups.core.cell.MatrixLogFrame.factor].
+            ``vectors = expm(A / cell_factor)``. A stop-gradient leaf that shares
+            ``log_matrix``'s leading axis and broadcasts against it, ``(B, 1, 1)``
+            for ``B`` systems.
     """
 
     log_matrix: Array
@@ -787,8 +781,9 @@ class DeformedFrame(BaseFrame, Sliceable):
     of a fixed reference frame: ``vectors = base @ deformation``.
 
     ``base`` is held fixed (stop-gradient); only ``deformation``'s parameters are
-    optimised. Right-multiplication deforms Cartesian space, so ``vectors`` stays
-    lower-triangular and atoms at fixed fractional coordinates ride the cell. The
+    optimised. Right-multiplication deforms Cartesian space, so atoms at fixed
+    fractional coordinates ride the cell; ``vectors`` stays lower-triangular for a
+    lower-triangular deformation. The
     deformation frame chooses the parameterisation: a
     [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] gives the unconstrained
     matrix-exponential map of ASE's ``FrechetCellFilter`` (build with
@@ -797,6 +792,13 @@ class DeformedFrame(BaseFrame, Sliceable):
     gradient of ASE's ``UnitCellFilter``. ``vectors`` is generally nonlinear in the
     parameters, so the gradient maps use the general inverse-Jacobian path on
     [BaseFrame][kups.core.cell.BaseFrame].
+
+    The leaves share the leading system axis but need not share their trailing
+    shapes: a log deformation stores its ``cell_factor`` as ``(B, 1)`` or
+    ``(B, 1, 1)`` next to a ``(B, 6)`` triclinic base. System ``i`` is therefore
+    the one-row slice ``frame[i : i + 1]``; with a log deformation, an integer
+    index drops the system axis unevenly and fails the
+    [Batched][kups.core.data.batched.Batched] shape check.
 
     Attributes:
         base: Reference frame, held fixed (stop-gradient); the identity
@@ -818,13 +820,11 @@ class DeformedFrame(BaseFrame, Sliceable):
         """ASE ``FrechetCellFilter``-style: an exponential-map deformation anchored
         at ``frame`` (identity deformation, so ``vectors == frame.vectors``).
 
-        ``deformation`` selects the deformation parameterisation:
-        [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] (default) keeps
-        ``base = frame`` with a lower-triangular ``(6,)`` matrix-log deformation;
+        ``base = frame``; ``deformation`` selects the deformation parameterisation:
+        [LogTriclinicFrame][kups.core.cell.LogTriclinicFrame] (default) gives a
+        lower-triangular ``(6,)`` matrix-log deformation;
         [MatrixLogFrame][kups.core.cell.MatrixLogFrame] gives a full-``3x3``
-        deformation, re-anchoring ``base`` as a ``MatrixLogFrame`` built from
-        ``frame.vectors`` (via the exact triangular log) so every leaf is
-        ``(..., 3, 3)`` and the resulting frame represents rotated / sheared cells.
+        deformation, so the resulting frame represents rotated / sheared cells.
         """
         eye = jnp.broadcast_to(
             jnp.eye(3, dtype=frame.vectors.dtype), frame.vectors.shape
