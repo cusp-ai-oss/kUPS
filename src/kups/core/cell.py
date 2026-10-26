@@ -687,7 +687,7 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
     def __mul__(self, other: Array | float | int) -> Self:
         # Uniform scaling commutes: expm(B + log(s) I) = s * expm(B) for B = A / cf,
         # so add cf * log(s) to A's diagonal elements (tril indices 0, 2, 5).
-        log_scale = self.cell_factor * jnp.log(jnp.asarray(other))
+        log_scale = self.cell_factor * jnp.log(jnp.asarray(other))[..., None]
         diagonal = jnp.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
         return type(self)(self.tril + log_scale * diagonal, self.cell_factor)
 
@@ -771,7 +771,8 @@ class MatrixLogFrame(BaseFrame, Sliceable):
     @override
     def __mul__(self, other: Array | float | int) -> Self:
         return type(self).from_matrix(
-            self.vectors * jnp.asarray(other), cell_factor=self.cell_factor
+            self.vectors * jnp.asarray(other)[..., None, None],
+            cell_factor=self.cell_factor,
         )
 
 
