@@ -838,6 +838,13 @@ _GEOMETRY_FRAMES = [
     pytest.param(DeformedFrame.from_matrix(_M_TRICLINIC), id="deformed"),
 ]
 _frame_case = pytest.mark.parametrize("frame", _GEOMETRY_FRAMES)
+# Frame classes that a ``(B,)`` factor scales system by system.
+_SCALED_FRAME_CLASSES = [
+    *_LINEAR_FRAME_CLASSES,
+    pytest.param(LogTriclinicFrame, id="log_triclinic"),
+    pytest.param(MatrixLogFrame, id="matrix_log"),
+    pytest.param(DeformedFrame, id="deformed"),
+]
 
 
 class TestFrameGeometry:
@@ -901,6 +908,19 @@ class TestFrameGeometry:
             scaled.inverse_vectors, frame.inverse_vectors / 2.0, atol=1e-6
         )
         npt.assert_allclose(scaled.volume, frame.volume * 8.0, atol=1e-6)
+
+    @pytest.mark.parametrize("frame_cls", _SCALED_FRAME_CLASSES)
+    def test_per_system_scaling(self, frame_cls: _FrameClass):
+        """A ``(B,)`` factor scales each system by its own entry."""
+        frame = frame_cls.from_matrix(
+            jnp.concatenate([_M_TRICLINIC, _M_ORTHO, 1.5 * _M_TRICLINIC])
+        )
+        scale = jnp.array([1.5, 2.0, 3.0])
+        scaled = frame * scale
+        npt.assert_allclose(
+            scaled.vectors, frame.vectors * scale[:, None, None], atol=1e-6
+        )
+        npt.assert_allclose(scaled.volume, frame.volume * scale**3, atol=1e-6)
 
     @_frame_case
     def test_tile_scales_basis_rows(self, frame: Frame):
