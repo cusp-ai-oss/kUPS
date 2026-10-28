@@ -179,6 +179,28 @@ class TestParticlesFromAse:
         particles, _, _ = particles_from_ase(atoms)
         npt.assert_allclose(particles.data.charges, jnp.asarray(charges))
 
+    def test_initial_charges_without_charge_tags(self, tmp_path):
+        """Initial charges load from atoms and from extxyz files; a tag wins."""
+        from ase import Atoms
+        from ase.io import write
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "NaCl",
+            positions=[[0, 0, 0], [2.8, 0, 0]],
+            cell=[5.6, 5.6, 5.6],
+            pbc=True,
+            charges=[1.0, -1.0],
+        )
+        write(str(tmp_path / "nacl.extxyz"), atoms)
+        for source in (atoms, tmp_path / "nacl.extxyz"):
+            particles, _, _ = particles_from_ase(source)
+            npt.assert_allclose(particles.data.charges, jnp.asarray([1.0, -1.0]))
+        atoms.info["_atom_site_charge"] = np.array([0.5, -0.5])
+        particles, _, _ = particles_from_ase(atoms)
+        npt.assert_allclose(particles.data.charges, jnp.asarray([0.5, -0.5]))
+
     def test_from_file_path(self, tmp_path):
         from ase import Atoms
         from ase.io import write

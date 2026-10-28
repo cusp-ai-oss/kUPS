@@ -182,7 +182,9 @@ def particles_from_ase(
 ]:
     """Build particle data and cell from an ASE Atoms object or file path.
 
-    Results are cached when ``atoms`` is a file path.
+    Results are cached when ``atoms`` is a file path. Charges come from the CIF
+    tags ``_atom_type_partial_charge`` or ``_atom_site_charge``, else from the
+    atoms' initial charges.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
@@ -324,7 +326,7 @@ def _particles_from_atoms(
     charges = jnp.asarray(
         atoms.info.get(
             "_atom_type_partial_charge",
-            atoms.info.get("_atom_site_charge", jnp.zeros((len(positions),))),
+            atoms.info.get("_atom_site_charge", atoms.get_initial_charges()),
         )
     )
     labels = list(
