@@ -56,6 +56,10 @@ logging.basicConfig(
 )
 
 
+# optimal block averaging needs at least 4 blocks of 2 rows
+_ANALYSIS_ROWS = 8
+
+
 class Config(BaseModel):
     """Top-level configuration for a molecular-dynamics run."""
 
@@ -112,6 +116,12 @@ def main() -> None:
     config = cli.parse()
     rich.print(config)
     run(config)
+    rows = config.run.num_steps // config.run.thermo_every
+    if rows < _ANALYSIS_ROWS:
+        logging.warning(
+            f"Not analyzed: {rows} rows, the analysis needs {_ANALYSIS_ROWS}."
+        )
+        return
     rich.print(analyze_md_file(config.run.out_file))
 
 
