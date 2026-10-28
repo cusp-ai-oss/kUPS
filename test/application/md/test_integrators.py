@@ -713,7 +713,8 @@ class TestCSVRNPTPhysics:
             state,
             jax.random.key(789),
             n_equil=150,
-            n_sample=150,
+            # 5 particles: 150 samples spread ~17% per run, 3000 about 4%
+            n_sample=3000,
             extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
         assert_temperature(jnp.mean(temps), kT_target, 0.15, "NPT ")
