@@ -11,7 +11,7 @@ real-space exclusion list.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import jax.numpy as jnp
 
@@ -34,6 +34,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
 )
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 
@@ -83,7 +84,7 @@ def all_connected_neighborlist[P: NeighborListPoints](
     systems: Table[SystemId, NeighborListSystems],
     *,
     queries: Table[ParticleId, P],
-) -> Edges[Literal[2]]: ...
+) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
 
 
 @overload
@@ -92,7 +93,7 @@ def all_connected_neighborlist[P: NeighborListPoints](
     systems: Table[SystemId, NeighborListSystems],
     *,
     queried_keys: Index[ParticleId] | None = None,
-) -> Edges[Literal[2]]: ...
+) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
 
 
 def all_connected_neighborlist[P: NeighborListPoints](
@@ -101,7 +102,7 @@ def all_connected_neighborlist[P: NeighborListPoints](
     *,
     queries: Table[ParticleId, P] | None = None,
     queried_keys: Index[ParticleId] | None = None,
-) -> Edges[Literal[2]]:
+) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
     """Neighbor list connecting all pairs sharing the same inclusion segment, ignoring distance.
 
     Connects every particle pair that belongs to the same inclusion segment and has
@@ -126,8 +127,10 @@ def all_connected_neighborlist[P: NeighborListPoints](
         postprocessors=(MirrorPairEdges(),),
     )
     if queries is not None:
-        return pipeline(keys, systems, queries=queries)
-    return pipeline(keys, systems, queried_keys=queried_keys)
+        edges = pipeline(keys, systems, queries=queries)
+    else:
+        edges = pipeline(keys, systems, queried_keys=queried_keys)
+    return WithPatch(edges, IdPatch[Any]())
 
 
 if TYPE_CHECKING:

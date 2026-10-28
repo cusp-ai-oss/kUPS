@@ -28,7 +28,7 @@ selected implementation.
 from __future__ import annotations
 
 import math
-from typing import Literal, Protocol, overload
+from typing import Any, Literal, Protocol, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -58,6 +58,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     SelectableNeighborList,
 )
+from kups.core.patch import Patch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field
 
@@ -144,7 +145,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
     Example:
         ```python
         nl = AdaptiveNeighborList.from_state(state, identity_lens(State), cutoffs)
-        edges = nl(particles, systems)
+        edges = nl(particles, systems).data
         ```
     """
 
@@ -257,7 +258,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], Patch[Any]]: ...
     @overload
     def __call__(
         self,
@@ -265,7 +266,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], Patch[Any]]: ...
     def __call__(
         self,
         keys: Table[ParticleId, NeighborListPoints],
@@ -273,7 +274,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
+    ) -> WithPatch[Edges[Literal[2]], Patch[Any]]:
         nl = self._choose(keys.size, systems.size)
         if queries is not None:
             return nl(keys, systems, queries=queries)

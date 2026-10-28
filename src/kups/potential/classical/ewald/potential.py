@@ -755,7 +755,7 @@ class EwaldLongRangeComposer[
 
     def __call__(
         self, state: State, patch: Ptch | None
-    ) -> Sum[EwaldLongRangeInput[State]]:
+    ) -> WithPatch[Sum[EwaldLongRangeInput[State]], IdPatch[State]]:
         """Compose the reciprocal-energy input for a full evaluation or proposal.
 
         Args:
@@ -763,7 +763,8 @@ class EwaldLongRangeComposer[
             patch: Optional proposed state patch to inspect with the particle probe.
 
         Returns:
-            A single-summand input with current particles and any probed previous values.
+            A single-summand input with current particles and any probed previous
+            values, and an identity patch.
         """
         particles = self.particles(state)
         changes = None
@@ -782,7 +783,7 @@ class EwaldLongRangeComposer[
             self.cache,
             changes,
         )
-        return Sum(Summand(inp))
+        return WithPatch(Sum(Summand(inp)), IdPatch[State]())
 
 
 @dataclass

@@ -29,6 +29,8 @@ from kups.potential.mliap.local import (
     make_local_mliap_potential,
 )
 
+from ._marking import MarkingNeighborList, MarkingProbe, applied_marks
+
 
 # Test data structures
 @dataclass
@@ -309,7 +311,7 @@ class TestLocalMLIAPComposer:
     def test_full_composition(self, simple_system, composer):
         """Test composition without patch returns single summand."""
         state, _ = simple_system
-        result = composer(state, None)
+        result = composer(state, None).data
 
         assert len(result) == 1
         assert result[0].weight == 1.0
@@ -318,10 +320,30 @@ class TestLocalMLIAPComposer:
     def test_patch_composition(self, simple_system, composer):
         """Test composition with patch includes changes."""
         state, make_patch = simple_system
-        result = composer(state, make_patch(state))
+        result = composer(state, make_patch(state)).data
 
         assert len(result) == 1
         assert result[0].inp.point_cloud_changes is not None
+
+    def test_forwards_the_patches_of_its_lists(self, simple_system):
+        """A full plan carries the patch of the list its graph reads. A proposal's
+        plan applies the old graph's patch, then the new graph's."""
+        state, make_patch = simple_system
+        patch = make_patch(state)
+        probe = MarkingProbe(
+            _make_probe(state, patch).particles,
+            neighborlist_before=MarkingNeighborList(2),
+            neighborlist_after=MarkingNeighborList(3),
+        )
+        composer = LocalMLIAPComposer[State, AtomData, SystemData, AtomPatch](
+            particles=lambda s: s.atoms,
+            systems=lambda s: s.systems,
+            neighborlist=lambda s: MarkingNeighborList(1),
+            model=lens(lambda s: s.model_config, cls=State),
+            probe=lambda s, p: probe,
+        )
+        npt.assert_array_equal(applied_marks(composer(state, None).patch), [1])
+        npt.assert_array_equal(applied_marks(composer(state, patch).patch), [23])
 
 
 class TestModelFunctions:

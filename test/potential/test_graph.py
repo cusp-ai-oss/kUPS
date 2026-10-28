@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -20,9 +20,16 @@ from kups.core.neighborlist import (
     EmptyNeighborList,
     FixedEdgesNeighborList,
 )
+from kups.core.patch import ExplicitPatch, IdPatch, WithPatch
+from kups.core.potential import EMPTY, EMPTY_LENS, PotentialAsPropagator, PotentialOut
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, key_chain
-from kups.potential.common.energy import FullSumComposer, LocalSumComposer
+from kups.potential.common.direct import DirectPotential
+from kups.potential.common.energy import (
+    FullSumComposer,
+    LocalSumComposer,
+    PotentialFromEnergy,
+)
 from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,
@@ -32,6 +39,8 @@ from kups.potential.common.graph import (
     PointCloud,
 )
 from kups.potential.common.pair import PairEnergy
+
+from ._marking import MarkingNeighborList, MarkingProbe, applied_marks, record_mark
 
 
 @dataclass
@@ -366,7 +375,7 @@ class TestGraphConstructorFixedEdges:
             probe=None,
         )
 
-        graph = constructor(state, None)
+        graph = constructor(state, None).data
         assert isinstance(graph, HyperGraph)
         assert graph.edges.degree == 2
         npt.assert_array_equal(graph.particles.data.positions, positions)
@@ -409,7 +418,7 @@ class TestGraphConstructorFixedEdges:
             probe=None,
         )
 
-        result = constructor(state, None)
+        result = constructor(state, None).data
         npt.assert_allclose(result.particles.data.positions, positions)
         npt.assert_array_equal(result.edges.indices.value, edges.indices.value)
         assert result.edges.shifts.shape == edges.shifts.shape
@@ -452,7 +461,7 @@ class TestGraphConstructorRadius:
         state = self._make_state(positions, jnp.array([0, 0]), 1.5)
         constructor = self._make_constructor()
 
-        graph = constructor(state, None)
+        graph = constructor(state, None).data
         assert isinstance(graph, HyperGraph)
         assert graph.edges.degree == 2
         # Should find bidirectional edges between the two close particles
@@ -465,7 +474,7 @@ class TestGraphConstructorRadius:
         positions = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]])
         # Cutoff too small — no edges
         state = self._make_state(positions, jnp.array([0, 0]), 0.1)
-        graph = self._make_constructor()(state, None)
+        graph = self._make_constructor()(state, None).data
         valid = graph.edges.indices.valid_mask
         assert not valid.all(-1).any()
 
@@ -483,7 +492,7 @@ class TestGraphConstructorRadius:
         )
         system_ids = jnp.array([0, 0, 0, 1, 1, 1])
         state = self._make_state(positions, system_ids, 1.5)
-        graph = self._make_constructor()(state, None)
+        graph = self._make_constructor()(state, None).data
         assert graph.batch_size == 2
 
 
@@ -502,7 +511,7 @@ class TestGraphConstructorEmpty:
             probe=None,
         )
 
-        graph = constructor(state, None)
+        graph = constructor(state, None).data
         assert isinstance(graph, HyperGraph)
         assert graph.edges.degree == 0
         assert len(graph.edges) == 0
@@ -523,7 +532,7 @@ class TestGraphConstructorEmpty:
             probe=None,
         )
 
-        graph = constructor(state, None)
+        graph = constructor(state, None).data
         assert graph.batch_size == 2
         assert graph.edges.degree == 0
 
@@ -573,7 +582,7 @@ class TestGraphInputConstructor:
     def test_no_patch(self, composer_type):
         composer = composer_type(self._make_constructor())
         state = self._make_state()
-        result = composer(state, None)
+        result = composer(state, None).data
         assert len(result) == 1
         assert result.add_previous_total is False
         assert result[0].weight == 1
@@ -648,10 +657,11 @@ class _RecordingNeighborList:
     def __call__(self, keys, systems, *, queries=None, queried_keys=None):
         del systems
         self.calls.append((queries, queried_keys))
-        return Edges(
+        edges = Edges(
             indices=self.edge_indices.update_labels(keys.keys),
             shifts=self.shifts,
         )
+        return WithPatch(edges, IdPatch[Any]())
 
     def assert_incremental_call(self, expected_queried_keys):
         assert len(self.calls) == 1
@@ -683,7 +693,7 @@ class TestGraphConstructorEmptyWithPatch:
             probe=None,
         )
 
-        graph = constructor(state, _SimplePatch(new_state))
+        graph = constructor(state, _SimplePatch(new_state)).data
         # Should use the new_state's particles
         npt.assert_allclose(graph.particles.data.positions, new_positions)
 
@@ -704,7 +714,7 @@ class TestGraphConstructorEmptyWithPatch:
             probe=_point_cloud_probe(probe_result),
         )
 
-        graph = constructor(state, _SimplePatch(state), old_graph=False)
+        graph = constructor(state, _SimplePatch(state), old_graph=False).data
         npt.assert_allclose(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
         npt.assert_allclose(graph.particles.data.positions[0], positions[0])
         npt.assert_allclose(graph.particles.data.positions[2], positions[2])
@@ -724,7 +734,7 @@ class TestGraphConstructorEmptyWithPatch:
             probe=_point_cloud_probe(probe_result),
         )
 
-        graph = constructor(state, _SimplePatch(state), old_graph=True)
+        graph = constructor(state, _SimplePatch(state), old_graph=True).data
         npt.assert_allclose(graph.particles.data.positions, positions)
 
 
@@ -760,7 +770,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
             probe=None,
         )
 
-        graph = constructor(state, _SimplePatch(new_state))
+        graph = constructor(state, _SimplePatch(new_state)).data
         npt.assert_allclose(graph.particles.data.positions, new_positions)
 
     def _make_edge_probe(self, particles, edges, particle_idx, new_pos):
@@ -804,7 +814,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
             probe=lambda s, p: probe_result,
         )
 
-        graph = constructor(state, _SimplePatch(state), old_graph=False)
+        graph = constructor(state, _SimplePatch(state), old_graph=False).data
         npt.assert_allclose(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
         # Both edges involve particle 1, so both should be in the result
         assert len(graph.edges) > 0
@@ -827,7 +837,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
             probe=lambda s, p: probe_result,
         )
 
-        graph = constructor(state, _SimplePatch(state), old_graph=True)
+        graph = constructor(state, _SimplePatch(state), old_graph=True).data
         npt.assert_allclose(graph.particles.data.positions, particles.data.positions)
         probe_result.neighborlist_before.assert_incremental_call(
             probe_result.particles.indices
@@ -868,7 +878,7 @@ class TestGraphConstructorRadiusWithPatch:
             probe=None,
         )
 
-        graph = constructor(state, _SimplePatch(new_state))
+        graph = constructor(state, _SimplePatch(new_state)).data
         npt.assert_allclose(graph.particles.data.positions, new_positions)
 
     def _make_radius_probe(self, particles, nnlist, particle_idx, new_pos):
@@ -913,7 +923,7 @@ class TestGraphConstructorRadiusWithPatch:
             probe=lambda s, p: probe_result,
         )
 
-        graph = constructor(state, _SimplePatch(state), old_graph=False)
+        graph = constructor(state, _SimplePatch(state), old_graph=False).data
         npt.assert_allclose(graph.particles.data.positions[1], [0.5, 0.0, 0.0])
         assert graph.edges.degree == 2
 
@@ -937,7 +947,7 @@ class TestGraphConstructorRadiusWithPatch:
             probe=lambda s, p: probe_result,
         )
 
-        graph = constructor(state, _SimplePatch(state), old_graph=True)
+        graph = constructor(state, _SimplePatch(state), old_graph=True).data
         npt.assert_allclose(graph.particles.data.positions, positions)
 
 
@@ -964,7 +974,7 @@ class TestGraphInputConstructorWithProbe:
             )
         )
 
-        result = composer(state, _SimplePatch(state))
+        result = composer(state, _SimplePatch(state)).data
         assert len(result) == 2
         assert result.add_previous_total is True
         assert result[0].weight == -1
@@ -1015,7 +1025,7 @@ class TestGraphInputConstructorWithoutProbe:
             parameter_view=view(lambda x: x["params"]),
         )
         patch = _SimplePatch(new_state)
-        inp = input_constructor(state, patch, old_input=old_input)
+        inp = input_constructor(state, patch, old_input=old_input).data
         expected_state = state if old_input else new_state
         assert inp.parameters == expected_state["params"]
         npt.assert_allclose(
@@ -1023,7 +1033,7 @@ class TestGraphInputConstructorWithoutProbe:
             expected_state["particles"].data.positions,
         )
 
-        result = composer_type(input_constructor)(state, patch)
+        result = composer_type(input_constructor)(state, patch).data
         if composer_type is LocalSumComposer:
             assert len(result) == 2
             assert result.add_previous_total is True
@@ -1038,3 +1048,100 @@ class TestGraphInputConstructorWithoutProbe:
         npt.assert_allclose(
             result[-1].inp.graph.particles.data.positions, new_positions
         )
+
+
+# --- Neighbor-list patches ---
+
+
+def _marking_energy(inp):
+    """Zero energy whose patch records the mark 9."""
+    systems = inp.graph.systems
+    energies = systems.set_data(jnp.zeros(systems.size))
+    return WithPatch(energies, ExplicitPatch(9, record_mark))
+
+
+def _marking_model(inp):
+    """Zero potential output whose patch records the mark 9."""
+    return _marking_energy(inp).map_data(lambda e: PotentialOut(e, EMPTY, EMPTY))
+
+
+def _from_energy(composer):
+    return PotentialFromEnergy(
+        energy_fn=_marking_energy,
+        composer=composer,
+        gradient_lens=EMPTY_LENS,
+        hessian_lens=EMPTY_LENS,
+        hessian_idx_view=EMPTY_LENS,
+        cache_lens=None,
+        patch_idx_view=None,
+    )
+
+
+def _direct(composer):
+    return DirectPotential(
+        direct_potential_fn=_marking_model,
+        composer=composer,
+        cache_lens=None,
+        patch_idx_view=None,
+    )
+
+
+class TestNeighborListPatch:
+    """The patch of a list that a graph reads reaches the potential and the state."""
+
+    def _state(self):
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        return {
+            "particles": _make_particles(
+                positions, jnp.array([1, 2]), jnp.array([0, 0])
+            ),
+            "systems": _make_systems(jnp.eye(3)[None] * 5.0, jnp.array([1.5])),
+            "marks": jnp.zeros(1, dtype=int),
+        }
+
+    def _constructor(self, probe=None):
+        return GraphInputConstructor(
+            GraphConstructor(
+                particles=view(lambda x: x["particles"]),
+                systems=view(lambda x: x["systems"]),
+                neighborlist=lambda _: MarkingNeighborList(1),
+                probe=probe,
+            ),
+            parameter_view=lambda _: None,
+        )
+
+    @pytest.mark.parametrize("potential", [_from_energy, _direct])
+    @pytest.mark.parametrize("composer", [LocalSumComposer, FullSumComposer])
+    def test_reaches_the_state_through_a_propagator(self, composer, potential):
+        state = self._state()
+        propagator = PotentialAsPropagator(potential(composer(self._constructor())))
+        new_state = propagator(jax.random.key(0), state)
+        # The list's mark 1 comes before the energy's mark 9.
+        npt.assert_array_equal(new_state["marks"], [19])
+
+    def test_no_acceptance_leaves_the_state_unchanged(self):
+        state = self._state()
+        out = _from_energy(FullSumComposer(self._constructor()))(state)
+        accept = state["systems"].set_data(jnp.ones(1, dtype=bool))
+        reject = state["systems"].set_data(jnp.zeros(1, dtype=bool))
+        npt.assert_array_equal(out.patch(state, accept)["marks"], [19])
+        npt.assert_array_equal(out.patch(state, reject)["marks"], [0])
+
+    @pytest.mark.parametrize(
+        "difference",
+        [None, lambda previous, proposed: proposed],
+        ids=["sum", "difference"],
+    )
+    def test_old_input_patch_comes_before_the_new_one(self, difference):
+        state = self._state()
+        probe = MarkingProbe(
+            _make_probe_update(state["particles"], 1, jnp.array([[1.2, 0.0, 0.0]])),
+            neighborlist_before=MarkingNeighborList(2),
+            neighborlist_after=MarkingNeighborList(3),
+        )
+        composer = LocalSumComposer(
+            self._constructor(lambda s, p: probe), difference=difference
+        )
+        plan = composer(state, _SimplePatch(state))
+        # The old graph's mark comes first, then the new graph's.
+        npt.assert_array_equal(applied_marks(plan.patch), [23])

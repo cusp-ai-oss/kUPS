@@ -1,19 +1,51 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for ``kups.core.neighborlist.types`` carrier dataclasses."""
+"""Unit tests for ``kups.core.neighborlist.types``: the carrier dataclasses and the
+``NeighborList`` call contract."""
 
+from typing import Literal
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
+from jax import Array
 
+from kups.core.capacity import FixedCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
-from kups.core.neighborlist.types import PipelineContext
-from kups.core.typing import ParticleId
+from kups.core.data.table import Table
+from kups.core.lens import identity_lens
+from kups.core.neighborlist import (
+    AdaptiveNeighborList,
+    AllDenseNearestNeighborList,
+    CellListNeighborList,
+    CellScanNeighborList,
+    DenseNearestNeighborList,
+    Edges,
+    EmptyNeighborList,
+    FixedEdgesNeighborList,
+    RefineCutoffNeighborList,
+    RefineMaskNeighborList,
+    all_connected_neighborlist,
+)
+from kups.core.neighborlist.types import NeighborList, PipelineContext
+from kups.core.patch import IdPatch
+from kups.core.typing import ParticleId, SystemId
 
-from ._builders import after, make_batch, make_lh, make_pipeline_ctx, make_systems
+from ._builders import (
+    EvalState,
+    after,
+    make_adaptive_state,
+    make_batch,
+    make_edges,
+    make_lh,
+    make_pipeline_ctx,
+    make_systems,
+    systems_from_lvecs,
+)
 
 
 class TestCandidateBatch:
@@ -68,3 +100,55 @@ class TestPipelineContext:
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         with pytest.raises(AssertionError, match="disjoint"):
             make_pipeline_ctx(lh, lh)
+
+
+def _neighbor_lists(
+    cutoffs: Table[SystemId, Array],
+) -> dict[str, NeighborList[Literal[2]]]:
+    pairs = make_edges(jnp.array([0, 1]), jnp.array([1, 0]))
+    capacity, cells = FixedCapacity(8), FixedCapacity(64)
+    return {
+        "adaptive": AdaptiveNeighborList.from_state(
+            make_adaptive_state(2, 1), identity_lens(EvalState), cutoffs
+        ),
+        "all_connected": all_connected_neighborlist,
+        "all_dense": AllDenseNearestNeighborList(capacity, capacity, cutoffs),
+        "cell_list": CellListNeighborList(capacity, capacity, cells, capacity, cutoffs),
+        "cell_scan": CellScanNeighborList(capacity, cells, cutoffs),
+        "dense": DenseNearestNeighborList(capacity, capacity, capacity, cutoffs),
+        "empty": EmptyNeighborList[Literal[2]](degree=2),
+        "fixed_edges": FixedEdgesNeighborList[Literal[2]](pairs.indices),
+        "refine_cutoff": RefineCutoffNeighborList(pairs, capacity, cutoffs),
+        "refine_mask": RefineMaskNeighborList(pairs),
+    }
+
+
+class TestNeighborList:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "adaptive",
+            "all_connected",
+            "all_dense",
+            "cell_list",
+            "cell_scan",
+            "dense",
+            "empty",
+            "fixed_edges",
+            "refine_cutoff",
+            "refine_mask",
+        ],
+    )
+    def test_library_lists_return_an_identity_patch(self, name):
+        """Lists that refresh no cache on the state return their edges with an
+        ``IdPatch``."""
+        lh = make_lh(
+            jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            jnp.zeros(2, dtype=int),
+            inclusion_max_count=2,
+        )
+        systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 5.0, jnp.array([1.5]))
+        neighborlist = _neighbor_lists(cutoffs)[name]
+        result = jax.eval_shape(lambda: neighborlist(lh, systems))
+        assert isinstance(result.data, Edges)
+        assert isinstance(result.patch, IdPatch)

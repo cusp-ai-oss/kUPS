@@ -1075,12 +1075,14 @@ class TestBlockingSpheresPatch:
         """The probed plan carries only the moved particle, not the whole table."""
         blocked = self._with_sphere(state)
         sl = identity_lens(MCMCState)
-        ((probed, _),) = make_blocking_spheres_from_state(sl, _probe).composer(
+        probed_plan = make_blocking_spheres_from_state(sl, _probe).composer(
             blocked, movement_update_pid0
         )
-        ((full, _),) = make_blocking_spheres_from_state(sl).composer(
+        full_plan = make_blocking_spheres_from_state(sl).composer(
             blocked, movement_update_pid0
         )
+        ((probed, _),) = probed_plan.data
+        ((full, _),) = full_plan.data
         assert len(probed.particles) == 1
         assert len(full.particles) == len(state.particles)
 

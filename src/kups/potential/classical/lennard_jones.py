@@ -562,7 +562,7 @@ def make_global_lennard_jones_tail_correction_potential[State, Gradients, Hessia
         )
         return composition.potential(
             coefficients,
-            gradient_lens(constructor(initial, None)),
+            gradient_lens(constructor(initial, None).data),
             hessian_lens,
             out_cache_lens,
             patch_idx_view,
@@ -594,7 +594,7 @@ def make_global_lennard_jones_tail_correction_pressure[State](
     def pressure(key: Array, state: State) -> Table[SystemId, Array]:
         del key
         params = parameter_view(state)
-        graph = graph_constructor(state, None)
+        graph = graph_constructor(state, None).data
         return global_lennard_jones_tail_correction_pressure(
             GraphPotentialInput(params, graph)
         ).data

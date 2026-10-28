@@ -100,7 +100,7 @@ def test_int32_build_matches_default(name):
         nl = as_result_function(_neighbor_lists(cutoffs)[name])
         result = jax.jit(nl)(points, systems)
         result.raise_assertion()
-        return result.value
+        return result.value.data
 
     expected = build()
     points, systems, cutoffs = _inputs(dtype=jnp.int32)

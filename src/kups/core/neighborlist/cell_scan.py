@@ -16,7 +16,7 @@ elsewhere. The kernel uses int32 and float32.
 from __future__ import annotations
 
 from functools import partial
-from typing import Literal, overload
+from typing import Any, Literal, overload
 
 import jax
 import jax.numpy as jnp
@@ -44,6 +44,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
 )
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import DTypeLike, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, jit
 from kups.core.utils.subselect import argsort_indices
@@ -401,7 +402,7 @@ class CellScanNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
     @overload
     def __call__(
         self,
@@ -409,7 +410,7 @@ class CellScanNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
     @jit
     def __call__(
         self,
@@ -418,7 +419,8 @@ class CellScanNeighborList:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
-        return build_radius_graph(
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
+        edges = build_radius_graph(
             self, keys, systems, queries=queries, queried_keys=queried_keys
         )
+        return WithPatch(edges, IdPatch[Any]())

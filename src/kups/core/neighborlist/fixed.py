@@ -23,7 +23,7 @@ during selection.
 
 from __future__ import annotations
 
-from typing import overload
+from typing import Any, overload
 
 import jax.numpy as jnp
 
@@ -39,6 +39,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
 )
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
 
@@ -81,7 +82,7 @@ class EmptyNeighborList[D: int]:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[D]: ...
+    ) -> WithPatch[Edges[D], IdPatch[Any]]: ...
 
     @overload
     def __call__(
@@ -90,7 +91,7 @@ class EmptyNeighborList[D: int]:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[D]: ...
+    ) -> WithPatch[Edges[D], IdPatch[Any]]: ...
 
     @jit
     def __call__(
@@ -100,19 +101,20 @@ class EmptyNeighborList[D: int]:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[D]:
+    ) -> WithPatch[Edges[D], IdPatch[Any]]:
         assert queries is None or queried_keys is None, (
             "Neighbor-list calls cannot combine queries with queried_keys."
         )
         del queries, systems, queried_keys
         shift_inner = self.degree - 1 if self.degree > 1 else 0
-        return Edges(
+        edges: Edges[D] = Edges(
             indices=Index(
                 keys.keys,
                 jnp.zeros((0, self.degree), keys.data.system.raw_indices.dtype),
             ),
             shifts=jnp.zeros((0, shift_inner, 3), dtype=int),
         )
+        return WithPatch(edges, IdPatch[Any]())
 
 
 @dataclass
@@ -145,7 +147,7 @@ class FixedEdgesNeighborList[D: int]:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[D]: ...
+    ) -> WithPatch[Edges[D], IdPatch[Any]]: ...
 
     @overload
     def __call__(
@@ -154,7 +156,7 @@ class FixedEdgesNeighborList[D: int]:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[D]: ...
+    ) -> WithPatch[Edges[D], IdPatch[Any]]: ...
 
     @jit
     def __call__(
@@ -164,7 +166,7 @@ class FixedEdgesNeighborList[D: int]:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[D]:
+    ) -> WithPatch[Edges[D], IdPatch[Any]]:
         assert queries is None or queried_keys is None, (
             "Neighbor-list calls cannot combine queries with queried_keys."
         )
@@ -183,4 +185,5 @@ class FixedEdgesNeighborList[D: int]:
             masks=(TouchesQueriedKeysMask(),),
             compactor=ReduceCompactor(max_edges),
         )
-        return pipeline(keys, systems, queried_keys=queried_keys)
+        edges = pipeline(keys, systems, queried_keys=queried_keys)
+        return WithPatch(edges, IdPatch[Any]())

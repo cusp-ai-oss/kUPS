@@ -62,11 +62,14 @@ class MockEnergyFunction:
 
 
 class MockSumComposer:
-    def __call__(self, state: ExampleState, patch=None) -> Sum[ExampleInput]:
-        return Sum(
+    def __call__(
+        self, state: ExampleState, patch=None
+    ) -> WithPatch[Sum[ExampleInput], IdPatch[ExampleState]]:
+        plan = Sum(
             Summand(ExampleInput(positions=state.positions), weight=1.0),
             add_previous_total=False,
         )
+        return WithPatch(plan, IdPatch())
 
 
 class MockLenses:
@@ -166,7 +169,7 @@ class TestPotentialFromEnergy:
 
         class EmptyComposer:
             def __call__(self, state, patch=None):
-                return Sum(add_previous_total=False)
+                return WithPatch(Sum(add_previous_total=False), IdPatch())
 
         potential = PotentialFromEnergy(
             energy_fn=MockEnergyFunction(),
@@ -190,11 +193,12 @@ class TestPotentialFromEnergy:
 
         class MultiSumComposer:
             def __call__(self, state, patch=None):
-                return Sum(
+                plan = Sum(
                     Summand(ExampleInput(positions=state.positions), weight=1.0),
                     Summand(ExampleInput(positions=state.positions * 2), weight=0.5),
                     add_previous_total=False,
                 )
+                return WithPatch(plan, IdPatch())
 
         potential = PotentialFromEnergy(
             energy_fn=MockEnergyFunction(),
@@ -218,10 +222,11 @@ class TestPotentialFromEnergy:
 
         class PreviousTotalComposer:
             def __call__(self, state, patch=None):
-                return Sum(
+                plan = Sum(
                     Summand(ExampleInput(positions=state.positions), weight=1.0),
                     add_previous_total=True,
                 )
+                return WithPatch(plan, IdPatch())
 
         potential = PotentialFromEnergy(
             energy_fn=MockEnergyFunction(),
@@ -282,7 +287,7 @@ class TestIdentityComposer:
     def test_returns_single_summand(self):
         composer = IdentityComposer()
         inp = ExampleInput(positions=jnp.array([[1.0, 2.0]]))
-        result = composer(inp, None)
+        result = composer(inp, None).data
         assert len(result) == 1
         assert result[0].weight == 1
         assert jnp.array_equal(result[0].inp.positions, inp.positions)

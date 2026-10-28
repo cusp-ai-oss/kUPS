@@ -65,7 +65,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(keys=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys).data
 
         assert len(edges) > 0
         assert edges.degree == 2
@@ -105,7 +105,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = make_systems(cell, cutoffs)
-        edges = refinement_nl(keys=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys).data
         assert len(edges) >= 0
         assert edges.degree == 2
 
@@ -137,7 +137,7 @@ class TestRefineCutoffNeighborList:
         )
         lh = lh.update(queried_keys, rh_update.data)
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(keys=lh, systems=_sys, queried_keys=queried_keys)
+        edges = refinement_nl(keys=lh, systems=_sys, queried_keys=queried_keys).data
 
         assert edges.degree == 2
 
@@ -170,7 +170,7 @@ class TestRefineCutoffNeighborList:
         )
 
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
-        edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys)
+        edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys).data
 
         npt.assert_array_equal(
             np.asarray(edges.indices[edges.indices.valid_mask[:, 0]]),
@@ -205,7 +205,7 @@ class TestRefineCutoffNeighborList:
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
 
-        edges = refinement_nl(keys=lh, systems=systems, queries=rh)
+        edges = refinement_nl(keys=lh, systems=systems, queries=rh).data
 
         npt.assert_array_equal(
             np.asarray(edges.indices[edges.indices.valid_mask[:, 0]]),
@@ -240,7 +240,7 @@ class TestRefineCutoffNeighborList:
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
 
-        edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys)
+        edges = refinement_nl(keys=lh, systems=systems, queried_keys=queried_keys).data
 
         assert not edges.indices.valid_mask[:, 0].any()
 
@@ -262,7 +262,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(keys=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys).data
 
         assert edges.degree == 2
 
@@ -295,7 +295,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(keys=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys).data
 
         assert edges.degree == 2
 
@@ -318,7 +318,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, cutoffs)
-        edges = refinement_nl(keys=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys).data
 
         for i, edge in enumerate(valid_ids(edges.indices)):
             if len(edge) >= 2:
@@ -336,7 +336,7 @@ class TestRefineCutoffNeighborList:
                 cutoffs=cutoff_table(jnp.array([2.0])),
             )
             _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
-            edges = refinement_nl(keys=lh, systems=_sys)
+            edges = refinement_nl(keys=lh, systems=_sys).data
 
             if len(edges) > 0:
                 diff_vectors = edges.difference_vectors(lh, _sys)
@@ -366,7 +366,7 @@ class TestRefineCutoffNeighborList:
         )
 
         _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
-        edges = refinement_nl(keys=lh, systems=_sys)
+        edges = refinement_nl(keys=lh, systems=_sys).data
 
         if len(edges) > 0:
             diff_vectors = edges.difference_vectors(lh, _sys)
@@ -408,7 +408,7 @@ class TestRefineMaskNeighborList:
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         sys, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys)
+        edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys).data
 
         valid = valid_ids(edges.indices)
         valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
@@ -437,7 +437,7 @@ class TestRefineMaskNeighborList:
 
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         sys, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
-        edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys)
+        edges = refine_nl(keys=lh, systems=sys, queried_keys=queried_keys).data
 
         valid = valid_ids(edges.indices)
         valid = valid[np.lexsort((valid[:, 1], valid[:, 0]))]
@@ -466,7 +466,7 @@ class TestRefineMaskNeighborList:
             jnp.array([10.0, 10.0]),
         )
 
-        edges = refine_nl(keys=lh, systems=systems, queries=rh)
+        edges = refine_nl(keys=lh, systems=systems, queries=rh).data
 
         assert edges.indices.shape == (1, 2)
         assert not edges.indices.valid_mask.any()
@@ -492,7 +492,7 @@ class TestRefineMaskNeighborList:
             jnp.eye(3)[None] * 100.0, jnp.array([10.0, 10.0])
         )
 
-        edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys)
+        edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys).data
 
         assert edges.indices.shape == (1, 2)
         assert not edges.indices.valid_mask.any()
@@ -516,7 +516,7 @@ class TestRefineMaskNeighborList:
         refine_nl = RefineMaskNeighborList(candidates=candidates)
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 100.0, jnp.array([10.0]))
 
-        edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys)
+        edges = refine_nl(keys=lh, systems=systems, queried_keys=queried_keys).data
 
         assert edges.indices.shape == (1, 2)
         assert not edges.indices.valid_mask.any()

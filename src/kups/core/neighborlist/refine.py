@@ -12,7 +12,7 @@ or tighter cutoffs
 
 from __future__ import annotations
 
-from typing import Literal, overload
+from typing import Any, Literal, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -36,6 +36,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
 )
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
 
@@ -118,14 +119,14 @@ class RefineMaskNeighborList:
     Example:
         ```python
         # Compute base neighbor list once
-        base_edges = base_nl(particles, cells)
+        base_edges = base_nl(particles, cells).data
 
         # Share across potentials with different masks
         lj_nl = RefineMaskNeighborList(candidates=base_edges)
-        lj_edges = lj_nl(lj_particles, cells)  # 1-4 exclusions
+        lj_edges = lj_nl(lj_particles, cells).data  # 1-4 exclusions
 
         coulomb_nl = RefineMaskNeighborList(candidates=base_edges)
-        coulomb_edges = coulomb_nl(coulomb_particles, cells)  # 1-2 exclusions only
+        coulomb_edges = coulomb_nl(coulomb_particles, cells).data  # 1-2 exclusions only
         ```
     """
 
@@ -138,7 +139,7 @@ class RefineMaskNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
 
     @overload
     def __call__(
@@ -147,7 +148,7 @@ class RefineMaskNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
 
     @jit
     def __call__(
@@ -157,7 +158,7 @@ class RefineMaskNeighborList:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
         resolved_keys, resolved_queries = _resolve_precomputed_inputs(
             keys, queries, queried_keys
         )
@@ -172,8 +173,10 @@ class RefineMaskNeighborList:
             compactor=MaskOnlyCompactor(),
         )
         if resolved_queries is not None:
-            return pipeline(resolved_keys, systems, queries=resolved_queries)
-        return pipeline(resolved_keys, systems, queried_keys=queried_keys)
+            edges = pipeline(resolved_keys, systems, queries=resolved_queries)
+        else:
+            edges = pipeline(resolved_keys, systems, queried_keys=queried_keys)
+        return WithPatch(edges, IdPatch[Any]())
 
 
 @dataclass
@@ -204,18 +207,18 @@ class RefineCutoffNeighborList:
         ```python
         # Compute base neighbor list once with maximum cutoff
         max_cutoff = 15.0  # Maximum of all potential cutoffs
-        base_edges = base_nl(particles, cells)
+        base_edges = base_nl(particles, cells).data
 
         # Share across potentials with different cutoffs
         lj_nl = RefineCutoffNeighborList(
             candidates=base_edges, avg_edges=cap1, cutoffs=lj_cutoffs
         )
-        lj_edges = lj_nl(particles, cells)  # LJ cutoff
+        lj_edges = lj_nl(particles, cells).data  # LJ cutoff
 
         coulomb_nl = RefineCutoffNeighborList(
             candidates=base_edges, avg_edges=cap2, cutoffs=coulomb_cutoffs
         )
-        coulomb_edges = coulomb_nl(particles, cells)  # Coulomb cutoff
+        coulomb_edges = coulomb_nl(particles, cells).data  # Coulomb cutoff
         ```
     """
 
@@ -230,7 +233,7 @@ class RefineCutoffNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
 
     @overload
     def __call__(
@@ -239,7 +242,7 @@ class RefineCutoffNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
 
     @jit
     def __call__(
@@ -249,7 +252,7 @@ class RefineCutoffNeighborList:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
         resolved_keys, resolved_queries = _resolve_precomputed_inputs(
             keys, queries, queried_keys
         )
@@ -273,5 +276,7 @@ class RefineCutoffNeighborList:
             compactor=ReduceCompactor(avg_edges=self.avg_edges.multiply(query_size)),
         )
         if resolved_queries is not None:
-            return pipeline(resolved_keys, systems, queries=resolved_queries)
-        return pipeline(resolved_keys, systems, queried_keys=queried_keys)
+            edges = pipeline(resolved_keys, systems, queries=resolved_queries)
+        else:
+            edges = pipeline(resolved_keys, systems, queried_keys=queried_keys)
+        return WithPatch(edges, IdPatch[Any]())

@@ -21,7 +21,7 @@ protocol used by the ``from_state`` constructors.
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, overload, runtime_checkable
+from typing import Any, Literal, Protocol, overload, runtime_checkable
 
 from jax import Array
 
@@ -30,6 +30,7 @@ from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens
 from kups.core.neighborlist.edges import Edges
+from kups.core.patch import Patch, WithPatch
 from kups.core.typing import (
     HasCell,
     HasExclusionIndex,
@@ -59,8 +60,10 @@ class NeighborList[D: int](Protocol):
     """Protocol for neighbor list construction algorithms.
 
     Implementations find groups of particles within a cutoff distance, handling
-    periodic boundary conditions and inclusion/exclusion masks. The degree
-    parameter tracks the arity of the emitted edge tuples.
+    periodic boundary conditions and inclusion/exclusion masks. A call also
+    returns the patch that stores any cache it refreshed on the state; a list that
+    refreshes none returns an ``IdPatch``. The degree parameter tracks the arity of
+    the emitted edge tuples.
     """
 
     @overload
@@ -70,7 +73,7 @@ class NeighborList[D: int](Protocol):
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, P],
-    ) -> Edges[D]: ...
+    ) -> WithPatch[Edges[D], Patch[Any]]: ...
     @overload
     def __call__[P: NeighborListPoints](
         self,
@@ -78,7 +81,7 @@ class NeighborList[D: int](Protocol):
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[D]: ...
+    ) -> WithPatch[Edges[D], Patch[Any]]: ...
     def __call__[P: NeighborListPoints](
         self,
         keys: Table[ParticleId, P],
@@ -86,7 +89,7 @@ class NeighborList[D: int](Protocol):
         *,
         queries: Table[ParticleId, P] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[D]:
+    ) -> WithPatch[Edges[D], Patch[Any]]:
         """Find particle groups for a self-graph or bipartite query.
 
         ``queries`` and ``queried_keys`` are mutually exclusive; the overloads
@@ -104,7 +107,8 @@ class NeighborList[D: int](Protocol):
                 already have written any updated particle data into ``keys``.
 
         Returns:
-            Edges whose columns index ``keys`` for self-graph calls.
+            Edges whose columns index ``keys`` for self-graph calls, and the patch
+            that stores any cache the call refreshed.
         """
         ...
 
@@ -303,7 +307,7 @@ class NeighborListFactory[Focus](Protocol):
     reads. The ``from_state`` of every library list, including the default
     :meth:`kups.core.neighborlist.AdaptiveNeighborList.from_state`, reads the
     ``neighborlist_params`` of the state at ``lens``. Runtime-assertion fixes
-    apply to ``state``.
+    and the list's patch apply to ``state``.
 
     The ``Focus`` type parameter is contravariant, because the lens is an input
     and ``Lens`` is covariant in its target. A factory written against a
