@@ -22,7 +22,7 @@ from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import SkinList, UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.relaxation.config import TransformationConfig
@@ -47,7 +47,9 @@ class RelaxParticles(Particles):
 
     def __post_init__(self) -> None:
         if self.exclusion is None:
-            object.__setattr__(self, "exclusion", default_exclusion(len(self.charges)))
+            dtype = self.system.raw_indices.dtype
+            exclusion = default_exclusion(len(self.charges), dtype)
+            object.__setattr__(self, "exclusion", exclusion)
 
     @property
     def forces(self) -> Array:
@@ -81,8 +83,41 @@ class RelaxState:
     particles: Table[ParticleId, RelaxParticles]
     systems: Table[SystemId, RelaxSystems]
     neighborlist_params: UniversalNeighborlistParameters
+    skin_list: SkinList
     opt_state: optax.OptState
     step: Array
+
+    @staticmethod
+    def create(
+        particles: Table[ParticleId, RelaxParticles],
+        systems: Table[SystemId, RelaxSystems],
+        cutoffs: Table[SystemId, Array],
+        skin: float,
+        opt_state: optax.OptState,
+        *,
+        multiplier: float = 1.0,
+    ) -> RelaxState:
+        """State at step 0 with capacities and the skin list seeded from the tables.
+
+        Args:
+            particles: Particles of all systems.
+            systems: Their systems.
+            cutoffs: Cutoffs (Å) of the potential.
+            skin: Skin width (Å) of every system.
+            opt_state: Initial optimizer state.
+            multiplier: Headroom factor of the capacity estimates.
+
+        Returns:
+            The relaxation state.
+        """
+        params = UniversalNeighborlistParameters.estimate(
+            particles.data.system.counts, systems, cutoffs, multiplier=multiplier
+        )
+        skins = Table.arange(jnp.array([skin]), label=SystemId)
+        skin_list = SkinList.create(particles, systems, cutoffs, skins)
+        return RelaxState(
+            particles, systems, params, skin_list, opt_state, jnp.array([0])
+        )
 
 
 class RelaxRunConfig(BaseModel):
@@ -100,6 +135,11 @@ class RelaxRunConfig(BaseModel):
     """List of Optax transform specifications passed to `make_optimizer`."""
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
+    skin: float = 1.0
+    """Verlet skin (Å) of the neighbor list. Pairs within cutoff + skin are listed
+    once and listed again when atom motion or cell deformation could have brought a
+    missing pair within the cutoff. The list is checked at every energy evaluation,
+    including the trial points of line searches."""
 
 
 def relax_state_from_ase(
