@@ -22,7 +22,7 @@ from kups.application.utils.particles import (
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import SkinList, UniversalNeighborlistParameters
 from kups.core.typing import DTypeLike, ExclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, tree_zeros_like
 from kups.md.integrators import Integrator
@@ -224,7 +224,42 @@ class MdState:
     particles: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
+    skin_list: SkinList
     step: Array
+
+    @staticmethod
+    def create(
+        particles: Table[ParticleId, MDParticles],
+        systems: Table[SystemId, MDSystems],
+        cutoffs: Table[SystemId, Array],
+        skin: float,
+        *,
+        base: float = 2,
+        multiplier: float = 1.0,
+    ) -> MdState:
+        """State at step 0 with capacities and the skin list seeded from the tables.
+
+        Args:
+            particles: Particles of all systems.
+            systems: Their systems.
+            cutoffs: Cutoffs (Å) of the potential.
+            skin: Skin width (Å) of every system.
+            base: Rounding base of the capacity estimates.
+            multiplier: Headroom factor of the capacity estimates.
+
+        Returns:
+            The MD state.
+        """
+        params = UniversalNeighborlistParameters.estimate(
+            particles.data.system.counts,
+            systems,
+            cutoffs,
+            base=base,
+            multiplier=multiplier,
+        )
+        skins = Table.arange(jnp.array([skin]), label=SystemId)
+        skin_list = SkinList.create(particles, systems, cutoffs, skins)
+        return MdState(particles, systems, params, skin_list, jnp.array([0]))
 
 
 class MdRunConfig(BaseModel):
@@ -268,6 +303,11 @@ class MdParameters(BaseModel):
     """Integration algorithm to use."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
+    skin: float = 1.0
+    """Verlet skin (Å) of the neighbor list. Pairs within cutoff + skin are listed
+    once and listed again when atom motion or cell deformation could have brought a
+    missing pair within the cutoff. The skin changes speed, not results: a larger
+    skin lists less often but checks more pairs every step."""
 
 
 def md_state_from_particles_and_cell(
