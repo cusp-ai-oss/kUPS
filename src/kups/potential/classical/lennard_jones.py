@@ -71,6 +71,7 @@ from kups.potential.common.graph import (
 )
 from kups.potential.common.pair import PairEnergy
 from kups.potential.common.rigid_body_composition import RigidBodyComposition
+from kups.potential.common.rows import RowPairEnergy, RowPotentialInput
 
 type MixingRule = Literal["lorentz_berthelot"]
 
@@ -197,8 +198,14 @@ def lennard_jones_pair_kernel(
     else:
         epsilon = parameters.epsilon[species_i, species_j]
         sigma = parameters.sigma[species_i, species_j]
-    c6 = (sigma**2 / r2) ** 3
-    return 4 * epsilon * (c6**2 - c6)
+    return _lennard_jones(r2, (sigma**2, 4 * epsilon))
+
+
+def _lennard_jones(r2: Array, coefficients: tuple[Array, ...]) -> Array:
+    """``4ε((σ/r)¹² − (σ/r)⁶)`` from ``r²`` and ``(σ², 4ε)``."""
+    sigma2, epsilon4 = coefficients
+    c6 = (sigma2 / r2) ** 3
+    return epsilon4 * (c6**2 - c6)
 
 
 lennard_jones_pair = PairEnergy[
@@ -447,6 +454,22 @@ def make_lennard_jones_potential[
     )
 
 
+type LennardJonesRowInput = RowPotentialInput[
+    LennardJonesParameters, IsLennardJonesParticles, HasCell[AnyPeriodicity]
+]
+
+
+lennard_jones_row_energy = RowPairEnergy[
+    LennardJonesParameters, IsLennardJonesParticles
+](
+    function=_lennard_jones,
+    tables=lambda p: (p.sigma**2, 4 * p.epsilon),
+    species=lambda p, particles: particles.labels.indices_in(p.labels),
+    cutoffs=lambda p: p.cutoff,
+)
+"""Lennard-Jones energy over a skin list's neighbor rows."""
+
+
 type PCLJInp = GraphPotentialInput[
     PairTailCorrectedLennardJonesParameters,
     IsLJGraphParticles,
@@ -604,6 +627,7 @@ def make_global_lennard_jones_tail_correction_pressure[State](
 
 if TYPE_CHECKING:
     _lj: EnergyFunction[Any, LennardJonesInput] = lennard_jones_energy
+    _rows: EnergyFunction[Any, LennardJonesRowInput] = lennard_jones_row_energy
     _ptc: EnergyFunction[Any, PairTailCorrectedLennardJonesInput] = (
         pair_tail_corrected_lennard_jones_energy
     )
