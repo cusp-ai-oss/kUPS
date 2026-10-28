@@ -338,7 +338,7 @@ def make_propagator(
 
 def run(config: Config) -> WidomState:
     """Initialise, warm up, and accumulate Widom statistics."""
-    seed = config.run.seed or time.time_ns()
+    seed = time.time_ns() if config.run.seed is None else config.run.seed
     chain = key_chain(jax.random.key(seed))
 
     state = init_state(next(chain), config)

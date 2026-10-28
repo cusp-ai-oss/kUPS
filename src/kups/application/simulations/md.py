@@ -83,7 +83,7 @@ def run(config: Config) -> MdState:
     Returns:
         The final state.
     """
-    seed = config.run.seed or time.time_ns()
+    seed = time.time_ns() if config.run.seed is None else config.run.seed
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
 
