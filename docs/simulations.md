@@ -9,6 +9,7 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble with `kups_
 | `potential.backend` | Force Field | Description |
 |---------------------|-------------|-------------|
 | `lj` | Lennard-Jones | Classical pair potential with configurable mixing rules |
+| `lj_coulomb` | Lennard-Jones + Coulomb | Lennard-Jones plus Ewald or particle-mesh Ewald electrostatics of the input charges |
 | `tojax` | MACE, UMA, ORB | Machine-learned interatomic potentials loaded via [Tojax](https://github.com/cusp-ai-oss/tojax) |
 | `mace`, `uma` | MACE, UMA | Native PyTorch MLFFs bridged into JAX (see [Direct PyTorch Bridge](#direct-pytorch-bridge)) |
 
@@ -28,6 +29,22 @@ kups_md md_orb.yaml
 
 All integrators are built from the same composable propagator primitives described in the Propagators tutorial.
 
+**Electrostatics:** `lj_coulomb` adds the Coulomb interactions of the input charges (`_atom_site_charge` or `_atom_type_partial_charge` in CIF files, else the atoms' initial charges, as extxyz files store them) to Lennard-Jones. Every pair of particles interacts, with no bonded exclusions, so it suits ionic systems without bonds. `coulomb.method` sums the reciprocal part on a particle mesh (`pme`, the default) or over k-vectors (`ewald`, faster only for cells of up to a few hundred atoms). `coulomb.precision` (default 1e-6, as `ewald.precision` in GCMC) is the target of the estimated real- and reciprocal-space truncation errors, not a force error: at the default and an 8 Å cutoff, Coulomb forces on rattled rock salt with charges of ±1 e are within about 3e-5 eV/Å (RMS) of a converged sum, and the Coulomb pressure within about 10 bar. The screening and the k-vectors or the mesh are estimated from it once, at the input cells, so a cell that changes a lot under NPT or in a cell relaxation loses some accuracy. The real-space sum uses `lj.cutoff` and the same skin list. `lj.kernel_dtype` sets the precision of the Lennard-Jones pair terms only; the Coulomb terms run in that of the positions. Cells must be periodic, and every system needs charges. GCMC and Widom keep direct Ewald, whose structure factors update incrementally.
+
+```yaml
+potential:
+  backend: lj_coulomb
+  lj:
+    cutoff: 10.0
+    parameters:
+      Na: [2.25, 0.01]  # (sigma [Å], epsilon [eV])
+      Cl: [4.0, 0.01]
+    mixing_rule: lorentz_berthelot
+  coulomb:
+    method: pme
+    precision: 1.e-6
+```
+
 ## Geometry Optimization
 
 Relax atomic positions (and optionally lattice vectors) to a local energy minimum with `kups_relax`. The force field is selected by the `potential.backend` field:
@@ -35,6 +52,7 @@ Relax atomic positions (and optionally lattice vectors) to a local energy minimu
 | `potential.backend` | Force Field | Description |
 |---------------------|-------------|-------------|
 | `lj` | Lennard-Jones | Classical relaxation |
+| `lj_coulomb` | Lennard-Jones + Coulomb | Classical relaxation with electrostatics, as in `kups_md` |
 | `tojax` | MACE, UMA, ORB | Machine-learned force field relaxation via JAX-exported models ([Tojax](https://github.com/cusp-ai-oss/tojax)) |
 | `mace`, `uma` | MACE, UMA | Native PyTorch MLFFs (MACE checkpoints, Meta's UMA via [fairchem-core](https://github.com/facebookresearch/fairchem)) bridged into JAX |
 

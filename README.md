@@ -98,7 +98,7 @@ kups_md md_lj_argon_nvt.yaml
 
 **Force Fields & Potentials**
 - **Lennard-Jones** potential
-- **Coulomb** interactions (Ewald summation)
+- **Coulomb** interactions (Ewald and particle-mesh Ewald)
 - **Harmonic** bonds and angles
 - **Morse** potential
 - **MACE** and **UMA** ML force fields
