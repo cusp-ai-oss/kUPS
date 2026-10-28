@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import subprocess
@@ -30,7 +31,7 @@ jax.config.update("jax_enable_x64", True)
 SCRIPT_DIR = Path(__file__).parent
 INPUTS_DIR = SCRIPT_DIR / "inputs" / "ci"
 EXPECTED_DIR = SCRIPT_DIR / "expected"
-DEFAULT_TOLERANCE_SIGMAS = 10.0
+DEFAULT_TOLERANCE_SIGMAS = 5.0
 N_BLOCKS = 5
 
 CLI_COMMANDS: dict[str, str] = {
@@ -112,13 +113,17 @@ def validate_observable(
     expected_sem: float | list[float],
     tolerance_sigmas: float = DEFAULT_TOLERANCE_SIGMAS,
 ) -> bool:
-    """Check if measured value is within tolerance."""
+    """Check if measured value is within tolerance of the combined standard error of
+    the run and the reference."""
     exp_mean = jnp.asarray(expected_mean).flatten()
     exp_sem = jnp.asarray(expected_sem).flatten()
     measured_mean = jnp.asarray(result.mean).flatten()
+    measured_sem = jnp.asarray(result.sem).flatten()
 
     all_pass = True
-    for i, (m, e, es) in enumerate(zip(measured_mean, exp_mean, exp_sem)):
+    for i, (m, e, es, ms) in enumerate(
+        zip(measured_mean, exp_mean, exp_sem, measured_sem)
+    ):
         m_f, e_f = float(m), float(e)
         suffix = f"[{i}]" if len(exp_mean) > 1 else ""
         if jnp.isnan(m) and jnp.isnan(e):
@@ -131,9 +136,9 @@ def validate_observable(
             all_pass = False
             continue
         diff = abs(m_f - e_f)
-        ref_sem = float(es)
-        max_diff = tolerance_sigmas * ref_sem if ref_sem > 1e-10 else abs(e_f) * 0.01
-        sem_str = f"{ref_sem:.4g}" if ref_sem > 1e-10 else f"{ref_sem:.2e}"
+        sem = math.hypot(float(es), float(ms))
+        max_diff = tolerance_sigmas * sem if sem > 1e-10 else abs(e_f) * 0.01
+        sem_str = f"{sem:.4g}" if sem > 1e-10 else f"{sem:.2e}"
         if diff <= max_diff:
             print(
                 f"  ✓ {name}{suffix}: {float(m):.4g} (expected {float(e):.4g}, σ={sem_str})"

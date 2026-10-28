@@ -16,11 +16,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import jax
 import numpy as np
 
 from kups.application.md.logging import MDLoggedData
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core.constants import BOLTZMANN_CONSTANT, PASCAL
 from kups.core.storage import HDF5StorageReader
+from kups.md.observables import instantaneous_pressure
+
+jax.config.update("jax_enable_x64", True)
 
 # Physical constants for validation
 ARGON_MASS_AMU = 39.948  # Atomic mass of argon
@@ -149,15 +153,16 @@ def validate_pressure_virial(
 ) -> tuple[bool, dict]:
     """Check pressure consistency with virial theorem.
 
-    Ideal gas contribution: P_ideal = N * k_B * T / V = 2/3 * KE / V
-    The excess pressure from interactions should be stable (bounded fluctuations).
+    ``pressure`` (Pa) is kinetic plus virial. Ideal gas contribution:
+    P_ideal = N * k_B * T / V = 2/3 * KE / V. The excess pressure from
+    interactions should be stable (bounded fluctuations).
     """
     mean_pressure = float(np.mean(pressure))
     std_pressure = float(np.std(pressure))
     mean_ke = float(np.mean(kinetic_energy))
 
     # Ideal gas pressure contribution
-    ideal_pressure = 2 * mean_ke / (3 * volume)
+    ideal_pressure = 2 * mean_ke / (3 * volume) / PASCAL
     excess_pressure = mean_pressure - ideal_pressure
 
     # Pressure coefficient of variation should be bounded
@@ -219,7 +224,9 @@ def main() -> int:
 
     total_energy = potential_energy + kinetic_energy
     temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
-    pressure = np.trace(stress_tensor, axis1=-2, axis2=-1) / 3
+    pressure = np.asarray(
+        instantaneous_pressure(kinetic_energy, stress_tensor, volume) / PASCAL
+    )
 
     print(f"MD Physics Validation: {args.hdf5_path.name}")
     print(f"  Atoms: {n_atoms}, Steps: {n_steps}, DOF: {int(dof)}")
