@@ -20,7 +20,7 @@ from .parameters import (
     reciprocal_grid_index,
     reciprocal_grid_shifts,
 )
-from .pme import PMEInput, PMEParameters, pme_long_range_energy
+from .pme import PMEInput, PMEParameters, estimate_pme_mesh, pme_long_range_energy
 from .potential import (
     TO_STANDARD_UNITS,
     EwaldCache,
@@ -81,6 +81,7 @@ __all__ = [
     "EwaldPotential",
     "PMEInput",
     "PMEParameters",
+    "estimate_pme_mesh",
     "pme_long_range_energy",
     "make_ewald_exclusion_correction_potential",
     "make_ewald_short_range_potential",
