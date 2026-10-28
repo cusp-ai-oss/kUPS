@@ -278,7 +278,9 @@ def test_analyze_md_file_matches_in_memory(tmp_path: Path):
         assert (r.n_atoms, r.n_steps) == (e.n_atoms, e.n_steps)
         assert r.energy_drift == pytest.approx(e.energy_drift, rel=1e-6, abs=1e-9)
         for f in fields:
-            assert getattr(r, f).mean == pytest.approx(getattr(e, f).mean, rel=1e-6)
+            assert getattr(r, f).mean == pytest.approx(
+                float(getattr(e, f).mean), rel=1e-6
+            )
             assert getattr(r, f).sem == pytest.approx(
-                getattr(e, f).sem, rel=1e-6, abs=1e-9
+                float(getattr(e, f).sem), rel=1e-6, abs=1e-9
             )
