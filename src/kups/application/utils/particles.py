@@ -183,9 +183,10 @@ def particles_from_ase(
 ]:
     """Build particle data and cell from an ASE Atoms object or file path.
 
-    Results are cached when ``atoms`` is a file path. Charges come from the CIF
-    tags ``_atom_type_partial_charge`` or ``_atom_site_charge``, else from the
-    atoms' initial charges.
+    Results are cached when ``atoms`` is a file path. Files ending in ``.data``
+    are read as LAMMPS data files. Charges come from the CIF tags
+    ``_atom_type_partial_charge`` or ``_atom_site_charge``, else from the atoms'
+    initial charges.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
@@ -209,7 +210,10 @@ def _particles_from_path(
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    if filetype(str(path)) == "cif":
+    if Path(path).suffix == ".data":
+        # ASE cannot detect LAMMPS data and reads .data files as RuNNer data
+        frames = ase.io.iread(path, index=-1, format="lammps-data")
+    elif filetype(str(path)) == "cif":
         # store_tags keeps the CIF tags, charges among them; other readers reject it
         frames = ase.io.iread(path, index=-1, store_tags=True)
     else:

@@ -234,6 +234,29 @@ class TestParticlesFromAse:
         npt.assert_array_equal(particles.data.atomic_numbers, [18, 36])
         npt.assert_allclose(cell.vectors, expected_cell.vectors)
 
+    def test_from_lammps_data_file(self, tmp_path):
+        """A .data file loads as LAMMPS data, with its species and charges."""
+        from ase import Atoms
+        from ase.io import write
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "ArKr",
+            positions=[[0, 0, 0], [1.5, 2, 2.5]],
+            cell=[10, 11, 12],
+            pbc=True,
+            charges=[0.5, -0.5],
+        )
+        path = tmp_path / "test.data"
+        write(str(path), atoms, format="lammps-data", atom_style="charge", masses=True)
+        particles, cell, _ = particles_from_ase(path)
+        expected, expected_cell, _ = particles_from_ase(atoms)
+        npt.assert_allclose(particles.data.positions, expected.data.positions)
+        npt.assert_array_equal(particles.data.atomic_numbers, [18, 36])
+        npt.assert_allclose(particles.data.charges, [0.5, -0.5])
+        npt.assert_allclose(cell.vectors, expected_cell.vectors)
+
     def test_float_dtype(self):
         """float_dtype stores the floats after the rotation into the lower-triangular
         frame."""
