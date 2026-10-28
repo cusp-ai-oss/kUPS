@@ -40,8 +40,10 @@ from kups.application.simulations.potentials import (
     TojaxPotentialConfig,
     UmaConfig,
 )
+from kups.application.utils.propagate import make_cycle_function
 from kups.core.data import Table
 from kups.core.lens import identity_lens
+from kups.core.propagator import propagate_and_fix
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -100,13 +102,16 @@ def run(config: Config) -> MdState:
     potential, cutoff = config.potential.build(
         state_lens, POSITIONS_AND_CELL, particles, systems
     )
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+    evaluate_forces, propagator = make_md_propagator(
+        state_lens, config.md.integrator, potential
+    )
 
     base = 1 if isinstance(config.potential, TojaxPotentialConfig) else 2
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
     state = MdState.create(
         particles, systems, cutoff, config.md.skin, base=base, multiplier=multiplier
     )
+    state = propagate_and_fix(make_cycle_function(evaluate_forces), next(chain), state)
     return run_md(next(chain), propagator, state, config.run)
 
 
