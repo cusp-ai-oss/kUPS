@@ -622,7 +622,14 @@ class DiagonalSquareMatrix(LowerTriangularSquareMatrix):
 
 
 @jit
-def solve_affine_ode(A: Array, b: Array, x0: Array, dt: Array | float) -> Array:
+def solve_affine_ode(
+    A: Array,
+    b: Array,
+    x0: Array,
+    dt: Array | float,
+    *,
+    segment: Array | None = None,
+) -> Array:
     r"""Solve the affine ODE $\dot{x} = A\,x + b$ exactly over $[0, \Delta t]$.
 
     Computes
@@ -643,10 +650,19 @@ def solve_affine_ode(A: Array, b: Array, x0: Array, dt: Array | float) -> Array:
         b: Constant inhomogeneous term, shape ``(..., n)``.
         x0: Initial state, shape ``(..., n)``.
         dt: Scalar timestep (broadcastable to the batch shape).
+        segment: Optional segment id per row. Then ``A`` and ``dt`` are given per
+            segment, shape ``(S, n, n)`` and ``(S,)``, and ``b``, ``x0`` per row,
+            shape ``(R, n)``. The exponential is computed once per segment, not per
+            row, without data-dependent branches (finite for ``|A dt|_1 < 2**15``).
 
     Returns:
         State at ``dt``, shape ``(..., n)``.
     """
+    if segment is not None:
+        E, P = _affine_ode_flow(A, dt)
+        return jnp.sum(
+            E[segment] * x0[:, None, :] + P[segment] * b[:, None, :], axis=-1
+        )
     n = x0.shape[-1]
     # Augmented matrix M = [[A, b], [0, 0]], shape (..., n+1, n+1)
     A_padded = jnp.concatenate([A, b[..., None]], axis=-1)  # (..., n, n+1)
@@ -654,6 +670,53 @@ def solve_affine_ode(A: Array, b: Array, x0: Array, dt: Array | float) -> Array:
     M = jnp.concatenate([A_padded, zero_row], axis=-2)  # (..., n+1, n+1)
     E = jax.scipy.linalg.expm(M * dt)
     return jnp.einsum("...ij,...j->...i", E[..., :n, :n], x0) + E[..., :n, n]
+
+
+def _expm_small(M: Array, max_squarings: int = 16, order: int = 12) -> Array:
+    """Matrix exponential of small matrices without data-dependent control flow.
+
+    Scaling and squaring with a degree-``order`` Taylor polynomial: ``M`` is scaled to 1-norm
+    <= 1/2 (truncation error < 1e-15) and squared back with ``jnp.where``-selected steps.
+    ``jax.scipy.linalg.expm`` branches (``lax.switch``/``lax.cond``) on the norm, which on GPU
+    costs many tiny host-synchronised launches per call. NaN when ``max_squarings`` is too few.
+    """
+    norm = jnp.max(jnp.sum(jnp.abs(M), axis=-2), axis=-1)
+    s = jnp.ceil(jnp.log2(jnp.maximum(norm, jnp.finfo(M.dtype).tiny) * 2.0))
+    s = jnp.clip(s, 0, None)
+    X = M / jnp.exp2(s)[..., None, None]
+    eye = jnp.broadcast_to(jnp.eye(M.shape[-1], dtype=M.dtype), M.shape)
+    E, term = eye, eye
+    for k in range(1, order + 1):
+        term = term @ X / k
+        E = E + term
+    for i in range(max_squarings):
+        E = jnp.where((i < s)[..., None, None], E @ E, E)
+    return jnp.where((s > max_squarings)[..., None, None], jnp.nan, E)
+
+
+def _affine_ode_flow(A: Array, dt: Array | float) -> tuple[Array, Array]:
+    r"""Flow maps of $\dot{x} = A\,x + b$ over $[0, \Delta t]$, independent of $x_0$ and $b$.
+
+    Returns $(E, P)$ with $x(\Delta t) = E\,x_0 + P\,b$, i.e. $E = e^{A\,\Delta t}$ and
+    $P = \varphi_1(A\,\Delta t)\,\Delta t$, from one exponential of the block matrix
+
+    $$\exp\!\left(\Delta t \begin{bmatrix} A & I \\ 0 & 0 \end{bmatrix}\right)
+      = \begin{bmatrix} E & P \\ 0 & I \end{bmatrix}.$$
+
+    Args:
+        A: Coefficient matrix, shape ``(..., n, n)``.
+        dt: Timestep, broadcastable to the batch shape ``(...)``.
+
+    Returns:
+        ``(E, P)``, each of shape ``(..., n, n)``.
+    """
+    n = A.shape[-1]
+    top = jnp.concatenate(
+        [A, jnp.broadcast_to(jnp.eye(n, dtype=A.dtype), A.shape)], axis=-1
+    )
+    M = jnp.concatenate([top, jnp.zeros_like(top)], axis=-2)
+    E = _expm_small(M * jnp.asarray(dt)[..., None, None])
+    return E[..., :n, :n], E[..., :n, n:]
 
 
 @jit(static_argnames=("hermitian",))

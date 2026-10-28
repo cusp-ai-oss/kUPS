@@ -6,9 +6,10 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import scipy.linalg
 
-from kups.core.utils.math import solve_affine_ode
+from kups.core.utils.math import _expm_small, solve_affine_ode
 
 
 def _reference_solution(A: np.ndarray, b: np.ndarray, x0: np.ndarray, dt: float):
@@ -112,3 +113,32 @@ def test_solve_affine_second_order_convergence_against_euler():
     euler = x0 + dt * (A @ x0 + b)
     euler_err = np.linalg.norm(euler - expected)
     assert euler_err > 1e-15, "Euler must be strictly less accurate than augmented-expm"
+
+
+def test_segment_path_matches_per_row():
+    """With ``segment``, one exponential per segment gives the per-row solution."""
+    rng = np.random.default_rng(3)
+    A = jnp.asarray(np.tril(rng.standard_normal((2, 3, 3))))
+    dt = jnp.asarray([0.1, 0.25])
+    segment = jnp.asarray([0, 1, 1, 0, 1])
+    b = jnp.asarray(rng.standard_normal((5, 3)))
+    x0 = jnp.asarray(rng.standard_normal((5, 3)))
+    got = solve_affine_ode(A, b, x0, dt, segment=segment)
+    expected = jax.vmap(solve_affine_ode)(A[segment], b, x0, dt[segment])
+    np.testing.assert_allclose(got, expected, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize("scale", [1e-8, 1e-3, 1.0, 30.0, 1e2, 1e3])
+def test_expm_small_matches_scipy(scale):
+    """Same accuracy as jax.scipy.linalg.expm; at 1-norm 1e4, exp itself overflows f64."""
+    rng = np.random.default_rng(int(np.log10(scale) + 10))
+    M = rng.standard_normal((8, 6, 6))
+    M *= scale / np.abs(M).sum(-2).max(-1)[:, None, None]  # 1-norm = scale
+    expected = np.stack([scipy.linalg.expm(m) for m in M])
+    got = np.asarray(_expm_small(jnp.asarray(M)))
+    error = np.abs(got - expected).max((-2, -1)) / np.abs(expected).max((-2, -1))
+    assert (error < 1e-11).all()
+
+
+def test_expm_small_nan_beyond_squaring_limit():
+    assert np.isnan(np.asarray(_expm_small(jnp.eye(3)[None] * 2.0**16))).all()
