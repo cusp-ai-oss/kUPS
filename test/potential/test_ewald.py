@@ -16,6 +16,8 @@ from scipy.special import erfc
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
     Cell,
+    DeformedFrame,
+    MatrixLogFrame,
     Periodic3D,
     PeriodicCell,
     TriclinicFrame,
@@ -557,6 +559,42 @@ class TestEwaldParametersMake:
         assert params.k_max.data.shape == (2,)
         inp = EwaldLongRangeInput(PointCloud(particles, systems), params)
         assert inp.kvecs.shape == params.reciprocal_lattice_shifts.data.shape
+
+    def test_deformed_cells(self):
+        """Relaxation cells, whose frame parameters differ in shape, give the
+        parameters of their triclinic cells."""
+        ids = jnp.repeat(jnp.arange(2), 8)
+        matrices = jnp.array(
+            [
+                [[20.0, 0.0, 0.0], [2.0, 19.0, 0.0], [-1.0, 1.5, 21.0]],
+                [[18.0, 0.0, 0.0], [-1.5, 17.5, 0.0], [1.0, -2.0, 19.0]],
+            ]
+        )
+        fractional = random.uniform(random.key(0), (16, 3))
+        particles = Table.arange(
+            _make_particle_data(
+                jnp.einsum("ni,nij->nj", fractional, matrices[ids]),
+                jnp.tile(jnp.array([1.0, -1.0]), 8),
+                2,
+                system_ids=ids,
+            ),
+            label=ParticleId,
+        )
+        systems = _make_systems(
+            PeriodicCell(TriclinicFrame.from_matrix(matrices)), jnp.full(2, 4.0)
+        )
+        deformed = bind(systems, lambda s: s.data.cell.frame).apply(
+            lambda f: DeformedFrame.from_frame(
+                f, cell_factor=jnp.full(2, 8.0), deformation=MatrixLogFrame
+            )
+        )
+        expected, actual = (
+            EwaldParameters.make(particles, s, 1e-6) for s in (systems, deformed)
+        )
+        for a, b in zip(
+            jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True
+        ):
+            npt.assert_allclose(a, b, rtol=1e-12)
 
     def test_interleaved_systems_ignore_buffered_rows(self, monkeypatch):
         import kups.potential.classical.ewald.parameters as parameters_module

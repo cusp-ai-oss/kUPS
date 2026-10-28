@@ -122,7 +122,8 @@ class PMEParameters:
         """
         system = np.asarray(charges.data.system.indices_in(cell.keys))
         values = np.asarray(charges.data.charges)
-        cells = [cell.data.cell[i] for i in range(cell.size)]
+        # one-row slices, as in EwaldParameters.make
+        cells = [cell.data.cell[i : i + 1] for i in range(cell.size)]
         estimates = [
             estimate_ewald_parameters(
                 values[system == i],

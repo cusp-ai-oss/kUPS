@@ -11,7 +11,13 @@ from jax import Array, random
 
 from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.core.capacity import FixedCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
+from kups.core.cell import (
+    Cell,
+    DeformedFrame,
+    MatrixLogFrame,
+    PeriodicCell,
+    TriclinicFrame,
+)
 from kups.core.data import Index, Table, cast_indices
 from kups.core.lens import bind, const_lens, view
 from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
@@ -307,6 +313,24 @@ def test_mesh_shrinks_with_looser_precision():
         for p in (1e-8, 1e-6, 1e-4)
     ]
     assert meshes[0] > meshes[1] > meshes[2]
+
+
+def test_make_reads_deformed_cells():
+    """Relaxation cells, whose frame parameters differ in shape, give the
+    parameters of their triclinic cells."""
+    particles, systems = _random_batch(3, (40, 30))
+    deformed = bind(systems, lambda s: s.data.cell.frame).apply(
+        lambda f: DeformedFrame.from_frame(
+            f, cell_factor=jnp.array([40.0, 30.0]), deformation=MatrixLogFrame
+        )
+    )
+    expected, actual = (
+        PMEParameters.make(particles, s, 1e-6, real_cutoff=6.0)
+        for s in (systems, deformed)
+    )
+    assert (actual.mesh, actual.order) == (expected.mesh, expected.order)
+    np.testing.assert_allclose(actual.alpha.data, expected.alpha.data, rtol=1e-12)
+    np.testing.assert_allclose(actual.cutoff.data, expected.cutoff.data, rtol=1e-12)
 
 
 def test_make_ignores_inactive_rows():
