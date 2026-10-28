@@ -138,6 +138,72 @@ def test_int32_indices_match_default() -> None:
     )
 
 
+def _float_dtypes(state: md.MdState) -> set[jnp.dtype]:
+    leaves = jax.tree.leaves((state.particles, state.systems))
+    return {x.dtype for x in leaves if jnp.issubdtype(x.dtype, jnp.floating)}
+
+
+def test_float32_matches_float64() -> None:
+    """``run.float_dtype: float32`` keeps the tables in float32 and follows the
+    float64 trajectory of two systems within float32 round-off."""
+    states = []
+    for float_dtype in ("float64", "float32"):
+        # fresh input files per run: particles_from_ase caches by path
+        config = _config(_tmp_h5(), _ar_cif(rattle=0.1))
+        config = config.model_copy(
+            update={
+                "run": config.run.model_copy(
+                    update={"float_dtype": float_dtype, "num_steps": 20}
+                ),
+                "md": config.md.model_copy(update={"integrator": "verlet"}),
+                "inp_files": (*config.inp_files, _ar_cif(rattle=0.2)),
+            }
+        )
+        states.append(run(config))
+    state, state32 = states
+    assert _float_dtypes(state32) == {jnp.dtype(jnp.float32)}
+    # positions are wrapped every step: compare minimum images
+    cells = state.systems.map_data(lambda s: s.cell)[state.particles.data.system]
+    delta = state32.particles.data.positions - state.particles.data.positions
+    assert np.abs(cells.wrap(delta)).max() < 1e-4
+    np.testing.assert_allclose(
+        state32.systems.data.potential_energy,
+        state.systems.data.potential_energy,
+        rtol=1e-4,
+    )
+
+
+def test_float32_int32_npt() -> None:
+    """BAOAB NPT on a float32 state with int32 indices and float32 pair terms keeps
+    every dtype at a cutoff that is not exact in float32 (5.1 Å), and the analysis
+    reads its output."""
+    config = _config(_tmp_h5(), _ar_cif(rattle=0.1))
+    config = config.model_copy(
+        update={
+            "run": config.run.model_copy(
+                update={"float_dtype": "float32", "index_dtype": "int32"}
+            ),
+            "md": config.md.model_copy(
+                update={
+                    "integrator": "baoab_npt_langevin",
+                    "friction_coefficient": 0.01,
+                    "target_pressure": 4.2e7,
+                    "pressure_coupling_time": 1000.0,
+                    "compressibility": 5.4e-10,
+                }
+            ),
+            "potential": config.potential.model_copy(
+                update={"cutoff": 5.1, "kernel_dtype": "float32"}
+            ),
+        }
+    )
+    state = run(config)
+    assert _float_dtypes(state) == {jnp.dtype(jnp.float32)}
+    assert state.particles.data.system.raw_indices.dtype == jnp.int32
+    result = next(iter(analyze_md_file(config.run.out_file, n_blocks=2).values()))
+    assert np.isfinite(result.pressure.mean)
+
+
 def test_skin_does_not_change_results() -> None:
     """``md.skin`` changes how often neighbors are listed, not the trajectory."""
     states = []

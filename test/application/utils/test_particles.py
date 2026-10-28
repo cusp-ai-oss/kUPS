@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
@@ -232,6 +233,28 @@ class TestParticlesFromAse:
         npt.assert_allclose(particles.data.positions, expected.data.positions)
         npt.assert_array_equal(particles.data.atomic_numbers, [18, 36])
         npt.assert_allclose(cell.vectors, expected_cell.vectors)
+
+    def test_float_dtype(self):
+        """float_dtype stores the floats after the rotation into the lower-triangular
+        frame."""
+        from ase import Atoms
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "NaCl",
+            positions=[[0.1, 0.2, 0.3], [2.8, 0.1, 0.2]],
+            cell=[[5.6, 0.3, 0.1], [0.2, 5.5, 0.4], [0.1, 0.2, 5.7]],
+            pbc=True,
+            charges=[1.0, -1.0],
+        )
+        single = particles_from_ase(atoms, float_dtype=jnp.float32)[:2]
+        double = particles_from_ase(atoms)[:2]
+        for a, b in zip(jax.tree.leaves(single), jax.tree.leaves(double), strict=True):
+            if jnp.issubdtype(b.dtype, jnp.floating):
+                assert a.dtype == jnp.float32
+                b = b.astype(jnp.float32)
+            npt.assert_array_equal(a, b)
 
     def test_uc_transform_produces_lower_triangular(self):
         from ase.build import bulk
