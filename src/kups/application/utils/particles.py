@@ -14,6 +14,7 @@ import ase
 import ase.io
 import jax.numpy as jnp
 import numpy as np
+from ase.io.formats import filetype
 from jax import Array
 from jax.typing import ArrayLike
 
@@ -204,8 +205,12 @@ def _particles_from_path(
     Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    atoms = next(ase.io.iread(path, index=-1, store_tags=True))
-    return _particles_from_atoms(atoms, index_dtype)
+    if filetype(str(path)) == "cif":
+        # store_tags keeps the CIF tags, charges among them; other readers reject it
+        frames = ase.io.iread(path, index=-1, store_tags=True)
+    else:
+        frames = ase.io.iread(path, index=-1)
+    return _particles_from_atoms(next(frames), index_dtype)
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:
