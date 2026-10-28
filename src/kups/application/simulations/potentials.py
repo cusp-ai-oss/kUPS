@@ -7,7 +7,9 @@ A discriminated [PotentialConfig][kups.application.simulations.potentials.Potent
 selects a force field; each config's ``build`` constructs the corresponding
 [Potential][kups.core.potential.Potential] directly with its parameters (so the
 parameters need not live on the simulation state) over the state's skin list and
-returns the per-system cutoff the skin list serves.
+returns the per-system cutoff the skin list serves. ``build`` gets the loaded
+particle and system tables to size parameters from; it keeps no reference to them,
+since the apps donate the state built from them.
 
 The torch backends (MACE/UMA) import torch lazily inside ``build`` so importing
 this module never requires the optional ``torch`` dependency.
@@ -35,7 +37,7 @@ from kups.core.lens import Lens
 from kups.core.neighborlist import SkinNeighborList
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
-from kups.core.typing import SystemId
+from kups.core.typing import ParticleId, SystemId
 from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.tojax import TojaxedMliap
@@ -74,8 +76,11 @@ class LjPotentialConfig(BaseModel):
         self,
         state_lens: Lens[State, IsLJRowState],
         gradient: Lens[Geometry, PositionsAndCell],
+        particles: Table[ParticleId, object],
+        systems: Table[SystemId, object],
     ) -> BuiltPotential[State]:
         """Build LJ over the skin list's neighbor rows with its parameters bound in."""
+        del particles, systems
         params = LennardJonesParameters.from_dict(
             cutoff=self.cutoff,
             parameters=self.parameters,
@@ -97,8 +102,11 @@ class TojaxPotentialConfig(BaseModel):
         self,
         state_lens: Lens[State, IsTojaxedSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
+        particles: Table[ParticleId, object],
+        systems: Table[SystemId, object],
     ) -> BuiltPotential[State]:
         """Build the jaxified potential from the exported model."""
+        del particles, systems
         model = TojaxedMliap.from_zip_file(get_model_path(self.model_path))
         potential = make_tojaxed_from_state(
             state_lens,
@@ -121,8 +129,11 @@ class MaceConfig(BaseModel):
         self,
         state_lens: Lens[State, IsTorchMliapSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
+        particles: Table[ParticleId, object],
+        systems: Table[SystemId, object],
     ) -> BuiltPotential[State]:
         """Load the MACE checkpoint and build the potential (lazy torch import)."""
+        del particles, systems
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
         from kups.potential.mliap.torch import load_mace
 
@@ -154,8 +165,11 @@ class UmaConfig(BaseModel):
         self,
         state_lens: Lens[State, IsTorchMliapSkinListState],
         gradient: Lens[Geometry, PositionsAndCell],
+        particles: Table[ParticleId, object],
+        systems: Table[SystemId, object],
     ) -> BuiltPotential[State]:
         """Load the UMA checkpoint and build the potential (lazy torch import)."""
+        del particles, systems
         from kups.application.potential.mliap.torch import make_torch_mliap_from_state
         from kups.potential.mliap.torch import load_uma
 
