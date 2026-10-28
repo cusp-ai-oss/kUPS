@@ -1,0 +1,34 @@
+# NPT Molecular Dynamics for Lennard-Jones argon liquid
+# CSVR thermostat with stochastic cell rescaling; md_lj_argon_nvt_from_npt.yaml
+# continues from this run at its mean volume.
+
+run:
+  out_file: md_npt_lj_argon.h5
+  num_steps: 20_000
+  num_warmup_steps: 20_000
+  block_size: 10
+  thermo_every: 10             # Energies, stress and volume every 10 steps
+  frames_every: 1_000          # Positions, momenta and cells every 2 ps
+  seed: 42
+
+md:
+  temperature: 100.0           # Target temperature (K)
+  time_step: 2.0               # Timestep (fs)
+  friction_coefficient: 0.01
+  thermostat_time_constant: 100.0
+  target_pressure: 4.2e7       # Target pressure (Pa), 420 bar
+  pressure_coupling_time: 1000.0
+  compressibility: 5.4e-10     # Liquid argon at 100 K (1/Pa)
+  minimum_scale_factor: 0.9
+  integrator: "csvr_npt"
+  initialize_momenta: true
+
+potential:
+  backend: lj
+  cutoff: 10.0
+  parameters:
+    Ar: [3.405, 0.010326]  # (sigma [A], epsilon [eV]) -- 119.8 K = 0.010326 eV
+  mixing_rule: "lorentz_berthelot"
+
+inp_files:
+  - host/argon_fcc.cif
