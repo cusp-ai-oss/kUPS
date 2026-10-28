@@ -15,7 +15,7 @@ import pytest
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
-from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
+from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY, fix_atoms
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxRunConfig,
@@ -114,7 +114,7 @@ class TestRun:
         assert result.n_steps >= 1
 
 
-def _build_propagator(optimize_cell: bool):
+def _build_propagator(optimize_cell: bool, fixed: jax.Array | None = None):
     """Build an LJ relaxation propagator and its initial state."""
     config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
     assert isinstance(config.potential, LjPotentialConfig)
@@ -126,6 +126,8 @@ def _build_propagator(optimize_cell: bool):
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if optimize_cell else POSITIONS_ONLY
+    if fixed is not None:
+        gradient = fix_atoms(gradient, fixed)
     potential = make_lennard_jones_from_state(
         state_lens, parameters=lj, gradient=gradient
     )
@@ -210,3 +212,54 @@ class TestCellRelaxation:
         low = jnp.tril(system.sum_over(jnp.einsum("ni,nj->nij", positions, g_r)).data)
         pos_term = -(low + low.mT - low * jnp.eye(3)) / volume
         npt.assert_allclose(sigma_total - sigma_partial, pos_term, atol=1e-10)
+
+
+class TestFixedAtoms:
+    """``fix_atoms`` pins atoms in the filter: zero gradient, no motion, cell rides."""
+
+    fixed = jnp.array([False, True, False, False, False, True, False, False])
+
+    @pytest.mark.parametrize("optimize_cell", [False, True])
+    def test_fixed_atoms_keep_their_fractional_coordinate(self, optimize_cell: bool):
+        prop, state = _build_propagator(optimize_cell, self.fixed)
+        stepped = state
+        for _ in range(3):
+            stepped = prop(jax.random.key(0), stepped)
+        frac0 = (
+            state.particles.data.positions @ state.systems.data.cell.inverse_vectors[0]
+        )
+        frac1 = (
+            stepped.particles.data.positions
+            @ stepped.systems.data.cell.inverse_vectors[0]
+        )
+        npt.assert_allclose(frac1[self.fixed], frac0[self.fixed], atol=1e-12)
+        assert not jnp.allclose(frac1[~self.fixed], frac0[~self.fixed])
+        npt.assert_array_equal(
+            stepped.particles.data.position_gradients[self.fixed], 0.0
+        )
+        assert jnp.all(
+            jnp.linalg.norm(
+                stepped.particles.data.position_gradients[~self.fixed], axis=-1
+            )
+            > 0
+        )
+        if optimize_cell:
+            assert not jnp.allclose(
+                stepped.systems.data.cell.vectors, state.systems.data.cell.vectors
+            )
+
+    def test_run_with_fixed_atoms(self):
+        out = _tmp_h5()
+        config = _config(out, _ar_cif(rattle=0.1)).model_copy(
+            update={"fixed_atoms": ((0, 1, 2),)}
+        )
+        run(config)
+        result = next(iter(analyze_relax_file(out).values()))
+        assert jnp.isfinite(jnp.asarray(result.final_max_force)).item()
+
+    def test_run_rejects_bad_fixed_atoms(self):
+        config = _config(_tmp_h5(), _ar_cif(rattle=0.1))
+        with pytest.raises(ValueError, match="out of range"):
+            run(config.model_copy(update={"fixed_atoms": ((8,),)}))
+        with pytest.raises(ValueError, match="entries"):
+            run(config.model_copy(update={"fixed_atoms": ((0,), (1,))}))
