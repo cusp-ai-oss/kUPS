@@ -601,7 +601,9 @@ class CSVRStep[State](Propagator[State]):
         # Generate random numbers for scaling
         key1, key2 = jax.random.split(key)
         # R₁ ~ N(0,1) [dimensionless]
-        gaussian_noise = jax.random.normal(key1, dtype=float)
+        gaussian_noise = jax.random.normal(
+            key1, kinetic_energy_current.shape, kinetic_energy_current.dtype
+        )
 
         # R₂ ~ χ²(N_dof-1) [dimensionless]
         chi_squared_noise = segment_chi_squared(
@@ -838,7 +840,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         depsilon_det = (
             (timestep / barostat_timescale) * compressibility * pressure_deviation
         )
-        random_noise = jax.random.normal(key, dtype=volume.dtype)
+        random_noise = jax.random.normal(key, volume.shape, volume.dtype)
         depsilon_stoch = (
             jnp.sqrt(
                 2.0
