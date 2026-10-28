@@ -607,7 +607,10 @@ class CSVRStep[State](Propagator[State]):
 
         # R₂ ~ χ²(N_dof-1) [dimensionless]
         chi_squared_noise = segment_chi_squared(
-            key2, particles.data.system, degrees_of_freedom - 1
+            key2,
+            particles.data.system,
+            degrees_of_freedom - 1,
+            dtype=kinetic_energy_current.dtype,
         )
 
         # CSVR scaling coefficients
@@ -1036,7 +1039,7 @@ class CellMomentumKick[State](Propagator[State]):
         chi_kT = _GAO_CHI * params.temperature * BOLTZMANN_CONSTANT  # (n,)
         P_target = params.target_pressure  # (n,)
         P_ins = instantaneous_pressure_tensor(par, sys)  # (n, 3, 3) symmetric
-        P_diff = P_ins - P_target[..., None, None] * jnp.eye(3)
+        P_diff = P_ins - P_target[..., None, None] * jnp.eye(3, dtype=P_ins.dtype)
 
         # Paper-side kick = det(h)·(P_diff @ V_inv) − χkT·V_inv.
         # kUPS-side kick = (paper kick)^T  (since kUPS p^h = paper p^h transposed).

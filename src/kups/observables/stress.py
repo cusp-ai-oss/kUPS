@@ -81,7 +81,7 @@ def _symmetrize_from_lower(lower: Array) -> Array:
     triangle. Returns ``lower + lower^T − diag(lower)`` so the diagonal
     is not double-counted.
     """
-    return lower + lower.mT - lower * jnp.eye(3)
+    return lower + lower.mT - lower * jnp.eye(3, dtype=lower.dtype)
 
 
 def _lower_sym_cell_virial(vectors: Array, vector_gradients: Array) -> Array:
