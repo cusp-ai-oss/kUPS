@@ -5,7 +5,7 @@
 """Validate MD simulation results against known physical properties.
 
 For an NVE simulation of argon with Lennard-Jones potential, validates:
-1. Energy conservation (total energy drift)
+1. Energy conservation (drift and fluctuation of the energy MD conserves)
 2. Equipartition theorem (KE per DOF = kT/2)
 3. Velocity distribution (Maxwell-Boltzmann)
 4. Virial pressure consistency
@@ -28,23 +28,48 @@ jax.config.update("jax_enable_x64", True)
 
 # Physical constants for validation
 ARGON_MASS_AMU = 39.948  # Atomic mass of argon
+ARGON_SIGMA = 3.405  # Lennard-Jones sigma of the CI inputs (A)
+ARGON_EPSILON = 0.01032356174398622  # Lennard-Jones epsilon of the CI inputs (eV)
+LJ_CUTOFF = 10.0  # Lennard-Jones cutoff of the CI inputs (A)
+
+
+def pairs_within_cutoff(
+    positions: np.ndarray, lattice: np.ndarray, cutoff: float
+) -> np.ndarray:
+    """Count the atom pairs closer than ``cutoff`` in each frame.
+
+    Pairs take their minimum image, so ``cutoff`` must be below half of each
+    perpendicular width of the cell, whose vectors are the rows of ``lattice``.
+    """
+    lattice = np.asarray(lattice, np.float64)
+    fractional = np.asarray(positions, np.float64) @ np.linalg.inv(lattice)
+    i, j = np.triu_indices(fractional.shape[1], 1)
+    counts = []
+    for frame in fractional:
+        delta = frame[j] - frame[i]
+        delta -= np.round(delta)
+        r2 = np.sum((delta @ lattice) ** 2, axis=-1)
+        counts.append(np.count_nonzero(r2 < cutoff**2))
+    return np.array(counts)
 
 
 def validate_energy_conservation(
     steps: np.ndarray,
     total_energy: np.ndarray,
     n_atoms: int,
-    max_drift_per_atom_per_step: float = 1e-8,
-    max_relative_fluctuation: float = 5e-4,
+    max_drift_per_atom_per_step: float = 1e-10,
+    max_relative_fluctuation: float = 1e-5,
 ) -> tuple[bool, dict]:
     """Validate energy conservation in NVE simulation.
 
     For a symplectic integrator, energy oscillates around a shadow Hamiltonian
     with bounded amplitude (no systematic drift). We check:
-    1. No linear drift: < 1e-8 eV/atom/step
-    2. Bounded fluctuations: relative std(E)/|<E>| < 0.05%
+    1. No linear drift: < 1e-10 eV/atom/step
+    2. Bounded fluctuations: relative std(E)/|<E>| < 1e-5
 
-    These thresholds are appropriate for typical MD timesteps (1-2 fs).
+    These thresholds are for the 0.1 fs steps of the CI runs, which stay at
+    least 7 times below them in float32 and 200 times in float64. Steps of 1-2
+    fs need looser ones.
     """
     # Linear fit to detect drift
     coeffs = np.polyfit(steps, total_energy, 1)
@@ -195,7 +220,7 @@ def main() -> int:
     parser.add_argument(
         "--max-drift",
         type=float,
-        default=1e-8,
+        default=1e-10,
         help="Max energy drift per atom per step (eV)",
     )
     args = parser.parse_args()
@@ -208,6 +233,7 @@ def main() -> int:
     with HDF5StorageReader[MDLoggedData](args.hdf5_path) as reader:
         init_data = reader.focus_group(lambda state: state.init)[...]
         step_data = reader.focus_group(lambda state: state.step)[...]
+        frame_data = reader.focus_group(lambda state: state.frames)[...]
 
     positions = np.asarray(init_data.atoms.data.positions)
     dof = float(3 * positions.shape[0] - 3)
@@ -227,6 +253,17 @@ def main() -> int:
         instantaneous_pressure(kinetic_energy, stress_tensor, volume) / PASCAL
     )
 
+    # The logged pair energy jumps by u(rc) when a pair crosses the cutoff. MD
+    # conserves the energy with pair terms shifted to zero at the cutoff,
+    # u(r) - u(rc), which have the same forces.
+    sr6 = (ARGON_SIGMA / LJ_CUTOFF) ** 6
+    cutoff_energy = 4 * ARGON_EPSILON * (sr6**2 - sr6)
+    frame_steps = np.asarray(frame_data.step).flatten()
+    frame_positions = np.asarray(frame_data.positions)
+    _, rows, frames = np.intersect1d(steps, frame_steps, return_indices=True)
+    pairs = pairs_within_cutoff(frame_positions[frames], lattice, LJ_CUTOFF)
+    conserved_energy = total_energy[rows] - cutoff_energy * pairs
+
     print(f"MD Physics Validation: {args.hdf5_path.name}")
     print(f"  Atoms: {n_atoms}, Steps: {n_steps}, DOF: {int(dof)}")
     print(f"  Volume: {volume:.2f} A^3, Density: {n_atoms / volume:.4f} atoms/A^3")
@@ -236,10 +273,14 @@ def main() -> int:
 
     # 1. Energy conservation
     passed, info = validate_energy_conservation(
-        steps, total_energy, n_atoms, args.max_drift
+        steps[rows], conserved_energy, n_atoms, args.max_drift
     )
     status = "PASS" if passed else "FAIL"
     print(f"1. Energy Conservation: {status}")
+    print(
+        f"   Energy: logged total minus u(rc) = {cutoff_energy:.3e} eV for each of "
+        f"{pairs.mean():.0f} +/- {pairs.std():.0f} pairs within the cutoff"
+    )
     print(
         f"   Drift: {info['drift_per_atom_per_step']:.2e} eV/atom/step (max: {info['drift_threshold']:.2e})"
     )

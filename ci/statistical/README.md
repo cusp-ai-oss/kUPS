@@ -76,6 +76,16 @@ The validator compares measured values against expected values using a statistic
 
 This accounts for statistical uncertainty in both the reference and measured values.
 
+The NVE argon case and its float32 variant are not validated against the expected
+total energy (`NOT_VALIDATED` in `validate.py`). Their logged total energy is the
+energy MD conserves plus the pair energy at the cutoff, u(rc), for each pair
+within the Lennard-Jones cutoff. Its mean follows the number of these pairs,
+which changes too slowly for 5-block standard errors. `validate_nve_physics.py`
+checks the drift and fluctuation of the conserved energy instead: the logged
+total energy minus u(rc) for each pair within the cutoff in the logged frames.
+The LAMMPS cross-reference still compares the expected total energy, as LAMMPS
+logs the same energy.
+
 ## LAMMPS References
 
 The MD LJ Argon statistical suite also keeps LAMMPS same-force-field reference
