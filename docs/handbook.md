@@ -4,9 +4,9 @@ icon: lucide/house
 
 # Handbook
 
-A tour of the primitives <em>k</em>UPS is built from. Each chapter covers one primitive: what it is and why it's included in the design.
+A tour of the primitives <em>k</em>UPS is built from. Each of the first ten chapters covers one primitive: what it is and why it's included in the design.
 
-This is not an API reference. Function signatures live under the API Reference tab, and CLI-ready packaged simulations under [Simulations](simulations.md). Code samples assume familiarity with [JAX pytrees](https://docs.jax.dev/en/latest/pytrees.html) and [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html), and use the conventions in [Units](units.md).
+This is not an API reference. Function signatures live under the API Reference tab, and CLI-ready packaged simulations under [Simulations](simulations.md). Code samples assume familiarity with [JAX pytrees](https://docs.jax.dev/en/latest/pytrees.html) and [`jax.jit`](https://docs.jax.dev/en/latest/_autosummary/jax.jit.html), and use the unit conventions in [Physical Units](notebooks/units.md).
 
 <em>k</em>UPS is a toolkit for batched, differentiable molecular simulations on GPU. One composable interface covers molecular dynamics, Monte Carlo, geometry optimization, classical force fields, and machine-learning potentials (via [Tojax](https://github.com/cusp-ai-oss/tojax)), with thousands of independent systems running as a single vectorized computation.
 
@@ -22,7 +22,7 @@ A molecular-simulation framework has to satisfy three things at once, and the na
 
 ## Primitives
 
-The chapters are organized in five pairs. Tables and Lenses are prerequisite vocabulary for everything after; the remaining pairs are largely independent.
+The ten primitive chapters are organized in five pairs, and a closing chapter, [Physical Units](notebooks/units.md), covers the unit conventions every code sample uses. Tables and Lenses are prerequisite vocabulary for everything after; the remaining pairs are largely independent.
 
 **Data layout: batched arrays that still carry relational structure.**
 
