@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import argparse
 import math
-from typing import Any
 
-from lammps_reference_utils import CASES, load_kups_expected, load_reference_stats
+from lammps_reference_utils import (
+    CASES,
+    ExpectedSpec,
+    compared_stats,
+    load_kups_expected,
+    load_reference_stats,
+)
 
 
-def _compare_to_kups(current: dict[str, Any]) -> bool:
+def _compare_to_kups(current: dict[str, ExpectedSpec]) -> bool:
     """Compare the LAMMPS statistics of every case against the kUPS references.
 
     Args:
@@ -24,23 +29,24 @@ def _compare_to_kups(current: dict[str, Any]) -> bool:
     """
     ok = True
     for case, config in CASES.items():
-        if not config.get("compare_to_kups", False):
+        if not config["compare_to_kups"]:
             continue
         kups_expected = load_kups_expected(config["kups_expected"])
-        max_z = float(config["max_z"])
+        max_z = config["max_z"]
         abs_tolerances = config.get("abs_tolerances", {})
         print(f"\n{case} vs kUPS {config['kups_expected']} ({max_z:g} sigma)")
-        compare_observables = config.get("compare_observables", config["observables"])
-        for lammps_obs, kups_obs in compare_observables.items():
+        for lammps_obs, kups_obs in config["compare_observables"].items():
             if kups_obs not in kups_expected:
                 print(f"  SKIP {lammps_obs}: no kUPS {kups_obs} expected value")
                 continue
             lmp_stats = current[case]["observables"][kups_obs]
             kups_stats = kups_expected[kups_obs]
-            lmp_mean = float(lmp_stats["expected_mean"])
-            lmp_sem = float(lmp_stats["expected_sem"])
-            kups_mean = float(kups_stats["expected_mean"])
-            kups_sem = float(kups_stats["expected_sem"])
+            unit, lmp_mean, lmp_sem = compared_stats(lmp_stats)
+            kups_unit, kups_mean, kups_sem = compared_stats(kups_stats)
+            if unit != kups_unit:
+                print(f"  FAIL {lammps_obs}: LAMMPS is in {unit}, kUPS in {kups_unit}")
+                ok = False
+                continue
             delta = abs(lmp_mean - kups_mean)
             abs_tol = float(abs_tolerances.get(lammps_obs, 0.0))
             combined = math.sqrt(lmp_sem**2 + kups_sem**2)
@@ -53,7 +59,8 @@ def _compare_to_kups(current: dict[str, Any]) -> bool:
                 reason = f"abs={delta:.3g}<={abs_tol:.3g}"
             print(
                 f"  {lammps_obs:7s}: LAMMPS {lmp_mean:.8g} +/- {lmp_sem:.3g}; "
-                f"kUPS {kups_mean:.8g} +/- {kups_sem:.3g}; {reason} {mark}"
+                f"kUPS {kups_mean:.8g} +/- {kups_sem:.3g} {unit or ''}; "
+                f"{reason} {mark}"
             )
     return ok
 

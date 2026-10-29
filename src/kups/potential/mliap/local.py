@@ -29,7 +29,7 @@ Example:
     def readout_fn(emb, msg): return linear(emb + msg)
 
     config = LocalMLIAPData(
-        cutoff=Table((SystemId(0),), jnp.array([6.0])),
+        cutoff=Table((SystemId(0),), jnp.array([6.0]) * u.angstrom),
         init_function=init_fn,
         edge_function=edge_fn,
         readout_function=readout_fn,
@@ -48,6 +48,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind
@@ -57,7 +58,7 @@ from kups.core.neighborlist import (
     NeighborListPoints,
 )
 from kups.core.patch import Accept, Patch, Probe, WithPatch
-from kups.core.potential import Energy, Potential, PotentialOut
+from kups.core.potential import Potential, PotentialOut
 from kups.core.typing import (
     HasCell,
     HasPositionsAndAtomicNumbers,
@@ -65,6 +66,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.ops import where_broadcast_last
@@ -109,7 +111,7 @@ class NodeInitFunction(Protocol):
 class ReadoutFunction(Protocol):
     """Protocol for readout function.
 
-    Computes per-atom energies `(n_atoms,)` from node embeddings and
+    Computes per-atom energies `(n_atoms,)` in eV from node embeddings and
     aggregated messages, both of shape `(n_atoms, embed_dim)`.
     """
 
@@ -120,7 +122,8 @@ class EdgeFunction(Protocol):
     """Protocol for edge/message function.
 
     Computes edge messages `(n_edges, msg_dim)` from source/target node
-    embeddings `(n_edges, embed_dim)` and displacement vectors `(n_edges, 3)`.
+    embeddings `(n_edges, embed_dim)` and displacement vectors `(n_edges, 3)`
+    in Å.
     """
 
     def __call__(
@@ -169,14 +172,14 @@ class LocalMLIAPData:
     for updating the cache in the state.
 
     Attributes:
-        cutoff: Interaction cutoff radius [Å], shape `(n_systems,)`
+        cutoff: Interaction cutoff radius, shape `(n_systems,)`
         init_function: Maps atomic numbers to node embeddings
         edge_function: Computes messages from node pairs and displacements
         readout_function: Computes per-atom energies from embeddings and messages
         cache: Cached values for incremental updates
     """
 
-    cutoff: Table[SystemId, Array]
+    cutoff: Table[SystemId, units.Length]
     init_function: NodeInitFunction = field(static=True)
     edge_function: EdgeFunction = field(static=True)
     readout_function: ReadoutFunction = field(static=True)
@@ -229,7 +232,10 @@ class LocalMLIAPData:
         ).shape[-1]
 
         return LocalMLIAPData(
-            cutoff=Table((SystemId(0),), jnp.array([metadata["cutoff"]], float)),
+            cutoff=Table(
+                (SystemId(0),),
+                units.stack([float(metadata["cutoff"]) * u.angstrom]),
+            ),
             init_function=init_fn,
             edge_function=edge_fn,
             readout_function=readout_fn,
@@ -319,7 +325,7 @@ def local_mliap_energy_full[
     S: HasCell[AnyPeriodicity],
 ](
     inp: LocalMLIAPInput[State, P, S],
-) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
+) -> WithPatch[Table[SystemId, units.Energy], Patch[State]]:
     """Compute full MLIAP energy from scratch.
 
     Performs complete message passing: initializes node embeddings,
@@ -341,12 +347,14 @@ def local_mliap_energy_full[
     edge_emb = inp.config.edge_function(
         edge_nodes[:, 0],
         edge_nodes[:, 1],
-        edges.difference_vectors(point_cloud.particles, point_cloud.systems)[:, 0],
+        edges.difference_vectors(point_cloud.particles, point_cloud.systems)[:, 0].to(
+            u.angstrom
+        ),
     )
     # Aggregate messages
     msg_sum = edges.indices[:, 0].sum_over(edge_emb).data
     # Node-wise energies
-    energies = inp.config.readout_function(node_emb, msg_sum)
+    energies = inp.config.readout_function(node_emb, msg_sum) * u.eV
     # Total energies per system
     energy = point_cloud.particles.data.system.sum_over(energies)
     new_cache = LocalMLIAPCache(node_emb, msg_sum)
@@ -366,7 +374,7 @@ def local_mliap_energy_update[
     S: HasCell[AnyPeriodicity],
 ](
     inp: LocalMLIAPInput[State, P, S],
-) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
+) -> WithPatch[Table[SystemId, units.Energy], Patch[State]]:
     """Compute MLIAP energy incrementally using cached values.
 
     Only recomputes embeddings and messages for changed atoms, subtracting
@@ -407,14 +415,14 @@ def local_mliap_energy_update[
         old_edge_nodes[:, 1],
         inp.edges_deleted.difference_vectors(
             old_point_cloud.particles, old_point_cloud.systems
-        )[:, 0],
+        )[:, 0].to(u.angstrom),
     )
     new_edge_emb = inp.config.edge_function(
         new_edge_nodes[:, 0],
         new_edge_nodes[:, 1],
         inp.edges.difference_vectors(
             new_point_cloud.particles, new_point_cloud.systems
-        )[:, 0],
+        )[:, 0].to(u.angstrom),
     )
     # Update message sums
     msg_sum = (
@@ -423,7 +431,7 @@ def local_mliap_energy_update[
         + inp.edges.indices[:, 0].sum_over(new_edge_emb).data
     )
     # Node-wise readout
-    energies = inp.config.readout_function(node_emb, msg_sum)
+    energies = inp.config.readout_function(node_emb, msg_sum) * u.eV
     # Total energies per system
     energy = new_point_cloud.particles.data.system.sum_over(energies)
     new_cache = LocalMLIAPCache(node_emb, msg_sum)
@@ -443,7 +451,7 @@ def local_mliap_energy[
     S: HasCell[AnyPeriodicity],
 ](
     inp: LocalMLIAPInput[State, P, S],
-) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
+) -> WithPatch[Table[SystemId, units.Energy], Patch[State]]:
     """Compute MLIAP energy with automatic full/incremental dispatch.
 
     Automatically chooses between full computation and incremental update

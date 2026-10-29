@@ -11,7 +11,6 @@ import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.block_average import (
     BlockAverageResult,
     BlockTransformResult,
@@ -21,6 +20,7 @@ from kups.core.utils.block_average import (
     compute_block_means,
     optimal_block_average,
 )
+from test.units import EV
 
 
 class TestBlockAverage:
@@ -370,6 +370,6 @@ class TestBlockAverageStatisticalProperties:
 def test_quantity_keeps_dimension(fn: Callable[[Any], Any]):
     """Energies go through as their magnitudes and every statistic is an energy."""
     data = jnp.sin(0.3 * jnp.arange(64.0))[:, None] * jnp.array([1.0, 2.0])
-    for got, want in zip(fn(data * u.eV), fn(data), strict=True):
-        assert units.dim_of(got) == units.dim_of(u.eV)
-        npt.assert_allclose(got.to(u.eV), want, rtol=1e-6)
+    for got, want in zip(fn(data * EV), fn(data), strict=True):
+        assert units.dim_of(got) == units.dim_of(EV)
+        npt.assert_allclose(got.to(EV), want, rtol=1e-6)

@@ -14,6 +14,7 @@ import numpy.testing as npt
 
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.neighborlist.refine import PrecomputedEdgesSelector
+from test.units import A
 
 from ._builders import make_edges, make_lh, make_pipeline_ctx
 
@@ -35,7 +36,7 @@ class TestPrecomputedEdgesSelectorModes:
         assert bool(batch.is_minimum_image.all())
 
     def test_recompute_mic_mode_overrides_precomputed_shifts(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A))
         lh = make_lh(
             jnp.array([[0.1, 0.0, 0.0], [0.9, 0.0, 0.0]]), jnp.zeros(2, dtype=int)
         )

@@ -32,6 +32,8 @@ from typing import Literal, cast, override
 import torch  # pyright: ignore[reportMissingImports]
 import torch.nn.functional as F  # pyright: ignore[reportMissingImports]
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.potential.mliap.torch.interface import (
     TorchMliap,
     lattice_gradient_from_virial,
@@ -191,7 +193,7 @@ def load_mace(
     device: str = "cuda",
     dtype: Literal["float32", "float64"] = "float32",
     compute_cell_gradients: bool = False,
-    cutoff: float | None = None,
+    cutoff: units.Length | None = None,
 ) -> TorchMliap:
     """Load a PyTorch MACE ``.model`` into a universal ``TorchMliap``.
 
@@ -200,7 +202,7 @@ def load_mace(
         device: Device to load the model onto.
         dtype: Model precision — ``"float32"`` (default) or ``"float64"``.
         compute_cell_gradients: Whether to also compute virials/stress.
-        cutoff: Cutoff radius [Å]. When ``None``, read from ``model.r_max``.
+        cutoff: Cutoff radius. When ``None``, read from ``model.r_max``.
 
     Returns:
         ``TorchMliap`` ready to be wired into the kUPS interface.
@@ -226,7 +228,7 @@ def load_mace(
 
     species_to_index, num_species = _build_species_to_index(model)
     if cutoff is None:
-        cutoff = float(cast(torch.Tensor, model.r_max).item())
+        cutoff = float(cast(torch.Tensor, model.r_max).item()) * u.angstrom
 
     module = MACEModule(
         model,

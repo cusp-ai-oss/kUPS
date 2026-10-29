@@ -28,11 +28,9 @@ Example:
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, overload
 
-import jax
-from jax import Array
-
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, View
@@ -56,17 +54,30 @@ from kups.potential.common.graph import (
 )
 
 
-def filter_pullback[U](
-    geometry: Geometry, cotangents: PositionsAndCell, gradient: Lens[Geometry, U]
-) -> U:
+@overload
+def filter_pullback(
+    geometry: Geometry,
+    cotangents: PositionsAndCell[units.Force],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+) -> PositionsAndCell[units.Force]: ...
+@overload
+def filter_pullback(
+    geometry: Geometry,
+    cotangents: PositionsAndCell[units.Force],
+    gradient: Lens[Geometry, Any],
+) -> Any: ...
+def filter_pullback(
+    geometry: Geometry,
+    cotangents: PositionsAndCell[units.Force],
+    gradient: Lens[Geometry, Any],
+) -> Any:
     """Map direct ``(∂E/∂r, ∂E/∂h|_r)`` outputs to the DOF gradient ``∂E/∂u``.
 
     Carrier- and codomain-agnostic: the ``gradient`` lens's ``set`` is the map
-    ``u → pose``, and pulling the physical cotangent back through it with one
-    ``jax.vjp`` yields ``∂E/∂u`` for any codomain ``U``, with the cell-factor and
+    ``u → pose``, and differentiating the energy ``⟨∂E/∂r, r(u)⟩ + ⟨∂E/∂h, h(u)⟩``
+    it defines yields ``∂E/∂u`` for any codomain ``U``, with the cell-factor and
     ``expm`` chain rule (and the atoms-ride-the-cell coupling) falling out of the
-    vjp. Targeting ``(positions, cell.vectors)`` makes the cotangent the raw
-    ``(n, 3)`` position gradient plus the raw ``(n_systems, 3, 3)`` ``∂E/∂h``.
+    derivative.
 
     Args:
         geometry: The carrier's geometric view (e.g. ``GRAPH_GEOMETRY.get(inp)``).
@@ -75,7 +86,8 @@ def filter_pullback[U](
         gradient: Relaxation filter ``Lens[Geometry, U]`` selecting the DOFs ``u``.
 
     Returns:
-        ``∂E/∂u`` in the gradient lens's DOF pytree.
+        ``∂E/∂u`` in the gradient lens's DOF pytree, each leaf in energy over its
+        DOF's dimension (``PositionsAndCell[units.Force]`` for the standard filters).
     """
     u0 = gradient.get(geometry)
     g_r = cotangents.positions.data
@@ -83,13 +95,14 @@ def filter_pullback[U](
     # parameters back through the real cell's frame Jacobian.
     dE_dh = geometry.systems.data.frame.vectors_gradient(cotangents.cell.data.frame)
 
-    def to_targets(u: U) -> tuple[Array, Array]:
+    def contracted(u: Any) -> units.Energy:
+        """The energy this gradient pair assigns to the pose ``u`` names."""
         pose = gradient.set(geometry, u)
-        return pose.particles.data.positions, pose.systems.data.vectors
+        return units.sum(pose.particles.data.positions * g_r) + units.sum(
+            pose.systems.data.vectors * dE_dh
+        )
 
-    _, pull_back = jax.vjp(to_targets, u0)
-    (g_u,) = pull_back((g_r, dE_dh))
-    return g_u
+    return units.grad(contracted)(u0)
 
 
 type DirectMliapInput[

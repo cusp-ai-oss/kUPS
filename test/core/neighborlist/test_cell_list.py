@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from kups.core import units
 from kups.core.capacity import Capacity, FixedCapacity, LensCapacity
 from kups.core.cell import OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.neighborlist import DenseNearestNeighborList
@@ -19,6 +20,7 @@ from kups.core.neighborlist.cell_list import (
 )
 from kups.core.neighborlist.common import Candidates
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
+from kups.core.units import catalog as u
 
 from ._builders import (
     EvalState,
@@ -29,6 +31,8 @@ from ._builders import (
     valid_edge_set,
     valid_pairs,
 )
+
+_A = u.angstrom
 
 
 class TestCellHashClampsAtBoundary:
@@ -52,7 +56,7 @@ class TestCellHashClampsAtBoundary:
         assert int(h) == 0 + 1 * 2 + 2 * 6
 
     def test_realistic_fold_path_does_not_escape_range(self):
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0]) * _A))
         bad_frac = jnp.array([-1.49e-8, 0.0, 0.0])
         folded, _ = cell.fold(bad_frac)
         h = cell_hash(folded, jnp.array([1, 1, 1]))
@@ -83,14 +87,14 @@ class TestCellListSubselect:
             jnp.zeros(3, dtype=int),
         )
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 4.0) * _A)),
             jnp.array([1.0]),
         )
         candidates = _cell_list_subselect(
             lh,
             lh,
             systems,
-            cutoffs=jnp.array([1.0]),
+            cutoffs=jnp.array([1.0]) * _A,
             max_num_cells=FixedCapacity(128),
             max_num_candidates=FixedCapacity(32),
         )
@@ -107,7 +111,7 @@ class TestCellListSubselect:
             jnp.zeros(3, dtype=int),
         )
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 4.0) * _A)),
             jnp.array([3.0]),
         )
 
@@ -116,7 +120,7 @@ class TestCellListSubselect:
                 lh,
                 lh,
                 systems,
-                cutoffs=jnp.array([3.0]),
+                cutoffs=jnp.array([3.0]) * _A,
                 max_num_cells=max_cells,
                 max_num_candidates=FixedCapacity(16),
             )
@@ -138,7 +142,7 @@ class TestCellListSubselect:
         )
         lh = make_lh(positions, jnp.zeros(len(positions), dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 4.0) * _A)),
             jnp.array([1.0]),
         )
 
@@ -147,7 +151,7 @@ class TestCellListSubselect:
                 lh,
                 lh,
                 systems,
-                cutoffs=jnp.array([1.0]),
+                cutoffs=jnp.array([1.0]) * _A,
                 max_num_cells=FixedCapacity(128),
                 max_num_candidates=FixedCapacity(64),
                 promise_unique_cells=promise_unique_cells,
@@ -162,14 +166,14 @@ class TestCellListSubselect:
         positions = jnp.array([[0.02, 0.05, 0.08], [0.52, 0.55, 0.58]])
         lh = make_lh(positions, jnp.zeros(len(positions), dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 4.0) * _A)),
             jnp.array([1.0]),
         )
 
         # The cutoff is a runtime input, so both cases share one program.
         @jax.jit
         @as_result_function
-        def run(cutoff: jax.Array) -> Candidates:
+        def run(cutoff: units.Length) -> Candidates:
             return _cell_list_subselect(
                 lh,
                 lh,
@@ -183,23 +187,23 @@ class TestCellListSubselect:
         # 4 A box, cutoff 2.0 -> 2 bins/axis: stencil offsets wrap onto the
         # same cell, so the promise is broken.
         with pytest.raises(AssertionError):
-            run(jnp.array(2.0)).raise_assertion()
+            run(jnp.array(2.0) * _A).raise_assertion()
         # cutoff 1.0 -> 4 bins/axis satisfies the promise.
-        run(jnp.array(1.0)).raise_assertion()
+        run(jnp.array(1.0) * _A).raise_assertion()
 
 
 class TestFromState:
     def test_from_state_wires_lens_capacities(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A)),
             jnp.array([2.0]),
         )
         params = UniversalNeighborlistParameters(
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        nl = CellListNeighborList.from_state(state, cutoff_table(jnp.array([2.0])))
+        nl = CellListNeighborList.from_state(state, cutoff_table(jnp.array([2.0]) * _A))
 
         assert isinstance(nl.cells, LensCapacity)
         assert isinstance(nl.avg_candidates, LensCapacity)
@@ -209,8 +213,8 @@ class TestFromState:
 
 def test_skewed_cell_bins_follow_perpendicular_widths():
     """Bins must be at least one cutoff wide on skewed cells (matches dense)."""
-    lattice = jnp.array(
-        [[10.913, 0.0, 0.0], [5.263, 9.006, 0.0], [-2.622, 4.34, 8.944]]
+    lattice = (
+        jnp.array([[10.913, 0.0, 0.0], [5.263, 9.006, 0.0], [-2.622, 4.34, 8.944]]) * _A
     )
     cell = PeriodicCell(TriclinicFrame.from_matrix(lattice[None]))
     n = 400

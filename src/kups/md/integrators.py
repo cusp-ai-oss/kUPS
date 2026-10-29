@@ -10,12 +10,12 @@ import jax.numpy as jnp
 from jax import Array
 from typing_extensions import Protocol
 
+from kups.core import units
 from kups.core.cell import (
     AnyPeriodicity,
     Cell,
     Periodic3D,
 )
-from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
 from kups.core.propagator import Propagator, SequentialPropagator
@@ -42,9 +42,10 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.utils.functools import pipe
-from kups.core.utils.jax import dataclass, field, tree_map, vectorize
+from kups.core.utils.jax import dataclass, field
 from kups.core.utils.math import solve_affine_ode
 from kups.core.utils.random import sample_like, segment_chi_squared
+from kups.core.utils.units import magnitudes
 from kups.md.observables import (
     instantaneous_pressure,
     instantaneous_pressure_tensor,
@@ -52,13 +53,6 @@ from kups.md.observables import (
     remove_center_of_mass_momentum,
 )
 from kups.observables.stress import stress_via_virial_theorem
-
-type Time = Array
-type Mass = Array
-type Energy = Array
-type Temperature = Array
-type Pressure = Array
-type Stress = Array
 
 type Integrator = Literal[
     "verlet", "baoab_langevin", "csvr", "csvr_npt", "baoab_npt_langevin"
@@ -78,29 +72,29 @@ class Flow[State, PyTree](Protocol):
     """
 
     def __call__(
-        self, state: State, dt: Time, primal: PyTree, tangent: PyTree
+        self, state: State, dt: units.Time, primal: PyTree, tangent: units.Velocity
     ) -> PyTree:
         """Apply flow to update positions.
 
         Args:
             state: Current simulation state.
-            dt: Timestep $\\Delta t$ (units: time).
-            primal: Position $\\mathbf{r}$ (units: length).
-            tangent: Velocity $\\mathbf{v}$  (units: length/time).
+            dt: Timestep $\\Delta t$.
+            primal: Position $\\mathbf{r}$.
+            tangent: Velocity $\\mathbf{v}$.
 
         Returns:
-            Updated position (units: length).
+            Updated position.
         """
         ...
 
 
-@vectorize(signature=("(),(n),(n)->(n)"), excluded=frozenset({0}))
+@units.vectorize(signature="(),(n),(n)->(n)", excluded=frozenset({0}))
 def euclidean_flow(
     state: Any,
-    dt: Time,
-    primal: Array,
-    tangent: Array,
-) -> Array:
+    dt: units.Time,
+    primal: units.Length,
+    tangent: units.Velocity,
+) -> units.Length:
     """Flow in unbounded Euclidean space without boundary conditions.
 
     Implements simple kinematic update:
@@ -111,12 +105,12 @@ def euclidean_flow(
 
     Args:
         state: Current simulation state (unused but required by Flow protocol)
-        dt: Timestep $\\Delta t$ (units: time)
-        primal: Position $\\mathbf{r}$ (units: length)
-        tangent: Velocity $\\mathbf{v}$ (units: length/time)
+        dt: Timestep $\\Delta t$
+        primal: Position $\\mathbf{r}$
+        tangent: Velocity $\\mathbf{v}$
 
     Returns:
-        Updated position $\\mathbf{r}_{\\text{new}}$ (units: length)
+        Updated position $\\mathbf{r}_{\\text{new}}$
     """
     return primal + tangent * dt
 
@@ -153,9 +147,11 @@ class WrapFlow[State, PyTree](Flow[State, PyTree]):
     flow: Flow[State, PyTree] = field(static=True)
 
     def __call__(
-        self, state: State, dt: Time, primal: PyTree, tangent: PyTree
+        self, state: State, dt: units.Time, primal: PyTree, tangent: units.Velocity
     ) -> PyTree:
-        return tree_map(self.cell(state).wrap, self.flow(state, dt, primal, tangent))
+        return units.tree_map(
+            self.cell(state).wrap, self.flow(state, dt, primal, tangent)
+        )
 
 
 def _half_time[S: HasIntegratorParams[HasTimeStep]](
@@ -223,7 +219,7 @@ class PositionStep[State](Propagator[State]):
 
     particles: Lens[State, Table[ParticleId, _PositionStepData]] = field(static=True)
     systems: View[State, Table[SystemId, HasTimeStep]] = field(static=True)
-    flow: Flow[State, Array] = field(static=True)
+    flow: Flow[State, units.Length] = field(static=True)
 
     def __call__(self, key: Array, state: State) -> State:
         """Apply position update step.
@@ -306,7 +302,7 @@ class _MDParticleData(
     HasMomenta, HasPositions, HasForces, HasMasses, HasSystemIndex, Protocol
 ):
     @property
-    def position_gradients(self) -> Array: ...
+    def position_gradients(self) -> units.Force: ...
 
 
 @runtime_checkable
@@ -318,7 +314,7 @@ def make_velocity_verlet_step[State](
     particles: Lens[State, Table[ParticleId, _MDParticleData]],
     systems: View[State, Table[SystemId, HasIntegratorParams[IsVerletParams]]],
     derivative_computation: Propagator[State],
-    flow: Flow[State, Array],
+    flow: Flow[State, units.Length],
 ) -> SequentialPropagator[State]:
     r"""Create a velocity Verlet integrator for molecular dynamics (NVE ensemble).
 
@@ -351,7 +347,7 @@ def make_velocity_verlet_step[State](
         DOI: 10.1063/1.442716
     """
     params = pipe(systems, _to_params)
-    params_half_time = pipe(systems, _half_time_params)  # Δt/2 [time]
+    params_half_time = pipe(systems, _half_time_params)  # Δt/2
     return SequentialPropagator(
         (
             MomentumStep(particles, params_half_time),
@@ -423,23 +419,21 @@ class StochasticStep[State](Propagator[State]):
         particle_lens = self.particles.bind(state)
         particles = particle_lens.get()
         sys = self.system(state)[particles.data.system]
-        # kT: thermal energy [energy]
-        thermal_energy_per_particle = sys.temperature * BOLTZMANN_CONSTANT
+        # kT: thermal energy
+        thermal_energy_per_particle = units.constants.k_B * sys.temperature
         # Ornstein-Uhlenbeck coefficients
-        # c₁ = e^(-γΔt) [dimensionless]
+        # c₁ = e^(-γΔt)
         damping_factor = jax.numpy.exp(-sys.friction_coefficient * sys.time_step)
-        # c₂ = √(kT(1-e^(-2γΔt))) [√energy]
-        noise_amplitude = jax.numpy.sqrt(
-            thermal_energy_per_particle * (1 - damping_factor**2)
-        )
+        # c₂² = kT(1-e^(-2γΔt))
+        noise_variance = thermal_energy_per_particle * (1 - damping_factor**2)
 
-        # η ~ N(0,1) [dimensionless]
-        noise = sample_like(jax.random.normal, key, particles.data.momenta)
+        # η ~ N(0,1)
+        noise = sample_like(jax.random.normal, key, magnitudes(particles.data.momenta))
 
         # Exact OU solution: p_new = c₁·p + c₂·√m·η
         new_momenta = (
             damping_factor[..., None] * particles.data.momenta
-            + (noise_amplitude * jnp.sqrt(particles.data.masses))[..., None] * noise
+            + units.sqrt(noise_variance * particles.data.masses)[..., None] * noise
         )
         constrained_momenta = remove_center_of_mass_momentum(
             new_momenta, particles.data.masses, particles.data.system
@@ -447,8 +441,10 @@ class StochasticStep[State](Propagator[State]):
         # Deterministic gamma=0 or dt=0 steps should remain no-ops. For
         # active Langevin thermostats, keep the sampled ensemble in the
         # zero-total-momentum subspace used by the MD temperature analysis.
-        should_project = (sys.friction_coefficient > 0) & (sys.time_step > 0)
-        new_momenta = jnp.where(
+        should_project = (sys.friction_coefficient.value > 0) & (
+            sys.time_step.value > 0
+        )
+        new_momenta = units.where(
             should_project[..., None], constrained_momenta, new_momenta
         )
 
@@ -462,7 +458,7 @@ def make_baoab_langevin_step[State](
     particles: Lens[State, Table[ParticleId, _MDParticleData]],
     systems: View[State, Table[SystemId, HasIntegratorParams[IsBAOABLangevinParams]]],
     derivative_computation: Propagator[State],
-    flow: Flow[State, Array],
+    flow: Flow[State, units.Length],
 ) -> SequentialPropagator[State]:
     r"""Create BAOAB Langevin integrator for canonical (NVT) ensemble sampling.
 
@@ -578,13 +574,13 @@ class CSVRStep[State](Propagator[State]):
         # Extract parameters
         system = self.systems(state)
         particles = self.particles.get(state)
-        # Δt: timestep [time]
+        # Δt: timestep
         timestep = system.data.time_step
-        # kT: thermal energy [energy]
-        target_thermal_energy = system.data.temperature * BOLTZMANN_CONSTANT
-        # τ: thermostat time constant [time]
+        # kT: thermal energy
+        target_thermal_energy = units.constants.k_B * system.data.temperature
+        # τ: thermostat time constant
         thermostat_timescale = system.data.thermostat_time_constant
-        # N_dof: degrees of freedom [dimensionless]
+        # N_dof: degrees of freedom
         # TODO: Update once we have constraints that could limit the degrees of freedom
         degrees_of_freedom = particles.data.system.counts.data * 3 - 3
 
@@ -592,39 +588,39 @@ class CSVRStep[State](Propagator[State]):
         per_particle_ke = particle_kinetic_energy(
             particles.data.momenta, particles.data.masses
         )
-        # K: total kinetic energy per system [energy]
+        # K: total kinetic energy per system
         kinetic_energy = particles.data.system.sum_over(per_particle_ke)
         kinetic_energy_current = kinetic_energy.data
-        # K_target = N_dof·kT/2 [energy]
+        # K_target = N_dof·kT/2
         kinetic_energy_target = degrees_of_freedom * target_thermal_energy / 2
 
         # Generate random numbers for scaling
         key1, key2 = jax.random.split(key)
-        # R₁ ~ N(0,1) [dimensionless]
+        # R₁ ~ N(0,1)
         gaussian_noise = jax.random.normal(key1, dtype=float)
 
-        # R₂ ~ χ²(N_dof-1) [dimensionless]
+        # R₂ ~ χ²(N_dof-1)
         chi_squared_noise = segment_chi_squared(
             key2, particles.data.system, degrees_of_freedom - 1
         )
 
         # CSVR scaling coefficients
-        # c₁ = e^(-Δt/τ) [dimensionless]
+        # c₁ = e^(-Δt/τ)
         exponential_decay = jnp.exp(-timestep / thermostat_timescale)
-        # c₂ = (1-c₁)·K_target/(K_current·N_dof) [dimensionless]
+        # c₂ = (1-c₁)·K_target/(K_current·N_dof)
         correction_factor = (
             (1 - exponential_decay)
             * kinetic_energy_target
             / (kinetic_energy_current * degrees_of_freedom)
         )
 
-        # α² = c₁ + c₂(R₁² + R₂) + 2R₁√(c₁c₂) [dimensionless]
+        # α² = c₁ + c₂(R₁² + R₂) + 2R₁√(c₁c₂)
         scaling_squared = (
             exponential_decay
             + correction_factor * (gaussian_noise**2 + chi_squared_noise)
             + 2 * gaussian_noise * jnp.sqrt(exponential_decay * correction_factor)
         )
-        # α = √(α²), ensure non-negative [dimensionless]
+        # α = √(α²), ensure non-negative
         velocity_scale = jnp.sqrt(jnp.maximum(scaling_squared, 0.0))
 
         # Scale momenta by system
@@ -643,7 +639,7 @@ def make_csvr_step[State](
     particles: Lens[State, Table[ParticleId, _MDParticleData]],
     systems: View[State, Table[SystemId, HasIntegratorParams[IsCSVRParams]]],
     derivative_computation: Propagator[State],
-    flow: Flow[State, Array],
+    flow: Flow[State, units.Length],
 ) -> SequentialPropagator[State]:
     r"""Create CSVR integrator for canonical (NVT) ensemble sampling.
 
@@ -793,28 +789,28 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         # Extract parameters
         systems = self.systems.get(state)
         params = systems.data.integrator_params
-        # Δt: timestep [time]
+        # Δt: timestep
         timestep = params.time_step
-        # kT: thermal energy [energy]
-        thermal_energy = params.temperature * BOLTZMANN_CONSTANT
-        # P₀: target pressure [pressure]
+        # kT: thermal energy
+        thermal_energy = units.constants.k_B * params.temperature
+        # P₀: target pressure
         target_pressure = params.target_pressure
-        # τP: barostat time constant [time]
+        # τP: barostat time constant
         barostat_timescale = params.pressure_coupling_time
-        # β: isothermal compressibility [1/pressure]
+        # β: isothermal compressibility
         compressibility = params.compressibility
 
         # Get current state
         # Cell with lattice vectors L
         cell = systems.data.cell
-        # V: volume [length³]
+        # V: volume
         volume = cell.volume
         # Compute kinetic energy from particles
         particles = self.particles.bind(state).get()
         per_particle_ke = particle_kinetic_energy(
             particles.data.momenta, particles.data.masses
         )
-        # K: total kinetic energy per system [energy]
+        # K: total kinetic energy per system
         kinetic_energy = particles.data.system.sum_over(per_particle_ke).data
 
         # Full Cauchy stress via virial theorem:
@@ -834,7 +830,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         # factor for lattice vectors is exp(dε/3) = (V_new/V)^(1/3).
 
         pressure_deviation = current_pressure - target_pressure
-        # dε: log-volume change [dimensionless]
+        # dε: log-volume change
         depsilon_det = (
             (timestep / barostat_timescale) * compressibility * pressure_deviation
         )
@@ -862,14 +858,14 @@ class StochasticCellRescalingStep[State](Propagator[State]):
 
         # Scale cell: L_new = μ·L
         # CRITICAL: Must reconstruct Cell to recompute cached volume
-        # L_new = μ·L [length]
+        # L_new = μ·L
         new_cell = cell * scaling_factor
         state = self.systems.focus(lambda x: x.data.cell).set(state, new_cell)
 
         # Scale positions: r_new = μ·r
         particle_lens = self.particles.bind(state)
         particles = particle_lens.get()
-        # μ_i: scaling factor per system [dimensionless]
+        # μ_i: scaling factor per system
         scaling_per_system = systems.set_data(scaling_factor)[particles.data.system]
 
         new_positions = particles.data.positions * scaling_per_system[..., None]
@@ -881,7 +877,7 @@ def make_csvr_npt_step[State](
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]],
     systems: Lens[State, Table[SystemId, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
-    flow: Flow[State, Array],
+    flow: Flow[State, units.Length],
 ) -> SequentialPropagator[State]:
     r"""Create NPT integrator for isothermal-isobaric (NPT) ensemble sampling.
 
@@ -980,15 +976,18 @@ class IsBAOABNPTLangevinSystem(
     r"""NPT Langevin MD system row: :class:`IsBAOABNPTLangevinSystemBase` plus integrator params."""
 
 
-def _cell_velocity(cell_momentum: Array, barostat_mass: Array) -> Array:
+def _cell_velocity(
+    cell_momentum: units.Momentum, barostat_mass: units.Mass
+) -> units.Velocity:
     """Element-wise ``V_dot = p^h / M`` on the lower-triangular DOFs.
 
     Both inputs have zeros in the strict-upper triangle by construction; a
     naive division would propagate ``0/0 = NaN`` there. Mask the strict-upper
     triangle to zero.
     """
-    safe_M = jnp.where(barostat_mass != 0, barostat_mass, 1.0)
-    return jnp.tril(jnp.where(barostat_mass != 0, cell_momentum / safe_M, 0.0))
+    live = barostat_mass.value != 0
+    safe_M = units.where(live, barostat_mass, units.ones_like(barostat_mass))
+    return units.apply(jnp.tril, units.where(live, cell_momentum / safe_M, 0.0))
 
 
 @dataclass
@@ -1031,7 +1030,7 @@ class CellMomentumKick[State](Propagator[State]):
 
         V_inv = sys.data.cell.inverse_vectors  # lower-tri
         V_det = sys.data.cell.volume  # (n,)
-        chi_kT = _GAO_CHI * params.temperature * BOLTZMANN_CONSTANT  # (n,)
+        chi_kT = _GAO_CHI * units.constants.k_B * params.temperature  # (n,)
         P_target = params.target_pressure  # (n,)
         P_ins = instantaneous_pressure_tensor(par, sys)  # (n, 3, 3) symmetric
         P_diff = P_ins - P_target[..., None, None] * jnp.eye(3)
@@ -1041,7 +1040,7 @@ class CellMomentumKick[State](Propagator[State]):
         kick_paper = (
             V_det[..., None, None] * (P_diff @ V_inv) - chi_kT[..., None, None] * V_inv
         )
-        kick_kups = jnp.tril(jnp.swapaxes(kick_paper, -1, -2))
+        kick_kups = units.apply(jnp.tril, kick_paper.swapaxes(-1, -2))
 
         # Half time-step: this kick fires twice per BAOAB step on each side.
         dt_half = params.time_step[..., None, None] / 2
@@ -1109,12 +1108,14 @@ class CellStochasticStep[State](Propagator[State]):
         params = sys.data.integrator_params
         gamma = params.barostat_friction
         M = params.barostat_mass
-        kT = params.temperature * BOLTZMANN_CONSTANT
+        kT = units.constants.k_B * params.temperature
         dt = params.time_step
         damp = jnp.exp(-gamma * dt[..., None, None])
-        noise_amp = jnp.sqrt(M * kT[..., None, None] * (1.0 - damp**2))
+        noise_amp = units.sqrt(M * kT[..., None, None] * (1.0 - damp**2))
         R = jnp.tril(jax.random.normal(key, M.shape, dtype=M.dtype))
-        new_cell_momentum = jnp.tril(damp * sys.data.cell_momentum + noise_amp * R)
+        new_cell_momentum = units.apply(
+            jnp.tril, damp * sys.data.cell_momentum + noise_amp * R
+        )
         return self.systems.focus(lambda x: x.data.cell_momentum).set(
             state, new_cell_momentum
         )
@@ -1186,7 +1187,7 @@ class CoupledPositionStep[State](Propagator[State]):
         M_pos = sys.data.cell.inverse_vectors @ V_dot  # lower-tri
         v = par.data.momenta / par.data.masses[..., None]
         new_positions = solve_affine_ode(
-            jnp.swapaxes(M_pos, -1, -2),  # column-form A = Mᵀ (upper-tri)
+            M_pos.swapaxes(-1, -2),  # column-form A = Mᵀ (upper-tri)
             v,
             par.data.positions,
             params.time_step / 2,
@@ -1224,7 +1225,7 @@ def make_baoab_npt_langevin_step[State](
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]],
     systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]],
     derivative_computation: Propagator[State],
-    flow: Flow[State, Array],
+    flow: Flow[State, units.Length],
 ) -> SequentialPropagator[State]:
     r"""Create the fully-flexible-cell BAOAB NPT Langevin integrator.
 

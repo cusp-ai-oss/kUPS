@@ -11,9 +11,9 @@ with a filter via ``NestedLens`` to obtain a potential ``gradient_lens``.
 The geometric-view types live in [kups.potential.common.geometry][].
 """
 
-import jax
 import jax.numpy as jnp
 
+from kups.core import units
 from kups.core.lens import LambdaLens, Lens, lens
 from kups.potential.common.geometry import (
     Geometry,
@@ -21,21 +21,21 @@ from kups.potential.common.geometry import (
     PositionsAndSystemIndex,
 )
 
-POSITIONS_AND_CELL: Lens[Geometry, PositionsAndCell] = lens(
+POSITIONS_AND_CELL: Lens[Geometry, PositionsAndCell[units.Length]] = lens(
     lambda g: PositionsAndCell(g.particles.map_data(lambda p: p.positions), g.systems)
 )
 """Positions + cell DOFs with atoms pinned (today's default cell gradient)."""
 
 
-def _positions_only_set(g: Geometry, value: PositionsAndCell) -> Geometry:
+def _positions_only_set(g: Geometry, value: PositionsAndCell[units.Length]) -> Geometry:
     particles = g.particles.map_data(
         lambda p: PositionsAndSystemIndex(value.positions.data, p.system)
     )
-    cell = jax.lax.stop_gradient(value.cell.data)
+    cell = units.stop_gradient(value.cell.data)
     return Geometry(particles, g.systems.set_data(cell))
 
 
-POSITIONS_ONLY: Lens[Geometry, PositionsAndCell] = LambdaLens(
+POSITIONS_ONLY: Lens[Geometry, PositionsAndCell[units.Length]] = LambdaLens(
     lambda g: PositionsAndCell(g.particles.map_data(lambda p: p.positions), g.systems),
     _positions_only_set,
 )
@@ -44,34 +44,34 @@ POSITIONS_ONLY: Lens[Geometry, PositionsAndCell] = LambdaLens(
 while the DOF pytree matches the cell filters."""
 
 
-def _frechet_filter_get(g: Geometry) -> PositionsAndCell:
+def _frechet_filter_get(g: Geometry) -> PositionsAndCell[units.Length]:
     cell = g.systems.data
     inverse, reference = g.systems.set_data(
         (cell.inverse_vectors, cell.frame.reference_vectors)
     )[g.particles.data.system]
-    s = jnp.einsum("ni,nij->nj", g.particles.data.positions, inverse)
-    q = jnp.einsum("ni,nij->nj", s, reference)
+    s = units.einsum("ni,nij->nj", g.particles.data.positions, inverse)
+    q = units.einsum("ni,nij->nj", s, reference)
     return PositionsAndCell(g.particles.set_data(q), g.systems)
 
 
-def _frechet_filter_set(g: Geometry, value: PositionsAndCell) -> Geometry:
+def _frechet_filter_set(g: Geometry, value: PositionsAndCell[units.Length]) -> Geometry:
     cell = value.cell.data
-    reference_inv = jax.lax.stop_gradient(jnp.linalg.inv(cell.frame.reference_vectors))
+    reference_inv = units.stop_gradient(units.inv(cell.frame.reference_vectors))
     m = jnp.array(cell.periodic)[:, None]
     h = cell.vectors
-    h_eff = m * h + (1 - m) * jax.lax.stop_gradient(h)
+    h_eff = m * h + (1 - m) * units.stop_gradient(h)
     reference_inv, h_eff = value.cell.set_data((reference_inv, h_eff))[
         g.particles.data.system
     ]
-    s = jnp.einsum("ni,nij->nj", value.positions.data, reference_inv)
-    positions = jnp.einsum("ni,nij->nj", s, h_eff)
+    s = units.einsum("ni,nij->nj", value.positions.data, reference_inv)
+    positions = units.einsum("ni,nij->nj", s, h_eff)
     particles = g.particles.map_data(
         lambda p: PositionsAndSystemIndex(positions, p.system)
     )
     return Geometry(particles, g.systems.set_data(cell))
 
 
-FRECHET_FILTER: Lens[Geometry, PositionsAndCell] = LambdaLens(
+FRECHET_FILTER: Lens[Geometry, PositionsAndCell[units.Length]] = LambdaLens(
     _frechet_filter_get, _frechet_filter_set
 )
 """Atoms-ride-the-cell filter; the frame chooses the conditioning.

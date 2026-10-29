@@ -41,6 +41,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Index, Table
 from kups.core.lens import View
@@ -66,7 +67,7 @@ from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing
 class _NNListPointsImpl:
     """Wraps HasPositionsAndSystemIndex to satisfy NeighborListPoints."""
 
-    positions: Array
+    positions: units.Length
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
@@ -89,7 +90,7 @@ def _to_nnlist_points(
 def radial_distribution_function(
     positions: Table[ParticleId, HasPositionsAndSystemIndex],
     systems: Table[SystemId, NeighborListSystems],
-    rmax: float,
+    rmax: units.Length,
     bins: int,
     neighborlist: NeighborList[Literal[2]],
 ) -> Array:
@@ -128,7 +129,7 @@ def radial_distribution_function(
     nnl_positions = _to_nnlist_points(positions)
     edge_result = neighborlist(nnl_positions, systems)
     diffs = edge_result.difference_vectors(positions, systems)
-    dists = jnp.linalg.norm(diffs, axis=(-2, -1))
+    dists = units.norm(diffs, axis=(-2, -1))
     dr = rmax / bins
     bin_indices = jnp.ceil(dists / dr).astype(int)
     system_index = positions.data.system
@@ -138,7 +139,7 @@ def radial_distribution_function(
     rdf = Index.combine(edge_system, edge_bin).counts.data
     rdf = rdf.reshape(n_sys, bins + 1).astype(dists.dtype)
 
-    rr = jnp.linspace(dr / 2, rmax - dr / 2, bins)
+    rr = units.linspace(dr / 2, rmax - dr / 2, bins)
     segment_sizes = system_index.counts.data
     phi = segment_sizes / systems.data.cell.volume
     norm = 4.0 * jnp.pi * dr * phi * segment_sizes
@@ -160,7 +161,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
     Attributes:
         positions: View extracting indexed particle positions from state.
         systems: View extracting indexed system data from state.
-        rmax: View extracting maximum distance (or constant float).
+        rmax: View extracting the maximum distance (a length quantity).
         bins: View extracting number of bins (or constant int).
         neighborlist: View extracting a cutoff-bound neighbor list.
 
@@ -174,7 +175,7 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
         static=True
     )
     systems: View[State, Table[SystemId, NeighborListSystems]] = field(static=True)
-    rmax: View[State, float] = field(static=True)
+    rmax: View[State, units.Length] = field(static=True)
     bins: View[State, int] = field(static=True)
     neighborlist: View[State, NeighborList[Literal[2]]] = field(static=True)
 
@@ -199,9 +200,9 @@ class RadialDistributionFunction[State](StateProperty[State, Array]):
 
 @no_jax_tracing
 def offline_radial_distribution_function(
-    positions: Array,
+    positions: units.Length,
     cell: Cell[Periodic3D],
-    rmax: float,
+    rmax: units.Length,
     bins: int,
     *,
     batch_size: int | None = None,
@@ -233,16 +234,17 @@ def offline_radial_distribution_function(
     Example:
         ```python
         import h5py
+        from kups.core.units import catalog as u
         from kups.observables.radial_distribution_function import offline_radial_distribution_function
 
-        # Load trajectory from file
+        # Load trajectory from file (stored as magnitudes in Angstrom)
         with h5py.File("trajectory.h5", "r") as f:
-            positions = f["positions"][:]  # Shape: (n_frames, n_particles, 3)
-            cell = PeriodicCell(TriclinicFrame.from_matrix(f["cell"][()]))
+            positions = f["positions"][:] * u.angstrom  # Shape: (n_frames, n_particles, 3)
+            cell = PeriodicCell(TriclinicFrame.from_matrix(f["cell"][()] * u.angstrom))
 
         # Compute time-averaged RDF
         g_r = offline_radial_distribution_function(
-            positions, cell, rmax=10.0, bins=200, batch_size=100
+            positions, cell, rmax=10.0 * u.angstrom, bins=200, batch_size=100
         )  # Shape: (n_frames, 200)
 
         # Average over trajectory
@@ -264,10 +266,10 @@ def offline_radial_distribution_function(
 
     _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])
     systems = Table.arange(
-        _SystemData(cell, jnp.array([rmax])),
+        _SystemData(cell, units.stack([rmax])),
         label=SystemId,
     )
-    cutoffs = Table((SystemId(0),), jnp.array([rmax]))
+    cutoffs = Table((SystemId(0),), units.stack([rmax]))
     particles_per_system = Table((SystemId(0),), jnp.array([positions.shape[-2]]))
 
     @dataclass
@@ -277,12 +279,12 @@ def offline_radial_distribution_function(
     @jit
     @as_result_function
     def rdf_with_capacity(nnlist: DenseNearestNeighborList) -> Array:
-        def rdf(pos: Array) -> Array:
+        def rdf(pos: units.Length) -> Array:
             _RDFParticles = namedtuple("_RDFParticles", ["positions", "system"])
             n = pos.shape[0]
             system = Index((SystemId(0),), jnp.zeros(n, dtype=int))
             particles = Table.arange(
-                _RDFParticles(jnp.asarray(pos), system),
+                _RDFParticles(pos, system),
                 label=ParticleId,
             )
             return radial_distribution_function(
@@ -294,7 +296,7 @@ def offline_radial_distribution_function(
             )
 
         return jax.lax.map(
-            rdf, positions.reshape(-1, *positions.shape[-2:]), batch_size=batch_size
+            rdf, positions.reshape((-1, *positions.shape[-2:])), batch_size=batch_size
         )
 
     params = UniversalNeighborlistParameters.estimate(

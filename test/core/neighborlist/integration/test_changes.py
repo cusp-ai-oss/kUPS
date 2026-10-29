@@ -22,6 +22,7 @@ from kups.core.data.index import Index
 from kups.core.data.wrappers import WithIndices
 from kups.core.neighborlist import DenseNearestNeighborList, neighborlist_changes
 from kups.core.neighborlist.edges import Edges
+from kups.core.units import catalog as u
 
 from .._builders import (
     call_with_retry,
@@ -31,6 +32,8 @@ from .._builders import (
     valid_edge_set,
     valid_ids,
 )
+
+_A = u.angstrom
 
 _EdgeKey = tuple[int, int, tuple[int, ...]]
 
@@ -71,8 +74,8 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([3.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, cutoffs = make_systems(cell, jnp.array([3.0]) * _A)
         nl = self._make_nl(cutoffs)
 
         # --- reference: two separate calls ---
@@ -120,8 +123,8 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([1.5]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5]) * _A)
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
@@ -157,10 +160,10 @@ class TestNeighborlistChanges:
         batch = jnp.array([0, 0, 1, 1])
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0]) * _A
             )
         )
-        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]) * _A)
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
@@ -201,10 +204,10 @@ class TestNeighborlistChanges:
 
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0]) * _A
             )
         )
-        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]) * _A)
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
@@ -224,8 +227,8 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([1.5]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5]) * _A)
         nl = self._make_nl(cutoffs)
 
         lh = make_lh(positions, batch)
@@ -251,8 +254,8 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([3.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, cutoffs = make_systems(cell, jnp.array([3.0]) * _A)
         nl = self._make_nl(cutoffs, capacity=64)
 
         full_new_pos = positions.at[changed_idx].set(new_positions)

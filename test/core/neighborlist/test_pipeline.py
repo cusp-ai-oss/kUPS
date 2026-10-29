@@ -27,6 +27,7 @@ from kups.core.neighborlist.pipeline import Pipeline, _prepare
 from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.refine import PrecomputedEdgesSelector
 from kups.core.typing import SystemId
+from test.units import A
 
 from ._builders import (
     make_edges,
@@ -50,7 +51,8 @@ class TestPrepare:
     def test_resolves_queried_keys_to_raw_array(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         ctx = _prepare(lh, None, systems, Index(lh.keys, jnp.array([1, 3])))
         npt.assert_array_equal(np.asarray(ctx.queried_keys), np.array([1, 3]))
@@ -59,7 +61,8 @@ class TestPrepare:
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         with pytest.raises(
             AssertionError, match="cannot combine queries with queried_keys"
@@ -115,7 +118,8 @@ class TestPipelineComposition:
     def test_runs_postprocessors_in_order(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         candidates = make_edges(
             jnp.array([0]),

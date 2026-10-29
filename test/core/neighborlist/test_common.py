@@ -24,6 +24,8 @@ from kups.core.neighborlist.common import (
     real_distance_sq,
 )
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
+from kups.core.units import testing
 
 from ._builders import (
     after,
@@ -35,18 +37,20 @@ from ._builders import (
     systems_from_lvecs,
 )
 
+_A = u.angstrom
+
 
 class TestNumCells:
     def test_face_length_over_cutoff(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, _ = make_systems(cell, jnp.array([2.0]))
-        bins = num_cells(systems.data, jnp.array([2.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([2.0]) * _A)
+        bins = num_cells(systems.data, jnp.array([2.0]) * _A)
         npt.assert_array_equal(np.asarray(bins), np.array([[5, 5, 5]]))
 
     def test_clamps_to_at_least_one_when_cutoff_exceeds_box(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, _ = make_systems(cell, jnp.array([100.0]))
-        bins = num_cells(systems.data, jnp.array([100.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([100.0]) * _A)
+        bins = num_cells(systems.data, jnp.array([100.0]) * _A)
         npt.assert_array_equal(np.asarray(bins), np.array([[1, 1, 1]]))
 
 
@@ -74,9 +78,9 @@ class TestGenerateImageOffsets:
 class TestCandidateImageCounts:
     def test_minimum_image_uses_single_image(self):
         # ratio <= 0.5 -> one image per axis.
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, _ = make_systems(cell, jnp.array([2.0]))
-        images = candidate_image_counts(systems.data.cell, jnp.array([2.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([2.0]) * _A)
+        images = candidate_image_counts(systems.data.cell, jnp.array([2.0]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[1, 1, 1]]))
 
     def test_half_perpendicular_cutoff_uses_single_image(self):
@@ -84,34 +88,34 @@ class TestCandidateImageCounts:
         # mask only the minimum image is in range, so one image per axis.
         # ``ceil(2 * 0.5) = 1``; the closed-interval ``floor(2 * 0.5) + 1`` would
         # wrongly emit 2, over-replicating into 8 copies per pair.
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, _ = make_systems(cell, jnp.array([5.0]))
-        images = candidate_image_counts(systems.data.cell, jnp.array([5.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([5.0]) * _A)
+        images = candidate_image_counts(systems.data.cell, jnp.array([5.0]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[1, 1, 1]]))
 
     def test_integer_ratio_boundary_uses_ceil(self):
         # ratio exactly 1.0: open-interval count ``ceil(2 * 1.0) = 2``; the image
         # at exactly the cutoff that ``floor(2 * 1.0) + 1 = 3`` would add is
         # dropped by the strict mask.
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 1.0))
-        systems, _ = make_systems(cell, jnp.array([1.0]))
-        images = candidate_image_counts(systems.data.cell, jnp.array([1.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 1.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
+        images = candidate_image_counts(systems.data.cell, jnp.array([1.0]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[2, 2, 2]]))
 
     def test_wide_cutoff_uses_window_width(self):
         # ratio = 0.8 -> ceil(2 * 0.8) = 2 images per axis.
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 1.0))
-        systems, _ = make_systems(cell, jnp.array([0.8]))
-        images = candidate_image_counts(systems.data.cell, jnp.array([0.8]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 1.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([0.8]) * _A)
+        images = candidate_image_counts(systems.data.cell, jnp.array([0.8]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[2, 2, 2]]))
 
     def test_handles_nonfinite_ratios(self):
         class Cells:
-            perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]])
+            perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]]) * _A
             periodic = (True, True, True)
 
         # ratio = [inf, 1.5, nan] -> [1, ceil(3), 1] = [1, 3, 1].
-        images = candidate_image_counts(Cells(), jnp.array([6.0]))
+        images = candidate_image_counts(Cells(), jnp.array([6.0]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[1, 3, 1]]))
 
 
@@ -120,7 +124,7 @@ class TestGetCandidateImagesIsFinite:
 
     def _minimal_inputs(self, cell):
         lh = make_lh(jnp.zeros((1, 3)), jnp.array([0]))
-        systems, _ = make_systems(cell, jnp.array([6.0]))
+        systems, _ = make_systems(cell, jnp.array([6.0]) * _A)
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([0])),
             query_idx=Index(lh.keys, jnp.array([0])),
@@ -128,12 +132,12 @@ class TestGetCandidateImagesIsFinite:
         return lh, systems, candidates
 
     def test_zero_perpendicular_axis_clamps_images_to_one(self):
-        tril = jnp.array([[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]])
+        tril = jnp.array([[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]]) * _A
         cell = PeriodicCell(TriclinicFrame(tril))
-        assert float(cell.perpendicular_lengths[0, 0]) == 0.0
+        assert float(cell.perpendicular_lengths[0, 0].to(_A)) == 0.0
         lh, systems, candidates = self._minimal_inputs(cell)
         idx, offsets = _get_candidate_images(
-            candidates, lh, lh, systems, jnp.array([6.0]), FixedCapacity(8)
+            candidates, lh, lh, systems, jnp.array([6.0]) * _A, FixedCapacity(8)
         )
         assert idx.shape[0] <= 8
         assert offsets.shape == (idx.shape[0], 3)
@@ -153,9 +157,9 @@ class TestReplicateForImages:
 
     def _one_candidate(self, box, cutoff, p0, p1):
         """Single candidate (0, 1) at fractional positions ``p0``/``p1``."""
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * box) * _A))
         lh = make_lh(jnp.array([p0, p1]), jnp.zeros(2, dtype=int))
-        systems, _ = make_systems(cell, jnp.array([cutoff]))
+        systems, _ = make_systems(cell, jnp.array([cutoff]) * _A)
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([0])),
             query_idx=Index(lh.keys, jnp.array([1])),
@@ -169,7 +173,7 @@ class TestReplicateForImages:
             box=10.0, cutoff=2.0, p0=[0.1, 0.0, 0.0], p1=[0.9, 0.0, 0.0]
         )
         batch = replicate(
-            candidates, lh, lh, systems, cutoff_table(jnp.array([2.0])), None
+            candidates, lh, lh, systems, cutoff_table(jnp.array([2.0]) * _A), None
         )
         assert len(batch.edges) == 1
         assert bool(batch.is_minimum_image.all())
@@ -185,7 +189,7 @@ class TestReplicateForImages:
             lh,
             lh,
             systems,
-            cutoff_table(jnp.array([0.8])),
+            cutoff_table(jnp.array([0.8]) * _A),
             FixedCapacity(8),
         )
         assert len(batch.edges) == 8
@@ -204,7 +208,7 @@ class TestReplicateForImages:
             lh,
             lh,
             systems,
-            cutoff_table(jnp.array([0.8])),
+            cutoff_table(jnp.array([0.8]) * _A),
             FixedCapacity(8),
         )
         expected = {(i, j, k) for i in (-1, 0) for j in (0, 1) for k in (0, 1)}
@@ -222,7 +226,7 @@ class TestReplicateForImages:
             lh,
             lh,
             systems,
-            cutoff_table(jnp.array([0.8])),
+            cutoff_table(jnp.array([0.8]) * _A),
             FixedCapacity(27),
         )
         assert int(batch.is_minimum_image.sum()) == 1
@@ -255,7 +259,7 @@ class TestReplicateForImages:
             lh,
             lh,
             systems,
-            cutoff_table(jnp.array([2.0, 0.8])),
+            cutoff_table(jnp.array([2.0, 0.8]) * _A),
             FixedCapacity(9),
         )
         assert len(batch.edges) == 9
@@ -277,7 +281,7 @@ class TestReplicateForImages:
         # Bipartite: the rhs endpoint lives in a separate ``rh`` table, so the
         # minimum-image delta must read rh's position (here giving MIC [-1,0,0]),
         # not lh's. The edges index the union of both tables.
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0 * _A))
         lh = make_lh(jnp.array([[0.1, 0.0, 0.0]]), jnp.zeros(1, dtype=int))
         rh = after(lh, make_lh(jnp.array([[0.9, 0.0, 0.0]]), jnp.zeros(1, dtype=int)))
         systems, _ = make_systems(cell, jnp.array([2.0]))
@@ -286,7 +290,7 @@ class TestReplicateForImages:
             query_idx=Index(rh.keys, jnp.array([0])),
         )
         batch = replicate(
-            candidates, lh, rh, systems, cutoff_table(jnp.array([2.0])), None
+            candidates, lh, rh, systems, cutoff_table(jnp.array([2.0]) * _A), None
         )
         npt.assert_array_equal(np.asarray(batch.edges.shifts), [[[-1.0, 0.0, 0.0]]])
         assert batch.edges.indices.keys == lh.keys + rh.keys
@@ -303,10 +307,10 @@ class TestReplicateForImages:
 
 class TestMakeBatchWithMic:
     def test_rounds_fractional_delta_as_shift(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * _A))
         positions = jnp.array([[0.1, 0.0, 0.0], [0.9, 0.0, 0.0]])
         lh = make_lh(positions, jnp.zeros(2, dtype=int))
-        systems, _ = make_systems(cell, jnp.array([1.0]))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([0])),
             query_idx=Index(lh.keys, jnp.array([1])),
@@ -337,11 +341,11 @@ class TestCandidatesToBatch:
 
 class TestMinimumImageShifts:
     def test_zero_for_in_cell_pair(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * _A))
         lh = make_lh(
             jnp.array([[0.1, 0.0, 0.0], [0.3, 0.0, 0.0]]), jnp.zeros(2, dtype=int)
         )
-        systems, _ = make_systems(cell, jnp.array([1.0]))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
         candidates = Candidates(
             key_idx=Index(lh.keys, jnp.array([0])),
             query_idx=Index(lh.keys, jnp.array([1])),
@@ -353,8 +357,8 @@ class TestMinimumImageShifts:
 
 class TestRealDistanceSq:
     def test_scales_fractional_delta_into_real(self):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, _ = make_systems(cell, jnp.array([1.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
         frame_table = systems.map_data(lambda s: s.cell.frame.materialize())
         frames = frame_table[Index((SystemId(0),), jnp.array([0]))]
         # fractional delta 0.3 along x -> real 3.0 -> squared 9.0.
@@ -364,7 +368,7 @@ class TestRealDistanceSq:
             frames,
             jnp.zeros((1, 3)),
         )
-        npt.assert_allclose(np.asarray(dist_sq), np.array([9.0]), atol=1e-5)
+        testing.assert_allclose(dist_sq, np.array([9.0]) * _A**2, _A**2, atol=1e-5)
 
 
 class TestContextTableHelpers:

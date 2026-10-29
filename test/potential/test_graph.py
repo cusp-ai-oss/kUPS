@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import WithIndices
@@ -32,11 +33,12 @@ from kups.potential.common.graph import (
     PointCloud,
 )
 from kups.potential.common.pair import PairEnergy
+from test.units import EV, A, as_length, assert_close
 
 
 @dataclass
 class _PointData:
-    positions: jax.Array
+    positions: units.Length
     species: jax.Array
     system: Index
     inclusion: Index
@@ -46,11 +48,11 @@ class _PointData:
 @dataclass
 class _SystemData:
     cell: Cell
-    cutoff: jax.Array
+    cutoff: units.Length
 
 
 def _make_particles(
-    positions: jax.Array,
+    positions: jax.Array | units.Length,
     species: jax.Array,
     system_ids: jax.Array,
     *,
@@ -65,15 +67,16 @@ def _make_particles(
         exclusion = Index.integer(jnp.arange(len(positions)), label=ParticleId)
     else:
         exclusion = Index((), jnp.zeros((0,), dtype=int), _cls=ParticleId)
-    data = _PointData(positions, species, system, inclusion, exclusion)
+    data = _PointData(as_length(positions), species, system, inclusion, exclusion)
     return Table.arange(data, label=ParticleId)
 
 
 def _make_systems(
-    lattice_vectors: jax.Array, cutoff: jax.Array
+    lattice_vectors: jax.Array | units.Length,
+    cutoff: jax.Array | units.Length,
 ) -> Table[SystemId, _SystemData]:
-    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
-    data = _SystemData(cell, cutoff)
+    cell = PeriodicCell(TriclinicFrame.from_matrix(as_length(lattice_vectors)))
+    data = _SystemData(cell, as_length(cutoff))
     return Table.arange(data, label=SystemId)
 
 
@@ -123,10 +126,12 @@ class TestGraphPairEnergy:
             ),
             jnp.zeros((9, 1, 3)).at[4:7, 0, 0].set(jnp.array([1.0, -1.0, 1.0])),
         )
-        pair = PairEnergy[Table[SystemId, jax.Array], _PointData, jax.Array](
-            kernel=lambda params, left, right, rij, r2, system: left * right * r2,
+        pair = PairEnergy[Table[SystemId, units.Length], _PointData, jax.Array](
+            kernel=lambda params, left, right, rij, r2, system: (
+                left * right * r2.to(A**2) * EV
+            ),
             # Features are computed on particle rows before gathering edge endpoints.
-            features=lambda p: p.species + p.positions[:, 0],
+            features=lambda p: p.species + p.positions[:, 0].to(A),
             cutoffs=lambda p: p,
         )
         energy = GraphPairEnergy(pair)
@@ -134,13 +139,13 @@ class TestGraphPairEnergy:
         inp = GraphPotentialInput(parameters, HyperGraph(particles, systems, edges))
         # System 1 is outside its cutoff; system 2 has no particles. Nonzero
         # self images remain, while padding and cross-system edges contribute zero.
-        npt.assert_allclose(
+        assert_close(
             jax.jit(energy.edge_energies)(inp),
             [8.0, 8.0, 0.0, 0.0, 64.0, 64.0, 0.0, 0.0, 0.0],
         )
         result = jax.jit(energy)(inp)
         assert result.data.keys == systems.keys
-        npt.assert_allclose(result.data.data, [72.0, 0.0, 0.0])
+        assert_close(result.data.data, [72.0, 0.0, 0.0])
 
 
 class TestPointCloud:
@@ -152,7 +157,7 @@ class TestPointCloud:
 
         pc = PointCloud(particles, systems)
         assert pc.batch_size == 1
-        npt.assert_array_equal(pc.particles.data.positions, positions)
+        assert_close(pc.particles.data.positions, positions)
 
     def test_multiple_batches(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
@@ -208,9 +213,9 @@ class TestHyperGraph:
         assert edge_shifts.shape == (2, 1, 3)
 
         # Edge 0→1: no shift
-        npt.assert_allclose(edge_shifts[0, 0], positions[1] - positions[0])
+        assert_close(edge_shifts[0, 0], positions[1] - positions[0])
         # Edge 1→2: with cell shift [5, 0, 0]
-        npt.assert_allclose(
+        assert_close(
             edge_shifts[1, 0], positions[2] - positions[1] + jnp.array([5.0, 0.0, 0.0])
         )
 
@@ -251,7 +256,7 @@ class TestHyperGraphSorted:
             edge_shifts=jnp.array([[[0, 0, 0]], [[0, 0, 0]]]),
         )
         s = hg.sorted_by_system()
-        npt.assert_array_equal(s.particles.data.positions, hg.particles.data.positions)
+        assert_close(s.particles.data.positions, hg.particles.data.positions)
         npt.assert_array_equal(s.particles.data.species, hg.particles.data.species)
         npt.assert_array_equal(
             s.particles.data.system.value, hg.particles.data.system.value
@@ -273,7 +278,7 @@ class TestHyperGraphSorted:
         s = hg.sorted_by_system()
         # argsort([1,0,1,0], stable) = [1,3,0,2]; inverse = [2,0,3,1]
         npt.assert_array_equal(s.particles.data.system.value, [0, 0, 1, 1])
-        npt.assert_array_equal(
+        assert_close(
             s.particles.data.positions,
             [[2.0, 0.0, 0.0], [4.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
         )
@@ -306,7 +311,7 @@ class TestHyperGraphSorted:
         )
         original_vecs = hg.edge_shifts
         sorted_vecs = hg.sorted_by_system().edge_shifts
-        npt.assert_allclose(sorted_vecs, original_vecs)
+        assert_close(sorted_vecs, original_vecs)
 
     def test_sort_edges(self):
         # Edges: first edge connects particles in system 1, second in system 0
@@ -349,7 +354,7 @@ class TestGraphConstructorFixedEdges:
         graph = constructor(state, None)
         assert isinstance(graph, HyperGraph)
         assert graph.edges.degree == 2
-        npt.assert_array_equal(graph.particles.data.positions, positions)
+        assert_close(graph.particles.data.positions, positions)
 
     @pytest.mark.parametrize(
         "n_particles,n_graphs,n_edges,degree",
@@ -390,7 +395,7 @@ class TestGraphConstructorFixedEdges:
         )
 
         result = constructor(state, None)
-        npt.assert_allclose(result.particles.data.positions, positions)
+        assert_close(result.particles.data.positions, positions)
         npt.assert_array_equal(result.edges.indices.value, edges.indices.value)
         assert result.edges.shifts.shape == edges.shifts.shape
         assert result.edges.degree == degree
@@ -486,7 +491,7 @@ class TestGraphConstructorEmpty:
         assert isinstance(graph, HyperGraph)
         assert graph.edges.degree == 0
         assert len(graph.edges) == 0
-        npt.assert_array_equal(graph.particles.data.positions, positions)
+        assert_close(graph.particles.data.positions, positions)
         assert graph.batch_size == 1
 
     def test_multiple_systems(self):
@@ -610,7 +615,7 @@ def _make_probe_update(
     d = particles.data
     idx_arr = jnp.array([particle_idx])
     updated_data = _PointData(
-        new_positions,
+        as_length(new_positions),
         d.species[idx_arr],
         d.system[idx_arr],
         d.inclusion[idx_arr],
@@ -665,7 +670,7 @@ class TestGraphConstructorEmptyWithPatch:
 
         graph = constructor(state, _SimplePatch(new_state))
         # Should use the new_state's particles
-        npt.assert_allclose(graph.particles.data.positions, new_positions)
+        assert_close(graph.particles.data.positions, new_positions)
 
     def test_with_probe(self):
         """patch + probe → applies incremental particle update."""
@@ -685,9 +690,9 @@ class TestGraphConstructorEmptyWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=False)
-        npt.assert_allclose(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
-        npt.assert_allclose(graph.particles.data.positions[0], positions[0])
-        npt.assert_allclose(graph.particles.data.positions[2], positions[2])
+        assert_close(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
+        assert_close(graph.particles.data.positions[0], positions[0])
+        assert_close(graph.particles.data.positions[2], positions[2])
 
     def test_with_probe_old_graph(self):
         """old_graph=True → returns original particles (no update applied)."""
@@ -705,7 +710,7 @@ class TestGraphConstructorEmptyWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=True)
-        npt.assert_allclose(graph.particles.data.positions, positions)
+        assert_close(graph.particles.data.positions, positions)
 
 
 class TestGraphConstructorFixedEdgesWithPatch:
@@ -741,7 +746,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(new_state))
-        npt.assert_allclose(graph.particles.data.positions, new_positions)
+        assert_close(graph.particles.data.positions, new_positions)
 
     def _make_edge_probe(self, particles, edges, particle_idx, new_pos):
         update = _make_probe_update(particles, particle_idx, new_pos)
@@ -785,7 +790,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=False)
-        npt.assert_allclose(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
+        assert_close(graph.particles.data.positions[1], [5.0, 5.0, 5.0])
         # Both edges involve particle 1, so both should be in the result
         assert len(graph.edges) > 0
         probe_result.neighborlist_after.assert_incremental_call(
@@ -808,7 +813,7 @@ class TestGraphConstructorFixedEdgesWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=True)
-        npt.assert_allclose(graph.particles.data.positions, particles.data.positions)
+        assert_close(graph.particles.data.positions, particles.data.positions)
         probe_result.neighborlist_before.assert_incremental_call(
             probe_result.particles.indices
         )
@@ -849,7 +854,7 @@ class TestGraphConstructorRadiusWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(new_state))
-        npt.assert_allclose(graph.particles.data.positions, new_positions)
+        assert_close(graph.particles.data.positions, new_positions)
 
     def _make_radius_probe(self, particles, nnlist, particle_idx, new_pos):
         update = _make_probe_update(particles, particle_idx, new_pos)
@@ -894,7 +899,7 @@ class TestGraphConstructorRadiusWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=False)
-        npt.assert_allclose(graph.particles.data.positions[1], [0.5, 0.0, 0.0])
+        assert_close(graph.particles.data.positions[1], [0.5, 0.0, 0.0])
         assert graph.edges.degree == 2
 
     def test_with_probe_old_graph(self):
@@ -918,7 +923,7 @@ class TestGraphConstructorRadiusWithPatch:
         )
 
         graph = constructor(state, _SimplePatch(state), old_graph=True)
-        npt.assert_allclose(graph.particles.data.positions, positions)
+        assert_close(graph.particles.data.positions, positions)
 
 
 class TestGraphInputConstructorWithProbe:
@@ -950,11 +955,9 @@ class TestGraphInputConstructorWithProbe:
         assert result[0].weight == -1
         assert result[1].weight == 1
         # old graph has original positions
-        npt.assert_allclose(result[0].inp.graph.particles.data.positions, positions)
+        assert_close(result[0].inp.graph.particles.data.positions, positions)
         # new graph has updated particle 1
-        npt.assert_allclose(
-            result[1].inp.graph.particles.data.positions[1], [5.0, 0.0, 0.0]
-        )
+        assert_close(result[1].inp.graph.particles.data.positions[1], [5.0, 0.0, 0.0])
 
 
 class TestGraphInputConstructorWithoutProbe:
@@ -998,7 +1001,7 @@ class TestGraphInputConstructorWithoutProbe:
         inp = input_constructor(state, patch, old_input=old_input)
         expected_state = state if old_input else new_state
         assert inp.parameters == expected_state["params"]
-        npt.assert_allclose(
+        assert_close(
             inp.graph.particles.data.positions,
             expected_state["particles"].data.positions,
         )
@@ -1009,12 +1012,10 @@ class TestGraphInputConstructorWithoutProbe:
             assert result.add_previous_total is True
             assert result[0].weight == -1
             assert result[0].inp.parameters == state["params"]
-            npt.assert_allclose(result[0].inp.graph.particles.data.positions, positions)
+            assert_close(result[0].inp.graph.particles.data.positions, positions)
         else:
             assert len(result) == 1
             assert result.add_previous_total is False
         assert result[-1].weight == 1
         assert result[-1].inp.parameters == new_state["params"]
-        npt.assert_allclose(
-            result[-1].inp.graph.particles.data.positions, new_positions
-        )
+        assert_close(result[-1].inp.graph.particles.data.positions, new_positions)

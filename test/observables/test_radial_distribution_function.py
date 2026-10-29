@@ -8,9 +8,9 @@ from typing import Any, Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy.testing as npt
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
@@ -24,6 +24,7 @@ from kups.observables.radial_distribution_function import (
     offline_radial_distribution_function,
     radial_distribution_function,
 )
+from test.units import A, as_length, assert_close
 
 _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])
 
@@ -38,16 +39,16 @@ def _make_particles(
         jnp.asarray(system_ids, dtype=int),
     )
     return Table.arange(
-        _Particles(positions_data, system),
+        _Particles(as_length(positions_data), system),
         label=ParticleId,
     )
 
 
-def _make_systems(cell: Cell, rmax: float) -> Table[SystemId, Any]:
+def _make_systems(cell: Cell, rmax: units.Length) -> Table[SystemId, Any]:
     """Helper to create Table systems for tests."""
     n_sys = cell.vectors.shape[0]
     return Table.arange(
-        _SystemData(cell, jnp.full(n_sys, rmax)),
+        _SystemData(cell, units.full(n_sys, rmax)),
         label=SystemId,
     )
 
@@ -57,7 +58,7 @@ class RDFTestState(NamedTuple):
 
     positions: Table[ParticleId, Any]
     systems: Table[SystemId, Any]
-    rmax: float
+    rmax: units.Length
     bins: int
 
 
@@ -86,7 +87,7 @@ class EmptyNeighborList:
 
 def _box10() -> Cell:
     """10x10x10 cubic unit cell."""
-    return PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * 10.0)[None]))
+    return PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * 10.0)[None] * A))
 
 
 class TestRadialDistributionFunction:
@@ -95,12 +96,12 @@ class TestRadialDistributionFunction:
     def test_two_particles_peak_and_class_interface(self):
         """Two particles 1.0 apart: RDF peak near r=1.0, works with class interface."""
         positions = _make_particles(
-            jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * A,
             jnp.array([0, 0]),
             1,
         )
-        systems = _make_systems(_box10(), 5.0)
-        rmax, bins = 5.0, 50
+        systems = _make_systems(_box10(), 5.0 * A)
+        rmax, bins = 5.0 * A, 50
         dr = rmax / bins
 
         # Test functional interface
@@ -112,13 +113,15 @@ class TestRadialDistributionFunction:
         assert jnp.all(result >= 0.0)
         assert result[0, 0] == 0.0
 
-        r_centers = jnp.linspace(dr / 2, rmax - dr / 2, bins)
-        bin_at_1 = int(jnp.argmin(jnp.abs(r_centers - 1.0)))
+        r_centers = units.linspace(dr / 2, rmax - dr / 2, bins)
+        bin_at_1 = int(jnp.argmin(jnp.abs(r_centers.to(A) - 1.0)))
         max_bin = int(jnp.argmax(result[0]))
         assert abs(max_bin - bin_at_1) <= 2
 
         # Test class interface
-        state = RDFTestState(positions=positions, systems=systems, rmax=5.0, bins=50)
+        state = RDFTestState(
+            positions=positions, systems=systems, rmax=5.0 * A, bins=50
+        )
         rdf_calc = RadialDistributionFunction(
             positions=view(lambda s: s.positions),  # type: ignore
             systems=view(lambda s: s.systems),  # type: ignore
@@ -131,22 +134,22 @@ class TestRadialDistributionFunction:
         assert jnp.all(jnp.isfinite(class_result))
 
         # Test a different rmax works
-        test_systems = _make_systems(_box10(), 10.0)
+        test_systems = _make_systems(_box10(), 10.0 * A)
         r = radial_distribution_function(
-            positions, test_systems, 10.0, 50, MockNeighborList()
+            positions, test_systems, 10.0 * A, 50, MockNeighborList()
         )
         assert r.shape == (1, 50)
 
     def test_no_neighbors_gives_zero_rdf(self):
         """Single particle or no pairs produces all-zero RDF."""
-        positions = _make_particles(jnp.array([[0.0, 0.0, 0.0]]), jnp.array([0]), 1)
-        systems = _make_systems(_box10(), 5.0)
+        positions = _make_particles(jnp.array([[0.0, 0.0, 0.0]]) * A, jnp.array([0]), 1)
+        systems = _make_systems(_box10(), 5.0 * A)
 
         result = radial_distribution_function(
-            positions, systems, 5.0, 50, EmptyNeighborList()
+            positions, systems, 5.0 * A, 50, EmptyNeighborList()
         )
         assert result.shape == (1, 50)
-        npt.assert_allclose(result, 0.0, atol=1e-10)
+        assert_close(result, 0.0, atol=1e-10)
 
     def test_ideal_gas_normalization(self):
         """Dilute system: RDF values are non-negative and bounded."""
@@ -162,18 +165,18 @@ class TestRadialDistributionFunction:
             jnp.array([0, 0, 0, 0]),
             1,
         )
-        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * 20.0)[None]))
-        systems = _make_systems(cell, 8.0)
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * 20.0)[None] * A))
+        systems = _make_systems(cell, 8.0 * A)
 
         result = radial_distribution_function(
             positions,
             systems,
-            8.0,
+            8.0 * A,
             40,
             AllDenseNearestNeighborList(
                 avg_edges=FixedCapacity(4),
                 avg_image_candidates=FixedCapacity(4),
-                cutoffs=Table((SystemId(0),), jnp.array([8.0])),
+                cutoffs=Table((SystemId(0),), jnp.array([8.0]) * A),
             ),
         )
 
@@ -196,10 +199,10 @@ class TestRadialDistributionFunction:
             2,
         )
         cell = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.tile(jnp.eye(3) * 10.0, (2, 1, 1)))
+            TriclinicFrame.from_matrix(jnp.tile(jnp.eye(3) * 10.0, (2, 1, 1)) * A)
         )
-        systems = _make_systems(cell, 5.0)
-        rmax, bins = 5.0, 50
+        systems = _make_systems(cell, 5.0 * A)
+        rmax, bins = 5.0 * A, 50
         dr = rmax / bins
 
         @dataclass
@@ -220,9 +223,9 @@ class TestRadialDistributionFunction:
         assert jnp.all(jnp.isfinite(result))
         assert jnp.all(result >= 0.0)
 
-        r_centers = jnp.linspace(dr / 2, rmax - dr / 2, bins)
-        bin_at_1 = int(jnp.argmin(jnp.abs(r_centers - 1.0)))
-        bin_at_2 = int(jnp.argmin(jnp.abs(r_centers - 2.0)))
+        r_centers = units.linspace(dr / 2, rmax - dr / 2, bins)
+        bin_at_1 = int(jnp.argmin(jnp.abs(r_centers.to(A) - 1.0)))
+        bin_at_2 = int(jnp.argmin(jnp.abs(r_centers.to(A) - 2.0)))
         assert abs(int(jnp.argmax(result[0])) - bin_at_1) <= 2
         assert abs(int(jnp.argmax(result[1])) - bin_at_2) <= 2
 
@@ -242,17 +245,18 @@ class TestRadialDistributionFunction:
         )
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.array([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])[None],
+                jnp.array([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])[None]
+                * A,
             )
         )
-        rmax, bins = 3.0, 30
+        rmax, bins = 3.0 * A, 30
         dr = rmax / bins
         systems = _make_systems(cell, rmax)
 
         nnlist = AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(4),
             avg_image_candidates=FixedCapacity(4),
-            cutoffs=Table((SystemId(0),), jnp.array([rmax])),
+            cutoffs=Table((SystemId(0),), units.stack([rmax])),
         )
         result = radial_distribution_function(positions, systems, rmax, bins, nnlist)
 
@@ -261,9 +265,9 @@ class TestRadialDistributionFunction:
         assert jnp.all(result >= 0.0)
         assert result[0, 0] == 0.0
 
-        r_centers = jnp.linspace(dr / 2, rmax - dr / 2, bins)
-        bin_at_1 = int(jnp.argmin(jnp.abs(r_centers - 1.0)))
-        bin_at_sqrt2 = int(jnp.argmin(jnp.abs(r_centers - jnp.sqrt(2))))
+        r_centers = units.linspace(dr / 2, rmax - dr / 2, bins)
+        bin_at_1 = int(jnp.argmin(jnp.abs(r_centers.to(A) - 1.0)))
+        bin_at_sqrt2 = int(jnp.argmin(jnp.abs(r_centers.to(A) - jnp.sqrt(2))))
 
         rdf = result[0]
         peak_1 = float(jnp.max(rdf[max(0, bin_at_1 - 2) : min(bins, bin_at_1 + 3)]))
@@ -277,9 +281,9 @@ class TestRadialDistributionFunction:
         """Offline trajectory RDF agrees with the online path frame by frame."""
         key = jax.random.key(0)
         n_frames, n_particles = 3, 8
-        positions = jax.random.uniform(key, (n_frames, n_particles, 3)) * 10.0
-        cell = _box10()
-        rmax, bins = 3.0, 12
+        positions = jax.random.uniform(key, (n_frames, n_particles, 3)) * 10.0 * A
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0 * A))
+        rmax, bins = 3.0 * A, 12
 
         offline = offline_radial_distribution_function(positions, cell, rmax, bins)
         assert offline.shape == (n_frames, bins)
@@ -288,11 +292,11 @@ class TestRadialDistributionFunction:
         nnlist = AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_particles),
             avg_image_candidates=FixedCapacity(27),
-            cutoffs=Table((SystemId(0),), jnp.array([rmax])),
+            cutoffs=Table((SystemId(0),), units.stack([rmax])),
         )
         for frame in range(n_frames):
             particles = _make_particles(positions[frame], jnp.zeros(n_particles), 1)
             online = radial_distribution_function(
                 particles, systems, rmax, bins, nnlist
             )
-            npt.assert_allclose(offline[frame], online[0], rtol=1e-6)
+            assert_close(offline[frame], online[0], rtol=1e-6)

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import Cell, TriclinicFrame
 from kups.core.data import Table
 from kups.core.neighborlist import (
@@ -26,23 +27,26 @@ from kups.core.neighborlist import (
 )
 from kups.core.neighborlist.verlet import _sym3_min_eigenvalue
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
+from test.units import as_length
 
 from ._builders import make_lh, make_systems
 
+_A = u.angstrom
 CUTOFF, SKIN = 3.5, 1.0
 
 
 def _cell(lvecs: Array, periodic=(True, True, True), n_sys: int = 1) -> Cell:
-    """An ``(n_sys,)``-batched cell."""
+    """An ``(n_sys,)``-batched cell, from lattice vectors in Angstrom."""
     lv = jnp.asarray(lvecs)
     if lv.ndim == 2:
         lv = jnp.repeat(lv[None], n_sys, axis=0)
-    return Cell.from_pbc(TriclinicFrame.from_matrix(lv), periodic)
+    return Cell.from_pbc(TriclinicFrame.from_matrix(lv * _A), periodic)
 
 
 def _margins(
-    positions: Array,
-    reference_positions: Array,
+    positions: Array | units.Length,
+    reference_positions: Array | units.Length,
     cell_now: Cell,
     cell_ref: Cell,
     system: Array | None = None,
@@ -52,14 +56,14 @@ def _margins(
     if system is None:
         system = jnp.zeros(positions.shape[0], dtype=int)
     n_sys = int(jnp.max(system)) + 1
-    particles = make_lh(positions, system)
+    particles = make_lh(as_length(positions), system)
     systems, cutoffs = make_systems(cell_now, jnp.full((n_sys,), cutoff))
-    reference = SkinReference(reference_positions, cell_ref)
-    return skin_margin(particles, systems, reference, cutoffs, skin)
+    reference = SkinReference(as_length(reference_positions), cell_ref)
+    return skin_margin(particles, systems, reference, cutoffs, skin * _A)
 
 
 def _margin_fires(*args, **kwargs) -> bool:
-    return bool(jnp.min(_margins(*args, **kwargs).data.headroom) < 0.0)
+    return bool(jnp.min(_margins(*args, **kwargs).data.headroom.to(_A)) < 0.0)
 
 
 class TestSkinMargin:
@@ -98,7 +102,7 @@ class TestSkinMargin:
             lvecs = jnp.array([[20.0, 0.0, 0.0], [gamma, 20.0, 0.0], [0.0, 0.0, 20.0]])
             now = _cell(lvecs)
             # Atoms at fixed fractional coordinates: pure affine, zero residual.
-            frac = ref.frame.to_fractional(pos)
+            frac = ref.frame.to_fractional(pos * _A)
             assert _margin_fires(now.frame.to_real(frac), pos, now, ref) is expected
 
     def test_triclinic_boundary_crossing(self):
@@ -117,8 +121,9 @@ class TestSkinMargin:
         for df, expected in [(0.04, False), (0.07, True)]:
             # |a2| = 10, so a fractional move of df along a2 is a 10*df true step.
             pos_new = cell.wrap(cell.frame.to_real(f_ref + jnp.array([[0, df, 0]])))
-            raw = jnp.linalg.norm(pos_new - pos_ref)
-            assert float(raw) > 5.0  # the raw difference jumped by ~a lattice vector
+            raw = units.norm(pos_new - pos_ref)
+            # The raw difference jumped by ~a lattice vector.
+            assert float(raw.to(_A)) > 5.0
             assert _margin_fires(pos_new, pos_ref, cell, cell) is expected
 
     def test_per_system_accounting(self):
@@ -131,9 +136,10 @@ class TestSkinMargin:
         system = jnp.array([0, 0, 1, 1])
         moved = pos.at[2, 0].add(0.6)  # only system 1 moves
         margin = _margins(moved, pos, cell, cell, system=system).data
-        assert float(margin.consumed[0]) == pytest.approx(0.0)
-        assert float(margin.consumed[1]) == pytest.approx(1.2)
-        assert bool(margin.headroom[0] >= 0.0) and bool(margin.headroom[1] < 0.0)
+        consumed, headroom = margin.consumed.to(_A), margin.headroom.to(_A)
+        assert float(consumed[0]) == pytest.approx(0.0)
+        assert float(consumed[1]) == pytest.approx(1.2)
+        assert bool(headroom[0] >= 0.0) and bool(headroom[1] < 0.0)
 
     def test_nonperiodic_axes_are_not_unwrapped(self):
         """In a vacuum cell nothing wraps, so a large real move must trigger even
@@ -150,18 +156,18 @@ class TestEffectiveBuildRadii:
     def test_unclamped_below_the_limit(self):
         """A radius inside the single-image regime passes through untouched."""
         cell = _cell(8.0 * jnp.eye(3))
-        radii = effective_build_radii(jnp.array([2.0]), 1.5, cell)
-        assert float(radii[0]) == pytest.approx(3.5)  # 2 + 1.5 < 8 / 2
+        radii = effective_build_radii(jnp.array([2.0]) * _A, 1.5 * _A, cell)
+        assert float(radii[0].to(_A)) == pytest.approx(3.5)  # 2 + 1.5 < 8 / 2
 
     def test_clamped_to_half_perpendicular_length(self):
         cell = _cell(8.0 * jnp.eye(3))
-        radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
-        assert float(radii[0]) == pytest.approx(4.0)  # min(3+2, 8/2)
+        radii = effective_build_radii(jnp.array([3.0]) * _A, 2.0 * _A, cell)
+        assert float(radii[0].to(_A)) == pytest.approx(4.0)  # min(3+2, 8/2)
 
     def test_unclamped_in_vacuum(self):
         cell = _cell(8.0 * jnp.eye(3), periodic=(False, False, False))
-        radii = effective_build_radii(jnp.array([3.0]), 2.0, cell)
-        assert float(radii[0]) == pytest.approx(5.0)
+        radii = effective_build_radii(jnp.array([3.0]) * _A, 2.0 * _A, cell)
+        assert float(radii[0].to(_A)) == pytest.approx(5.0)
 
 
 def test_sym3_min_eigenvalue_matches_eigvalsh():

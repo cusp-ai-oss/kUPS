@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
+from kups.core import units
 from kups.core.cell import Periodic3D
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
@@ -94,13 +95,13 @@ def make_ewald_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
         IsEwaldState[MaybeCached[EwaldParameters, Any]]
     ] = ...,
-) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> EwaldPotential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -125,19 +126,25 @@ def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsEwaldState[
-            HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]
+            HasCache[
+                EwaldParameters, EwaldCache[PositionsAndCell[units.Force], EmptyType]
+            ]
         ],
     ],
     probe: Probe[State, P, IsParticleProbe[IsEwaldPointData]],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
-        IsEwaldState[HasCache[EwaldParameters, EwaldCache[PositionsAndCell, EmptyType]]]
+        IsEwaldState[
+            HasCache[
+                EwaldParameters, EwaldCache[PositionsAndCell[units.Force], EmptyType]
+            ]
+        ]
     ] = ...,
-) -> EwaldPotential[State, PositionsAndCell, EmptyType, P]: ...
+) -> EwaldPotential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 @overload
@@ -159,11 +166,11 @@ def make_ewald_from_state[State](
     probe: None = None,
     *,
     parameters: EwaldParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
-) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> EwaldPotential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -184,18 +191,19 @@ def make_ewald_from_state[State, P: Patch[Any]](
 @overload
 def make_ewald_from_state[State, P: Patch[Any]](
     state: Lens[
-        State, IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
+        State,
+        IsCachedEwaldGraphState[EwaldCache[PositionsAndCell[units.Force], EmptyType]],
     ],
     probe: Probe[State, P, IsParticleProbe[IsEwaldPointData]],
     *,
     parameters: EwaldParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
     neighborlist_factory: NeighborListFactory[
-        IsCachedEwaldGraphState[EwaldCache[PositionsAndCell, EmptyType]]
+        IsCachedEwaldGraphState[EwaldCache[PositionsAndCell[units.Force], EmptyType]]
     ] = ...,
-) -> EwaldPotential[State, PositionsAndCell, EmptyType, P]: ...
+) -> EwaldPotential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 def make_ewald_from_state(

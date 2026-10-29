@@ -5,7 +5,6 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from jax import Array
 
@@ -14,6 +13,7 @@ from kups.application.potential.filter import (
     POSITIONS_AND_CELL,
     POSITIONS_ONLY,
 )
+from kups.core import units
 from kups.core.cell import (
     Cell,
     DeformedFrame,
@@ -30,6 +30,7 @@ from kups.potential.common.geometry import (
     PositionsAndCell,
     PositionsAndSystemIndex,
 )
+from test.units import FORCE, A, as_length, assert_close
 
 jax.config.update("jax_enable_x64", True)
 
@@ -41,7 +42,7 @@ def _frechet_cell(
     cell_factor: float | Array = 1.0,
 ) -> Cell[Any]:
     """Build a batched Cell with DeformedFrame from a stack of basis matrices."""
-    base = TriclinicFrame.from_matrix(h)
+    base = TriclinicFrame.from_matrix(as_length(h))
     frame = DeformedFrame.from_frame(base, cell_factor=cell_factor)
     if periodic == (True, True, True):
         return PeriodicCell(frame)
@@ -52,7 +53,7 @@ def _geometry(positions: Array, system_ids: Sequence[int], cell: Cell[Any]) -> G
     """Assemble a Table-based Geometry from raw positions, ids and a batched cell."""
     sys_index = Index.new([SystemId(s) for s in system_ids])
     particles = Table.arange(
-        PositionsAndSystemIndex(positions, sys_index), label=ParticleId
+        PositionsAndSystemIndex(as_length(positions), sys_index), label=ParticleId
     )
     systems = Table(tuple(SystemId(k) for k in sorted(set(system_ids))), cell)
     return Geometry(particles, systems)
@@ -93,12 +94,8 @@ def test_lens_law_roundtrip(name: str, filt: Lens[Geometry, Any]):
     """get/set round-trips: set(g, get(g)) leaves the Geometry unchanged."""
     g = _GEOMETRIES[name]()
     g2 = filt.set(g, filt.get(g))
-    np.testing.assert_allclose(
-        g2.particles.data.positions, g.particles.data.positions, atol=1e-12
-    )
-    np.testing.assert_allclose(
-        g2.systems.data.vectors, g.systems.data.vectors, atol=1e-12
-    )
+    assert_close(g2.particles.data.positions, g.particles.data.positions, atol=1e-12)
+    assert_close(g2.systems.data.vectors, g.systems.data.vectors, atol=1e-12)
 
 
 def test_frechet_get_is_inverse_of_set():
@@ -106,29 +103,35 @@ def test_frechet_get_is_inverse_of_set():
     g = _multi()
     filt = FRECHET_FILTER
     u = PositionsAndCell(
-        g.particles.set_data(g.particles.data.positions + 0.3), g.systems
+        g.particles.set_data(g.particles.data.positions + 0.3 * A), g.systems
     )
     u_back = filt.get(filt.set(g, u))
-    np.testing.assert_allclose(u_back.positions.data, u.positions.data, atol=1e-12)
+    assert_close(u_back.positions.data, u.positions.data, atol=1e-12)
 
 
-def _toy_energy(positions: Array, cell: Cell[Any]) -> Array:
-    """Toy energy reading positions and the cell (mirrors the notebook)."""
-    g_r = jnp.arange(positions.size, dtype=positions.dtype).reshape(positions.shape)
-    w = jnp.arange(cell.vectors.size, dtype=positions.dtype).reshape(cell.vectors.shape)
-    return jnp.sum(0.1 * g_r * positions) + jnp.sum(0.05 * w * cell.vectors)
+def _toy_energy(positions: units.Length, cell: Cell[Any]) -> units.Energy:
+    """Toy energy reading positions and the cell (mirrors the notebook).
+
+    The weights are eV per Angstrom, so the energy comes out in eV.
+    """
+    r, h = positions, cell.vectors
+    g_r = jnp.arange(r.size, dtype=r.dtype).reshape(r.shape) * FORCE
+    w = jnp.arange(h.size, dtype=h.dtype).reshape(h.shape) * FORCE
+    return units.sum(0.1 * g_r * r) + units.sum(0.05 * w * h)
 
 
-def _filter_gradient(filt: Lens[Geometry, Any], g: Geometry) -> tuple[Array, Any]:
+def _filter_gradient(
+    filt: Lens[Geometry, Any], g: Geometry
+) -> tuple[units.Energy, Any]:
     """dE/du via vjp of the energy through the filter's set (mirrors energy.py)."""
     u0 = filt.get(g)
 
-    def e_of_u(u: Any) -> Array:
+    def e_of_u(u: Any) -> units.Energy:
         gg = filt.set(g, u)
         return _toy_energy(gg.particles.data.positions, gg.systems.data)
 
-    e, vjp = jax.vjp(e_of_u, u0)
-    (grad,) = vjp(jnp.ones_like(e))
+    e, vjp = units.vjp(e_of_u, u0)
+    (grad,) = vjp(units.ones_like(e))
     return e, grad
 
 
@@ -139,20 +142,20 @@ def test_frechet_total_gradient_matches_jax_grad():
     frame = cast(DeformedFrame, cell.frame)
     deformation = cast(LogTriclinicFrame, frame.deformation)
     r = g.particles.data.positions
-    s0 = r @ jnp.linalg.inv(cell.vectors[0])
+    s0 = r @ units.inv(cell.vectors[0])
 
     _, grad = _filter_gradient(FRECHET_FILTER, g)
 
-    def e_total(tril: Array) -> Array:
+    def e_total(tril: Array) -> units.Energy:
         f = DeformedFrame(
             frame.base, LogTriclinicFrame(tril[None], deformation.cell_factor)
         )
         h = f.vectors[0]
         return _toy_energy(s0 @ h, PeriodicCell(TriclinicFrame.from_matrix(h[None])))
 
-    truth = jax.grad(e_total)(deformation.tril[0])
+    truth = units.grad(e_total)(deformation.tril[0])
     grad_frame = cast(DeformedFrame, grad.cell.data.frame)
-    np.testing.assert_allclose(
+    assert_close(
         cast(LogTriclinicFrame, grad_frame.deformation).tril[0], truth, atol=1e-10
     )
 
@@ -162,9 +165,7 @@ def test_frechet_dE_dq_equals_force_at_A_zero():
     g = _single()
     _, grad_fr = _filter_gradient(FRECHET_FILTER, g)
     _, grad_id = _filter_gradient(POSITIONS_AND_CELL, g)
-    np.testing.assert_allclose(
-        grad_fr.positions.data, grad_id.positions.data, atol=1e-10
-    )
+    assert_close(grad_fr.positions.data, grad_id.positions.data, atol=1e-10)
 
 
 def test_slab_mask_leaves_primal_untouched():
@@ -172,6 +173,4 @@ def test_slab_mask_leaves_primal_untouched():
     g = _slab()
     filt = FRECHET_FILTER
     g2 = filt.set(g, filt.get(g))
-    np.testing.assert_allclose(
-        g2.particles.data.positions, g.particles.data.positions, atol=1e-12
-    )
+    assert_close(g2.particles.data.positions, g.particles.data.positions, atol=1e-12)

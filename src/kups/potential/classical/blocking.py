@@ -25,6 +25,7 @@ from typing import (
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View
@@ -34,7 +35,6 @@ from kups.core.neighborlist import (
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     PotentialOut,
 )
 from kups.core.typing import (
@@ -49,6 +49,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.potential.common.energy import (
     EnergyFunction,
@@ -63,9 +64,9 @@ class BlockingSpheresConfig(Protocol):
     """Protocol for a single blocking sphere description (center and radius)."""
 
     @property
-    def center(self) -> tuple[float, float, float]: ...
+    def center(self) -> units.Length: ...
     @property
-    def radius(self) -> float: ...
+    def radius(self) -> units.Length: ...
 
 
 @dataclass
@@ -79,13 +80,14 @@ class BlockingSpheresParameters:
         motif: Motif assignment per sphere
     """
 
-    radii: Array
-    positions: Array
+    radii: units.Length
+    positions: units.Length
     system: Index[SystemId]
     motif: Index[MotifId]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.radii, Array):
+        radii = self.radii.v if units.is_quantity(self.radii) else self.radii
+        if not isinstance(radii, Array):
             return
         assert (*self.radii.shape, 3) == self.positions.shape, (
             f"Positions shape {self.positions.shape} must match radii shape {self.radii.shape} with last dimension 3"
@@ -108,8 +110,8 @@ class BlockingSpheresParameters:
             BlockingSpheresParameters with flattened arrays of radii, positions,
             system assignments, and motif assignments.
         """
-        radii_list: list[float] = []
-        positions_list: list[tuple[float, float, float]] = []
+        radii_list: list[units.Length] = []
+        positions_list: list[units.Length] = []
         system_list: list[SystemId] = []
         motif_list: list[MotifId] = []
         for sys_idx, sys_spheres in enumerate(data):
@@ -119,8 +121,12 @@ class BlockingSpheresParameters:
                     positions_list.append(sphere.center)
                     system_list.append(SystemId(sys_idx))
                     motif_list.append(MotifId(motif_idx))
-        radii = jnp.array(radii_list)
-        positions = jnp.array(positions_list).reshape(-1, 3)
+        radii = units.stack(radii_list) if radii_list else units.zeros((0,), u.angstrom)
+        positions = (
+            units.stack(positions_list)
+            if positions_list
+            else units.zeros((0, 3), u.angstrom)
+        )
         system = Index.new(system_list, label=SystemId).populate_max_count()
         motif = Index.new(motif_list, label=MotifId).populate_max_count()
         return BlockingSpheresParameters(radii, positions, system, motif)
@@ -133,14 +139,14 @@ class _BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): .
 class _BlockingSpherePoints:
     """Wraps blocking sphere centers as NeighborListPoints for neighborlist calls."""
 
-    positions: Array
+    positions: units.Length
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
 
 
 type BlockingSpheresNeighborListFactory = Callable[
-    [Table[SystemId, Array]], NeighborList[Literal[2]]
+    [Table[SystemId, units.Length]], NeighborList[Literal[2]]
 ]
 
 
@@ -189,7 +195,7 @@ def _sphere_ids(
 
 def blocking_spheres_energy(
     inp: BlockingSpheresPotentialInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Calculate blocking spheres potential energy.
 
     Returns infinite energy for particles inside blocking spheres.
@@ -209,15 +215,17 @@ def blocking_spheres_energy(
     ]
     particle_sys = particles.system
     diffs = inp.cell[particle_sys].wrap(particles.positions - sphere.positions)
-    dists = jnp.linalg.norm(diffs, axis=-1)
+    dists = units.norm(diffs, axis=-1)
     # Compare motifs in a merged keyspace so that groups whose motif has no
     # sphere (and OOB-sentinel groups, e.g. buffered empty slots) never match
     # any sphere motif and therefore are not blocked.
     group_motif_idx, sph_motif_idx = Index.match(
         inp.groups[particles.group].motif, sphere.motif
     )
-    raw_energies = jnp.where(
-        (dists < sphere.radii) & (group_motif_idx == sph_motif_idx), jnp.inf, 0.0
+    raw_energies = units.where(
+        (dists < sphere.radii) & (group_motif_idx == sph_motif_idx),
+        jnp.inf * u.eV,
+        0.0,
     )
     energies = particle_sys.sum_over(raw_energies)
     return WithPatch(energies, IdPatch[Any]())
@@ -280,7 +288,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         # systems that carry spheres); systems without spheres get a zero cutoff.
         sphere_system = parameters.system.update_labels(tuple(systems.keys))
         max_radii = sphere_system.max_over(parameters.radii).data
-        cutoffs = Table(systems.keys, jnp.maximum(max_radii, 0.0))
+        cutoffs = Table(systems.keys, units.maximum(max_radii, 0.0))
 
         nnlist_particles = particles.map_data(
             lambda p: _BlockingSpherePoints(

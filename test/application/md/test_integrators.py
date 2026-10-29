@@ -9,13 +9,20 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
+from kups.core.cell import (
+    Cell,
+    PeriodicCell,
+    TriclinicFrame,
+    zero_gradient_cell,
+)
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import HasLensFields, LensField, lens
 from kups.core.propagator import CachePropagator, Propagator
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
+from kups.core.units import testing
 from kups.core.utils.jax import dataclass, jit
 from kups.md.integrators import (
     CellMomentumKick,
@@ -42,6 +49,14 @@ from kups.md.observables import (
     instantaneous_pressure_tensor,
     particle_kinetic_energy,
 )
+from test.units import EV, FORCE, A, allclose, assert_close, isclose
+
+AMU = u.amu
+T0 = A * (AMU / EV) ** 0.5
+"""The base time unit, Å·√(amu/eV) ≈ 10.18 fs."""
+
+MOMENTUM = AMU * A / T0
+"""The base momentum unit."""
 
 # ============================================================================
 # Data Classes
@@ -50,12 +65,12 @@ from kups.md.observables import (
 
 @dataclass
 class ParticleData:
-    positions: Array
-    momenta: Array
-    forces: Array
-    masses: Array
+    positions: units.Length
+    momenta: units.Momentum
+    forces: units.Force
+    masses: units.Mass
     system: Index[SystemId]
-    position_gradients: Array
+    position_gradients: units.Force
 
 
 @dataclass
@@ -66,22 +81,22 @@ class SystemParams:
     state shape can drive both integrators.
     """
 
-    time_step: Array
-    temperature: Array
-    friction_coefficient: Array
-    thermostat_time_constant: Array
+    time_step: units.Time
+    temperature: units.Temperature
+    friction_coefficient: units.Frequency
+    thermostat_time_constant: units.Time
 
 
 @dataclass
 class NPTSystemParams:
     """Bundled integrator-params for CSVR-NPT tests."""
 
-    time_step: Array
-    temperature: Array
-    thermostat_time_constant: Array
-    target_pressure: Array
-    pressure_coupling_time: Array
-    compressibility: Array
+    time_step: units.Time
+    temperature: units.Temperature
+    thermostat_time_constant: units.Time
+    target_pressure: units.Pressure
+    pressure_coupling_time: units.Time
+    compressibility: units.Compressibility
     minimum_scale_factor: Array
 
 
@@ -116,7 +131,7 @@ class NPTState(HasLensFields):
 
 def compute_temperature(state, dof):
     """Compute instantaneous temperature from state."""
-    ke = jnp.sum(
+    ke = units.sum(
         particle_kinetic_energy(
             state.particles.data.momenta, state.particles.data.masses
         )
@@ -184,10 +199,19 @@ def _extract_volume0(s):
 
 
 def assert_temperature(mean_temp, kT_target, tolerance, label=""):
-    """Assert temperature is within tolerance of target."""
-    rel_err = jnp.abs(mean_temp - kT_target) / kT_target
+    """Assert a measured thermal energy is within tolerance of its target.
+
+    Args:
+        mean_temp: The measured thermal energy.
+        kT_target: The target thermal energy, as a quantity in any unit.
+        tolerance: Allowed relative deviation.
+        label: Prefix for the failure message.
+    """
+    unit = mean_temp.unit
+    rel_err = units.absolute(mean_temp - kT_target).to(unit) / kT_target.to(unit)
     assert rel_err < tolerance, (
-        f"{label}Temperature {mean_temp:.3f} differs from target {kT_target} by {rel_err * 100:.1f}%"
+        f"{label}Temperature {mean_temp:.3f} differs from target {kT_target} "
+        f"by {rel_err * 100:.1f}%"
     )
 
 
@@ -209,10 +233,13 @@ def create_harmonic_system(
         key = jax.random.key(42)
     key1, key2 = jax.random.split(key)
 
-    positions = jax.random.normal(key1, (n_particles, 3)) * 0.1
-    momenta = jax.random.normal(key2, (n_particles, 3)) * jnp.sqrt(m * kT)
-    forces = -k * positions
-    masses = jnp.full((n_particles,), m)
+    spring = k * EV / A**2
+    mass = m * AMU
+    thermal = kT * EV
+    positions = jax.random.normal(key1, (n_particles, 3)) * 0.1 * A
+    momenta = jax.random.normal(key2, (n_particles, 3)) * units.sqrt(mass * thermal)
+    forces = -spring * positions
+    masses = jnp.full((n_particles,), m) * AMU
 
     system_index = Index.new([SystemId(0)] * n_particles)
     particles = Table.arange(
@@ -230,10 +257,10 @@ def create_harmonic_system(
     systems = Table.arange(
         SystemData(
             integrator_params=SystemParams(
-                time_step=jnp.array([dt]),
-                temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
-                friction_coefficient=jnp.array([gamma]),
-                thermostat_time_constant=jnp.array([tau]),
+                time_step=jnp.array([dt]) * T0,
+                temperature=jnp.full((1,), 1.0) * (thermal / units.constants.k_B),
+                friction_coefficient=jnp.array([gamma]) / T0,
+                thermostat_time_constant=jnp.array([tau]) * T0,
             ),
         ),
         label=SystemId,
@@ -242,7 +269,7 @@ def create_harmonic_system(
     state = SimpleState(particles=particles, systems=systems)
 
     def compute_forces_fn(s):
-        forces = -k * s.particles.data.positions
+        forces = -spring * s.particles.data.positions
         return Table(
             s.particles.keys,
             ParticleData(
@@ -281,10 +308,13 @@ def create_npt_system(
         key = jax.random.key(42)
     key1, key2 = jax.random.split(key)
 
-    positions = (jax.random.uniform(key1, (n_particles, 3)) - 0.5) * box_size * 0.8
-    momenta = jax.random.normal(key2, (n_particles, 3)) * jnp.sqrt(m * kT)
-    forces = -k * positions
-    masses = jnp.full((n_particles,), m)
+    spring = k * EV / A**2
+    mass = m * AMU
+    thermal = kT * EV
+    positions = (jax.random.uniform(key1, (n_particles, 3)) - 0.5) * box_size * 0.8 * A
+    momenta = jax.random.normal(key2, (n_particles, 3)) * units.sqrt(mass * thermal)
+    forces = -spring * positions
+    masses = jnp.full((n_particles,), m) * AMU
 
     system_index = Index.new([SystemId(0)] * n_particles)
     particles = Table.arange(
@@ -299,20 +329,19 @@ def create_npt_system(
         label=ParticleId,
     )
 
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size))
-    from kups.core.utils.jax import tree_zeros_like
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size * A))
 
     systems = Table.arange(
         NPTSystemData(
             cell=cell,
-            cell_gradients=tree_zeros_like(cell),
+            cell_gradients=zero_gradient_cell(cell),
             integrator_params=NPTSystemParams(
-                time_step=jnp.array([dt]),
-                temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
-                thermostat_time_constant=jnp.array([tau_t]),
-                target_pressure=jnp.array([target_pressure]),
-                pressure_coupling_time=jnp.array([tau_p]),
-                compressibility=jnp.array([compressibility]),
+                time_step=jnp.array([dt]) * T0,
+                temperature=jnp.array([kT]) * EV / units.constants.k_B,
+                thermostat_time_constant=jnp.array([tau_t]) * T0,
+                target_pressure=jnp.array([target_pressure]) * EV / A**3,
+                pressure_coupling_time=jnp.array([tau_p]) * T0,
+                compressibility=jnp.array([compressibility]) * A**3 / EV,
                 minimum_scale_factor=jnp.array([0.5]),
             ),
         ),
@@ -326,7 +355,7 @@ def create_npt_derivative_computation():
     """Create derivative computation propagator for NPT tests."""
 
     def derivative_step(key, s):
-        forces = -1.0 * s.particles.data.positions
+        forces = -1.0 * EV / A**2 * s.particles.data.positions
 
         new_particles = Table(
             s.particles.keys,
@@ -373,10 +402,8 @@ class TestBasicSteps:
             state.particles.data.positions
             + velocities * state.systems.data.integrator_params.time_step[0]
         )
-        assert jnp.allclose(new_state.particles.data.positions, expected, rtol=1e-6)
-        assert jnp.allclose(
-            new_state.particles.data.momenta, state.particles.data.momenta
-        )
+        assert_close(new_state.particles.data.positions, expected, rtol=1e-6)
+        assert_close(new_state.particles.data.momenta, state.particles.data.momenta)
 
     def test_momentum_update(self):
         """Momentum update correctness and position preservation."""
@@ -389,10 +416,8 @@ class TestBasicSteps:
             + state.particles.data.forces
             * state.systems.data.integrator_params.time_step[0]
         )
-        assert jnp.allclose(new_state.particles.data.momenta, expected, rtol=1e-6)
-        assert jnp.allclose(
-            new_state.particles.data.positions, state.particles.data.positions
-        )
+        assert_close(new_state.particles.data.momenta, expected, rtol=1e-6)
+        assert_close(new_state.particles.data.positions, state.particles.data.positions)
 
 
 class TestThermostatSteps:
@@ -413,11 +438,11 @@ class TestThermostatSteps:
             n_sample=100,
             extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
-        assert_temperature(jnp.mean(temps), kT_target, 0.2)
+        assert_temperature(units.mean(temps), kT_target * EV, 0.2)
 
     def test_stochastic_step_removes_center_of_mass_momentum(self):
         state, _, _ = create_harmonic_system(n_particles=6, kT=1.0, dt=0.02)
-        drift = jnp.array([0.4, -0.2, 0.1])
+        drift = jnp.array([0.4, -0.2, 0.1]) * A / T0
         momenta = (
             state.particles.data.momenta + state.particles.data.masses[:, None] * drift
         )
@@ -431,7 +456,7 @@ class TestThermostatSteps:
         total_momentum = out.particles.data.system.sum_over(
             out.particles.data.momenta
         ).data
-        assert jnp.allclose(total_momentum, 0.0, atol=1e-12)
+        assert allclose(total_momentum, 0.0, atol=1e-12)
 
     def test_stochastic_step_gamma_zero_is_deterministic_noop(self):
         state, _, _ = create_harmonic_system(n_particles=6, kT=1.0, dt=0.02, gamma=0.0)
@@ -439,7 +464,7 @@ class TestThermostatSteps:
 
         out = step(jax.random.key(7), state)
 
-        assert jnp.allclose(out.particles.data.momenta, state.particles.data.momenta)
+        assert_close(out.particles.data.momenta, state.particles.data.momenta)
 
     def test_csvr_velocity_rescaling(self):
         n_particles, kT_target = 10, 2.0
@@ -456,7 +481,7 @@ class TestThermostatSteps:
             n_sample=100,
             extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
-        assert_temperature(jnp.mean(temps), kT_target, 0.15)
+        assert_temperature(units.mean(temps), kT_target * EV, 0.15)
 
 
 class TestBarostatAndMICSteps:
@@ -471,13 +496,11 @@ class TestBarostatAndMICSteps:
         initial_volume = state.systems.data.cell.volume
         new_state = step(jax.random.key(42), state)
 
-        assert not jnp.isclose(
+        assert not isclose(
             new_state.systems.data.cell.volume, initial_volume, rtol=1e-8
         ), "CRITICAL BUG: Cell volume did not update"
-        expected_volume = jnp.linalg.det(new_state.systems.data.cell.vectors)
-        assert jnp.isclose(
-            new_state.systems.data.cell.volume, expected_volume, rtol=1e-6
-        )
+        expected_volume = units.det(new_state.systems.data.cell.vectors)
+        assert_close(new_state.systems.data.cell.volume, expected_volume, rtol=1e-6)
 
     def test_positions_scale_with_box(self):
         state = create_npt_system(n_particles=3, box_size=5.0)
@@ -486,12 +509,12 @@ class TestBarostatAndMICSteps:
         )
 
         initial_pos = state.particles.data.positions
-        initial_box = jnp.mean(jnp.diag(state.systems.data.cell.vectors[0]))
+        initial_box = units.mean(state.systems.data.cell.vectors[0].diagonal())
         new_state = step(jax.random.key(42), state)
-        new_box = jnp.mean(jnp.diag(new_state.systems.data.cell.vectors[0]))
+        new_box = units.mean(new_state.systems.data.cell.vectors[0].diagonal())
 
         expected_pos = initial_pos * (new_box / initial_box)
-        assert jnp.allclose(new_state.particles.data.positions, expected_pos, rtol=1e-3)
+        assert allclose(new_state.particles.data.positions, expected_pos, rtol=1e-3)
 
     def test_pressure_response(self):
         state = create_npt_system(
@@ -511,13 +534,13 @@ class TestBarostatAndMICSteps:
             extract_fn=lambda s: s.systems.data.cell.volume,
         )
 
-        assert jnp.mean(volumes[5:]) > initial_volume * 1.01, (
+        assert units.mean(volumes[5:]) > initial_volume * 1.01, (
             "Barostat did not expand box in response to high pressure"
         )
 
     def test_wrapping_positions(self):
         box_size = 5.0
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * box_size))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * box_size) * A))
 
         @dataclass
         class TestState:
@@ -526,12 +549,13 @@ class TestBarostatAndMICSteps:
         flow = WrapFlow(cell=lambda s: s.cell, flow=euclidean_flow)
         new_pos = flow(
             TestState(cell=cell),
-            jnp.array([0.1]),
-            jnp.array([0.0, 0.0, 0.0]),
-            jnp.array([100.0, 0.0, 0.0]),
+            jnp.array([0.1]) * T0,
+            jnp.array([0.0, 0.0, 0.0]) * A,
+            jnp.array([100.0, 0.0, 0.0]) * A / T0,
         )
 
-        assert jnp.all(new_pos >= 0.0) and jnp.all(new_pos < box_size)
+        magnitudes = new_pos.to(A)
+        assert jnp.all(magnitudes >= 0.0) and jnp.all(magnitudes < box_size)
 
 
 # ============================================================================
@@ -553,12 +577,12 @@ class TestNVTPhysics:
         )
 
         def total_energy(s):
-            ke = jnp.sum(
+            ke = units.sum(
                 particle_kinetic_energy(
                     s.particles.data.momenta, s.particles.data.masses
                 )
             )
-            pe = 0.5 * k * jnp.sum(s.particles.data.positions**2)
+            pe = 0.5 * k * EV / A**2 * units.sum(s.particles.data.positions**2)
             return ke + pe
 
         initial_energy = total_energy(state)
@@ -567,7 +591,7 @@ class TestNVTPhysics:
         )
 
         max_drift = jnp.max(
-            jnp.abs(energies - initial_energy) / jnp.abs(initial_energy)
+            units.absolute(energies - initial_energy) / units.absolute(initial_energy)
         )
         assert max_drift < 1e-4, (
             f"Energy conservation violated: max drift = {max_drift:.2e}"
@@ -610,8 +634,8 @@ class TestNVTPhysics:
             return state
 
         state = run_forward_backward(jax.random.key(0), state)
-        assert jnp.allclose(state.particles.data.positions, initial_pos, rtol=1e-4)
-        assert jnp.allclose(state.particles.data.momenta, -initial_mom, rtol=1e-4)
+        assert_close(state.particles.data.positions, initial_pos, rtol=1e-4)
+        assert_close(state.particles.data.momenta, -initial_mom, rtol=1e-4)
 
     def test_csvr_temperature_and_equipartition(self):
         """Merged: temperature convergence and equipartition theorem."""
@@ -635,7 +659,7 @@ class TestNVTPhysics:
             n_sample=200,
             extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
-        assert_temperature(jnp.mean(temps), kT_target, 0.15)
+        assert_temperature(units.mean(temps), kT_target * EV, 0.15)
 
         # Equipartition theorem (kT=1.0)
         n_particles2, kT_target2 = 10, 1.0
@@ -651,7 +675,7 @@ class TestNVTPhysics:
 
         def extract_ke_xyz(s):
             p, m = s.particles.data.momenta, s.particles.data.masses
-            return jnp.array([jnp.sum(0.5 * p[:, i] ** 2 / m) for i in range(3)])
+            return units.stack([units.sum(0.5 * p[:, i] ** 2 / m) for i in range(3)])
 
         _, ke_samples = run_simulation(
             integrator2, state2, jax.random.key(42), 150, 200, extract_ke_xyz
@@ -659,7 +683,10 @@ class TestNVTPhysics:
         expected = n_particles2 * kT_target2 / 2
 
         for i, dim in enumerate("xyz"):
-            rel_err = jnp.abs(jnp.mean(ke_samples[:, i]) - expected) / expected
+            rel_err = (
+                units.absolute(units.mean(ke_samples[:, i]) - expected * EV).to(EV)
+                / expected
+            )
             assert rel_err < 0.30, f"Equipartition violated in {dim}"
 
     def test_baoab_temperature_control(self):
@@ -682,7 +709,7 @@ class TestNVTPhysics:
             n_sample=150,
             extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
-        assert_temperature(jnp.mean(temps), kT_target, 0.15, "BAOAB ")
+        assert_temperature(units.mean(temps), kT_target * EV, 0.15, "BAOAB ")
 
 
 class TestCSVRNPTPhysics:
@@ -717,7 +744,7 @@ class TestCSVRNPTPhysics:
             n_sample=3000,
             extract_fn=lambda s: compute_temperature(s, 3 * n_particles - 3),
         )
-        assert_temperature(jnp.mean(temps), kT_target, 0.15, "NPT ")
+        assert_temperature(units.mean(temps), kT_target * EV, 0.15, "NPT ")
 
     def test_volume_fluctuations(self):
         state = create_npt_system(
@@ -734,7 +761,7 @@ class TestCSVRNPTPhysics:
             extract_fn=lambda s: s.systems.data.cell.volume,
         )
 
-        mean_vol, std_vol = jnp.mean(volumes), jnp.std(volumes)
+        mean_vol, std_vol = units.mean(volumes), volumes.std()
         assert std_vol > 0.01 * mean_vol, "Volume fluctuations too small"
         assert std_vol / mean_vol < 1.0, "Volume fluctuations too large"
 
@@ -754,7 +781,7 @@ class TestCSVRNPTPhysics:
             extract_fn=lambda s: s.particles.data.position_gradients,
         )
 
-        assert not jnp.allclose(
+        assert not allclose(
             initial_grads, final_state.particles.data.position_gradients, rtol=1e-6
         )
 
@@ -767,20 +794,26 @@ class TestCSVRNPTPhysics:
 def test_particle_kinetic_energy():
     """KE = p^2/(2m) for known momentum vectors."""
     # Single particle, unit mass, p = (1, 0, 0) => KE = 0.5
-    ke = particle_kinetic_energy(jnp.array([[1.0, 0.0, 0.0]]), jnp.array([1.0]))
-    assert jnp.isclose(ke[0], 0.5)
+    ke = particle_kinetic_energy(
+        jnp.array([[1.0, 0.0, 0.0]]) * MOMENTUM, jnp.array([1.0]) * AMU
+    )
+    assert_close(ke[0], 0.5 * EV)
 
     # Multi-dimensional: p = (3, 4, 0), m = 2 => KE = 25/(2*2) = 6.25
-    ke2 = particle_kinetic_energy(jnp.array([[3.0, 4.0, 0.0]]), jnp.array([2.0]))
-    assert jnp.isclose(ke2[0], 6.25)
+    ke2 = particle_kinetic_energy(
+        jnp.array([[3.0, 4.0, 0.0]]) * MOMENTUM, jnp.array([2.0]) * AMU
+    )
+    assert_close(ke2[0], 6.25 * EV)
 
 
 def test_instantaneous_pressure():
     """P = 2K/(3V) + Tr(σ)/3 for known Cauchy stress σ."""
-    ke, sigma, vol = jnp.array([10.0]), jnp.eye(3)[None] * 5.0, jnp.array([125.0])
+    ke = jnp.array([10.0]) * EV
+    sigma = jnp.eye(3)[None] * 5.0 * EV / A**3
+    vol = jnp.array([125.0]) * A**3
     pressure = instantaneous_pressure(ke, sigma, vol)
-    expected = (2.0 * ke) / (3.0 * vol) + 15.0 / 3.0
-    assert jnp.isclose(pressure, expected, rtol=1e-5).all()
+    expected = (2.0 * ke) / (3.0 * vol) + 15.0 / 3.0 * EV / A**3
+    assert_close(pressure, expected, rtol=1e-5)
 
 
 def test_npt_cauchy_stress_convention():
@@ -886,16 +919,18 @@ def test_stress_matches_ase():
         lj_parameters: LennardJonesParameters
 
     lj = LennardJonesParameters.from_dict(
-        cutoff=10.0, parameters={"Ar": (sigma, eps)}, mixing_rule="lorentz_berthelot"
+        cutoff=10.0 * A,
+        parameters={"Ar": (sigma * A, eps * EV)},
+        mixing_rule="lorentz_berthelot",
     )
     config = MdParameters(
-        temperature=100.0,
-        time_step=2.0,
-        friction_coefficient=1.0,
-        thermostat_time_constant=100.0,
-        target_pressure=1.0,
-        pressure_coupling_time=1e10,
-        compressibility=4.5e-5,
+        temperature="100 K",
+        time_step="2 fs",
+        friction_coefficient="1 1/fs",
+        thermostat_time_constant="100 fs",
+        target_pressure="1 Pa",
+        pressure_coupling_time="1e10 fs",
+        compressibility="4.5e-5 1/Pa",
         minimum_scale_factor=1.0,
         integrator="baoab_langevin",
         initialize_momenta=False,
@@ -923,7 +958,7 @@ def test_stress_matches_ase():
     s_with_grad = s.set_data(dataclasses.replace(s.data, cell_gradients=cell_grad))
 
     kups_stress = np.asarray(
-        stress_via_virial_theorem(p_with_grad, s_with_grad).data[0]
+        stress_via_virial_theorem(p_with_grad, s_with_grad).data[0].to(EV / A**3)
     )
     kups_pressure = np.trace(kups_stress) / 3
 
@@ -961,10 +996,11 @@ def create_verlet_md_state(n_particles=5, k=1.0, dt=0.01, box_size=100.0):
     from kups.application.md.data import VerletParams
 
     key1, key2 = jax.random.split(jax.random.key(42))
-    positions = jax.random.normal(key1, (n_particles, 3)) * 0.1
-    momenta = jax.random.normal(key2, (n_particles, 3))
-    forces = -k * positions
-    masses = jnp.ones(n_particles)
+    spring = k * EV / A**2
+    positions = jax.random.normal(key1, (n_particles, 3)) * 0.1 * A
+    momenta = jax.random.normal(key2, (n_particles, 3)) * MOMENTUM
+    forces = -spring * positions
+    masses = jnp.ones(n_particles) * AMU
     particles = Table.arange(
         ParticleData(
             positions=positions,
@@ -976,15 +1012,17 @@ def create_verlet_md_state(n_particles=5, k=1.0, dt=0.01, box_size=100.0):
         ),
         label=ParticleId,
     )
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size * A))
     systems = Table.arange(
-        VerletSystemData(cell=cell, integrator_params=VerletParams(jnp.array([dt]))),
+        VerletSystemData(
+            cell=cell, integrator_params=VerletParams(jnp.array([dt]) * T0)
+        ),
         label=SystemId,
     )
     state = VerletState(particles=particles, systems=systems)
 
     def derivative_step(key, s):
-        forces = -k * s.particles.data.positions
+        forces = -spring * s.particles.data.positions
         return VerletState.particles.focus(lambda p: p.data.forces).set(s, forces)
 
     @dataclass
@@ -1016,8 +1054,8 @@ def test_make_md_step_from_state_parameters_overlay_matches_state_params():
         return s
 
     a, b = advance(from_state), advance(from_params)
-    assert jnp.allclose(a.particles.data.positions, b.particles.data.positions)
-    assert jnp.allclose(a.particles.data.momenta, b.particles.data.momenta)
+    assert allclose(a.particles.data.positions, b.particles.data.positions)
+    assert allclose(a.particles.data.momenta, b.particles.data.momenta)
 
 
 # ============================================================================
@@ -1029,21 +1067,21 @@ def test_make_md_step_from_state_parameters_overlay_matches_state_params():
 class BNPTLParams:
     """Bundled integrator-params for the BAOAB NPT Langevin tests."""
 
-    time_step: Array
-    temperature: Array
-    friction_coefficient: Array
-    target_pressure: Array
-    pressure_coupling_time: Array
-    compressibility: Array
-    barostat_mass: Array
-    barostat_friction: Array
+    time_step: units.Time
+    temperature: units.Temperature
+    friction_coefficient: units.Frequency
+    target_pressure: units.Pressure
+    pressure_coupling_time: units.Time
+    compressibility: units.Compressibility
+    barostat_mass: units.Mass
+    barostat_friction: units.Frequency
 
 
 @dataclass
 class BNPTLSystemData:
     cell: Cell
     cell_gradients: Cell
-    cell_momentum: Array
+    cell_momentum: units.Momentum
     integrator_params: BNPTLParams
 
 
@@ -1068,12 +1106,11 @@ def create_bnptl_system(
     if key is None:
         key = jax.random.key(2026)
     k1, k2 = jax.random.split(key)
-    from kups.core.utils.jax import tree_zeros_like
 
-    positions = (jax.random.uniform(k1, (n_particles, 3)) - 0.5) * box_size * 0.6
-    momenta = jax.random.normal(k2, (n_particles, 3)) * jnp.sqrt(kT)
-    forces = -positions
-    masses = jnp.ones(n_particles)
+    positions = (jax.random.uniform(k1, (n_particles, 3)) - 0.5) * box_size * 0.6 * A
+    momenta = jax.random.normal(k2, (n_particles, 3)) * units.sqrt(kT * EV * AMU)
+    forces = -positions * EV / A**2
+    masses = jnp.ones(n_particles) * AMU
     system_index = Index.new([SystemId(0)] * n_particles)
     particles = Table.arange(
         ParticleData(
@@ -1086,27 +1123,31 @@ def create_bnptl_system(
         ),
         label=ParticleId,
     )
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box_size * A))
     # Gao Eq. (14)/(15) in kUPS' transposed lower-triangular convention:
     # the paper row index becomes a kUPS column index.
-    V0 = jnp.array([box_size**3])
-    h_diag = jnp.full((1, 3), box_size)
-    tau_p_arr = jnp.array([tau_p])
-    kappa = jnp.array([compressibility])
+    V0 = jnp.array([box_size**3]) * A**3
+    h_diag = jnp.full((1, 3), box_size) * A
+    tau_p_arr = jnp.array([tau_p]) * T0
+    kappa = jnp.array([compressibility]) * A**3 / EV
     per_column = (
         3.0
         * V0[..., None]
         * (tau_p_arr[..., None] / (2.0 * jnp.pi)) ** 2
         / (kappa[..., None] * h_diag**2)
     )
-    M = jnp.tril(jnp.broadcast_to(per_column[..., None, :], (1, 3, 3)))
-    gamma_arr = jnp.array([gamma])
-    gamma_t = jnp.tril(jnp.broadcast_to(gamma_arr[..., None, None], M.shape))
+    M = units.apply(
+        lambda m: jnp.tril(jnp.broadcast_to(m[..., None, :], (1, 3, 3))), per_column
+    )
+    gamma_arr = jnp.array([gamma]) / T0
+    gamma_t = units.apply(
+        lambda g: jnp.tril(jnp.broadcast_to(g[..., None, None], M.shape)), gamma_arr
+    )
     params = BNPTLParams(
-        time_step=jnp.array([dt]),
-        temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
+        time_step=jnp.array([dt]) * T0,
+        temperature=jnp.array([kT]) * EV / units.constants.k_B,
         friction_coefficient=gamma_arr,
-        target_pressure=jnp.array([target_pressure]),
+        target_pressure=jnp.array([target_pressure]) * EV / A**3,
         pressure_coupling_time=tau_p_arr,
         compressibility=kappa,
         barostat_mass=M,
@@ -1115,8 +1156,8 @@ def create_bnptl_system(
     systems = Table.arange(
         BNPTLSystemData(
             cell=cell,
-            cell_gradients=tree_zeros_like(cell),
-            cell_momentum=jnp.zeros((1, 3, 3)),
+            cell_gradients=zero_gradient_cell(cell),
+            cell_momentum=units.zeros((1, 3, 3), MOMENTUM),
             integrator_params=params,
         ),
         label=SystemId,
@@ -1131,7 +1172,7 @@ def create_bnptl_derivative_computation():
     class DerivativeComputation(Propagator[BNPTLState]):
         def __call__(self, key, state: BNPTLState) -> BNPTLState:
             del key
-            forces = -1.0 * state.particles.data.positions
+            forces = -1.0 * EV / A**2 * state.particles.data.positions
             new_particles = Table(
                 state.particles.keys,
                 ParticleData(
@@ -1157,7 +1198,7 @@ def test_gao_barostat_mass_uses_kups_transposed_column_index():
     compressibility = jnp.array([7.0])
     tau_p = jnp.array([11.0])
 
-    mass = _gao_barostat_mass(cell_vectors, compressibility, tau_p)
+    mass = _gao_barostat_mass(cell_vectors * A, compressibility * A**3 / EV, tau_p * T0)
 
     volume = jnp.abs(jnp.linalg.det(cell_vectors))[0]
     diag = jnp.diagonal(cell_vectors[0])
@@ -1167,8 +1208,9 @@ def test_gao_barostat_mass_uses_kups_transposed_column_index():
     expected = jnp.tril(jnp.broadcast_to(per_paper_row[None, None, :], (1, 3, 3)))
     row_indexed = jnp.tril(jnp.broadcast_to(per_paper_row[None, :, None], (1, 3, 3)))
 
-    assert jnp.allclose(mass, expected)
-    assert not jnp.allclose(mass, row_indexed)
+    # Magnitudes in Angstrom, eV and T0 give a mass in amu.
+    assert allclose(mass, expected * AMU)
+    assert not allclose(mass, row_indexed * AMU)
 
 
 def _row_affine_reference(
@@ -1313,11 +1355,13 @@ class TestBNPTLPropagators:
         new_state = kick(jax.random.key(0), state)
         # System is small + harmonic → high internal pressure → diagonal p^h increases.
         delta = new_state.systems.data.cell_momentum - state.systems.data.cell_momentum
-        diag = jnp.diagonal(delta[0], axis1=-2, axis2=-1)
-        assert jnp.all(diag > 0), f"diagonal p^h kick should be positive: {diag}"
+        diag = delta[0].diagonal(axis1=-2, axis2=-1)
+        assert jnp.all(diag.to(MOMENTUM) > 0), (
+            f"diagonal p^h kick should be positive: {diag}"
+        )
         # Strict-upper-triangular part stays zero.
-        upper = delta[0] - jnp.tril(delta[0])
-        assert jnp.allclose(upper, 0.0, atol=1e-12)
+        upper = delta[0] - units.apply(jnp.tril, delta[0])
+        assert allclose(upper, 0.0, atol=1e-12)
 
     def test_cell_momentum_kick_matches_gao_transposed_formula(self):
         """B^h kick agrees with Gao Eq. 8d under kUPS' V = h.T convention."""
@@ -1332,11 +1376,13 @@ class TestBNPTLPropagators:
             dt=dt,
             gamma=0.0,
         )
-        V = jnp.array([[[2.0, 0.0, 0.0], [0.4, 3.0, 0.0], [0.3, 0.8, 4.0]]])
-        positions = jnp.array([[0.2, -0.3, 0.4], [-0.5, 0.1, -0.2]])
-        momenta = jnp.array([[1.1, -0.7, 0.3], [0.4, 0.9, -1.2]])
-        masses = jnp.array([1.5, 2.0])
-        initial_cm = jnp.array([[[0.2, 0.0, 0.0], [0.1, -0.3, 0.0], [0.4, 0.2, 0.5]]])
+        V = jnp.array([[[2.0, 0.0, 0.0], [0.4, 3.0, 0.0], [0.3, 0.8, 4.0]]]) * A
+        positions = jnp.array([[0.2, -0.3, 0.4], [-0.5, 0.1, -0.2]]) * A
+        momenta = jnp.array([[1.1, -0.7, 0.3], [0.4, 0.9, -1.2]]) * MOMENTUM
+        masses = jnp.array([1.5, 2.0]) * AMU
+        initial_cm = (
+            jnp.array([[[0.2, 0.0, 0.0], [0.1, -0.3, 0.0], [0.4, 0.2, 0.5]]]) * MOMENTUM
+        )
 
         state = BNPTLState.systems.focus(lambda s: s.data.cell.frame).set(
             state, TriclinicFrame.from_matrix(V)
@@ -1350,7 +1396,7 @@ class TestBNPTLPropagators:
         state = BNPTLState.particles.focus(lambda p: p.data.momenta).set(state, momenta)
         state = BNPTLState.particles.focus(lambda p: p.data.masses).set(state, masses)
         state = BNPTLState.particles.focus(lambda p: p.data.position_gradients).set(
-            state, jnp.zeros_like(positions)
+            state, units.zeros(positions.shape, FORCE)
         )
 
         kick = CellMomentumKick(
@@ -1358,20 +1404,23 @@ class TestBNPTLPropagators:
         )
         out = kick(jax.random.key(0), state)
 
-        volume = jnp.abs(jnp.linalg.det(V[0]))
-        V_inv = jnp.linalg.inv(V[0])
+        # The Gao formula is checked on magnitudes in Angstrom, amu and eV.
+        h = V[0].to(A)
+        volume = jnp.abs(jnp.linalg.det(h))
+        V_inv = jnp.linalg.inv(h)
+        p = momenta.to(MOMENTUM)
         kinetic_tensor = jnp.sum(
-            momenta[:, :, None] * momenta[:, None, :] / masses[:, None, None],
+            p[:, :, None] * p[:, None, :] / masses.to(AMU)[:, None, None],
             axis=0,
         )
         pressure_tensor = kinetic_tensor / volume
         pressure_diff = pressure_tensor - target_pressure * jnp.eye(3)
         kick_paper = volume * (pressure_diff @ V_inv) - kT * V_inv
-        expected = initial_cm + (dt / 2) * jnp.tril(kick_paper.T)[None]
+        expected = initial_cm.to(MOMENTUM) + (dt / 2) * jnp.tril(kick_paper.T)[None]
 
-        assert jnp.allclose(
+        assert_close(
             out.systems.data.cell_momentum,
-            expected,
+            expected * MOMENTUM,
             rtol=2e-6,
             atol=2e-6,
         )
@@ -1386,7 +1435,7 @@ class TestBNPTLPropagators:
         splitting (verified by the Hamiltonian-conservation test).
         """
         state = create_bnptl_system(box_size=5.0)
-        cm = jnp.tril(jnp.ones((1, 3, 3))) * 0.5
+        cm = jnp.tril(jnp.ones((1, 3, 3))) * 0.5 * MOMENTUM
         state = BNPTLState.systems.focus(lambda s: s.data.cell_momentum).set(state, cm)
         initial_pos = state.particles.data.positions
 
@@ -1397,26 +1446,26 @@ class TestBNPTLPropagators:
         new_V = new_state.systems.data.cell.vectors
         old_V = state.systems.data.cell.vectors
         M = state.systems.data.integrator_params.barostat_mass
-        V_dot = jnp.tril(jnp.where(M != 0, cm / jnp.where(M != 0, M, 1.0), 0.0))
+        live = M.value != 0
+        V_dot = units.apply(
+            jnp.tril, units.where(live, cm / units.where(live, M, 1.0 * AMU), 0.0)
+        )
         expected_V = (
             old_V
             + state.systems.data.integrator_params.time_step[..., None, None]
             / 2
             * V_dot
         )
-        assert jnp.allclose(new_V, expected_V, rtol=1e-6)
-        assert not jnp.allclose(new_V, old_V)
+        assert allclose(new_V, expected_V, rtol=1e-6)
+        assert not allclose(new_V, old_V)
         # Cell still lower-triangular.
-        upper = new_V - jnp.tril(new_V)
-        assert jnp.allclose(upper, 0.0, atol=1e-12)
+        upper = new_V - units.apply(jnp.tril, new_V)
+        assert allclose(upper, 0.0, atol=1e-12)
         # Volume cache refreshed.
-        expected_vol = jnp.abs(jnp.linalg.det(new_V))
-        assert jnp.allclose(new_state.systems.data.cell.volume, expected_vol, rtol=1e-6)
+        expected_vol = units.absolute(units.det(new_V))
+        assert allclose(new_state.systems.data.cell.volume, expected_vol, rtol=1e-6)
         # Positions are NOT modified.
-        assert jnp.array_equal(new_state.particles.data.positions, initial_pos), (
-            "CellPositionStep must not touch particle positions; the convective "
-            "drift belongs in CoupledPositionStep."
-        )
+        testing.assert_array_equal(new_state.particles.data.positions, initial_pos, A)
 
     def test_cell_stochastic_step_equipartitions(self):
         """⟨p^h_αβ²⟩ → M_αβ k_B T in the long-run limit (per-DOF equipartition)."""
@@ -1429,7 +1478,9 @@ class TestBNPTLPropagators:
             dt=0.01,
         )
         step = CellStochasticStep(systems=BNPTLState.systems)
-        kT = (state.systems.data.integrator_params.temperature * BOLTZMANN_CONSTANT)[0]
+        kT = (units.constants.k_B * state.systems.data.integrator_params.temperature)[
+            0
+        ].to(EV)
         # Step many times to sample the OU stationary distribution. With γ·dt = 0.1
         # the relaxation time is ~5 steps, so 20000 samples is plenty.
         n_steps = 20000
@@ -1450,8 +1501,8 @@ class TestBNPTLPropagators:
         # Use only the lower triangle (the active DOFs)
         mask = jnp.tril(jnp.ones((3, 3))) > 0
         # ⟨p_αβ²⟩ / M_αβ should be ≈ k_B T for active DOFs.
-        var = jnp.mean(traj[2000:] ** 2, axis=0)  # skip burn-in
-        ratio = (var / M)[mask] / kT
+        var = units.mean(traj[2000:] ** 2, axis=0)  # skip burn-in
+        ratio = (var / M)[mask].to(EV) / kT
         # 20k samples, autocorr ~5 steps ⇒ ~4k effective samples per DOF; expected
         # std error on variance ≈ √(2/4000) ≈ 2.2 %. Tol 15 % covers ~7σ.
         assert jnp.all(jnp.abs(ratio - 1.0) < 0.15), f"equipartition ratio: {ratio}"
@@ -1461,14 +1512,14 @@ class TestBNPTLPropagators:
         must equal the plain MomentumStep at Δt/2 (the propagator's hardcoded
         BAOAB half-step)."""
         state = create_bnptl_system(box_size=5.0)
-        assert jnp.allclose(state.systems.data.cell_momentum, 0.0)
+        assert allclose(state.systems.data.cell_momentum, 0.0)
         coupled = CoupledMomentumStep(
             particles=BNPTLState.particles, systems=BNPTLState.systems
         )
         out_coupled = coupled(jax.random.key(0), state)
         dt_half = state.systems.data.integrator_params.time_step[0] / 2
         expected = state.particles.data.momenta + state.particles.data.forces * dt_half
-        assert jnp.allclose(out_coupled.particles.data.momenta, expected, atol=1e-8)
+        assert allclose(out_coupled.particles.data.momenta, expected, atol=1e-8)
 
     def test_coupled_position_step_reduces_to_positionstep_when_p_h_zero(self):
         state = create_bnptl_system(box_size=5.0)
@@ -1479,7 +1530,7 @@ class TestBNPTLPropagators:
         v = state.particles.data.momenta / state.particles.data.masses[..., None]
         dt_half = state.systems.data.integrator_params.time_step[0] / 2
         expected = state.particles.data.positions + v * dt_half
-        assert jnp.allclose(out.particles.data.positions, expected, atol=1e-8)
+        assert allclose(out.particles.data.positions, expected, atol=1e-8)
 
     def test_coupled_steps_match_independent_row_affine_reference(self):
         """A and B coupled substeps match direct row-vector matrix exponentials."""
@@ -1491,15 +1542,17 @@ class TestBNPTLPropagators:
             dt=dt,
             gamma=0.0,
         )
-        V = jnp.array([[[2.4, 0.0, 0.0], [0.3, 2.7, 0.0], [0.2, 0.5, 3.1]]])
-        barostat_mass = jnp.array([[[3.0, 0.0, 0.0], [4.0, 5.0, 0.0], [6.0, 7.0, 8.0]]])
-        cell_momentum = jnp.array(
-            [[[0.6, 0.0, 0.0], [0.2, -0.5, 0.0], [0.4, 0.3, 0.7]]]
+        V = jnp.array([[[2.4, 0.0, 0.0], [0.3, 2.7, 0.0], [0.2, 0.5, 3.1]]]) * A
+        barostat_mass = (
+            jnp.array([[[3.0, 0.0, 0.0], [4.0, 5.0, 0.0], [6.0, 7.0, 8.0]]]) * AMU
         )
-        positions = jnp.array([[0.4, -0.2, 0.7], [-0.3, 0.5, -0.6]])
-        momenta = jnp.array([[0.8, -1.1, 0.2], [1.3, 0.4, -0.9]])
-        masses = jnp.array([1.2, 2.3])
-        forces = jnp.array([[-0.4, 0.6, -0.1], [0.2, -0.3, 0.5]])
+        cell_momentum = (
+            jnp.array([[[0.6, 0.0, 0.0], [0.2, -0.5, 0.0], [0.4, 0.3, 0.7]]]) * MOMENTUM
+        )
+        positions = jnp.array([[0.4, -0.2, 0.7], [-0.3, 0.5, -0.6]]) * A
+        momenta = jnp.array([[0.8, -1.1, 0.2], [1.3, 0.4, -0.9]]) * MOMENTUM
+        masses = jnp.array([1.2, 2.3]) * AMU
+        forces = jnp.array([[-0.4, 0.6, -0.1], [0.2, -0.3, 0.5]]) * FORCE
 
         state = BNPTLState.systems.focus(lambda s: s.data.cell.frame).set(
             state, TriclinicFrame.from_matrix(V)
@@ -1517,15 +1570,16 @@ class TestBNPTLPropagators:
         state = BNPTLState.particles.focus(lambda p: p.data.masses).set(state, masses)
         state = BNPTLState.particles.focus(lambda p: p.data.forces).set(state, forces)
 
-        V_dot = jnp.tril(cell_momentum / barostat_mass)
-        M_pos = jnp.linalg.inv(V[0]) @ V_dot[0]
+        # The row-affine reference runs on magnitudes in Angstrom, amu and eV.
+        V_dot = jnp.tril((cell_momentum / barostat_mass).to(A / T0))
+        M_pos = jnp.linalg.inv(V[0].to(A)) @ V_dot[0]
         dt_half = dt / 2
         expected_positions = jax.vmap(
             lambda r, p, m: _row_affine_reference(r, M_pos, p / m, dt_half)
-        )(positions, momenta, masses)
+        )(positions.to(A), momenta.to(MOMENTUM), masses.to(AMU))
         expected_momenta = jax.vmap(
             lambda p, f: _row_affine_reference(p, -M_pos.T, f, dt_half)
-        )(momenta, forces)
+        )(momenta.to(MOMENTUM), forces.to(FORCE))
 
         out_pos = CoupledPositionStep(
             particles=BNPTLState.particles, systems=BNPTLState.systems
@@ -1534,15 +1588,15 @@ class TestBNPTLPropagators:
             particles=BNPTLState.particles, systems=BNPTLState.systems
         )(jax.random.key(0), state)
 
-        assert jnp.allclose(
+        assert_close(
             out_pos.particles.data.positions,
-            expected_positions,
+            expected_positions * A,
             rtol=2e-6,
             atol=2e-6,
         )
-        assert jnp.allclose(
+        assert_close(
             out_mom.particles.data.momenta,
-            expected_momenta,
+            expected_momenta * MOMENTUM,
             rtol=2e-6,
             atol=2e-6,
         )
@@ -1550,13 +1604,13 @@ class TestBNPTLPropagators:
     def test_wrap_step_wraps_positions(self):
         state = create_bnptl_system(box_size=5.0)
         # Push positions far outside the box.
-        far = state.particles.data.positions + 100.0
+        far = state.particles.data.positions + 100.0 * A
         state = BNPTLState.particles.focus(lambda p: p.data.positions).set(state, far)
         step = WrapStep(particles=BNPTLState.particles, systems=lambda s: s.systems)
         out = step(jax.random.key(0), state)
         # All wrapped into [-box/2, box/2)
-        assert jnp.all(out.particles.data.positions >= -2.5 - 1e-6)
-        assert jnp.all(out.particles.data.positions < 2.5 + 1e-6)
+        assert jnp.all(out.particles.data.positions.to(A) >= -2.5 - 1e-6)
+        assert jnp.all(out.particles.data.positions.to(A) < 2.5 + 1e-6)
 
 
 class TestBNPTLPressureTensor:
@@ -1565,7 +1619,7 @@ class TestBNPTLPressureTensor:
     def test_pressure_tensor_symmetric(self):
         state = create_bnptl_system(box_size=4.0)
         P = instantaneous_pressure_tensor(state.particles, state.systems)
-        assert jnp.allclose(P, jnp.swapaxes(P, -1, -2), atol=1e-10)
+        assert_close(P, P.swapaxes(-1, -2), atol=1e-10)
 
     def test_pressure_tensor_trace_matches_scalar_pressure(self):
         state = create_bnptl_system(box_size=4.0)
@@ -1581,8 +1635,8 @@ class TestBNPTLPressureTensor:
         V = state.systems.data.cell.volume
         P_scalar = instantaneous_pressure(ke, sigma, V)
         # Tr(P_tensor)/3 should equal scalar P.
-        np_tr = jnp.trace(P_tensor[0]) / 3.0
-        assert jnp.allclose(np_tr, P_scalar[0], rtol=1e-5)
+        np_tr = P_tensor[0].trace() / 3.0
+        assert allclose(np_tr, P_scalar[0], rtol=1e-5)
 
 
 class TestBNPTLIntegrator:
@@ -1608,15 +1662,18 @@ class TestBNPTLIntegrator:
             def __call__(self, key, state: BNPTLState) -> BNPTLState:
                 del key
                 positions = state.particles.data.positions
+                # The echo reads the positions' numbers back as a gradient, so the
+                # test can compare the two directly.
+                echoed = units.relabel(positions, units.dim_of(FORCE))
                 new_particles = Table(
                     state.particles.keys,
                     ParticleData(
                         positions=positions,
                         momenta=state.particles.data.momenta,
-                        forces=-positions,
+                        forces=-echoed,
                         masses=state.particles.data.masses,
                         system=state.particles.data.system,
-                        position_gradients=positions,
+                        position_gradients=echoed,
                     ),
                     _cls=state.particles._cls,
                 )
@@ -1628,15 +1685,18 @@ class TestBNPTLIntegrator:
             dt=0.0,
             gamma=0.0,
         )
-        outside = jnp.array([[2.4, 0.0, 0.0], [-2.5, 1.9, 0.0], [0.1, 2.6, -2.7]])
-        zeros = jnp.zeros_like(outside)
+        outside = jnp.array([[2.4, 0.0, 0.0], [-2.5, 1.9, 0.0], [0.1, 2.6, -2.7]]) * A
         state = BNPTLState.particles.focus(lambda p: p.data.positions).set(
             state, outside
         )
-        state = BNPTLState.particles.focus(lambda p: p.data.momenta).set(state, zeros)
-        state = BNPTLState.particles.focus(lambda p: p.data.forces).set(state, zeros)
+        state = BNPTLState.particles.focus(lambda p: p.data.momenta).set(
+            state, units.zeros(outside.shape, MOMENTUM)
+        )
+        state = BNPTLState.particles.focus(lambda p: p.data.forces).set(
+            state, units.zeros(outside.shape, FORCE)
+        )
         state = BNPTLState.particles.focus(lambda p: p.data.position_gradients).set(
-            state, zeros
+            state, units.zeros(outside.shape, FORCE)
         )
 
         integrator = make_baoab_npt_langevin_step(
@@ -1648,8 +1708,11 @@ class TestBNPTLIntegrator:
         out = integrator(jax.random.key(0), state)
 
         expected = state.systems.data.cell.wrap(outside)
-        assert jnp.allclose(out.particles.data.positions, expected)
-        assert jnp.allclose(out.particles.data.position_gradients, expected)
+        assert allclose(out.particles.data.positions, expected)
+        assert allclose(
+            out.particles.data.position_gradients,
+            units.relabel(expected, units.dim_of(FORCE)),
+        )
 
     def test_dt_zero_step_is_noop_for_current_inside_state(self):
         """At dt = 0, even with nonzero frictions, the full stochastic step is inert."""
@@ -1660,8 +1723,8 @@ class TestBNPTLIntegrator:
             dt=0.0,
             gamma=3.0,
         )
-        cell_momentum = jnp.array(
-            [[[0.5, 0.0, 0.0], [0.1, -0.2, 0.0], [0.3, 0.4, 0.6]]]
+        cell_momentum = (
+            jnp.array([[[0.5, 0.0, 0.0], [0.1, -0.2, 0.0], [0.3, 0.4, 0.6]]]) * MOMENTUM
         )
         state = BNPTLState.systems.focus(lambda s: s.data.cell_momentum).set(
             state, cell_momentum
@@ -1669,19 +1732,15 @@ class TestBNPTLIntegrator:
         integrator = self._make_integrator()
         out = integrator(jax.random.key(99), state)
 
-        assert jnp.allclose(
-            out.particles.data.positions, state.particles.data.positions
-        )
-        assert jnp.allclose(out.particles.data.momenta, state.particles.data.momenta)
-        assert jnp.allclose(out.particles.data.forces, state.particles.data.forces)
-        assert jnp.allclose(
+        assert_close(out.particles.data.positions, state.particles.data.positions)
+        assert_close(out.particles.data.momenta, state.particles.data.momenta)
+        assert allclose(out.particles.data.forces, state.particles.data.forces)
+        assert_close(
             out.particles.data.position_gradients,
             state.particles.data.position_gradients,
         )
-        assert jnp.allclose(
-            out.systems.data.cell.vectors, state.systems.data.cell.vectors
-        )
-        assert jnp.allclose(
+        assert_close(out.systems.data.cell.vectors, state.systems.data.cell.vectors)
+        assert_close(
             out.systems.data.cell_momentum,
             state.systems.data.cell_momentum,
         )
@@ -1699,17 +1758,24 @@ class TestBNPTLIntegrator:
             dt=dt,
             gamma=0.0,
         )
-        V = jnp.array([[5.8, 0.0, 0.0], [0.4, 6.1, 0.0], [-0.2, 0.3, 5.6]])
-        barostat_mass = jnp.array([[4.0, 0.0, 0.0], [5.0, 6.0, 0.0], [7.0, 8.0, 9.0]])
-        cell_momentum = jnp.array(
-            [[0.12, 0.0, 0.0], [-0.05, 0.08, 0.0], [0.03, -0.04, 0.07]]
+        V = jnp.array([[5.8, 0.0, 0.0], [0.4, 6.1, 0.0], [-0.2, 0.3, 5.6]]) * A
+        barostat_mass = (
+            jnp.array([[4.0, 0.0, 0.0], [5.0, 6.0, 0.0], [7.0, 8.0, 9.0]]) * AMU
         )
-        positions = jnp.array(
-            [[0.25, -0.35, 0.18], [-0.42, 0.21, -0.27], [0.16, 0.31, 0.44]]
+        cell_momentum = (
+            jnp.array([[0.12, 0.0, 0.0], [-0.05, 0.08, 0.0], [0.03, -0.04, 0.07]])
+            * MOMENTUM
         )
-        momenta = jnp.array([[0.7, -0.2, 0.3], [-0.4, 0.5, -0.6], [0.2, 0.8, -0.1]])
-        masses = jnp.array([1.1, 1.7, 2.3])
-        forces = -positions
+        positions = (
+            jnp.array([[0.25, -0.35, 0.18], [-0.42, 0.21, -0.27], [0.16, 0.31, 0.44]])
+            * A
+        )
+        momenta = (
+            jnp.array([[0.7, -0.2, 0.3], [-0.4, 0.5, -0.6], [0.2, 0.8, -0.1]])
+            * MOMENTUM
+        )
+        masses = jnp.array([1.1, 1.7, 2.3]) * AMU
+        forces = -positions * EV / A**2
 
         state = BNPTLState.systems.focus(lambda s: s.data.cell.frame).set(
             state, TriclinicFrame.from_matrix(V[None])
@@ -1727,7 +1793,7 @@ class TestBNPTLIntegrator:
         state = BNPTLState.particles.focus(lambda p: p.data.masses).set(state, masses)
         state = BNPTLState.particles.focus(lambda p: p.data.forces).set(state, forces)
         state = BNPTLState.particles.focus(lambda p: p.data.position_gradients).set(
-            state, positions
+            state, units.relabel(positions, units.dim_of(FORCE))
         )
 
         (
@@ -1738,12 +1804,13 @@ class TestBNPTLIntegrator:
             expected_forces,
             expected_grad,
         ) = _manual_baoab_no_thermostat_step(
-            positions,
-            momenta,
-            masses,
-            V,
-            cell_momentum,
-            barostat_mass,
+            # The reference runs on magnitudes in Angstrom, amu and eV.
+            positions.to(A),
+            momenta.to(MOMENTUM),
+            masses.to(AMU),
+            V.to(A),
+            cell_momentum.to(MOMENTUM),
+            barostat_mass.to(AMU),
             dt,
             target_pressure,
             kT,
@@ -1751,28 +1818,40 @@ class TestBNPTLIntegrator:
         integrator = self._make_integrator()
         out = integrator(jax.random.key(123), state)
 
-        assert jnp.allclose(
-            out.particles.data.positions, expected_pos, rtol=3e-6, atol=3e-6
+        assert_close(
+            out.particles.data.positions, expected_pos * A, rtol=3e-6, atol=3e-6
         )
-        assert jnp.allclose(
-            out.particles.data.momenta, expected_mom, rtol=3e-6, atol=3e-6
+        assert_close(
+            out.particles.data.momenta,
+            expected_mom * MOMENTUM,
+            rtol=3e-6,
+            atol=3e-6,
         )
-        assert jnp.allclose(
-            out.particles.data.forces, expected_forces, rtol=3e-6, atol=3e-6
+        assert_close(
+            out.particles.data.forces,
+            expected_forces * FORCE,
+            rtol=3e-6,
+            atol=3e-6,
         )
-        assert jnp.allclose(
-            out.particles.data.position_gradients, expected_grad, rtol=3e-6, atol=3e-6
+        assert_close(
+            out.particles.data.position_gradients,
+            expected_grad * FORCE,
+            rtol=3e-6,
+            atol=3e-6,
         )
-        assert jnp.allclose(
-            out.systems.data.cell.vectors[0], expected_V, rtol=3e-6, atol=3e-6
+        assert_close(
+            out.systems.data.cell.vectors[0], expected_V * A, rtol=3e-6, atol=3e-6
         )
-        assert jnp.allclose(
+        assert_close(
             out.systems.data.cell.volume[0],
-            jnp.abs(jnp.linalg.det(expected_V)),
+            jnp.abs(jnp.linalg.det(expected_V)) * A**3,
             rtol=3e-6,
         )
-        assert jnp.allclose(
-            out.systems.data.cell_momentum[0], expected_cm, rtol=3e-6, atol=3e-6
+        assert_close(
+            out.systems.data.cell_momentum[0],
+            expected_cm * MOMENTUM,
+            rtol=3e-6,
+            atol=3e-6,
         )
 
     def test_temperature_control(self):
@@ -1793,7 +1872,7 @@ class TestBNPTLIntegrator:
             n_sample=500,
             extract_fn=lambda s: compute_temperature(s, 3 * n - 3),
         )
-        assert_temperature(jnp.mean(temps), kT, 0.20, "BAOAB-NPT-L ")
+        assert_temperature(units.mean(temps), kT * EV, 0.20, "BAOAB-NPT-L ")
 
     def test_volume_fluctuations(self):
         state = create_bnptl_system(
@@ -1814,7 +1893,7 @@ class TestBNPTLIntegrator:
             n_sample=200,
             extract_fn=_extract_volume0,
         )
-        mean_vol, std_vol = jnp.mean(volumes), jnp.std(volumes)
+        mean_vol, std_vol = units.mean(volumes), volumes.std()
         assert std_vol > 0.005 * mean_vol, "Volume must actually fluctuate"
         assert std_vol / mean_vol < 1.0, "Volume must not explode"
 
@@ -1836,13 +1915,13 @@ class TestBNPTLIntegrator:
             extract_fn=_extract_volume0,
         )
         V = final_state.systems.data.cell.vectors[0]
-        upper = V - jnp.tril(V)
-        assert jnp.allclose(upper, 0.0, atol=1e-8), (
+        upper = V - units.apply(jnp.tril, V)
+        assert allclose(upper, 0.0, atol=1e-8), (
             f"cell.vectors must remain lower-triangular, got upper part:\n{upper}"
         )
         cm = final_state.systems.data.cell_momentum[0]
-        cm_upper = cm - jnp.tril(cm)
-        assert jnp.allclose(cm_upper, 0.0, atol=1e-10), (
+        cm_upper = cm - units.apply(jnp.tril, cm)
+        assert allclose(cm_upper, 0.0, atol=1e-10), (
             f"cell_momentum must remain lower-triangular, got upper part:\n{cm_upper}"
         )
 
@@ -1854,10 +1933,10 @@ class TestBNPTLIntegrator:
         k1, k2 = jax.random.split(jax.random.key(101))
         # Start with a sheared triclinic cell.
         h0 = jnp.array([[5.0, 0.0, 0.0], [1.0, 4.5, 0.0], [0.5, 0.8, 4.0]])
-        positions = (jax.random.uniform(k1, (n, 3)) - 0.5) * 2.0
-        momenta = jax.random.normal(k2, (n, 3)) * jnp.sqrt(kT)
-        forces = -positions
-        masses = jnp.ones(n)
+        positions = (jax.random.uniform(k1, (n, 3)) - 0.5) * 2.0 * A
+        momenta = jax.random.normal(k2, (n, 3)) * units.sqrt(kT * EV * AMU)
+        forces = -positions * EV / A**2
+        masses = jnp.ones(n) * AMU
         si = Index.new([SystemId(0)] * n)
         particles = Table.arange(
             ParticleData(
@@ -1870,38 +1949,39 @@ class TestBNPTLIntegrator:
             ),
             label=ParticleId,
         )
-        from kups.core.utils.jax import tree_zeros_like
 
-        cell = PeriodicCell(TriclinicFrame.from_matrix(h0[None]))
-        V0 = float(jnp.abs(jnp.linalg.det(h0)))
-        h_diag = jnp.diagonal(h0)[None]  # (1, 3)
-        tau_p = jnp.array([1.0])
-        kappa = jnp.array([10.0])
+        cell = PeriodicCell(TriclinicFrame.from_matrix(h0[None] * A))
+        V0 = float(jnp.abs(jnp.linalg.det(h0))) * A**3
+        h_diag = jnp.diagonal(h0)[None] * A  # (1, 3)
+        tau_p = jnp.array([1.0]) * T0
+        kappa = jnp.array([10.0]) * A**3 / EV
         per_column = (
             3.0
             * V0
             * (tau_p[..., None] / (2.0 * jnp.pi)) ** 2
             / (kappa[..., None] * h_diag**2)
         )
-        M = jnp.tril(jnp.broadcast_to(per_column[..., None, :], (1, 3, 3)))
-        gamma = jnp.array([1.0])
+        M = units.apply(
+            lambda m: jnp.tril(jnp.broadcast_to(m[..., None, :], (1, 3, 3))), per_column
+        )
+        gamma = jnp.array([1.0]) / T0
         params = BNPTLParams(
-            time_step=jnp.array([0.005]),
-            temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
+            time_step=jnp.array([0.005]) * T0,
+            temperature=jnp.array([kT]) * EV / units.constants.k_B,
             friction_coefficient=gamma,
-            target_pressure=jnp.array([0.0]),
+            target_pressure=jnp.array([0.0]) * EV / A**3,
             pressure_coupling_time=tau_p,
             compressibility=kappa,
             barostat_mass=M,
-            barostat_friction=jnp.tril(
-                jnp.broadcast_to(gamma[..., None, None], M.shape)
+            barostat_friction=units.apply(
+                lambda g: jnp.tril(jnp.broadcast_to(g[..., None, None], M.shape)), gamma
             ),
         )
         systems = Table.arange(
             BNPTLSystemData(
                 cell=cell,
-                cell_gradients=tree_zeros_like(cell),
-                cell_momentum=jnp.zeros((1, 3, 3)),
+                cell_gradients=zero_gradient_cell(cell),
+                cell_momentum=units.zeros((1, 3, 3), MOMENTUM),
                 integrator_params=params,
             ),
             label=SystemId,
@@ -1921,11 +2001,11 @@ class TestBNPTLIntegrator:
         )
         # No collapse to zero or NaN.
         assert jnp.all(vols > 0.1 * V0), "Cell collapsed below 10% of initial volume"
-        assert jnp.all(jnp.isfinite(vols)), "Volume went non-finite"
+        assert jnp.all(jnp.isfinite(vols.to(A**3))), "Volume went non-finite"
         # Off-diagonal elements of the cell remain finite and non-degenerate.
         V_final = final_state.systems.data.cell.vectors[0]
-        assert jnp.all(jnp.isfinite(V_final))
-        assert jnp.abs(jnp.linalg.det(V_final)) > 0.1 * V0
+        assert jnp.all(jnp.isfinite(V_final.to(A)))
+        assert units.absolute(units.det(V_final)).to(A**3) > 0.1 * V0.to(A**3)
 
     def test_off_diagonal_cell_dofs_get_exercised(self):
         """Initial cubic cell + thermal noise on the cell DOFs must produce
@@ -1950,12 +2030,13 @@ class TestBNPTLIntegrator:
         )
         # V_traj has shape (300, 3, 3). Off-diagonal elements should
         # fluctuate, not be ~0 the whole run.
-        off_diag = jnp.stack(
+        off_diag = units.stack(
             [V_traj[:, 1, 0], V_traj[:, 2, 0], V_traj[:, 2, 1]], axis=-1
-        )
+        ).to(A)
         rms_off = jnp.sqrt(jnp.mean(off_diag**2))
         # Expect off-diagonal RMS to be at least ~1% of the diagonal.
-        rms_diag = jnp.sqrt(jnp.mean(jnp.diagonal(V_traj, axis1=-2, axis2=-1) ** 2))
+        diagonal = V_traj.diagonal(axis1=-2, axis2=-1).to(A)
+        rms_diag = jnp.sqrt(jnp.mean(diagonal**2))
         assert rms_off > 0.005 * rms_diag, (
             f"Off-diagonal cell DOFs are barely active (rms_off={rms_off:.4e}, "
             f"rms_diag={rms_diag:.4e}); the anisotropic barostat is not "
@@ -1963,7 +2044,7 @@ class TestBNPTLIntegrator:
         )
 
 
-def _bnptl_hamiltonian(state: BNPTLState, k: float = 1.0) -> Array:
+def _bnptl_hamiltonian(state: BNPTLState, k: float = 1.0) -> units.Energy:
     r"""Extended-phase-space Hamiltonian for the harmonic NPT test system.
 
     $$H = \sum_{\alpha\beta} \frac{(p^h_{\alpha\beta})^2}{2 M_{\alpha\beta}}
@@ -1976,19 +2057,22 @@ def _bnptl_hamiltonian(state: BNPTLState, k: float = 1.0) -> Array:
     params = sys.integrator_params
 
     # Atomic KE (uses the algorithm-side p, not p_phys — see Gao Remark 2).
-    ke_atomic = jnp.sum(0.5 * par.momenta**2 / par.masses[..., None])
+    ke_atomic = units.sum(0.5 * par.momenta**2 / par.masses[..., None])
 
     # Cell KE on the lower-triangular DOFs only. Use safe-division mask.
     M = params.barostat_mass
     cm = sys.cell_momentum
-    ke_cell = jnp.sum(jnp.where(M > 0, 0.5 * cm**2 / jnp.where(M > 0, M, 1.0), 0.0))
+    live = M.value > 0
+    ke_cell = units.sum(
+        units.where(live, 0.5 * cm**2 / units.where(live, M, 1.0 * AMU), 0.0)
+    )
 
-    U = 0.5 * k * jnp.sum(par.positions**2)
+    U = 0.5 * k * EV / A**2 * units.sum(par.positions**2)
     V = sys.cell.volume[0]
     P_ext = params.target_pressure[0]
-    kT = params.temperature[0] * BOLTZMANN_CONSTANT
+    kT = units.constants.k_B * params.temperature[0]
     chi = 1  # _GAO_CHI for 3D lower-tri parameterisation
-    return ke_atomic + ke_cell + U + P_ext * V + chi * kT * jnp.log(V)
+    return ke_atomic + ke_cell + U + P_ext * V + chi * kT * jnp.log(V / A**3)
 
 
 class TestBNPTLHamiltonianConservation:
@@ -2033,10 +2117,10 @@ class TestBNPTLHamiltonianConservation:
     def _make_no_thermostat_state(self, dt: float) -> BNPTLState:
         n, box, kT = 8, 20.0, 1.0
         k1, k2 = jax.random.split(jax.random.key(7))
-        positions = (jax.random.uniform(k1, (n, 3)) - 0.5) * 2.0  # tight, ±1
-        momenta = jax.random.normal(k2, (n, 3)) * jnp.sqrt(kT)
-        forces = -positions
-        masses = jnp.ones(n)
+        positions = (jax.random.uniform(k1, (n, 3)) - 0.5) * 2.0 * A  # tight, ±1
+        momenta = jax.random.normal(k2, (n, 3)) * units.sqrt(kT * EV * AMU)
+        forces = -positions * EV / A**2
+        masses = jnp.ones(n) * AMU
         si = Index.new([SystemId(0)] * n)
         particles = Table.arange(
             ParticleData(
@@ -2049,32 +2133,28 @@ class TestBNPTLHamiltonianConservation:
             ),
             label=ParticleId,
         )
-        from kups.core.utils.jax import tree_zeros_like
 
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
-        V0 = box**3
-        # Gao Eq. (14) per-row mass for cubic h₀ = box * I.
-        M = jnp.tril(
-            jnp.full(
-                (1, 3, 3),
-                3.0 * V0 * (1.0 / (2.0 * jnp.pi)) ** 2 / (10.0 * box**2),
-            )
-        )
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box * A))
+        V0 = box**3 * A**3
+        # Gao Eq. (14) per-row mass for cubic h₀ = box * I, with κ = 10 A^3/eV.
+        kappa = 10.0 * A**3 / EV
+        per_row = 3.0 * V0 * (1.0 * T0 / (2.0 * jnp.pi)) ** 2 / (kappa * (box * A) ** 2)
+        M = units.apply(lambda m: jnp.tril(jnp.full((1, 3, 3), m)), per_row)
         params = BNPTLParams(
-            time_step=jnp.array([dt]),
-            temperature=jnp.array([kT / BOLTZMANN_CONSTANT]),
-            friction_coefficient=jnp.array([0.0]),
-            target_pressure=jnp.array([0.0]),
-            pressure_coupling_time=jnp.array([1.0]),
-            compressibility=jnp.array([10.0]),
+            time_step=jnp.array([dt]) * T0,
+            temperature=jnp.array([kT]) * EV / units.constants.k_B,
+            friction_coefficient=jnp.array([0.0]) / T0,
+            target_pressure=jnp.array([0.0]) * EV / A**3,
+            pressure_coupling_time=jnp.array([1.0]) * T0,
+            compressibility=jnp.array([10.0]) * A**3 / EV,
             barostat_mass=M,
-            barostat_friction=jnp.zeros((1, 3, 3)),
+            barostat_friction=units.zeros((1, 3, 3), 1 / T0),
         )
         systems = Table.arange(
             BNPTLSystemData(
                 cell=cell,
-                cell_gradients=tree_zeros_like(cell),
-                cell_momentum=jnp.zeros((1, 3, 3)),
+                cell_gradients=zero_gradient_cell(cell),
+                cell_momentum=units.zeros((1, 3, 3), MOMENTUM),
                 integrator_params=params,
             ),
             label=SystemId,
@@ -2097,7 +2177,7 @@ class TestBNPTLHamiltonianConservation:
             n_sample=500,
             extract_fn=_bnptl_hamiltonian,
         )
-        rel_drift = float(jnp.max(jnp.abs(hs - H0)) / jnp.abs(H0))
+        rel_drift = float(units.max(units.absolute(hs - H0)) / units.absolute(H0))
         # Empirically rel_drift ~ 1e-6 at this Δt and position scale; we leave
         # generous headroom for the JAX-version drift.
         assert rel_drift < 1e-4, (
@@ -2123,7 +2203,9 @@ class TestBNPTLHamiltonianConservation:
                 n_sample=n_steps,
                 extract_fn=_bnptl_hamiltonian,
             )
-            drifts.append(float(jnp.max(jnp.abs(hs - H0)) / jnp.abs(H0)))
+            drifts.append(
+                float(units.max(units.absolute(hs - H0)) / units.absolute(H0))
+            )
         # Halving Δt should reduce drift by ~4×.
         ratios = [drifts[i] / drifts[i + 1] for i in range(len(dts) - 1)]
         for r, dt_pair in zip(ratios, list(zip(dts[:-1], dts[1:]))):

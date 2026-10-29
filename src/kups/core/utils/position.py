@@ -10,8 +10,8 @@ crystals, vacuum clusters, and slab / wire geometries.
 """
 
 import jax.numpy as jnp
-from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.typing import (
@@ -21,12 +21,13 @@ from kups.core.typing import (
     ParticleId,
 )
 from kups.core.utils.jax import jit
+from kups.core.utils.units import magnitudes
 
 
 @jit
 def center_of_mass[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P], cells: Cell[AnyPeriodicity]
-) -> Array:
+) -> units.Length:
     """Compute center of mass for indexed particle groups.
 
     Calculates the center of mass for each group of particles defined by
@@ -66,12 +67,14 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     # Index the first particle of each group
     ref_idx = group.select_per_label(jnp.zeros(num_groups, dtype=int))
     positions = particles.data.positions
+    # A weight only sets a particle's relative importance and divides out again,
+    # so its magnitudes are enough and an unweighted table can pass plain ones.
     if isinstance(particles.data, HasWeights):
-        weight = particles.data.weights[:, None]
+        weight = magnitudes(particles.data.weights)[:, None]
     elif isinstance(particles.data, HasMasses):
-        weight = particles.data.masses[:, None]
+        weight = magnitudes(particles.data.masses)[:, None]
     else:
-        weight = jnp.ones_like(positions[:, 0])[:, None]
+        weight = jnp.ones_like(magnitudes(positions)[:, 0])[:, None]
     offsets = positions[ref_idx]
     rel_positions = positions - Table(group.keys, offsets)[group]
     rel_positions = batched_cells.wrap(rel_positions)
@@ -86,8 +89,8 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
 def to_relative_positions[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P],
     cells: Cell[AnyPeriodicity],
-    center_of_masses: Array | None = None,
-) -> Array:
+    center_of_masses: units.Length | None = None,
+) -> units.Length:
     """Calculate particle positions relative to their group's center of mass.
 
     Transforms absolute particle positions to positions relative to each
@@ -123,8 +126,8 @@ def to_relative_positions[P: HasPositionsAndGroupIndex](
 def to_absolute_positions[P: HasPositionsAndGroupIndex](
     particles: Table[ParticleId, P],
     cells: Cell[AnyPeriodicity],
-    center_of_masses: Array,
-) -> Array:
+    center_of_masses: units.Length,
+) -> units.Length:
     """Calculate absolute positions from relative positions and group COMs.
 
     Inverse operation of `to_relative_positions`. Converts positions defined

@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
     AnyPeriodicity,
@@ -24,6 +25,7 @@ from kups.core.cell import (
 from kups.core.data.table import Table
 from kups.core.neighborlist import CellListNeighborList, DenseNearestNeighborList
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 
 from .._builders import (
     SamplePoints,
@@ -34,6 +36,8 @@ from .._builders import (
     run_nl,
     valid_edge_set,
 )
+
+_A = u.angstrom
 
 # Every fixture is padded with inactive particles to this count, so each
 # periodicity compiles one program per implementation.
@@ -46,10 +50,10 @@ def _padded_inputs(
 ) -> tuple[
     Table[ParticleId, SamplePoints],
     Table[SystemId, SampleSystems],
-    Table[SystemId, Array],
+    Table[SystemId, units.Length],
 ]:
     lh = make_lh(positions, jnp.zeros(len(positions), dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]) * _A)
     lh, systems, cutoffs, _ = pad(
         lh, systems, cutoffs, n_particles=_PADDED, n_systems=1
     )
@@ -89,13 +93,13 @@ class TestNeighborListAcrossPeriodicities:
     """Cell-list and dense agree across vacuum (0D), 1D wire, 2D slab, 3D bulk."""
 
     def _bulk_cell(self, L):
-        return PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        return PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None] * _A))
 
     def _vacuum_cell(self, L):
-        return VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
+        return VacuumCell(OrthogonalFrame(jnp.array([L, L, L])[None] * _A))
 
     def _slab_cell(self, L, periodic):
-        return Cell(OrthogonalFrame(jnp.array([L, L, L])[None]), periodic=periodic)
+        return Cell(OrthogonalFrame(jnp.array([L, L, L])[None] * _A), periodic=periodic)
 
     def test_3d_periodic_wraps_across_face(self):
         """Two atoms near opposite x-faces connect via the periodic image."""

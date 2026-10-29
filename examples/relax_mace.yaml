@@ -6,7 +6,7 @@ potential:
 run:
   out_file: relax_mace.h5
   max_steps: 1000
-  force_tolerance: 0.001   # eV/Å
+  force_tolerance: "0.001 eV/angstrom"
   seed: null
   optimizer:
     - transform: scale_by_ase_lbfgs

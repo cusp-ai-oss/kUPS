@@ -9,12 +9,14 @@ import pytest
 
 from kups.core.data.index import Index
 from kups.core.neighborlist import Edges
+from kups.core.units import catalog as u
 from kups.potential.classical.cosine_angle import (
     CosineAngleParameters,
     _compute_cosine_coefficients,
     cosine_angle_energy,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
+from test.units import A, assert_close
 
 from .conftest import make_particles, make_systems
 
@@ -184,14 +186,14 @@ class TestFromUff:
         return CosineAngleParameters.from_uff(
             self._UFF_LABELS,
             self._ANGLE,
-            self._RADIUS,
+            self._RADIUS * A,
             self._ELECTRONEGATIVITY,
-            self._CHARGE,
+            self._CHARGE * u.e,
         )
 
     def test_theta0_from_central_atom(self):
         params = self._params()
-        assert jnp.isclose(jnp.degrees(params.theta0[0, 1, 0]), 104.51, rtol=1e-5)
+        assert_close(jnp.degrees(params.theta0[0, 1, 0]), 104.51, rtol=1e-5)
 
     @pytest.mark.parametrize(
         "triplet,expected",
@@ -200,4 +202,5 @@ class TestFromUff:
     )
     def test_force_constant(self, triplet, expected):
         # UFF Eq. 13; reference values from RDKit's UFF in kcal/mol/rad^2.
-        assert jnp.isclose(self._params().k[triplet], expected, rtol=1e-3)
+        k = self._params().k.to(u.kcal / u.mol)
+        assert_close(k[triplet], expected, rtol=1e-3)

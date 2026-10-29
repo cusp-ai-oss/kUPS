@@ -30,6 +30,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import Lens, View, bind, const_lens
@@ -42,9 +43,6 @@ from kups.core.typing import (
 )
 from kups.core.utils.jax import dataclass, field, tree_map
 from kups.core.utils.kahan import KahanSummand
-
-type Energy = Array
-"""Type alias for energy arrays, typically shape (n_systems,)."""
 
 
 @dataclass
@@ -104,7 +102,7 @@ class PotentialOut[Gradients, Hessians]:
         ```python
         # Simple potential output with position gradients only
         out = PotentialOut(
-            total_energies=jnp.array([10.5, 12.3]),  # 2 systems
+            total_energies=jnp.array([10.5, 12.3]) * u.eV,  # 2 systems
             gradients={"positions": force_array},     # Forces on particles
             hessians=EMPTY                            # No Hessians computed
         )
@@ -114,7 +112,7 @@ class PotentialOut[Gradients, Hessians]:
         ```
     """
 
-    total_energies: Table[SystemId, Energy]
+    total_energies: Table[SystemId, units.Energy]
     gradients: Gradients
     hessians: Hessians
 
@@ -135,7 +133,7 @@ class PotentialOut[Gradients, Hessians]:
         return jax.tree.map(lambda x: other * x, self)
 
     @property
-    def as_tuple(self) -> tuple[Table[SystemId, Energy], Gradients, Hessians]:
+    def as_tuple(self) -> tuple[Table[SystemId, units.Energy], Gradients, Hessians]:
         """Convert to tuple form (energies, gradients, hessians).
 
         Returns:
@@ -536,8 +534,11 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
                 "patch_idx_view must be provided for multi-system potentials"
             )
             sys_keys = summand.value.total_energies.keys
+            # One Index per quantity rather than one inside its magnitudes.
             patch_idx = tree_map(
-                lambda x: Index(sys_keys, jnp.zeros(x.shape, dtype=int)), summand.value
+                lambda x: Index(sys_keys, jnp.zeros(x.shape, dtype=int)),
+                summand.value,
+                is_leaf=units.is_leaf,
             )
         patches: list[Patch[State]] = [
             result.patch,

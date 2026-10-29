@@ -12,6 +12,7 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.data.table import Table
 from kups.core.lens import lens
 from kups.core.patch import IdPatch, Patch, WithPatch
@@ -22,6 +23,7 @@ from kups.core.propagator import (
     PatchFn,
 )
 from kups.core.typing import SystemId
+from kups.core.units import testing
 from kups.core.utils.jax import dataclass
 from kups.mcmc.widom import (
     EnergyMoments,
@@ -30,6 +32,7 @@ from kups.mcmc.widom import (
     WidomStatistics,
     widom_test,
 )
+from test.units import EV, assert_close
 
 
 def _sys_table[T](values: T) -> Table[SystemId, T]:
@@ -38,13 +41,13 @@ def _sys_table[T](values: T) -> Table[SystemId, T]:
 
 @dataclass
 class _DummyState:
-    energies: Array
+    energies: units.Energy
     widom_statistics: Table[SystemId, WidomStatistics]
 
 
-def _dummy_state(n_systems: int, energies: Array | None = None) -> _DummyState:
+def _dummy_state(n_systems: int, energies: units.Energy | None = None) -> _DummyState:
     if energies is None:
-        energies = jnp.arange(n_systems, dtype=jnp.float64)
+        energies = jnp.arange(n_systems, dtype=jnp.float64) * EV
     return _DummyState(
         energies=energies,
         widom_statistics=_sys_table(WidomStatistics.zeros(n_systems)),
@@ -127,17 +130,17 @@ class TestWidomStatistics:
     def test_reset_clears_sums(self):
         stats = WidomStatistics.zeros(2)
         for _ in range(7):
-            stats = stats.update(jnp.array([0.0, 0.5]), jnp.array([1.0, 2.0]))
+            stats = stats.update(jnp.array([0.0, 0.5]), jnp.array([1.0, 2.0]) * EV)
         r = stats.reset()
         npt.assert_array_equal(r.sum_boltzmann, jnp.zeros(2))
-        npt.assert_array_equal(r.sum_delta_u_boltzmann, jnp.zeros(2))
+        assert_close(r.sum_delta_u_boltzmann, jnp.zeros(2) * EV)
         npt.assert_array_equal(r.n_samples, jnp.zeros(2, dtype=int))
 
 
 class TestGhostProbe:
     def test_accumulates_via_stat_lens_and_update_fn(self):
         n_systems = 2
-        energies = jnp.array([0.0, 1.5])
+        energies = jnp.array([0.0, 1.5]) * EV
         state = _dummy_state(n_systems, energies=energies)
 
         def update(state_: _DummyState, stats: WidomStatistics, ln_a: Array):
@@ -159,7 +162,7 @@ class TestGhostProbe:
         # One update with ln α = [0, ln 0.5] → boltzmann = [1, 0.5].
         npt.assert_allclose(stats.sum_boltzmann, jnp.array([1.0, 0.5]), rtol=1e-10)
         # Update fn passed ``state_.energies`` as ΔU, so ⟨ΔU·W⟩ = energies · W.
-        npt.assert_allclose(
+        assert_close(
             stats.sum_delta_u_boltzmann,
             energies * jnp.array([1.0, 0.5]),
             rtol=1e-10,
@@ -183,7 +186,7 @@ class TestGhostProbe:
 
         new_state = probe(jax.random.key(0), state)
         # `energies` is the non-accumulator field and must round-trip unchanged.
-        npt.assert_array_equal(new_state.energies, state.energies)
+        testing.assert_array_equal(new_state.energies, state.energies, EV)
 
 
 # -- TransitionStatistics (TMMC C-matrix) --------------------------------
@@ -261,12 +264,12 @@ class TestEnergyMoments:
 
         moments = EnergyMoments.zeros(1)
         for x in samples:
-            moments = moments.update(jnp.array([x]))
+            moments = moments.update(jnp.array([x]) * EV)
 
         cumulants = moments.finalize()
         ref_mean, ref_m2, ref_m3, ref_m4 = _numpy_central_moments(samples)
 
-        npt.assert_allclose(cumulants.mean[0], ref_mean, rtol=1e-10)
+        assert_close(cumulants.mean[0], ref_mean * EV, rtol=1e-10)
         npt.assert_allclose(cumulants.variance[0], ref_m2, rtol=1e-10)
         npt.assert_allclose(cumulants.cumulants[0, 1], ref_m3, rtol=1e-9, atol=1e-12)
         npt.assert_allclose(
@@ -281,7 +284,7 @@ class TestEnergyMoments:
 
         moments = EnergyMoments.zeros(1, max_order=6)
         for x in samples:
-            moments = moments.update(jnp.array([x]))
+            moments = moments.update(jnp.array([x]) * EV)
 
         dev = samples - samples.mean()
         mu = {p: np.mean(dev**p) for p in range(2, 7)}
@@ -306,19 +309,19 @@ class TestEnergyMoments:
 
         moments = EnergyMoments.zeros(2)
         for x1, x2 in zip(s1, s2, strict=True):
-            moments = moments.update(jnp.array([float(x1), float(x2)]))
+            moments = moments.update(jnp.array([float(x1), float(x2)]) * EV)
         c = moments.finalize()
 
-        npt.assert_allclose(c.mean[0], s1.mean(), rtol=1e-10)
-        npt.assert_allclose(c.mean[1], s2.mean(), rtol=1e-10)
+        assert_close(c.mean[0], s1.mean() * EV, rtol=1e-10)
+        assert_close(c.mean[1], s2.mean() * EV, rtol=1e-10)
         npt.assert_allclose(c.variance[0], s1.var(), rtol=1e-10)
         npt.assert_allclose(c.variance[1], s2.var(), rtol=1e-10)
 
     def test_reset_restores_zeros(self):
         moments = EnergyMoments.zeros(3)
         for _ in range(10):
-            moments = moments.update(jnp.array([1.0, 2.0, 3.0]))
+            moments = moments.update(jnp.array([1.0, 2.0, 3.0]) * EV)
         reset = moments.reset()
         npt.assert_array_equal(reset.count, jnp.zeros(3, dtype=int))
-        npt.assert_array_equal(reset.mean, jnp.zeros(3))
+        assert_close(reset.mean, jnp.zeros(3) * EV)
         npt.assert_array_equal(reset.central_sums, jnp.zeros((3, 3)))

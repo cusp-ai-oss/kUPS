@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 import jax.numpy as jnp
-import numpy.testing as npt
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
@@ -28,12 +28,13 @@ from kups.potential.mliap.local import (
     LocalMLIAPData,
     make_local_mliap_potential,
 )
+from test.units import EV, A, assert_close
 
 
 # Test data structures
 @dataclass
 class AtomData:
-    positions: Array
+    positions: units.Length
     atomic_numbers: Array
     system: Index[SystemId]
     inclusion: Index[InclusionId]
@@ -43,7 +44,7 @@ class AtomData:
 @dataclass
 class SystemData:
     cell: Cell
-    cutoff: Array
+    cutoff: units.Length
 
 
 # Simple model functions for testing - smaller dimensions for speed
@@ -79,12 +80,12 @@ class State:
 @dataclass
 class AtomPatch(Patch[State]):
     indices: Array
-    new_positions: Array
+    new_positions: units.Length
 
     def __call__(self, state: State, accept: Accept) -> State:
         prev_positions = state.atoms.data.positions[self.indices]
         mask = accept[accept.index]
-        new_pos = jnp.where(mask, self.new_positions, prev_positions)
+        new_pos = units.where(mask, self.new_positions, prev_positions)
         return (
             bind(state)
             .focus(lambda s: s.atoms.data.positions)
@@ -101,9 +102,11 @@ def simple_system():
     embed_dim = 4
 
     # Spread atoms far apart to minimize edges
-    positions = jnp.array([[i * 3.0, 0.0, 0.0] for i in range(n_atoms)], dtype=float)
+    positions = (
+        jnp.array([[i * 3.0, 0.0, 0.0] for i in range(n_atoms)], dtype=float) * A
+    )
     atomic_numbers = jnp.zeros((n_atoms,), dtype=int)
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 30.0))
+    cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 30.0) * A))
 
     init_fn, edge_fn, readout_fn = make_simple_model(embed_dim)
 
@@ -121,7 +124,7 @@ def simple_system():
         label=ParticleId,
     )
     systems = Table.arange(
-        SystemData(cell=cell, cutoff=jnp.array([2.5])),
+        SystemData(cell=cell, cutoff=jnp.array([2.5]) * A),
         label=SystemId,
     )
 
@@ -129,7 +132,7 @@ def simple_system():
         atoms=atoms,
         systems=systems,
         model_config=LocalMLIAPData(
-            cutoff=Table((SystemId(0),), jnp.array([2.5])),
+            cutoff=Table((SystemId(0),), jnp.array([2.5]) * A),
             init_function=init_fn,
             edge_function=edge_fn,
             readout_function=readout_fn,
@@ -139,7 +142,7 @@ def simple_system():
             ),
         ),
         out=KahanSummand.init(
-            PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), (), ())
+            PotentialOut(Table.arange(jnp.zeros((1,)) * EV, label=SystemId), (), ())
         ),
         full_neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
@@ -156,7 +159,7 @@ def simple_system():
     def make_patch(state: State) -> AtomPatch:
         return AtomPatch(
             indices=jnp.arange(2),
-            new_positions=jnp.array([[0.1, 0.1, 0.1], [3.1, 0.0, 0.0]]),
+            new_positions=jnp.array([[0.1, 0.1, 0.1], [3.1, 0.0, 0.0]]) * A,
         )
 
     return state, make_patch
@@ -245,10 +248,10 @@ class TestLocalMLIAPEnergy:
 
         energy = result.value.data.total_energies.data
         assert energy.shape == (1,)
-        assert jnp.isfinite(energy).all()
+        assert jnp.isfinite(energy.to(EV)).all()
         # With non-trivial model functions and atoms at non-zero positions,
         # energy should be non-zero
-        assert not jnp.allclose(energy, 0.0)
+        assert not jnp.allclose(energy.to(EV), 0.0)
 
     def test_incremental_vs_full(self, simple_system, potential):
         """Test that incremental update matches full recomputation."""
@@ -276,7 +279,7 @@ class TestLocalMLIAPEnergy:
         out_full = potential_fn(new_state)
         out_full.raise_assertion()
 
-        npt.assert_allclose(
+        assert_close(
             out_incremental.value.data.total_energies.data,
             out_full.value.data.total_energies.data,
             rtol=1e-5,

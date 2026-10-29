@@ -17,8 +17,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Periodic3D
-from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist import (
@@ -30,7 +30,6 @@ from kups.core.patch import Accept, IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
     EMPTY,
     EMPTY_LENS,
-    Energy,
     Potential,
     PotentialOut,
     ScaledPotential,
@@ -45,6 +44,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.functools import constant, pipe
 from kups.core.utils.jax import (
     astype_floating,
@@ -89,15 +89,19 @@ from .parameters import (
 )
 from .reciprocal import _structure_factor_full, _use_grid_response
 
-TO_STANDARD_UNITS = HARTREE * BOHR
+type ChargeSquared = units.Quantity[0, 0, 2, 2, 0]
+"""Dimension of a squared charge."""
+
+type EnergyPerChargeSquared = units.Quantity[2, 1, -4, -2, 0]
+"""Dimension of an energy per squared charge."""
 
 
 @dataclass
 class EwaldCache[Gradient, Hessian]:
     """Compensated structure factors, prefactors and component outputs for updates."""
 
-    structure_factor: KahanSummand[Array]  # (n_groups, n_kvecs, 2)
-    prefactor: Array  # (n_groups, n_kvecs)
+    structure_factor: KahanSummand[units.Charge]  # (n_groups, n_kvecs, 2)
+    prefactor: units.Wavenumber  # (n_groups, n_kvecs)
     short_range: KahanSummand[PotentialOut[Gradient, Hessian]]
     long_range: KahanSummand[PotentialOut[Gradient, Hessian]]
     self_interaction: KahanSummand[PotentialOut[Gradient, Hessian]]
@@ -121,13 +125,13 @@ class EwaldCache[Gradient, Hessian]:
             Structure-factor, prefactor and component-output caches set to zero.
         """
         out = PotentialOut(
-            Table.arange(jnp.zeros(n_sys, dtype=float), label=SystemId),
+            Table.arange(units.zeros(n_sys, u.eV, dtype=float), label=SystemId),
             gradient,
             hessian,
         )
         return EwaldCache(
-            KahanSummand.init(jnp.zeros((n_sys, n_kvecs, 2), dtype=float)),
-            jnp.zeros((n_sys, n_kvecs), dtype=float),
+            KahanSummand.init(units.zeros((n_sys, n_kvecs, 2), u.e, dtype=float)),
+            units.zeros((n_sys, n_kvecs), 1 / u.angstrom, dtype=float),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
@@ -140,8 +144,8 @@ class EwaldCache[Gradient, Hessian]:
 class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
     """Accept or reject each system's structure factor and prefactor."""
 
-    new_structure_factor: KahanSummand[Array]
-    new_prefactor: Array
+    new_structure_factor: KahanSummand[units.Charge]
+    new_prefactor: units.Wavenumber
     system_idx: Index[SystemId]
     lens: Lens[State, EwaldCache[Gradient, Hessian]] = field(static=True)
 
@@ -170,7 +174,7 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
 class EwaldCacheDeltaPatch[State, Gradient, Hessian](Patch[State]):
     """Add each accepted system's structure-factor change to the compensated cache."""
 
-    structure_factor_delta: Array
+    structure_factor_delta: units.Charge
     system_idx: Index[SystemId]
     lens: Lens[State, EwaldCache[Gradient, Hessian]] = field(static=True)
 
@@ -222,39 +226,42 @@ class EwaldLongRangeInput[State]:
     ) = None
 
     @property
-    def volume(self) -> Array:
-        """Cell volumes in Å³, shaped ``(n_systems,)``."""
+    def volume(self) -> units.Volume:
+        """Cell volumes, shaped ``(n_systems,)``."""
         return self.point_cloud.systems.data.cell.volume
 
     @property
-    def kvecs(self) -> Array:
+    def kvecs(self) -> units.Wavenumber:
         """Convert the stored integer shifts to Cartesian reciprocal vectors.
 
-        The result is in 1/Å, shaped ``(n_systems, n_kvecs, 3)``.
+        The result is shaped ``(n_systems, n_kvecs, 3)``.
         """
         sys_idx = self.point_cloud.systems.index
+        inverse = self.point_cloud.systems.data.cell.inverse_vectors
         return triangular_3x3_matmul(
-            self.point_cloud.systems.data.cell.inverse_vectors.mT[:, None] * 2 * jnp.pi,
+            inverse.swapaxes(-1, -2)[:, None] * 2 * jnp.pi,
             self.parameters.reciprocal_lattice_shifts[sys_idx],
             lower=False,
         )
 
 
-def _self_energy(charge_squares: Array, alpha: Array) -> Array:
+def _self_energy(
+    charge_squares: ChargeSquared, alpha: units.Wavenumber
+) -> units.Energy:
     """Self energy shared by particle sums and molecular coefficients."""
-    return -charge_squares * alpha / jnp.sqrt(jnp.pi) * TO_STANDARD_UNITS
+    return -units.constants.k_e * charge_squares * alpha / jnp.sqrt(jnp.pi)
 
 
 def ewald_self_interaction_energy(
     inp: EwaldSelfInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Subtract each charge's interaction with its own Gaussian screening cloud.
 
     Args:
         inp: Particle graph and per-system screening parameters.
 
     Returns:
-        Per-system self-interaction energies in eV and an identity patch.
+        Per-system self-interaction energies and an identity patch.
     """
     sys_idx = inp.graph.systems.index
     energies = _self_energy(
@@ -268,30 +275,30 @@ def ewald_self_interaction_energy(
 
 def ewald_short_range_pair_kernel(
     parameters: EwaldParameters,
-    charges_i: Array,
-    charges_j: Array,
-    rij: Array,
-    r2: Array,
+    charges_i: units.Charge,
+    charges_j: units.Charge,
+    rij: units.Length,
+    r2: units.Area,
     system: Index[SystemId],
     /,
-) -> Array:
+) -> units.Energy:
     """Screened Coulomb pair kernel shared by graph and fused evaluation.
 
     Callers apply the cutoff; pair inputs broadcast to a common shape.
 
     Args:
         parameters: Per-system screening parameters.
-        charges_i: Left-particle charges in e.
-        charges_j: Right-particle charges in e.
+        charges_i: Left-particle charges.
+        charges_j: Right-particle charges.
         rij: Pair displacement vectors; unused by this radial kernel.
-        r2: Squared pair distances in Å².
+        r2: Squared pair distances.
         system: Left-particle system indices.
 
     Returns:
-        Pair energies in eV.
+        Pair energies ``k_e q_i q_j erfc(alpha r) / r``.
     """
     del rij
-    dists = jnp.sqrt(r2)
+    dists = units.sqrt(r2)
     alpha = parameters.alpha
     alpha_values = alpha.data[0] if alpha.size == 1 else alpha[system]
     argument = alpha_values * dists
@@ -299,13 +306,15 @@ def ewald_short_range_pair_kernel(
         # Direct erfc crashes the GPU fused kernel compiler.
         screened = (1.0 - jax.lax.erf(argument)) / dists
     elif argument.dtype == jnp.float64:
-        screened = erfc_over(argument, dists)
+        screened = units.apply(
+            erfc_over, argument, dists, dim=units.dim_of(1 / u.angstrom)
+        )
     else:
         screened = jax.lax.erfc(argument) / dists
-    return TO_STANDARD_UNITS * charges_i * charges_j * screened
+    return units.constants.k_e * charges_i * charges_j * screened
 
 
-ewald_short_range_pair = PairEnergy[EwaldParameters, IsEwaldPointData, Array](
+ewald_short_range_pair = PairEnergy[EwaldParameters, IsEwaldPointData, units.Charge](
     kernel=ewald_short_range_pair_kernel,
     features=lambda p: p.charges,
     cutoffs=lambda p: p.cutoff,
@@ -318,8 +327,10 @@ ewald_short_range_energy = GraphPairEnergy(ewald_short_range_pair)
 """Ewald short-range graph evaluator derived from the shared pair term."""
 
 
-def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy:
-    """Compute the unscaled reciprocal sum ``sum_k P(k) |S(k)|²``.
+def long_range(
+    inp: EwaldLongRangeInput[Any], structure_factor: units.Charge
+) -> units.Energy:
+    """Compute the reciprocal energy ``k_e sum_k P(k) |S(k)|²``.
 
     Args:
         inp: System cells, reciprocal-space parameters and, for incremental
@@ -327,18 +338,19 @@ def long_range(inp: EwaldLongRangeInput[Any], structure_factor: Array) -> Energy
         structure_factor: Real/imaginary structure factors, shaped ``(n_systems, n_kvecs, 2)``.
 
     Returns:
-        Per-system reciprocal sums before ``TO_STANDARD_UNITS`` scaling,
-        excluding the neutralizing-background correction.
+        Per-system reciprocal energies, excluding the neutralizing-background
+        correction.
     """
     if inp.changes_from_prev is None:
         weights = prefactor(inp)
     else:
         assert inp.cache is not None, "Cache required for structure factor update"
         weights = _cached_prefactor(inp.cache.prefactor, *_prefactor_args(inp))
-    return jnp.sum(weights * jnp.sum(structure_factor**2, axis=-1), axis=-1)
+    reciprocal = units.sum(weights * units.sum(structure_factor**2, axis=-1), axis=-1)
+    return units.constants.k_e * reciprocal
 
 
-def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
+def prefactor(inp: EwaldLongRangeInput[Any]) -> units.Wavenumber:
     """Weights ``2π/V exp(-k²/(4α²))/k²``, zero outside the reciprocal cutoff.
 
     Double contributions with nonzero first lattice coefficient for the omitted
@@ -355,7 +367,7 @@ def prefactor(inp: EwaldLongRangeInput[Any]) -> Array:
 
 def _prefactor_args(
     inp: EwaldLongRangeInput[Any],
-) -> tuple[Array, Array, Array, Array, Array]:
+) -> tuple[units.Wavenumber, units.Wavenumber, units.Wavenumber, units.Volume, Array]:
     sys_idx = inp.point_cloud.systems.index
     params = inp.parameters
     return (
@@ -368,12 +380,16 @@ def _prefactor_args(
 
 
 def _prefactor(
-    kvecs: Array, alpha: Array, k_max: Array, volume: Array, leading_zero: Array
-) -> Array:
-    k_squared = jnp.sum(kvecs**2, axis=-1)
-    mask = k_squared > 0
+    kvecs: units.Wavenumber,
+    alpha: units.Wavenumber,
+    k_max: units.Wavenumber,
+    volume: units.Volume,
+    leading_zero: Array,
+) -> units.Wavenumber:
+    k_squared = units.sum(kvecs**2, axis=-1)
+    mask = k_squared.value > 0
     mask &= k_squared <= k_max[:, None] ** 2
-    k_squared = jnp.where(mask, k_squared, 1)
+    k_squared = units.where(mask, k_squared, units.ones_like(k_squared))
     result = (
         (2 * jnp.pi)
         / volume[:, None]
@@ -381,35 +397,57 @@ def _prefactor(
         / k_squared
     )
     result = (2 - leading_zero) * result
-    return jnp.where(mask, result, 0.0)
+    return units.where(mask, result, 0.0)
+
+
+def _is_zero_tangent(tangent: Any) -> bool:
+    """Whether a ``symbolic_zeros`` tangent carries no perturbation.
+
+    A quantity is a pytree node, so its unperturbed tangent arrives as a
+    quantity whose magnitudes are the ``SymbolicZero``.
+
+    Args:
+        tangent: A tangent handed to a ``custom_jvp`` rule.
+
+    Returns:
+        Whether the tangent is symbolically zero.
+    """
+    inner = tangent.v if units.is_quantity(tangent) else tangent
+    return isinstance(inner, jax.custom_derivatives.SymbolicZero)
 
 
 @jax.custom_jvp
-def _cached_prefactor(cached: Array, *args: Array) -> Array:
+def _cached_prefactor(cached: units.Wavenumber, *args: Any) -> units.Wavenumber:
     """Cached ``prefactor`` weights; the tangent is that of ``_prefactor(*args)``."""
     return cached
 
 
 @_cached_prefactor.defjvp
 def _cached_prefactor_jvp(
-    primals: tuple[Array, ...], tangents: tuple[Array, ...]
-) -> tuple[Array, Array]:
+    primals: tuple[Any, ...], tangents: tuple[Any, ...]
+) -> tuple[units.Wavenumber, units.Wavenumber]:
     return primals[0], jax.jvp(_prefactor, primals[1:], tangents[1:])[1]
 
 
 def _changed_particle_rows(
     batch_mask: Index[SystemId],
     changes: WithIndices[ParticleId, tuple[IsEwaldPointData, IsEwaldPointData]],
-) -> tuple[Array, Array, Index[SystemId]]:
+) -> tuple[units.Length, units.Charge, Index[SystemId]]:
     """Pair changed current rows with negated previous charges; drop invalid probes."""
     previous, current = changes.data
     system = Index.concatenate(current.system, previous.system)
     system = system.apply_mask(jnp.tile(changes.indices.valid_mask, 2))
     return (
-        jnp.concatenate((current.positions, previous.positions)),
-        jnp.concatenate((current.charges, -previous.charges)),
+        units.concatenate((current.positions, previous.positions)),
+        units.concatenate((current.charges, -previous.charges)),
         system.update_labels(batch_mask.keys, allow_missing=True),
     )
+
+
+type _StructureFactorPrimals = tuple[
+    units.Length, units.Charge, units.Wavenumber, units.Wavenumber
+]
+"""Differentiable structure-factor inputs: positions, charges, k-vectors, inverse cells."""
 
 
 @functools.partial(
@@ -423,16 +461,16 @@ def _changed_particle_rows(
     ),
 )
 def _structure_factor(
-    positions: Array,
-    charges: Array,
-    kvecs: Array,
-    inverse_vectors: Array,
+    positions: units.Length,
+    charges: units.Charge,
+    kvecs: units.Wavenumber,
+    inverse_vectors: units.Wavenumber,
     batch_mask: Index[SystemId],
     bound: ReciprocalGridBound,
     particle_chunk_size: int,
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
-) -> Array:
+) -> units.Charge:
     """Evaluate S(k) from all current particles."""
     return _structure_factor_full(
         positions,
@@ -459,17 +497,17 @@ def _structure_factor(
     ),
 )
 def _structure_factor_delta(
-    positions: Array,
-    charges: Array,
-    kvecs: Array,
-    inverse_vectors: Array,
+    positions: units.Length,
+    charges: units.Charge,
+    kvecs: units.Wavenumber,
+    inverse_vectors: units.Wavenumber,
     batch_mask: Index[SystemId],
     bound: ReciprocalGridBound,
     particle_chunk_size: int,
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
     changes: WithIndices[ParticleId, tuple[IsEwaldPointData, IsEwaldPointData]],
-) -> Array:
+) -> units.Charge:
     """Signed new-minus-old S(k) contribution of the changed particles.
 
     ``changes`` holds the previous and current values of the changed rows.
@@ -497,9 +535,9 @@ def _full_structure_factor_jvp(
     particle_chunk_size: int,
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
-    primals: tuple[Array, Array, Array, Array],
-    tangents: tuple[Array, Array, Array, Array],
-) -> tuple[Array, Array]:
+    primals: _StructureFactorPrimals,
+    tangents: _StructureFactorPrimals,
+) -> tuple[units.Charge, units.Charge]:
     """Differentiate all current particles, even when values use an incremental cache.
 
     Each kernel uses either k-vectors or inverse cells, counting cell dependence
@@ -515,14 +553,10 @@ def _full_structure_factor_jvp(
         grid_index=grid_index,
     )
     # Absent tangents must not trigger charge or cell derivative work.
-    active = tuple(
-        i
-        for i, t in enumerate(tangents)
-        if not isinstance(t, jax.custom_derivatives.SymbolicZero)
-    )
+    active = tuple(i for i, t in enumerate(tangents) if not _is_zero_tangent(t))
 
-    def active_full(*args: Array) -> Array:
-        inputs = list(primals)
+    def active_full(*args: Any) -> units.Charge:
+        inputs: list[Any] = list(primals)
         for i, value in zip(active, args):
             inputs[i] = value
         return full(*inputs)
@@ -541,9 +575,9 @@ def _structure_factor_jvp(
     particle_chunk_size: int,
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
-    primals: tuple[Array, Array, Array, Array],
-    tangents: tuple[Array, Array, Array, Array],
-) -> tuple[Array, Array]:
+    primals: _StructureFactorPrimals,
+    tangents: _StructureFactorPrimals,
+) -> tuple[units.Charge, units.Charge]:
     value, tangent = _full_structure_factor_jvp(
         batch_mask,
         bound,
@@ -568,9 +602,9 @@ def _structure_factor_delta_jvp(
     k_chunk_size: int,
     grid_index: Array | np.ndarray | None,
     changes: WithIndices[ParticleId, tuple[IsEwaldPointData, IsEwaldPointData]],
-    primals: tuple[Array, Array, Array, Array],
-    tangents: tuple[Array, Array, Array, Array],
-) -> tuple[Array, Array]:
+    primals: _StructureFactorPrimals,
+    tangents: _StructureFactorPrimals,
+) -> tuple[units.Charge, units.Charge]:
     _, tangent = _full_structure_factor_jvp(
         batch_mask,
         bound,
@@ -604,7 +638,7 @@ class _StructureFactorStatic(NamedTuple):
 
 def _structure_factor_args(
     inp: EwaldLongRangeInput[Any],
-) -> tuple[tuple[Array, Array, Array, Array], _StructureFactorStatic]:
+) -> tuple[_StructureFactorPrimals, _StructureFactorStatic]:
     # Structure factors and their k-vectors are evaluated in reciprocal_dtype.
     inp = bind(inp, lambda x: x.point_cloud).apply(
         lambda cloud: astype_floating(cloud, inp.parameters.reciprocal_dtype)
@@ -635,7 +669,7 @@ def _structure_factor_args(
     return primals, static
 
 
-def structure_factor_delta(inp: EwaldLongRangeInput[Any]) -> Array:
+def structure_factor_delta(inp: EwaldLongRangeInput[Any]) -> units.Charge:
     """Signed structure-factor change from the input's previous particle values.
 
     Args:
@@ -655,7 +689,7 @@ def structure_factor_delta(inp: EwaldLongRangeInput[Any]) -> Array:
 
 
 def _cache_patch[State](
-    inp: EwaldLongRangeInput[State], update: KahanSummand[Array] | Array
+    inp: EwaldLongRangeInput[State], update: KahanSummand[units.Charge] | units.Charge
 ) -> Patch[State]:
     """Patch storing a full S(k) or adding a delta; identity without a cache lens."""
     if inp.cache_lens is None:
@@ -668,7 +702,7 @@ def _cache_patch[State](
 
 def structure_factor[State](
     inp: EwaldLongRangeInput[State],
-) -> tuple[KahanSummand[Array], Patch[State]]:
+) -> tuple[KahanSummand[units.Charge], Patch[State]]:
     """Return the full or incrementally updated structure factor and cache patch.
 
     Args:
@@ -687,42 +721,46 @@ def structure_factor[State](
     return inp.cache.structure_factor + delta, _cache_patch(inp, delta)
 
 
-def _net_charge_energy(net_charge: Array, alpha: Array, volume: Array) -> Array:
-    """Background energy shared by particle sums and molecular coefficients."""
-    return -jnp.pi / (2 * volume * alpha**2) * net_charge**2 * TO_STANDARD_UNITS
+def _net_charge_scale(
+    alpha: units.Wavenumber, volume: units.Volume
+) -> EnergyPerChargeSquared:
+    """Background energy per squared net charge, ``-k_e π / (2 V α²)``."""
+    return -units.constants.k_e * jnp.pi / (2 * volume * alpha**2)
 
 
 def ewald_net_charge_energy(
     inp: EwaldSelfInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
-    """Uniform neutralizing-background correction ``-π Q² / (2 V α²)`` per system.
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
+    """Uniform neutralizing-background correction ``-k_e π Q² / (2 V α²)`` per system.
 
     Args:
         inp: Particle graph and per-system screening parameters.
 
     Returns:
-        Per-system neutralizing-background energies in eV and an identity patch.
+        Per-system neutralizing-background energies and an identity patch.
     """
     sys_idx = inp.graph.systems.index
     particles = inp.graph.particles.data
-    energies = _net_charge_energy(
-        particles.system.sum_over(particles.charges)[sys_idx],
-        inp.parameters.alpha[sys_idx],
-        inp.graph.systems.data.cell.volume,
+    net_charge = particles.system.sum_over(particles.charges)[sys_idx]
+    energies = (
+        _net_charge_scale(
+            inp.parameters.alpha[sys_idx], inp.graph.systems.data.cell.volume
+        )
+        * net_charge**2
     )
     return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
 
 
 def ewald_long_range_energy[State](
     inp: EwaldLongRangeInput[State],
-) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
+) -> WithPatch[Table[SystemId, units.Energy], Patch[State]]:
     """Reciprocal energy with an acceptance cache patch.
 
     Args:
         inp: Current particles, reciprocal parameters and optional incremental cache.
 
     Returns:
-        Per-system energies in eV with the structure-factor acceptance patch.
+        Per-system energies with the structure-factor acceptance patch.
     """
     if inp.changes_from_prev is not None and inp.cache is not None:
         delta = structure_factor_delta(inp)
@@ -735,7 +773,7 @@ def ewald_long_range_energy[State](
     assert energy.shape == (inp.point_cloud.batch_size,), (
         f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     )
-    return WithPatch(Table.arange(energy * TO_STANDARD_UNITS, label=SystemId), patch)
+    return WithPatch(Table.arange(energy, label=SystemId), patch)
 
 
 @dataclass
@@ -1039,10 +1077,8 @@ def make_ewald_net_charge_potential[
         charges = composition.sum_particles(
             particles.data.charges, composition.templates.charges
         )
-        scale = _net_charge_energy(
-            jnp.ones(systems.size),
-            parameter_view(initial).alpha[systems.index],
-            systems.data.cell.volume,
+        scale = _net_charge_scale(
+            parameter_view(initial).alpha[systems.index], systems.data.cell.volume
         )
         return composition.potential(
             scale[:, None, None] * charges[:, :, None] * charges[:, None, :],
@@ -1076,8 +1112,8 @@ def make_ewald_net_charge_potential[
 class _EwaldAtomicParticles:
     """Particle view with inclusion groups and per-particle self-exclusion."""
 
-    positions: Array
-    charges: Array
+    positions: units.Length
+    charges: units.Charge
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
@@ -1149,7 +1185,7 @@ def _exclusion_coefficients[State](
     composition: RigidBodyComposition[State, IsChargedTemplate],
     particles: IsEwaldPointData,
     systems: Table[SystemId, HasCell[Periodic3D]],
-) -> tuple[Array, Array]:
+) -> tuple[units.Energy, Array]:
     """Template energies per system and motif, and whether rigid moves keep them.
 
     They are usable when every template fits within half the narrowest cell
@@ -1157,26 +1193,30 @@ def _exclusion_coefficients[State](
     carries exclusions.
     """
     templates, motif = composition.templates, composition.template_motif
-    distance = jnp.linalg.norm(
+    distance = units.norm(
         templates.positions[:, None] - templates.positions[None, :], axis=-1
     )
     same_motif = jnp.equal(*Index.match(motif[:, None], motif[None, :]))
-    diameter = jnp.where(same_motif, distance, 0).max(initial=0)
+    diameter = units.apply(
+        lambda d: jnp.where(same_motif, d, 0).max(initial=0), distance
+    )
     fixed_exclusions = (
         composition.fixed_system.valid_mask & particles.exclusion.valid_mask
     ).any()
     half_height = systems.data.cell.perpendicular_lengths.min() / 2
     usable = (diameter < half_height) & ~fixed_exclusions
     mask = same_motif & ~jnp.eye(len(distance), dtype=bool)
-    pair_energy = jnp.where(
+    pair_energy = units.where(
         mask,
         coulomb_pair_energy(
-            templates.charges[:, None], templates.charges, jnp.where(mask, distance, 1)
+            templates.charges[:, None],
+            templates.charges,
+            units.where(mask, distance, units.ones_like(distance)),
         ),
-        0,
+        0.0,
     )
     per_motif = motif.sum_over(pair_energy.sum(axis=1)).data / 2
-    coefficients = jnp.zeros((len(systems), 1 + motif.num_labels))
+    coefficients = units.zeros((len(systems), 1 + motif.num_labels), u.eV)
     return coefficients.at[:, 1:].set(per_motif), usable
 
 
@@ -1184,7 +1224,7 @@ def _molecular_exclusion_coefficients[State](
     composition: RigidBodyComposition[State, IsChargedTemplate],
     particles: IsEwaldPointData,
     systems: Table[SystemId, HasCell[Periodic3D]],
-) -> Array | None:
+) -> units.Energy | None:
     """Prepare template energies when rigid moves preserve minimum-image distances."""
     coefficients, usable = _exclusion_coefficients(composition, particles, systems)
     return coefficients if bool(usable) else None

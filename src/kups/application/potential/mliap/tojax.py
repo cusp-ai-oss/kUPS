@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, cast, overload
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
@@ -67,9 +68,9 @@ def make_tojaxed_from_state[State, Focus: IsTojaxedState](
     state: Lens[State, Focus],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[Focus] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -87,16 +88,16 @@ def make_tojaxed_from_state[State, Focus: IsTojaxedGraphState](
     state: Lens[State, Focus],
     *,
     parameters: TojaxedMliap,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[Focus] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 def make_tojaxed_from_state(
     state: Any,
     *,
     parameters: TojaxedMliap | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a jaxified potential from a typed state.
@@ -114,7 +115,7 @@ def make_tojaxed_from_state(
         Configured jaxified [Potential][kups.core.potential.Potential].
     """
     gradient_lens = cast(
-        "Lens[Any, PositionsAndCell | EmptyType]",
+        "Lens[Any, PositionsAndCell[units.Length] | EmptyType]",
         EMPTY_LENS if gradient is None else GRAPH_GEOMETRY.nest(gradient),
     )
     if parameters is not None:

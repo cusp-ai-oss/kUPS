@@ -41,6 +41,7 @@ from kups.application.simulations.mcmc_rigid import (
     make_guest_stress,
     make_propagator,
 )
+from kups.core import units
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Table, WithCache, WithIndices
 from kups.core.data.buffered import Buffered
@@ -68,6 +69,8 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
+from kups.core.units import testing
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
     ExchangeChanges,
@@ -91,6 +94,7 @@ from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
 )
 from kups.potential.common.graph import POINTCLOUD_GEOMETRY, PointCloud
+from test.units import EV, PRESSURE, A, allclose, as_length, assert_close
 
 from ._rigid_configs import (
     BOX,
@@ -119,10 +123,10 @@ def _build_state() -> MCMCState:
 
     particles = Buffered.arange(
         MCMCParticles(
-            positions=positions,
-            masses=jnp.full((N_MAX,), 40.0),
+            positions=as_length(positions),
+            masses=jnp.full((N_MAX,), 40.0) * u.amu,
             atomic_numbers=jnp.full((N_MAX,), 18),
-            charges=jnp.zeros((N_MAX,)),
+            charges=units.zeros((N_MAX,), u.e),
             labels=Index.new([Label("Ar")] * N_MAX),
             system=Index.integer(sys_ids, label=SystemId, max_count=N_MAX),
             group=Index.integer(grp_ids, label=GroupId, max_count=1),
@@ -139,10 +143,10 @@ def _build_state() -> MCMCState:
     )
     motifs = Table.arange(
         MotifParticles(
-            positions=jnp.zeros((1, 3)),
-            masses=jnp.ones(1),
+            positions=units.zeros((1, 3), A),
+            masses=jnp.ones(1) * u.amu,
             atomic_numbers=jnp.array([18]),
-            charges=jnp.zeros(1),
+            charges=units.zeros(1, u.e),
             labels=Index.new([Label("Ar")]),
             motif=Index.integer(jnp.zeros(1, dtype=int), label=MotifId, max_count=1),
         ),
@@ -150,75 +154,87 @@ def _build_state() -> MCMCState:
     )
     systems = Table.arange(
         MCMCSystems(
-            cell=PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * L)),
-            temperature=jnp.array([300.0]),
-            potential_energy=KahanSummand.init(jnp.array([0.0])),
-            log_fugacity=jnp.array([[0.0]]),  # (n_sys, n_motifs)
+            cell=PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * L) * A)),
+            temperature=jnp.array([300.0]) * u.K,
+            potential_energy=KahanSummand.init(jnp.array([0.0]) * EV),
+            # (n_sys, n_motifs)
+            log_fugacity=units.Log.from_logs(jnp.array([[0.0]]), PRESSURE),
         ),
         label=SystemId,
     )
     lj_params = WithCache(
         GlobalTailCorrectedLennardJonesParameters(
             labels=(Label("Ar"),),
-            sigma=jnp.array([[3.4]]),
-            epsilon=jnp.array([[1.0]]),
-            cutoff=Table((SystemId(0),), jnp.array([8.0])),
+            sigma=jnp.array([[3.4]]) * A,
+            epsilon=jnp.array([[1.0]]) * EV,
+            cutoff=Table((SystemId(0),), jnp.array([8.0]) * A),
             tail_corrected=jnp.array([[True]]),
         ),
         KahanSummand.init(
-            PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY)
+            PotentialOut(
+                Table.arange(units.zeros((1,), EV), label=SystemId), EMPTY, EMPTY
+            )
         ),
     )
     ewald_params = WithCache(
         EwaldParameters(
-            alpha=Table((SystemId(0),), jnp.array([0.0])),
-            cutoff=Table((SystemId(0),), jnp.array([0.0])),  # disabled
-            k_max=Table((SystemId(0),), jnp.zeros(1)),
+            alpha=Table((SystemId(0),), jnp.array([0.0]) / A),
+            cutoff=Table((SystemId(0),), jnp.array([0.0]) * A),  # disabled
+            k_max=Table((SystemId(0),), jnp.zeros(1) / A),
             reciprocal_lattice_shifts=Table(
                 (SystemId(0),), jnp.zeros((1, 1, 3), dtype=int)
             ),
         ),
         EwaldCache(
-            structure_factor=KahanSummand.init(jnp.zeros((1, 1, 2))),
-            prefactor=jnp.zeros((1, 1)),
+            structure_factor=KahanSummand.init(units.zeros((1, 1, 2), u.e)),
+            prefactor=jnp.zeros((1, 1)) / A,
             short_range=KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros((1,), EV), label=SystemId), EMPTY, EMPTY
                 )
             ),
             long_range=KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros((1,), EV), label=SystemId), EMPTY, EMPTY
                 )
             ),
             self_interaction=KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros((1,), EV), label=SystemId), EMPTY, EMPTY
                 )
             ),
             net_charge=KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros((1,), EV), label=SystemId), EMPTY, EMPTY
                 )
             ),
             exclusion=KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros((1,)), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros((1,), EV), label=SystemId), EMPTY, EMPTY
                 )
             ),
         ),
     )
     move_params = ParameterSchedulerState(
-        value=jnp.array([1.0]),
+        value=jnp.array([1.0]) * A,
         multiplicity=jnp.array([1.1]),
         target=jnp.array([0.5]),
         tolerance=jnp.array([0.05]),
         correlation=Correlation.NEGATIVE,
-        bounds=(jnp.zeros((1,)), jnp.array([L / 2])),
+        bounds=(units.zeros((1,), A), jnp.array([L / 2]) * A),
         history=AcceptanceHistory(
             values=jnp.zeros((1, 10)),
             index=jnp.zeros((1,), dtype=int),
         ),
+    )
+    plain_params = ParameterSchedulerState(
+        value=jnp.array([1.0]),
+        multiplicity=move_params.multiplicity,
+        target=move_params.target,
+        tolerance=move_params.tolerance,
+        correlation=Correlation.NEGATIVE,
+        bounds=(jnp.zeros(1), jnp.array([L / 2])),
+        history=move_params.history,
     )
     cell_tables = init_cell_tables(
         particles, motifs, systems, lj_params.data, ewald_params.data
@@ -237,8 +253,8 @@ def _build_state() -> MCMCState:
         lj_parameters=lj_params,
         ewald_parameters=ewald_params,
         blocking_spheres_parameters=BlockingSpheresParameters(
-            radii=jnp.zeros((0,)),
-            positions=jnp.zeros((0, 3)),
+            radii=jnp.zeros((0,)) * A,
+            positions=jnp.zeros((0, 3)) * A,
             system=Index.arange(0, label=SystemId),
             motif=Index.arange(0, label=MotifId),
         ),
@@ -249,9 +265,9 @@ def _build_state() -> MCMCState:
             cells=0,
         ),
         translation_params=Table.arange(move_params, label=SystemId),
-        rotation_params=Table.arange(move_params, label=SystemId),
-        reinsertion_params=Table.arange(move_params, label=SystemId),
-        exchange_params=Table.arange(move_params, label=SystemId),
+        rotation_params=Table.arange(plain_params, label=SystemId),
+        reinsertion_params=Table.arange(plain_params, label=SystemId),
+        exchange_params=Table.arange(plain_params, label=SystemId),
         cell_tables=cell_tables,
     )
 
@@ -279,7 +295,7 @@ def movement_update_pid0(state):
         state,
         ParticlePositionChanges(
             particle_ids=Index(PI, jnp.array([0])),
-            new_positions=jnp.array([[3.0, 3.0, 3.0]]),
+            new_positions=jnp.array([[3.0, 3.0, 3.0]]) * A,
         ),
     )
 
@@ -287,7 +303,7 @@ def movement_update_pid0(state):
 @pytest.fixture(scope="module")
 def movement_update_newpos(state):
     """Cached _movement_patch result with new_pos=[3,4,5] for particle 0."""
-    new_pos = jnp.array([[3.0, 4.0, 5.0]])
+    new_pos = jnp.array([[3.0, 4.0, 5.0]]) * A
     update = _movement_patch(
         jax.random.key(0),
         state,
@@ -302,7 +318,7 @@ def _make_exchange_proposal(particle_ids, new_positions, group_ids):
     n = particle_ids.shape[0]
     gi = tuple(GroupId(i) for i in range(N_MAX))
     particle_data = ExchangeParticleData(
-        new_positions=new_positions,
+        new_positions=as_length(new_positions),
         group=Index.integer(group_ids, n=N_MAX, label=GroupId, max_count=1),
         system=Index.integer(
             jnp.zeros_like(group_ids), label=SystemId, max_count=N_MAX
@@ -341,7 +357,7 @@ class TestProbe:
 class TestPatchFn:
     def test_new_positions_stored(self, movement_update_newpos):
         update, new_pos = movement_update_newpos
-        npt.assert_allclose(update._particles.data.data.positions, new_pos)
+        assert_close(update._particles.data.data.positions, new_pos)
 
     def test_indices_stored(self, state):
         ids = Index(PI, jnp.array([1]))
@@ -349,7 +365,7 @@ class TestPatchFn:
             jax.random.key(0),
             state,
             ParticlePositionChanges(
-                particle_ids=ids, new_positions=jnp.array([[5.0, 5.0, 5.0]])
+                particle_ids=ids, new_positions=jnp.array([[5.0, 5.0, 5.0]]) * A
             ),
         )
         npt.assert_array_equal(update._particles.indices.value, [1])
@@ -359,9 +375,7 @@ class TestPatchFn:
             np.asarray(movement_update_pid0._particles.data.data.labels), [Label("Ar")]
         )
         # Masses now come from motif data (1.0), not original particles (40.0)
-        npt.assert_allclose(
-            movement_update_pid0._particles.data.data.masses, jnp.array([1.0])
-        )
+        assert_close(movement_update_pid0._particles.data.data.masses, jnp.array([1.0]))
 
     def test_group_changes_single(self, movement_update_pid0):
         assert movement_update_pid0.groups.indices.shape == (1,)
@@ -372,7 +386,7 @@ class TestExchPatchFn:
         new_pos = jnp.array([[5.0, 6.0, 7.0]])
         proposal = _make_exchange_proposal(jnp.array([2]), new_pos, jnp.array([2]))
         update = MCMCStateUpdate.from_changes(jax.random.key(0), state, proposal)
-        npt.assert_allclose(update._particles.data.data.positions, new_pos)
+        assert_close(update._particles.data.data.positions, new_pos)
 
     def test_motif_properties_used(self, exchange_update_default):
         npt.assert_array_equal(
@@ -380,7 +394,7 @@ class TestExchPatchFn:
             [Label("Ar")],
         )
         # Mass comes from motifs (1.0), not from the particle fixture (40.0)
-        npt.assert_allclose(
+        assert_close(
             exchange_update_default._particles.data.data.masses, jnp.array([1.0])
         )
 
@@ -397,14 +411,14 @@ class TestMCMCStateUpdate:
         new_state = update(
             state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
         )
-        npt.assert_allclose(new_state.particles.data.positions[0], new_pos[0])
+        assert_close(new_state.particles.data.positions[0], new_pos[0])
 
     def test_accept_leaves_other_particles(self, state, movement_update_newpos):
         update, _ = movement_update_newpos
         new_state = update(
             state, state.systems.set_data(jnp.ones(len(state.systems), dtype=bool))
         )
-        npt.assert_allclose(
+        assert_close(
             new_state.particles.data.positions[1], state.particles.data.positions[1]
         )
 
@@ -413,9 +427,7 @@ class TestMCMCStateUpdate:
         new_state = update(
             state, state.systems.set_data(jnp.zeros(len(state.systems), dtype=bool))
         )
-        npt.assert_allclose(
-            new_state.particles.data.positions, state.particles.data.positions
-        )
+        assert_close(new_state.particles.data.positions, state.particles.data.positions)
 
     @pytest.mark.parametrize("accept", [True, False])
     def test_positions_only_matches_full_update_positions(
@@ -425,10 +437,8 @@ class TestMCMCStateUpdate:
         positions_only = dataclasses.replace(update, positions_only=True)
         acc = state.systems.set_data(jnp.full(len(state.systems), accept))
         full, partial = update(state, acc), positions_only(state, acc)
-        npt.assert_allclose(
-            partial.particles.data.positions, full.particles.data.positions
-        )
-        npt.assert_allclose(partial.particles.data.masses, state.particles.data.masses)
+        assert_close(partial.particles.data.positions, full.particles.data.positions)
+        assert_close(partial.particles.data.masses, state.particles.data.masses)
         npt.assert_array_equal(
             *Index.match(partial.groups.data.system, state.groups.data.system)
         )
@@ -453,9 +463,9 @@ class TestMakeGuestStress:
         # Applying the patch writes back through the cache lens, which only
         # resolves if every leaf of its focus function is a settable path.
         stress = make_guest_stress(state)(jax.random.key(0), state).data.potential
-        assert jnp.isfinite(stress).all()
-        assert jnp.abs(stress).max() > 0
-        npt.assert_allclose(stress, jnp.swapaxes(stress, -1, -2), atol=1e-12)
+        assert jnp.isfinite(stress.to(PRESSURE)).all()
+        assert units.absolute(stress).to(PRESSURE).max() > 0
+        assert_close(stress, stress.swapaxes(-1, -2), atol=1e-12)
 
     def test_tail_correction_stays_out_of_configurational_stress(
         self, state: MCMCState
@@ -474,10 +484,11 @@ class TestMakeGuestStress:
             return make_guest_stress(toggled)(jax.random.key(0), toggled).data
 
         on, off = stress(True), stress(False)
-        npt.assert_array_equal(on.potential, off.potential)
+        testing.assert_array_equal(on.potential, off.potential, PRESSURE)
         # Guard: without this the test would also pass if the tail vanished.
-        assert jnp.all(jnp.diagonal(on.tail_correction[0]) < 0)
-        npt.assert_array_equal(off.tail_correction, jnp.zeros_like(off.tail_correction))
+        diagonal = on.tail_correction[0].diagonal()
+        assert jnp.all(diagonal.to(PRESSURE) < 0)
+        assert_close(off.tail_correction, units.zeros_like(off.tail_correction))
 
 
 class TestRequiredLJTypes:
@@ -487,7 +498,10 @@ class TestRequiredLJTypes:
             update={
                 "lj": config.lj.model_copy(
                     update={
-                        "parameters": {**config.lj.parameters, "unused": (100.0, 200.0)}
+                        "parameters": {
+                            **config.lj.parameters,
+                            "unused": (100.0 * A, 200.0 * EV),
+                        }
                     }
                 )
             }
@@ -506,7 +520,9 @@ class TestRequiredLJTypes:
             (parameters.sigma, reference.sigma),
             (parameters.epsilon, reference.epsilon),
         ):
-            npt.assert_array_equal(actual, full[indices[:, None], indices])
+            testing.assert_array_equal(
+                actual, full[indices[:, None], indices], actual.unit
+            )
 
     def test_missing_guest_parameters_fail_at_initialization(self):
         config = co2_config(exchange_prob=0.5, init_adsorbates=(0,))
@@ -539,7 +555,7 @@ class TestRigidCorrections:
         second = co2().model_copy(
             update={
                 "symbols": ("C_alt", "O_alt", "O_alt"),
-                "charges": (0.5, -0.2, -0.2),
+                "charges": jnp.array([0.5, -0.2, -0.2]) * u.e,
             }
         )
         config = config.model_copy(
@@ -559,9 +575,9 @@ class TestRigidCorrections:
                     update={
                         "parameters": {
                             **config.lj.parameters,
-                            "X1": (2.0, 0.01),
-                            "C_alt": (3.0, 0.004),
-                            "O_alt": (2.5, 0.008),
+                            "X1": (2.0 * A, 0.01 * EV),
+                            "C_alt": (3.0 * A, 0.004 * EV),
+                            "O_alt": (2.5 * A, 0.008 * EV),
                         }
                     }
                 ),
@@ -578,7 +594,7 @@ class TestRigidCorrections:
         # A charged, interacting fixed host tests the constant and cross terms.
         host = ~state.particles.data.group.valid_mask & state.particles.occupation
         return bind(state, lambda s: s.particles.data.charges).apply(
-            lambda q: jnp.where(host, 0.3, q)
+            lambda q: units.where(host, 0.3 * u.e, q)
         )
 
     @pytest.fixture(scope="class")
@@ -658,8 +674,8 @@ class TestRigidCorrections:
             jax.jit(term)(state).data.total_energies.data
             for term in (ewald.long_range, ewald.net_charge)
         )
-        assert jnp.all(net_charge != 0)
-        npt.assert_allclose(
+        assert jnp.all(net_charge.to(EV) != 0)
+        assert_close(
             logged.ewald_long_range_energy, long_range + net_charge, rtol=1e-12
         )
 
@@ -694,8 +710,8 @@ class TestRigidCorrections:
             .exclusion_correction(mixture)
             .data.total_energies.data
         )
-        assert jnp.any(jnp.abs(expected) > 0)
-        npt.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+        assert jnp.any(jnp.abs(expected.to(EV)) > 0)
+        assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
     @pytest.mark.parametrize("move", ["translation", "rotation", "reinsertion"])
     def test_rigid_moves_leave_corrections_unchanged(
@@ -711,16 +727,17 @@ class TestRigidCorrections:
                 if move == "translation"
                 else propose_group_rotation
             )
+            widths = jnp.ones(2) * A if move == "translation" else jnp.ones(2)
             changes = propose(
-                *args, mixture.systems.set_data(jnp.ones(2)), mixture.move_capacity
+                *args, mixture.systems.set_data(widths), mixture.move_capacity
             )
         update = _movement_patch(jax.random.key(95), mixture, changes)
         moved = update(mixture, mixture.systems.set_data(jnp.array([True, True])))
         for candidate, full in zip(actual, reference, strict=True):
             old = candidate(mixture).data.total_energies.data
             proposed = candidate(mixture, update).data.total_energies.data
-            npt.assert_array_equal(proposed, old)
-            npt.assert_allclose(
+            testing.assert_array_equal(proposed, old, EV)
+            assert_close(
                 proposed, full(moved).data.total_energies.data, rtol=1e-12, atol=1e-12
             )
 
@@ -746,7 +763,7 @@ class TestRigidCorrections:
             accept = state.systems.set_data(jnp.array([True, i % 2 == 0]))
             outputs = [candidate(state, update) for candidate in actual]
             for out, full in zip(outputs, reference, strict=True):
-                npt.assert_allclose(
+                assert_close(
                     out.data.total_energies.data,
                     full(proposed).data.total_energies.data,
                     rtol=1e-12,
@@ -755,17 +772,17 @@ class TestRigidCorrections:
             state = update(state, accept)
             for out in outputs:
                 state = out.patch(state, accept)
-            npt.assert_allclose(
+            assert_close(
                 state.ewald_parameters.cache.self_interaction.total.total_energies.data,
                 reference[1](state).data.total_energies.data,
                 atol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 state.ewald_parameters.cache.exclusion.total.total_energies.data,
                 reference[2](state).data.total_energies.data,
                 atol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 state.ewald_parameters.cache.net_charge.total.total_energies.data,
                 reference[3](state).data.total_energies.data,
                 atol=1e-12,
@@ -790,7 +807,7 @@ class TestRigidCorrections:
             mixture = bind(mixture, lambda s: s.ewald_parameters.data.alpha).apply(
                 lambda alpha: alpha * 0.9
             )
-            assert not jnp.allclose(
+            assert not allclose(
                 reference(mixture).data.total_energies.data, initial_energy
             )
         composition = make_rigid_body_composition(
@@ -816,7 +833,7 @@ class TestRigidCorrections:
             update = MCMCStateUpdate.from_changes(key, state, proposal)
             proposed = update(state, state.systems.set_data(jnp.array([True, True])))
             result = candidate(state, update)
-            npt.assert_allclose(
+            assert_close(
                 result.data.total_energies.data,
                 reference(proposed).data.total_energies.data,
                 rtol=1e-12,
@@ -824,7 +841,7 @@ class TestRigidCorrections:
             )
             accept = state.systems.set_data(jnp.array([True, i % 2 == 0]))
             state = result.patch(update(state, accept), accept)
-            npt.assert_allclose(
+            assert_close(
                 state.ewald_parameters.cache.long_range.total.total_energies.data,
                 reference(state).data.total_energies.data,
                 rtol=1e-12,
@@ -853,7 +870,7 @@ class TestRigidCorrections:
         for size in (8, 3):
             state = compiled(jax.random.split(jax.random.key(1), size), state)
             jax.block_until_ready(state)
-        npt.assert_allclose(
+        assert_close(
             state.ewald_parameters.cache.long_range.total.total_energies.data,
             make_ewald_from_state(sl).long_range(state).data.total_energies.data,
             rtol=1e-12,
@@ -863,14 +880,18 @@ class TestRigidCorrections:
     def test_large_template_retains_geometric_periodic_exclusions(self) -> None:
         config = co2_config(exchange_prob=0.5, init_adsorbates=(1,))
         template = co2().model_copy(
-            update={"positions": ((0.0, 0.0, 0.0), (-5.0, 0.0, 0.0), (5.0, 0.0, 0.0))}
+            update={
+                "positions": as_length(
+                    [[0.0, 0.0, 0.0], [-5.0, 0.0, 0.0], [5.0, 0.0, 0.0]]
+                )
+            }
         )
         config = config.model_copy(update={"adsorbates": (template,)})
         state = init_state(jax.random.key(120), config)
         rows = jnp.flatnonzero(
             state.particles.data.group.valid_mask & state.particles.occupation
         )
-        positions = jnp.asarray(template.positions) + 7.0
+        positions = template.positions + 7.0 * A
         state = (
             bind(state, lambda s: s.particles.data.positions).at(rows).set(positions)
         )
@@ -891,14 +912,14 @@ class TestRigidCorrections:
         rotated = (
             bind(state, lambda s: s.particles.data.positions)
             .at(rows)
-            .set((positions - 7.0) @ rotation + 7.0)
+            .set((positions - 7.0 * A) @ rotation + 7.0 * A)
         )
         exclusion = jax.jit(ewald.exclusion_correction)
         old_exclusion = exclusion(state).data.total_energies.data
         new_exclusion = exclusion(rotated).data.total_energies.data
-        assert float(jnp.abs(new_exclusion - old_exclusion).max()) > 0.1
+        assert float(units.absolute(new_exclusion - old_exclusion).max().to(EV)) > 0.1
         for configuration in (state, rotated):
-            npt.assert_allclose(
+            assert_close(
                 candidate(configuration).data.total_energies.data,
                 reference(configuration).data.total_energies.data,
                 rtol=1e-12,
@@ -916,7 +937,11 @@ class TestInitStateBlockingSpheres:
         blocked = base.hosts[0].model_copy(
             update={
                 "blocking_spheres": (
-                    (BlockingSphereConfig(center=(0.0, 0.0, 0.0), radius=2.0),),
+                    (
+                        BlockingSphereConfig(
+                            center={"angstrom": [0.0, 0.0, 0.0]}, radius="2 angstrom"
+                        ),
+                    ),
                 )
             }
         )
@@ -991,7 +1016,7 @@ class TestExchangeEnergyConsistency:
         new_state, e_incr = self._apply(state, pot, proposal)
         n_after = new_state.groups.data.system.counts.data
         assert int(n_after.max()) < 2, "deletion did not reduce molecule count"
-        npt.assert_allclose(e_incr, pot(new_state).data.total_energies.data, atol=1e-3)
+        assert_close(e_incr, pot(new_state).data.total_energies.data, atol=1e-3)
 
     def test_batched_insertion_matches_full(self, primed):
         state, pot = primed
@@ -1006,7 +1031,7 @@ class TestExchangeEnergyConsistency:
         new_state, e_incr = self._apply(state, pot, proposal)
         n_after = new_state.groups.data.system.counts.data
         assert int(n_after.max()) > 2, "insertion did not add a molecule"
-        npt.assert_allclose(
+        assert_close(
             e_incr, pot(new_state).data.total_energies.data, rtol=1e-5, atol=1e-3
         )
 
@@ -1030,8 +1055,8 @@ def test_reinsertion_onto_colliding_particle_matches_full(state: MCMCState):
     accept = Table(state.systems.keys, jnp.ones(len(state.systems), dtype=bool))
     new_state = out.patch(update(state, accept), accept)
     e_full = pot(new_state).data.total_energies.data
-    assert float(e_full[0]) > 1.0, "reinserted molecule must contact particle 0"
-    npt.assert_allclose(out.data.total_energies.data, e_full, rtol=1e-6, atol=1e-6)
+    assert float(e_full[0].to(EV)) > 1.0, "reinserted molecule must contact particle 0"
+    assert_close(out.data.total_energies.data, e_full, rtol=1e-6, atol=1e-6)
 
 
 class TestBlockingSpheresPatch:
@@ -1045,8 +1070,8 @@ class TestBlockingSpheresPatch:
     def _with_sphere(state: MCMCState) -> MCMCState:
         return bind(state, lambda x: x.blocking_spheres_parameters).set(
             BlockingSpheresParameters(
-                radii=jnp.array([1.0]),
-                positions=jnp.array([[3.0, 3.0, 3.0]]),
+                radii=jnp.array([1.0]) * A,
+                positions=jnp.array([[3.0, 3.0, 3.0]]) * A,
                 system=Index.new([SystemId(0)]).populate_max_count(),
                 motif=Index.new([MotifId(0)]).populate_max_count(),
             )
@@ -1057,8 +1082,9 @@ class TestBlockingSpheresPatch:
     ):
         pot = make_blocking_spheres_from_state(identity_lens(MCMCState), _probe)
         blocked = self._with_sphere(state)
-        assert pot(blocked).data.total_energies.data[0] == 0.0
-        assert jnp.isinf(pot(blocked, movement_update_pid0).data.total_energies.data[0])
+        assert pot(blocked).data.total_energies.data[0].to(EV) == 0.0
+        energy = pot(blocked, movement_update_pid0).data.total_energies.data[0]
+        assert jnp.isinf(energy.to(EV))
 
     def test_probed_move_outside_sphere_is_free(
         self,
@@ -1067,7 +1093,8 @@ class TestBlockingSpheresPatch:
     ):
         pot = make_blocking_spheres_from_state(identity_lens(MCMCState), _probe)
         update, _ = movement_update_newpos
-        assert pot(self._with_sphere(state), update).data.total_energies.data[0] == 0.0
+        energy = pot(self._with_sphere(state), update).data.total_energies.data[0]
+        assert energy.to(EV) == 0.0
 
     def test_probe_narrows_the_query(
         self, state: MCMCState, movement_update_pid0: MCMCStateUpdate
@@ -1089,7 +1116,8 @@ class TestBlockingSpheresPatch:
     ):
         pot = make_blocking_spheres_from_state(identity_lens(MCMCState))
         blocked = self._with_sphere(state)
-        assert jnp.isinf(pot(blocked, movement_update_pid0).data.total_energies.data[0])
+        energy = pot(blocked, movement_update_pid0).data.total_energies.data[0]
+        assert jnp.isinf(energy.to(EV))
 
 
 class TestFusedPairIntegration:
@@ -1130,7 +1158,7 @@ class TestFusedPairIntegration:
             reference = propagate_and_fix(baseline_step, key, reference)
             candidate = propagate_and_fix(guarded_step, key, candidate)
             # Also the charged, single-image (5 Å) case of the cycle checks below.
-            npt.assert_allclose(
+            assert_close(
                 candidate.systems.data.potential_energy.total,
                 full_energy(candidate).data.total_energies.data,
                 rtol=1e-9,
@@ -1143,7 +1171,7 @@ class TestFusedPairIntegration:
             ):
                 # An evaluated empty system leaves ~1e-34 of rounding in the
                 # Ewald Kahan terms where the skipped one keeps zeros.
-                npt.assert_allclose(
+                assert_close(
                     a, b, rtol=0, atol=1e-30, err_msg=jax.tree_util.keystr(path)
                 )
 
@@ -1173,7 +1201,7 @@ class TestFusedPairIntegration:
         for key in [None, *jax.random.split(jax.random.key(76), 3)]:
             if key is not None:
                 state = propagate_and_fix(cycle_step, key, state)
-            npt.assert_allclose(
+            assert_close(
                 state.systems.data.potential_energy.total,
                 reference(state).data.total_energies.data,
                 rtol=1e-9,
@@ -1189,7 +1217,7 @@ class TestFusedPairIntegration:
             table.block_bounds.upper,
             cell.vectors[0],
             cell.perpendicular_lengths[0],
-            5.0,
+            5.0 * A,
             (True, True, True),
         )
         occupied = table.block_bounds.lower[0] <= table.block_bounds.upper[0]
@@ -1216,8 +1244,8 @@ class TestFusedPairIntegration:
                 "hosts": tuple(
                     host.model_copy(update={"init_adsorbates": (n,)}) for n in loadings
                 ),
-                "lj": config.lj.model_copy(update={"cutoff": cutoff}),
-                "ewald": config.ewald.model_copy(update={"real_cutoff": cutoff}),
+                "lj": config.lj.model_copy(update={"cutoff": cutoff * A}),
+                "ewald": config.ewald.model_copy(update={"real_cutoff": cutoff * A}),
             }
         )
         state = initial = init_state(jax.random.key(71), config)
@@ -1227,7 +1255,7 @@ class TestFusedPairIntegration:
             as_result_function(PotentialAsPropagator(_make_potential(state)))
         )
 
-        def reference(state: MCMCState) -> jax.Array:
+        def reference(state: MCMCState) -> units.Energy:
             state = propagate_and_fix(unfused, jax.random.key(70), state)
             return state.systems.data.potential_energy.total
 
@@ -1237,14 +1265,14 @@ class TestFusedPairIntegration:
             jax.jit(as_result_function(initialize)), jax.random.key(72), state
         )
         for key in jax.random.split(jax.random.key(73), 3):
-            npt.assert_allclose(
+            assert_close(
                 state.systems.data.potential_energy.total,
                 reference(state),
                 rtol=1e-9,
                 atol=1e-10,
             )
             state = propagate_and_fix(cycle_step, key, state)
-        npt.assert_allclose(
+        assert_close(
             state.systems.data.potential_energy.total,
             reference(state),
             rtol=1e-9,
@@ -1252,6 +1280,6 @@ class TestFusedPairIntegration:
         )
         if exchange_prob == 0:
             npt.assert_array_equal(state.groups.data.system.counts.data, loadings)
-            assert not jnp.allclose(
+            assert not allclose(
                 state.particles.data.positions, initial.particles.data.positions
             )

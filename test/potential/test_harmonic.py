@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from kups.core import units
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -21,11 +22,12 @@ from kups.potential.classical.harmonic import (
     harmonic_bond_energy,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
+from test.units import EV, A, as_length, assert_close
 
 
 @dataclass
 class _PointData:
-    positions: jax.Array
+    positions: units.Length
     labels: Index[str]
     system: Index[SystemId]
 
@@ -36,15 +38,17 @@ class _SystemData:
 
 
 def _make_particles(
-    positions: jax.Array, species: list[str], system_ids: list[int]
+    positions: jax.Array | units.Length, species: list[str], system_ids: list[int]
 ) -> Table[ParticleId, _PointData]:
     labels = Index.new(species)
     system = Index.new(system_ids)
-    return Table.arange(_PointData(positions, labels, system), label=ParticleId)
+    return Table.arange(
+        _PointData(as_length(positions), labels, system), label=ParticleId
+    )
 
 
 def _make_systems(lattice_vectors: jax.Array) -> Table[SystemId, _SystemData]:
-    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(as_length(lattice_vectors)))
     return Table.arange(_SystemData(cell), label=SystemId)
 
 
@@ -82,8 +86,8 @@ class TestHarmonicBondEnergy:
         )
         cls.graph = HyperGraph(cls.particles, cls.systems, cls.edges)
 
-        cls.x0 = jnp.array([[1.5, 1.2], [1.2, 1.8]])
-        cls.k = jnp.array([[100.0, 80.0], [80.0, 120.0]])
+        cls.x0 = jnp.array([[1.5, 1.2], [1.2, 1.8]]) * A
+        cls.k = jnp.array([[100.0, 80.0], [80.0, 120.0]]) * EV / A**2
         cls.parameters = HarmonicBondParameters(labels=_LABELS, x0=cls.x0, k=cls.k)
 
     def test_bond_energy_scenarios(self):
@@ -95,15 +99,15 @@ class TestHarmonicBondEnergy:
         result = energy_fn(inp)
         assert isinstance(result, WithPatch)
         assert result.data.data.shape == (1,)
-        r = 1.0
+        r = 1.0 * A
         x0_ij = self.x0[0, 1]
         k_ij = self.k[0, 1]
         expected_energy = (r - x0_ij) ** 2 * k_ij
-        assert jnp.isclose(result.data.data[0], expected_energy, rtol=1e-6)
+        assert_close(result.data.data[0], expected_energy, rtol=1e-6)
 
         # Equilibrium distance -> zero energy (same shape: 2 particles, A-B)
         eq_dist = self.x0[0, 1]
-        positions_eq = jnp.array([[0.0, 0.0, 0.0], [eq_dist, 0.0, 0.0]])
+        positions_eq = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * eq_dist
         particles_eq = _make_particles(positions_eq, self.species, self.system_ids)
         graph_eq = _make_graph(
             particles_eq,
@@ -114,18 +118,18 @@ class TestHarmonicBondEnergy:
         result_eq = energy_fn(
             GraphPotentialInput(graph=graph_eq, parameters=self.parameters)
         )
-        assert jnp.isclose(result_eq.data.data[0], 0.0, atol=1e-10)
+        assert_close(result_eq.data.data[0], 0.0, atol=1e-10)
 
         # Zero force constant (same shape graph)
-        k_zero = jnp.array([[0.0, 0.0], [0.0, 0.0]])
+        k_zero = jnp.array([[0.0, 0.0], [0.0, 0.0]]) * EV / A**2
         params_zero = HarmonicBondParameters(labels=_LABELS, x0=self.x0, k=k_zero)
         result_zero = energy_fn(
             GraphPotentialInput(graph=self.graph, parameters=params_zero)
         )
-        assert jnp.isclose(result_zero.data.data[0], 0.0, atol=1e-10)
+        assert_close(result_zero.data.data[0], 0.0, atol=1e-10)
 
         # Same species (A-A) -- different Index keys, use raw function
-        positions_aa = jnp.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        positions_aa = jnp.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]]) * A
         particles_aa = _make_particles(positions_aa, ["A", "A"], [0, 0])
         graph_aa = _make_graph(
             particles_aa,
@@ -136,8 +140,8 @@ class TestHarmonicBondEnergy:
         result_aa = harmonic_bond_energy(
             GraphPotentialInput(graph=graph_aa, parameters=self.parameters)
         )
-        expected_aa = (1.5 - self.x0[0, 0]) ** 2 * self.k[0, 0]
-        assert jnp.isclose(result_aa.data.data[0], expected_aa, rtol=1e-6)
+        expected_aa = (1.5 * A - self.x0[0, 0]) ** 2 * self.k[0, 0]
+        assert_close(result_aa.data.data[0], expected_aa, rtol=1e-6)
 
         # Multiple bonds in same graph (different shape: 3 particles, 2 edges)
         positions_m = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.5, 0.0, 0.0]])
@@ -151,9 +155,9 @@ class TestHarmonicBondEnergy:
         result_m = harmonic_bond_energy(
             GraphPotentialInput(graph=graph_m, parameters=self.parameters)
         )
-        energy1 = (1.0 - self.x0[0, 1]) ** 2 * self.k[0, 1]
-        energy2 = (1.5 - self.x0[1, 0]) ** 2 * self.k[1, 0]
-        assert jnp.isclose(result_m.data.data[0], energy1 + energy2, rtol=1e-6)
+        energy1 = (1.0 * A - self.x0[0, 1]) ** 2 * self.k[0, 1]
+        energy2 = (1.5 * A - self.x0[1, 0]) ** 2 * self.k[1, 0]
+        assert_close(result_m.data.data[0], energy1 + energy2, rtol=1e-6)
 
     def test_energy_calculation_multiple_graphs(self):
         """Test with multiple graphs (batched)."""
@@ -179,8 +183,8 @@ class TestHarmonicBondEnergy:
         assert result.data.data.shape == (2,)
         x0_ij = self.x0[0, 1]
         k_ij = self.k[0, 1]
-        assert jnp.isclose(result.data.data[0], (1.0 - x0_ij) ** 2 * k_ij, rtol=1e-6)
-        assert jnp.isclose(result.data.data[1], (2.0 - x0_ij) ** 2 * k_ij, rtol=1e-6)
+        assert_close(result.data.data[0], (1.0 * A - x0_ij) ** 2 * k_ij, rtol=1e-6)
+        assert_close(result.data.data[1], (2.0 * A - x0_ij) ** 2 * k_ij, rtol=1e-6)
 
     def test_gradient_compatibility(self):
         """Merged: position + parameter gradients."""
@@ -194,22 +198,28 @@ class TestHarmonicBondEnergy:
                 jnp.array([[0, 1]]),
                 jnp.array([[[0.0, 0.0, 0.0]]]),
             )
-            return harmonic_bond_energy(
-                GraphPotentialInput(graph=graph, parameters=self.parameters)
-            ).data.data.sum()
+            return units.sum(
+                harmonic_bond_energy(
+                    GraphPotentialInput(graph=graph, parameters=self.parameters)
+                ).data.data
+            ).to(EV)
 
         grads_pos = jax.grad(energy_fn_pos)(self.positions)
         assert grads_pos.shape == self.positions.shape
         assert jnp.all(jnp.isfinite(grads_pos))
 
         # Parameter gradients
-        def energy_fn_k(k):
-            params = HarmonicBondParameters(labels=_LABELS, x0=self.x0, k=k)
-            return harmonic_bond_energy(
-                GraphPotentialInput(graph=self.graph, parameters=params)
-            ).data.data.sum()
+        stiffness = EV / A**2
 
-        grads_k = jax.grad(energy_fn_k)(self.k)
+        def energy_fn_k(k):
+            params = HarmonicBondParameters(labels=_LABELS, x0=self.x0, k=k * stiffness)
+            return units.sum(
+                harmonic_bond_energy(
+                    GraphPotentialInput(graph=self.graph, parameters=params)
+                ).data.data
+            ).to(EV)
+
+        grads_k = jax.grad(energy_fn_k)(self.k.to(stiffness))
         assert grads_k.shape == self.k.shape
         assert jnp.all(jnp.isfinite(grads_k))
 
@@ -254,7 +264,9 @@ class TestHarmonicAngleEnergy:
         cls.theta0 = jnp.array(
             [[[120.0, 90.0], [90.0, 120.0]], [[90.0, 90.0], [120.0, 90.0]]]
         )
-        cls.k = jnp.array([[[10.0, 8.0], [12.0, 10.0]], [[8.0, 12.0], [10.0, 8.0]]])
+        cls.k = (
+            jnp.array([[[10.0, 8.0], [12.0, 10.0]], [[8.0, 12.0], [10.0, 8.0]]]) * EV
+        )
         cls.parameters = HarmonicAngleParameters(
             labels=_LABELS, theta0=cls.theta0, k=cls.k
         )
@@ -271,20 +283,20 @@ class TestHarmonicAngleEnergy:
         theta0_ijk = self.theta0[0, 1, 0]
         k_ijk = self.k[0, 1, 0]
         expected_energy = (90.0 - theta0_ijk) ** 2 * k_ijk
-        assert jnp.isclose(result.data.data[0], expected_energy, rtol=1e-5)
+        assert_close(result.data.data[0], expected_energy, rtol=1e-5, atol=1e-10)
 
         # At equilibrium -> zero energy
-        assert jnp.isclose(result.data.data[0], 0.0, atol=1e-6)
+        assert_close(result.data.data[0], 0.0, atol=1e-6)
 
         # Zero force constant
-        k_zero = jnp.zeros_like(self.k)
+        k_zero = units.zeros_like(self.k)
         params_zero = HarmonicAngleParameters(
             labels=_LABELS, theta0=self.theta0, k=k_zero
         )
         result_zero = energy_fn(
             GraphPotentialInput(graph=self.graph, parameters=params_zero)
         )
-        assert jnp.isclose(result_zero.data.data[0], 0.0, atol=1e-10)
+        assert_close(result_zero.data.data[0], 0.0, atol=1e-10)
 
     def test_linear_configuration(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
@@ -301,7 +313,7 @@ class TestHarmonicAngleEnergy:
         theta0_ijk = self.theta0[0, 1, 0]
         k_ijk = self.k[0, 1, 0]
         expected_energy = (180.0 - theta0_ijk) ** 2 * k_ijk
-        assert jnp.isclose(result.data.data[0], expected_energy, rtol=1e-5)
+        assert_close(result.data.data[0], expected_energy, rtol=1e-5)
 
     def test_energy_calculation_multiple_graphs(self):
         positions = jnp.array(
@@ -335,12 +347,8 @@ class TestHarmonicAngleEnergy:
         assert result.data.data.shape == (2,)
         theta0_ijk = self.theta0[0, 1, 0]
         k_ijk = self.k[0, 1, 0]
-        assert jnp.isclose(
-            result.data.data[0], (90.0 - theta0_ijk) ** 2 * k_ijk, rtol=1e-5
-        )
-        assert jnp.isclose(
-            result.data.data[1], (120.0 - theta0_ijk) ** 2 * k_ijk, rtol=1e-2
-        )
+        assert_close(result.data.data[0], (90.0 - theta0_ijk) ** 2 * k_ijk, rtol=1e-5)
+        assert_close(result.data.data[1], (120.0 - theta0_ijk) ** 2 * k_ijk, rtol=1e-2)
 
     def test_gradient_compatibility(self):
         """Merged: position + parameter gradients."""
@@ -353,21 +361,27 @@ class TestHarmonicAngleEnergy:
                 jnp.array([[0, 1, 2]]),
                 jnp.array([[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]),
             )
-            return harmonic_angle_energy(
-                GraphPotentialInput(graph=graph, parameters=self.parameters)
-            ).data.data.sum()
+            return units.sum(
+                harmonic_angle_energy(
+                    GraphPotentialInput(graph=graph, parameters=self.parameters)
+                ).data.data
+            ).to(EV)
 
         grads_pos = jax.grad(energy_fn_pos)(self.positions)
         assert grads_pos.shape == self.positions.shape
         assert jnp.all(jnp.isfinite(grads_pos))
 
         def energy_fn_k(k):
-            params = HarmonicAngleParameters(labels=_LABELS, theta0=self.theta0, k=k)
-            return harmonic_angle_energy(
-                GraphPotentialInput(graph=self.graph, parameters=params)
-            ).data.data.sum()
+            params = HarmonicAngleParameters(
+                labels=_LABELS, theta0=self.theta0, k=k * EV
+            )
+            return units.sum(
+                harmonic_angle_energy(
+                    GraphPotentialInput(graph=self.graph, parameters=params)
+                ).data.data
+            ).to(EV)
 
-        grads_k = jax.grad(energy_fn_k)(self.k)
+        grads_k = jax.grad(energy_fn_k)(self.k.to(EV))
         assert grads_k.shape == self.k.shape
         assert jnp.all(jnp.isfinite(grads_k))
 

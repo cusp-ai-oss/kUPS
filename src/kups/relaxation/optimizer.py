@@ -13,6 +13,7 @@ from typing import Any, Protocol, no_type_check, override
 
 import optax
 
+from kups.core import units
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass
 
@@ -30,12 +31,34 @@ class Optimizer[Params, OptState](Protocol):
     ) -> tuple[Params, OptState]: ...
 
 
+def relabel_like[T](reference: T, tree: T) -> T:
+    """Give ``tree``'s leaves the dimensions of ``reference``'s.
+
+    Args:
+        reference: Pytree whose leaves carry the intended dimensions.
+        tree: Pytree of magnitudes with ``reference``'s structure.
+
+    Returns:
+        ``tree`` with each leaf labelled like its counterpart: a quantity's
+        dimension in its own base, and a plain leaf as it stands.
+    """
+
+    def like(ref: Any, x: Any) -> Any:
+        """One leaf of magnitudes, labelled like its counterpart."""
+        if units.is_quantity(ref):
+            return units.from_dim(x, units.dim_of(ref), units.base_of(ref))
+        return x
+
+    return units.tree_map(like, reference, tree)
+
+
 def apply_updates[Params](parameters: Params, updates: Params) -> Params:
     """Add each update to its parameter, keeping the parameter's dtype.
 
     Args:
-        parameters: The parameter pytree.
-        updates: A pytree of the same structure and leaf shapes.
+        parameters: The parameter pytree, whose leaves may carry dimensions.
+        updates: A pytree of the same structure, including each quantity's
+            dimension and base.
 
     Returns:
         The updated parameters, with ``None`` leaves left in place.

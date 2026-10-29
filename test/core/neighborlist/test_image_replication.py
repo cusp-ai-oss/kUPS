@@ -59,6 +59,7 @@ from kups.core.neighborlist.common import (
 )
 from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.neighborlist.types import NeighborList
+from kups.core.units import catalog as u
 
 from ._builders import (
     cutoff_table,
@@ -71,12 +72,15 @@ from ._builders import (
     valid_pairs,
 )
 
+_A = u.angstrom
+
 # --------------------------------------------------------------------------- #
 # Cell zoo: (name, 3x3 matrix rows=lattice vectors, is_triclinic-only?)
 # Covers the orthogonal baseline, anisotropic short-axis, monoclinic skew, an
 # acute 35-degree cell (round-based minimum image picks the wrong copy),
 # a general triclinic, and a strongly sheared small-perp cell.
 # --------------------------------------------------------------------------- #
+
 type Matrix = list[list[float]]
 type Vec3 = tuple[int, int, int]
 type Edge = tuple[int, int, Vec3]
@@ -162,7 +166,7 @@ def _all_closest_d2(frac: np.ndarray, matrix: Matrix, pbc) -> np.ndarray:
 
 
 def _make_cell(matrix: Matrix, pbc=(True, True, True)) -> Cell:
-    frame = TriclinicFrame.from_matrix(jnp.asarray(matrix)[None])
+    frame = TriclinicFrame.from_matrix(jnp.asarray(matrix)[None] * _A)
     return Cell.from_pbc(frame, pbc)
 
 
@@ -283,24 +287,24 @@ class TestCandidateImageCounts:
     )
     def test_width_matches_ceil_formula(self, ratio, expected):
         # Cubic cell: perp = L on every axis; cutoff = ratio * L.
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0))
-        cutoff = jnp.array([ratio * 4.0])
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 4.0 * _A))
+        cutoff = jnp.array([ratio * 4.0]) * _A
         images = candidate_image_counts(cell, cutoff)
         npt.assert_array_equal(np.asarray(images), np.full((1, 3), expected))
 
     def test_anisotropic_per_axis_widths(self):
         # perp = (3, 5, 8); cutoff 4 -> ratios (1.33, 0.8, 0.5) -> (3, 2, 1).
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([[3.0, 5.0, 8.0]])))
-        images = candidate_image_counts(cell, jnp.array([4.0]))
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([[3.0, 5.0, 8.0]]) * _A))
+        images = candidate_image_counts(cell, jnp.array([4.0]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[3, 2, 1]]))
 
     def test_orthogonal_and_triclinic_frames_agree(self):
         # Same diagonal geometry through both frame parameterisations.
-        ortho = PeriodicCell(OrthogonalFrame(jnp.array([[3.0, 5.0, 8.0]])))
+        ortho = PeriodicCell(OrthogonalFrame(jnp.array([[3.0, 5.0, 8.0]]) * _A))
         tri = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.diag(jnp.array([3.0, 5.0, 8.0]))[None])
+            TriclinicFrame.from_matrix(jnp.diag(jnp.array([3.0, 5.0, 8.0]))[None] * _A)
         )
-        cutoff = jnp.array([4.0])
+        cutoff = jnp.array([4.0]) * _A
         npt.assert_array_equal(
             np.asarray(candidate_image_counts(ortho, cutoff)),
             np.asarray(candidate_image_counts(tri, cutoff)),
@@ -316,23 +320,23 @@ class TestCandidateImageCounts:
     )
     def test_open_axes_use_single_image(self, pbc, expected):
         # ratio 0.8 on every axis, but open axes must never replicate.
-        cell = Cell.from_pbc(TriclinicFrame.from_matrix(jnp.eye(3)[None]), pbc)
-        images = candidate_image_counts(cell, jnp.array([0.8]))
+        cell = Cell.from_pbc(TriclinicFrame.from_matrix(jnp.eye(3)[None] * _A), pbc)
+        images = candidate_image_counts(cell, jnp.array([0.8]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([expected]))
 
     def test_multi_system_heterogeneous(self):
         cell = PeriodicCell(
-            OrthogonalFrame(jnp.array([[10.0, 10.0, 10.0], [1.0, 1.0, 1.0]]))
+            OrthogonalFrame(jnp.array([[10.0, 10.0, 10.0], [1.0, 1.0, 1.0]]) * _A)
         )
-        images = candidate_image_counts(cell, jnp.array([2.0, 0.8]))
+        images = candidate_image_counts(cell, jnp.array([2.0, 0.8]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[1, 1, 1], [2, 2, 2]]))
 
     def test_nonfinite_ratio_clamps_to_one(self):
         class Cells:
-            perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]])
+            perpendicular_lengths = jnp.array([[0.0, 4.0, jnp.nan]]) * _A
             periodic = (True, True, True)
 
-        images = candidate_image_counts(Cells(), jnp.array([6.0]))
+        images = candidate_image_counts(Cells(), jnp.array([6.0]) * _A)
         npt.assert_array_equal(np.asarray(images), np.array([[1, 3, 1]]))
 
 
@@ -425,8 +429,8 @@ def _replicate_edges(frac: np.ndarray, matrix: Matrix, cutoff: float, pbc):
     n = frac.shape[0]
     cell = _make_cell(matrix, pbc)
     lh = make_lh(jnp.asarray(frac), jnp.zeros(n, dtype=int))
-    systems, _ = make_systems(cell, jnp.array([cutoff]))
-    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
+    systems, _ = make_systems(cell, jnp.array([cutoff]) * _A)
+    images = int(candidate_image_counts(cell, jnp.array([cutoff]) * _A).prod())
     gi, gj = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
     candidates = Candidates(
         key_idx=Index(lh.keys, jnp.asarray(gi.ravel())),
@@ -437,7 +441,7 @@ def _replicate_edges(frac: np.ndarray, matrix: Matrix, cutoff: float, pbc):
         lh,
         lh,
         systems,
-        cutoff_table(jnp.array([cutoff])),
+        cutoff_table(jnp.array([cutoff]) * _A),
         FixedCapacity(n * n * _image_bucket(images)),
     )
     # Padding rows carry the out-of-range index n; every other row is an image.
@@ -553,7 +557,7 @@ def _neighbor_list(
 ) -> NeighborList[Literal[2]]:
     assert bins <= _MAX_BINS
     cap = FixedCapacity(n * _image_bucket(images))
-    cutoffs = cutoff_table(jnp.array([cutoff]))
+    cutoffs = cutoff_table(jnp.array([cutoff]) * _A)
     if nl_cls is CellListNeighborList:
         return CellListNeighborList(
             avg_candidates=FixedCapacity(n),
@@ -590,10 +594,10 @@ def _nl_edge_list(
     With ``queried``, every real particle is a queried key.
     """
     n = real.shape[0]
-    lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
-    images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
-    bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
+    lh = make_lh(jnp.asarray(real) * _A, jnp.zeros(n, dtype=int))
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]) * _A)
+    images = int(candidate_image_counts(cell, jnp.array([cutoff]) * _A).prod())
+    bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff]) * _A).prod()))
     lh, systems, _, _ = pad(lh, systems, cutoffs, n_particles=_PADDED, n_systems=1)
     queried_keys = Index(lh.keys, jnp.arange(n)) if queried else None
     nl = _neighbor_list(nl_cls, _PADDED, images, bins, cutoff)
@@ -743,12 +747,12 @@ class TestCellListSingleCellPath:
     def _candidate_pairs(self, max_cells, matrix, cutoff):
         frac = np.asarray(jax.random.uniform(jax.random.key(9), (self.n, 3)))
         lh = make_lh(jnp.asarray(frac), jnp.zeros(self.n, dtype=int))
-        systems, _ = make_systems(_make_cell(matrix), jnp.array([cutoff]))
+        systems, _ = make_systems(_make_cell(matrix), jnp.array([cutoff]) * _A)
         c = _cell_list_subselect(
             lh,
             lh,
             systems,
-            cutoffs=jnp.array([cutoff]),
+            cutoffs=jnp.array([cutoff]) * _A,
             max_num_cells=max_cells,
             max_num_candidates=FixedCapacity(self.n * self.n * 2),
         )
@@ -761,8 +765,8 @@ class TestCellListSingleCellPath:
         # applies. It must emit the same all-pairs candidate set as forcing a
         # larger cell capacity (the general stencil + dedup path).
         cutoff = float(ratio * _perp(matrix).max())
-        systems, _ = make_systems(_make_cell(matrix), jnp.array([cutoff]))
-        bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff])).prod()))
+        systems, _ = make_systems(_make_cell(matrix), jnp.array([cutoff]) * _A)
+        bins = int(np.asarray(num_cells(systems.data, jnp.array([cutoff]) * _A).prod()))
         assert bins == 1, (
             f"{cell_name}@{ratio}: expected a single cell, got {bins} bins"
         )
@@ -789,11 +793,11 @@ def _x_window(box: float, cutoff: float, sep: float) -> set[int]:
     """Emitted x-axis integer shifts for one pair separated by ``sep`` in x
     (cubic box, so perp = box). Runs the real float32 ``replicate_for_images``
     under jit, as in production, with one capacity for every ratio."""
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box * _A))
     frac = jnp.array([[0.0, 0.3, 0.7], [sep, 0.3, 0.7]])  # query, key
     lh = make_lh(frac, jnp.zeros(2, dtype=int))
-    systems, _ = make_systems(cell, jnp.array([cutoff]))
-    images = candidate_image_counts(cell, jnp.array([cutoff])).prod()
+    systems, _ = make_systems(cell, jnp.array([cutoff]) * _A)
+    images = candidate_image_counts(cell, jnp.array([cutoff]) * _A).prod()
     assert 1 < images <= _X_WINDOW_IMAGES
     candidates = Candidates(
         key_idx=Index(lh.keys, jnp.array([1])), query_idx=Index(lh.keys, jnp.array([0]))
@@ -803,7 +807,7 @@ def _x_window(box: float, cutoff: float, sep: float) -> set[int]:
         lh,
         lh,
         systems,
-        cutoff_table(jnp.array([cutoff])),
+        cutoff_table(jnp.array([cutoff]) * _A),
         FixedCapacity(_X_WINDOW_IMAGES),
     )
     real = np.asarray(batch.edges.indices.valid_mask[:, 0])
@@ -945,11 +949,11 @@ class TestParametersEstimateSufficiency:
 
         cutoff = _cutoff_for(matrix, ratio)
         cell = _make_cell(matrix)
-        systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+        systems, cutoffs = make_systems(cell, jnp.array([cutoff]) * _A)
         n_particles = 8
         ppc_table = Table((SystemId(0),), jnp.array([n_particles]))
         params = UniversalNeighborlistParameters.estimate(ppc_table, systems, cutoffs)
-        images = int(candidate_image_counts(cell, jnp.array([cutoff])).prod())
+        images = int(candidate_image_counts(cell, jnp.array([cutoff]) * _A).prod())
         # estimate replicates the rounded candidate buffer by the image product;
         # avg_image_candidates must be at least that product (per candidate).
         assert params.avg_image_candidates >= images

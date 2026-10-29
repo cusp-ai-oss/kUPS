@@ -30,6 +30,7 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import NeighborList
 from kups.core.result import as_result_function
 from kups.core.typing import Label, ParticleId, SystemId
+from kups.core.units import catalog as u
 
 from ._builders import (
     SamplePoints,
@@ -38,6 +39,8 @@ from ._builders import (
     make_systems,
     systems_from_lvecs,
 )
+
+_A = u.angstrom
 
 
 def _edge_rows(edges):
@@ -79,7 +82,7 @@ class TestCachedCellList:
         x = jnp.array([-21.0, -20.0, -0.5, 0.5, 9.5, 10.5, 20.0, 21.0])
         points = make_lh(jnp.stack((x, x * 0, x * 0), -1), jnp.zeros(len(x), int))
         systems, cutoffs = make_systems(
-            Cell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10), periodic),
+            Cell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10 * _A), periodic),
             jnp.array([2.0]),
         )
         layout = CellListCacheParameters.estimate(points, systems, cutoffs)
@@ -142,7 +145,7 @@ class TestCachedCellList:
             ]
         )
         systems, cutoffs = make_systems(
-            Cell(TriclinicFrame.from_matrix(matrices), periodic=periodic),
+            Cell(TriclinicFrame.from_matrix(matrices * _A), periodic=periodic),
             jnp.array([cutoff, 1.4]),
         )
         system = jnp.array([1, 0, 1, 0, 0, 1, 1, 0, 0, 1])
@@ -396,7 +399,7 @@ class TestCellListCache:
             jnp.repeat(jnp.arange(n_systems), 5),
         )
         frame = TriclinicFrame.from_matrix(
-            jnp.tile(jnp.eye(3) * length, (n_systems, 1, 1))
+            jnp.tile(jnp.eye(3) * length, (n_systems, 1, 1)) * _A
         )
         systems, cutoffs = make_systems(
             Cell(frame, periodic=periodic), jnp.full(n_systems, 6.0)
@@ -468,7 +471,7 @@ class TestCellListCache:
             bounds.upper,
             systems.data.cell.vectors[0],
             systems.data.cell.perpendicular_lengths[0],
-            6.0,
+            6.0 * _A,
             (True, True, True),
         )
         union = jnp.zeros_like(near)
@@ -483,7 +486,7 @@ class TestCellListCache:
     def test_blocks_need_the_minimum_image(self, lengths, cutoff):
         positions = jax.random.uniform(jax.random.key(76), (60, 3)) * jnp.array(lengths)
         particles = make_lh(positions, jnp.zeros(60, int))
-        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array(lengths))[None])
+        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array(lengths))[None] * _A)
         systems, cutoffs = make_systems(
             Cell(frame, periodic=(True, True, True)), jnp.array([cutoff])
         )
@@ -850,7 +853,15 @@ class TestBlockCulling:
         skipped = projected = 0
         for cutoff in (1.5, 3.0, 4.5):
             near = np.asarray(
-                near_fn(queries, lower, upper, matrix, perpendicular, cutoff, periodic)
+                near_fn(
+                    queries,
+                    lower,
+                    upper,
+                    jnp.asarray(matrix) * _A,
+                    jnp.asarray(perpendicular) * _A,
+                    cutoff * _A,
+                    periodic,
+                )
             )
             assert not near[:, -1].any()
             # A query inside a block's box is never culled from it.

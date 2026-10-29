@@ -5,38 +5,43 @@
 
 import jax
 import jax.numpy as jnp
-import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import GroupId, ParticleId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.position import (
     center_of_mass,
     to_absolute_positions,
     to_relative_positions,
 )
+from test.units import A, as_length, as_unit, assert_close
+
+AMU = u.amu
+"""The mass unit a test's plain weights are read in."""
 
 
 @dataclass
 class ParticlesWithMass:
-    positions: jax.Array
-    weights: jax.Array
+    positions: units.Length
+    weights: units.Mass
     group: Index[GroupId]
 
 
 @dataclass
 class ParticlesUsingMasses:
-    positions: jax.Array
-    masses: jax.Array
+    positions: units.Length
+    masses: units.Mass
     group: Index[GroupId]
 
 
 @dataclass
 class ParticlesWithoutWeights:
-    positions: jax.Array
+    positions: units.Length
     group: Index[GroupId]
 
 
@@ -47,11 +52,16 @@ def _make_group_index(ids: list[int], num_groups: int) -> Index[GroupId]:
 
 
 def _make_particles(
-    positions: jax.Array, weights: jax.Array, ids: list[int], num_groups: int
+    positions: units.Length | jax.Array,
+    weights: units.Mass | jax.Array,
+    ids: list[int],
+    num_groups: int,
 ) -> Table[ParticleId, ParticlesWithMass]:
     """Create Table particles from positions, weights, and group assignments."""
     group = _make_group_index(ids, num_groups)
-    data = ParticlesWithMass(positions=positions, weights=weights, group=group)
+    data = ParticlesWithMass(
+        positions=as_length(positions), weights=as_unit(weights, AMU), group=group
+    )
     return Table.arange(data, label=ParticleId)
 
 
@@ -65,7 +75,8 @@ def cells_2sys():
                     [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
                     [[6.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 6.0]],
                 ]
-            ),
+            )
+            * A,
         )
     )
 
@@ -75,7 +86,7 @@ def cells_1sys():
     """Single 4x4x4 cubic cell."""
     return PeriodicCell(
         TriclinicFrame.from_matrix(
-            jnp.array([[[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]]),
+            jnp.array([[[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]]) * A,
         )
     )
 
@@ -85,7 +96,7 @@ def small_cells():
     """Single 2x2x2 cubic cell."""
     return PeriodicCell(
         TriclinicFrame.from_matrix(
-            jnp.array([[[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]]),
+            jnp.array([[[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]]) * A,
         )
     )
 
@@ -96,13 +107,16 @@ class TestCenterOfMass:
     def test_center_of_mass_variants(self, cells_2sys, small_cells):
         """Test CoM with equal weights, different weights, wrapping, and single particle."""
         # Equal weights
-        positions = jnp.array(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]
+        positions = (
+            jnp.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]
+            )
+            * A
         )
         particles = _make_particles(positions, jnp.ones(4), [0, 0, 1, 1], num_groups=2)
         com = center_of_mass(particles, cells_2sys[:2])
-        expected = jnp.array([[0.5, 0.0, 0.0], [0.5, 1.0, 0.0]])
-        npt.assert_allclose(com, expected, atol=1e-10)
+        expected = jnp.array([[0.5, 0.0, 0.0], [0.5, 1.0, 0.0]]) * A
+        assert_close(com, expected, atol=1e-10)
 
         # Different weights
         positions2 = jnp.array(
@@ -111,21 +125,21 @@ class TestCenterOfMass:
         weights2 = jnp.array([3.0, 1.0, 1.0, 3.0])
         particles2 = _make_particles(positions2, weights2, [0, 0, 1, 1], num_groups=2)
         com2 = center_of_mass(particles2, cells_2sys[:2])
-        expected2 = jnp.array([[0.25, 0.0, 0.0], [2.75, 2.0, 0.0]])
-        npt.assert_allclose(com2, expected2, atol=1e-10)
+        expected2 = jnp.array([[0.25, 0.0, 0.0], [2.75, 2.0, 0.0]]) * A
+        assert_close(com2, expected2, atol=1e-10)
 
         # Wrapping
-        positions3 = jnp.array([[0.1, 0.0, 0.0], [1.9, 0.0, 0.0]])
+        positions3 = jnp.array([[0.1, 0.0, 0.0], [1.9, 0.0, 0.0]]) * A
         particles3 = _make_particles(positions3, jnp.ones(2), [0, 0], num_groups=1)
         com3 = center_of_mass(particles3, small_cells)
-        npt.assert_allclose(com3, jnp.array([[0.0, 0.0, 0.0]]), atol=1e-10)
+        assert_close(com3, jnp.array([[0.0, 0.0, 0.0]]), atol=1e-10)
 
         # Single particle per group
-        positions4 = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        positions4 = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]) * A
         particles4 = _make_particles(positions4, jnp.ones(2), [0, 1], num_groups=2)
         com4 = center_of_mass(particles4, cells_2sys[:2])
         expected_wrapped = cells_2sys[:2].wrap(positions4)
-        npt.assert_allclose(com4, expected_wrapped, atol=1e-10)
+        assert_close(com4, expected_wrapped, atol=1e-10)
 
     def test_masses_weight_the_average_when_weights_are_absent(self, cells_2sys):
         """Test that a masses field weights the CoM, and that its absence does not.
@@ -134,19 +148,19 @@ class TestCenterOfMass:
         weights, so checking only for weights would silently fall back to an
         unweighted centroid throughout the library.
         """
-        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * A
         group = _make_group_index([0, 0], 1)
 
         weighted = center_of_mass(
             Table.arange(
                 ParticlesUsingMasses(
-                    positions=positions, masses=jnp.array([3.0, 1.0]), group=group
+                    positions=positions, masses=jnp.array([3.0, 1.0]) * AMU, group=group
                 ),
                 label=ParticleId,
             ),
             cells_2sys[:1],
         )
-        npt.assert_allclose(weighted, jnp.array([[0.25, 0.0, 0.0]]), atol=1e-10)
+        assert_close(weighted, jnp.array([[0.25, 0.0, 0.0]]), atol=1e-10)
 
         # Same geometry with no weight field at all falls back to the centroid.
         unweighted = center_of_mass(
@@ -156,11 +170,11 @@ class TestCenterOfMass:
             ),
             cells_2sys[:1],
         )
-        npt.assert_allclose(unweighted, jnp.array([[0.5, 0.0, 0.0]]), atol=1e-10)
+        assert_close(unweighted, jnp.array([[0.5, 0.0, 0.0]]), atol=1e-10)
 
     def test_center_of_mass_assertion_error(self, cells_2sys):
         """Test that assertion error is raised when cells don't match groups."""
-        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * A
         particles = _make_particles(positions, jnp.ones(2), [0, 0], num_groups=1)
 
         com = center_of_mass(particles, cells_2sys[:1])
@@ -178,36 +192,36 @@ class TestToRelative:
     def test_relative_positions(self, cells_1sys, small_cells):
         """Test basic relative positions, with provided CoM, with mass, and wrapping."""
         # Basic
-        positions = jnp.array([[1.0, 1.0, 1.0], [3.0, 1.0, 1.0]])
+        positions = jnp.array([[1.0, 1.0, 1.0], [3.0, 1.0, 1.0]]) * A
         particles = _make_particles(positions, jnp.ones(2), [0, 0], num_groups=1)
         com = center_of_mass(particles, cells_1sys)
         rel_pos = to_relative_positions(particles, cells_1sys)
         expected = cells_1sys[0].wrap(positions - com[0])
-        npt.assert_allclose(rel_pos, expected, atol=1e-10)
+        assert_close(rel_pos, expected, atol=1e-10)
 
         # With provided CoM
-        positions2 = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        positions2 = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]) * A
         particles2 = _make_particles(positions2, jnp.ones(2), [0, 0], num_groups=1)
-        provided_com = jnp.array([[1.5, 0.0, 0.0]])
+        provided_com = jnp.array([[1.5, 0.0, 0.0]]) * A
         rel_pos2 = to_relative_positions(particles2, cells_1sys, provided_com)
-        expected2 = jnp.array([[-1.5, 0.0, 0.0], [0.5, 0.0, 0.0]])
-        npt.assert_allclose(rel_pos2, expected2, atol=1e-10)
+        expected2 = jnp.array([[-1.5, 0.0, 0.0], [0.5, 0.0, 0.0]]) * A
+        assert_close(rel_pos2, expected2, atol=1e-10)
 
         # With mass
-        positions3 = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        positions3 = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * A
         weights3 = jnp.array([1.0, 2.0])
         particles3 = _make_particles(positions3, weights3, [0, 0], num_groups=1)
         com3 = center_of_mass(particles3, cells_1sys)
         rel_pos3 = to_relative_positions(particles3, cells_1sys)
         expected3 = cells_1sys[0].wrap(positions3 - com3[0])
-        npt.assert_allclose(rel_pos3, expected3, atol=1e-10)
+        assert_close(rel_pos3, expected3, atol=1e-10)
 
         # Wrapping
-        positions4 = jnp.array([[0.1, 0.0, 0.0], [1.9, 0.0, 0.0]])
+        positions4 = jnp.array([[0.1, 0.0, 0.0], [1.9, 0.0, 0.0]]) * A
         particles4 = _make_particles(positions4, jnp.ones(2), [0, 0], num_groups=1)
         rel_pos4 = to_relative_positions(particles4, small_cells)
-        expected4 = jnp.array([[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]])
-        npt.assert_allclose(rel_pos4, expected4, atol=1e-10)
+        expected4 = jnp.array([[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]) * A
+        assert_close(rel_pos4, expected4, atol=1e-10)
 
 
 class TestToAbsolute:
@@ -216,29 +230,30 @@ class TestToAbsolute:
     def test_absolute_positions(self, cells_1sys, small_cells):
         """Test basic absolute positions, with mass, and wrapping."""
         # Basic
-        rel_positions = jnp.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        rel_positions = jnp.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * A
         particles = _make_particles(rel_positions, jnp.ones(2), [0, 0], num_groups=1)
-        center_of_masses = jnp.array([[2.0, 1.0, 1.0]])
+        center_of_masses = jnp.array([[2.0, 1.0, 1.0]]) * A
         abs_pos = to_absolute_positions(particles, cells_1sys, center_of_masses)
         expected = cells_1sys[0].wrap(rel_positions + center_of_masses[0])
-        npt.assert_allclose(abs_pos, expected, atol=1e-10)
+        assert_close(abs_pos, expected, atol=1e-10)
 
         # With mass
-        rel_positions2 = jnp.array([[-0.5, 0.0, 0.0], [1.5, 0.0, 0.0]])
+        rel_positions2 = jnp.array([[-0.5, 0.0, 0.0], [1.5, 0.0, 0.0]]) * A
         weights2 = jnp.array([2.0, 1.0])
         particles2 = _make_particles(rel_positions2, weights2, [0, 0], num_groups=1)
-        center_of_masses2 = jnp.array([[1.0, 2.0, 3.0]])
+        center_of_masses2 = jnp.array([[1.0, 2.0, 3.0]]) * A
         abs_pos2 = to_absolute_positions(particles2, cells_1sys, center_of_masses2)
         expected2 = cells_1sys[0].wrap(rel_positions2 + center_of_masses2[0])
-        npt.assert_allclose(abs_pos2, expected2, atol=1e-10)
+        assert_close(abs_pos2, expected2, atol=1e-10)
 
         # Wrapping
-        rel_positions3 = jnp.array([[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0]])
+        rel_positions3 = jnp.array([[-0.5, 0.0, 0.0], [0.5, 0.0, 0.0]]) * A
         particles3 = _make_particles(rel_positions3, jnp.ones(2), [0, 0], num_groups=1)
-        center_of_masses3 = jnp.array([[1.8, 0.0, 0.0]])
+        center_of_masses3 = jnp.array([[1.8, 0.0, 0.0]]) * A
         abs_pos3 = to_absolute_positions(particles3, small_cells, center_of_masses3)
-        assert jnp.all(jnp.isfinite(abs_pos3))
-        assert jnp.all(jnp.abs(abs_pos3) <= 1.0)
+        magnitudes = abs_pos3.to(A)
+        assert jnp.all(jnp.isfinite(magnitudes))
+        assert jnp.all(jnp.abs(magnitudes) <= 1.0)
 
 
 class TestRoundTripConsistency:
@@ -247,8 +262,11 @@ class TestRoundTripConsistency:
     def test_round_trip(self, cells_2sys, cells_1sys):
         """Test to_relative -> to_absolute gives back original positions."""
         # Multi-group
-        original_positions = jnp.array(
-            [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.5, 0.5, 0.0]]
+        original_positions = (
+            jnp.array(
+                [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.5, 0.5, 0.0]]
+            )
+            * A
         )
         group_ids = [0, 0, 1, 1]
         particles = _make_particles(
@@ -258,13 +276,13 @@ class TestRoundTripConsistency:
         rel_pos = to_relative_positions(particles, cells_2sys, com)
         rel_particles = _make_particles(rel_pos, jnp.ones(4), group_ids, num_groups=2)
         abs_pos = to_absolute_positions(rel_particles, cells_2sys, com)
-        npt.assert_allclose(abs_pos, original_positions, atol=1e-6)
+        assert_close(abs_pos, original_positions, atol=1e-6)
 
         # With mass
         original_positions2 = jnp.array(
             [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5], [1.0, 1.0, 1.0]]
         )
-        weights = jnp.array([1.0, 2.0, 0.5])
+        weights = jnp.array([1.0, 2.0, 0.5]) * AMU
         group_ids2 = [0, 0, 0]
         particles2 = _make_particles(
             original_positions2, weights, group_ids2, num_groups=1
@@ -273,7 +291,7 @@ class TestRoundTripConsistency:
         rel_pos2 = to_relative_positions(particles2, cells_1sys, com2)
         rel_particles2 = _make_particles(rel_pos2, weights, group_ids2, num_groups=1)
         abs_pos2 = to_absolute_positions(rel_particles2, cells_1sys, com2)
-        npt.assert_allclose(abs_pos2, original_positions2, atol=1e-10)
+        assert_close(abs_pos2, original_positions2, atol=1e-10)
 
 
 class TestJAXCompatibility:
@@ -281,43 +299,46 @@ class TestJAXCompatibility:
 
     def test_jax_transforms(self, small_cells):
         """Test JIT, gradient, and vmap for center_of_mass."""
-        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * A
         particles = _make_particles(positions, jnp.ones(2), [0, 0], num_groups=1)
 
         # JIT
         com_normal = center_of_mass(particles, small_cells)
         com_jit = jax.jit(center_of_mass)(particles, small_cells)
-        npt.assert_allclose(com_normal, com_jit, atol=1e-10)
+        assert_close(com_normal, com_jit, atol=1e-10)
 
         # Gradient
         group = _make_group_index([0, 0], num_groups=1)
 
         def com_func(pos):
             data = ParticlesWithMass(
-                positions=pos, weights=jnp.ones(pos.shape[0]), group=group
+                positions=pos * A, weights=jnp.ones(pos.shape[0]) * AMU, group=group
             )
             p = Table.arange(data, label=ParticleId)
-            return jnp.sum(center_of_mass(p, small_cells))
+            return units.sum(center_of_mass(p, small_cells)).to(A)
 
         grad_positions = jnp.array([[0.5, 0.0, 0.0], [1.5, 0.0, 0.0]])
         grad = jax.grad(com_func)(grad_positions)
         assert jnp.all(jnp.isfinite(grad))
         expected_grad = jnp.array([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]])
-        npt.assert_allclose(grad, expected_grad, atol=1e-6)
+        assert_close(grad, expected_grad, atol=1e-6)
 
         # Vmap
-        batch_positions = jnp.array(
-            [
-                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-                [[0.5, 0.5, 0.0], [1.5, 0.5, 0.0]],
-                [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
-            ]
+        batch_positions = (
+            jnp.array(
+                [
+                    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                    [[0.5, 0.5, 0.0], [1.5, 0.5, 0.0]],
+                    [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+                ]
+            )
+            * A
         )
 
         def process_batch(batch_pos):
             data = ParticlesWithMass(
                 positions=batch_pos,
-                weights=jnp.ones(batch_pos.shape[0]),
+                weights=jnp.ones(batch_pos.shape[0]) * AMU,
                 group=group,
             )
             p = Table.arange(data, label=ParticleId)
@@ -325,5 +346,5 @@ class TestJAXCompatibility:
 
         batch_coms = jax.vmap(process_batch)(batch_positions)
         assert batch_coms.shape == (3, 1, 3)
-        expected = jnp.array([process_batch(batch_positions[i]) for i in range(3)])
-        npt.assert_allclose(batch_coms, expected, atol=1e-10)
+        expected = units.stack([process_batch(batch_positions[i]) for i in range(3)])
+        assert_close(batch_coms, expected, atol=1e-10)

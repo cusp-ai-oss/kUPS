@@ -8,30 +8,33 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
-import numpy.testing as npt
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import (
     AnyPeriodicity,
     Cell,
     PeriodicCell,
     TriclinicFrame,
     VacuumCell,
+    zero_gradient_cell,
 )
 from kups.core.data import Index, Table
 from kups.core.typing import GroupId, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.observables.stress import (
     molecular_stress_via_virial_theorem,
     stress_via_virial_theorem,
     total_lattice_gradient,
 )
+from test.units import EV, FORCE, A, allclose, as_length, as_unit, assert_close
 
 
 @dataclass
 class _VirialParticles:
-    positions: Array
-    position_gradients: Array
+    positions: units.Length
+    position_gradients: units.Force
     system: Index[SystemId]
 
 
@@ -48,10 +51,13 @@ def _make_systems(
 ) -> Table[SystemId, _VirialSystems]:
     """Helper: Table with cell and cell-gradient for each row of
     ``lattice_vectors`` (one system per leading-axis entry)."""
+    # A gradient cell holds dE/dh in its frame parameters, so its own zeros carry
+    # a force where the primal carries a length.
+    cell = Cell.from_pbc(TriclinicFrame.from_matrix(as_length(lattice_vectors)), pbc)
     if lattice_grad is None:
-        lattice_grad = jnp.zeros_like(lattice_vectors)
-    cell = Cell.from_pbc(TriclinicFrame.from_matrix(lattice_vectors), pbc)
-    cell_grad = Cell.from_pbc(TriclinicFrame.from_matrix(lattice_grad), pbc)
+        cell_grad = zero_gradient_cell(cell)
+    else:
+        cell_grad = Cell.from_pbc(TriclinicFrame.from_matrix(lattice_grad * FORCE), pbc)
     n = lattice_vectors.shape[0]
     keys = tuple(SystemId(i) for i in range(n))
     return Table(keys, _VirialSystems(cell=cell, cell_gradients=cell_grad))
@@ -66,7 +72,7 @@ def _make_particles(
     """Helper: particle Table with positions, gradients, and system index."""
     n = positions.shape[0]
     if position_gradients is None:
-        position_gradients = positions  # default: use positions as gradients
+        position_gradients = positions  # symmetric outer product
     if system_ids is None:
         system_ids = jnp.zeros(n, dtype=int)
     sys_keys = tuple(SystemId(i) for i in range(n_systems))
@@ -74,8 +80,8 @@ def _make_particles(
     return Table(
         p_keys,
         _VirialParticles(
-            positions=positions,
-            position_gradients=position_gradients,
+            positions=as_length(positions),
+            position_gradients=as_unit(position_gradients, FORCE),
             system=Index(sys_keys, system_ids),
         ),
     )
@@ -83,9 +89,9 @@ def _make_particles(
 
 @dataclass
 class _MolecularVirialParticles:
-    positions: Array
-    position_gradients: Array
-    masses: Array
+    positions: units.Length
+    position_gradients: units.Force
+    masses: units.Mass
     group: Index[GroupId]
     system: Index[SystemId]
 
@@ -117,9 +123,9 @@ def _make_molecular_particles(
     return Table(
         tuple(ParticleId(i) for i in range(n)),
         _MolecularVirialParticles(
-            positions=positions,
-            position_gradients=position_gradients,
-            masses=masses,
+            positions=as_length(positions),
+            position_gradients=as_unit(position_gradients, FORCE),
+            masses=as_unit(masses, u.amu),
             group=Index(tuple(GroupId(i) for i in range(n_groups)), group_ids),
             system=Index(tuple(SystemId(i) for i in range(n_systems)), system_ids),
         ),
@@ -160,14 +166,14 @@ class TestStressViaVirialTheorem:
             / volume
         )
         assert result.data.shape == (1, 3, 3)
-        npt.assert_allclose(result.data[0], expected, rtol=1e-6)
+        assert_close(result.data[0], expected, rtol=1e-6)
 
     def test_single_particle_at_origin(self):
         """Single particle at origin gives zero stress."""
         particles = _make_particles(jnp.zeros((1, 3)))
         systems = _make_systems(jnp.eye(3)[None])
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
-        npt.assert_allclose(result.data, 0.0, atol=1e-10)
+        assert_close(result.data, 0.0, atol=1e-10)
 
     def test_with_diagonal_lattice_gradient(self):
         """Diagonal h and diagonal ∂U/∂h: σ = -h^T·∂U/∂h / V."""
@@ -181,7 +187,7 @@ class TestStressViaVirialTheorem:
 
         # h^T @ ∂U/∂h = (2I) @ (3I) = 6I, σ = -6I / 8
         expected = -jnp.eye(3) * 6.0 / 8.0
-        npt.assert_allclose(result.data[0], expected, rtol=1e-6)
+        assert_close(result.data[0], expected, rtol=1e-6)
 
     def test_periodic_pair_virial_combines_position_and_cell_before_symmetry(self):
         """A pair crossing PBC reconstructs the full minimum-image virial.
@@ -207,7 +213,7 @@ class TestStressViaVirialTheorem:
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
 
         expected = -jnp.outer(d, d) / 1000.0
-        npt.assert_allclose(result.data[0], expected, atol=1e-12)
+        assert_close(result.data[0], expected, atol=1e-12)
 
     def test_triclinic_cell_recovers_symmetric_cell_virial(self):
         """Non-diagonal lower-triangular ``h``: stress code recovers
@@ -235,7 +241,7 @@ class TestStressViaVirialTheorem:
 
         volume = float(np.abs(np.linalg.det(h_np)))
         expected = -S_np / volume
-        npt.assert_allclose(result.data[0], expected, atol=1e-10)
+        assert_close(result.data[0], expected, atol=1e-10)
 
     def test_stress_is_symmetric(self):
         """Output is always symmetric, even with asymmetric position outer
@@ -250,7 +256,7 @@ class TestStressViaVirialTheorem:
         particles = _make_particles(positions, position_gradients=position_gradients)
         systems = _make_systems(lv, lattice_grad)
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
-        npt.assert_allclose(result.data[0], result.data[0].T, atol=1e-10)
+        assert_close(result.data[0], result.data[0].T, atol=1e-10)
 
     def test_vacuum_cell_has_zero_stress(self):
         """A fully non-periodic (vacuum) cell has no lattice-strain DOF, so every
@@ -261,7 +267,7 @@ class TestStressViaVirialTheorem:
         particles = _make_particles(positions)
         systems = _make_systems(lv, lattice_grad, pbc=(False, False, False))
         result = jax.jit(stress_via_virial_theorem)(particles, systems)
-        npt.assert_allclose(result.data, 0.0, atol=1e-12)
+        assert_close(result.data, 0.0, atol=1e-12)
 
     def test_slab_zeroes_non_periodic_row_and_column(self):
         """A slab periodic in x,y keeps only the in-plane 2×2 block: the z row and
@@ -279,9 +285,9 @@ class TestStressViaVirialTheorem:
         full = jax.jit(stress_via_virial_theorem)(
             particles, _make_systems(lv, lattice_grad)
         ).data[0]
-        npt.assert_allclose(slab[2, :], 0.0, atol=1e-12)
-        npt.assert_allclose(slab[:, 2], 0.0, atol=1e-12)
-        npt.assert_allclose(slab[:2, :2], full[:2, :2], atol=1e-12)
+        assert_close(slab[2, :], 0.0, atol=1e-12)
+        assert_close(slab[:, 2], 0.0, atol=1e-12)
+        assert_close(slab[:2, :2], full[:2, :2], atol=1e-12)
 
 
 _H_TRICLINIC = jnp.array([[[2.0, 0.0, 0.0], [0.7, 1.9, 0.0], [0.3, -0.5, 2.4]]])
@@ -296,49 +302,51 @@ class TestTotalLatticeGradient:
 
     def test_reduces_to_partial_at_zero_force(self):
         """With ∂E/∂rᵢ = 0 the coupling term vanishes: total == partial."""
-        cell = _periodic(TriclinicFrame.from_matrix(_H_TRICLINIC))
-        partial = _periodic(TriclinicFrame.from_matrix(jnp.tril(jnp.ones((1, 3, 3)))))
-        positions = jnp.array([[0.5, 1.0, -0.3], [1.2, 0.1, 0.8]])
+        cell = _periodic(TriclinicFrame.from_matrix(_H_TRICLINIC * A))
+        partial = _periodic(
+            TriclinicFrame.from_matrix(jnp.tril(jnp.ones((1, 3, 3))) * FORCE)
+        )
+        positions = jnp.array([[0.5, 1.0, -0.3], [1.2, 0.1, 0.8]]) * A
         system = Index((SystemId(0),), jnp.zeros(2, dtype=int))
         total = total_lattice_gradient(
-            positions, jnp.zeros((2, 3)), cell, partial, system
+            positions, units.zeros((2, 3), FORCE), cell, partial, system
         )
-        npt.assert_allclose(
-            total.data.frame.vectors, partial.data.frame.vectors, atol=1e-12
-        )
+        assert_close(total.data.frame.vectors, partial.data.frame.vectors, atol=1e-12)
 
     def test_matches_autodiff_through_fixed_fractional(self):
-        """Validate against ``jax.grad`` of ``E(s@h, h)`` with fractional ``s`` held
-        fixed -- the definition of the total lattice gradient."""
+        """Validate against ``units.grad`` of ``E(s@h, h)`` with fractional ``s``
+        held fixed -- the definition of the total lattice gradient."""
         rng = np.random.default_rng(3)
-        frame = TriclinicFrame.from_matrix(_H_TRICLINIC)
-        positions = jnp.asarray(rng.standard_normal((5, 3)))
+        frame = TriclinicFrame.from_matrix(_H_TRICLINIC * A)
+        positions = jnp.asarray(rng.standard_normal((5, 3))) * A
         system = Index((SystemId(0),), jnp.zeros(5, dtype=int))
-        c = 0.37
+        s = frame.to_fractional(positions)  # fixed fractional coordinates
+        k, c = 0.5 * EV / A**2, 0.37 * EV / A**2
 
-        def energy(fr: TriclinicFrame, r: Array) -> Array:
-            return 0.5 * (r**2).sum() + c * (fr.vectors**2).sum()
+        def energy(fr: TriclinicFrame, r: units.Length) -> units.Energy:
+            return k * units.sum(r**2) + c * units.sum(fr.vectors**2)
 
-        partial = jax.grad(lambda fr: energy(fr, positions))(frame)
-        g = jax.grad(lambda r: energy(frame, r))(positions)
+        def strained(fr: TriclinicFrame) -> units.Energy:
+            return energy(fr, fr.to_real(s))
+
+        partial = units.grad(energy)(frame, positions)
+        g = units.grad(energy, 1)(frame, positions)
         total = total_lattice_gradient(
             positions, g, _periodic(frame), _periodic(partial), system
         )
-
-        s = frame.to_fractional(positions)  # fixed fractional coordinates
-        total_ref = jax.grad(lambda fr: energy(fr, fr.to_real(s)))(frame)
-        npt.assert_allclose(total.data.frame.vectors, total_ref.vectors, atol=1e-10)
+        total_ref = units.grad(strained)(frame)
+        assert_close(total.data.frame.vectors, total_ref.vectors, atol=1e-10)
 
     def test_non_periodic_axes_drop_the_coupling(self):
         """A non-periodic basis vector carries no atoms: an open cell drops the
         coupling entirely (total == partial), a periodic one does not."""
         rng = np.random.default_rng(4)
-        frame = TriclinicFrame.from_matrix(_H_TRICLINIC)
+        frame = TriclinicFrame.from_matrix(_H_TRICLINIC * A)
         partial_frame = TriclinicFrame.from_matrix(
-            jnp.tril(jnp.asarray(rng.standard_normal((1, 3, 3))))
+            jnp.tril(jnp.asarray(rng.standard_normal((1, 3, 3)))) * FORCE
         )
-        positions = jnp.asarray(rng.standard_normal((4, 3)))
-        g = jnp.asarray(rng.standard_normal((4, 3)))
+        positions = jnp.asarray(rng.standard_normal((4, 3))) * A
+        g = jnp.asarray(rng.standard_normal((4, 3))) * FORCE
         system = Index((SystemId(0),), jnp.zeros(4, dtype=int))
 
         vacuum = total_lattice_gradient(
@@ -348,14 +356,12 @@ class TestTotalLatticeGradient:
             Table((SystemId(0),), VacuumCell(partial_frame)),
             system,
         )
-        npt.assert_allclose(
-            vacuum.data.frame.vectors, partial_frame.vectors, atol=1e-12
-        )
+        assert_close(vacuum.data.frame.vectors, partial_frame.vectors, atol=1e-12)
 
         periodic = total_lattice_gradient(
             positions, g, _periodic(frame), _periodic(partial_frame), system
         )
-        assert not jnp.allclose(periodic.data.frame.vectors, partial_frame.vectors)
+        assert not allclose(periodic.data.frame.vectors, partial_frame.vectors)
 
 
 class TestMolecularStressViaVirialTheorem:
@@ -381,7 +387,7 @@ class TestMolecularStressViaVirialTheorem:
             _make_groups(jnp.zeros(2, dtype=int)),
             systems,
         )
-        npt.assert_allclose(molecular.data, atomic.data, atol=1e-12)
+        assert_close(molecular.data, atomic.data, atol=1e-12)
 
     def test_centroid_uses_the_image_nearest_each_particle(self):
         """A group straddling the boundary must not be centred in mid-box.
@@ -403,9 +409,9 @@ class TestMolecularStressViaVirialTheorem:
             _make_systems(jnp.eye(3)[None] * L),
         )
         expected = jnp.zeros((3, 3)).at[0, 0].set(-10.5 / L**3)
-        npt.assert_allclose(result.data[0], expected, atol=1e-12)
+        assert_close(result.data[0], expected, atol=1e-12)
         # The naive in-box centroid (5.5) would give a different answer.
-        assert not jnp.allclose(result.data[0, 0, 0], -5.5 / L**3)
+        assert not allclose(result.data[0, 0, 0], -5.5 / L**3)
 
     def test_reference_point_is_mass_weighted(self):
         """A heteronuclear pair is referenced to its COM, not its centroid.
@@ -430,5 +436,5 @@ class TestMolecularStressViaVirialTheorem:
             _make_systems(jnp.eye(3)[None] * L),
         )
         com_x, centroid_x = 4.5, 3.0
-        npt.assert_allclose(result.data[0, 0, 0], -com_x / L**3, atol=1e-12)
-        assert not jnp.allclose(result.data[0, 0, 0], -centroid_x / L**3)
+        assert_close(result.data[0, 0, 0], -com_x / L**3, atol=1e-12)
+        assert not allclose(result.data[0, 0, 0], -centroid_x / L**3)

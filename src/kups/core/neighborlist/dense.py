@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol, overload
 
-from jax import Array
-
+from kups.core import units
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table, subselect
 from kups.core.lens import Lens, lens
@@ -67,7 +66,7 @@ def _dense_subselect(
 class DenseSelector:
     """Selector for the per-system dense ``O(N²/K²)`` algorithm."""
 
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
     max_candidates: Capacity[int]
     max_image_candidates: Capacity[int]
 
@@ -123,14 +122,14 @@ class DenseNearestNeighborList:
     avg_candidates: Capacity[int]
     avg_edges: Capacity[int]
     avg_image_candidates: Capacity[int]
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
 
     @classmethod
     def new[S](
         cls,
         state: S,
         lens: Lens[S, IsDenseNeighborlistParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> DenseNearestNeighborList:
         params = lens.get(state)
         return DenseNearestNeighborList(
@@ -149,7 +148,7 @@ class DenseNearestNeighborList:
     def from_state(
         cls,
         state: IsNeighborListState[IsDenseNeighborlistParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> DenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 

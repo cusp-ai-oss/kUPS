@@ -11,10 +11,10 @@ import zipfile
 import jax
 import jax.numpy as jnp
 import numpy as np
-import numpy.testing as npt
 import pytest
 from jax import Array, export
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
@@ -29,13 +29,14 @@ from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.msgpack import serialize as msgpack_serialize
 from kups.potential.common.energy import PotentialFromEnergy
 from kups.potential.mliap.tojax import TojaxedMliap, make_tojaxed_potential
+from test.units import EV, A, as_length, assert_close
 
 # --- Data structures ---
 
 
 @dataclass
 class AtomData:
-    positions: Array
+    positions: units.Length
     atomic_numbers: Array
     system: Index[SystemId]
     inclusion: Index[InclusionId]
@@ -45,7 +46,7 @@ class AtomData:
 @dataclass
 class SystemData:
     cell: Cell
-    cutoff: Array
+    cutoff: units.Length
 
 
 @dataclass
@@ -109,7 +110,7 @@ def mock_exported():
 def jaxified_model(mock_exported):
     exported, params = mock_exported
     return TojaxedMliap(
-        cutoff=Table((SystemId(0),), jnp.array([5.0])),
+        cutoff=Table((SystemId(0),), jnp.array([5.0]) * A),
         params=params,
         model=exported,
     )
@@ -126,12 +127,12 @@ def simple_system(jaxified_model):
     system_ids = Index.new([SystemId(0)] * n_atoms)
     inclusion_ids = Index.new([InclusionId(0)] * n_atoms)
     exclusion_ids = Index.new([ExclusionId(i) for i in range(n_atoms)])
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+    cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A))
 
     return State(
         atoms=Table.arange(
             AtomData(
-                positions=positions,
+                positions=as_length(positions),
                 atomic_numbers=atomic_numbers,
                 system=system_ids,
                 inclusion=inclusion_ids,
@@ -140,17 +141,17 @@ def simple_system(jaxified_model):
             label=ParticleId,
         ),
         systems=Table.arange(
-            SystemData(cell=cell, cutoff=jnp.array([5.0])),
+            SystemData(cell=cell, cutoff=jnp.array([5.0]) * A),
             label=SystemId,
         ),
         jaxified_model=jaxified_model,
         out=KahanSummand.init(
-            PotentialOut(Table.arange(jnp.zeros((1,)), label=SystemId), (), ())
+            PotentialOut(Table.arange(jnp.zeros((1,)) * EV, label=SystemId), (), ())
         ),
         neighborlist=AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(n_atoms),
             avg_image_candidates=FixedCapacity(n_atoms),
-            cutoffs=Table((SystemId(0),), jnp.array([5.0])),
+            cutoffs=Table((SystemId(0),), jnp.array([5.0]) * A),
         ),
     )
 
@@ -188,7 +189,7 @@ class TestTojaxedMliapFromZipFile:
 
         model = TojaxedMliap.from_zip_file(zip_path)
 
-        assert jnp.allclose(model.cutoff.data, jnp.array([cutoff]))
+        assert_close(model.cutoff.data, jnp.array([cutoff]) * A)
         assert model.params is not None
         assert model.model is not None
 
@@ -208,7 +209,7 @@ class TestJaxifiedEnergy:
         result.raise_assertion()
 
         assert result.value.data.total_energies.data.shape == (1,)
-        npt.assert_allclose(result.value.data.total_energies.data, jnp.array([36.0]))
+        assert_close(result.value.data.total_energies.data, jnp.array([36.0]) * EV)
 
 
 class TestMakeJaxifiedPotential:

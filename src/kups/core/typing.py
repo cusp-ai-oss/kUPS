@@ -13,6 +13,7 @@ from typing import Any, Generic, Protocol, TypeVar, Union, runtime_checkable
 import numpy as np
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.utils.kahan import KahanSummand
@@ -138,7 +139,7 @@ class HasPositions(Protocol):
     """
 
     @property
-    def positions(self) -> Array: ...
+    def positions(self) -> units.Length: ...
 
 
 @runtime_checkable
@@ -162,7 +163,7 @@ class HasMomenta(Protocol):
     """
 
     @property
-    def momenta(self) -> Array: ...
+    def momenta(self) -> units.Momentum: ...
 
 
 @runtime_checkable
@@ -174,7 +175,7 @@ class HasVelocities(Protocol):
     """
 
     @property
-    def velocities(self) -> Array: ...
+    def velocities(self) -> units.Velocity: ...
 
 
 @runtime_checkable
@@ -186,7 +187,7 @@ class HasForces(Protocol):
     """
 
     @property
-    def forces(self) -> Array: ...
+    def forces(self) -> units.Force: ...
 
 
 @runtime_checkable
@@ -198,7 +199,7 @@ class HasWeights(Protocol):
     """
 
     @property
-    def weights(self) -> Array: ...
+    def weights(self) -> units.Mass: ...
 
 
 @runtime_checkable
@@ -222,7 +223,7 @@ class HasCharges(Protocol):
     """
 
     @property
-    def charges(self) -> Array: ...
+    def charges(self) -> units.Charge: ...
 
 
 @runtime_checkable
@@ -234,7 +235,7 @@ class HasMasses(Protocol):
     """
 
     @property
-    def masses(self) -> Array: ...
+    def masses(self) -> units.Mass: ...
 
 
 @runtime_checkable
@@ -254,11 +255,11 @@ class HasTemperature(Protocol):
     """Protocol for entities with temperature parameters.
 
     Attributes:
-        temperature: Temperature array [K], shape `(n_systems,)`.
+        temperature: Temperature array, shape `(n_systems,)`.
     """
 
     @property
-    def temperature(self) -> Array: ...
+    def temperature(self) -> units.Temperature: ...
 
 
 @runtime_checkable
@@ -266,12 +267,12 @@ class HasLogActivity(Protocol):
     """Protocol for entities with chemical activity parameters.
 
     Attributes:
-        log_activity: Natural log of the chemical activity ``fugacity / kT`` per
-            species, with the activity in Å⁻³, shape `(n_systems, n_species)`.
+        log_activity: Chemical activity per species, in the log domain; a number
+            density, shape `(n_systems, n_species)`.
     """
 
     @property
-    def log_activity(self) -> Array: ...
+    def log_activity(self) -> units.Log[units.NumberDensityUnit]: ...
 
 
 @runtime_checkable
@@ -295,11 +296,11 @@ class HasTimeStep(Protocol):
     r"""Protocol for systems with integration time step.
 
     Attributes:
-        time_step: Time step $\Delta t$ (units: time).
+        time_step: Time step $\Delta t$.
     """
 
     @property
-    def time_step(self) -> Array: ...
+    def time_step(self) -> units.Time: ...
 
 
 @runtime_checkable
@@ -307,11 +308,11 @@ class HasThermalEnergy(Protocol):
     r"""Protocol for systems with target thermal energy.
 
     Attributes:
-        thermal_energy: Thermal energy $k_B T$ (units: energy).
+        thermal_energy: Thermal energy $k_B T$.
     """
 
     @property
-    def thermal_energy(self) -> Array: ...
+    def thermal_energy(self) -> units.Energy: ...
 
 
 @runtime_checkable
@@ -319,11 +320,11 @@ class HasFrictionCoefficient(Protocol):
     r"""Protocol for systems with Langevin friction coefficient.
 
     Attributes:
-        friction_coefficient: Friction coefficient $\gamma$ (units: 1/time).
+        friction_coefficient: Friction coefficient $\gamma$.
     """
 
     @property
-    def friction_coefficient(self) -> Array: ...
+    def friction_coefficient(self) -> units.Frequency: ...
 
 
 @runtime_checkable
@@ -331,11 +332,11 @@ class HasThermostatTimeConstant(Protocol):
     r"""Protocol for systems with thermostat coupling time constant.
 
     Attributes:
-        thermostat_time_constant: Thermostat time constant $\tau$ (units: time).
+        thermostat_time_constant: Thermostat time constant $\tau$.
     """
 
     @property
-    def thermostat_time_constant(self) -> Array: ...
+    def thermostat_time_constant(self) -> units.Time: ...
 
 
 @runtime_checkable
@@ -343,11 +344,11 @@ class HasStressTensor(Protocol):
     r"""Protocol for systems with computed virial stress tensor.
 
     Attributes:
-        stress_tensor: Virial stress tensor $\mathbf{W}$ (units: energy/length³).
+        stress_tensor: Virial stress tensor $\mathbf{W}$.
     """
 
     @property
-    def stress_tensor(self) -> Array: ...
+    def stress_tensor(self) -> units.Pressure: ...
 
 
 @runtime_checkable
@@ -355,11 +356,11 @@ class HasTargetPressure(Protocol):
     r"""Protocol for systems with target pressure for barostat.
 
     Attributes:
-        target_pressure: Target pressure $P_0$ (units: energy/length³).
+        target_pressure: Target pressure $P_0$.
     """
 
     @property
-    def target_pressure(self) -> Array: ...
+    def target_pressure(self) -> units.Pressure: ...
 
 
 @runtime_checkable
@@ -367,11 +368,11 @@ class HasPressureCouplingTime(Protocol):
     r"""Protocol for systems with barostat coupling time constant.
 
     Attributes:
-        pressure_coupling_time: Barostat time constant $\tau_P$ (units: time).
+        pressure_coupling_time: Barostat time constant $\tau_P$.
     """
 
     @property
-    def pressure_coupling_time(self) -> Array: ...
+    def pressure_coupling_time(self) -> units.Time: ...
 
 
 @runtime_checkable
@@ -379,11 +380,11 @@ class HasCompressibility(Protocol):
     r"""Protocol for systems with isothermal compressibility.
 
     Attributes:
-        compressibility: Isothermal compressibility $\beta$ (units: length³/energy).
+        compressibility: Isothermal compressibility $\beta$.
     """
 
     @property
-    def compressibility(self) -> Array: ...
+    def compressibility(self) -> units.Compressibility: ...
 
 
 @runtime_checkable
@@ -409,12 +410,12 @@ class HasCellMomentum(Protocol):
     Gao–Fang–Wang BAOAB NPT Langevin.
 
     Attributes:
-        cell_momentum: Cell momentum $p^h$ (units: mass·length/time),
+        cell_momentum: Cell momentum $p^h$,
             shape ``(..., 3, 3)``, lower-triangular.
     """
 
     @property
-    def cell_momentum(self) -> Array: ...
+    def cell_momentum(self) -> units.Momentum: ...
 
 
 @runtime_checkable
@@ -428,12 +429,12 @@ class HasBarostatMass(Protocol):
     match [`cell_momentum`][kups.core.typing.HasCellMomentum].
 
     Attributes:
-        barostat_mass: Cell mass tensor $M$ (units: mass·length²),
+        barostat_mass: Cell mass tensor $M$,
             shape ``(..., 3, 3)``, lower-triangular.
     """
 
     @property
-    def barostat_mass(self) -> Array: ...
+    def barostat_mass(self) -> units.Mass: ...
 
 
 @runtime_checkable
@@ -445,12 +446,12 @@ class HasBarostatFriction(Protocol):
     Lower-triangular.
 
     Attributes:
-        barostat_friction: Cell friction tensor $\gamma$ (units: 1/time),
+        barostat_friction: Cell friction tensor $\gamma$,
             shape ``(..., 3, 3)``, lower-triangular.
     """
 
     @property
-    def barostat_friction(self) -> Array: ...
+    def barostat_friction(self) -> units.Frequency: ...
 
 
 @runtime_checkable
@@ -473,11 +474,11 @@ class HasPotentialEnergy(Protocol):
     r"""Protocol for systems with a potential energy.
 
     Attributes:
-        potential_energy: Potential energy in eV.
+        potential_energy: Potential energy.
     """
 
     @property
-    def potential_energy(self) -> Array: ...
+    def potential_energy(self) -> units.Energy: ...
 
 
 @runtime_checkable
@@ -485,12 +486,12 @@ class HasCompensatedPotentialEnergy(Protocol):
     r"""Protocol for systems whose potential energy is accumulated incrementally.
 
     Attributes:
-        potential_energy: Potential energy in eV as a compensated accumulator, so
+        potential_energy: Potential energy as a compensated accumulator, so
             that small increments survive being added to a large total.
     """
 
     @property
-    def potential_energy(self) -> KahanSummand[Array]: ...
+    def potential_energy(self) -> KahanSummand[units.Energy]: ...
 
 
 @runtime_checkable
@@ -540,11 +541,11 @@ class HasCutoff(Protocol):
     """Protocol for entities with a distance cutoff.
 
     Attributes:
-        cutoff: Cutoff distance (units: length).
+        cutoff: Cutoff distance.
     """
 
     @property
-    def cutoff(self) -> Array: ...
+    def cutoff(self) -> units.Length: ...
 
 
 @runtime_checkable

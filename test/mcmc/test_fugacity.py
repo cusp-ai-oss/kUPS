@@ -7,14 +7,26 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from kups.core.constants import BAR, KELVIN, PASCAL
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
+
+# The reference implementation below is numpy on plain numbers, so the tests hold
+# their magnitudes in pascal and read the log fugacities back against it.
+PA = u.Pa
+K = u.K
+BAR = float((1.0 * u.bar).to(PA))
+
+
+def ln_pa(log_fugacity: units.Log[units.PressureUnit]) -> jax.Array:
+    """Log fugacities read against pascal."""
+    return log_fugacity.log + jnp.log((1.0 * log_fugacity.ref).to(PA))
 
 
 class TestPengRobinsonFugacity:
     def setup_method(self):
         # CO2-like reference parameters used across tests
-        self.Pc = 7.84e6 * PASCAL
+        self.Pc = 7.84e6
         self.Tc = 303.75
         self.omega = 0.22394
 
@@ -61,15 +73,17 @@ class TestPengRobinsonFugacity:
         p = 1e-2 * BAR  # 0.01 bar
 
         res = peng_robinson_log_fugacity(
-            pressure=jnp.array(p),
-            temperature=jnp.array(300.0),
-            critical_pressure=jnp.array([self.Pc]),
-            critical_temperature=jnp.array([self.Tc]),
+            pressure=jnp.array(p) * PA,
+            temperature=jnp.array(300.0) * K,
+            critical_pressure=jnp.array([self.Pc]) * PA,
+            critical_temperature=jnp.array([self.Tc]) * K,
             acentric_factor=jnp.array([self.omega]),
         )
 
         npt.assert_allclose(res.compressibility, jnp.array(1.0), rtol=0, atol=1e-4)
-        npt.assert_allclose(res.log_fugacity, jnp.log(jnp.array(p)), rtol=0, atol=1e-4)
+        npt.assert_allclose(
+            ln_pa(res.log_fugacity), jnp.log(jnp.array(p)), rtol=0, atol=1e-4
+        )
 
     def test_against_numpy_roots_at_moderate_pressure(self):
         """Cross-check Z and ln f against independent numpy.roots solution."""
@@ -77,10 +91,10 @@ class TestPengRobinsonFugacity:
         p = 50.0 * BAR
 
         out = peng_robinson_log_fugacity(
-            pressure=jnp.array(p),
-            temperature=jnp.array(T),
-            critical_pressure=jnp.array([self.Pc]),
-            critical_temperature=jnp.array([self.Tc]),
+            pressure=jnp.array(p) * PA,
+            temperature=jnp.array(T) * K,
+            critical_pressure=jnp.array([self.Pc]) * PA,
+            critical_temperature=jnp.array([self.Tc]) * K,
             acentric_factor=jnp.array([self.omega]),
         )
 
@@ -95,14 +109,14 @@ class TestPengRobinsonFugacity:
 
         npt.assert_allclose(out.compressibility, jnp.array(Z), rtol=1e-10, atol=1e-10)
         npt.assert_allclose(
-            out.log_fugacity, jnp.array(ln_f_np), rtol=1e-10, atol=1e-10
+            ln_pa(out.log_fugacity), jnp.array(ln_f_np), rtol=1e-10, atol=1e-10
         )
 
 
 class TestPengRobinsonFugacityMixtures:
     def setup_method(self):
         # Use CO2-like parameters for both components to simplify checks
-        self.Pc = 7.84e6 * PASCAL
+        self.Pc = 7.84e6
         self.Tc = 303.75
         self.omega = 0.22394
 
@@ -119,10 +133,10 @@ class TestPengRobinsonFugacityMixtures:
         kij = jnp.zeros((2, 2))
 
         res = peng_robinson_log_fugacity(
-            pressure=jnp.array(p),
-            temperature=jnp.array(T),
-            critical_pressure=Pc,
-            critical_temperature=Tc,
+            pressure=jnp.array(p) * PA,
+            temperature=jnp.array(T) * K,
+            critical_pressure=Pc * PA,
+            critical_temperature=Tc * K,
             acentric_factor=omega,
             composition=y,
             interaction=kij,
@@ -132,7 +146,7 @@ class TestPengRobinsonFugacityMixtures:
         npt.assert_allclose(res.compressibility, jnp.ones(2), rtol=0, atol=1e-4)
         # ln f_i should approach ln(y_i p)
         expected = jnp.log(y * p)
-        npt.assert_allclose(res.log_fugacity, expected, rtol=0, atol=2e-4)
+        npt.assert_allclose(ln_pa(res.log_fugacity), expected, rtol=0, atol=2e-4)
 
     def test_binary_reduces_to_pure_when_first_component_dominates(self):
         """When y -> [1, 0], component-1 fugacity reduces to pure-component value."""
@@ -148,10 +162,10 @@ class TestPengRobinsonFugacityMixtures:
         y_mix = jnp.array([1.0, 0.0])
 
         mix = peng_robinson_log_fugacity(
-            pressure=jnp.array(p),
-            temperature=jnp.array(T),
-            critical_pressure=Pc,
-            critical_temperature=Tc,
+            pressure=jnp.array(p) * PA,
+            temperature=jnp.array(T) * K,
+            critical_pressure=Pc * PA,
+            critical_temperature=Tc * K,
             acentric_factor=omega,
             composition=y_mix,
             interaction=kij,
@@ -159,16 +173,19 @@ class TestPengRobinsonFugacityMixtures:
 
         # Pure component calculation with a single species
         pure = peng_robinson_log_fugacity(
-            pressure=jnp.array(p),
-            temperature=jnp.array(T),
-            critical_pressure=jnp.array([self.Pc]),
-            critical_temperature=jnp.array([self.Tc]),
+            pressure=jnp.array(p) * PA,
+            temperature=jnp.array(T) * K,
+            critical_pressure=jnp.array([self.Pc]) * PA,
+            critical_temperature=jnp.array([self.Tc]) * K,
             acentric_factor=jnp.array([self.omega]),
         )
 
         # Component 1 should match the pure-component results
         npt.assert_allclose(
-            mix.log_fugacity[0], pure.log_fugacity[0], rtol=1e-10, atol=1e-10
+            ln_pa(mix.log_fugacity)[0],
+            ln_pa(pure.log_fugacity)[0],
+            rtol=1e-10,
+            atol=1e-10,
         )
         npt.assert_allclose(
             mix.compressibility[0], pure.compressibility[0], rtol=1e-10, atol=1e-10
@@ -176,11 +193,11 @@ class TestPengRobinsonFugacityMixtures:
 
     def test_batched_states_match_single_calls(self):
         """Batched pressure and temperature give the per-state results."""
-        p = jnp.array([1.0, 50.0]) * BAR
-        T = jnp.array([280.0, 320.0])
+        p = jnp.array([1.0, 50.0]) * BAR * PA
+        T = jnp.array([280.0, 320.0]) * K
         kw = dict(
-            critical_pressure=jnp.array([self.Pc, self.Pc]),
-            critical_temperature=jnp.array([self.Tc, self.Tc]),
+            critical_pressure=jnp.array([self.Pc, self.Pc]) * PA,
+            critical_temperature=jnp.array([self.Tc, self.Tc]) * K,
             acentric_factor=jnp.array([self.omega, self.omega]),
             composition=jnp.array([0.25, 0.75]),
             interaction=jnp.zeros((2, 2)),
@@ -189,7 +206,7 @@ class TestPengRobinsonFugacityMixtures:
         for i in range(2):
             single = peng_robinson_log_fugacity(p[i], T[i], **kw)
             npt.assert_allclose(
-                batched.log_fugacity[i], single.log_fugacity, rtol=1e-12
+                ln_pa(batched.log_fugacity)[i], ln_pa(single.log_fugacity), rtol=1e-12
             )
             npt.assert_allclose(
                 batched.compressibility[i], single.compressibility, rtol=1e-12
@@ -210,13 +227,13 @@ class TestPengRobinsonAutodiff:
     @staticmethod
     def _pure_log_f(P_pa: float, T_k: float) -> jax.Array:
         result = peng_robinson_log_fugacity(
-            jnp.asarray(P_pa * PASCAL),
-            jnp.asarray(T_k * KELVIN),
-            jnp.atleast_1d(jnp.asarray(7.38e6 * PASCAL)),
-            jnp.atleast_1d(jnp.asarray(304.2 * KELVIN)),
+            jnp.asarray(P_pa) * PA,
+            jnp.asarray(T_k) * K,
+            jnp.atleast_1d(jnp.asarray(7.38e6)) * PA,
+            jnp.atleast_1d(jnp.asarray(304.2)) * K,
             jnp.atleast_1d(jnp.asarray(0.228)),
         )
-        return result.log_fugacity[0]
+        return ln_pa(result.log_fugacity)[0]
 
     @pytest.mark.parametrize(
         "P_pa,T_k",

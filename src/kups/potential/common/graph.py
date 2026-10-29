@@ -34,12 +34,12 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
 from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist import Edges, NeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
-from kups.core.potential import Energy
 from kups.core.typing import (
     HasCell,
     HasPositionsAndSystemIndex,
@@ -97,7 +97,7 @@ class HyperGraph(PointCloud[Part, Sys], Generic[Part, Sys, Degree]):
         return self.edges.shifts
 
     @property
-    def edge_shifts(self) -> Array:
+    def edge_shifts(self) -> units.Length:
         return self.edges.difference_vectors(self.particles, self.systems)
 
     @property
@@ -249,7 +249,7 @@ def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
     graph: HyperGraph[Part, HasCell[AnyPeriodicity], Literal[2]],
     inclusion: Array,
     exclusion: Array,
-) -> Array:
+) -> units.Energy:
     """Evaluate pair terms on compacted edges with their remaining group masks."""
     particles = graph.particles[graph.edges.indices]
     system = particles.system[:, 0]
@@ -257,7 +257,7 @@ def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
         graph.edges.indices.indices_in(graph.particles.keys) < graph.particles.size
     ).all(-1)
     valid &= system.valid_mask & jnp.equal(*Index.match(system, particles.system[:, 1]))
-    rij = jnp.where(valid[:, None], graph.edge_shifts[:, 0], 0.0)
+    rij = units.where(valid[:, None], graph.edge_shifts[:, 0], 0.0)
     # Combining periodic geometry with pair algebra can crash the CUDA MLIR
     # fusion compiler in CSE. Preserve this boundary without changing autodiff.
     rij, r2 = jax.lax.optimization_barrier((rij, (rij**2).sum(-1)))
@@ -292,7 +292,7 @@ class GraphPairEnergy[
     def edge_energies(
         self,
         inp: GraphPotentialInput[Params, Part, HasCell[AnyPeriodicity], Literal[2]],
-    ) -> Array:
+    ) -> units.Energy:
         """Evaluate the pair term on each directed edge, ignoring padded edges."""
         keep = jnp.ones(len(inp.graph.edges), dtype=bool)
         return graph_pair_energies(self.pair, inp.parameters, inp.graph, keep, keep)
@@ -300,7 +300,7 @@ class GraphPairEnergy[
     def __call__[State](
         self,
         inp: GraphPotentialInput[Params, Part, HasCell[AnyPeriodicity], Literal[2]],
-    ) -> WithPatch[Table[SystemId, Energy], IdPatch[State]]:
+    ) -> WithPatch[Table[SystemId, units.Energy], IdPatch[State]]:
         system = inp.graph.edge_batch_mask.update_labels(inp.graph.systems.keys).to_cls(
             inp.graph.systems.cls
         )

@@ -8,10 +8,13 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.cell import MatrixLogFrame, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.neighborlist.edges import Edges
 from kups.core.typing import ParticleId
+from kups.core.units import catalog as u
+from kups.core.units import testing
 from kups.core.utils.math import (
     GeneralSquareMatrix,
     LowerTriangularSquareMatrix,
@@ -19,6 +22,8 @@ from kups.core.utils.math import (
 )
 
 from ._builders import make_lh, make_systems
+
+_A = u.angstrom
 
 
 class TestEdgesConstruction:
@@ -82,10 +87,10 @@ class TestEdgeGeometry:
     """``difference_vectors`` / ``absolute_shifts`` against a known cell."""
 
     def _setup(self, shift):
-        positions = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        positions = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]) * _A
         lh = make_lh(positions, jnp.zeros(2, dtype=int))
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, _ = make_systems(cell, jnp.array([1.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
         edges = Edges(
             Index((ParticleId(0), ParticleId(1)), jnp.array([[0, 1]])),
             jnp.array([[shift]], dtype=float),
@@ -95,18 +100,18 @@ class TestEdgeGeometry:
     def test_difference_vectors_no_shift(self):
         edges, lh, systems = self._setup([0.0, 0.0, 0.0])
         diff = edges.difference_vectors(lh, systems)
-        npt.assert_allclose(diff, jnp.array([[[2.0, 0.0, 0.0]]]))
+        npt.assert_allclose(diff.to(_A), jnp.array([[[2.0, 0.0, 0.0]]]))
 
     def test_difference_vectors_with_periodic_shift(self):
         # shift (1,0,0) adds one lattice vector (10 Å) to the difference.
         edges, lh, systems = self._setup([1.0, 0.0, 0.0])
         diff = edges.difference_vectors(lh, systems)
-        npt.assert_allclose(diff, jnp.array([[[12.0, 0.0, 0.0]]]))
+        npt.assert_allclose(diff.to(_A), jnp.array([[[12.0, 0.0, 0.0]]]))
 
     def test_absolute_shifts_apply_lattice(self):
         edges, lh, systems = self._setup([1.0, 0.0, 0.0])
         abs_shifts = edges.absolute_shifts(lh, systems)
-        npt.assert_allclose(abs_shifts, jnp.array([[[10.0, 0.0, 0.0]]]))
+        npt.assert_allclose(abs_shifts.to(_A), jnp.array([[[10.0, 0.0, 0.0]]]))
 
 
 class TestAbsoluteShiftsStructure:
@@ -121,33 +126,33 @@ class TestAbsoluteShiftsStructure:
         )
 
     def _lh(self):
-        positions = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+        positions = jnp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]) * _A
         return make_lh(positions, jnp.zeros(2, dtype=int))
 
     def test_lower_triangular_matches_old_triangular_matmul(self):
         """Lower-triangular fast path is behaviour-preserving."""
         lattice = jnp.array([[10.0, 0.0, 0.0], [1.0, 11.0, 0.0], [2.0, 3.0, 12.0]])
-        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice[None]))
-        systems, _ = make_systems(cell, jnp.array([1.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice[None] * _A))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
         assert isinstance(cell.frame.matrix, LowerTriangularSquareMatrix)
         shift = jnp.array([[1.0, -2.0, 1.0], [0.0, 1.0, 0.0]])
         edges = self._edges(shift)
         new = edges.absolute_shifts(self._lh(), systems)
         vecs = cell.frame.vectors[0]
         old = triangular_3x3_matmul(vecs[None, None], edges.shifts)
-        npt.assert_allclose(new, old, atol=1e-6)
+        testing.assert_allclose(new, old, _A, atol=1e-6)
 
     def test_general_rotated_cell_matches_dense_reference(self):
         """General (rotated, non-lower-tri) cell uses the full 3x3 product."""
         # A general 3x3 lattice with a non-zero upper triangle.
         lattice = jnp.array([[10.0, 1.5, 0.7], [0.4, 11.0, 2.1], [1.2, 0.9, 12.0]])
-        cell = PeriodicCell(MatrixLogFrame.from_matrix(lattice[None]))
-        systems, _ = make_systems(cell, jnp.array([1.0]))
+        cell = PeriodicCell(MatrixLogFrame.from_matrix(lattice[None] * _A))
+        systems, _ = make_systems(cell, jnp.array([1.0]) * _A)
         assert type(cell.frame.matrix) is GeneralSquareMatrix
         shift = jnp.array([[1.0, -2.0, 1.0], [0.0, 1.0, 0.0]])
         edges = self._edges(shift)
         new = edges.absolute_shifts(self._lh(), systems)
         vecs = cell.frame.vectors[0]
         # Dense RIGHT-side reference: shifts @ vecs per edge/Degree slot.
-        ref = jnp.einsum("ji,nkj->nki", vecs, edges.shifts)
-        npt.assert_allclose(new, ref, atol=1e-5)
+        ref = units.einsum("ji,nkj->nki", vecs, edges.shifts)
+        testing.assert_allclose(new, ref, _A, atol=1e-5)

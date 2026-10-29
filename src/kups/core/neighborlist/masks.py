@@ -18,6 +18,7 @@ from typing import Literal
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import MaterializedFrame
 from kups.core.data import Index, Table
 from kups.core.neighborlist.common import real_distance_sq
@@ -105,7 +106,7 @@ class TouchesQueriedKeysMask[D: int]:
 class DistanceCutoffMask:
     """Drops candidates whose squared real-space distance exceeds ``cutoff²``."""
 
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
 
     def __call__(
         self, batch: CandidateBatch[Literal[2]], ctx: PipelineContext

@@ -13,12 +13,14 @@ import pytest
 from jax import Array
 
 from kups.application.md.analysis import analyze_md, analyze_md_file
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.lens import view
 from kups.core.storage import EveryNStep, HDF5StorageWriter, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass as jax_dataclass
+from test.units import EV, PRESSURE, A, as_unit, assert_close
 
 
 @dataclass
@@ -43,11 +45,11 @@ class MockInitData:
 class MockStepData:
     """Mock satisfying IsMDStepData (per-step thermodynamic scalars)."""
 
-    potential_energy: Array
-    kinetic_energy: Array
-    stress_tensor: Array
-    volume: Array
-    internal_kinetic_energy: Array
+    potential_energy: units.Energy
+    kinetic_energy: units.Energy
+    stress_tensor: units.Pressure
+    volume: units.Volume
+    internal_kinetic_energy: units.Energy
 
 
 jax.tree_util.register_dataclass(MockInitData)
@@ -90,11 +92,11 @@ def _make_step(
 ) -> MockStepData:
     """Create mock step data; internal KE defaults to the logged KE."""
     return MockStepData(
-        potential_energy=pe,
-        kinetic_energy=ke,
-        stress_tensor=stress,
-        volume=jnp.ones(pe.shape) if volume is None else volume,
-        internal_kinetic_energy=ke if internal_ke is None else internal_ke,
+        potential_energy=as_unit(pe, EV),
+        kinetic_energy=as_unit(ke, EV),
+        stress_tensor=as_unit(stress, PRESSURE),
+        volume=units.ones(pe.shape, A**3) if volume is None else as_unit(volume, A**3),
+        internal_kinetic_energy=as_unit(ke if internal_ke is None else internal_ke, EV),
     )
 
 
@@ -111,12 +113,12 @@ class TestAnalyzeMD:
         results = analyze_md(_make_init(), _make_step(pe, ke, stress), n_blocks=10)
         r = results[SystemId(0)]
 
-        assert r.potential_energy.mean == pytest.approx(1.0)
-        assert r.kinetic_energy.mean == pytest.approx(0.5)
-        assert r.total_energy.mean == pytest.approx(1.5)
-        assert r.potential_energy.sem == pytest.approx(0.0, abs=1e-12)
-        assert r.total_energy.sem == pytest.approx(0.0, abs=1e-12)
-        assert r.energy_drift == pytest.approx(0.0, abs=1e-12)
+        assert r.potential_energy.mean.to(EV) == pytest.approx(1.0)
+        assert r.kinetic_energy.mean.to(EV) == pytest.approx(0.5)
+        assert r.total_energy.mean.to(EV) == pytest.approx(1.5)
+        assert r.potential_energy.sem.to(EV) == pytest.approx(0.0, abs=1e-12)
+        assert r.total_energy.sem.to(EV) == pytest.approx(0.0, abs=1e-12)
+        assert r.energy_drift.to(EV) == pytest.approx(0.0, abs=1e-12)
 
     def test_temperature(self):
         """Temperature follows T = 2*internal_KE / (k_B * DOF)."""
@@ -124,7 +126,7 @@ class TestAnalyzeMD:
         n_steps = 100
         ke_val = 0.3
         dof = 3 * n_atoms - 3
-        expected_temp = 2 * ke_val / (BOLTZMANN_CONSTANT * dof)
+        expected_temp = float((2 * ke_val * EV / (units.constants.k_B * dof)).to(u.K))
 
         pe = jnp.zeros((n_steps, 1))
         ke = jnp.full((n_steps, 1), ke_val)
@@ -135,7 +137,7 @@ class TestAnalyzeMD:
         )
         r = results[SystemId(0)]
 
-        assert r.temperature.mean == pytest.approx(expected_temp, rel=1e-6)
+        assert r.temperature.mean.to(u.K) == pytest.approx(expected_temp, rel=1e-6)
         assert r.n_atoms == n_atoms
 
     def test_temperature_uses_internal_kinetic_energy(self):
@@ -154,9 +156,9 @@ class TestAnalyzeMD:
         )
         r = results[SystemId(0)]
 
-        assert r.kinetic_energy.mean == pytest.approx(5.0)
-        assert r.temperature.mean == pytest.approx(
-            2 * 0.3 / (BOLTZMANN_CONSTANT * dof), rel=1e-6
+        assert r.kinetic_energy.mean.to(EV) == pytest.approx(5.0)
+        assert r.temperature.mean.to(u.K) == pytest.approx(
+            float((2 * 0.3 * EV / (units.constants.k_B * dof)).to(u.K)), rel=1e-6
         )
 
     def test_pressure(self):
@@ -171,8 +173,8 @@ class TestAnalyzeMD:
         results = analyze_md(_make_init(), _make_step(pe, ke, stress), n_blocks=10)
         r = results[SystemId(0)]
 
-        assert r.pressure.mean == pytest.approx(p_val, rel=1e-6)
-        assert r.pressure.sem == pytest.approx(0.0, abs=1e-12)
+        assert r.pressure.mean.to(PRESSURE) == pytest.approx(p_val, rel=1e-6)
+        assert r.pressure.sem.to(PRESSURE) == pytest.approx(0.0, abs=1e-12)
 
     def test_energy_drift(self):
         """Linearly increasing PE gives matching drift slope."""
@@ -185,8 +187,8 @@ class TestAnalyzeMD:
         results = analyze_md(_make_init(), _make_step(pe, ke, stress), n_blocks=10)
         r = results[SystemId(0)]
 
-        assert r.energy_drift == pytest.approx(slope, rel=1e-6)
-        assert r.energy_drift_per_atom == pytest.approx(slope / 10, rel=1e-6)
+        assert r.energy_drift.to(EV) == pytest.approx(slope, rel=1e-6)
+        assert r.energy_drift_per_atom.to(EV) == pytest.approx(slope / 10, rel=1e-6)
         assert r.n_steps == n_steps
 
     def test_multi_system(self):
@@ -204,10 +206,10 @@ class TestAnalyzeMD:
 
         r0 = results[SystemId(0)]
         r1 = results[SystemId(1)]
-        assert r0.potential_energy.mean == pytest.approx(1.0)
-        assert r1.potential_energy.mean == pytest.approx(2.0)
-        assert r0.kinetic_energy.mean == pytest.approx(0.5)
-        assert r1.kinetic_energy.mean == pytest.approx(1.0)
+        assert r0.potential_energy.mean.to(EV) == pytest.approx(1.0)
+        assert r1.potential_energy.mean.to(EV) == pytest.approx(2.0)
+        assert r0.kinetic_energy.mean.to(EV) == pytest.approx(0.5)
+        assert r1.kinetic_energy.mean.to(EV) == pytest.approx(1.0)
         assert r0.n_atoms == 5
         assert r1.n_atoms == 5
 
@@ -220,11 +222,11 @@ def _trajectory(
     base = jnp.arange(n_systems, dtype=jnp.float64)
     steps = [
         MockStepData(
-            potential_energy=base + 0.1 * t,
-            kinetic_energy=0.5 * base + 0.01 * t + 1.0,
-            stress_tensor=jnp.eye(3) * (0.2 * t + base[:, None, None]),
-            volume=base + 100.0 + t,
-            internal_kinetic_energy=0.4 * base + 0.01 * t + 0.9,
+            potential_energy=(base + 0.1 * t) * EV,
+            kinetic_energy=(0.5 * base + 0.01 * t + 1.0) * EV,
+            stress_tensor=jnp.eye(3) * (0.2 * t + base[:, None, None]) * PRESSURE,
+            volume=(base + 100.0 + t) * A**3,
+            internal_kinetic_energy=(0.4 * base + 0.01 * t + 0.9) * EV,
         )
         for t in range(n_steps)
     ]
@@ -234,11 +236,11 @@ def _trajectory(
 def _stack_steps(steps: list[MockStepData]) -> MockStepData:
     """Stack per-step states into one trajectory object (leading time axis)."""
     return MockStepData(
-        potential_energy=jnp.stack([s.potential_energy for s in steps]),
-        kinetic_energy=jnp.stack([s.kinetic_energy for s in steps]),
-        stress_tensor=jnp.stack([s.stress_tensor for s in steps]),
-        volume=jnp.stack([s.volume for s in steps]),
-        internal_kinetic_energy=jnp.stack([s.internal_kinetic_energy for s in steps]),
+        potential_energy=units.stack([s.potential_energy for s in steps]),
+        kinetic_energy=units.stack([s.kinetic_energy for s in steps]),
+        stress_tensor=units.stack([s.stress_tensor for s in steps]),
+        volume=units.stack([s.volume for s in steps]),
+        internal_kinetic_energy=units.stack([s.internal_kinetic_energy for s in steps]),
     )
 
 
@@ -276,11 +278,7 @@ def test_analyze_md_file_matches_in_memory(tmp_path: Path):
     for sys_id in expected:
         e, r = expected[sys_id], result[sys_id]
         assert (r.n_atoms, r.n_steps) == (e.n_atoms, e.n_steps)
-        assert r.energy_drift == pytest.approx(e.energy_drift, rel=1e-6, abs=1e-9)
+        assert_close(r.energy_drift, e.energy_drift, rtol=1e-6, atol=1e-9)
         for f in fields:
-            assert getattr(r, f).mean == pytest.approx(
-                float(getattr(e, f).mean), rel=1e-6
-            )
-            assert getattr(r, f).sem == pytest.approx(
-                float(getattr(e, f).sem), rel=1e-6, abs=1e-9
-            )
+            assert_close(getattr(r, f).mean, getattr(e, f).mean, rtol=1e-6)
+            assert_close(getattr(r, f).sem, getattr(e, f).sem, rtol=1e-6, atol=1e-9)

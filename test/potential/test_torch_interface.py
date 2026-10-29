@@ -12,13 +12,13 @@ from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from jax import Array
 
 # Skip the whole module if torch isn't installed.
 torch = pytest.importorskip("torch", minversion="2.0.0")
 
+from kups.core import units  # noqa: E402
 from kups.core.cell import PeriodicCell, TriclinicFrame  # noqa: E402
 from kups.core.data import Index, Table  # noqa: E402
 from kups.core.neighborlist import Edges  # noqa: E402
@@ -31,6 +31,7 @@ from kups.core.typing import (  # noqa: E402
 from kups.core.utils.jax import dataclass  # noqa: E402
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph  # noqa: E402
 from kups.potential.mliap.torch.interface import torch_mliap_model_fn  # noqa: E402
+from test.units import FORCE, A, assert_close  # noqa: E402
 
 
 @pytest.fixture
@@ -46,7 +47,7 @@ def enable_x64():
 
 @dataclass
 class _Atoms:
-    positions: Array
+    positions: units.Length
     atomic_numbers: Array
     system: Index[SystemId]
     inclusion: Index[InclusionId]
@@ -82,18 +83,18 @@ def _interleaved_graph() -> tuple[HyperGraph[Any, Any, Literal[2]], Array]:
     (non-identity) permutation, so inverting it actually matters.
 
     Returns:
-        The graph and the original (pre-sort) atom positions.
+        The graph and the original (pre-sort) atom positions in Å.
     """
     sys_of_atom = [1, 0, 1, 0, 2, 1, 0, 2]
     n = len(sys_of_atom)
     n_sys = 3
     positions = jnp.arange(n * 3, dtype=float).reshape(n, 3)
     cell = PeriodicCell(
-        TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(n_sys, 0) * 20.0)
+        TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(n_sys, 0) * 20.0 * A)
     )
     atoms = Table.arange(
         _Atoms(
-            positions=positions,
+            positions=positions * A,
             atomic_numbers=jnp.zeros(n, dtype=int),
             system=Index.new([SystemId(s) for s in sys_of_atom]),
             inclusion=Index.new([InclusionId(0)] * n),
@@ -130,4 +131,4 @@ def test_unsort_recovers_original_atom_order():
         return torch_mliap_model_fn(inp).data.gradients
 
     pos_grad = run(graph).positions.data
-    np.testing.assert_array_equal(np.asarray(pos_grad), np.asarray(positions))
+    assert_close(pos_grad, positions * FORCE, rtol=0, atol=0)

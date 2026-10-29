@@ -3,15 +3,19 @@
 
 """Inputs for energy terms that depend only on rigid-body counts."""
 
+from typing import Any, overload
+
 import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View, const_lens
 from kups.core.patch import IdPatch, Patch, WithPatch
 from kups.core.potential import Potential, PotentialOut
 from kups.core.typing import MotifId, SystemId
+from kups.core.units._typed import _E_A, _E_K, _E_KG, _E_M, _E_S
 from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -42,8 +46,16 @@ class RigidBodyComposition[State, Template]:
         static=True
     )
 
+    @overload
+    def sum_particles(self, fixed_values: Array, template_values: Array) -> Array: ...
+    @overload
+    def sum_particles(
+        self,
+        fixed_values: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+        template_values: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    ) -> units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
     @jit
-    def sum_particles(self, fixed_values: Array, template_values: Array) -> Array:
+    def sum_particles(self, fixed_values: Any, template_values: Any) -> Any:
         """Sum particle properties into background and template coefficients.
 
         Args:
@@ -52,21 +64,23 @@ class RigidBodyComposition[State, Template]:
 
         Returns:
             Background sums followed by template sums for each system,
-            ``(n_systems, 1 + n_templates, ...)``.
+            ``(n_systems, 1 + n_templates, ...)``, in the values' dimension.
         """
         fixed = self.fixed_system.sum_over(fixed_values).data
         templates = self.template_motif.sum_over(template_values).data
-        return jnp.concatenate(
+        return units.concatenate(
             (
                 fixed[:, None],
-                jnp.broadcast_to(templates, (len(fixed), *templates.shape)),
+                units.apply(
+                    jnp.broadcast_to, templates, (len(fixed), *templates.shape)
+                ),
             ),
             axis=1,
         )
 
     def potential[Gradients, Hessians](
         self,
-        coefficients: Array,
+        coefficients: units.Energy,
         gradients: Gradients,
         hessian_lens: Lens[Gradients, Hessians],
         cache: Lens[State, KahanSummand[PotentialOut[Gradients, Hessians]]] | None,
@@ -80,11 +94,11 @@ class RigidBodyComposition[State, Template]:
 
         def energy(
             inp: Table[SystemId, Array],
-        ) -> WithPatch[Table[SystemId, Array], IdPatch[State]]:
+        ) -> WithPatch[Table[SystemId, units.Energy], IdPatch[State]]:
             values = (
-                jnp.einsum("gi,gij,gj->g", inp.data, coefficients, inp.data)
+                units.einsum("gi,gij,gj->g", inp.data, coefficients, inp.data)
                 if coefficients.ndim == 3
-                else jnp.einsum("gi,gi->g", inp.data, coefficients)
+                else units.einsum("gi,gi->g", inp.data, coefficients)
             )
             return WithPatch(inp.set_data(values), IdPatch())
 

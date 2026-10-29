@@ -51,8 +51,9 @@ stress = stress_via_virial_theorem(particles, systems)
 pressure = ideal_gas_pressure(counts, systems)
 
 # For offline analysis
+from kups.core.units import catalog as u
 from kups.observables.radial_distribution_function import offline_radial_distribution_function
-rdf = offline_radial_distribution_function(positions, cell, rmax=10.0, bins=200)
+rdf = offline_radial_distribution_function(positions, cell, rmax=10.0 * u.angstrom, bins=200)
 ```
 
 See individual module documentation for detailed API references:

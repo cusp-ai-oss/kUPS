@@ -18,8 +18,12 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.fixed import EmptyNeighborList, FixedEdgesNeighborList
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId
+from kups.core.units import catalog as u
+from kups.core.units import testing
 
 from ._builders import make_edges, make_lh, make_systems, valid_ids
+
+_A = u.angstrom
 
 
 def _simple_lh(n: int):
@@ -27,8 +31,8 @@ def _simple_lh(n: int):
 
 
 def _simple_systems():
-    cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])[None]))
-    systems, _ = make_systems(cell, jnp.array([2.0]))
+    cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])[None] * _A))
+    systems, _ = make_systems(cell, jnp.array([2.0]) * _A)
     return systems
 
 
@@ -109,13 +113,13 @@ class TestFixedEdgesNeighborList:
         indices = Index((ParticleId(0), ParticleId(1)), jnp.array([[0, 1]]))
         nl = FixedEdgesNeighborList[Literal[2]](indices=indices)
         lh = make_lh(
-            jnp.array([[9.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), jnp.zeros(2, dtype=int)
+            jnp.array([[9.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * _A, jnp.zeros(2, dtype=int)
         )
         systems = _simple_systems()
         out = nl(lh, systems)
         npt.assert_allclose(out.shifts, jnp.array([[[1.0, 0.0, 0.0]]]))
-        npt.assert_allclose(
-            out.difference_vectors(lh, systems), jnp.array([[[2.0, 0.0, 0.0]]])
+        testing.assert_allclose(
+            out.difference_vectors(lh, systems), jnp.array([[[2.0, 0.0, 0.0]]]) * _A, _A
         )
 
     def test_queried_keys_filters_without_rh(self):

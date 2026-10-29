@@ -9,11 +9,12 @@ import jax.numpy as jnp
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import lens, view
 from kups.core.patch import IdPatch, Patch, WithPatch
-from kups.core.potential import Energy, PotentialOut
+from kups.core.potential import PotentialOut
 from kups.core.typing import SystemId
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -22,6 +23,7 @@ from kups.potential.common.energy import (
     Sum,
     Summand,
 )
+from test.units import EV, A, assert_close
 
 
 class ExampleState(NamedTuple):
@@ -54,7 +56,7 @@ class MockEnergyFunction:
 
     def __call__(
         self, inp: ExampleInput
-    ) -> WithPatch[Table[SystemId, Energy], Patch[ExampleState]]:
+    ) -> WithPatch[Table[SystemId, units.Energy], Patch[ExampleState]]:
         energy = 0.5 * jnp.sum(inp.positions**2)
         return WithPatch(
             Table.arange(jnp.atleast_1d(energy), label=SystemId), IdPatch()
@@ -158,6 +160,32 @@ class TestPotentialFromEnergy:
 
         # Hessians: identity matrix diagonal -> all 1.0
         assert jnp.allclose(result.data.hessians.positions, 1.0)
+
+    def test_dimensioned_derivatives(self):
+        """Gradients carry dim(E)/dim(x), Hessians dim(E)/dim(x)^2."""
+        k = 3.0 * EV / A**2
+
+        class SpringEnergy:
+            def __call__(self, inp):
+                energy = 0.5 * k * units.sum(inp.positions**2)
+                return WithPatch(
+                    Table.arange(units.stack([energy]), label=SystemId), IdPatch()
+                )
+
+        lenses, views = MockLenses(), MockViews()
+        potential = PotentialFromEnergy(
+            energy_fn=SpringEnergy(),
+            composer=MockSumComposer(),
+            gradient_lens=lenses.gradient_lens(),
+            hessian_lens=lenses.hessian_lens(),
+            hessian_idx_view=views.hessian_idx_view(),
+            cache_lens=None,
+            patch_idx_view=None,
+        )
+        positions = jnp.array([[1.0, 2.0], [3.0, 4.0]]) * A
+        result = potential(ExampleState(positions=positions)).data
+        assert_close(result.gradients.positions, k * positions)
+        assert_close(result.hessians.positions, k * jnp.ones((4, 1)))
 
     def test_empty_plan_assertion(self):
         """Test that empty plans raise assertion error."""

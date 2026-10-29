@@ -18,6 +18,7 @@ from kups.core.neighborlist.all_connected import (
     InclusionGroupSelector,
     all_connected_neighborlist,
 )
+from test.units import A
 
 from ._builders import (
     make_lh,
@@ -29,7 +30,9 @@ from ._builders import (
 
 
 def _systems(n=1, box=100.0):
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(n, 0) * box))
+    cell = PeriodicCell(
+        TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(n, 0) * box) * A)
+    )
     systems, _ = make_systems(cell, jnp.full((n,), 10.0))
     return systems
 

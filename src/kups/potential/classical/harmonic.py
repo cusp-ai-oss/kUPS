@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -61,13 +61,13 @@ class HarmonicBondParameters:
 
     Attributes:
         labels: Species labels, shape `(n_species,)`
-        x0: Equilibrium bond lengths [Å], shape `(n_species, n_species)`
-        k: Force constants [energy/Å²], shape `(n_species, n_species)`
+        x0: Equilibrium bond lengths, shape `(n_species, n_species)`
+        k: Force constants, shape `(n_species, n_species)`
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    x0: Array  # (n_species, n_species)
-    k: Array  # (n_species, n_species)
+    x0: units.Length  # (n_species, n_species)
+    k: units.Stiffness  # (n_species, n_species)
 
 
 type HarmonicBondInput = GraphPotentialInput[
@@ -77,7 +77,7 @@ type HarmonicBondInput = GraphPotentialInput[
 
 def harmonic_bond_energy(
     inp: HarmonicBondInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Compute harmonic bond energy for all bonds.
 
     Calculates energy as k(r - r₀)² for each bond and sums over all systems.
@@ -97,7 +97,7 @@ def harmonic_bond_energy(
     )
     x0 = inp.parameters.x0[edg_species[:, 0], edg_species[:, 1]]
     k = inp.parameters.k[edg_species[:, 0], edg_species[:, 1]]
-    edge_energy = (jnp.linalg.norm(graph.edge_shifts[:, 0], axis=-1) - x0) ** 2 * k
+    edge_energy = (units.norm(graph.edge_shifts[:, 0], axis=-1) - x0) ** 2 * k
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
@@ -106,15 +106,19 @@ def harmonic_bond_energy(
 class HarmonicAngleParameters:
     """Harmonic angle potential parameters.
 
+    Unlike the other angle potentials in this package, which work in radians,
+    this module works in **degrees**: ``k`` is an energy per squared degree, a
+    scale kups.core.units cannot express beyond the energy dimension it carries.
+
     Attributes:
         labels: Species labels, shape `(n_species,)`
         theta0: Equilibrium angles [degrees], shape `(n_species, n_species, n_species)`
-        k: Force constants [energy/degree²], shape `(n_species, n_species, n_species)`
+        k: Force constants per squared degree, shape `(n_species, n_species, n_species)`
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    theta0: Array  # (n_species, n_species, n_species)
-    k: Array  # (n_species, n_species, n_species)
+    theta0: Array  # (n_species, n_species, n_species) degrees
+    k: units.Energy  # (n_species, n_species, n_species) per degree^2
 
 
 type HarmonicAngleInput = GraphPotentialInput[
@@ -124,7 +128,7 @@ type HarmonicAngleInput = GraphPotentialInput[
 
 def harmonic_angle_energy(
     inp: HarmonicAngleInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Compute harmonic angle energy for all angles.
 
     Calculates energy as k(θ - θ₀)² for each angle triplet and sums over all systems.
@@ -149,8 +153,8 @@ def harmonic_angle_energy(
     k = inp.parameters.k[edg_species[:, 0], edg_species[:, 1], edg_species[:, 2]]
     v1, v2 = graph.edge_shifts[:, 0], graph.edge_shifts[:, 1]
     angle = jnp.arccos(
-        jnp.einsum("ij,ij->i", v1, v2)
-        / (jnp.linalg.norm(v1, axis=-1) * jnp.linalg.norm(v2, axis=-1))
+        units.einsum("ij,ij->i", v1, v2)
+        / (units.norm(v1, axis=-1) * units.norm(v2, axis=-1))
     )
     angle = jnp.rad2deg(angle)
     edge_energy = (angle - theta0) ** 2 * k

@@ -9,10 +9,14 @@ import pytest
 
 from kups.core.data.index import Index
 from kups.core.neighborlist import Edges
+from kups.core.units import catalog as u
 from kups.potential.classical.dihedral import DihedralParameters, dihedral_energy
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
 
 from .conftest import make_particles, make_systems
+
+KCAL = u.kcal / u.mol
+"""The energy unit UFF's tabulated torsion barriers are given in."""
 
 _LABELS = ("A", "B")
 
@@ -31,8 +35,8 @@ class TestDihedralParametersFromUFF:
                 jnp.radians(109.5),
             ]
         )
-        cls.torsion_sp3 = jnp.array([2.0, 0.0, 6.8, 1.0])
-        cls.torsion_sp2 = jnp.array([0.0, 2.0, 0.0, 0.0])
+        cls.torsion_sp3 = jnp.array([2.0, 0.0, 6.8, 1.0]) * KCAL
+        cls.torsion_sp2 = jnp.array([0.0, 2.0, 0.0, 0.0]) * KCAL
         cls.group = jnp.array([14, 14, 6, 0])
 
     def _from_uff(self, bond_order=None):
@@ -47,19 +51,19 @@ class TestDihedralParametersFromUFF:
 
     def test_sp3_sp3_general(self):
         params = self._from_uff()
-        assert jnp.isclose(params.V[0, 0, 0, 0], 2.0)
+        assert jnp.isclose(params.V[0, 0, 0, 0].to(KCAL), 2.0)
         assert params.n[0, 0, 0, 0] == 3
         assert jnp.isclose(params.phi0[0, 0, 0, 0], jnp.pi)
 
     def test_sp3_sp3_group6(self):
         params = self._from_uff()
-        assert jnp.isclose(params.V[0, 2, 2, 0], 6.8)
+        assert jnp.isclose(params.V[0, 2, 2, 0].to(KCAL), 6.8)
         assert params.n[0, 2, 2, 0] == 2
         assert jnp.isclose(params.phi0[0, 2, 2, 0], jnp.pi / 2)
 
     def test_sp2_sp2(self):
         params = self._from_uff()
-        assert jnp.isclose(params.V[0, 1, 1, 0], 10.0)
+        assert jnp.isclose(params.V[0, 1, 1, 0].to(KCAL), 10.0)
         assert params.n[0, 1, 1, 0] == 2
         assert jnp.isclose(params.phi0[0, 1, 1, 0], jnp.pi)
 
@@ -67,20 +71,20 @@ class TestDihedralParametersFromUFF:
         bond_order = jnp.ones((4, 4)) * 2.0
         params = self._from_uff(bond_order)
         expected_V = 10.0 * (1.0 + 4.18 * jnp.log(2.0))
-        assert jnp.isclose(params.V[0, 1, 1, 0], expected_V, rtol=1e-5)
+        assert jnp.isclose(params.V[0, 1, 1, 0].to(KCAL), expected_V, rtol=1e-5)
 
     def test_sp3_sp2_general(self):
         params = self._from_uff()
-        assert jnp.isclose(params.V[0, 0, 1, 0], 1.0)
+        assert jnp.isclose(params.V[0, 0, 1, 0].to(KCAL), 1.0)
         assert params.n[0, 0, 1, 0] == 6
         assert jnp.isclose(params.phi0[0, 0, 1, 0], 0.0)
 
     def test_sp3_sp2_propene(self):
         params = self._from_uff()
-        assert jnp.isclose(params.V[1, 1, 0, 0], 2.0)
+        assert jnp.isclose(params.V[1, 1, 0, 0].to(KCAL), 2.0)
         assert params.n[1, 1, 0, 0] == 3
         assert jnp.isclose(params.phi0[1, 1, 0, 0], jnp.pi)
-        assert jnp.isclose(params.V[0, 0, 1, 1], 2.0)
+        assert jnp.isclose(params.V[0, 0, 1, 1].to(KCAL), 2.0)
         assert params.n[0, 0, 1, 1] == 3
         assert jnp.isclose(params.phi0[0, 0, 1, 1], jnp.pi)
 
@@ -91,9 +95,9 @@ class TestDihedralParametersFromUFF:
 
     def test_non_main_group(self):
         params = self._from_uff()
-        assert jnp.isclose(params.V[0, 3, 0, 0], 0.0)
-        assert jnp.isclose(params.V[0, 0, 3, 0], 0.0)
-        assert jnp.isclose(params.V[0, 3, 3, 0], 0.0)
+        assert jnp.isclose(params.V[0, 3, 0, 0].to(KCAL), 0.0)
+        assert jnp.isclose(params.V[0, 0, 3, 0].to(KCAL), 0.0)
+        assert jnp.isclose(params.V[0, 3, 3, 0].to(KCAL), 0.0)
 
 
 def _positions_for_dihedral(phi) -> jax.Array:
@@ -127,10 +131,10 @@ _SINGLE_CELLS_LV = jnp.eye(3)[None] * 20.0
 def _single_dihedral_energy(positions: jax.Array, params: DihedralParameters):
     """Energy of one A-A-A-A dihedral; params traced for grad/jit reuse."""
     particles = make_particles(positions, _SINGLE_SPECIES, _SINGLE_SYSTEM_IDS)
-    systems = make_systems(_SINGLE_CELLS_LV)
+    systems = make_systems(_SINGLE_CELLS_LV.astype(positions.dtype))
     edges = Edges(
         indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
-        shifts=jnp.zeros((1, 3, 3)),
+        shifts=jnp.zeros((1, 3, 3), positions.dtype),
     )
     graph = HyperGraph(particles, systems, edges)
     return dihedral_energy(
@@ -252,6 +256,13 @@ class TestDihedralEnergy:
                 _positions_for_dihedral(jnp.radians(test_deg)), params
             )
             assert jnp.linalg.norm(grad) > 1e-6
+
+    def test_float32_inputs_stay_float32(self):
+        """The kernel's regularisers do not promote float32 inputs."""
+        params = jax.tree.map(lambda x: x.astype(jnp.float32), self.params)
+        positions = _positions_for_dihedral(2.0).astype(jnp.float32)
+        energy = jax.eval_shape(_single_dihedral_energy, positions, params)
+        assert energy.dtype == jnp.float32
 
     def test_assertion_wrong_order(self):
         positions = _positions_for_dihedral(0.0)[:3]

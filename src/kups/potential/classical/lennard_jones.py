@@ -15,6 +15,7 @@ periodic systems. Supports Lorentz-Berthelot mixing rules for multi-component sy
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -29,6 +30,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
@@ -38,7 +40,6 @@ from kups.core.neighborlist import (
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -54,6 +55,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -95,35 +97,42 @@ class LennardJonesParameters:
 
     Attributes:
         labels: Species labels as ``Index``.
-        sigma: Length scale parameters [Å], shape ``(n_species, n_species)``.
-        epsilon: Energy well depths [energy units], shape ``(n_species, n_species)``.
-        cutoff: Cutoff radius [Å], shape ``(n_systems,)``.
+        sigma: Length scale parameters, shape ``(n_species, n_species)``.
+        epsilon: Energy well depths, shape ``(n_species, n_species)``.
+        cutoff: Cutoff radius, shape ``(n_systems,)``.
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    sigma: Array  # (n_species, n_species) float
-    epsilon: Array  # (n_species, n_species) float
-    cutoff: Table[SystemId, Array]  # (n_graphs,) float
+    sigma: units.Length  # (n_species, n_species) float
+    epsilon: units.Energy  # (n_species, n_species) float
+    cutoff: Table[SystemId, units.Length]  # (n_graphs,) float
 
     @classmethod
     def from_dict(
         cls,
-        cutoff: float | Array,
-        parameters: dict[str, tuple[float | None, float | None]],
+        cutoff: units.Length,
+        parameters: Mapping[str, tuple[units.Length | None, units.Energy | None]],
         mixing_rule: MixingRule,
     ) -> LennardJonesParameters:
         """Create parameters from a dict of per-species values.
 
         Args:
-            cutoff: Cutoff radius [Angstrom].
+            cutoff: Cutoff radius.
             parameters: Map from species label to ``(sigma, epsilon)`` pair.
-                ``None`` values default to ``sigma=1.0``, ``epsilon=0.0``.
+                ``None`` values default to ``sigma=1 Å``, ``epsilon=0 eV``.
             mixing_rule: Combining rule for cross-species interactions.
+
+        Returns:
+            Mixed parameters for a single system.
         """
         labels = tuple(parameters.keys())
-        raw = [(s or 1.0, e or 0.0) for s, e in parameters.values()]
-        sigma, epsilon = jnp.asarray(raw).T
-        cutoff_indexed = Table((SystemId(0),), jnp.array([cutoff]))
+        sigma = units.stack(
+            [1.0 * u.angstrom if s is None else s for s, _ in parameters.values()]
+        )
+        epsilon = units.stack(
+            [0.0 * u.eV if e is None else e for _, e in parameters.values()]
+        )
+        cutoff_indexed = Table((SystemId(0),), units.stack([cutoff]))
         match mixing_rule:
             case "lorentz_berthelot":
                 return cls.from_lorentz_berthelot_mixing(
@@ -136,9 +145,9 @@ class LennardJonesParameters:
     def from_lorentz_berthelot_mixing(
         cls,
         labels: tuple[str, ...],
-        sigma: Array,
-        epsilon: Array,
-        cutoff: Table[SystemId, Array],
+        sigma: units.Length,
+        epsilon: units.Energy,
+        cutoff: Table[SystemId, units.Length],
     ) -> LennardJonesParameters:
         """Create parameters using Lorentz-Berthelot mixing rules.
 
@@ -147,7 +156,7 @@ class LennardJonesParameters:
         """
         assert sigma.ndim == epsilon.ndim == 1
         sigma_matrix = (sigma[:, None] + sigma) / 2
-        epsilon_matrix = jnp.sqrt(epsilon[:, None] * epsilon)
+        epsilon_matrix = units.sqrt(epsilon[:, None] * epsilon)
         return cls(tuple(map(Label, labels)), sigma_matrix, epsilon_matrix, cutoff)
 
 
@@ -156,11 +165,11 @@ def lennard_jones_pair_kernel(
     parameters: LennardJonesParameters,
     labels_i: Index[Label],
     labels_j: Index[Label],
-    rij: Array,
-    r2: Array,
+    rij: units.Length,
+    r2: units.Area,
     system: Index[SystemId],
     /,
-) -> Array:
+) -> units.Energy:
     """Lennard-Jones pair kernel shared by graph and fused evaluation.
 
     Callers apply the cutoff; pair inputs broadcast to a common shape.
@@ -188,12 +197,12 @@ def lennard_jones_pair_kernel(
         epsilon_rows = parameters.epsilon[species_i]
         sigma_rows = parameters.sigma[species_i]
         # A where chain: jnp.select's argmax over the matches is slower here.
-        epsilon = jnp.zeros((), epsilon_rows.dtype)
-        sigma = jnp.zeros((), sigma_rows.dtype)
+        epsilon = units.zeros_like(epsilon_rows, shape=())
+        sigma = units.zeros_like(sigma_rows, shape=())
         for t in range(n_species):
             match = species_j == t
-            epsilon = jnp.where(match, epsilon_rows[..., t], epsilon)
-            sigma = jnp.where(match, sigma_rows[..., t], sigma)
+            epsilon = units.where(match, epsilon_rows[..., t], epsilon)
+            sigma = units.where(match, sigma_rows[..., t], sigma)
     else:
         epsilon = parameters.epsilon[species_i, species_j]
         sigma = parameters.sigma[species_i, species_j]
@@ -225,10 +234,10 @@ class PairTailCorrectedLennardJonesParameters(LennardJonesParameters):
     """Lennard-Jones parameters with smooth pairwise tail correction.
 
     Attributes:
-        truncation_radius: Radius where smoothing begins [Å], shape ``(n_systems,)``.
+        truncation_radius: Radius where smoothing begins, shape ``(n_systems,)``.
     """
 
-    truncation_radius: Table[SystemId, Array]  # (n_graphs,)
+    truncation_radius: Table[SystemId, units.Length]  # (n_graphs,)
 
 
 type PairTailCorrectedLennardJonesInput = GraphPotentialInput[
@@ -242,10 +251,10 @@ type PairTailCorrectedLennardJonesInput = GraphPotentialInput[
 @jit
 def pair_tail_corrected_lennard_jones_energy(
     inp: PairTailCorrectedLennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Compute Lennard-Jones energy with smooth pairwise tail correction."""
     graph = inp.graph
-    r: Array = jnp.linalg.norm(graph.edge_shifts, axis=(-2, -1))
+    r = units.norm(graph.edge_shifts, axis=(-2, -1))
     edge_energy = lennard_jones_energy.edge_energies(inp)
 
     batch = graph.edge_batch_mask
@@ -256,11 +265,11 @@ def pair_tail_corrected_lennard_jones_energy(
     factor1 = ((r_cut**2) - r**2) ** 2
     factor2 = 2 * r**2 + (r_cut**2 - 3 * r_tr**2)
     div = (r_cut**2 - r_tr**2) ** 3
-    corrected_edge_energy = jnp.where(
+    corrected_edge_energy = units.where(
         mask, edge_energy * factor1 * factor2 / div, edge_energy
     )
-    corrected_edge_energy = jnp.where(remove, 0.0, corrected_edge_energy)
-    total_energies = batch.sum_over(corrected_edge_energy) / 2
+    corrected_edge_energy = units.where(remove, 0.0, corrected_edge_energy)
+    total_energies = 0.5 * batch.sum_over(corrected_edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())
 
 
@@ -275,43 +284,57 @@ class GlobalTailCorrectedLennardJonesParameters(LennardJonesParameters):
     tail_corrected: Array  # (n_species, n_species) bool
 
     @property
-    def tail_coefficients(self) -> tuple[Array, Array]:
-        """Two cutoff-independent coefficient matrices over species pairs."""
+    def tail_coefficients(
+        self,
+    ) -> tuple[units.Quantity[8, 1, -2, 0, 0], units.Quantity[14, 1, -2, 0, 0]]:
+        """Two cutoff-independent coefficient matrices over species pairs.
+
+        Returns:
+            ``eps * sigma^6`` and ``eps * sigma^12`` where tail corrected.
+        """
         sigma6 = self.sigma**6
         base = self.tail_corrected * self.epsilon
         return base * sigma6, base * sigma6**2
 
     @property
-    def tail_weights(self) -> Array:
-        """Current pair weights, shaped ``(2, n_systems, n_species, n_species)``."""
+    def tail_weights(self) -> units.Quantity[5, 1, -2, 0, 0]:
+        """Current pair weights, shaped ``(2, n_systems, n_species, n_species)``.
+
+        Returns:
+            Energy-volume weights ``eps * sigma^3 * (sigma / r_c)^3`` and
+            ``eps * sigma^3 * (sigma / r_c)^9``, stacked.
+        """
         term1 = (self.sigma / self.cutoff.data[:, None, None]) ** 3
         base = self.tail_corrected * self.epsilon * self.sigma**3
-        return jnp.stack([base * term1, base * term1**3])
+        return units.stack([base * term1, base * term1**3])
 
     @classmethod
     @override
     def from_dict(
         cls,
-        cutoff: float | Array,
-        parameters: dict[str, tuple[float | None, float | None]],
+        cutoff: units.Length,
+        parameters: Mapping[str, tuple[units.Length | None, units.Energy | None]],
         mixing_rule: MixingRule,
         tail_correction: bool = True,
     ) -> GlobalTailCorrectedLennardJonesParameters:
         """Create tail-corrected parameters from a dict of per-species values.
 
         Args:
-            cutoff: Cutoff radius [Angstrom].
+            cutoff: Cutoff radius.
             parameters: Map from species label to ``(sigma, epsilon)`` pair.
-                ``None`` values default to ``sigma=1.0``, ``epsilon=0.0``.
+                ``None`` values default to ``sigma=1 Å``, ``epsilon=0 eV``.
             mixing_rule: Combining rule for cross-species interactions.
             tail_correction: Whether to enable tail corrections for all
                 non-zero epsilon pairs.
+
+        Returns:
+            Mixed parameters for a single system with tail-correction mask.
         """
         base = LennardJonesParameters.from_dict(cutoff, parameters, mixing_rule)
         mask = (
-            base.epsilon > 0
+            base.epsilon.value > 0
             if tail_correction
-            else jnp.zeros_like(base.epsilon, dtype=bool)
+            else jnp.zeros(base.epsilon.shape, dtype=bool)
         )
         return cls(
             labels=base.labels,
@@ -332,7 +355,7 @@ type GlobalTailCorrectedLennardJonesInput = GraphPotentialInput[
 
 def _global_tail_correction_common(
     inp: GlobalTailCorrectedLennardJonesInput,
-) -> tuple[Array, Array, Array, int]:
+) -> tuple[units.Energy, units.Energy, units.Volume, int]:
     """Shared quantities for the global LJ tail correction energy/pressure.
 
     Contracts the species counts with the pair weight matrices as bilinear
@@ -358,20 +381,18 @@ def _global_tail_correction_common(
     ):
         # The expanded contraction is faster for small GPU workloads.
         w1, w2 = inp.parameters.tail_weights
-        q1 = jnp.einsum("gs,gst,gt->g", counts, w1, counts) / volume
-        q2 = jnp.einsum("gs,gst,gt->g", counts, w2, counts) / volume
+        q1 = units.einsum("gs,gst,gt->g", counts, w1, counts) / volume
+        q2 = units.einsum("gs,gst,gt->g", counts, w2, counts) / volume
     else:
         # Factor out cutoffs to share the species matrices across systems.
-        w1, w2 = inp.parameters.tail_coefficients
+        c1, c2 = inp.parameters.tail_coefficients
         cutoff3 = inp.parameters.cutoff.data**3
-        q1 = jnp.einsum("gs,st,gt->g", counts, w1, counts)
-        q2 = jnp.einsum("gs,st,gt->g", counts, w2, counts)
-        q1 /= volume * cutoff3
-        q2 /= volume * cutoff3**3
+        q1 = units.einsum("gs,st,gt->g", counts, c1, counts) / (volume * cutoff3)
+        q2 = units.einsum("gs,st,gt->g", counts, c2, counts) / (volume * cutoff3**3)
     return q1, q2, volume, n_graphs
 
 
-def _tail_energy(q1: Array, q2: Array) -> Array:
+def _tail_energy(q1: units.Energy, q2: units.Energy) -> units.Energy:
     """Convert the two integrated LJ contributions to energy."""
     return (8 / 3) * jnp.pi * (q2 / 3 - q1)
 
@@ -379,7 +400,7 @@ def _tail_energy(q1: Array, q2: Array) -> Array:
 @jit
 def global_lennard_jones_tail_correction_energy(
     inp: GlobalTailCorrectedLennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Compute analytical long-range tail correction energy."""
     q1, q2, _volume, n_graphs = _global_tail_correction_common(inp)
     result = _tail_energy(q1, q2)
@@ -391,7 +412,7 @@ def global_lennard_jones_tail_correction_energy(
 @jit
 def global_lennard_jones_tail_correction_pressure(
     inp: GlobalTailCorrectedLennardJonesInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Pressure], IdPatch[Any]]:
     """Compute analytical long-range tail correction for pressure."""
     q1, q2, volume, n_graphs = _global_tail_correction_common(inp)
     result = (16 / 3) * jnp.pi / volume * (q2 / 3 * 2 - q1)
@@ -510,8 +531,8 @@ def _molecular_tail_coefficients[State](
     composition: RigidBodyComposition[State, HasLabels],
     particles: HasLabels,
     parameters: GlobalTailCorrectedLennardJonesParameters,
-    volume: Array,
-) -> Array:
+    volume: units.Volume,
+) -> units.Energy:
     """Project the ordinary LJ tail energy onto background and template counts."""
     labels = parameters.labels
     basis = composition.sum_particles(
@@ -520,8 +541,8 @@ def _molecular_tail_coefficients[State](
     )
     w1, w2 = parameters.tail_weights
     return _tail_energy(
-        jnp.einsum("gmi,gij,gnj->gmn", basis, w1, basis) / volume[:, None, None],
-        jnp.einsum("gmi,gij,gnj->gmn", basis, w2, basis) / volume[:, None, None],
+        units.einsum("gmi,gij,gnj->gmn", basis, w1, basis) / volume[:, None, None],
+        units.einsum("gmi,gij,gnj->gmn", basis, w2, basis) / volume[:, None, None],
     )
 
 
@@ -582,7 +603,7 @@ def make_global_lennard_jones_tail_correction_pressure[State](
     particles_view: View[State, Table[ParticleId, IsLJGraphParticles]],
     systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameter_view: View[State, GlobalTailCorrectedLennardJonesParameters],
-) -> StateProperty[State, Table[SystemId, Array]]:
+) -> StateProperty[State, Table[SystemId, units.Pressure]]:
     """Create long-range pressure correction for Lennard-Jones systems."""
     graph_constructor = GraphConstructor(
         particles=particles_view,
@@ -591,7 +612,7 @@ def make_global_lennard_jones_tail_correction_pressure[State](
         probe=None,
     )
 
-    def pressure(key: Array, state: State) -> Table[SystemId, Array]:
+    def pressure(key: Array, state: State) -> Table[SystemId, units.Pressure]:
         del key
         params = parameter_view(state)
         graph = graph_constructor(state, None)

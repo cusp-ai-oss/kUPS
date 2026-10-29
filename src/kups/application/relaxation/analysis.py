@@ -9,9 +9,8 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
-from jax import Array
-
 from kups.application.relaxation.logging import RelaxLoggedData
+from kups.core import units
 from kups.core.data import Table
 from kups.core.storage import HDF5StorageReader
 from kups.core.typing import HasPotentialEnergy, SystemId
@@ -21,21 +20,24 @@ class IsRelaxStepData(HasPotentialEnergy, Protocol):
     """Contract for a single relaxation step from the reader."""
 
     @property
-    def max_force(self) -> Array: ...
+    def max_force(self) -> units.Force: ...
 
 
 @plain_dataclass
 class RelaxAnalysisResult:
     """Summary of a completed relaxation for a single system.
 
+    The energy and force are dimensioned quantities, so a caller reads them in
+    whatever unit it names.
+
     Attributes:
-        final_energy: Final potential energy (eV).
-        final_max_force: Maximum atomic force at the last step (eV/Ang).
+        final_energy: Final potential energy.
+        final_max_force: Maximum atomic force at the last step.
         n_steps: Number of steps actually taken.
     """
 
-    final_energy: float
-    final_max_force: float
+    final_energy: units.Energy
+    final_max_force: units.Force
     n_steps: int
 
 
@@ -46,15 +48,15 @@ class _IsRelaxInitData(Protocol):
 
 def _analyze_relax(
     system_keys: tuple[SystemId, ...],
-    final_energy: Array,
-    final_max_force: Array,
+    final_energy: units.Energy,
+    final_max_force: units.Force,
     n_steps: int,
 ) -> dict[SystemId, RelaxAnalysisResult]:
     """Build per-system results from the final-step energy and force arrays."""
     return {
         sys_id: RelaxAnalysisResult(
-            final_energy=float(final_energy[i]),
-            final_max_force=float(final_max_force[i]),
+            final_energy=final_energy[i],
+            final_max_force=final_max_force[i],
             n_steps=n_steps,
         )
         for i, sys_id in enumerate(system_keys)

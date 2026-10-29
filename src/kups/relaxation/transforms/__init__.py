@@ -8,6 +8,12 @@ These are batch-aware versions of the transforms in
 :mod:`kups.relaxation.optax`: they accept an ``index_prefix`` pytree at
 ``init`` time identifying which system each element belongs to, so batched
 systems are clipped or scaled independently.
+
+Transforms act on plain magnitudes:
+[RelaxationPropagator][kups.relaxation.propagator.RelaxationPropagator] hands
+them parameters, gradients and energies in their own base (ATOMISTIC by
+default: Å, eV, amu). Hyperparameters such as ``max_step_size``, ``alpha`` or
+``dt_start`` are numbers in that base.
 """
 
 from kups.relaxation.transforms.clip_by_global_norm import (

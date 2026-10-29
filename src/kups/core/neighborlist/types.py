@@ -25,6 +25,7 @@ from typing import Literal, Protocol, overload, runtime_checkable
 
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import Capacity
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
@@ -250,7 +251,7 @@ class SelectableNeighborList[D: int](NeighborList[D], Protocol):
     """
 
     @property
-    def cutoffs(self) -> Table[SystemId, Array]: ...
+    def cutoffs(self) -> Table[SystemId, units.Length]: ...
 
     @property
     def avg_edges(self) -> Capacity[int]: ...
@@ -329,7 +330,7 @@ class NeighborListFactory[State](Protocol):
     def __call__(
         self,
         state: State,
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> NeighborList[Literal[2]]: ...
 
 

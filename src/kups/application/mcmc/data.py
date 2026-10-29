@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, override
+from typing import Annotated, Any, Callable, NamedTuple, override
 
 import ase
 import ase.data
@@ -17,9 +17,16 @@ import numpy as np
 from jax import Array
 from pydantic import BaseModel, Field, model_validator
 
+from kups.application.utils.data import Scalar
 from kups.application.utils.particles import Particles, particles_from_ase
-from kups.core.cell import AnyPeriodicity, Cell, is_3d_periodic, make_supercell
-from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
+from kups.core import units
+from kups.core.cell import (
+    AnyPeriodicity,
+    Cell,
+    is_3d_periodic,
+    make_supercell,
+    zero_gradient_cell,
+)
 from kups.core.data import Index, Table
 from kups.core.data.buffered import Buffered
 from kups.core.data.index import SupportsSorting
@@ -35,13 +42,15 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field, jit, key_chain, tree_zeros_like
+from kups.core.units import catalog as u
+from kups.core.units.pydantic import UnitsModel
+from kups.core.utils.jax import dataclass, field, jit, key_chain
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.quaternion import Quaternion
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
 
 
-class AdsorbateConfig(BaseModel):
+class AdsorbateConfig(UnitsModel):
     """Configuration for a single adsorbate species.
 
     Thermodynamic parameters feed Peng-Robinson EOS for fugacity calculation.
@@ -49,21 +58,21 @@ class AdsorbateConfig(BaseModel):
     masses, and atomic numbers are auto-derived from ASE if omitted.
     """
 
-    critical_temperature: float
-    """Critical temperature (K) for Peng-Robinson EOS."""
-    critical_pressure: float
-    """Critical pressure (Pa) for Peng-Robinson EOS."""
+    critical_temperature: Annotated[units.Temperature, Scalar]
+    """Critical temperature for Peng-Robinson EOS."""
+    critical_pressure: Annotated[units.Pressure, Scalar]
+    """Critical pressure for Peng-Robinson EOS."""
     acentric_factor: float
     """Acentric factor (dimensionless)."""
-    positions: tuple[tuple[float, float, float], ...]
-    """Atom positions within the molecule, relative to its centre of mass (Ang)."""
+    positions: units.Length
+    """Atom positions within the molecule, relative to its centre of mass."""
     symbols: tuple[str, ...]
     """Element symbols for each atom in the molecule."""
-    charges: tuple[float, ...] = ()
-    """Partial charges on each atom (e). Defaults to zeros."""
-    masses: tuple[float, ...] = ()
-    """Atomic masses (amu). Derived from ``atomic_numbers`` via ASE if omitted;
-    an atomic number of 0 yields a massless virtual site."""
+    charges: units.Charge | None = None
+    """Partial charges on each atom. Defaults to zeros."""
+    masses: units.Mass | None = None
+    """Atomic masses. Derived from ``atomic_numbers`` via ASE if omitted; an
+    atomic number of 0 yields a massless virtual site."""
     atomic_numbers: tuple[int, ...] = ()
     """Atomic numbers (0 for virtual sites). Derived from symbols via ASE if
     omitted; underscore suffixes are ignored (``O_co2`` resolves as ``O``)."""
@@ -77,17 +86,19 @@ class AdsorbateConfig(BaseModel):
         marks a massless virtual site. Symbols that ASE cannot resolve
         (united-atom pseudo-symbols like ``CH4``, virtual sites like ``Mw``)
         make the derivation ambiguous, so such configs must set
-        ``atomic_numbers`` (0 for virtual sites) or ``masses`` explicitly.
+        ``atomic_numbers`` (0 for virtual sites) or ``masses`` explicitly. The
+        derived values are quantities in the units ASE tabulates them in, which
+        the field validators take as they stand.
         """
         symbols = data.get("symbols", ())
-        if not data.get("charges"):
-            data["charges"] = tuple(0.0 for _ in symbols)
+        if data.get("charges") is None:
+            data["charges"] = jnp.zeros(len(symbols)) * u.e
         explicit_numbers = bool(data.get("atomic_numbers"))
         if not explicit_numbers:
             data["atomic_numbers"] = tuple(
                 ase.data.atomic_numbers.get(s.split("_")[0], 0) for s in symbols
             )
-        if not data.get("masses"):
+        if data.get("masses") is None:
             zs = data["atomic_numbers"]
             if not explicit_numbers and any(z == 0 for z in zs):
                 unknown = [s for s, z in zip(symbols, zs, strict=True) if z == 0]
@@ -98,20 +109,28 @@ class AdsorbateConfig(BaseModel):
                     "Mw/M_n2). Set `atomic_numbers` (0 for massless virtual "
                     "sites) or `masses` explicitly."
                 )
-            data["masses"] = tuple(
-                float(ase.data.atomic_masses[z]) if z > 0 else 0.0 for z in zs
+            data["masses"] = (
+                jnp.asarray(
+                    [float(ase.data.atomic_masses[z]) if z > 0 else 0.0 for z in zs]
+                )
+                * u.amu
             )
         return data
 
     @model_validator(mode="after")
-    def _check_per_atom_lengths(self) -> AdsorbateConfig:
-        """Reject per-atom fields whose length differs from ``symbols``."""
+    def _check_per_atom_shapes(self) -> AdsorbateConfig:
+        """Reject per-atom fields whose shape does not match ``symbols``."""
+        assert self.charges is not None and self.masses is not None
         n = len(self.symbols)
-        for name in ("positions", "charges", "masses", "atomic_numbers"):
-            m = len(getattr(self, name))
-            if m != n:
+        for name, got, want in (
+            ("positions", self.positions.shape, (n, 3)),
+            ("charges", self.charges.shape, (n,)),
+            ("masses", self.masses.shape, (n,)),
+            ("atomic_numbers", (len(self.atomic_numbers),), (n,)),
+        ):
+            if got != want:
                 raise ValueError(
-                    f"`{name}` has {m} entries, expected {n} (one per symbol)"
+                    f"`{name}` has shape {got}, expected {want} (one per symbol)"
                 )
         return self
 
@@ -122,12 +141,13 @@ class AdsorbateConfig(BaseModel):
         assert self.masses is not None
         assert self.atomic_numbers is not None
         assert self.charges is not None
+        # Copies keep the config's arrays alive when a run donates its state.
         return Table.arange(
             MotifParticles(
-                positions=jnp.asarray(self.positions),
-                masses=jnp.asarray(self.masses),
+                positions=self.positions.copy(),
+                masses=self.masses.copy(),
                 atomic_numbers=jnp.asarray(self.atomic_numbers),
-                charges=jnp.asarray(self.charges),
+                charges=self.charges.copy(),
                 labels=Index.new(list(map(Label, self.symbols))),
                 motif=Index.integer(
                     jnp.zeros(n, dtype=int),
@@ -139,16 +159,23 @@ class AdsorbateConfig(BaseModel):
         )
 
 
-class BlockingSphereConfig(BaseModel):
+class BlockingSphereConfig(UnitsModel):
     """Configuration for a blocking sphere to prevent adsorbate placement in certain regions."""
 
-    center: tuple[float, float, float]
-    """Center of the blocking sphere in Cartesian coordinates (Ang)."""
-    radius: float
-    """Radius of the blocking sphere (Ang)."""
+    center: units.Length
+    """Center of the blocking sphere in Cartesian coordinates, shape ``(3,)``."""
+    radius: Annotated[units.Length, Scalar]
+    """Radius of the blocking sphere."""
+
+    @model_validator(mode="after")
+    def _check_center(self) -> BlockingSphereConfig:
+        """Reject a center that is not a single 3D point."""
+        if self.center.shape != (3,):
+            raise ValueError(f"`center` has shape {self.center.shape}, expected (3,)")
+        return self
 
 
-class HostConfig(BaseModel):
+class HostConfig(UnitsModel):
     """Configuration for a single host framework (e.g. zeolite, MOF).
 
     Each host gets its own system with unit cell, thermodynamic conditions,
@@ -157,10 +184,10 @@ class HostConfig(BaseModel):
 
     cif_file: str
     """Path to the host structure CIF file."""
-    pressure: float
-    """System pressure (Pa)."""
-    temperature: float
-    """System temperature (K)."""
+    pressure: Annotated[units.Pressure, Scalar]
+    """System pressure."""
+    temperature: Annotated[units.Temperature, Scalar]
+    """System temperature."""
     init_adsorbates: tuple[int, ...] = (0,)
     """Number of initial adsorbates per species to randomly insert."""
     adsorbate_composition: tuple[float, ...] = (1.0,)
@@ -199,9 +226,9 @@ class RunConfig(BaseModel):
 class StressResult(NamedTuple):
     """Decomposed stress tensor with potential, tail correction, and ideal gas components."""
 
-    potential: Array
-    tail_correction: Array
-    ideal_gas: Array
+    potential: units.Pressure
+    tail_correction: units.Pressure
+    ideal_gas: units.Pressure
 
 
 @dataclass
@@ -213,18 +240,18 @@ class MotifParticles:
     exchange moves to populate new particle data.
 
     Attributes:
-        positions: Reference atom positions relative to COM (Ang), shape ``(n_atoms, 3)``.
-        masses: Atomic masses (amu), shape ``(n_atoms,)``.
+        positions: Reference atom positions relative to COM, shape ``(n_atoms, 3)``.
+        masses: Atomic masses, shape ``(n_atoms,)``.
         atomic_numbers: Atomic numbers, shape ``(n_atoms,)``.
-        charges: Partial charges (e), shape ``(n_atoms,)``.
+        charges: Partial charges, shape ``(n_atoms,)``.
         labels: Per-atom string labels.
         motif: Index mapping atoms to their species (MotifId).
     """
 
-    positions: Array
-    masses: Array
+    positions: units.Length
+    masses: units.Mass
     atomic_numbers: Array
-    charges: Array
+    charges: units.Charge
     labels: Index[Label]
     motif: Index[MotifId]
 
@@ -239,12 +266,16 @@ class MCMCParticles(Particles):
 
     group: Index[GroupId]
     motif: Index[MotifParticleId]
-    position_gradients: Array = field(default=None)  # type: ignore[assignment]
+    position_gradients: units.Force = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.position_gradients is None:
             object.__setattr__(
-                self, "position_gradients", jnp.zeros_like(self.positions)
+                self,
+                "position_gradients",
+                units.zeros(
+                    self.positions.shape, u.eV / u.angstrom, dtype=self.positions.dtype
+                ),
             )
 
     @property
@@ -287,31 +318,38 @@ class MCMCSystems:
 
     Attributes:
         cell: Cell geometry, batched shape ``(n_systems,)``.
-        temperature: Temperature (K), shape ``(n_systems,)``.
-        potential_energy: Total potential energy per system (eV) as a compensated
+        temperature: Temperature, shape ``(n_systems,)``.
+        potential_energy: Total potential energy per system as a compensated
             accumulator, each entry of shape ``(n_systems,)``. Monte Carlo folds
             per-move energy changes into it, so the compensation keeps changes
             far below ``ulp`` of the total from being lost.
-        log_fugacity: Log of the fugacity (eV/Å³) per species, shape
-            ``(n_systems, n_species)``.
+        log_fugacity: Fugacity per species in the log domain, shape ``(n_systems, n_species)``.
         cell_gradients: Energy gradients w.r.t. the cell, defaults to zeros.
     """
 
     cell: Cell[Any]
-    temperature: Array
-    potential_energy: KahanSummand[Array]
-    log_fugacity: Array
+    temperature: units.Temperature
+    potential_energy: KahanSummand[units.Energy]
+    log_fugacity: units.Log[units.PressureUnit]
     cell_gradients: Cell[Any] = field(default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.cell_gradients is None:
-            object.__setattr__(self, "cell_gradients", tree_zeros_like(self.cell))
+            object.__setattr__(self, "cell_gradients", zero_gradient_cell(self.cell))
 
     @property
-    def log_activity(self) -> Array:
-        """Log activity: log(fugacity / kT), shape ``(n_systems, n_species)``."""
-        return (
-            self.log_fugacity - jnp.log(self.temperature * BOLTZMANN_CONSTANT)[:, None]
+    def log_activity(self) -> units.Log[units.NumberDensityUnit]:
+        """Activity ``fugacity / kT`` in the log domain, shape ``(n_systems, n_species)``.
+
+        A pressure over an energy is a number density; the logs are measured
+        against ``1/Å³``.
+        """
+        kT = units.constants.k_B * self.temperature
+        ref = 1 / u.angstrom**3
+        return units.Log.from_logs(
+            self.log_fugacity.log
+            + jnp.log(self.log_fugacity.ref / (kT * ref))[:, None],
+            ref,
         )
 
 
@@ -343,7 +381,7 @@ def _make_molecule(
     n_a = len(tpl.positions)
     particles = Table.arange(
         MCMCParticles(
-            positions=tpl.positions @ rot + com[None, :],
+            positions=units.apply(lambda p: p @ rot, tpl.positions) + com[None, :],
             masses=tpl.masses,
             atomic_numbers=tpl.atomic_numbers,
             charges=tpl.charges,
@@ -411,14 +449,14 @@ def mcmc_state_from_config(
     motifs, _ = Table.union(ads_particles, motif_ids)
 
     # Compute log fugacity via Peng-Robinson EOS
-    crit_temps = jnp.asarray([a.critical_temperature for a in adsorbates])
-    crit_press = jnp.asarray([a.critical_pressure for a in adsorbates])
+    crit_temps = units.stack([a.critical_temperature for a in adsorbates])
+    crit_press = units.stack([a.critical_pressure for a in adsorbates])
     acentric = jnp.asarray([a.acentric_factor for a in adsorbates])
     result = peng_robinson_log_fugacity(
-        jnp.asarray(float(host.pressure)) * PASCAL,
-        jnp.asarray(float(host.temperature)) * KELVIN,
-        crit_press * PASCAL,
-        crit_temps * KELVIN,
+        host.pressure,
+        host.temperature,
+        crit_press,
+        crit_temps,
         acentric,
         jnp.asarray(host.adsorbate_composition),
         jnp.asarray(host.adsorbate_interaction),
@@ -428,8 +466,8 @@ def mcmc_state_from_config(
     system = Table.arange(
         MCMCSystems(
             cell=cell[None],
-            temperature=jnp.array([host.temperature]),
-            potential_energy=KahanSummand.init(jnp.zeros(1)),
+            temperature=host.temperature[None],
+            potential_energy=KahanSummand.init(jnp.zeros(1) * u.eV),
             log_fugacity=result.log_fugacity[None],
         ),
         label=SystemId,
@@ -480,6 +518,19 @@ def mcmc_state_from_config(
     return particles, groups, system, motifs
 
 
+def _expected_count(activity: units.NumberDensity, free_volume: units.Volume) -> Array:
+    """Ideal-gas occupancy of a free volume at a reservoir number density.
+
+    Args:
+        activity: Reservoir number density (``fugacity / kT``).
+        free_volume: Volume available to the adsorbate.
+
+    Returns:
+        Expected motif count, dimensionless.
+    """
+    return activity * free_volume
+
+
 @jit
 def estimate_max_adsorbates(
     particles: Table[Any, MCMCParticles],
@@ -510,11 +561,19 @@ def estimate_max_adsorbates(
     """
     total_volume = systems.map_data(lambda s: s.cell.volume)
     taken_volume = estimate_occupied_volume(particles, lambda s: s.system)
-    free_volume = (total_volume - taken_volume).map_data(lambda v: jnp.maximum(v, 0.0))
-    min_motif_volume = estimate_occupied_volume(motifs, lambda s: s.motif).data.min()
+    free_volume = (total_volume - taken_volume).map_data(
+        lambda v: units.maximum(v, 0.0)
+    )
+    min_motif_volume = units.min(
+        estimate_occupied_volume(motifs, lambda s: s.motif).data
+    )
     capacity = free_volume.map_data(lambda v: v / min_motif_volume)
-    activity = systems.map_data(lambda s: jnp.exp(s.log_activity).max(axis=-1))
-    capacity, ideal = Table.broadcast(capacity, activity * free_volume)
+    # ``log_activity`` is fugacity/kT, a number density, so leaving the log domain
+    # gives a density outright and the product with a volume is a count.
+    activity = systems.map_data(lambda s: s.log_activity.exp().max(axis=-1))
+    capacity, ideal = Table.broadcast(
+        capacity, Table.transform(_expected_count)(activity, free_volume)
+    )
     estimate = jnp.minimum(capacity.data, ideal.data * max_enhancement)
     return capacity.set_data(jnp.floor(estimate).astype(int))
 
@@ -523,7 +582,7 @@ def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
     particles: Table[Any, T],
     group_index: Callable[[T], Index[K]],
     radius_scale: float = 1,
-) -> Table[K, Array]:
+) -> Table[K, units.Volume]:
     """Estimate the volume occupied by particles, grouped by a chosen index.
 
     Each particle is treated as a sphere of its van der Waals radius
@@ -538,9 +597,10 @@ def estimate_occupied_volume[T: HasAtomicNumbers, K: SupportsSorting](
         radius_scale: Scale factor applied to the vdW radii (default 1.0).
 
     Returns:
-        Table mapping each group key to its occupied volume (Ang^3).
+        Table mapping each group key to its occupied volume.
     """
+    # ase tabulates the radii in Angstrom.
     radii = jnp.asarray(ase.data.vdw_radii)[particles.data.atomic_numbers]
     scaled_radii = radii * radius_scale
-    volumes = jnp.nan_to_num(4.0 / 3.0 * jnp.pi * scaled_radii**3)
+    volumes = jnp.nan_to_num(4.0 / 3.0 * jnp.pi * scaled_radii**3) * u.angstrom**3
     return group_index(particles.data).sum_over(volumes)

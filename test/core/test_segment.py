@@ -18,8 +18,8 @@ from jax import Array
 from jax.typing import ArrayLike, DTypeLike
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.segment import bincount, segment_sum, segment_take
+from test.units import EV, A
 
 type Case = tuple[Array, Array, int]
 type Loss = Callable[[Array], Array]
@@ -729,26 +729,25 @@ class TestSegmentTake:
 @pytest.mark.parametrize(
     "fn",
     [
-        pytest.param(lambda x, unit: segment_sum(x * unit, POISON[:3], 2), id="sum"),
+        pytest.param(lambda x, u: segment_sum(x * u, POISON[:3], 2), id="sum"),
         pytest.param(
-            lambda x, unit: segment_sum(x * unit, jnp.zeros(3, int), 1), id="sum_one"
+            lambda x, u: segment_sum(x * u, jnp.zeros(3, int), 1), id="sum_one"
         ),
         pytest.param(
-            lambda x, unit: segment_take(x * unit, POISON, fill_value=-1.0 * unit),
-            id="take",
+            lambda x, u: segment_take(x * u, POISON, fill_value=-1.0 * u), id="take"
         ),
     ],
 )
 def test_quantity_keeps_dimension(fn: Callable[[Array, Any], Any]) -> None:
     """A length goes through as its magnitudes and comes back a length."""
     rows = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-    out = fn(rows, u.angstrom)
-    assert units.dim_of(out) == units.dim_of(u.angstrom)
-    npt.assert_allclose(out.to(u.angstrom), fn(rows, 1.0))
+    out = fn(rows, A)
+    assert units.dim_of(out) == units.dim_of(A)
+    npt.assert_allclose(out.to(A), fn(rows, 1.0))
 
 
 def test_take_rejects_fill_of_another_dimension() -> None:
     """A fill must measure what the data does."""
     with pytest.raises(units.DimensionError, match="fill_value"):
         # pyrefly: ignore[no-matching-overload]
-        segment_take(jnp.ones((3, 2)) * u.angstrom, POISON, fill_value=7.0 * u.eV)
+        segment_take(jnp.ones((3, 2)) * A, POISON, fill_value=7.0 * EV)

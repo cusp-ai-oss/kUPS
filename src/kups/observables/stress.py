@@ -25,6 +25,7 @@ from typing import Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Index, Table
 from kups.core.lens import bind
@@ -47,7 +48,7 @@ class IsVirialParticles(HasPositions, HasSystemIndex, Protocol):
     """Particles with position gradients ∂U/∂r."""
 
     @property
-    def position_gradients(self) -> Array: ...
+    def position_gradients(self) -> units.Force: ...
 
 
 @runtime_checkable
@@ -71,20 +72,22 @@ class IsMolecularVirialParticles(
     """
 
     @property
-    def position_gradients(self) -> Array: ...
+    def position_gradients(self) -> units.Force: ...
 
 
-def _symmetrize_from_lower(lower: Array) -> Array:
+def _symmetrize_from_lower(lower: units.Pressure) -> units.Pressure:
     """Build a symmetric (..., 3, 3) tensor from its lower triangle.
 
     ``lower`` is assumed to have a zero (or arbitrary, ignored) upper
     triangle. Returns ``lower + lower^T − diag(lower)`` so the diagonal
     is not double-counted.
     """
-    return lower + lower.mT - lower * jnp.eye(3)
+    return lower + lower.swapaxes(-1, -2) - lower * jnp.eye(3)
 
 
-def _lower_sym_cell_virial(vectors: Array, vector_gradients: Array) -> Array:
+def _lower_sym_cell_virial(
+    vectors: units.Length, vector_gradients: units.Force
+) -> units.Energy:
     """Lower triangle of ``S = h^T · ∂U/∂h`` from lower-triangular ``h`` and
     the lower-triangular projection of ``∂U/∂h``.
 
@@ -93,7 +96,7 @@ def _lower_sym_cell_virial(vectors: Array, vector_gradients: Array) -> Array:
     ``g`` are not parameters and are not stored). The upper triangle is not
     materialized; the final position-plus-cell virial is symmetrized later.
     """
-    return jnp.tril(vectors.mT @ vector_gradients)
+    return units.apply(jnp.tril, vectors.swapaxes(-1, -2) @ vector_gradients)
 
 
 def _periodic_mask(cell: Cell[AnyPeriodicity]) -> Array:
@@ -109,15 +112,15 @@ def _periodic_mask(cell: Cell[AnyPeriodicity]) -> Array:
 
 
 def _stress_via_virial_theorem(
-    position_gradients: Array,
-    vector_gradients: Array,
-    positions: Array,
+    position_gradients: units.Force,
+    vector_gradients: units.Force,
+    positions: units.Length,
     cell: Cell[AnyPeriodicity],
     system: Index[SystemId],
-) -> Array:
+) -> units.Pressure:
     """σ = −1/V sym[Σ_i r_i ⊗ ∂U/∂r_i + h^T · ∂U/∂h], zeroed on non-periodic axes."""
     pos_outer = system.sum_over(position_gradients[:, None] * positions[..., None]).data
-    pos_lower = jnp.tril(pos_outer)
+    pos_lower = units.apply(jnp.tril, pos_outer)
     cell_lower = _lower_sym_cell_virial(cell.vectors, vector_gradients)
     volume = cell.volume[..., None, None]
     sigma = _symmetrize_from_lower(-(pos_lower + cell_lower) / volume)
@@ -125,15 +128,15 @@ def _stress_via_virial_theorem(
 
 
 def _molecular_stress_via_virial_theorem(
-    position_gradients: Array,
-    vector_gradients: Array,
-    positions: Array,
-    com: Table[GroupId, Array],
+    position_gradients: units.Force,
+    vector_gradients: units.Force,
+    positions: units.Length,
+    com: Table[GroupId, units.Length],
     group: Index[GroupId],
     group_cells: Table[GroupId, Cell[AnyPeriodicity]],
     system: Index[SystemId],
     system_cell: Cell[AnyPeriodicity],
-) -> Array:
+) -> units.Pressure:
     """Molecular virial stress about per-group centres of mass (RASPA convention).
 
     ``com`` comes from [center_of_mass][kups.core.utils.position.center_of_mass],
@@ -143,7 +146,7 @@ def _molecular_stress_via_virial_theorem(
     pos_outer = system.sum_over(
         position_gradients[:, None] * (positions - rel_pos)[..., None]
     ).data
-    pos_lower = jnp.tril(pos_outer)
+    pos_lower = units.apply(jnp.tril, pos_outer)
     cell_lower = _lower_sym_cell_virial(system_cell.vectors, vector_gradients)
     volume = system_cell.volume[..., None, None]
     sigma = _symmetrize_from_lower(-(pos_lower + cell_lower) / volume)
@@ -153,7 +156,7 @@ def _molecular_stress_via_virial_theorem(
 def stress_via_virial_theorem(
     particles: Table[ParticleId, IsVirialParticles],
     systems: Table[SystemId, IsVirialSystems],
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Pressure]:
     """Compute atomic-level virial stress tensor.
 
     Args:
@@ -175,8 +178,8 @@ def stress_via_virial_theorem(
 
 
 def total_lattice_gradient[C: Cell[AnyPeriodicity]](
-    positions: Array,
-    position_gradients: Array,
+    positions: units.Length,
+    position_gradients: units.Force,
     cell: Table[SystemId, C],
     partial_lattice_gradient: Table[SystemId, C],
     system: Index[SystemId],
@@ -206,7 +209,7 @@ def total_lattice_gradient[C: Cell[AnyPeriodicity]](
     """
 
     @Table.transform
-    def compose_gradient(cell: C, coupling: Array, partial: C) -> C:
+    def compose_gradient(cell: C, coupling: units.Force, partial: C) -> C:
         # A non-periodic basis vector is a bounding-box edge, not a translation,
         # so its row carries no atoms -- drop the coupling there.
         coupling = coupling * jnp.array(cell.periodic)[:, None]
@@ -216,7 +219,7 @@ def total_lattice_gradient[C: Cell[AnyPeriodicity]](
         )
 
     outer = positions[:, :, None] * position_gradients[:, None, :]  # r_i ⊗ ∂E/∂r_i
-    coupling = system.sum_over(cell[system].inverse_vectors.mT @ outer)
+    coupling = system.sum_over(cell[system].inverse_vectors.swapaxes(-1, -2) @ outer)
     return compose_gradient(cell, coupling, partial_lattice_gradient)
 
 
@@ -224,7 +227,7 @@ def molecular_stress_via_virial_theorem(
     particles: Table[ParticleId, IsMolecularVirialParticles],
     groups: Table[GroupId, HasSystemIndex],
     systems: Table[SystemId, IsVirialSystems],
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Pressure]:
     """Compute molecular virial stress tensor (RASPA convention).
 
     The position virial is taken about each group's mass-weighted centre of

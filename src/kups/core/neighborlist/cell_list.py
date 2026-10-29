@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.cell import AnyPeriodicity, Cell
@@ -156,7 +157,7 @@ def _cell_list_subselect(
     keys: Table[ParticleId, FractionalPoints],
     queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Array,
+    cutoffs: units.Length,
     max_num_cells: Capacity[int],
     max_num_candidates: Capacity[int],
     promise_unique_cells: bool = False,
@@ -216,7 +217,7 @@ class CellListSelector:
     per-query cell deduplication in the uncached lookup.
     """
 
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
     max_cells: Capacity[int]
     max_candidates: Capacity[int]
     max_image_candidates: Capacity[int]
@@ -307,7 +308,7 @@ class CellListNeighborList:
     avg_edges: Capacity[int]
     cells: Capacity[int]
     avg_image_candidates: Capacity[int]
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
     cache: CellListLookup | None = field(default=None, kw_only=True)
 
     @classmethod
@@ -315,7 +316,7 @@ class CellListNeighborList:
         cls,
         state: S,
         lens: Lens[S, IsCellListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> CellListNeighborList:
         params = lens.get(state)
         return CellListNeighborList(
@@ -335,7 +336,7 @@ class CellListNeighborList:
     def from_state(
         cls,
         state: IsNeighborListState[IsCellListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> CellListNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 

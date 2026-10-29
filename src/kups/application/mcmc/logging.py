@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Protocol
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
@@ -19,6 +18,7 @@ from kups.application.mcmc.data import (
     MotifParticles,
     StressResult,
 )
+from kups.core import units
 from kups.core.capacity import Capacity
 from kups.core.data import Buffered, Index, Table
 from kups.core.data.wrappers import WithCache
@@ -27,6 +27,7 @@ from kups.core.potential import EmptyType, PotentialOut
 from kups.core.propagator import StateProperty
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import GroupId, MotifId, MotifParticleId, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.widom import WidomStatistics
@@ -34,6 +35,8 @@ from kups.potential.classical.ewald import EwaldCache, EwaldParameters
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
 )
+
+_PRESSURE_UNIT = u.eV / u.angstrom**3
 
 
 class IsMCMCState(Protocol):
@@ -48,13 +51,17 @@ class IsMCMCState(Protocol):
     @property
     def motifs(self) -> Table[MotifParticleId, MotifParticles]: ...
     @property
-    def translation_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def translation_params(
+        self,
+    ) -> Table[SystemId, ParameterSchedulerState[units.Length]]: ...
     @property
-    def rotation_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def rotation_params(self) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
     @property
-    def reinsertion_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def reinsertion_params(
+        self,
+    ) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
     @property
-    def exchange_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def exchange_params(self) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
     @property
     def lj_parameters(
         self,
@@ -85,13 +92,13 @@ class MCMCFixedData:
 class MCMCSystemStepData:
     """Per-system, per-cycle data: energies, move statistics, and stress."""
 
-    potential_energy: Array
-    lj_energy: Array
-    ewald_short_range_energy: Array
-    ewald_long_range_energy: Array
-    ewald_self_energy: Array
-    ewald_exclusion_energy: Array
-    translation_step_width: Array
+    potential_energy: units.Energy
+    lj_energy: units.Energy
+    ewald_short_range_energy: units.Energy
+    ewald_long_range_energy: units.Energy
+    ewald_self_energy: units.Energy
+    ewald_exclusion_energy: units.Energy
+    translation_step_width: units.Length
     rotation_step_width: Array
     translation_acceptance: Array
     rotation_acceptance: Array
@@ -162,7 +169,7 @@ def make_mcmc_logged_data[S: IsMCMCState](
         if stress_fn is not None:
             guest_stress = stress_fn(jax.random.key(0), state)
         else:
-            z = jnp.zeros((len(state.systems), 3, 3))
+            z = units.zeros((len(state.systems), 3, 3), _PRESSURE_UNIT)
             guest_stress = Table(state.systems.keys, StressResult(z, z, z))
         sys_keys = state.systems.keys
         system_step = MCMCSystemStepData(

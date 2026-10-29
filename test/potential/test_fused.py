@@ -13,6 +13,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
@@ -56,6 +57,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.ewald import (
@@ -92,6 +94,9 @@ from kups.potential.common.pair import (
     PairEnergySum,
     PairTerm,
 )
+from test.units import EV, A, assert_close
+
+E = u.e
 
 _LABELS = (Label("A"), Label("B"))
 _PARAMS = CellListCacheParameters(
@@ -101,9 +106,9 @@ _PARAMS = CellListCacheParameters(
 
 @dataclass
 class _Points:
-    positions: jax.Array
+    positions: units.Length
     labels: Index[Label]
-    charges: jax.Array
+    charges: units.Charge
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
@@ -132,13 +137,13 @@ class _CachedState[Feat](_MiniState):
 
 class _Parameters(Protocol):
     @property
-    def cutoff(self) -> Table[SystemId, jax.Array]: ...
+    def cutoff(self) -> Table[SystemId, units.Length]: ...
 
 
 class _PointChanges(TypedDict, total=False):
-    positions: jax.Array
+    positions: units.Length
     labels: Index[Label]
-    charges: jax.Array
+    charges: units.Charge
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
@@ -201,9 +206,9 @@ def _make_state(
     n = sum(counts) + n_inactive * n_systems
     particles = Table.arange(
         _Points(
-            positions=jnp.concatenate(positions),
+            positions=jnp.concatenate(positions) * A,
             labels=Index(_LABELS, jnp.arange(n) % 2),
-            charges=jnp.concatenate(charges),
+            charges=jnp.concatenate(charges) * E,
             system=Index(
                 tuple(SystemId(i) for i in range(n_systems)),
                 jnp.asarray(np.concatenate(system_ids)),
@@ -217,14 +222,14 @@ def _make_state(
         ),
         label=ParticleId,
     )
-    lattices = jnp.stack([jnp.eye(3) * length for length in box_lengths])
+    lattices = jnp.stack([jnp.eye(3) * length for length in box_lengths]) * A
     systems = Table.arange(
         _System(
             cell=Cell(TriclinicFrame.from_matrix(lattices), periodic=(True, True, True))
         ),
         label=SystemId,
     )
-    zero = Table.arange(jnp.zeros(n_systems), label=SystemId)
+    zero = Table.arange(jnp.zeros(n_systems) * EV, label=SystemId)
     return _MiniState(
         particles, systems, KahanSummand.init(PotentialOut(zero, EMPTY, EMPTY))
     )
@@ -233,17 +238,17 @@ def _make_state(
 def _lj_params(n_systems: int, cutoff: float) -> LennardJonesParameters:
     return LennardJonesParameters.from_lorentz_berthelot_mixing(
         labels=_LABELS,
-        sigma=jnp.array([1.8, 2.2]),
-        epsilon=jnp.array([25.0, 60.0]),
-        cutoff=Table.arange(jnp.full((n_systems,), cutoff), label=SystemId),
+        sigma=jnp.array([1.8, 2.2]) * A,
+        epsilon=jnp.array([25.0, 60.0]) * EV,
+        cutoff=Table.arange(jnp.full((n_systems,), cutoff) * A, label=SystemId),
     )
 
 
 def _ewald_params(n_systems: int, cutoff: float) -> EwaldParameters:
     return EwaldParameters(
-        alpha=Table.arange(jnp.full((n_systems,), 0.3), label=SystemId),
-        cutoff=Table.arange(jnp.full((n_systems,), cutoff), label=SystemId),
-        k_max=Table.arange(jnp.zeros(n_systems), label=SystemId),
+        alpha=Table.arange(jnp.full((n_systems,), 0.3) / A, label=SystemId),
+        cutoff=Table.arange(jnp.full((n_systems,), cutoff) * A, label=SystemId),
+        k_max=Table.arange(jnp.zeros(n_systems) / A, label=SystemId),
         reciprocal_lattice_shifts=Table.arange(
             jnp.zeros((n_systems, 1, 3), dtype=int), label=SystemId
         ),
@@ -267,7 +272,7 @@ def _graph_full[Params: _Parameters](
         _MiniState,
         GraphPotentialInput[Params, _Points, HasCell[AnyPeriodicity], Literal[2]],
     ],
-) -> jax.Array:
+) -> units.Energy:
     """Ground truth: materialized-edge full evaluation, per-system energies."""
     edges = _neighborlist(params)(state.particles, state.systems)
     graph = HyperGraph(state.particles, state.systems, edges)
@@ -290,11 +295,11 @@ def _per_particle_exclusion(state: _MiniState) -> _MiniState:
 _LJ_PAIR: PairEnergy[LennardJonesParameters, _Points, Index[Label]] = (
     lennard_jones_pair.with_particles(identity_lens(_Points))
 )
-_EWALD_PAIR: PairEnergy[EwaldParameters, _Points, jax.Array] = (
+_EWALD_PAIR: PairEnergy[EwaldParameters, _Points, units.Charge] = (
     ewald_short_range_pair.with_particles(identity_lens(_Points))
 )
 type _PairParameters = tuple[LennardJonesParameters, EwaldParameters]
-_LJ_EWALD_PAIR: PairEnergySum[_PairParameters, _Points, Index[Label] | jax.Array] = (
+_LJ_EWALD_PAIR: PairEnergySum[_PairParameters, _Points, Index[Label] | units.Charge] = (
     _LJ_PAIR.with_parameters(lambda p: p[0])
     + _EWALD_PAIR.with_parameters(lambda p: p[1])
 )
@@ -302,7 +307,7 @@ _LJ_EWALD_PAIR: PairEnergySum[_PairParameters, _Points, Index[Label] | jax.Array
 _LJ: FusedNeighborEnergy[_MiniState, LennardJonesParameters, _Points, Index[Label]] = (
     FusedNeighborEnergy(_LJ_PAIR, _PARAMS)
 )
-_EWALD: FusedNeighborEnergy[_MiniState, EwaldParameters, _Points, jax.Array] = (
+_EWALD: FusedNeighborEnergy[_MiniState, EwaldParameters, _Points, units.Charge] = (
     FusedNeighborEnergy(_EWALD_PAIR, _PARAMS)
 )
 
@@ -332,7 +337,7 @@ def _potential[State: _MiniState, Params, Feat](
 
 def _step[State: _MiniState](
     potential: Potential[State, EmptyType, EmptyType, _Move],
-) -> Callable[[State, _Move, Accept], Result[Any, tuple[jax.Array, State]]]:
+) -> Callable[[State, _Move, Accept], Result[Any, tuple[units.Energy, State]]]:
     """One compiled program that evaluates a move and commits it.
 
     It returns the proposed energies and the state after applying the move's
@@ -341,7 +346,7 @@ def _step[State: _MiniState](
 
     @jax.jit
     @as_result_function
-    def step(state: State, move: _Move, accept: Accept) -> tuple[jax.Array, State]:
+    def step(state: State, move: _Move, accept: Accept) -> tuple[units.Energy, State]:
         out = potential(state, move)
         return out.data.total_energies.data, move(out.patch(state, accept), accept)
 
@@ -509,7 +514,7 @@ class TestPotentialFusion:
         params = _lj_params(2, 3.0)
         params = dataclasses.replace(params, sigma=params.sigma * 0.25)
         other = dataclasses.replace(
-            params, cutoff=params.cutoff.set_data(jnp.full(2, 3.5))
+            params, cutoff=params.cutoff.set_data(jnp.full(2, 3.5) * A)
         )
 
         def make(parameters: LennardJonesParameters):
@@ -558,11 +563,11 @@ class TestPotentialFusion:
             move = _move(
                 state,
                 jnp.array([0, 8]),
-                state.particles.data.positions[jnp.array([0, 8])] + 0.15,
+                state.particles.data.positions[jnp.array([0, 8])] + 0.15 * A,
             )
             proposed = move(state, accept_all)
             result = potential(state, move)
-            npt.assert_allclose(
+            assert_close(
                 result.data.total_energies.data,
                 original(proposed).data.total_energies.data,
                 rtol=1e-10,
@@ -570,7 +575,7 @@ class TestPotentialFusion:
             )
             accept = state.systems.set_data(jnp.array(accepted))
             state = move(result.patch(state, accept), accept)
-            npt.assert_allclose(
+            assert_close(
                 potential(state).data.total_energies.data,
                 original(state).data.total_energies.data,
                 rtol=1e-10,
@@ -604,7 +609,9 @@ class TestFullEvaluation:
     @pytest.mark.parametrize("old_input", [False, True])
     def test_unprobed_constructor_selects_old_or_proposed_input(self, old_input: bool):
         state = _make_state(jax.random.key(32), (4,), (12.0,))
-        move = _move(state, jnp.array([0]), state.particles.data.positions[:1] + 0.5)
+        move = _move(
+            state, jnp.array([0]), state.particles.data.positions[:1] + 0.5 * A
+        )
         constructor = FusedInputConstructor(
             particles=lambda s: s.particles,
             systems=lambda s: s.systems,
@@ -618,16 +625,16 @@ class TestFullEvaluation:
         inp = constructor(state, move, old_input=old_input)
         expected = state.particles.data.positions
         if not old_input:
-            expected = expected.at[0].add(0.5)
-        npt.assert_allclose(inp.cloud.particles.data.positions, expected)
-        npt.assert_allclose(inp.parameters, expected.sum())
+            expected = expected.at[0].add(0.5 * A)
+        assert_close(inp.cloud.particles.data.positions, expected)
+        assert_close(inp.parameters, expected.sum())
 
     def test_lj_matches_graph_with_inactive_rows(self):
         state = _make_state(jax.random.PRNGKey(0), (24, 16), (12.0, 10.0), n_inactive=4)
         params = _lj_params(2, 3.0)
         pot = _potential(_LJ, params)
         ref = _graph_full(state, params, lennard_jones_energy)
-        npt.assert_allclose(pot(state).data.total_energies.data, ref, rtol=1e-10)
+        assert_close(pot(state).data.total_energies.data, ref, rtol=1e-10)
 
     def test_ewald_sr_matches_graph(self):
         state = _per_particle_exclusion(
@@ -636,7 +643,7 @@ class TestFullEvaluation:
         params = _ewald_params(2, 3.5)
         pot = _potential(_EWALD, params)
         ref = _graph_full(state, params, ewald_short_range_energy)
-        npt.assert_allclose(pot(state).data.total_energies.data, ref, rtol=1e-10)
+        assert_close(pot(state).data.total_energies.data, ref, rtol=1e-10)
 
     def test_float32_kernels_sum_in_float64(self):
         state = _per_particle_exclusion(
@@ -647,7 +654,7 @@ class TestFullEvaluation:
         actual = _potential(engine, params)(state).data.total_energies.data
         ref = _graph_full(state, params, ewald_short_range_energy)
         assert actual.dtype == jnp.float64
-        npt.assert_allclose(actual, ref, rtol=1e-4)
+        assert_close(actual, ref, rtol=1e-4)
         cloud = PointCloud(state.particles, state.systems)
         assert (
             engine.build_cell_list_cache(params, cloud).rows.frac.dtype == jnp.float32
@@ -658,27 +665,27 @@ class TestFullEvaluation:
         params = _lj_params(2, 3.0)
         edges = _neighborlist(params)(state.particles, state.systems)
 
-        def moved(positions: jax.Array) -> Table[ParticleId, _Points]:
+        def moved(positions: units.Length) -> Table[ParticleId, _Points]:
             return _with_points(state, positions=positions).particles
 
-        def graph_energy(positions: jax.Array) -> jax.Array:
+        def graph_energy(positions: units.Length) -> units.Energy:
             graph = HyperGraph(moved(positions), state.systems, edges)
             return lennard_jones_energy(
                 GraphPotentialInput(params, graph)
             ).data.data.sum()
 
-        def fused_energy(positions: jax.Array) -> jax.Array:
+        def fused_energy(positions: units.Length) -> units.Energy:
             inp = FusedFullInput(params, PointCloud(moved(positions), state.systems))
             return _LJ(inp).data.data.sum()
 
         x = state.particles.data.positions
         fused, graph = (
-            jax.jit(as_result_function(jax.grad(energy)))(x)
+            jax.jit(as_result_function(units.grad(energy)))(x)
             for energy in (fused_energy, graph_energy)
         )
         fused.raise_assertion()
         graph.raise_assertion()
-        npt.assert_allclose(fused.value, graph.value, rtol=1e-8, atol=1e-12)
+        assert_close(fused.value, graph.value, rtol=1e-8, atol=1e-12)
 
     def test_small_box_stencil_dedup(self):
         # Two bins per axis: the stencil wraps onto duplicates, which must not
@@ -691,7 +698,7 @@ class TestFullEvaluation:
         assert estimated.stencil_width == 8
         pot = _potential(FusedNeighborEnergy(_LJ_PAIR, estimated), params)
         ref = _graph_full(state, params, lennard_jones_energy)
-        npt.assert_allclose(pot(state).data.total_energies.data, ref, rtol=1e-10)
+        assert_close(pot(state).data.total_energies.data, ref, rtol=1e-10)
 
 
 class TestPeriodicImages:
@@ -709,26 +716,32 @@ class TestPeriodicImages:
         box, lattice = state.systems.set_data((jnp.array([4.0, 10.0]), vectors))[
             state.particles.data.system
         ]
-        fractions = state.particles.data.positions / box[:, None]
+        fractions = state.particles.data.positions.to(A) / box[:, None]
         state = _with_points(
             state,
-            positions=jnp.einsum("ni,nij->nj", fractions, lattice),
+            positions=jnp.einsum("ni,nij->nj", fractions, lattice) * A,
             charges=state.particles.data.charges.at[jnp.array([6, 12])].set(
-                jnp.array([0.2, -0.3])
+                jnp.array([0.2, -0.3]) * E
             ),
         )
         state = dataclasses.replace(
             state,
             systems=state.systems.set_data(
-                _System(Cell(TriclinicFrame.from_matrix(vectors), periodic=periodic))
+                _System(
+                    Cell(TriclinicFrame.from_matrix(vectors * A), periodic=periodic)
+                )
             ),
         )
         lj = _lj_params(2, 4.4)
         lj = dataclasses.replace(
-            lj, sigma=lj.sigma * 0.2, cutoff=lj.cutoff.set_data(jnp.array([4.4, 3.5]))
+            lj,
+            sigma=lj.sigma * 0.2,
+            cutoff=lj.cutoff.set_data(jnp.array([4.4, 3.5]) * A),
         )
         ew = _ewald_params(2, 5.7)
-        ew = dataclasses.replace(ew, cutoff=ew.cutoff.set_data(jnp.array([3.0, 5.7])))
+        ew = dataclasses.replace(
+            ew, cutoff=ew.cutoff.set_data(jnp.array([3.0, 5.7]) * A)
+        )
         params = (lj, ew)
         layout = CellListCacheParameters.estimate(
             state.particles,
@@ -745,7 +758,7 @@ class TestPeriodicImages:
     @staticmethod
     def _reference(
         state: _MiniState, params: _PairParameters, images: int
-    ) -> jax.Array:
+    ) -> units.Energy:
         def evaluate[Params: _Parameters](
             points: _MiniState,
             parameters: Params,
@@ -755,7 +768,7 @@ class TestPeriodicImages:
                     Params, _Points, HasCell[AnyPeriodicity], Literal[2]
                 ],
             ],
-        ) -> jax.Array:
+        ) -> units.Energy:
             n = points.particles.size
             neighborlist = DenseNearestNeighborList(
                 avg_candidates=FixedCapacity(n),
@@ -776,7 +789,7 @@ class TestPeriodicImages:
     @as_result_function
     def _compiled_reference(
         state: _MiniState, params: _PairParameters, images: int
-    ) -> jax.Array:
+    ) -> units.Energy:
         """Compiled once for all tests sharing state shapes and image count."""
         return TestPeriodicImages._reference(state, params, images)
 
@@ -796,21 +809,17 @@ class TestPeriodicImages:
             state, params, engine.layout.max_images_per_pair
         )
         expected.raise_assertion()
-        npt.assert_allclose(
-            actual.value.data.data, expected.value, rtol=1e-10, atol=1e-10
-        )
+        assert_close(actual.value.data.data, expected.value, rtol=1e-10, atol=1e-10)
 
     @pytest.mark.parametrize("kind", ["lj", "ewald"])
     def test_single_particle_retains_nonzero_self_images(
         self, kind: Literal["lj", "ewald"]
     ):
-        from kups.potential.classical.ewald import TO_STANDARD_UNITS
-
         state = _make_state(jax.random.key(92), (1,), (4.0,), molecule_size=1)
 
         def evaluate[Params: _Parameters, Feat](
             parameters: Params, pair: PairTerm[Params, _Points, Feat]
-        ) -> jax.Array:
+        ) -> units.Energy:
             layout = CellListCacheParameters.estimate(
                 state.particles, state.systems, parameters.cutoff
             )
@@ -825,16 +834,17 @@ class TestPeriodicImages:
 
         if kind == "lj":
             lj = _lj_params(1, 4.4)
-            c6 = (lj.sigma[0, 0] / 4.0) ** 6
+            c6 = (lj.sigma[0, 0] / (4.0 * A)) ** 6
             expected = 3 * 4 * lj.epsilon[0, 0] * (c6**2 - c6)
             actual = evaluate(lj, _LJ_PAIR)
         else:
             ew = _ewald_params(1, 4.4)
             charge = state.particles.data.charges[0]
-            expected = 3 * TO_STANDARD_UNITS * charge**2 * (1 - jax.lax.erf(1.2)) / 4
+            k_e = units.constants.k_e
+            expected = 3 * k_e * charge**2 * (1 - jax.lax.erf(1.2)) / (4.0 * A)
             actual = evaluate(ew, _EWALD_PAIR)
         # Six nearest self-images, halved for directed pairs; the zero shift is absent.
-        npt.assert_allclose(actual, [expected], rtol=1e-10, atol=1e-12)
+        assert_close(actual, expected[None], rtol=1e-10, atol=1e-12)
 
     @pytest.mark.parametrize(
         "key_layout,key_chunk_size,key_block_size",
@@ -863,7 +873,7 @@ class TestPeriodicImages:
         )
         images = engine.layout.max_images_per_pair
 
-        def expected_energies(current: _MiniState) -> jax.Array:
+        def expected_energies(current: _MiniState) -> units.Energy:
             # A plain _MiniState: the cached state's cell table would change the
             # reference's input signature and recompile it.
             result = self._compiled_reference(
@@ -899,13 +909,14 @@ class TestPeriodicImages:
                 move = _move(
                     state,
                     rows,
-                    state.particles.data.positions[rows] + jnp.array([4.2, 0.3, -0.2]),
+                    state.particles.data.positions[rows]
+                    + jnp.array([4.2, 0.3, -0.2]) * A,
                 )
             elif step == 1:
                 move = _move(
                     state,
                     jnp.array([6, 12]),
-                    jnp.array([[1.1, 2.2, 3.3], [8.2, 1.2, 4.2]]),
+                    jnp.array([[1.1, 2.2, 3.3], [8.2, 1.2, 4.2]]) * A,
                 )
             elif step == 2:
                 rows = jnp.array([6, 12])
@@ -920,18 +931,20 @@ class TestPeriodicImages:
                 )
             else:
                 rows = jnp.array([3, 10])
-                move = _move(state, rows, state.particles.data.positions[rows] + 0.2)
+                move = _move(
+                    state, rows, state.particles.data.positions[rows] + 0.2 * A
+                )
             result = evaluate(state, move, state.systems.set_data(jnp.array(accepted)))
             result.raise_assertion()
             energies, committed = result.value
-            npt.assert_allclose(
+            assert_close(
                 energies,
                 expected_energies(move(state, accept_all)),
                 rtol=1e-9,
                 atol=1e-9,
             )
             state = committed
-            npt.assert_allclose(
+            assert_close(
                 state.cache.total.total_energies.data,
                 expected_energies(state),
                 rtol=1e-9,
@@ -941,7 +954,7 @@ class TestPeriodicImages:
     def test_position_and_cell_derivatives_with_images(self):
         state, params, engine = self._setup()
 
-        def energy(positions: jax.Array, vectors: jax.Array, fused: bool):
+        def energy(positions: units.Length, vectors: units.Length, fused: bool):
             moved = _with_points(state, positions=positions)
             moved = dataclasses.replace(
                 moved,
@@ -965,16 +978,16 @@ class TestPeriodicImages:
             return values.sum()
 
         actual = jax.jit(
-            as_result_function(jax.grad(lambda x, h: energy(x, h, True), (0, 1)))
+            as_result_function(units.grad(lambda x, h: energy(x, h, True), (0, 1)))
         )(state.particles.data.positions, state.systems.data.cell.vectors)
         expected = jax.jit(
-            as_result_function(jax.grad(lambda x, h: energy(x, h, False), (0, 1)))
+            as_result_function(units.grad(lambda x, h: energy(x, h, False), (0, 1)))
         )(state.particles.data.positions, state.systems.data.cell.vectors)
         actual.raise_assertion()
         expected.raise_assertion()
         for a, b in zip(actual.value, expected.value):
-            assert jnp.isfinite(a).all()
-            npt.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
+            assert jnp.isfinite(a.value).all()
+            assert_close(a, b, rtol=1e-9, atol=1e-9)
 
     def test_image_capacity_is_checked(self):
         state, params, engine = self._setup()
@@ -997,7 +1010,7 @@ def _molecule_rows(state: _MiniState, system: int, size: int = 3) -> jax.Array:
 
 
 def _move(
-    state: _MiniState, rows: jax.Array, positions: jax.Array, active: bool = True
+    state: _MiniState, rows: jax.Array, positions: units.Length, active: bool = True
 ) -> _Move:
     p = state.particles.data
     return _Move(
@@ -1015,12 +1028,12 @@ def _move(
 
 @overload
 def _with_cache[Feat](
-    state: _MiniState, energies: jax.Array, table: CellListCache[Feat]
+    state: _MiniState, energies: units.Energy, table: CellListCache[Feat]
 ) -> _CachedState[Feat]: ...
 @overload
-def _with_cache(state: _MiniState, energies: jax.Array) -> _MiniState: ...
+def _with_cache(state: _MiniState, energies: units.Energy) -> _MiniState: ...
 def _with_cache[Feat](
-    state: _MiniState, energies: jax.Array, table: CellListCache[Feat] | None = None
+    state: _MiniState, energies: units.Energy, table: CellListCache[Feat] | None = None
 ) -> _MiniState:
     cache = KahanSummand.init(
         PotentialOut(Table.arange(energies, label=SystemId), EMPTY, EMPTY)
@@ -1060,7 +1073,7 @@ class TestDeltaEvaluation:
             patch_idx_view=_patch_indices,
             cache_lens=lens(lambda s: s.cache),
         )
-        npt.assert_allclose(
+        assert_close(
             pot(state, move).data.total_energies.data, after, rtol=1e-9, atol=1e-12
         )
 
@@ -1070,7 +1083,7 @@ class TestDeltaEvaluation:
         move = _move(
             state,
             rows,
-            state.particles.data.positions[rows] + jnp.array([1.1, -0.6, 0.4]),
+            state.particles.data.positions[rows] + jnp.array([1.1, -0.6, 0.4]) * A,
         )
         self._check(state, move, _lj_params(2, 3.0), lennard_jones_energy, _LJ)
 
@@ -1081,8 +1094,10 @@ class TestDeltaEvaluation:
             _make_state(jax.random.PRNGKey(5), (18, 12), (12.0, 10.0), n_inactive=3)
         )
         rows = jnp.concatenate([_molecule_rows(state, 0), _molecule_rows(state, 1)])
-        new = state.particles.data.positions[rows] + jnp.array([0.9, 0.3, -0.5])
-        new = new + 0.2 * jax.random.normal(jax.random.PRNGKey(6), (rows.shape[0], 3))
+        new = state.particles.data.positions[rows] + jnp.array([0.9, 0.3, -0.5]) * A
+        new = (
+            new + 0.2 * jax.random.normal(jax.random.PRNGKey(6), (rows.shape[0], 3)) * A
+        )
         self._check(
             state,
             _move(state, rows, new),
@@ -1096,7 +1111,9 @@ class TestDeltaEvaluation:
         params = _lj_params(2, 3.0)
         p = state.particles.data
         inactive = jnp.nonzero(~p.inclusion.valid_mask)[0][:2]
-        insert = _move(state, inactive, jnp.array([[3.1, 4.2, 5.3], [3.6, 4.2, 5.3]]))
+        insert = _move(
+            state, inactive, jnp.array([[3.1, 4.2, 5.3], [3.6, 4.2, 5.3]]) * A
+        )
         self._check(state, insert, params, lennard_jones_energy, _LJ)
         rows = _molecule_rows(state, 1)
         delete = _move(state, rows, p.positions[rows], active=False)
@@ -1108,9 +1125,9 @@ class TestDeltaEvaluation:
         )
         p = state.particles.data
         inactive = jnp.nonzero(~p.inclusion.valid_mask)[0][:3]
-        charges = p.charges.at[inactive].set(jnp.array([0.4, -0.25, -0.15]))
+        charges = p.charges.at[inactive].set(jnp.array([0.4, -0.25, -0.15]) * E)
         state = _with_points(state, charges=charges)
-        new = jnp.array([[3.1, 4.2, 5.3], [4.0, 4.2, 5.3], [3.5, 4.9, 5.3]])
+        new = jnp.array([[3.1, 4.2, 5.3], [4.0, 4.2, 5.3], [3.5, 4.9, 5.3]]) * A
         self._check(
             state,
             _move(state, inactive, new),
@@ -1134,7 +1151,7 @@ class TestPersistentCellListCache:
             positions[system, :, system // 2] = (
                 [0.2, 1.2] if system % 2 == 0 else [9.8, 8.8]
             )
-        state = _with_points(state, positions=jnp.array(positions.reshape(-1, 3)))
+        state = _with_points(state, positions=jnp.array(positions.reshape(-1, 3)) * A)
         state = dataclasses.replace(
             state,
             systems=state.systems.set_data(
@@ -1147,7 +1164,7 @@ class TestPersistentCellListCache:
             FixedCapacity(12), FixedCapacity(12), FixedCapacity(12), params.cutoff
         )
 
-        def full(current: _MiniState) -> jax.Array:
+        def full(current: _MiniState) -> units.Energy:
             graph = HyperGraph(
                 current.particles,
                 current.systems,
@@ -1184,12 +1201,14 @@ class TestPersistentCellListCache:
         accept = state.systems.set_data(jnp.ones(6, bool))
         for distance in (0.3, 0.2, -0.8):
             move = _move(
-                state, rows, state.particles.data.positions[rows] + distance * direction
+                state,
+                rows,
+                state.particles.data.positions[rows] + distance * direction * A,
             )
             result = evaluate(state, move, accept)
             result.raise_assertion()
             _, state = result.value
-            npt.assert_allclose(
+            assert_close(
                 state.cache.total.total_energies.data,
                 full(state),
                 rtol=1e-10,
@@ -1219,11 +1238,13 @@ class TestPersistentCellListCache:
             state.particles.keys, jnp.array([0 if valid_target else n, n, n])
         )
         data = state.particles[Index(state.particles.keys, jnp.zeros(3, dtype=int))]
-        move = _Move(targets, dataclasses.replace(data, positions=data.positions + 0.2))
+        move = _Move(
+            targets, dataclasses.replace(data, positions=data.positions + 0.2 * A)
+        )
         accept = state.systems.set_data(jnp.array([True]))
         result = potential(state, move)
         expected = _graph_full(move(state, accept), params, lennard_jones_energy)
-        npt.assert_allclose(result.data.total_energies.data, expected, rtol=1e-10)
+        assert_close(result.data.total_energies.data, expected, rtol=1e-10)
         updated = result.patch(state, accept)
         for before, after in zip(
             jax.tree.leaves(table.rows),
@@ -1279,13 +1300,13 @@ class TestPersistentCellListCache:
 
         def translation(state: _MiniState, key: jax.Array) -> _Move:
             rows = jnp.concatenate([_molecule_rows(state, 0), _molecule_rows(state, 1)])
-            shift = jax.random.uniform(key, (1, 3)) * 2.0 - 1.0
+            shift = (jax.random.uniform(key, (1, 3)) * 2.0 - 1.0) * A
             return _move(state, rows, state.particles.data.positions[rows] + shift)
 
         def insertion(state: _MiniState, key: jax.Array) -> _Move:
             base = jax.random.uniform(key, (1, 3)) * 8.0 + 1.0
             offsets = jnp.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.55, 0.0]])
-            return _move(state, inactive[:3], base + offsets)
+            return _move(state, inactive[:3], (base + offsets) * A)
 
         def deletion(state: _MiniState, key: jax.Array) -> _Move:
             del key
@@ -1314,8 +1335,8 @@ class TestPersistentCellListCache:
             _, state = result.value
             committed = _graph_full(state, params, lennard_jones_energy)
             npt.assert_allclose(
-                state.cache.total.total_energies.data,
-                committed,
+                state.cache.total.total_energies.data.to(EV),
+                committed.to(EV),
                 rtol=1e-9,
                 atol=1e-12,
                 err_msg=f"step {step}",
@@ -1373,19 +1394,19 @@ class TestAdditivePairEnergy:
         ] = FusedNeighborEnergy(_LJ_PAIR + _LJ_PAIR, _PARAMS)
         actual = _potential(engine, params)(state).data.total_energies.data
         expected = 2 * _graph_full(state, params, lennard_jones_energy)
-        npt.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+        assert_close(actual, expected, rtol=1e-10, atol=1e-10)
 
     @staticmethod
     def _engine[State: _MiniState](
-        table_lens: Lens[State, CellListCache[tuple[Index[Label] | jax.Array, ...]]]
+        table_lens: Lens[State, CellListCache[tuple[Index[Label] | units.Charge, ...]]]
         | None = None,
     ) -> FusedNeighborEnergy[
-        State, _PairParameters, _Points, tuple[Index[Label] | jax.Array, ...]
+        State, _PairParameters, _Points, tuple[Index[Label] | units.Charge, ...]
     ]:
         return FusedNeighborEnergy(_LJ_EWALD_PAIR, _PARAMS, table_lens)
 
     @staticmethod
-    def _reference(state: _MiniState, params: _PairParameters) -> jax.Array:
+    def _reference(state: _MiniState, params: _PairParameters) -> units.Energy:
         return _graph_full(state, params[0], lennard_jones_energy) + _graph_full(
             _per_particle_exclusion(state), params[1], ewald_short_range_energy
         )
@@ -1419,6 +1440,7 @@ class TestAdditivePairEnergy:
                 [0.0, 0.0, 0.0],
             ]
         )
+        positions = positions * A
         move = _Move(
             Index(state.particles.keys, ids),
             dataclasses.replace(
@@ -1429,7 +1451,7 @@ class TestAdditivePairEnergy:
         proposed = move(state, state.systems.set_data(jnp.ones(4, bool)))
         result = as_result_function(lambda: pot(state, move))()
         result.raise_assertion()
-        npt.assert_allclose(
+        assert_close(
             result.value.data.total_energies.data,
             self._reference(proposed, params),
             rtol=1e-9,
@@ -1463,7 +1485,9 @@ class TestAdditivePairEnergy:
             patch_idx_view=_patch_indices,
             cache_lens=lens(lambda s: s.cache),
         )
-        move = _move(state, jnp.array([0]), state.particles.data.positions[:1] + 0.2)
+        move = _move(
+            state, jnp.array([0]), state.particles.data.positions[:1] + 0.2 * A
+        )
         move = dataclasses.replace(
             move,
             data=dataclasses.replace(
@@ -1471,7 +1495,7 @@ class TestAdditivePairEnergy:
             ),
         )
         proposed = move(state, state.systems.set_data(jnp.ones(1, bool)))
-        npt.assert_allclose(
+        assert_close(
             potential(state, move).data.total_energies.data,
             self._reference(proposed, params),
             rtol=1e-9,
@@ -1484,12 +1508,12 @@ class TestAdditivePairEnergy:
         lj = _lj_params(1, 2.8)
         ew = dataclasses.replace(
             _ewald_params(2, 3.5),
-            cutoff=Table.arange(jnp.array([3.5, 4.0]), label=SystemId),
+            cutoff=Table.arange(jnp.array([3.5, 4.0]) * A, label=SystemId),
         )
         engine = self._engine()
-        npt.assert_allclose(engine.pair.cutoffs((lj, ew)).data, [3.5, 4.0])
+        assert_close(engine.pair.cutoffs((lj, ew)).data, [3.5, 4.0])
         result = _potential(engine, (lj, ew))(state)
-        npt.assert_allclose(
+        assert_close(
             result.data.total_energies.data,
             self._reference(state, (lj, ew)),
             rtol=1e-10,
@@ -1499,7 +1523,7 @@ class TestAdditivePairEnergy:
         triple = engine.pair + PairEnergySum.from_term(engine.pair.terms[0])
         assert len(triple.terms) == 3
         doubled_lj = dataclasses.replace(engine, pair=triple)
-        npt.assert_allclose(
+        assert_close(
             _potential(doubled_lj, (lj, ew))(state).data.total_energies.data,
             self._reference(state, (lj, ew))
             + _graph_full(state, lj, lennard_jones_energy),
@@ -1529,7 +1553,7 @@ class TestAdditivePairEnergy:
         atomic = _per_particle_exclusion(state)
         edges_ew = _neighborlist(params[1])(atomic.particles, state.systems)
 
-        def energy(positions: jax.Array, vectors: jax.Array, fused: bool):
+        def energy(positions: units.Length, vectors: units.Length, fused: bool):
             moved = _with_points(state, positions=positions)
             systems: Table[SystemId, HasCell[AnyPeriodicity]] = Table(
                 state.systems.keys,
@@ -1563,7 +1587,7 @@ class TestAdditivePairEnergy:
         grads = [
             jax.jit(
                 as_result_function(
-                    jax.grad(lambda x, h, fused=fused: energy(x, h, fused), (0, 1))
+                    units.grad(lambda x, h, fused=fused: energy(x, h, fused), (0, 1))
                 )
             )(x, vectors)
             for fused in (True, False)
@@ -1571,8 +1595,8 @@ class TestAdditivePairEnergy:
         for result in grads:
             result.raise_assertion()
         for fused, reference in zip(grads[0].value, grads[1].value, strict=True):
-            assert jnp.isfinite(fused).all()
-            npt.assert_allclose(fused, reference, rtol=1e-9, atol=1e-9)
+            assert jnp.isfinite(fused.value).all()
+            assert_close(fused, reference, rtol=1e-9, atol=1e-9)
 
     def test_persistent_sum_multiple_groups_and_mixed_acceptance(self):
         state = _make_state(jax.random.key(23), (16, 12), (12.0, 10.0), n_inactive=2)
@@ -1608,17 +1632,17 @@ class TestAdditivePairEnergy:
                     ]
                 )
                 + step * 0.2
-            )
+            ) * A
             move = _move(state, rows, positions)
             result = evaluate(state, move, state.systems.set_data(jnp.array(accepted)))
             result.raise_assertion()
             energies, committed = result.value
             proposed = move(state, state.systems.set_data(jnp.ones(2, bool)))
-            npt.assert_allclose(
+            assert_close(
                 energies, self._reference(proposed, params), rtol=1e-9, atol=1e-9
             )
             state = committed
-            npt.assert_allclose(
+            assert_close(
                 state.cache.total.total_energies.data,
                 self._reference(state, params),
                 rtol=1e-9,
@@ -1629,10 +1653,12 @@ class TestAdditivePairEnergy:
         state = _make_state(jax.random.key(24), (16, 12), (12.0, 10.0))
         params = (_lj_params(2, 3.0), _ewald_params(2, 3.5))
         move = _move(
-            state, jnp.array([0, 16]), jnp.array([[2.0, 3.0, 4.0], [4.0, 5.0, 6.0]])
+            state,
+            jnp.array([0, 16]),
+            jnp.array([[2.0, 3.0, 4.0], [4.0, 5.0, 6.0]]) * A,
         )
         proposed = move(state, state.systems.set_data(jnp.ones(2, bool)))
-        npt.assert_allclose(
+        assert_close(
             _potential(self._engine(), params)(state, move).data.total_energies.data,
             self._reference(proposed, params),
             rtol=1e-10,
@@ -1658,7 +1684,7 @@ class TestAdditivePairEnergy:
         )
         rows = jnp.array([0, 5])
         # Nearby coordinates in independent systems must not add an intra-query edge.
-        move = _move(state, rows, jnp.array([[3.0, 3.0, 3.0], [3.1, 3.0, 3.0]]))
+        move = _move(state, rows, jnp.array([[3.0, 3.0, 3.0], [3.1, 3.0, 3.0]]) * A)
         move = dataclasses.replace(
             move,
             data=dataclasses.replace(
@@ -1666,7 +1692,7 @@ class TestAdditivePairEnergy:
             ),
         )
         proposed = move(state, state.systems.set_data(jnp.ones(2, bool)))
-        npt.assert_allclose(
+        assert_close(
             pot(state, move).data.total_energies.data,
             full(proposed).data.total_energies.data,
             rtol=1e-9,
@@ -1679,7 +1705,7 @@ class TestAdditivePairEnergy:
         state = dataclasses.replace(state, particles=empty)
         params = (_lj_params(2, 3.0), _ewald_params(2, 3.5))
         npt.assert_array_equal(
-            _potential(self._engine(), params)(state).data.total_energies.data,
+            _potential(self._engine(), params)(state).data.total_energies.data.to(EV),
             jnp.zeros(2),
         )
 
@@ -1713,7 +1739,7 @@ class TestAdditivePairEnergy:
             jax.jit(lambda: sum_chunks(consume, jnp.arange(state.particles.size), 4))()
             / 2
         )
-        npt.assert_allclose(result, self._reference(state, params), rtol=1e-10)
+        assert_close(result, self._reference(state, params), rtol=1e-10)
 
     def test_fused_gradient_matches_application_geometry_lens(self):
         from kups.application.potential.classical.lennard_jones import (
@@ -1742,7 +1768,7 @@ class TestAdditivePairEnergy:
             gradient=POSITIONS_AND_CELL,
         )(state).data
         for a, b in zip(jax.tree.leaves(fused), jax.tree.leaves(graph)):
-            npt.assert_allclose(a, b, rtol=1e-9, atol=1e-8)
+            assert_close(a, b, rtol=1e-9, atol=1e-8)
 
     def test_query_inclusion_vocabulary_is_independent(self):
         state = _make_state(jax.random.key(29), (8,), (12.0,))
@@ -1753,7 +1779,7 @@ class TestAdditivePairEnergy:
             old,
             data=dataclasses.replace(
                 old.data,
-                positions=jnp.array([[3.0, 4.0, 5.0]]),
+                positions=jnp.array([[3.0, 4.0, 5.0]]) * A,
                 inclusion=Index((InclusionId(0), InclusionId(1)), jnp.array([1])),
             ),
         )
@@ -1767,7 +1793,7 @@ class TestAdditivePairEnergy:
         def evaluate(
             cloud: PointCloud[_Points, HasCell[AnyPeriodicity]],
             proposed: PointCloud[_Points, HasCell[AnyPeriodicity]],
-        ) -> list[jax.Array]:
+        ) -> list[units.Energy]:
             # The new group is active, even though it is absent from the key
             # vocabulary.
             table = _EWALD.build_cell_list_cache(params, cloud)
@@ -1785,7 +1811,7 @@ class TestAdditivePairEnergy:
             PointCloud(state.particles, state.systems),
             PointCloud(proposal.particles, proposal.systems),
         )
-        npt.assert_allclose(result + before, after, rtol=1e-10, atol=1e-12)
+        assert_close(result + before, after, rtol=1e-10, atol=1e-12)
 
     def test_buffered_deletion_uses_old_system_for_acceptance(self):
         state = _make_state(jax.random.key(30), (16, 12), (12.0, 10.0), n_inactive=2)
@@ -1820,17 +1846,17 @@ class TestAdditivePairEnergy:
         accept = state.systems.set_data(jnp.array([False, True]))
         result = potential(state, deletion)
         state = deletion(result.patch(state, accept), accept)
-        npt.assert_allclose(
+        assert_close(
             state.cache.total.total_energies.data,
             self._reference(state, params),
             rtol=1e-9,
             atol=1e-9,
         )
         # A subsequent nearby move must not see the deleted molecule in the table.
-        move = _move(state, jnp.array([0, 18]), positions[jnp.array([0, 3])] + 0.6)
+        move = _move(state, jnp.array([0, 18]), positions[jnp.array([0, 3])] + 0.6 * A)
         result = potential(state, move)
         proposed = move(state, state.systems.set_data(jnp.ones(2, bool)))
-        npt.assert_allclose(
+        assert_close(
             result.data.total_energies.data,
             self._reference(proposed, params),
             rtol=1e-9,
@@ -1853,7 +1879,7 @@ class TestSumChunks:
 
         rows = jnp.arange(12.0)
         result = jax.jit(evaluate)(rows)
-        npt.assert_allclose(result, jnp.sum(rows**2))
+        assert_close(result, jnp.sum(rows**2))
         assert traced == [(4,)]
 
     def test_chunk_tracing_does_not_grow_with_number_of_chunks(self):
@@ -1869,8 +1895,8 @@ class TestSumChunks:
         for program in programs:
             assert any(eqn.primitive.name == "scan" for eqn in program.jaxpr.eqns)
         rows = jnp.arange(12, dtype=float)
-        npt.assert_allclose(jax.jit(evaluate)(rows), jnp.sum(rows**2))
-        npt.assert_allclose(jax.jit(jax.grad(evaluate))(rows), 2 * rows)
+        assert_close(jax.jit(evaluate)(rows), jnp.sum(rows**2))
+        assert_close(jax.jit(jax.grad(evaluate))(rows), 2 * rows)
 
     @pytest.mark.parametrize("disable_jit", [False, True])
     @pytest.mark.parametrize("n_chunks", [1, 3])
@@ -1900,14 +1926,14 @@ class TestSumChunks:
         jax.effects_barrier()
         assert visited == [float(values[-2])]
         assert result.value.dtype == jnp.float32
-        npt.assert_allclose(result.value, jnp.sum(values[-2:] ** 2))
+        assert_close(result.value, jnp.sum(values[-2:] ** 2))
         visited.clear()
         empty = run(values, jnp.zeros_like(flags))
         empty.raise_assertion()
         jax.effects_barrier()
         assert visited == []
         assert empty.value == 0
-        npt.assert_allclose(
+        assert_close(
             jax.jit(jax.grad(lambda v: run(v, flags).value))(values),
             jnp.where(flags, 2 * values, 0),
         )
@@ -1927,13 +1953,13 @@ class TestSumChunks:
         run = jax.jit(as_result_function(evaluate))
         valid = run(jnp.array([1.0, 2.0, 3.0, 4.0]))
         valid.raise_assertion()
-        npt.assert_allclose(valid.value, 30.0)
+        assert_close(valid.value, 30.0)
         # A failure in a later chunk must propagate out through remat and scan.
         with pytest.raises(AssertionError, match="negative chunk entry"):
             run(jnp.array([1.0, 2.0, -3.0, 4.0])).raise_assertion()
         empty = run(jnp.zeros(0))
         empty.raise_assertion()
-        npt.assert_allclose(empty.value, 0.0)
+        assert_close(empty.value, 0.0)
 
 
 class TestBlockCulling:
@@ -1950,15 +1976,17 @@ class TestBlockCulling:
         vectors = 14.0 * jnp.array(
             [[1.0, 0.0, 0.0], [0.5, 0.866, 0.0], [0.5, 0.289, 0.816]]
         )
-        fractions = state.particles.data.positions
+        fractions = state.particles.data.positions.to(A)
         rows = _molecule_rows(state, 0)
         # Keep the molecule compact in real space.
         fractions = fractions.at[rows].set(fractions[rows[0]] + 0.02 * jnp.eye(3))
-        state = _with_points(state, positions=fractions @ vectors)
+        state = _with_points(state, positions=fractions @ vectors * A)
         state = dataclasses.replace(
             state,
             systems=state.systems.set_data(
-                _System(Cell(TriclinicFrame.from_matrix(vectors[None]), (True,) * 3))
+                _System(
+                    Cell(TriclinicFrame.from_matrix(vectors[None] * A), (True,) * 3)
+                )
             ),
         )
         lj = _lj_params(1, 4.0)
@@ -2002,7 +2030,7 @@ class TestBlockCulling:
             )
 
         for key in jax.random.split(jax.random.key(32), 8):
-            shift = jax.random.uniform(key, (1, 3), minval=-9.0, maxval=9.0)
+            shift = jax.random.uniform(key, (1, 3), minval=-9.0, maxval=9.0) * A
             move = _move(state, rows, state.particles.data.positions[rows] + shift)
             new = Table(old.keys, move.data, _cls=old.cls)
             # Each move also with a padding row in both phases, as an insertion
@@ -2017,7 +2045,7 @@ class TestBlockCulling:
                     f(FusedLocalInput(params, cloud, queries, move.indices, table))
                     for f, table in zip(evaluate, tables)
                 ]
-                npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)
+                assert_close(energies[1], energies[0], rtol=1e-12, atol=1e-12)
 
     def test_batched_systems_match_unculled_traversal(self):
         # Nine moved rows per system give 18-row phases, and one shared inclusion
@@ -2065,7 +2093,7 @@ class TestBlockCulling:
         keys = jax.random.split(jax.random.key(35), 3)
         # Translations that insert the inactive rows, then a deletion of all rows.
         for key, active in zip(keys, (True, True, False)):
-            shift = jax.random.uniform(key, (18, 3), minval=-3.0, maxval=3.0)
+            shift = jax.random.uniform(key, (18, 3), minval=-3.0, maxval=3.0) * A
             move = _move(state, rows, state.particles.data.positions[rows] + shift)
             new_inclusion = Index(inclusion.keys, jnp.full(18, 0 if active else 2))
             data = dataclasses.replace(move.data, inclusion=new_inclusion)
@@ -2074,7 +2102,7 @@ class TestBlockCulling:
                 f(FusedLocalInput(params, cloud, (old, new), move.indices, table))
                 for f, table in zip(evaluate, tables)
             ]
-            npt.assert_allclose(energies[1], energies[0], rtol=1e-12, atol=1e-12)
+            assert_close(energies[1], energies[0], rtol=1e-12, atol=1e-12)
 
     def test_mixed_precision_matches_unculled_traversal(self):
         # float32 geometry with float64 parameters (x64 is on in tests) yields
@@ -2083,7 +2111,7 @@ class TestBlockCulling:
         state = _with_points(
             state, positions=state.particles.data.positions.astype(jnp.float32)
         )
-        frame = TriclinicFrame.from_matrix(jnp.eye(3, dtype=jnp.float32)[None] * 12)
+        frame = TriclinicFrame.from_matrix(jnp.eye(3, dtype=jnp.float32)[None] * 12 * A)
         state = dataclasses.replace(
             state, systems=state.systems.set_data(_System(Cell(frame, (True,) * 3)))
         )
@@ -2098,7 +2126,7 @@ class TestBlockCulling:
         cloud = PointCloud(state.particles, state.systems)
         rows = _molecule_rows(state, 0)
         old = state.particles.subset(Index(state.particles.keys, rows))
-        move = _move(state, rows, state.particles.data.positions[rows] + 1.5)
+        move = _move(state, rows, state.particles.data.positions[rows] + 1.5 * A)
         new = Table(old.keys, move.data, _cls=old.cls)
         energies = []
         for variant in (
@@ -2117,4 +2145,4 @@ class TestBlockCulling:
                 ).data.data
             )
         assert energies[1].dtype == jnp.float64
-        npt.assert_allclose(energies[1], energies[0], rtol=1e-6)
+        assert_close(energies[1], energies[0], rtol=1e-6)

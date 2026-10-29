@@ -9,15 +9,14 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
-import jax.numpy as jnp
 import numpy as np
-from jax import Array
 
 from kups.application.md.logging import MDLoggedData
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.storage import HDF5StorageReader
 from kups.core.typing import HasPotentialEnergy, HasStressTensor, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.block_average import (
     BlockAverageResult,
     block_average,
@@ -41,50 +40,53 @@ class IsMDStepData(HasPotentialEnergy, HasStressTensor, Protocol):
     """Contract for the step reader group."""
 
     @property
-    def kinetic_energy(self) -> Array: ...
+    def kinetic_energy(self) -> units.Energy: ...
 
     @property
-    def internal_kinetic_energy(self) -> Array: ...
+    def internal_kinetic_energy(self) -> units.Energy: ...
 
     @property
-    def volume(self) -> Array: ...
+    def volume(self) -> units.Volume: ...
 
 
 @plain_dataclass
 class MDAnalysisResult:
     """Results from MD simulation analysis for a single system.
 
+    Every average and drift is a dimensioned quantity; read it in any unit
+    with ``.to``.
+
     Attributes:
-        potential_energy: Average potential energy with SEM (eV).
-        kinetic_energy: Average kinetic energy with SEM (eV).
-        total_energy: Average total energy with SEM (eV).
-        temperature: Average temperature with SEM (K).
-        energy_drift: Linear drift rate of total energy (eV/step).
-        energy_drift_per_atom: Energy drift normalized by number of atoms.
-        pressure: Average pressure with SEM (Pa).
-        volume: Average cell volume with SEM (A^3).
+        potential_energy: Average potential energy with SEM.
+        kinetic_energy: Average kinetic energy with SEM.
+        total_energy: Average total energy with SEM.
+        temperature: Average temperature with SEM.
+        energy_drift: Linear drift rate of the total energy, per step.
+        energy_drift_per_atom: Energy drift per step and atom.
+        pressure: Average pressure with SEM.
+        volume: Average cell volume with SEM.
         n_atoms: Number of atoms in this system.
         n_steps: Number of simulation steps analyzed.
     """
 
-    potential_energy: BlockAverageResult[Array]
-    kinetic_energy: BlockAverageResult[Array]
-    total_energy: BlockAverageResult[Array]
-    temperature: BlockAverageResult[Array]
-    energy_drift: float
-    energy_drift_per_atom: float
-    pressure: BlockAverageResult[Array]
-    volume: BlockAverageResult[Array]
+    potential_energy: BlockAverageResult[units.Energy]
+    kinetic_energy: BlockAverageResult[units.Energy]
+    total_energy: BlockAverageResult[units.Energy]
+    temperature: BlockAverageResult[units.Temperature]
+    energy_drift: units.Energy
+    energy_drift_per_atom: units.Energy
+    pressure: BlockAverageResult[units.Pressure]
+    volume: BlockAverageResult[units.Volume]
     n_atoms: int
     n_steps: int
 
 
 def _analyze_single_system(
-    potential_energy: Array,
-    kinetic_energy: Array,
-    internal_kinetic_energy: Array,
-    stress_tensor: Array,
-    volume: Array,
+    potential_energy: units.Energy,
+    kinetic_energy: units.Energy,
+    internal_kinetic_energy: units.Energy,
+    stress_tensor: units.Pressure,
+    volume: units.Volume,
     n_atoms: int,
     n_blocks: int | None,
 ) -> MDAnalysisResult:
@@ -105,8 +107,8 @@ def _analyze_single_system(
     """
     total_energy = potential_energy + kinetic_energy
     dof = 3 * n_atoms - 3
-    temperature = 2 * internal_kinetic_energy / (BOLTZMANN_CONSTANT * dof)
-    pressure = jnp.trace(stress_tensor, axis1=-2, axis2=-1) / 3
+    temperature = 2 * internal_kinetic_energy / (units.constants.k_B * dof)
+    pressure = stress_tensor.trace(axis1=-2, axis2=-1) / 3
 
     if n_blocks is None:
         pressure_result = optimal_block_average(pressure)
@@ -114,15 +116,20 @@ def _analyze_single_system(
     else:
         pressure_result = block_average(pressure, n_blocks=n_blocks)
 
-    slope, _ = np.polyfit(np.arange(len(total_energy)), np.asarray(total_energy), 1)
+    # ``polyfit`` is a host fit over plain numbers, so the drift is fitted on the
+    # energy's magnitudes in eV and labelled with that unit again.
+    slope, _ = np.polyfit(
+        np.arange(len(total_energy)), np.asarray(total_energy.to(u.eV)), 1
+    )
+    drift = float(slope) * u.eV
 
     return MDAnalysisResult(
         potential_energy=block_average(potential_energy, n_blocks=n_blocks),
         kinetic_energy=block_average(kinetic_energy, n_blocks=n_blocks),
         total_energy=block_average(total_energy, n_blocks=n_blocks),
         temperature=block_average(temperature, n_blocks=n_blocks),
-        energy_drift=float(slope),
-        energy_drift_per_atom=float(slope) / n_atoms,
+        energy_drift=drift,
+        energy_drift_per_atom=drift / n_atoms,
         pressure=pressure_result,
         volume=block_average(volume, n_blocks=n_blocks),
         n_atoms=n_atoms,
@@ -132,11 +139,11 @@ def _analyze_single_system(
 
 def _analyze_md_systems(
     system: Index[SystemId],
-    potential_energy: Array,
-    kinetic_energy: Array,
-    internal_kinetic_energy: Array,
-    stress_tensor: Array,
-    volume: Array,
+    potential_energy: units.Energy,
+    kinetic_energy: units.Energy,
+    internal_kinetic_energy: units.Energy,
+    stress_tensor: units.Pressure,
+    volume: units.Volume,
     n_blocks: int | None,
 ) -> dict[SystemId, MDAnalysisResult]:
     """Block-average each system independently.

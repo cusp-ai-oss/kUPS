@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
@@ -22,13 +23,14 @@ from kups.potential.classical.blocking import (
     BlockingSpheresSumComposer,
     blocking_spheres_energy,
 )
+from test.units import EV, A, as_length, assert_close
 
 
 @dataclass
 class ParticleData:
     """Particle data with positions, system, and group index."""
 
-    positions: jax.Array
+    positions: units.Length
     system: Index[SystemId]
     group: Index[GroupId]
 
@@ -41,13 +43,15 @@ class GroupData:
 
 
 def _make_particles(
-    positions: jax.Array,
+    positions: jax.Array | units.Length,
     system_ids: list[int],
     group_ids: list[int],
 ) -> Table[ParticleId, ParticleData]:
     system = Index.new([SystemId(i) for i in system_ids])
     group = Index.new([GroupId(i) for i in group_ids])
-    return Table.arange(ParticleData(positions, system, group), label=ParticleId)
+    return Table.arange(
+        ParticleData(as_length(positions), system, group), label=ParticleId
+    )
 
 
 def _make_groups(motif_ids: list[int]) -> Table[GroupId, GroupData]:
@@ -59,7 +63,7 @@ def _make_cell(n_systems: int, box_size: float = 1000.0):
     """Large cubic per-system cells, so wrap is effectively identity."""
     cells = PeriodicCell(
         TriclinicFrame.from_matrix(
-            jnp.broadcast_to(jnp.eye(3) * box_size, (n_systems, 3, 3))
+            jnp.broadcast_to(jnp.eye(3) * box_size, (n_systems, 3, 3)) * A
         )
     )
     return Table(tuple(SystemId(i) for i in range(n_systems)), cells)
@@ -91,8 +95,8 @@ class TestBlockingSpheresEnergy:
     def setup_class(cls):
         """Set up test data: two spheres in system 0, motif 0."""
         cls.parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0, 2.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0, 2.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0), SystemId(0)]),
             motif=Index.new([MotifId(0), MotifId(0)]),
         )
@@ -130,7 +134,7 @@ class TestBlockingSpheresEnergy:
                 self.particles, create_test_edges(self.particles, [[0, 0]])
             )
         )
-        assert jnp.isinf(result_in.data.data[0])
+        assert jnp.isinf(result_in.data.data[0].to(EV))
 
         # Outside sphere -> zero energy
         result_out = energy_fn(
@@ -138,7 +142,7 @@ class TestBlockingSpheresEnergy:
                 self.particles, create_test_edges(self.particles, [[3, 0]])
             )
         )
-        assert result_out.data.data[0] == 0.0
+        assert_close(result_out.data.data[0], 0.0)
 
         # On boundary -> finite energy (dist == radius is not strictly less)
         boundary_particles = _make_particles(jnp.array([[1.0, 0.0, 0.0]]), [0], [0])
@@ -149,7 +153,7 @@ class TestBlockingSpheresEnergy:
                 groups=_make_groups([0]),
             )
         )
-        assert jnp.isfinite(result_bnd.data.data[0])
+        assert jnp.isfinite(result_bnd.data.data[0].to(EV))
 
         # Multiple particles + spheres -> inf if any overlap
         result_multi = energy_fn(
@@ -158,13 +162,13 @@ class TestBlockingSpheresEnergy:
                 create_test_edges(self.particles, [[0, 0], [1, 0], [2, 1], [3, 1]]),
             )
         )
-        assert jnp.isinf(result_multi.data.data[0])
+        assert jnp.isinf(result_multi.data.data[0].to(EV))
 
         # No edges -> zero energy
         result_none = energy_fn(
             self._make_input(self.particles, create_test_edges(self.particles, []))
         )
-        assert result_none.data.data[0] == 0.0
+        assert_close(result_none.data.data[0], 0.0)
 
     def test_move_into_sphere_then_out(self):
         """Position-driven energy: a particle moving into a sphere yields inf,
@@ -172,8 +176,8 @@ class TestBlockingSpheresEnergy:
         or reject proposed moves: each call evaluates the post-move energy.
         """
         parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -193,11 +197,11 @@ class TestBlockingSpheresEnergy:
             ).data.data[0]
 
         # Move into the sphere -> inf (move would be rejected by MCMC).
-        assert jnp.isinf(energy_at([0.3, 0.0, 0.0]))
+        assert jnp.isinf(energy_at([0.3, 0.0, 0.0]).to(EV))
         # Move back out -> 0 (move would be accepted).
-        assert energy_at([2.5, 0.0, 0.0]) == 0.0
+        assert_close(energy_at([2.5, 0.0, 0.0]), 0.0)
         # Move into a different point inside the sphere -> inf.
-        assert jnp.isinf(energy_at([0.0, 0.5, 0.0]))
+        assert jnp.isinf(energy_at([0.0, 0.5, 0.0]).to(EV))
 
     def test_pbc_wrapping_blocks_across_boundary(self):
         """A particle on the far side of the box and a sphere at the origin
@@ -206,8 +210,8 @@ class TestBlockingSpheresEnergy:
         """
         L = 10.0
         parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -215,7 +219,7 @@ class TestBlockingSpheresEnergy:
         particles = _make_particles(jnp.array([[L - 0.4, 0.0, 0.0]]), [0], [0])
         cell = Table(
             (SystemId(0),),
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * L)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * L) * A)),
         )
         result = blocking_spheres_energy(
             BlockingSpheresPotentialInput(
@@ -226,14 +230,14 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles, [[0, 0]]),
             )
         )
-        assert jnp.isinf(result.data.data[0])
+        assert jnp.isinf(result.data.data[0].to(EV))
 
     def test_motif_filtering(self):
         """A sphere only blocks particles whose group's motif matches the sphere's motif."""
         # Two spheres, one per motif; both centered at origin so geometry alone wouldn't discriminate.
         parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0, 1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0, 1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0), SystemId(0)]),
             motif=Index.new([MotifId(0), MotifId(1)]),
         )
@@ -253,7 +257,7 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles, [[0, 1]]),
             )
         )
-        assert jnp.isinf(result_match.data.data[0])
+        assert jnp.isinf(result_match.data.data[0].to(EV))
 
         # Mismatch: motif 0 sphere does not block
         result_miss = blocking_spheres_energy(
@@ -265,7 +269,7 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles, [[0, 0]]),
             )
         )
-        assert result_miss.data.data[0] == 0.0
+        assert_close(result_miss.data.data[0], 0.0)
 
     def test_motif_outside_sphere_keyspace_does_not_block(self):
         """A particle whose group's motif is absent from the sphere motif keyspace
@@ -275,8 +279,8 @@ class TestBlockingSpheresEnergy:
         """
         # Sphere keyspace covers only motif 0.
         parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -293,7 +297,7 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles, [[0, 0]]),
             )
         )
-        assert result.data.data[0] == 0.0
+        assert_close(result.data.data[0], 0.0)
 
     def test_oob_group_sentinel_does_not_block(self):
         """Buffer-slot semantics: a particle whose group is the OOB sentinel
@@ -301,8 +305,8 @@ class TestBlockingSpheresEnergy:
         falls inside a sphere matching another particle's motif.
         """
         parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -316,7 +320,9 @@ class TestBlockingSpheresEnergy:
         group = Index.new([GroupId(0), GroupId(1)]).apply_mask(jnp.array([False, True]))
         positions = jnp.array([[0.5, 0.0, 0.0], [10.0, 0.0, 0.0]])
         particles = Table.arange(
-            ParticleData(positions, Index.new([SystemId(0), SystemId(0)]), group),
+            ParticleData(
+                as_length(positions), Index.new([SystemId(0), SystemId(0)]), group
+            ),
             label=ParticleId,
         )
         # Edge connects the OOB-group particle to the sphere it sits inside.
@@ -329,14 +335,14 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles, [[0, 0]]),
             )
         )
-        assert result.data.data[0] == 0.0
+        assert_close(result.data.data[0], 0.0)
 
     def test_edge_cases(self):
         """Merged: zero_radius + negative_radius + very_large_distances."""
         # Zero radius sphere -> dist (=0) is not strictly less than 0 -> finite
         params_zero = BlockingSpheresParameters(
-            radii=jnp.array([0.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([0.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -351,12 +357,12 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles_z, [[0, 0]]),
             )
         )
-        assert jnp.isfinite(result_z.data.data[0])
+        assert jnp.isfinite(result_z.data.data[0].to(EV))
 
         # Negative radius sphere -> never blocks
         params_neg = BlockingSpheresParameters(
-            radii=jnp.array([-1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([-1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -369,12 +375,12 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles_z, [[0, 0]]),
             )
         )
-        assert result_n.data.data[0] == 0.0
+        assert_close(result_n.data.data[0], 0.0)
 
         # Very large distance -> zero energy
         params_far = BlockingSpheresParameters(
-            radii=jnp.array([1.0]),
-            positions=jnp.array([[0.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0)]),
             motif=Index.new([MotifId(0)]),
         )
@@ -388,15 +394,15 @@ class TestBlockingSpheresEnergy:
                 edges=create_test_edges(particles_f, [[0, 0]]),
             )
         )
-        assert result_f.data.data[0] == 0.0
+        assert_close(result_f.data.data[0], 0.0)
 
     def test_jit_gradient(self):
         """Gradients can flow through the JIT-compiled energy."""
 
         def energy_wrapper(positions):
             parameters = BlockingSpheresParameters(
-                radii=jnp.array([1.0]),
-                positions=jnp.array([[0.0, 0.0, 0.0]]),
+                radii=jnp.array([1.0]) * A,
+                positions=jnp.array([[0.0, 0.0, 0.0]]) * A,
                 system=Index.new([SystemId(0)]),
                 motif=Index.new([MotifId(0)]),
             )
@@ -408,7 +414,7 @@ class TestBlockingSpheresEnergy:
                 cell=_make_cell(1),
                 edges=create_test_edges(particles, [[0, 0]]),
             )
-            return blocking_spheres_energy(inp).data.data[0]
+            return blocking_spheres_energy(inp).data.data[0].to(EV)
 
         gradient = jax.jit(jax.grad(energy_wrapper))(jnp.array([[2.0, 0.0, 0.0]]))
         assert jnp.all(jnp.isfinite(gradient))
@@ -416,8 +422,8 @@ class TestBlockingSpheresEnergy:
     def test_multiple_batches(self):
         """Energy is summed per-system across two systems."""
         parameters = BlockingSpheresParameters(
-            radii=jnp.array([1.0, 1.5]),
-            positions=jnp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]),
+            radii=jnp.array([1.0, 1.5]) * A,
+            positions=jnp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]) * A,
             system=Index.new([SystemId(0), SystemId(1)]),
             motif=Index.new([MotifId(0), MotifId(0)]),
         )
@@ -434,8 +440,8 @@ class TestBlockingSpheresEnergy:
             edges=create_test_edges(particles, [[0, 0], [1, 1]]),
         )
         result = blocking_spheres_energy(inp)
-        assert jnp.isinf(result.data.data[0])
-        assert jnp.isfinite(result.data.data[1])
+        assert jnp.isinf(result.data.data[0].to(EV))
+        assert jnp.isfinite(result.data.data[1].to(EV))
 
 
 class TestBlockingSpheresParametersFromData:
@@ -446,21 +452,35 @@ class TestBlockingSpheresParametersFromData:
 
         @dataclass
         class _Sphere:
-            center: tuple[float, float, float]
-            radius: float
+            center: units.Length
+            radius: units.Length
+
+        def sphere(x: float, radius: float) -> _Sphere:
+            return _Sphere(jnp.array([x, 0.0, 0.0]) * A, radius * A)
 
         data = [
             [
-                [_Sphere((0.0, 0.0, 0.0), 1.0), _Sphere((1.0, 0.0, 0.0), 0.5)],
-                [_Sphere((2.0, 0.0, 0.0), 2.0)],
+                [sphere(0.0, 1.0), sphere(1.0, 0.5)],
+                [sphere(2.0, 2.0)],
             ],
-            [[_Sphere((3.0, 0.0, 0.0), 1.5)]],
+            [[sphere(3.0, 1.5)]],
         ]
         params = BlockingSpheresParameters.from_data(data)
-        assert params.radii.tolist() == [1.0, 0.5, 2.0, 1.5]
+        assert params.radii.to(A).tolist() == [1.0, 0.5, 2.0, 1.5]
         assert params.system.value.tolist() == [0, 0, 0, 1]
         assert params.motif.value.tolist() == [0, 0, 1, 0]
         assert params.positions.shape == (4, 3)
+
+    def test_tree_map_to_non_array_leaves(self):
+        """Rebuilding with non-array leaves (e.g. vmap specs) skips the shape check."""
+        params = BlockingSpheresParameters(
+            radii=jnp.array([1.0]) * A,
+            positions=jnp.zeros((1, 3)) * A,
+            system=Index.new([SystemId(0)]),
+            motif=Index.new([MotifId(0)]),
+        )
+        jax.tree.map(lambda _: 0, params)
+        jax.tree.map(lambda _: None, params)
 
 
 class TestBlockingSpheresSumComposer:
@@ -468,8 +488,8 @@ class TestBlockingSpheresSumComposer:
 
     @dataclass
     class _Sphere:
-        center: tuple[float, float, float]
-        radius: float
+        center: units.Length
+        radius: units.Length
 
     @dataclass
     class _System:
@@ -483,7 +503,7 @@ class TestBlockingSpheresSumComposer:
         cell = _make_cell(n_sys)
         systems = cell.map_data(lambda c: self._System(cell=c))
         data = [[[]] for _ in range(n_sys)]
-        data[sphere_system] = [[self._Sphere((5.0, 5.0, 5.0), 2.0)]]
+        data[sphere_system] = [[self._Sphere(jnp.full(3, 5.0) * A, 2.0 * A)]]
         parameters = BlockingSpheresParameters.from_data(data)
 
         def neighborlist(cutoffs):
@@ -500,7 +520,7 @@ class TestBlockingSpheresSumComposer:
             probe=None,
         )
         (summand,) = composer(None, None)
-        return blocking_spheres_energy(summand.inp).data.data
+        return blocking_spheres_energy(summand.inp).data.data.to(EV)
 
     @pytest.mark.parametrize("sphere_system", [0, 1])
     def test_only_the_sphere_system_is_blocked(self, sphere_system: int) -> None:
