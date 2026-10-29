@@ -440,3 +440,46 @@ def eigh(
     bs, (la, da) = _lowered(a)
     w, v = jnp.linalg.eigh(la, UPLO=UPLO, symmetrize_input=symmetrize_input)
     return _lift(w, da, bs), v
+
+
+@overload
+def svd(
+    a: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    full_matrices: bool = ...,
+    compute_uv: Literal[True] = ...,
+    hermitian: bool = ...,
+) -> tuple[jax.Array, Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K], jax.Array]: ...
+@overload
+def svd(
+    a: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    full_matrices: bool = ...,
+    compute_uv: Literal[False] = ...,
+    hermitian: bool = ...,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+@overload
+def svd(
+    a: Any, full_matrices: bool = ..., compute_uv: bool = ..., hermitian: bool = ...
+) -> Any: ...
+def svd(
+    a: Any, full_matrices: bool = True, compute_uv: bool = True, hermitian: bool = False
+) -> Any:
+    """Singular value decomposition.
+
+    Args:
+      a: a quantity or plain array of shape ``(..., m, n)``.
+      full_matrices: whether ``u`` and ``vh`` are square.
+      compute_uv: whether to return the vectors as well as the values.
+      hermitian: whether ``a`` may be assumed Hermitian.
+
+    Returns:
+      ``(u, s, vh)`` with plain unitary factors and ``s`` in ``a``'s dimension,
+      or ``s`` alone when ``compute_uv`` is False.
+    """
+    bs, (la, da) = _lowered(a)
+    out = jnp.linalg.svd(
+        la, full_matrices=full_matrices, compute_uv=compute_uv, hermitian=hermitian
+    )
+    if not compute_uv:
+        return _lift(out, da, bs)
+    lu, s, vh = out
+    return lu, _lift(s, da, bs), vh

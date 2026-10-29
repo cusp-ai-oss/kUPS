@@ -730,3 +730,15 @@ def vectorize[**P, R](
         )
 
     return run
+
+
+def stop_gradient[T](tree: T) -> T:
+    """``jax.lax.stop_gradient``, typed to keep dimensions.
+
+    Args:
+      tree: any pytree; quantity leaves keep their labels.
+
+    Returns:
+      ``tree`` with gradients stopped on every leaf.
+    """
+    return jax.lax.stop_gradient(tree)
