@@ -2151,6 +2151,8 @@ dependencies = [
     { name = "optax" },
     { name = "packaging" },
     { name = "pint" },
+    { name = "pydantic" },
+    { name = "pyrefly-shape-extensions" },
     { name = "rich" },
     { name = "tqdm" },
     { name = "typing-extensions" },
@@ -2221,6 +2223,8 @@ requires-dist = [
     { name = "optax", specifier = ">=0.2.6" },
     { name = "packaging", specifier = ">=24.2" },
     { name = "pint", specifier = ">=0.24.4" },
+    { name = "pydantic", specifier = ">=2.13" },
+    { name = "pyrefly-shape-extensions", specifier = ">=1.4" },
     { name = "rich", specifier = ">=13.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "typing-extensions", specifier = ">=4.10" },
@@ -4201,6 +4205,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6e/16/1b9549168b38a575d9c168e17b4b4ee30028d602ec0f7b07c198ef265dbe/pyrefly-1.4.0-py3-none-win32.whl", hash = "sha256:839db536d0ac29f1b23e2d974fb911075c2283e3e623755c45d826aafac175bc", size = 14858880, upload-time = "2026-10-15T16:54:05.114Z" },
     { url = "https://files.pythonhosted.org/packages/03/02/18f075d4de0e255f184f42fc28c1f0ecc9f49dd528678479fc90cf12246c/pyrefly-1.4.0-py3-none-win_amd64.whl", hash = "sha256:7aff37c2b711c8240ed650da0c6148237b327bf7e5dfacee65884f1adea22305", size = 15726220, upload-time = "2026-10-15T16:54:07.452Z" },
     { url = "https://files.pythonhosted.org/packages/92/62/92947076681550904c72a9dd03b24e92694ede9a48548f5e487c849e66ea/pyrefly-1.4.0-py3-none-win_arm64.whl", hash = "sha256:88879f0cb749e5fea81d9ff4c2d5431a70349c458bcdf0b61de72c79214d90a5", size = 14943690, upload-time = "2026-10-15T16:54:09.689Z" },
+]
+
+[[package]]
+name = "pyrefly-shape-extensions"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/51/d2845fc038b550404326ed2144d8deef6d13240db51e09d19762a472cf40/pyrefly_shape_extensions-1.4.0.tar.gz", hash = "sha256:5c3d96b04cd55c23a19265fce35ed69de623d69bfaeb2dc17ff15d2d160a637d", size = 14731, upload-time = "2026-10-15T16:35:16.819Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/ad/42b2761c56f7e4cb671d6daa301a1dbe7d49c442be1c2cd76c181d9198fc/pyrefly_shape_extensions-1.4.0-py3-none-any.whl", hash = "sha256:ced2aeeadc21e076bfdb3a223faee696a04cc013a8dc2f644a234f19b0e0bea3", size = 17557, upload-time = "2026-10-15T16:35:10.554Z" },
 ]
 
 [[package]]
