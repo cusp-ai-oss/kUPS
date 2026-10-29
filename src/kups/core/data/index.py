@@ -423,8 +423,8 @@ class Index[Key: SupportsSorting]:
         else:
             size = None
         if size is None:
-            return jnp.where(mask, fill_value=len(self))[0]
-        return first_true_indices(mask, size, len(self))
+            return jnp.where(mask, fill_value=len(self))[0].astype(self._indices.dtype)
+        return first_true_indices(mask, size, len(self), self._indices.dtype)
 
     def indices_in(
         self, tokens: tuple[Key, ...], *, allow_missing: bool = False

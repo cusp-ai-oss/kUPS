@@ -31,6 +31,8 @@ def _outputs(dtype) -> list[jax.Array]:
         idx.where_rectangular(idx, 2),
         idx.indices_in(("a", "aa", "b", "c")),
         Index.combine(idx, idx).raw_indices,
+        idx.where_flat(Index.new(["b"])),
+        jax.jit(lambda i: i.where_flat(Index.new(["b"]), FixedCapacity(2)))(idx),
         *subselect(
             jnp.array([0, 2], dtype=dtype),
             idx.raw_indices,
