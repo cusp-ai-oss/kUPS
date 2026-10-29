@@ -228,7 +228,7 @@ def test_appended_cell_scan_pair_candidates_match_cell_list():
         PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
     )
     adaptive = AdaptiveNeighborList.from_state(state, cutoffs)
-    scan = replace(CellScanNeighborList.from_state(state, cutoffs), stencil_radius=2)
+    scan = CellScanNeighborList.from_state(state, cutoffs)
 
     def pairs(implementations):
         nl = AdaptiveNeighborList(implementations)
