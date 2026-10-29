@@ -26,6 +26,7 @@ from kups.core.data.table import Table
 from kups.core.neighborlist import (
     AllDenseNearestNeighborList,
     CellListNeighborList,
+    CellScanNeighborList,
     DenseNearestNeighborList,
 )
 from kups.core.neighborlist.types import NeighborList
@@ -82,6 +83,17 @@ class TestNearestNeighborListImplementations:
             },
             {
                 "instance_factory": (
+                    lambda edges, cells, cutoffs, **kwargs: CellScanNeighborList(
+                        avg_edges=FixedCapacity(edges),
+                        cells=FixedCapacity(cells),
+                        cutoffs=cutoffs,
+                        stencil_radius=2,  # small-cell cases: cutoff up to 2 cell widths
+                    )
+                ),
+                "name": "cell_scan",
+            },
+            {
+                "instance_factory": (
                     lambda candidates, edges, cells, cutoffs, image_candidates=None, **kwargs: (
                         AllDenseNearestNeighborList(
                             avg_edges=FixedCapacity(edges),
@@ -94,7 +106,8 @@ class TestNearestNeighborListImplementations:
                 ),
                 "name": "all_to_all",
             },
-        ]
+        ],
+        ids=lambda impl: impl["name"],
     )
     def neighbor_list_impl(self, request):
         """Different neighbor list implementations with their instance factories."""
@@ -833,6 +846,10 @@ class TestNearestNeighborListImplementations:
 
     def test_no_replication_with_infinite_cutoff(self, neighbor_list_impl):
         """Verify no periodic images are generated when cutoff is infinite."""
+        if neighbor_list_impl["name"] == "cell_scan":
+            pytest.skip(
+                "CellScanNeighborList needs a finite cutoff (cells of cutoff width)"
+            )
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]]),
