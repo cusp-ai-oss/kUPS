@@ -18,6 +18,7 @@ from kups.application.utils.propagate import (
     run_simulation_cycles,
     run_warmup_cycles,
 )
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
@@ -49,12 +50,12 @@ class IsMdGradients(Protocol):
     """Protocol for MD gradient outputs.
 
     Attributes:
-        positions: Position gradients as Table[ParticleId, Array].
+        positions: Position gradients ``dE/dr``.
         cell: Cell gradients as Table[SystemId, Cell].
     """
 
     @property
-    def positions(self) -> Table[ParticleId, Array]: ...
+    def positions(self) -> Table[ParticleId, units.Force]: ...
     @property
     def cell(self) -> Table[SystemId, Cell[AnyPeriodicity]]: ...
 
@@ -74,7 +75,7 @@ class IsMdState(IsState[MDParticles, MDSystems], Protocol):
 
 def potential_map[State: IsMdState, Grad: IsMdGradients](
     input: LinearMappedPotentialInput[State, Grad, EmptyType],
-) -> PotentialOut[tuple[Array, Cell[AnyPeriodicity]], EmptyType]:
+) -> PotentialOut[tuple[units.Force, Cell[AnyPeriodicity]], EmptyType]:
     """Map the full potential output to the specific gradients needed for MD."""
     return PotentialOut(
         input.potential_out.total_energies,

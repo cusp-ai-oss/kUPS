@@ -18,7 +18,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from jax import Array
 from pydantic import BaseModel, Field
 
 from kups.application.potential.classical.lennard_jones import (
@@ -29,13 +28,16 @@ from kups.application.potential.mliap.tojax import (
     IsTojaxedGraphState,
     make_tojaxed_from_state,
 )
+from kups.application.utils.data import Scalar
 from kups.application.utils.path import get_model_path
+from kups.core import units
 from kups.core.data import Table
 from kups.core.lens import Lens
 from kups.core.neighborlist import AdaptiveNeighborList, NeighborListFactory
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import SystemId
+from kups.core.units.pydantic import UnitsModel
 from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
 from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.tojax import TojaxedMliap
@@ -51,23 +53,31 @@ type UMATaskName = Literal["omat", "omol", "oc20", "odac", "omc"]
 type UMAInferenceSettings = Literal["default", "turbo", "turbo_f64"]
 
 type BuiltPotential[State] = tuple[
-    Potential[State, PositionsAndCell, EmptyType, Patch[Any]], Table[SystemId, Array]
+    Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]],
+    Table[SystemId, units.Length],
 ]
 """``(potential, cutoff)`` where ``cutoff`` sizes the neighbor list."""
 
 
-class LjPotentialConfig(BaseModel):
+class LjPotentialConfig(UnitsModel):
     """Lennard-Jones force field."""
 
     backend: Literal["lj"] = "lj"
-    cutoff: float
-    parameters: dict[str, tuple[float | None, float | None]]
+    cutoff: Annotated[units.Length, Scalar]
+    parameters: dict[
+        str,
+        tuple[
+            Annotated[units.Length, Scalar] | None,
+            Annotated[units.Energy, Scalar] | None,
+        ],
+    ]
+    """Mapping label -> (sigma, epsilon); a null pair means no interaction."""
     mixing_rule: MixingRule
 
     def build[State, Focus: IsLJGraphState](
         self,
         state_lens: Lens[State, Focus],
-        gradient: Lens[Geometry, PositionsAndCell],
+        gradient: Lens[Geometry, PositionsAndCell[units.Length]],
         neighborlist_factory: NeighborListFactory[
             Focus
         ] = AdaptiveNeighborList.from_state,
@@ -96,7 +106,7 @@ class TojaxPotentialConfig(BaseModel):
     def build[State, Focus: IsTojaxedGraphState](
         self,
         state_lens: Lens[State, Focus],
-        gradient: Lens[Geometry, PositionsAndCell],
+        gradient: Lens[Geometry, PositionsAndCell[units.Length]],
         neighborlist_factory: NeighborListFactory[
             Focus
         ] = AdaptiveNeighborList.from_state,
@@ -123,7 +133,7 @@ class MaceConfig(BaseModel):
     def build[State, Focus: IsTorchMliapGraphState](
         self,
         state_lens: Lens[State, Focus],
-        gradient: Lens[Geometry, PositionsAndCell],
+        gradient: Lens[Geometry, PositionsAndCell[units.Length]],
         neighborlist_factory: NeighborListFactory[
             Focus
         ] = AdaptiveNeighborList.from_state,
@@ -159,7 +169,7 @@ class UmaConfig(BaseModel):
     def build[State, Focus: IsTorchMliapGraphState](
         self,
         state_lens: Lens[State, Focus],
-        gradient: Lens[Geometry, PositionsAndCell],
+        gradient: Lens[Geometry, PositionsAndCell[units.Length]],
         neighborlist_factory: NeighborListFactory[
             Focus
         ] = AdaptiveNeighborList.from_state,

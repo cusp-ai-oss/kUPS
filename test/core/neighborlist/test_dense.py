@@ -12,6 +12,7 @@ from kups.core.data import Index, Table
 from kups.core.neighborlist.dense import DenseNearestNeighborList, _dense_subselect
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
+from test.units import A
 
 from ._builders import (
     EvalState,
@@ -30,7 +31,7 @@ class TestDenseSubselect:
         lh = make_lh(jnp.zeros((4, 3)), jnp.array([0, 0, 1, 1]))
         systems, _ = make_systems(
             PeriodicCell(
-                TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, 0) * 10.0)
+                TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(2, 0) * 10.0) * A)
             ),
             jnp.array([1.0, 1.0]),
         )
@@ -44,7 +45,7 @@ class TestDenseSubselect:
     def test_self_pairs_present(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A)),
             jnp.array([1.0]),
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(8))
@@ -57,14 +58,14 @@ class TestFromState:
     def test_from_state_builds_lens_capacities_and_carries_cutoffs(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A)),
             jnp.array([2.0]),
         )
         params = UniversalNeighborlistParameters(
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        cutoffs = cutoff_table(jnp.array([2.5]))
+        cutoffs = cutoff_table(jnp.array([2.5]) * A)
 
         nl = DenseNearestNeighborList.from_state(state, cutoffs)
 
@@ -83,7 +84,9 @@ class TestBipartiteQueryKeys:
         ``Index.new`` compacts keys to the systems that occur, so a lone query in system 1
         carries ``keys == (1,)`` and ``indices == [0]``; by position it would meet system 0.
         """
-        lh = make_lh(jnp.array([[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]), jnp.array([0, 1]))
+        lh = make_lh(
+            jnp.array([[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]) * A, jnp.array([0, 1])
+        )
         systems, cutoffs = systems_from_lvecs(
             jnp.eye(3)[None] * 20.0, jnp.array([2.0, 2.0])
         )
@@ -91,7 +94,7 @@ class TestBipartiteQueryKeys:
         queries = Table(
             (ParticleId(2),),
             SamplePoints(
-                positions=jnp.array([[5.0, 5.0, 5.0]]),
+                positions=jnp.array([[5.0, 5.0, 5.0]]) * A,
                 system=system,
                 inclusion=system,
                 exclusion=Index.integer(jnp.array([2])),

@@ -28,8 +28,8 @@ from kups.core.assertion import (
 )
 from kups.core.capacity import CapacityError, LensCapacityFix
 from kups.core.lens import lens
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
+from test.units import A
 
 
 class SimpleState(NamedTuple):
@@ -1611,7 +1611,7 @@ class TestLoopMerge:
 
 def test_quantities_bind_as_magnitudes():
     """A length in ``fmt_args`` or ``like`` reaches the primitives as its magnitudes."""
-    x = jnp.array([1.0, -2.0]) * u.angstrom
+    x = jnp.array([1.0, -2.0]) * A
 
     def f(x: units.Length) -> Array:
         runtime_assert(jnp.all(x.value > 0), "got {v}", fmt_args={"v": x})
@@ -1619,4 +1619,4 @@ def test_quantities_bind_as_magnitudes():
 
     ok, (assertion,) = with_runtime_assertions(f)(x)
     assert not ok
-    np.testing.assert_array_equal(assertion.fmt_args["v"], x.to(u.angstrom))
+    np.testing.assert_array_equal(assertion.fmt_args["v"], x.to(A))

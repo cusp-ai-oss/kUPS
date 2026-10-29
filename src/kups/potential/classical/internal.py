@@ -13,6 +13,7 @@ from typing import Any, Literal, overload
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.lens import View
 from kups.core.patch import IdPatch, Patch, WithPatch
@@ -20,7 +21,6 @@ from kups.core.potential import (
     EMPTY,
     CompensatedPotentialResult,
     EmptyType,
-    Energy,
     Potential,
     PotentialOut,
     PotentialResult,
@@ -66,7 +66,7 @@ class InternalEnergies[State, StatePatch: Patch[Any]](
     """
 
     motifs: View[State, Table[ParticleId, MotifData]] = field(static=True)
-    motif_potential_out: View[State, Energy] = field(static=True)
+    motif_potential_out: View[State, units.Energy] = field(static=True)
 
     @overload
     def __call__(

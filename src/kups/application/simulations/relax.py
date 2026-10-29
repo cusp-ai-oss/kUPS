@@ -105,7 +105,7 @@ def main() -> None:
     """CLI entry point for structure relaxation."""
     cli = NanoArgs(Config)
     config = cli.parse()
-    rich.print(config)
+    rich.print(config.model_dump())
     run(config)
     rich.print(analyze_relax_file(config.run.out_file))
 

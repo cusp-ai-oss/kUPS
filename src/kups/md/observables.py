@@ -10,12 +10,9 @@ and are distinct from the StateProperty-based observables in kups.observables.
 
 from typing import Protocol, runtime_checkable
 
-import jax.numpy as jnp
-from jax import Array
-
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.typing import HasMasses, HasMomenta, ParticleId, SystemId
-from kups.core.utils.jax import vectorize
 from kups.observables.stress import (
     IsVirialParticles,
     IsVirialSystems,
@@ -27,7 +24,7 @@ from kups.observables.stress import (
 class _PressureTensorParticles(IsVirialParticles, HasMomenta, HasMasses, Protocol): ...
 
 
-def particle_kinetic_energy(momentum: Array, mass: Array) -> Array:
+def particle_kinetic_energy(momentum: units.Momentum, mass: units.Mass) -> units.Energy:
     """Compute the per-particle kinetic energy from momentum and mass.
 
     Calculates the kinetic energy for each particle using:
@@ -37,19 +34,19 @@ def particle_kinetic_energy(momentum: Array, mass: Array) -> Array:
     where $\\mathbf{p}_i$ is the momentum vector and $m_i$ is the particle mass.
 
     Args:
-        momentum: Momentum vector $\\mathbf{p}$ (units: mass·length/time), shape `(..., 3)`
-        mass: Particle mass $m$ (units: mass), shape `(...,)`
+        momentum: Momentum vector $\\mathbf{p}$, shape `(..., 3)`
+        mass: Particle mass $m$, shape `(...,)`
 
     Returns:
-        Per-particle kinetic energy $K$ (units: energy), shape `(...,)`
+        Per-particle kinetic energy $K$, shape `(...,)`
     """
-    # K = p²/(2m) [energy]
-    return 0.5 * jnp.sum(jnp.square(momentum), axis=-1) / mass
+    # K = p²/(2m)
+    return 0.5 * units.sum(momentum**2, axis=-1) / mass
 
 
 def remove_center_of_mass_momentum(
-    momenta: Array, masses: Array, system: Index[SystemId]
-) -> Array:
+    momenta: units.Momentum, masses: units.Mass, system: Index[SystemId]
+) -> units.Momentum:
     """Project momenta onto the zero-total-momentum subspace per system.
 
     The projection subtracts the center-of-mass velocity from each particle,
@@ -72,8 +69,12 @@ def remove_center_of_mass_momentum(
 
 
 def system_kinetic_energy(
-    momenta: Array, masses: Array, system: Index[SystemId], *, remove_com: bool = False
-) -> Array:
+    momenta: units.Momentum,
+    masses: units.Mass,
+    system: Index[SystemId],
+    *,
+    remove_com: bool = False,
+) -> units.Energy:
     """Total kinetic energy per system.
 
     Args:
@@ -92,37 +93,36 @@ def system_kinetic_energy(
     return system.sum_over(particle_kinetic_energy(momenta, masses)).data
 
 
-@vectorize(signature="(),(3,3),()->()")
 def instantaneous_pressure(
-    kinetic_energy: Array,
-    cauchy_stress: Array,
-    volume: Array,
-) -> Array:
+    kinetic_energy: units.Energy,
+    cauchy_stress: units.Pressure,
+    volume: units.Volume,
+) -> units.Pressure:
     """Compute instantaneous pressure from kinetic energy and Cauchy stress.
 
     $$P = \\frac{2K}{dV} + \\frac{\\text{Tr}(\\boldsymbol{\\sigma})}{d}$$
 
     where $K$ is the total kinetic energy, $d$ is the spatial dimensionality,
-    $V$ is the volume, and $\\boldsymbol{\\sigma}$ is the Cauchy stress tensor
-    (units: energy/length³).
+    $V$ is the volume, and $\\boldsymbol{\\sigma}$ is the Cauchy stress tensor.
 
     Args:
-        kinetic_energy: Total kinetic energy $K$ (units: energy), scalar or array.
-        cauchy_stress: Cauchy stress tensor $\\boldsymbol{\\sigma}$
-            (units: energy/length³), shape ``(d, d)``.
-        volume: System volume $V$ (units: length³), scalar or array.
+        kinetic_energy: Total kinetic energy $K$, scalar or array.
+        cauchy_stress: Cauchy stress tensor $\\boldsymbol{\\sigma}$,
+            shape ``(d, d)``.
+        volume: System volume $V$, scalar or array.
 
     Returns:
-        Instantaneous pressure $P$ (units: energy/length³), scalar or array.
+        Instantaneous pressure $P$, scalar or array.
     """
-    d = cauchy_stress.shape[0]
-    return (2.0 * kinetic_energy) / (d * volume) + jnp.trace(cauchy_stress) / d
+    d = cauchy_stress.shape[-1]
+    trace = cauchy_stress.trace(axis1=-2, axis2=-1)
+    return (2.0 * kinetic_energy) / (d * volume) + trace / d
 
 
 def instantaneous_pressure_tensor(
     particles: Table[ParticleId, _PressureTensorParticles],
     systems: Table[SystemId, IsVirialSystems],
-) -> Array:
+) -> units.Pressure:
     r"""Compute the symmetric instantaneous pressure tensor.
 
     $$P_{\text{ins}} = \frac{1}{V}\sum_i \frac{\mathbf{p}_i \otimes \mathbf{p}_i}{m_i}
@@ -143,8 +143,7 @@ def instantaneous_pressure_tensor(
         systems: Per-system table providing ``cell`` and ``cell_gradients``.
 
     Returns:
-        Symmetric pressure tensor per system, shape ``(n_systems, 3, 3)``,
-        units of energy/length³.
+        Symmetric pressure tensor per system, shape ``(n_systems, 3, 3)``.
     """
     p = particles.data.momenta
     m = particles.data.masses

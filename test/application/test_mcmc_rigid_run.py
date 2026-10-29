@@ -13,6 +13,7 @@ import pytest
 from kups.application.mcmc.logging import MCMCLoggedData, MCMCStepData
 from kups.application.simulations.mcmc_rigid import MCMCState, init_state, run
 from kups.core.storage import HDF5StorageReader
+from kups.core.units import catalog as u
 
 from ._rigid_configs import assert_readable, co2_config
 
@@ -52,7 +53,7 @@ class TestRunNVT:
     def test_empty_host_keeps_one_slot_and_runs(self):
         # At zero pressure the reservoir estimate is 0; one slot is still kept.
         base = co2_config(exchange_prob=0.0, init_adsorbates=(0,), charged=False)
-        host = base.hosts[0].model_copy(update={"pressure": 0.0})
+        host = base.hosts[0].model_copy(update={"pressure": 0.0 * u.Pa})
         config = base.model_copy(update={"hosts": (host,)})
         state = init_state(jax.random.key(7), config)
         assert len(state.groups) == 1
@@ -117,7 +118,8 @@ class TestRunGCMC:
 
     def test_state_has_finite_energy(self, runs):
         for state, _ in runs:
-            assert jnp.isfinite(state.systems.data.potential_energy.total[0]).item()
+            energy = state.systems.data.potential_energy.total[0]
+            assert jnp.isfinite(energy.to(u.eV)).item()
 
     def test_analyzer_reads_back_physical_outputs(self, runs):
         for _, output in runs:

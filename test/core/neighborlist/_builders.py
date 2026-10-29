@@ -19,6 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import Capacity
 from kups.core.cell import Cell, OrthogonalFrame, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
@@ -36,6 +37,7 @@ from kups.core.neighborlist.types import (
 from kups.core.result import Result, as_result_function
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
+from test.units import A, as_length
 
 
 @dataclass
@@ -92,35 +94,55 @@ def make_lh(
 
 
 def make_systems(
-    cell: Cell, cutoffs: Array
-) -> tuple[Table[SystemId, SampleSystems], Table[SystemId, Array]]:
+    cell: Cell, cutoffs: Array | units.Length
+) -> tuple[Table[SystemId, SampleSystems], Table[SystemId, units.Length]]:
     """Create a systems table from a ``Cell``, alongside the cutoff table.
+
+    Args:
+        cell: The cell every system shares.
+        cutoffs: One cutoff per system, in Angstrom if given as magnitudes.
+
+    Returns:
+        A tuple of ``(systems, cutoffs)`` tables keyed by ``SystemId``.
+    """
+    cuts = as_length(cutoffs)
+    sys_keys = tuple(SystemId(i) for i in range(len(cuts)))
+    indexed_systems = Table(sys_keys, SampleSystems(cell=cell))
+    indexed_cutoffs = Table(sys_keys, cuts)
+    return indexed_systems, indexed_cutoffs
+
+
+def systems_from_lvecs(
+    lvecs: Array | units.Length, cutoffs: Array | units.Length
+) -> tuple[Table[SystemId, SampleSystems], Table[SystemId, units.Length]]:
+    """Create a systems table from raw lattice vectors, alongside cutoffs.
+
+    Args:
+        lvecs: Lattice vectors, in Angstrom if given as magnitudes.
+        cutoffs: One cutoff per system, in Angstrom if given as magnitudes.
 
     Returns:
         A tuple of ``(systems, cutoffs)`` tables keyed by ``SystemId``.
     """
     n = len(cutoffs)
-    sys_keys = tuple(SystemId(i) for i in range(n))
-    indexed_systems = Table(sys_keys, SampleSystems(cell=cell))
-    indexed_cutoffs = Table(sys_keys, cutoffs)
-    return indexed_systems, indexed_cutoffs
-
-
-def systems_from_lvecs(
-    lvecs: Array, cutoffs: Array
-) -> tuple[Table[SystemId, SampleSystems], Table[SystemId, Array]]:
-    """Create a systems table from raw lattice vectors, alongside cutoffs."""
-    n = len(cutoffs)
-    lv = jnp.asarray(lvecs)
+    lv = as_length(lvecs)
     if lv.shape[0] == 1 and n > 1:
-        lv = jnp.repeat(lv, n, axis=0)
+        lv = units.apply(jnp.repeat, lv, n, axis=0)
     cell = PeriodicCell(TriclinicFrame.from_matrix(lv))
     return make_systems(cell, cutoffs)
 
 
-def cutoff_table(cutoffs: Array) -> Table[SystemId, Array]:
-    """Create a cutoff table with canonical ``SystemId`` keys."""
-    return Table(tuple(SystemId(i) for i in range(len(cutoffs))), cutoffs)
+def cutoff_table(cutoffs: Array | units.Length) -> Table[SystemId, units.Length]:
+    """Create a cutoff table with canonical ``SystemId`` keys.
+
+    Args:
+        cutoffs: One cutoff per system, in Angstrom if given as magnitudes.
+
+    Returns:
+        The cutoffs as a table keyed by ``SystemId``.
+    """
+    cuts = as_length(cutoffs)
+    return Table(tuple(SystemId(i) for i in range(len(cuts))), cuts)
 
 
 def make_rh(
@@ -188,7 +210,7 @@ def make_pipeline_ctx(
         queried_keys = Index(lh.keys, queried_keys)
     assert rh is None or queried_keys is None
     if cell is None:
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A))
     systems, _ = make_systems(cell, jnp.array([1.0]))
     if queried_keys is not None:
         queried_keys = queried_keys.update_labels(lh.keys)
@@ -258,7 +280,7 @@ def make_adaptive_state(n_particles: int, n_systems: int) -> EvalState:
     lh = make_lh(positions, batch_mask)
     systems, _ = make_systems(
         PeriodicCell(
-            OrthogonalFrame(jnp.tile(jnp.array([10.0, 10.0, 10.0]), (n_systems, 1)))
+            OrthogonalFrame(jnp.tile(jnp.array([10.0, 10.0, 10.0]), (n_systems, 1)) * A)
         ),
         jnp.full((n_systems,), 2.0),
     )
@@ -271,7 +293,7 @@ def make_adaptive_state(n_particles: int, n_systems: int) -> EvalState:
 def pad(
     lh: Table[ParticleId, SamplePoints],
     systems: Table[SystemId, SampleSystems],
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     queried_keys: Index[ParticleId] | None = None,
     *,
     n_particles: int,
@@ -280,7 +302,7 @@ def pad(
 ) -> tuple[
     Table[ParticleId, SamplePoints],
     Table[SystemId, SampleSystems],
-    Table[SystemId, Array],
+    Table[SystemId, units.Length],
     Index[ParticleId] | None,
 ]:
     """Pad to ``n_particles`` particles, ``n_systems`` systems, ``n_queried`` queried keys.
@@ -315,7 +337,7 @@ def pad(
     return (
         padded,
         Table(system_keys, jax.tree.map(repeat_last, systems.data)),
-        Table(system_keys, repeat_last(cutoffs.data)),
+        Table(system_keys, jax.tree.map(repeat_last, cutoffs.data)),
         queried_keys,
     )
 
@@ -350,7 +372,7 @@ def _replicate(
     keys: Table[ParticleId, FractionalPoints],
     queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     image_candidates: Capacity[int] | None,
 ) -> Result[Any, CandidateBatch[Literal[2]]]:
     return as_result_function(replicate_for_images)(
@@ -363,7 +385,7 @@ def replicate(
     keys: Table[ParticleId, FractionalPoints],
     queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     image_candidates: Capacity[int] | None,
 ) -> CandidateBatch[Literal[2]]:
     """``replicate_for_images`` under jit, raising its runtime assertions.

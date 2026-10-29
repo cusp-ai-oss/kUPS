@@ -49,7 +49,7 @@ from kups.application.utils.propagate import (
     run_simulation_cycles,
     run_warmup_cycles,
 )
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.data import Table, WithCache
 from kups.core.data.buffered import add_buffers
 from kups.core.data.index import unify_keys_by_cls
@@ -75,6 +75,7 @@ from kups.core.propagator import (
 )
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, key_chain, tree_map
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.moves import (
@@ -188,7 +189,7 @@ def init_state(key: Array, config: Config) -> WidomState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts + num_buffer_particles / n_sys,
         system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
+        tree_map(units.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
     if blocking_spheres.radii.shape[0] > 0:
         # Systems without spheres have no radius to size from, so use the batch-wide max.
@@ -200,7 +201,7 @@ def init_state(key: Array, config: Config) -> WidomState:
         )
     else:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
-    min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
+    min_half_box = units.min(system.data.cell.perpendicular_lengths) / 2
 
     return WidomState(
         particles=particles,
@@ -213,24 +214,40 @@ def init_state(key: Array, config: Config) -> WidomState:
             lj_params,
             KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros(n_sys, u.eV), label=SystemId),
+                    EMPTY,
+                    EMPTY,
                 )
             ),
         ),
         ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
         blocking_spheres_parameters=blocking_spheres,
         translation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
+            ParameterSchedulerState.create(
+                n_sys,
+                initial_value=0.1 * u.angstrom,
+                lower_bound=0.0 * u.angstrom,
+                upper_bound=min_half_box,
+            ),
             label=SystemId,
         ),
         rotation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
+            ParameterSchedulerState.create(
+                n_sys, initial_value=jnp.array(0.1), lower_bound=jnp.array(0.0)
+            ),
+            label=SystemId,
         ),
         reinsertion_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
+            ParameterSchedulerState.create(
+                n_sys, initial_value=jnp.array(0.1), lower_bound=jnp.array(0.0)
+            ),
+            label=SystemId,
         ),
         exchange_params=Table.arange(
-            ParameterSchedulerState.create(n_sys), label=SystemId
+            ParameterSchedulerState.create(
+                n_sys, initial_value=jnp.array(0.1), lower_bound=jnp.array(0.0)
+            ),
+            label=SystemId,
         ),
         widom_statistics=Table.arange(WidomStatistics.zeros(n_sys), label=SystemId),
     )
@@ -244,7 +261,7 @@ def _update_widom_stats(
     The probe uses a bare Boltzmann log-ratio with a zero-move-log insertion
     proposal, so $\Delta U = -k_BT \ln\alpha$ exactly.
     """
-    kT = state.systems.data.temperature * BOLTZMANN_CONSTANT
+    kT = state.systems.data.temperature * units.constants.k_B
     delta_u = -ln_alpha * kT
     return stats.update(ln_alpha, delta_u)
 
@@ -366,7 +383,7 @@ def run(config: Config) -> WidomState:
 def main() -> None:
     cli = NanoArgs(Config)
     config = cli.parse()
-    rich.print(config)
+    rich.print(config.model_dump())
     run(config)
     rich.print(analyze_widom_file(config.run.out_file))
 

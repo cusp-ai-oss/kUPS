@@ -16,6 +16,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.neighborlist.common import candidate_image_counts, num_cells
 from kups.core.neighborlist.types import NeighborListSystems
@@ -28,7 +29,7 @@ from kups.core.utils.math import next_higher_power
 def _capacity_estimates(
     systems: NeighborListSystems,
     num_particles: Array,
-    cutoffs: Array,
+    cutoffs: units.Length,
     base: float,
     multiplier: float,
 ) -> tuple[Array, Array, Array, Array]:
@@ -90,7 +91,7 @@ class UniversalNeighborlistParameters:
         cls,
         particles_per_system: Table[SystemId, Array],
         systems: Table[SystemId, NeighborListSystems],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
         *,
         base: float = 2,
         multiplier: float = 1.0,

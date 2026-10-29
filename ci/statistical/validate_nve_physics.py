@@ -19,8 +19,9 @@ from pathlib import Path
 import numpy as np
 
 from kups.application.md.logging import MDLoggedData
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.storage import HDF5StorageReader
+from kups.core.units import catalog as u
 
 # Physical constants for validation
 ARGON_MASS_AMU = 39.948  # Atomic mass of argon
@@ -107,10 +108,14 @@ def validate_equipartition(
     mean_temp = float(np.mean(temperature))
 
     # Expected KE from equipartition
-    expected_ke = 0.5 * degrees_of_freedom * BOLTZMANN_CONSTANT * mean_temp
+    expected_ke = float(
+        (0.5 * degrees_of_freedom * units.constants.k_B * mean_temp * u.K).to(u.eV)
+    )
 
     # Temperature from KE (should be consistent)
-    temp_from_ke = 2 * mean_ke / (degrees_of_freedom * BOLTZMANN_CONSTANT)
+    temp_from_ke = float(
+        (2 * mean_ke * u.eV / (degrees_of_freedom * units.constants.k_B)).to(u.K)
+    )
 
     relative_error = (
         abs(mean_ke - expected_ke) / expected_ke if expected_ke != 0 else 0.0
@@ -252,19 +257,23 @@ def main() -> int:
         init_data = reader.focus_group(lambda state: state.init)[...]
         step_data = reader.focus_group(lambda state: state.step)[...]
 
-    positions = np.asarray(init_data.atoms.data.positions)
+    positions = np.asarray(init_data.atoms.data.positions.to(u.angstrom))
     dof = float(3 * positions.shape[0] - 3)
-    lattice = np.asarray(init_data.systems.data.cell.vectors[0])
-    potential_energy = np.asarray(step_data.potential_energy).flatten()
-    kinetic_energy = np.asarray(step_data.kinetic_energy).flatten()
-    stress_tensor = np.asarray(step_data.stress_tensor).reshape(-1, 3, 3)
+    lattice = np.asarray(init_data.systems.data.cell.vectors[0].to(u.angstrom))
+    potential_energy = np.asarray(step_data.potential_energy.to(u.eV)).flatten()
+    kinetic_energy = np.asarray(step_data.kinetic_energy.to(u.eV)).flatten()
+    stress_tensor = np.asarray(
+        step_data.stress_tensor.to(u.eV / u.angstrom**3)
+    ).reshape(-1, 3, 3)
 
     n_atoms = positions.shape[0]
     n_steps = len(potential_energy)
     volume = abs(np.linalg.det(lattice))
 
     total_energy = potential_energy + kinetic_energy
-    temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
+    temperature = np.asarray(
+        (2 * step_data.kinetic_energy / (units.constants.k_B * dof)).to(u.K)
+    ).flatten()
     pressure = np.trace(stress_tensor, axis1=-2, axis2=-1) / 3
 
     print(f"MD Physics Validation: {args.hdf5_path.name}")

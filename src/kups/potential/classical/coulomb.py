@@ -12,11 +12,8 @@ Potential: $U = \\frac{1}{4\\pi\\epsilon_0} \\sum_{i<j} \\frac{q_i q_j}{r_{ij}}$
 
 from typing import Any, Literal, Protocol
 
-import jax.numpy as jnp
-from jax import Array
-
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Vacuum
-from kups.core.constants import BOHR, HARTREE
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import (
@@ -25,7 +22,6 @@ from kups.core.neighborlist import (
 )
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -48,8 +44,6 @@ from kups.potential.common.graph import (
     IsGraphProbe,
 )
 
-TO_STANDARD_UNITS = HARTREE * BOHR
-
 
 class IsCoulombGraphParticles(
     HasPositionsAndSystemIndex, HasCharges, NeighborListPoints, Protocol
@@ -68,30 +62,29 @@ type _PairwiseCoulombInput = GraphPotentialInput[
 ]
 
 
-def coulomb_pair_energy(charges_i: Array, charges_j: Array, distance: Array) -> Array:
+def coulomb_pair_energy(
+    charges_i: units.Charge, charges_j: units.Charge, distance: units.Length
+) -> units.Energy:
     """Coulomb energy of charge pairs separated by ``distance``.
 
     Args:
-        charges_i: Charges of the left endpoints in e.
-        charges_j: Charges of the right endpoints in e.
-        distance: Pair separations in Å.
+        charges_i: Charges of the left endpoints.
+        charges_j: Charges of the right endpoints.
+        distance: Pair separations.
 
     Returns:
-        ``k_e * q_i * q_j / r`` per pair in eV.
+        ``k_e * q_i * q_j / r`` per pair.
     """
-    return charges_i * charges_j / distance * TO_STANDARD_UNITS
+    return units.constants.k_e * charges_i * charges_j / distance
 
 
 def _pairwise_coulomb_energy(
     inp: _PairwiseCoulombInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     edg = inp.graph.particles[inp.graph.edges.indices]
-    dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
-    energies = (
-        inp.graph.edge_batch_mask.sum_over(
-            coulomb_pair_energy(edg.charges[:, 0], edg.charges[:, 1], dists)
-        )
-        / 2
+    dists = units.norm(inp.graph.edge_shifts[:, 0], axis=-1)
+    energies = 0.5 * inp.graph.edge_batch_mask.sum_over(
+        coulomb_pair_energy(edg.charges[:, 0], edg.charges[:, 1], dists)
     )
     assert len(energies) == inp.graph.batch_size
     return WithPatch(energies, IdPatch[Any]())
@@ -99,7 +92,7 @@ def _pairwise_coulomb_energy(
 
 def coulomb_vacuum_energy(
     inp: CoulombVacuumInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Compute Coulomb electrostatic energy for vacuum systems.
 
     Calculates pairwise electrostatic energy using Coulomb's law over all

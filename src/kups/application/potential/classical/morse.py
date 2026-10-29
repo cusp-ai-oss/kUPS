@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index
 from kups.core.lens import Lens, const_lens
@@ -84,8 +85,8 @@ def make_morse_bond_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -112,15 +113,15 @@ def make_morse_bond_from_state[State, P: Patch[Any]](
         IsMorseBondState[
             HasCache[
                 MorseBondParameters,
-                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+                KahanSummand[PotentialOut[PositionsAndCell[units.Force], EmptyType]],
             ]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
-) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 @overload
@@ -139,8 +140,8 @@ def make_morse_bond_from_state[State](
     probe: None = None,
     *,
     parameters: MorseBondParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -161,14 +162,14 @@ def make_morse_bond_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
         IsCachedMorseBondGraphState[
-            KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]
+            KahanSummand[PotentialOut[PositionsAndCell[units.Force], EmptyType]]
         ],
     ],
     probe: Probe[State, P, IsGraphProbe[IsBondedParticles, Literal[2]]],
     *,
     parameters: MorseBondParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
-) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 def make_morse_bond_from_state(
@@ -176,7 +177,7 @@ def make_morse_bond_from_state(
     probe: Any = None,
     *,
     parameters: MorseBondParameters | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
 ) -> Any:
     """Create a Morse bond potential from a typed state, optionally with incremental updates.
 

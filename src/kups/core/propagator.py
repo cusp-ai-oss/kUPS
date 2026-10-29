@@ -676,13 +676,13 @@ class ScheduledPropertyPropagator[State, Input, Value](Propagator[State]):
         ```python
         from kups.core.schedule import LinearSchedule
 
-        # Temperature annealing from 500K to 300K over 10000 steps
+        # Temperature annealing from 500 K to 300 K over 10000 steps
         temp_propagator = ScheduledPropertyPropagator(
             lens=lens(lambda s: s.temperature),
             input_view=lens(lambda s: s.step).get,
             schedule=LinearSchedule(
-                start=jnp.array(500.0),
-                end=jnp.array(300.0),
+                start=500.0 * u.K,
+                end=300.0 * u.K,
                 total_steps=jnp.array(10000)
             )
         )
