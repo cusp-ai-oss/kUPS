@@ -11,13 +11,15 @@ from typing import Annotated
 import ase
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import ArrayLike
 from pydantic import BaseModel
 
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
+    _electronic_metadata,
+    _prepare_ase,
     default_exclusion,
-    particles_from_ase,
 )
 from kups.core import units
 from kups.core.cell import (
@@ -38,7 +40,7 @@ from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, IsState, ParticleId, SystemId
 from kups.core.units import catalog as u
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
 from kups.relaxation.config import TransformationConfig
 
 
@@ -89,6 +91,24 @@ class RelaxSystems:
     cell: Cell[AnyPeriodicity]
     cell_gradients: Cell[AnyPeriodicity]
     potential_energy: units.Energy
+
+    total_charge: Array = field(default=None, kw_only=True)  # type: ignore
+    """Integer total charge per system, defaulting to zero."""
+    spin_multiplicity: Array = field(default=None, kw_only=True)  # type: ignore
+    """Integer spin multiplicity per system, defaulting to one."""
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        if self.total_charge is None:
+            object.__setattr__(
+                self, "total_charge", jnp.zeros(self.cell.vectors.shape[:-2], dtype=int)
+            )
+        if self.spin_multiplicity is None:
+            object.__setattr__(
+                self,
+                "spin_multiplicity",
+                jnp.ones(self.cell.vectors.shape[:-2], dtype=int),
+            )
 
 
 @dataclass
@@ -163,7 +183,13 @@ class RelaxRunConfig(BaseModel):
     """Whether to also relax lattice vectors."""
 
 
-def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
+def relax_systems(
+    cell: Cell[AnyPeriodicity],
+    n_atoms: Array,
+    *,
+    total_charge: Array | None = None,
+    spin_multiplicity: Array | None = None,
+) -> RelaxSystems:
     """System rows with zeroed caches and cells in the log-deformation frame.
 
     ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
@@ -174,6 +200,10 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
         cell: Cells with a plain frame, one per system; an unbatched cell gains
             a leading axis.
         n_atoms: Atom count per system, shape ``(n_systems,)``.
+        total_charge: Integer total charge per system, shape ``(n_systems,)``;
+            None gives zeros.
+        spin_multiplicity: Integer spin multiplicity per system, shape
+            ``(n_systems,)``; None gives ones.
     """
     if cell.vectors.ndim == 2:
         cell = cell[None]
@@ -189,6 +219,8 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
         potential_energy=units.zeros(
             cell.vectors.shape[0], u.eV, dtype=cell.vectors.dtype
         ),
+        total_charge=total_charge,
+        spin_multiplicity=spin_multiplicity,
     )
 
 
@@ -224,7 +256,11 @@ def relax_particles(
 
 
 def relax_state_from_particles_and_cell(
-    particles: Table[ParticleId, Particles], cell: Cell[AnyPeriodicity]
+    particles: Table[ParticleId, Particles],
+    cell: Cell[AnyPeriodicity],
+    *,
+    total_charge: ArrayLike | None = None,
+    spin_multiplicity: ArrayLike | None = None,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system tables from plain particles and a cell.
 
@@ -232,6 +268,10 @@ def relax_state_from_particles_and_cell(
         particles: Particles of one or more systems. Keys are preserved;
             out-of-bounds system references denote padding.
         cell: Their cells in system-key order, unbatched for a single system.
+        total_charge: Integer total charge per system in system-key order,
+            defaulting to zero.
+        spin_multiplicity: Nonnegative integer multiplicity per system in
+            system-key order, defaulting to one.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
@@ -252,23 +292,47 @@ def relax_state_from_particles_and_cell(
             f"got {cell.vectors.shape}."
         )
     n_atoms = system.counts.data.astype(particles.data.positions.dtype)
+    systems = relax_systems(
+        cell,
+        n_atoms,
+        total_charge=None if total_charge is None else jnp.asarray(total_charge),
+        spin_multiplicity=(
+            None if spin_multiplicity is None else jnp.asarray(spin_multiplicity)
+        ),
+    )
     return (
         particles.map_data(relax_particles),
-        Table(system.keys, relax_systems(cell, n_atoms), _cls=SystemId),
+        Table(system.keys, systems, _cls=SystemId),
     )
 
 
 def relax_state_from_ase(
     atoms: ase.Atoms | str | Path,
+    *,
+    total_charge: ArrayLike | None = None,
+    spin_multiplicity: ArrayLike | None = None,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system data from an ASE Atoms object or file.
+
+    Non-None metadata keywords override ``atoms.info["charge"]`` and
+    ``atoms.info["spin"]`` independently. Missing info defaults to 0/1;
+    present invalid values raise unless overridden. Partial charges are unchanged.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
+        total_charge: Integer total charge, defaulting to zero.
+        spin_multiplicity: Nonnegative integer multiplicity, defaulting to one.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
+
+    Raises:
+        TypeError: If selected electronic metadata are not integers.
+        ValueError: If selected metadata have invalid shapes or values.
     """
-    p, cell, _ = particles_from_ase(atoms)
-    return relax_state_from_particles_and_cell(p, cell)
+    (p, cell, _), info = _prepare_ase(atoms)
+    charge, spin = _electronic_metadata(total_charge, spin_multiplicity, info)
+    return relax_state_from_particles_and_cell(
+        p, cell, total_charge=charge[None], spin_multiplicity=spin[None]
+    )
