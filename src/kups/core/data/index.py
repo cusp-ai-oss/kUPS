@@ -739,15 +739,30 @@ class Index[Key: SupportsSorting]:
         if not shift_keys:
             new_keys = _merge_keys(*[i.keys for i in indices])
             new_indices = jnp.concatenate([i.indices_in(new_keys) for i in indices])
-            mc = 0
-            for i in indices:
-                if i.max_count is None:
-                    mc = None
-                    break
-                mc += i.max_count
+            mc = _summed_max_count(*indices)
             return Index(new_keys, new_indices, mc, _cls=indices[0].cls)
 
         return _concatenate_shifted(*indices)  # type: ignore[arg-type]
+
+    @staticmethod
+    def stack[K: SupportsSorting](*indices: Index[K], axis: int = 0) -> Index[K]:
+        """Stack Index objects of equal shape along a new axis.
+
+        Keys are merged (deduplicated, sorted) and indices remapped into the
+        combined key space, as in ``concatenate``.
+
+        Args:
+            *indices: One or more Index objects to stack.
+            axis: Position of the new axis in the result.
+
+        Returns:
+            A single stacked Index.
+        """
+        assert len(indices) > 0, "At least 1 set of indices must be provided."
+        assert all(i.cls == indices[0].cls for i in indices)
+        keys = _merge_keys(*[i.keys for i in indices])
+        stacked = jnp.stack([i.indices_in(keys) for i in indices], axis=axis)
+        return Index(keys, stacked, _summed_max_count(*indices), _cls=indices[0].cls)
 
     @overload
     @staticmethod
@@ -901,6 +916,12 @@ def _merge_keys[Key: SupportsSorting](
 ) -> tuple[Key, ...]:
     """Return the sorted union of multiple key tuples."""
     return tuple(sorted(set(t for ts in tokens for t in ts)))
+
+
+def _summed_max_count(*indices: Index[Any]) -> int | None:
+    """Sum of the ``max_count`` of all inputs, ``None`` if any input has none."""
+    counts = [i.max_count for i in indices if i.max_count is not None]
+    return sum(counts) if len(counts) == len(indices) else None
 
 
 find_index = Index.find

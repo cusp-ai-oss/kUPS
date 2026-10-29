@@ -60,11 +60,16 @@ def _tensor(shape: tuple[int, ...], element: Any) -> Any:
     return mlir.ir.RankedTensorType.get(list(shape), element)
 
 
+def _widen(ids: Array, bound: int) -> Array:
+    """Cast `ids` to int32 when their dtype cannot hold `bound`."""
+    return ids.astype(jnp.int32) if jnp.iinfo(ids.dtype).max < bound else ids
+
+
 def _gather(data: Array, segment_ids: Array) -> Array:
     """Gather rows of `data`, ids outside ``[0, len(data))`` picking up zero.
 
-    Uses the scatter's own out-of-range rule, so negative ids fill rather than
-    index from the end as ``jnp.take`` would.
+    Out-of-range ids, negative ones included (unlike ``jnp.take``), read an
+    appended zero row, so the gathered rows need no mask.
 
     Args:
         data: Rows to gather from, shape ``(num_segments, *feature_dims)``.
@@ -73,20 +78,20 @@ def _gather(data: Array, segment_ids: Array) -> Array:
     Returns:
         Gathered rows of shape ``(*segment_ids.shape, *feature_dims)``.
     """
-    features = data.shape[1:]
-    if data.shape[0] == 0:
+    num_rows, features = data.shape[0], data.shape[1:]
+    if num_rows == 0:
         return jnp.zeros((*segment_ids.shape, *features), data.dtype)
+    ids = _widen(segment_ids.reshape(-1, 1), num_rows)
     rows = jax.lax.gather(
-        data,
-        segment_ids.reshape(-1, 1),
+        jnp.concatenate([data, jnp.zeros_like(data[:1])]),
+        jnp.where((ids >= 0) & (ids < num_rows), ids, num_rows),
         jax.lax.GatherDimensionNumbers(
             offset_dims=tuple(range(1, 1 + len(features))),
             collapsed_slice_dims=(0,),
             start_index_map=(0,),
         ),
         slice_sizes=(1, *features),
-        mode=jax.lax.GatherScatterMode.FILL_OR_DROP,
-        fill_value=0,
+        mode=jax.lax.GatherScatterMode.PROMISE_IN_BOUNDS,
     )
     return rows.reshape(*segment_ids.shape, *features)
 
@@ -134,8 +139,7 @@ def _clip_ids(segment_ids: Array, num_segments: int) -> Array:
     """
     if num_segments == 0:
         return segment_ids
-    if jnp.iinfo(segment_ids.dtype).max < num_segments:
-        segment_ids = segment_ids.astype(jnp.int32)
+    segment_ids = _widen(segment_ids, num_segments)
     # Bounds in the ids' own dtype, which a Python int would widen under x64.
     limits = np.array([0, num_segments - 1], segment_ids.dtype)
     return jnp.clip(segment_ids, limits[0], limits[1])
@@ -207,8 +211,7 @@ def _flatten_batch(
         if data_dim is None
         else jnp.moveaxis(data, data_dim, 0)
     )
-    if jnp.iinfo(ids.dtype).max < size * rows:
-        ids = ids.astype(jnp.int32)
+    ids = _widen(ids, size * rows)
     offset = jnp.arange(size, dtype=ids.dtype)[:, None] * rows
     valid = (ids >= 0) & (ids < rows)
     flat_ids = jnp.where(valid, ids + offset, size * rows).reshape(-1)
