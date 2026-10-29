@@ -86,7 +86,7 @@ side_lengths = frame.lengths
 The same Frame instance can be wrapped in either cell type:
 
 ```python
-frame = OrthogonalFrame(lengths=jnp.array([20., 20., 20.]))
+frame = OrthogonalFrame(lengths=jnp.array([20., 20., 20.]) * u.angstrom)
 PeriodicCell(frame)   # 20 Å cubic crystal — particles wrap
 VacuumCell(frame)     # 20 Å bounding box of a cluster — no wrap
 ```
@@ -99,6 +99,7 @@ Frame vectors follow the row convention: ``r_real = r_frac @ frame.vectors``.
 from __future__ import annotations
 
 import abc
+import functools
 import math
 from enum import Enum
 from functools import partial
@@ -111,6 +112,7 @@ from typing import (
     Self,
     TypeGuard,
     TypeVar,
+    cast,
     overload,
     override,
 )
@@ -121,9 +123,18 @@ import numpy as np
 from jax import Array
 from jax.flatten_util import ravel_pytree
 
+from kups.core import units
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
-from kups.core.utils.jax import dataclass, field, jit, no_post_init
+from kups.core.units import catalog as u
+from kups.core.units import magnitudes
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    jit,
+    no_post_init,
+    skip_post_init_if_disabled,
+)
 from kups.core.utils.math import (
     DiagonalSquareMatrix,
     GeneralSquareMatrix,
@@ -142,7 +153,7 @@ class CoordinateSpace(Enum):
     """Enumeration for coordinate systems.
 
     Attributes:
-        REAL: Cartesian coordinates in Angstroms.
+        REAL: Cartesian coordinates (a length quantity).
         FRACTIONAL: Scaled coordinates in [0, 1) relative to frame vectors.
     """
 
@@ -171,7 +182,7 @@ class TriclinicMap(Protocol):
     in the lower-triangular triclinic frame produced by
     [to_lower_triangular][kups.core.cell.to_lower_triangular]."""
 
-    def __call__(self, r: Array, /) -> Array: ...
+    def __call__(self, r: units.Length, /) -> units.Length: ...
 
 
 class Frame(Protocol):
@@ -199,10 +210,17 @@ class Frame(Protocol):
     [MaterializedFrame][kups.core.cell.MaterializedFrame] stores the basis
     matrix, inverse and volume directly and implements this interface without
     going through ``BaseFrame``.
+
+    A *gradient frame* is a frame of the same type whose parameters hold
+    ``dE/dθ`` rather than ``θ``, as differentiating an energy with respect to a
+    frame returns it. Its leaves carry their true dimensions at runtime, while
+    the static field types still name the primal's; reading one as ``dE/dh``
+    goes through [`vectors_gradient`][kups.core.cell.Frame.vectors_gradient],
+    which holds the casts that reconcile the two.
     """
 
     @property
-    def vectors(self) -> Array:
+    def vectors(self) -> units.Length:
         """Basis vectors of the parallelepiped, shape ``(..., 3, 3)``.
 
         Rows are the basis vectors. Lower-triangular by convention so that
@@ -212,7 +230,7 @@ class Frame(Protocol):
         ...
 
     @property
-    def inverse_vectors(self) -> Array:
+    def inverse_vectors(self) -> units.Wavenumber:
         """Matrix inverse of [`vectors`][kups.core.cell.Frame.vectors],
         used to convert real-space coordinates to fractional, shape
         ``(..., 3, 3)``."""
@@ -227,7 +245,12 @@ class Frame(Protocol):
         ...
 
     @property
-    def reference_vectors(self) -> Array:
+    def unit(self) -> units.LengthUnit:
+        """The length unit [`matrix`][kups.core.cell.Frame.matrix] holds magnitudes in."""
+        ...
+
+    @property
+    def reference_vectors(self) -> units.Length:
         """Fixed reference basis for deformation-relative atom coordinates,
         shape ``(..., 3, 3)``. The identity for directly-parameterised frames
         (so atom DOFs are fractional); a frame that parameterises a deformation
@@ -236,22 +259,22 @@ class Frame(Protocol):
         ...
 
     @property
-    def volume(self) -> Array:
+    def volume(self) -> units.Volume:
         """Volume of the parallelepiped, shape ``(...)``."""
         ...
 
     @property
-    def perpendicular_lengths(self) -> Array:
+    def perpendicular_lengths(self) -> units.Length:
         """Perpendicular distance between opposing faces, per axis,
         shape ``(..., 3)``. Used by neighbor-list cutoff checks and by
         [min_multiplicity][kups.core.cell.min_multiplicity]."""
         ...
 
-    def to_fractional(self, r: Array) -> Array:
+    def to_fractional(self, r: units.Length) -> Array:
         """Convert real-space coordinates to fractional, shape ``(..., 3)``."""
         ...
 
-    def to_real(self, r_frac: Array) -> Array:
+    def to_real(self, r_frac: Array) -> units.Length:
         """Convert fractional coordinates to real-space, shape ``(..., 3)``."""
         ...
 
@@ -265,7 +288,7 @@ class Frame(Protocol):
         ...
 
     @classmethod
-    def from_matrix(cls, vecs: Array) -> Self:
+    def from_matrix(cls, vecs: units.Length) -> Self:
         """Construct from a ``(..., 3, 3)`` basis matrix.
 
         Projects the input onto the frame's parameter space — entries
@@ -293,7 +316,7 @@ class Frame(Protocol):
         """
         ...
 
-    def parameter_gradient(self, vectors_grad: Array) -> Self:
+    def parameter_gradient(self, vectors_grad: units.Force) -> Self:
         """Pull a cartesian ``∂E/∂h`` matrix back onto the frame's parameter
         space, returning a same-type frame whose parameter leaves hold
         ``∂E/∂θ``.
@@ -307,7 +330,7 @@ class Frame(Protocol):
         """
         ...
 
-    def vectors_gradient(self, parameter_grad: Frame) -> Array:
+    def vectors_gradient(self, parameter_grad: Frame) -> units.Force:
         """Map a parameter-space gradient frame (``parameter_grad`` holding
         ``∂E/∂θ`` in its parameter leaves) to the cartesian ``∂E/∂h`` matrix,
         shape ``(..., 3, 3)``.
@@ -344,10 +367,15 @@ class BaseFrame(Frame, abc.ABC):
     interface, ``BaseFrame`` the shared implementation.
     """
 
+    @property
+    @override
+    def unit(self) -> units.LengthUnit:
+        return _length_unit(self.vectors)
+
     @classmethod
     @abc.abstractmethod
     @override
-    def from_matrix(cls, vecs: Array) -> Self: ...
+    def from_matrix(cls, vecs: units.Length) -> Self: ...
 
     @abc.abstractmethod
     @override
@@ -362,45 +390,46 @@ class BaseFrame(Frame, abc.ABC):
     def matrix(self) -> SquareMatrix:
         # Conservative default: any frame without an explicit structure is
         # correct (just not fast) under the general dense paths.
-        return GeneralSquareMatrix(self.vectors)
+        return GeneralSquareMatrix(magnitudes(self.vectors))
 
     @property
     @override
-    def inverse_vectors(self) -> Array:
-        return self.matrix.inverse().array
+    def inverse_vectors(self) -> units.Wavenumber:
+        return self.matrix.inverse().array / self.unit
 
     @property
     @override
-    def reference_vectors(self) -> Array:
+    def reference_vectors(self) -> units.Length:
         # No stored reference: atom DOFs are fractional. DeformedFrame overrides.
-        return jnp.broadcast_to(
-            jnp.eye(3, dtype=self.vectors.dtype), self.vectors.shape
+        return (
+            jnp.broadcast_to(jnp.eye(3, dtype=self.vectors.dtype), self.vectors.shape)
+            * self.unit
         )
 
     @property
     @override
-    def volume(self) -> Array:
-        return jnp.abs(self.matrix.det())
+    def volume(self) -> units.Volume:
+        return jnp.abs(self.matrix.det()) * self.unit**3
 
     @property
     @override
     @jit
-    def perpendicular_lengths(self) -> Array:
+    def perpendicular_lengths(self) -> units.Length:
         v = self.vectors
         a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
         vol = self.volume
-        Lx = vol / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
-        Ly = vol / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
-        Lz = vol / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
-        return jnp.stack([Lx, Ly, Lz], axis=-1)
+        Lx = vol / units.norm(units.cross(b, c), axis=-1)
+        Ly = vol / units.norm(units.cross(a, c), axis=-1)
+        Lz = vol / units.norm(units.cross(a, b), axis=-1)
+        return units.stack([Lx, Ly, Lz], axis=-1)
 
     @override
-    def to_fractional(self, r: Array) -> Array:
-        return self.matrix.inverse().matmul(r)
+    def to_fractional(self, r: units.Length) -> Array:
+        return self.matrix.inverse().matmul(r / self.unit)
 
     @override
-    def to_real(self, r_frac: Array) -> Array:
-        return self.matrix.matmul(r_frac)
+    def to_real(self, r_frac: Array) -> units.Length:
+        return self.matrix.matmul(r_frac) * self.unit
 
     @override
     @jit
@@ -409,21 +438,23 @@ class BaseFrame(Frame, abc.ABC):
         # Otherwise XLA recomputes them inside every consumer, such as a
         # per-particle gather.
         det, inv = jax.lax.optimization_barrier((matrix.det(), matrix.inverse()))
-        return MaterializedFrame(self.matrix, inv, jnp.abs(det))
+        return MaterializedFrame(
+            self.matrix, inv, jnp.abs(det) * self.unit**3, self.unit
+        )
 
     @override
     @jit
-    def parameter_gradient(self, vectors_grad: Array) -> Self:
-        (grad,) = jax.vjp(lambda f: f.vectors, self)[1](vectors_grad)
-        return grad
+    def parameter_gradient(self, vectors_grad: units.Force) -> Self:
+        return _pull_back(self, vectors_grad)
 
     @override
     @jit
-    def vectors_gradient(self, parameter_grad: Frame) -> Array:
+    def vectors_gradient(self, parameter_grad: Frame) -> units.Force:
         def single(frame: Frame, grad: Frame) -> Array:
             theta, unravel = ravel_pytree(frame)
             g_theta, _ = ravel_pytree(grad)
-            jac = jax.jacfwd(lambda p: unravel(p).vectors)(theta)  # (3, 3, n)
+            # ``vectors`` labels its result, and jacfwd differentiates magnitudes.
+            jac = jax.jacfwd(lambda p: magnitudes(unravel(p).vectors.rebase()))(theta)
             # vec(∂E/∂h) = (Jᵀ)⁺·∂E/∂θ; lstsq on the wide ``Jᵀ`` gives the
             # min-norm solution, i.e. the pseudo-inverse.
             vec_grad = jnp.linalg.lstsq(jac.reshape(9, theta.shape[0]).T, g_theta)[0]
@@ -433,7 +464,12 @@ class BaseFrame(Frame, abc.ABC):
         for _ in range(self.vectors.ndim - 2):
             fn = jax.vmap(fn)
         with no_post_init():
-            return fn(self, parameter_grad)
+            # ravel_pytree, jacfwd and lstsq act on magnitudes, so both frames are
+            # expressed in the active base and the result is read in it: dE/dh is
+            # a force.
+            return units.from_dim(
+                fn(_active_base(self), _active_base(parameter_grad)), _FORCE_DIM
+            )
 
 
 class LinearFrame(BaseFrame, abc.ABC):
@@ -448,15 +484,113 @@ class LinearFrame(BaseFrame, abc.ABC):
     """
 
     @override
-    def vectors_gradient(self, parameter_grad: Frame) -> Array:
-        return self.from_matrix(parameter_grad.vectors).vectors
-
-    @override
-    def parameter_gradient(self, vectors_grad: Array) -> Self:
-        return self.from_matrix(vectors_grad)
+    def vectors_gradient(self, parameter_grad: Frame) -> units.Force:
+        # The gradient frame's matrix is dE/dh itself; its static type names the
+        # primal's lengths.
+        return cast(units.Force, parameter_grad.vectors)
 
 
-def _build_vectors(lengths: Array, angles: Array) -> Array:
+def _active_base[T](tree: T) -> T:
+    """``tree`` with every quantity leaf re-expressed in the active base.
+
+    Args:
+        tree: A pytree whose leaves may carry dimensions.
+
+    Returns:
+        The same structure; plain leaves pass through.
+    """
+    return units.tree_map(lambda x: x.rebase() if units.is_quantity(x) else x, tree)
+
+
+def _require_length(name: str, value: units.Length) -> None:
+    """Reject anything but a length, or a gradient frame's ``dE/dh``.
+
+    Args:
+        name: The field, for the error message.
+        value: The value the frame was built with.
+
+    Raises:
+        TypeError: If ``value`` is not a quantity.
+        units.DimensionError: If ``value`` is neither a length nor a force.
+    """
+    if not units.is_quantity(value):
+        raise TypeError(
+            f"{name} must be a length quantity; multiply plain magnitudes by "
+            "their unit, e.g. u.angstrom."
+        )
+    if units.dim_of(value) == _FORCE_DIM:
+        return
+    try:
+        units.require_dim(value, u.angstrom)
+    except units.DimensionError as err:
+        raise units.DimensionError(f"{name}: {err}") from None
+
+
+def _unchecked(frame: object) -> None:
+    """Accept a frame a pytree transform rebuilt, whatever its leaves hold.
+
+    Transforms map leaves freely, e.g. to the magnitudes an optimizer state
+    keeps, so only direct construction requires quantities.
+    """
+    del frame
+
+
+_LENGTH_DIM = units.dim_of(u.angstrom)
+_FORCE_DIM = units.dim_of(u.eV / u.angstrom)
+"""The dimension of a cartesian cell gradient ``dE/dh``."""
+
+
+@functools.cache
+def _base_length_unit(base: units.BaseSystem) -> units.LengthUnit:
+    """The unit of length ``base`` stores magnitudes in.
+
+    Args:
+        base: The base system.
+
+    Returns:
+        One unit of length sized by ``base``.
+    """
+    return units.from_dim(1.0, _LENGTH_DIM, base).unit
+
+
+def _active_length_unit() -> units.LengthUnit:
+    """The length unit of the active base.
+
+    Returns:
+        The base's length unit, which plain magnitudes are read in.
+    """
+    return _base_length_unit(units.active_base())
+
+
+def _pull_back[F: Frame | MaterializedFrame](frame: F, vectors_grad: units.Force) -> F:
+    """dE/dθ for each parameter, from differentiating ⟨dE/dh, h(θ)⟩.
+
+    Each gradient carries its parameter's own dimension. Systems are
+    independent, so summing over a batched frame leaves each one's untouched.
+    """
+
+    def contracted(f: F) -> units.Energy:
+        return units.sum(f.vectors * vectors_grad)
+
+    return units.grad(contracted)(frame)
+
+
+def _length_unit(vectors: units.Length) -> units.LengthUnit:
+    """The base length unit of ``vectors``, readable inside ``jit``.
+
+    The unit is derived from the quantity's static base, so a traced quantity
+    yields it too.
+
+    Args:
+        vectors: A length-dimensioned quantity.
+
+    Returns:
+        The length unit its magnitudes are expressed in.
+    """
+    return _base_length_unit(units.base_of(vectors))
+
+
+def _build_vectors(lengths: units.Length, angles: Array) -> units.Length:
     """Construct a lower-triangular 3x3 matrix from crystallographic parameters.
 
     Uses the standard convention where the first vector lies along x, the
@@ -478,12 +612,12 @@ def _build_vectors(lengths: Array, angles: Array) -> Array:
         / sin_g
     )
 
-    zero = jnp.zeros_like(a)
-    return jnp.stack(
+    zero = units.zeros_like(a)
+    return units.stack(
         [
-            jnp.stack([a, zero, zero], axis=-1),
-            jnp.stack([b * cos_g, b * sin_g, zero], axis=-1),
-            jnp.stack([c * cos_b, c * (cos_a - cos_b * cos_g) / sin_g, c2z], axis=-1),
+            units.stack([a, zero, zero], axis=-1),
+            units.stack([b * cos_g, b * sin_g, zero], axis=-1),
+            units.stack([c * cos_b, c * (cos_a - cos_b * cos_g) / sin_g, c2z], axis=-1),
         ],
         axis=-2,
     )
@@ -515,11 +649,22 @@ class TriclinicFrame(LinearFrame, Sliceable):
                  [L20, L21, L22]]
     """
 
-    tril: Array
+    tril: units.Length
+
+    _unflatten_post_init = _unchecked
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        _require_length("TriclinicFrame.tril", self.tril)
+
+    @property
+    @override
+    def unit(self) -> units.LengthUnit:
+        return _length_unit(self.tril)
 
     @classmethod
     @override
-    def from_matrix(cls, vecs: Array) -> TriclinicFrame:
+    def from_matrix(cls, vecs: units.Length) -> TriclinicFrame:
         """Construct from a lower-triangular basis matrix, shape ``(..., 3, 3)``.
 
         Projects the input onto the 6-parameter lower-triangular space by
@@ -527,15 +672,16 @@ class TriclinicFrame(LinearFrame, Sliceable):
         [`parameter_gradient`][kups.core.cell.Frame.parameter_gradient], which
         pulls a gradient cotangent back rather than a primal matrix.
         """
-        vecs = jnp.asarray(vecs)
         return cls(vecs[..., *np.tril_indices(3)])
 
     @classmethod
-    def from_lengths_and_angles(cls, lengths: Array, angles: Array) -> TriclinicFrame:
+    def from_lengths_and_angles(
+        cls, lengths: units.Length, angles: Array
+    ) -> TriclinicFrame:
         """Construct from crystallographic parameters.
 
         Args:
-            lengths: Lattice lengths ``[a, b, c]`` in Angstroms, shape ``(..., 3)``.
+            lengths: Lattice lengths ``[a, b, c]``, shape ``(..., 3)``.
             angles: Lattice angles ``[alpha, beta, gamma]`` in degrees, shape ``(..., 3)``.
                 alpha = angle(b, c), beta = angle(a, c), gamma = angle(a, b).
         """
@@ -544,34 +690,34 @@ class TriclinicFrame(LinearFrame, Sliceable):
     @property
     @override
     def matrix(self) -> SquareMatrix:
-        return LowerTriangularSquareMatrix(self.vectors)
+        return LowerTriangularSquareMatrix(magnitudes(self.vectors))
 
     @property
     @override
-    def vectors(self) -> Array:
-        return triangular_3x3_from_tril(self.tril)
+    def vectors(self) -> units.Length:
+        return units.apply(triangular_3x3_from_tril, self.tril)
 
     @property
     @override
-    def volume(self) -> Array:
-        return jnp.abs(self.tril[..., 0] * self.tril[..., 2] * self.tril[..., 5])
+    def volume(self) -> units.Volume:
+        return units.absolute(self.tril[..., 0] * self.tril[..., 2] * self.tril[..., 5])
 
     @property
-    def lengths(self) -> Array:
-        return jnp.linalg.norm(self.vectors, axis=-1)
+    def lengths(self) -> units.Length:
+        return units.norm(self.vectors, axis=-1)
 
     @property
     def angles(self) -> Array:
         v = self.vectors
         a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
         la, lb, lc = (
-            jnp.linalg.norm(a, axis=-1),
-            jnp.linalg.norm(b, axis=-1),
-            jnp.linalg.norm(c, axis=-1),
+            units.norm(a, axis=-1),
+            units.norm(b, axis=-1),
+            units.norm(c, axis=-1),
         )
-        cos_alpha = jnp.clip(jnp.sum(b * c, axis=-1) / (lb * lc), -1.0, 1.0)
-        cos_beta = jnp.clip(jnp.sum(a * c, axis=-1) / (la * lc), -1.0, 1.0)
-        cos_gamma = jnp.clip(jnp.sum(a * b, axis=-1) / (la * lb), -1.0, 1.0)
+        cos_alpha = jnp.clip(units.sum(b * c, axis=-1) / (lb * lc), -1.0, 1.0)
+        cos_beta = jnp.clip(units.sum(a * c, axis=-1) / (la * lc), -1.0, 1.0)
+        cos_gamma = jnp.clip(units.sum(a * b, axis=-1) / (la * lb), -1.0, 1.0)
         return jnp.degrees(
             jnp.stack(
                 [jnp.arccos(cos_alpha), jnp.arccos(cos_beta), jnp.arccos(cos_gamma)],
@@ -630,10 +776,21 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
             carries a ``1 / cell_factor`` factor. A stop-gradient leaf that shares
             ``tril``'s leading axis and broadcasts against it, ``(B, 1)`` for ``B``
             systems.
+        length_unit: Unit the logarithm was taken in, which is what ``vectors``
+            multiplies back in. Defaults to the length the active base pins.
     """
 
     tril: Array
     cell_factor: Array
+    length_unit: units.LengthUnit = field(
+        static=True, default_factory=_active_length_unit
+    )
+
+    @property
+    @override
+    def unit(self) -> units.LengthUnit:
+        """The length unit the logarithm was taken in."""
+        return self.length_unit
 
     @classmethod
     def from_frame(cls, frame: Frame, *, cell_factor: float | Array = 1.0) -> Self:
@@ -641,36 +798,41 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
 
     @classmethod
     @override
-    def from_matrix(cls, vecs: Array, *, cell_factor: float | Array = 1.0) -> Self:
+    def from_matrix(
+        cls, vecs: units.Length, *, cell_factor: float | Array = 1.0
+    ) -> Self:
         """Construct from a lower-triangular basis matrix ``L`` (positive
         diagonal), shape ``(..., 3, 3)``, storing ``A = cell_factor * logm(L)`` so
         that ``vectors == expm(A / cell_factor) == L``."""
-        vecs = jnp.asarray(vecs)
-        tril = triangular_3x3_logm(vecs)[..., *np.tril_indices(3)]
+        v = magnitudes(vecs)
+        tril = triangular_3x3_logm(v)[..., *np.tril_indices(3)]
         cf = _broadcast_cell_factor(cell_factor, tril)
-        return cls(tril * cf, cf)
+        return cls(tril * cf, cf, _length_unit(vecs))
 
     @property
     @override
     def matrix(self) -> SquareMatrix:
-        # expm of a lower-triangular A is lower-triangular.
-        return LowerTriangularSquareMatrix(self.vectors)
-
-    @property
-    @override
-    def vectors(self) -> Array:
-        # fixed preconditioner, never optimised.
+        # fixed preconditioner, never optimised; expm of a lower-triangular A is
+        # lower-triangular.
         cf = jax.lax.stop_gradient(self.cell_factor)
         A = triangular_3x3_from_tril(self.tril / cf)
-        return triangular_3x3_expm(A=A)
+        return LowerTriangularSquareMatrix(triangular_3x3_expm(A=A))
 
     @property
     @override
-    def volume(self) -> Array:
+    def vectors(self) -> units.Length:
+        return self.matrix.array * self.unit
+
+    @property
+    @override
+    def volume(self) -> units.Volume:
         # det(expm(A / cf)) = exp(tr(A / cf)); A's diagonal is tril[0], tril[2], tril[5].
-        return jnp.exp(
-            (self.tril[..., 0] + self.tril[..., 2] + self.tril[..., 5])
-            / self.cell_factor[..., 0]
+        return (
+            jnp.exp(
+                (self.tril[..., 0] + self.tril[..., 2] + self.tril[..., 5])
+                / self.cell_factor[..., 0]
+            )
+            * self.unit**3
         )
 
     @override
@@ -688,7 +850,9 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
         # so add cf * log(s) to A's diagonal elements (tril indices 0, 2, 5).
         log_scale = self.cell_factor * jnp.log(jnp.asarray(other))[..., None]
         diagonal = jnp.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
-        return type(self)(self.tril + log_scale * diagonal, self.cell_factor)
+        return type(self)(
+            self.tril + log_scale * diagonal, self.cell_factor, self.length_unit
+        )
 
 
 @dataclass
@@ -714,14 +878,27 @@ class MatrixLogFrame(BaseFrame, Sliceable):
             ``vectors = expm(A / cell_factor)``. A stop-gradient leaf that shares
             ``log_matrix``'s leading axis and broadcasts against it, ``(B, 1, 1)``
             for ``B`` systems.
+        length_unit: Unit the logarithm was taken in, which is what ``vectors``
+            multiplies back in. Defaults to the length the active base pins.
     """
 
     log_matrix: Array
     cell_factor: Array
+    length_unit: units.LengthUnit = field(
+        static=True, default_factory=_active_length_unit
+    )
+
+    @property
+    @override
+    def unit(self) -> units.LengthUnit:
+        """The length unit the logarithm was taken in."""
+        return self.length_unit
 
     @classmethod
     @override
-    def from_matrix(cls, vecs: Array, *, cell_factor: float | Array = 1.0) -> Self:
+    def from_matrix(
+        cls, vecs: units.Length, *, cell_factor: float | Array = 1.0
+    ) -> Self:
         """Construct from an arbitrary basis matrix via the general (eig-based)
         [logm][kups.core.utils.math.logm], shape ``(..., 3, 3)``.
 
@@ -729,14 +906,13 @@ class MatrixLogFrame(BaseFrame, Sliceable):
         matrices). Use [from_lower_triangular][kups.core.cell.MatrixLogFrame.from_lower_triangular]
         for the reference cell, whose diagonal can repeat.
         """
-        vecs = jnp.asarray(vecs)
-        log_matrix = logm(vecs).real
+        log_matrix = logm(magnitudes(vecs)).real
         cf = _broadcast_cell_factor(cell_factor, log_matrix)
-        return cls(log_matrix * cf, cf)
+        return cls(log_matrix * cf, cf, _length_unit(vecs))
 
     @classmethod
     def from_lower_triangular(
-        cls, vecs: Array, *, cell_factor: float | Array = 1.0
+        cls, vecs: units.Length, *, cell_factor: float | Array = 1.0
     ) -> Self:
         """Construct from a lower-triangular basis matrix (positive diagonal) via the
         exact [triangular_3x3_logm][kups.core.utils.math.triangular_3x3_logm].
@@ -745,20 +921,24 @@ class MatrixLogFrame(BaseFrame, Sliceable):
         (cubic / tetragonal cells), unlike the eig-based
         [from_matrix][kups.core.cell.MatrixLogFrame.from_matrix].
         """
-        vecs = jnp.asarray(vecs)
-        log_matrix = triangular_3x3_logm(vecs)
+        log_matrix = triangular_3x3_logm(magnitudes(vecs))
         cf = _broadcast_cell_factor(cell_factor, log_matrix)
-        return cls(log_matrix * cf, cf)
+        return cls(log_matrix * cf, cf, _length_unit(vecs))
 
     @property
     @override
-    def vectors(self) -> Array:
+    def matrix(self) -> SquareMatrix:
         # fixed preconditioner, never optimised
         cf = jax.lax.stop_gradient(self.cell_factor)
         fn = jax.scipy.linalg.expm
         for _ in range(self.log_matrix.ndim - 2):
             fn = jax.vmap(fn)
-        return fn(self.log_matrix / cf)
+        return GeneralSquareMatrix(fn(self.log_matrix / cf))
+
+    @property
+    @override
+    def vectors(self) -> units.Length:
+        return self.matrix.array * self.unit
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
@@ -829,13 +1009,20 @@ class DeformedFrame(BaseFrame, Sliceable):
         eye = jnp.broadcast_to(
             jnp.eye(3, dtype=frame.vectors.dtype), frame.vectors.shape
         )
-        deform = deformation.from_matrix(eye, cell_factor=cell_factor)
+        deform = deformation.from_matrix(
+            units.from_dim(eye, _LENGTH_DIM), cell_factor=cell_factor
+        )
         return cls(frame, deform)
 
     @classmethod
     @override
-    def from_matrix(cls, vecs: Array) -> Self:
+    def from_matrix(cls, vecs: units.Length) -> Self:
         return cls.from_frame(TriclinicFrame.from_matrix(vecs))
+
+    @property
+    @override
+    def unit(self) -> units.LengthUnit:
+        return self.base.unit
 
     @property
     @override
@@ -848,15 +1035,15 @@ class DeformedFrame(BaseFrame, Sliceable):
 
     @property
     @override
-    def reference_vectors(self) -> Array:
-        return self._base.array
+    def reference_vectors(self) -> units.Length:
+        return self._base.array * self.unit
 
     @property
     @override
-    def vectors(self) -> Array:
+    def vectors(self) -> units.Length:
         # Right-multiply: deform Cartesian space (v -> v @ deformation), so atoms at
         # fixed fractional coordinates ride the cell.
-        return self._base.matmul(self.deformation.matrix).array
+        return self.matrix.array * self.unit
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
@@ -881,55 +1068,64 @@ class OrthogonalFrame(LinearFrame, Sliceable):
     tetragonal, or orthorhombic crystals; standard rectangular MD boxes).
 
     Attributes:
-        lengths: Box side lengths ``[Lx, Ly, Lz]`` in Angstroms,
-            shape ``(..., 3)``.
+        lengths: Box side lengths ``[Lx, Ly, Lz]``, shape ``(..., 3)``.
     """
 
-    lengths: Array
+    lengths: units.Length
+
+    _unflatten_post_init = _unchecked
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        _require_length("OrthogonalFrame.lengths", self.lengths)
+
+    @property
+    @override
+    def unit(self) -> units.LengthUnit:
+        return _length_unit(self.lengths)
 
     @classmethod
     @override
-    def from_matrix(cls, vecs: Array) -> Self:
+    def from_matrix(cls, vecs: units.Length) -> Self:
         """Construct from a diagonal basis matrix, shape ``(..., 3, 3)``.
 
         Projects the input matrix onto the orthogonal subspace by taking
         its diagonal — off-diagonal entries are discarded, matching the
         3-parameter ``(Lx, Ly, Lz)`` representation.
         """
-        vecs = jnp.asarray(vecs)
-        return cls(jnp.diagonal(vecs, axis1=-2, axis2=-1))
+        return cls(vecs.diagonal(axis1=-2, axis2=-1))
 
     @property
     @override
     def matrix(self) -> SquareMatrix:
-        return DiagonalSquareMatrix(self.vectors)
+        return DiagonalSquareMatrix(magnitudes(self.vectors))
 
     @property
     @override
-    def vectors(self) -> Array:
+    def vectors(self) -> units.Length:
         return self.lengths[..., :, None] * jnp.eye(3)
 
     @property
     @override
-    def inverse_vectors(self) -> Array:
+    def inverse_vectors(self) -> units.Wavenumber:
         return (1.0 / self.lengths)[..., :, None] * jnp.eye(3)
 
     @property
     @override
-    def volume(self) -> Array:
-        return jnp.prod(self.lengths, axis=-1)
+    def volume(self) -> units.Volume:
+        return units.prod(self.lengths, axis=-1)
 
     @property
     @override
-    def perpendicular_lengths(self) -> Array:
+    def perpendicular_lengths(self) -> units.Length:
         return self.lengths
 
     @override
-    def to_fractional(self, r: Array) -> Array:
+    def to_fractional(self, r: units.Length) -> Array:
         return r / self.lengths
 
     @override
-    def to_real(self, r_frac: Array) -> Array:
+    def to_real(self, r_frac: Array) -> units.Length:
         return r_frac * self.lengths
 
     @override
@@ -966,52 +1162,55 @@ class MaterializedFrame(Sliceable):
         vectors: Basis matrix, shape ``(B, 3, 3)``.
         inverse_vectors: Matrix inverse of ``vectors``, shape ``(B, 3, 3)``.
         volume: Absolute determinant of ``vectors``, shape ``(B,)``.
-        structure: Static structure flag dispatching the coordinate transforms.
+        unit: Length unit the stored matrices are expressed in.
     """
 
     matrix: SquareMatrix
     inverse_matrix: SquareMatrix
-    volume: Array
+    volume: units.Volume
+    unit: units.LengthUnit = field(static=True)
 
     @property
-    def vectors(self) -> Array:
-        return self.matrix.array
+    def vectors(self) -> units.Length:
+        return self.matrix.array * self.unit
 
     @property
-    def inverse_vectors(self) -> Array:
-        return self.inverse_matrix.array
+    def inverse_vectors(self) -> units.Wavenumber:
+        return self.inverse_matrix.array / self.unit
 
     @classmethod
     def from_matrix(
         cls,
-        vecs: Array,
+        vecs: units.Length,
         *,
         structure: Callable[[Array], SquareMatrix] = GeneralSquareMatrix,
     ) -> Self:
-        matrix = structure(jnp.asarray(vecs))
+        matrix = structure(magnitudes(vecs))
         det, inv = matrix.det(), matrix.inverse()
-        return cls(matrix, inv, jnp.abs(det))
+        unit = _length_unit(vecs)
+        return cls(matrix, inv, jnp.abs(det) * unit**3, unit)
 
     @property
-    def reference_vectors(self) -> Array:
-        return jnp.broadcast_to(
-            jnp.eye(3, dtype=self.vectors.dtype), self.vectors.shape
+    def reference_vectors(self) -> units.Length:
+        return (
+            jnp.broadcast_to(jnp.eye(3, dtype=self.vectors.dtype), self.vectors.shape)
+            * self.unit
         )
 
     @property
-    def perpendicular_lengths(self) -> Array:
+    def perpendicular_lengths(self) -> units.Length:
         v = self.vectors
         a, b, c = v[..., 0, :], v[..., 1, :], v[..., 2, :]
-        Lx = self.volume / jnp.linalg.norm(jnp.cross(b, c), axis=-1)
-        Ly = self.volume / jnp.linalg.norm(jnp.cross(a, c), axis=-1)
-        Lz = self.volume / jnp.linalg.norm(jnp.cross(a, b), axis=-1)
-        return jnp.stack([Lx, Ly, Lz], axis=-1)
+        Lx = self.volume / units.norm(units.cross(b, c), axis=-1)
+        Ly = self.volume / units.norm(units.cross(a, c), axis=-1)
+        Lz = self.volume / units.norm(units.cross(a, b), axis=-1)
+        return units.stack([Lx, Ly, Lz], axis=-1)
 
-    def to_fractional(self, r: Array) -> Array:
-        return self.inverse_matrix.matmul(r)
+    def to_fractional(self, r: units.Length) -> Array:
+        return self.inverse_matrix.matmul(r / self.unit)
 
-    def to_real(self, r_frac: Array) -> Array:
-        return self.matrix.matmul(r_frac)
+    def to_real(self, r_frac: Array) -> units.Length:
+        return self.matrix.matmul(r_frac) * self.unit
 
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
         m = jnp.asarray(multiplicities)
@@ -1019,6 +1218,7 @@ class MaterializedFrame(Sliceable):
             matrix=self.matrix.scale(m[:, None]),
             inverse_matrix=self.inverse_matrix.scale(1 / m[None, :]),
             volume=self.volume * jnp.prod(m),
+            unit=self.unit,
         )
 
     def __mul__(self, other: Array | float | int) -> Self:
@@ -1028,29 +1228,35 @@ class MaterializedFrame(Sliceable):
             matrix=self.matrix.scale(factor),
             inverse_matrix=self.inverse_matrix.scale(1 / factor),
             volume=self.volume * scale**3,
+            unit=self.unit,
         )
 
     def materialize(self) -> Self:
         return self
 
-    def parameter_gradient(self, vectors_grad: Array) -> Self:
-        (grad,) = jax.vjp(lambda f: f.vectors, self)[1](vectors_grad)
-        return grad
+    def parameter_gradient(self, vectors_grad: units.Force) -> Self:
+        return _pull_back(self, vectors_grad)
 
-    def vectors_gradient(self, parameter_grad: Frame) -> Array:
-        # Stored ``vectors`` is the parameterisation (identity Jacobian).
-        return parameter_grad.vectors
+    def vectors_gradient(self, parameter_grad: Frame) -> units.Force:
+        # Stored ``matrix`` is the parameterisation (identity Jacobian), so its
+        # gradient is the energy per ``unit`` of each entry, i.e. dE/dh; the
+        # static type names the primal's plain magnitudes.
+        return cast(units.Energy, parameter_grad.matrix.array) / self.unit
 
 
 def _wrap(
     frame: Frame,
     periodic: tuple[bool, bool, bool],
-    r: Array,
+    r: units.Length | Array,
     input_space: CoordinateSpace,
     output_space: CoordinateSpace,
-) -> Array:
+) -> units.Length | Array:
     """Fold coordinates into ``[-0.5, 0.5)`` along periodic axes."""
-    frac = frame.to_fractional(r) if input_space is CoordinateSpace.REAL else r
+    frac = (
+        frame.to_fractional(cast(units.Length, r))
+        if input_space is CoordinateSpace.REAL
+        else cast(Array, r)
+    )
     wrapped = (frac + 0.5) % 1 - 0.5
     mask = jnp.array(periodic)
     out = jnp.where(mask, wrapped, frac)
@@ -1081,39 +1287,72 @@ class Cell(Sliceable, Generic[_P]):
     periodic: _P = field(static=True)
 
     @property
-    def vectors(self) -> Array:
+    def vectors(self) -> units.Length:
         return self.frame.vectors
 
     @property
-    def inverse_vectors(self) -> Array:
+    def inverse_vectors(self) -> units.Wavenumber:
         return self.frame.inverse_vectors
 
     @property
-    def volume(self) -> Array:
+    def volume(self) -> units.Volume:
         return self.frame.volume
 
     @property
-    def perpendicular_lengths(self) -> Array:
+    def perpendicular_lengths(self) -> units.Length:
         return self.frame.perpendicular_lengths
 
+    @overload
+    def wrap(
+        self,
+        r: units.Length,
+        *,
+        input_space: Literal[CoordinateSpace.REAL] = ...,
+        output_space: Literal[CoordinateSpace.REAL] = ...,
+    ) -> units.Length: ...
+    @overload
+    def wrap(
+        self,
+        r: units.Length,
+        *,
+        input_space: Literal[CoordinateSpace.REAL] = ...,
+        output_space: Literal[CoordinateSpace.FRACTIONAL],
+    ) -> Array: ...
+    @overload
     def wrap(
         self,
         r: Array,
         *,
+        input_space: Literal[CoordinateSpace.FRACTIONAL],
+        output_space: Literal[CoordinateSpace.REAL] = ...,
+    ) -> units.Length: ...
+    @overload
+    def wrap(
+        self,
+        r: Array,
+        *,
+        input_space: Literal[CoordinateSpace.FRACTIONAL],
+        output_space: Literal[CoordinateSpace.FRACTIONAL],
+    ) -> Array: ...
+    def wrap(
+        self,
+        r: units.Length | Array,
+        *,
         input_space: CoordinateSpace = CoordinateSpace.REAL,
         output_space: CoordinateSpace = CoordinateSpace.REAL,
-    ) -> Array:
+    ) -> units.Length | Array:
         """Fold fractional coordinates into ``[-0.5, 0.5)`` along periodic axes.
 
         Args:
-            r: Coordinates in ``input_space``: Cartesian in Å when that space is
-                real, fractional otherwise.
+            r: Coordinates in ``input_space``: a length quantity when that
+                space is real, plain fractional coordinates otherwise.
             input_space: Space ``r`` is expressed in.
             output_space: Space to return the folded coordinates in.
 
         Returns:
-            The folded coordinates in ``output_space``. Non-periodic axes pass
-            through unchanged.
+            The folded coordinates, a length quantity when ``output_space``
+            is real and plain fractional coordinates otherwise. Non-periodic
+            axes pass through unchanged.
         """
         return _wrap(self.frame, self.periodic, r, input_space, output_space)
 
@@ -1209,7 +1448,7 @@ class VacuumCell(Cell[Vacuum]):
     periodic: Vacuum = field(default=(False, False, False), init=False, static=True)
 
 
-def min_multiplicity[P: AnyPeriodicity](cell: Cell[P], cutoff: float | Array) -> Array:
+def min_multiplicity[P: AnyPeriodicity](cell: Cell[P], cutoff: units.Length) -> Array:
     """Minimum supercell replication per axis for a given cutoff.
 
     Returns 1 for non-periodic axes (no replication needed).
@@ -1217,6 +1456,36 @@ def min_multiplicity[P: AnyPeriodicity](cell: Cell[P], cutoff: float | Array) ->
     computed = jnp.ceil(2 * cutoff / cell.perpendicular_lengths).astype(int)
     mask = jnp.array(cell.periodic)
     return jnp.where(mask, computed, 1)
+
+
+def zero_gradient_frame[F: Frame](frame: F) -> F:
+    """A gradient frame for ``frame`` whose parameters are a zero ``dE/dθ``.
+
+    A gradient frame's parameters hold ``dE/dθ`` rather than ``θ``, so zeros made
+    with ``tree_zeros_like`` would carry the primal's own labels. Pulling a zero
+    ``dE/dh`` back through the parameterisation labels every parameter the way
+    [`parameter_gradient`][kups.core.cell.Frame.parameter_gradient] does.
+
+    Args:
+        frame: The frame whose parameterisation the gradient follows.
+
+    Returns:
+        A frame of the same type holding a zero parameter gradient.
+    """
+    zero = units.relabel(units.zeros_like(frame.vectors), _FORCE_DIM)
+    return frame.parameter_gradient(zero)
+
+
+def zero_gradient_cell[C: Cell[AnyPeriodicity]](cell: C) -> C:
+    """A gradient cell for ``cell``, holding a zero ``dE/dθ`` in its frame.
+
+    Args:
+        cell: The cell whose parameterisation the gradient follows.
+
+    Returns:
+        A cell of the same type whose frame holds a zero parameter gradient.
+    """
+    return bind(cell, lambda c: c.frame).set(zero_gradient_frame(cell.frame))
 
 
 def make_supercell[T, T2, C: Cell[Any]](
@@ -1257,9 +1526,9 @@ def make_supercell[T, T2, C: Cell[Any]](
     )
     replicated = to_shift.apply(
         replicated,
-        lambda y: jax.tree.map(
+        lambda y: units.tree_map(
             lambda x: new_cell.wrap(
-                x + real_shifts.repeat(x.shape[0] // n_reps, axis=0).reshape(-1, 3)
+                x + real_shifts.repeat(x.shape[0] // n_reps, axis=0).reshape((-1, 3))
             ),
             y,
         ),
@@ -1319,7 +1588,7 @@ def require_periodic_3d_triclinic[P: AnyPeriodicity](cell: Cell[P]) -> None:
     require_triclinic_frame(cell)
 
 
-def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
+def to_lower_triangular(vecs: units.Length) -> tuple[units.Length, TriclinicMap]:
     """Convert arbitrary basis vectors to lower-triangular form via QR.
 
     The returned basis has a positive diagonal. The coordinate mapper applies
@@ -1331,11 +1600,11 @@ def to_lower_triangular(vecs: Array) -> tuple[Array, TriclinicMap]:
     Returns:
         Tuple of (lower_triangular_vectors, coordinate_rotation_fn).
     """
-    vecs = jnp.asarray(vecs)
-    Q, R = jnp.linalg.qr(vecs.T)
-    signs = jnp.sign(jnp.diagonal(R))
+    vecs = units.apply(jnp.asarray, vecs)
+    Q, R = units.qr(vecs.T)
+    signs = units.apply(lambda r: jnp.sign(jnp.diagonal(r)), R, dim=units.ONE)
     signs = jnp.where(signs == 0, 1.0, signs)
     R = R * signs[:, None]
     Q = Q * signs[None, :]
     L = R.T
-    return L, partial(jnp.einsum, "...ij,...i->...j", Q)
+    return L, partial(units.einsum, "...ij,...i->...j", Q)

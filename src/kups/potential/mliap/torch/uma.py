@@ -36,6 +36,8 @@ from typing import Any, Literal, override
 
 import torch  # pyright: ignore[reportMissingImports]
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.potential.mliap.torch.interface import (
     TorchMliap,
     lattice_gradient_from_virial,
@@ -257,7 +259,7 @@ def load_uma(
     device: Literal["cpu", "cuda"] = "cuda",
     task_name: UMATaskName | str = "omat",
     compute_cell_gradients: bool = False,
-    cutoff: float = 6.0,
+    cutoff: units.Length | None = None,
     inference_settings: UMAInferenceSettings = "default",
 ) -> TorchMliap:
     """Load a Meta FAIR Chemistry UMA checkpoint into a ``TorchMliap``.
@@ -270,7 +272,7 @@ def load_uma(
             ``"odac"`` (MOFs / DAC), ``"omc"`` (molecular crystals).
         compute_cell_gradients: Whether to also return cell gradients
             (stress). See ``UMAModule`` for convention caveats.
-        cutoff: Cutoff radius [Å]. UMA-s-1.2 defaults to 6.0.
+        cutoff: Cutoff radius. ``None`` uses 6 Å, UMA-s-1.2's radius.
         inference_settings: ``"default"`` or ``"turbo"`` (resolved by
             fairchem's ``guess_inference_settings``), or ``"turbo_f64"`` for
             a compiled, MOLE-merged float64 preset.
@@ -341,6 +343,10 @@ def load_uma(
         task_name=task_name,
         compute_cell_gradients=compute_cell_gradients,
     )
+    if cutoff is None:
+        cutoff = 6.0 * u.angstrom
     return TorchMliap.from_module(
-        module, cutoff=cutoff, compute_cell_gradients=compute_cell_gradients
+        module,
+        cutoff=cutoff,
+        compute_cell_gradients=compute_cell_gradients,
     )

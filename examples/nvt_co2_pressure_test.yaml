@@ -1,35 +1,36 @@
 adsorbates:
-  - critical_temperature: 303.75
-    critical_pressure: 7_840_000
+  - critical_temperature: "303.75 K"
+    critical_pressure: "7840000 Pa"
     acentric_factor: 0.22394
     positions:
-      - [0, 0, 0]
-      - [-1.16, 0, 0]
-      - [1.16, 0, 0]
+      angstrom:
+        - [0, 0, 0]
+        - [-1.16, 0, 0]
+        - [1.16, 0, 0]
     symbols:
       - "C_co2"
       - "O_co2"
       - "O_co2"
-    charges: [0.7, -0.35, -0.35]
+    charges: {e: [0.7, -0.35, -0.35]}
 
 hosts:
   - cif_file: host/empty.cif
-    pressure: 10_000
-    temperature: 298.15
+    pressure: "10000 Pa"
+    temperature: "298.15 K"
     init_adsorbates: [50]
     cell_replication: 1
 
 lj:
-  cutoff: 12.0
+  cutoff: "12.0 angstrom"
   tail_correction: true
   mixing_rule: lorentz_berthelot
   parameters:
-    O_co2: [3.05, 0.006807690966401598]
-    C_co2: [2.8, 0.0023266791910486473]
+    O_co2: ["3.05 angstrom", "0.006807690966401598 eV"]
+    C_co2: ["2.8 angstrom", "0.0023266791910486473 eV"]
     X1: [null, null]
 
 ewald:
-  real_cutoff: 12.0
+  real_cutoff: "12.0 angstrom"
   precision: 1.e-6
 
 run:

@@ -1,12 +1,13 @@
-critical_temperature: 282.4
-critical_pressure: 5_060_000
+critical_temperature: "282.4 K"
+critical_pressure: "5060000 Pa"
 acentric_factor: 0.089
 positions:
-  - [0, 0, 0]
-  - [1.33, 0, 0]
+  angstrom:
+    - [0, 0, 0]
+    - [1.33, 0, 0]
 symbols:
   - "CH2"
   - "CH2"
 atomic_numbers: [6, 6] # carbon backbones of the united atoms
-masses: [14.027, 14.027] # united-atom masses (C + 2 H) — not derivable from Z
-charges: [0.0, 0.0]
+masses: {amu: [14.027, 14.027]} # united-atom masses (C + 2 H) — not derivable from Z
+charges: {e: [0.0, 0.0]}

@@ -9,8 +9,8 @@ import logging
 from typing import Literal, Protocol, overload
 
 import jax.numpy as jnp
-from jax import Array
 
+from kups.core import units
 from kups.core.capacity import Capacity, LensCapacity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
@@ -58,7 +58,7 @@ def _all_subselect(
 class AllDenseSelector:
     """Selector that emits every ``(i, j)`` pair across all systems."""
 
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
     max_image_candidates: Capacity[int]
 
     def __call__(self, ctx: PipelineContext) -> CandidateBatch[Literal[2]]:
@@ -108,14 +108,14 @@ class AllDenseNearestNeighborList:
 
     avg_edges: Capacity[int]
     avg_image_candidates: Capacity[int]
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
 
     @classmethod
     def new[S](
         cls,
         state: S,
         lens: Lens[S, IsAllDenseNeighborListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> AllDenseNearestNeighborList:
         params = lens.get(state)
         return AllDenseNearestNeighborList(
@@ -131,7 +131,7 @@ class AllDenseNearestNeighborList:
     def from_state(
         cls,
         state: IsNeighborListState[IsAllDenseNeighborListParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> AllDenseNearestNeighborList:
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)
 

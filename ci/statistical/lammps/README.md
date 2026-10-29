@@ -8,7 +8,8 @@ Normal CI compares the committed YAML references in `expected/*.yaml` to the
 kUPS expected YAMLs and does not require LAMMPS or `.dat` output tables.
 The LAMMPS YAML references use the same expected-value
 shape as `ci/statistical/expected/*.yaml`: `simulation_type`, `hdf5_output`,
-and `observables` with `expected_mean`/`expected_sem`. SEMs are computed
+and `observables` with `unit`, `expected_mean` and `expected_sem`, the unit
+naming what the two numbers are read in. SEMs are computed
 with the same fixed 5-block average used by kUPS expected-value
 generation. LAMMPS `press` is total
 pressure; the analyzer subtracts `2K/(3V)` before writing `pressure`, so the

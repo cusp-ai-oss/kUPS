@@ -38,6 +38,7 @@ from kups.potential.classical.lennard_jones import LennardJonesParameters  # noq
 from kups.potential.mliap.torch.interface import (  # noqa: E402
     lattice_gradient_from_virial,
 )
+from test.units import EV, FORCE, A  # noqa: E402
 
 SIGMA, EPS, RC = 3.405, 0.010326, 4.5
 
@@ -57,7 +58,9 @@ def test_recovers_partial_lattice_gradient_under_shear():
     atoms = _sheared_lj()
     particles, systems = relax_state_from_ase(atoms)
     lj = LennardJonesParameters.from_dict(
-        cutoff=RC, parameters={"Ar": (SIGMA, EPS)}, mixing_rule="lorentz_berthelot"
+        cutoff=RC * A,
+        parameters={"Ar": (SIGMA * A, EPS * EV)},
+        mixing_rule="lorentz_berthelot",
     )
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
@@ -68,11 +71,13 @@ def test_recovers_partial_lattice_gradient_under_shear():
     out = make_lennard_jones_from_state(
         identity_lens(RelaxState), parameters=lj, gradient=POSITIONS_AND_CELL
     )(state).data
-    g_r = np.asarray(out.gradients.positions.data)
+    g_r = np.asarray(out.gradients.positions.data.to(FORCE))
     frame = systems.data.cell.frame
-    dEdh_true = np.asarray(frame.vectors_gradient(out.gradients.cell.data.frame)[0])
-    r = np.asarray(particles.data.positions)
-    h = np.asarray(systems.data.cell.vectors[0])
+    dEdh_true = np.asarray(
+        frame.vectors_gradient(out.gradients.cell.data.frame)[0].to(FORCE)
+    )
+    r = np.asarray(particles.data.positions.to(A))
+    h = np.asarray(systems.data.cell.vectors[0].to(A))
 
     # Symmetric total virial a backend would report (stress · volume).
     total = g_r.T @ r + dEdh_true.T @ h
