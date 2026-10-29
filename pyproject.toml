@@ -58,6 +58,7 @@ dependencies = [
     "nanoargs>=0.1.1",
     "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
     "hdf5plugin>=6.0.0",
+    "typing-extensions>=4.10",
 ]
 
 [project.optional-dependencies]
@@ -114,7 +115,7 @@ dev = [
     "pytest-cov>=6.2.1",
     "pytest-testmon>=2.1.3",
     "pyright>=1.1.409",
-    "pyrefly>=1.0.0",
+    "pyrefly>=1.4",
 ]
 
 [tool.uv]
@@ -155,3 +156,4 @@ ignore-missing-imports = [
 
 [tool.pyrefly.errors]
 bad-function-definition = false
+implicit-any-lambda = false

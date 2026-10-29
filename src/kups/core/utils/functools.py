@@ -127,7 +127,6 @@ def unpack_args[*A, B](f: Callable[[tuple[*A]], B]) -> Callable[[*A], B]:
     def unpacked(*args: *A) -> B:
         return f(args)
 
-    # pyrefly: ignore [bad-return]
     return unpacked
 
 

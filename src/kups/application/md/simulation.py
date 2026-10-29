@@ -72,8 +72,8 @@ class IsMdState(IsState[MDParticles, MDSystems], Protocol):
     def step(self) -> Array: ...
 
 
-def potential_map(
-    input: LinearMappedPotentialInput[IsMdState, IsMdGradients, Any],
+def potential_map[State: IsMdState, Grad: IsMdGradients](
+    input: LinearMappedPotentialInput[State, Grad, EmptyType],
 ) -> PotentialOut[tuple[Array, Cell[AnyPeriodicity]], EmptyType]:
     """Map the full potential output to the specific gradients needed for MD."""
     return PotentialOut(
@@ -115,7 +115,6 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
                     EMPTY,
                 )
             ),
-            # pyrefly: ignore [bad-argument-type]
             lambda x: PotentialOut(
                 x.systems.index,  # type: ignore
                 (x.particles.data.system, x.systems.index),
