@@ -7,10 +7,12 @@ import tempfile
 
 import ase.build
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from kups.application.md.analysis import analyze_md_file
 from kups.application.md.data import MdParameters, MdRunConfig
+from kups.application.simulations import md
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
 
@@ -97,3 +99,15 @@ class TestRun:
         assert jnp.isfinite(result.total_energy.mean).all().item()
         assert jnp.isfinite(result.temperature.mean).all().item()
         assert (result.temperature.mean >= 0.0).all().item()
+
+
+def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same input file passed twice must not start with identical momenta."""
+    captured = {}
+    monkeypatch.setattr(
+        md, "run_md", lambda key, propagator, state, config: captured.update(s=state)
+    )
+    inp = _ar_cif()
+    run(_config(_tmp_h5(), inp).model_copy(update={"inp_files": (inp, inp)}))
+    first, second = np.split(np.asarray(captured["s"].particles.data.momenta), 2)
+    assert not np.allclose(first, second)
