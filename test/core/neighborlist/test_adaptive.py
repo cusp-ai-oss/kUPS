@@ -13,6 +13,7 @@ import pytest
 
 from kups.core.cell import OrthogonalFrame, PeriodicCell
 from kups.core.data import Index
+from kups.core.lens import identity_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     AllDenseNearestNeighborList,
@@ -29,7 +30,13 @@ from kups.core.neighborlist import (
 )
 from kups.core.result import as_result_function
 
-from ._builders import cutoff_table, make_adaptive_state, make_lh, make_systems
+from ._builders import (
+    EvalState,
+    cutoff_table,
+    make_adaptive_state,
+    make_lh,
+    make_systems,
+)
 
 
 def _always_cheapest(num_particles: int, num_systems: int) -> float:
@@ -73,7 +80,7 @@ class TestAdaptiveNeighborList:
     def _nl(self, n_particles: int = 64, n_systems: int = 1) -> AdaptiveNeighborList:
         state = make_adaptive_state(n_particles=n_particles, n_systems=n_systems)
         return AdaptiveNeighborList.from_state(
-            state, cutoff_table(jnp.array([2.0] * n_systems))
+            state, identity_lens(EvalState), cutoff_table(jnp.array([2.0] * n_systems))
         )
 
     def test_from_state_returns_adaptive(self):
@@ -155,7 +162,9 @@ class TestAdaptiveNeighborList:
         systems, cutoffs = make_systems(
             PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
         )
-        neighbors = AdaptiveNeighborList.from_state(state, cutoffs)
+        neighbors = AdaptiveNeighborList.from_state(
+            state, identity_lens(EvalState), cutoffs
+        )
         candidate = neighbors.implementations[implementation % 4]
         if implementation == 4:
             base = candidate.neighborlist
@@ -204,7 +213,9 @@ class TestAdaptiveNeighborList:
         systems, cutoffs = make_systems(
             PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([2.0])
         )
-        neighbors = AdaptiveNeighborList.from_state(make_adaptive_state(1, 1), cutoffs)
+        neighbors = AdaptiveNeighborList.from_state(
+            make_adaptive_state(1, 1), identity_lens(EvalState), cutoffs
+        )
         neighbors = replace(
             neighbors, implementations=(neighbors.implementations[implementation],)
         )

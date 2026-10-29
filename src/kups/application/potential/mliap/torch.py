@@ -101,7 +101,7 @@ def make_torch_mliap_from_state(
         model_view = state.focus(lambda x: x.torch_mliap_model)
 
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_view(s).cutoff)
+        return neighborlist_factory(s, state, model_view(s).cutoff)
 
     particles_view = state.focus(lambda x: x.particles)
     systems_view = state.focus(lambda x: x.systems)
