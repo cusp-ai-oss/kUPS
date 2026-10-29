@@ -26,6 +26,7 @@ from ._builders import (
     cutoff_table,
     make_lh,
     make_systems,
+    run_nl,
     valid_edge_set,
     valid_pairs,
 )
@@ -205,6 +206,22 @@ class TestFromState:
         assert isinstance(nl.avg_candidates, LensCapacity)
         assert int(nl.cells.size) == 64
         assert int(nl.avg_candidates.size) == 32
+
+    def test_cell_capacity_grows_to_a_power_of_two(self):
+        """A growing cell (NPT) must not recompile at every new bin count."""
+        lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
+        systems, _ = make_systems(
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            jnp.array([2.0]),
+        )
+        params = UniversalNeighborlistParameters(
+            avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=8
+        )
+        state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
+        nl = CellListNeighborList.from_state(state, cutoff_table(jnp.array([2.0])))
+        state = run_nl(nl, lh, systems).fix_or_raise(state)
+        # 5 bins per axis need 125 cells
+        assert state.neighborlist_params.cells == 128
 
 
 def test_skewed_cell_bins_follow_perpendicular_widths():
