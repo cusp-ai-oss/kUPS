@@ -38,6 +38,7 @@ from typing import (
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.tree_util import PyTreeDef
 from jax.typing import ArrayLike, DTypeLike
 from typing_extensions import TypedDict, TypeIs
 
@@ -865,12 +866,7 @@ class Quantity(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
         hi: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | None = None,
     ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
         """Clamp magnitudes between two bounds of the same dimension."""
-        bounds = [b for b in (lo, hi) if b is not None]
-        mags, dim, bs = _agree([self, *bounds], "clip")
-        rest = iter(mags[1:])
-        low = None if lo is None else next(rest)
-        high = None if hi is None else next(rest)
-        return _lift(jnp.clip(mags[0], low, high), dim, bs)
+        return _clip_impl(self, lo, hi)
 
     # named overloads catch odd exponents, which ``//`` would floor
     @overload
@@ -964,6 +960,30 @@ def is_quantity(x: object) -> TypeIs[AnyQuantity]:
 
 # ``is_leaf=units.is_leaf`` makes ``jax.tree.map`` pass quantities whole
 is_leaf = is_quantity
+
+
+def tree_flatten(x: object) -> tuple[list[Any], PyTreeDef]:
+    """Flatten a pytree, treating each quantity as a single leaf.
+
+    Args:
+      x: any pytree.
+
+    Returns:
+      The leaves (each quantity one leaf) and the treedef that reassembles them.
+    """
+    return jax.tree.flatten(x, is_leaf=is_leaf)
+
+
+def tree_leaves(x: object) -> list[Any]:
+    """The leaves of a pytree, with each quantity as one leaf.
+
+    Args:
+      x: any pytree.
+
+    Returns:
+      The leaf list.
+    """
+    return jax.tree.leaves(x, is_leaf=is_leaf)
 
 
 def tree_map[T, *S](f: Callable[..., object], x: T, *rest: *S) -> T:
@@ -1569,6 +1589,20 @@ def _sqrt_impl(x: AnyQuantity | ArrayLike) -> Any:
     bs = _joint(x)
     lx, dim = _mag(x, bs)
     return _lift(jnp.sqrt(lx), dpow(dim, Frac(1, 2)), bs)
+
+
+def _clip_impl(
+    x: ArrayLike | AnyQuantity,
+    lo: ArrayLike | AnyQuantity | None,
+    hi: ArrayLike | AnyQuantity | None,
+) -> Any:
+    """Clamp ``x`` between bounds of its dimension; a None bound is absent."""
+    bounds = [b for b in (lo, hi) if b is not None]
+    mags, dim, bs = _agree([x, *bounds], "clip")
+    rest = iter(mags[1:])
+    low = None if lo is None else next(rest)
+    high = None if hi is None else next(rest)
+    return _lift(jnp.clip(mags[0], low, high), dim, bs)
 
 
 @overload
