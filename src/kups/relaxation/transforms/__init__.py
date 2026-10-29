@@ -8,6 +8,9 @@ These are batch-aware versions of the transforms in
 :mod:`kups.relaxation.optax`: they accept an ``index_prefix`` pytree at
 ``init`` time identifying which system each element belongs to, so batched
 systems are clipped or scaled independently.
+
+Hyperparameters are magnitudes in the parameters' base; see
+[RelaxationPropagator][kups.relaxation.propagator.RelaxationPropagator].
 """
 
 from kups.relaxation.transforms.clip_by_global_norm import (

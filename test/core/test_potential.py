@@ -20,6 +20,8 @@ from kups.core.potential import (
 )
 from kups.core.result import as_result_function
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
+from kups.core.units import testing
 from kups.core.utils.kahan import KahanSummand
 
 
@@ -27,7 +29,7 @@ from kups.core.utils.kahan import KahanSummand
 @pytest.fixture
 def sample_energy():
     """Sample energy array for testing."""
-    return jnp.array([1.0, 2.0, 3.0])
+    return jnp.array([1.0, 2.0, 3.0]) * u.eV
 
 
 @pytest.fixture
@@ -54,7 +56,7 @@ class MockPotential:
 
     def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
         # Mock implementation that returns predictable values
-        energy = jnp.array([1.0, 2.0, 3.0]) * self.energy_multiplier
+        energy = jnp.array([1.0, 2.0, 3.0]) * self.energy_multiplier * u.eV
         gradients = {
             "pos": jnp.array([[1.0, 2.0], [3.0, 4.0]]) * self.gradient_multiplier
         }
@@ -84,7 +86,7 @@ class TestPotentialOut:
             hessians=sample_hessians,
         )
 
-        assert jnp.array_equal(pot_out.total_energies.data, sample_energy)
+        testing.assert_array_equal(pot_out.total_energies.data, sample_energy, u.eV)
         assert jnp.array_equal(pot_out.gradients["pos"], sample_gradients["pos"])
         assert jnp.array_equal(pot_out.hessians["pos"], sample_hessians["pos"])
 
@@ -110,7 +112,7 @@ class TestPotentialOut:
         }
         expected_hessians = {"pos": sample_hessians["pos"] + sample_hessians["pos"] * 2}
 
-        assert jnp.array_equal(result.total_energies.data, expected_energy)
+        testing.assert_array_equal(result.total_energies.data, expected_energy, u.eV)
         assert jnp.array_equal(result.gradients["pos"], expected_gradients["pos"])
         assert jnp.array_equal(result.hessians["pos"], expected_hessians["pos"])
 
@@ -136,7 +138,7 @@ class TestPotentialOut:
         }
         expected_hessians = {"pos": sample_hessians["pos"] * 3 - sample_hessians["pos"]}
 
-        assert jnp.array_equal(result.total_energies.data, expected_energy)
+        testing.assert_array_equal(result.total_energies.data, expected_energy, u.eV)
         assert jnp.array_equal(result.gradients["pos"], expected_gradients["pos"])
         assert jnp.array_equal(result.hessians["pos"], expected_hessians["pos"])
 
@@ -155,7 +157,7 @@ class TestPotentialOut:
         expected_gradients = {"pos": sample_gradients["pos"] * scalar}
         expected_hessians = {"pos": sample_hessians["pos"] * scalar}
 
-        assert jnp.array_equal(result.total_energies.data, expected_energy)
+        testing.assert_array_equal(result.total_energies.data, expected_energy, u.eV)
         assert jnp.array_equal(result.gradients["pos"], expected_gradients["pos"])
         assert jnp.array_equal(result.hessians["pos"], expected_hessians["pos"])
 
@@ -174,7 +176,7 @@ class TestPotentialOut:
         expected_gradients = {"pos": sample_gradients["pos"] * scalar}
         expected_hessians = {"pos": sample_hessians["pos"] * scalar}
 
-        assert jnp.array_equal(result.total_energies.data, expected_energy)
+        testing.assert_array_equal(result.total_energies.data, expected_energy, u.eV)
         assert jnp.array_equal(result.gradients["pos"], expected_gradients["pos"])
         assert jnp.array_equal(result.hessians["pos"], expected_hessians["pos"])
 
@@ -188,7 +190,7 @@ class TestPotentialOut:
 
         energy, gradients, hessians = pot_out.as_tuple
 
-        assert jnp.array_equal(energy.data, sample_energy)
+        testing.assert_array_equal(energy.data, sample_energy, u.eV)
         assert jnp.array_equal(gradients["pos"], sample_gradients["pos"])
         assert jnp.array_equal(hessians["pos"], sample_hessians["pos"])
 
@@ -205,8 +207,8 @@ class TestComposePotentials:
         result = composed(mock_state)
 
         assert isinstance(result, WithPatch)
-        assert jnp.array_equal(
-            result.data.total_energies.data, jnp.array([1.0, 2.0, 3.0])
+        testing.assert_array_equal(
+            result.data.total_energies.data, jnp.array([1.0, 2.0, 3.0]), u.eV
         )
 
     def test_compose_multiple_potentials(self):
@@ -222,7 +224,9 @@ class TestComposePotentials:
 
         # Energy should be sum of all potentials: 1*[1,2,3] + 2*[1,2,3] + 3*[1,2,3] = 6*[1,2,3]
         expected_energy = jnp.array([6.0, 12.0, 18.0])
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
         # Gradients should also be summed
         expected_gradients = {"pos": jnp.array([[6.0, 12.0], [18.0, 24.0]])}
@@ -243,7 +247,9 @@ class TestComposePotentials:
         assert isinstance(result, WithPatch)
         # Energy should be sum of two potentials: 2*[1,2,3]
         expected_energy = jnp.array([2.0, 4.0, 6.0])
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
     def test_compose_empty_potentials_raises_error(self):
         """Test that composing empty potentials raises ValueError."""
@@ -263,7 +269,9 @@ class TestComposePotentials:
 
         # Check that the result is linear combination
         expected_energy = jnp.array([5.0, 10.0, 15.0])  # 2*[1,2,3] + 3*[1,2,3]
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
         expected_gradients = {"pos": jnp.array([[5.0, 10.0], [15.0, 20.0]])}
         assert jnp.array_equal(result.data.gradients["pos"], expected_gradients["pos"])
@@ -293,15 +301,19 @@ class TestIntegration:
 
         # Verify energy is sum of components
         expected_energy = jnp.array([3.0, 6.0, 9.0])  # 1*[1,2,3] + 2*[1,2,3]
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
         # Test arithmetic operations on results
         scaled_result = result.data * 2.0
-        assert jnp.array_equal(scaled_result.total_energies.data, expected_energy * 2.0)
+        testing.assert_array_equal(
+            scaled_result.total_energies.data, expected_energy * 2.0, u.eV
+        )
 
         # Test tuple conversion
         energy, gradients, hessians = result.data.as_tuple
-        assert jnp.array_equal(energy.data, expected_energy)
+        testing.assert_array_equal(energy.data, expected_energy, u.eV)
         assert "pos" in gradients
         assert "pos" in hessians
 
@@ -318,7 +330,9 @@ class TestIntegration:
 
         # Test that energies are computed correctly
         expected_energy = jnp.array([1.0, 2.0, 3.0])
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
 
 class TestCachedPotential:
@@ -330,7 +344,9 @@ class TestCachedPotential:
         return {
             "positions": jnp.array([[0.0, 0.0], [1.0, 1.0]]),
             "cached_energy": PotentialOut(
-                total_energies=Table.arange(jnp.array([0.0, 0.0, 0.0]), label=SystemId),
+                total_energies=Table.arange(
+                    jnp.array([0.0, 0.0, 0.0]) * u.eV, label=SystemId
+                ),
                 gradients={"pos": jnp.zeros((2, 2))},
                 hessians={"pos": jnp.zeros((1, 2, 2))},
             ),
@@ -373,7 +389,9 @@ class TestCachedPotential:
 
         # Should return the same energy as the underlying potential
         expected_energy = jnp.array([2.0, 4.0, 6.0])  # 2 * [1, 2, 3]
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
         # Should have composed patch that includes caching
         assert hasattr(result.patch, "__call__")
@@ -396,7 +414,9 @@ class TestCachedPotential:
 
         # Should still work with patches
         expected_energy = jnp.array([2.0, 4.0, 6.0])
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
     def test_cached_value_access(self, cached_potential, test_state):
         """Test accessing the cached value."""
@@ -404,8 +424,8 @@ class TestCachedPotential:
         cached_value = cached_potential.cached_value(test_state)
 
         assert isinstance(cached_value, KahanSummand)
-        assert jnp.array_equal(
-            cached_value.value.total_energies.data, jnp.array([0.0, 0.0, 0.0])
+        testing.assert_array_equal(
+            cached_value.value.total_energies.data, jnp.array([0.0, 0.0, 0.0]), u.eV
         )
 
     def test_composed_patch_functionality(self, cached_potential, test_state):
@@ -432,7 +452,7 @@ class TestCachedPotential:
             def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
                 potential_out = PotentialOut(
                     total_energies=Table.arange(
-                        jnp.array([1.0, 2.0, 3.0]), label=SystemId
+                        jnp.array([1.0, 2.0, 3.0]) * u.eV, label=SystemId
                     ),
                     gradients={"pos": jnp.array([[1.0, 2.0], [3.0, 4.0]])},
                     hessians={"pos": jnp.array([[[1.0, 0.0], [0.0, 1.0]]])},
@@ -482,7 +502,7 @@ class TestCachedPotential:
         total_energy = jitted_compute(test_state)
         expected_total = jnp.array(12.0)  # sum of [2, 4, 6]
 
-        assert jnp.allclose(total_energy, expected_total)
+        testing.assert_allclose(total_energy, expected_total, u.eV)
 
     def test_lens_and_view_integration(self, mock_potential):
         """Test integration between lens and view components."""
@@ -493,7 +513,7 @@ class TestCachedPotential:
                 "cache": {
                     "energy_cache": PotentialOut(
                         total_energies=Table.arange(
-                            jnp.array([10.0, 20.0, 30.0]), label=SystemId
+                            jnp.array([10.0, 20.0, 30.0]) * u.eV, label=SystemId
                         ),
                         gradients={"pos": jnp.array([[5.0, 6.0], [7.0, 8.0]])},
                         hessians={"pos": jnp.array([[[2.0, 0.0], [0.0, 2.0]]])},
@@ -527,12 +547,14 @@ class TestCachedPotential:
         # Should work with nested structures
         assert isinstance(result.data, PotentialOut)
         expected_energy = jnp.array([2.0, 4.0, 6.0])
-        assert jnp.array_equal(result.data.total_energies.data, expected_energy)
+        testing.assert_array_equal(
+            result.data.total_energies.data, expected_energy, u.eV
+        )
 
         # Test cached value access with nested structure
         cached_value = cached_pot.cached_value(complex_state)
-        assert jnp.array_equal(
-            cached_value.value.total_energies.data, jnp.array([10.0, 20.0, 30.0])
+        testing.assert_array_equal(
+            cached_value.value.total_energies.data, jnp.array([10.0, 20.0, 30.0]), u.eV
         )
 
     def test_empty_gradients_and_hessians(self, cache_lens, patch_idx_view):
@@ -544,7 +566,7 @@ class TestCachedPotential:
             def __call__(self, state, patch=None, *, include_compensate=False) -> Any:
                 potential_out = PotentialOut(
                     total_energies=Table.arange(
-                        jnp.array([1.0, 2.0, 3.0]), label=SystemId
+                        jnp.array([1.0, 2.0, 3.0]) * u.eV, label=SystemId
                     ),
                     gradients=(),
                     hessians=(),
@@ -558,7 +580,7 @@ class TestCachedPotential:
             view(
                 lambda state: PotentialOut(
                     total_energies=Table.arange(
-                        jnp.array([0.0, 0.0, 0.0]), label=SystemId
+                        jnp.array([0.0, 0.0, 0.0]) * u.eV, label=SystemId
                     ),
                     gradients=(),
                     hessians=(),
@@ -585,8 +607,8 @@ class TestCachedPotential:
 
         # Should work with empty gradients and hessians
         assert isinstance(result.data, PotentialOut)
-        assert jnp.array_equal(
-            result.data.total_energies.data, jnp.array([1.0, 2.0, 3.0])
+        testing.assert_array_equal(
+            result.data.total_energies.data, jnp.array([1.0, 2.0, 3.0]), u.eV
         )
         assert result.data.gradients == ()
         assert result.data.hessians == ()
@@ -610,8 +632,8 @@ class TestMappedPotential:
 
         result = mapped({"positions": jnp.zeros((2, 2))})
 
-        assert jnp.array_equal(
-            result.data.total_energies.data, jnp.array([1.0, 2.0, 3.0])
+        testing.assert_array_equal(
+            result.data.total_energies.data, jnp.array([1.0, 2.0, 3.0]), u.eV
         )
         assert jnp.array_equal(result.data.gradients, jnp.array([1.0, 2.0]))
         assert "pos" in result.data.hessians
@@ -664,8 +686,8 @@ class TestMappedPotential:
 
         result = mapped({"positions": jnp.zeros((2, 2))})
 
-        assert jnp.array_equal(
-            result.data.total_energies.data, jnp.array([5.0, 10.0, 15.0])
+        testing.assert_array_equal(
+            result.data.total_energies.data, jnp.array([5.0, 10.0, 15.0]), u.eV
         )
 
     def test_patch_passthrough(self):
@@ -713,7 +735,7 @@ class TestMappedPotential:
 
         result = mapped({"positions": jnp.zeros((2, 2))})
 
-        assert jnp.array_equal(
-            result.data.total_energies.data, jnp.array([3.0, 6.0, 9.0])
+        testing.assert_array_equal(
+            result.data.total_energies.data, jnp.array([3.0, 6.0, 9.0]), u.eV
         )
         assert jnp.array_equal(result.data.gradients, jnp.array([3.0, 6.0]))

@@ -7,10 +7,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from kups.core import units
 from kups.core.data.index import Index
 from kups.core.neighborlist import Edges
 from kups.potential.classical.inversion import InversionParameters, inversion_energy
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
+from test.units import EV
 
 from .conftest import make_particles, make_systems
 
@@ -22,17 +24,22 @@ _SINGLE_CELLS_LV = jnp.eye(3)[None] * 10.0
 
 
 def _single_inversion_energy(positions: jax.Array, params: InversionParameters):
-    """Energy of one A-A-A-A inversion; params traced for grad/jit reuse."""
+    """Energy in eV of one A-A-A-A inversion at positions in Angstrom.
+
+    Params are traced for grad/jit reuse.
+    """
     particles = make_particles(positions, _SINGLE_SPECIES, _SINGLE_SYSTEM_IDS)
-    systems = make_systems(_SINGLE_CELLS_LV)
+    systems = make_systems(_SINGLE_CELLS_LV.astype(positions.dtype))
     edges = Edges(
         indices=Index(particles.keys, jnp.array([[0, 1, 2, 3]])),
-        shifts=jnp.zeros((1, 3, 3)),
+        shifts=jnp.zeros((1, 3, 3), positions.dtype),
     )
     graph = HyperGraph(particles, systems, edges)
-    return inversion_energy(
-        GraphPotentialInput(graph=graph, parameters=params)
-    ).data.data[0]
+    return (
+        inversion_energy(GraphPotentialInput(graph=graph, parameters=params))
+        .data.data[0]
+        .to(EV)
+    )
 
 
 # Shared jitted energy/gradient: params is a traced argument so a single
@@ -74,7 +81,7 @@ class TestInversionEnergy:
         cls.system_ids = _SINGLE_SYSTEM_IDS
         shape = (2, 2, 2, 2)
         cls.omega0 = jnp.zeros(shape)
-        cls.k = jnp.ones(shape) * 10.0
+        cls.k = jnp.ones(shape) * 10.0 * EV
         cls.params = InversionParameters(labels=_LABELS, omega0=cls.omega0, k=cls.k)
 
     def _make_graph(self, positions):
@@ -127,7 +134,7 @@ class TestInversionEnergy:
         params = InversionParameters(
             labels=_LABELS,
             omega0=jnp.ones(shape) * omega0_rad,
-            k=jnp.ones(shape) * barrier,
+            k=jnp.ones(shape) * barrier * EV,
         )
         positions = _make_positions(0.0)
         energy = self._energy(positions, params)
@@ -140,7 +147,7 @@ class TestInversionEnergy:
         params = InversionParameters(
             labels=_LABELS,
             omega0=jnp.ones(shape) * omega0_rad,
-            k=jnp.ones(shape) * barrier,
+            k=jnp.ones(shape) * barrier * EV,
         )
 
         h = 0.3
@@ -158,10 +165,17 @@ class TestInversionEnergy:
 
     def test_zero_force_constant(self):
         params = InversionParameters(
-            labels=_LABELS, omega0=self.omega0, k=jnp.zeros_like(self.k)
+            labels=_LABELS, omega0=self.omega0, k=units.zeros_like(self.k)
         )
         positions = _make_positions(0.5)
         assert jnp.isclose(self._energy(positions, params), 0.0, atol=1e-10)
+
+    def test_float32_inputs_stay_float32(self):
+        """The kernel's regularisers do not promote float32 inputs."""
+        params = jax.tree.map(lambda x: x.astype(jnp.float32), self.params)
+        positions = _make_positions(0.3).astype(jnp.float32)
+        energy = jax.eval_shape(_single_inversion_energy, positions, params)
+        assert energy.dtype == jnp.float32
 
     def test_assertion_wrong_order(self):
         positions = _make_positions(0.0)[:3]
@@ -191,7 +205,7 @@ class TestInversionEnergy:
         result = inversion_energy(
             GraphPotentialInput(graph=graph, parameters=self.params)
         )
-        assert jnp.isclose(result.data.data[0], 0.0, atol=1e-6)
+        assert jnp.isclose(result.data.data[0].to(EV), 0.0, atol=1e-6)
 
     def test_multiple_inversions(self):
         positions = _make_positions(0.2)
@@ -208,8 +222,8 @@ class TestInversionEnergy:
         result = inversion_energy(
             GraphPotentialInput(graph=graph, parameters=self.params)
         )
-        assert result.data.data[0] > 0.0
-        assert jnp.isfinite(result.data.data[0])
+        assert result.data.data[0].to(EV) > 0.0
+        assert jnp.isfinite(result.data.data[0].to(EV))
 
     def test_multiple_graphs(self):
         positions = jnp.concatenate([_make_positions(0.0), _make_positions(0.5)])
@@ -226,5 +240,5 @@ class TestInversionEnergy:
             GraphPotentialInput(graph=graph, parameters=self.params)
         )
         assert result.data.data.shape == (2,)
-        assert jnp.isclose(result.data.data[0], 0.0, atol=1e-6)
-        assert result.data.data[1] > 0.0
+        assert jnp.isclose(result.data.data[0].to(EV), 0.0, atol=1e-6)
+        assert result.data.data[1].to(EV) > 0.0

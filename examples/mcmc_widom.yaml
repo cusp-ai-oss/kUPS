@@ -5,19 +5,19 @@ adsorbates:
 
 hosts:
   - cif_file: host/RUBTAK.cif
-    pressure: 100_000   # Pa (1 bar)
-    temperature: 298.15   # K
+    pressure: "100000 Pa"
+    temperature: "298.15 K"
     init_adsorbates: [0]
     cell_replication: 3
     # Optional blocking spheres (per adsorbate species):
     # blocking_spheres:
-    #   - - center: [0.0, 0.0, 0.0]
-    #       radius: 2.5
+    #   - - center: {angstrom: [0.0, 0.0, 0.0]}
+    #       radius: "2.5 angstrom"
 
 lj: !import ["lennard_jones/trappe.yaml"]
 
 ewald:
-  real_cutoff: 12.0
+  real_cutoff: "12.0 angstrom"
   precision: 1.e-6
 
 run:

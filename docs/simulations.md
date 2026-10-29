@@ -2,6 +2,24 @@
 
 <em>k</em>UPS ships with several ready-to-use simulation applications as CLI tools. Each is a thin layer built on the core primitives (propagators, potentials, lenses, tables) and serves as both a useful tool and a reference implementation. All commands take a YAML configuration file via and use [nanoargs](https://github.com/cusp-ai-oss/nanoargs) for argument parsing, so any configuration value can also be overridden from the command line. Example configurations are provided in the [`examples/`](https://github.com/cusp-ai-oss/kups/tree/main/examples) directory and should be run from there.
 
+## Units in Configuration Files
+
+Every dimensioned setting is written as `"<number> <unit>"`, and the unit always comes from the file:
+
+```yaml
+temperature: "298.15 K"
+time_step: "2.0 fs"
+force_tolerance: "0.001 eV/angstrom"
+compressibility: "4.5e-5 1/Pa"
+```
+
+- Any unit of the setting's dimension is accepted: `"1 bar"` and `"100000 Pa"` are the same pressure. Unit names come from [`kups.core.units.catalog`][kups.core.units.catalog] (`angstrom`, `nm`, `fs`, `eV`, `kcal`, `mol`, `K`, `Pa`, `bar`, ...), take an SI prefix (`keV`, `MPa`), and combine with `*`, `/` and `^` (`eV/angstrom^2`, `kJ/mol`).
+- An array is a one-entry mapping from a unit to its numbers: `center: {angstrom: [0.0, 0.0, 0.0]}`.
+- A bare number is rejected, zero included: write `"0.0 Pa"`, not `0`. A unit of the wrong dimension is rejected too.
+- The configuration echoed at startup shows each value in its dimension's display unit (Å, eV, K, fs, Pa, ...), whatever unit the file used.
+
+Optimizer settings under `run.optimizer` of `kups_relax` are the exception: they are bare numbers in the base units Å and eV.
+
 ## Molecular Dynamics
 
 Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble with `kups_md`. The force field is selected by the `potential.backend` field:

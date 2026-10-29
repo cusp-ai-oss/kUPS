@@ -2,20 +2,26 @@ simulation_type: md
 hdf5_output: md_nve_lj_argon_lammps.dat
 observables:
   potential_energy:
+    unit: eV
     expected_mean: -15.312457488937964
     expected_sem: 0.00919420639113633
   kinetic_energy:
+    unit: eV
     expected_mean: 7.450515402046034
-    expected_sem: 0.009043805189871964
+    expected_sem: 0.009043805189871818
   total_energy:
+    unit: eV
     expected_mean: -7.861942086891933
-    expected_sem: 0.0002624954642331157
+    expected_sem: 0.0002624954642332002
   temperature:
+    unit: K
     expected_mean: 226.03802168877382
-    expected_sem: 0.27437616370753687
+    expected_sem: 0.2743761637075378
   pressure:
-    expected_mean: 0.0036562479459263547
-    expected_sem: 5.265487830446802e-06
+    unit: eV/angstrom^3
+    expected_mean: 0.0036562479114096804
+    expected_sem: 5.265487791772639e-06
   volume:
-    expected_mean: 9314.020864
+    unit: angstrom^3
+    expected_mean: 9314.020864000004
     expected_sem: 0.0

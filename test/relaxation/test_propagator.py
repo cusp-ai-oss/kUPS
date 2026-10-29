@@ -3,13 +3,15 @@
 
 """Tests for relaxation propagators."""
 
-from typing import Literal, assert_type, overload
+from typing import Any, Literal, assert_type, overload
 
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import optax
+import pytest
 
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.lens import bind, lens
 from kups.core.patch import IdPatch, Patch, WithPatch
@@ -20,9 +22,18 @@ from kups.core.potential import (
     PotentialResult,
 )
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
+from kups.core.units import magnitudes_of, testing
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
-from kups.relaxation.optimizer import ChainOptimizer, ChainOptState, chain
+from kups.relaxation.optimizer import (
+    ChainOptimizer,
+    ChainOptState,
+    Optimizer,
+    apply_updates,
+    chain,
+    relabel_like,
+)
 from kups.relaxation.propagator import RelaxationPropagator, UpdateMask
 from kups.relaxation.transforms import (
     ScaleByAseLbfgs,
@@ -83,7 +94,7 @@ class QuadraticPotential[State: PotentialState](
         del patch
         energy = 0.5 * jnp.sum(state.positions**2)
         out = PotentialOut(
-            total_energies=Table.arange(jnp.array([energy]), label=SystemId),
+            total_energies=Table.arange(jnp.array([energy]) * u.eV, label=SystemId),
             gradients=state.positions,
             hessians=(),
         )
@@ -98,6 +109,33 @@ def _counted_quadratic() -> QuadraticPotential[PotentialStateWithCounter]:
             bind(s).focus(lambda x: x.patch_count).apply(lambda count: count + 1)
         )
     )
+
+
+@dataclass
+class LengthState:
+    """State whose optimized positions are lengths."""
+
+    positions: units.Length
+    opt_state: ChainOptState
+
+
+class DimensionedQuadraticPotential:
+    """Mock potential: E = 0.5 * k * ||x||^2 with x a length, grad = k * x."""
+
+    def __call__(
+        self, state: LengthState, patch: Patch[LengthState] | None = None
+    ) -> WithPatch[PotentialOut[Any, tuple[()]], IdPatch[LengthState]]:
+        del patch
+        k = 1.0 * u.eV / u.angstrom**2
+        energy = 0.5 * k * units.sum(state.positions**2)
+        return WithPatch(
+            PotentialOut(
+                total_energies=Table.arange(units.stack([energy]), label=SystemId),
+                gradients=k * state.positions,
+                hessians=(),
+            ),
+            IdPatch(),
+        )
 
 
 class TestRelaxationPropagator:
@@ -227,3 +265,43 @@ class TestRelaxationPropagator:
         for _ in range(8):
             state = propagator(key, state)
         npt.assert_allclose(state.positions, jnp.zeros(2), atol=1e-6)
+
+    @pytest.mark.parametrize(
+        "base", [units.ATOMISTIC, units.SI], ids=["atomistic", "si"]
+    )
+    def test_dimensioned_positions_converge(self, base: units.BaseSystem):
+        """Length positions relax through a line search and stay lengths."""
+        optimizer: Optimizer[Any, Any] = chain(
+            optax.scale(-1.0), ScaleByMoreThuenteLinesearch()
+        )
+        positions = (jnp.array([5.0, -3.0]) * u.angstrom).rebase(base)
+        state = LengthState(
+            positions=positions, opt_state=optimizer.init(magnitudes_of(positions))
+        )
+        propagator = jax.jit(
+            RelaxationPropagator(
+                # pyrefly: ignore[bad-argument-type]  # mock without the overloads
+                potential=DimensionedQuadraticPotential(),
+                property=lens(lambda s: s.positions, cls=LengthState),
+                opt_state=lens(lambda s: s.opt_state),
+                optimizer=optimizer,
+            )
+        )
+        for _ in range(5):
+            state = propagator(jax.random.key(0), state)
+        testing.assert_allclose(
+            state.positions, jnp.zeros(2) * u.angstrom, u.angstrom, atol=1e-6
+        )
+
+
+def test_relabel_and_apply_updates_keep_dimensions():
+    """Steps on magnitudes are relabelled per leaf; logs keep their reference."""
+    params = (
+        jnp.array([1.0, 2.0]) * u.angstrom,
+        units.Log(jnp.zeros(2), 1 / u.angstrom**3),
+    )
+    steps = jax.tree.map(lambda x: jnp.full_like(x, 0.5), magnitudes_of(params))
+    new_x, new_log = apply_updates(params, relabel_like(params, steps))
+    testing.assert_allclose(new_x, jnp.array([1.5, 2.5]) * u.angstrom, u.angstrom)
+    npt.assert_allclose(new_log.log, jnp.full(2, 0.5))
+    assert new_log.ref == params[1].ref

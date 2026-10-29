@@ -30,6 +30,7 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import NeighborList
 from kups.core.result import as_result_function
 from kups.core.typing import Label, ParticleId, SystemId
+from test.units import A
 
 from ._builders import (
     SamplePoints,
@@ -77,9 +78,9 @@ class TestCachedCellList:
     def test_open_boundaries_match_dense(self, periodic):
         # Include neighbors inside/outside both faces and entirely outside the box.
         x = jnp.array([-21.0, -20.0, -0.5, 0.5, 9.5, 10.5, 20.0, 21.0])
-        points = make_lh(jnp.stack((x, x * 0, x * 0), -1), jnp.zeros(len(x), int))
+        points = make_lh(jnp.stack((x, x * 0, x * 0), -1) * A, jnp.zeros(len(x), int))
         systems, cutoffs = make_systems(
-            Cell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10), periodic),
+            Cell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10 * A), periodic),
             jnp.array([2.0]),
         )
         layout = CellListCacheParameters.estimate(points, systems, cutoffs)
@@ -105,7 +106,7 @@ class TestCachedCellList:
     def test_roundoff_at_periodic_boundary_preserves_neighbors(self, cached: bool):
         tiny = jnp.finfo(jnp.float64).eps / 4
         points = make_lh(
-            jnp.array([[-tiny, 0.0, 0.0], [0.1, 0.0, 0.0]]), jnp.zeros(2, int)
+            jnp.array([[-tiny, 0.0, 0.0], [0.1, 0.0, 0.0]]) * A, jnp.zeros(2, int)
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None], jnp.array([0.25]))
         layout = CellListCacheParameters.estimate(points, systems, cutoffs)
@@ -142,7 +143,7 @@ class TestCachedCellList:
             ]
         )
         systems, cutoffs = make_systems(
-            Cell(TriclinicFrame.from_matrix(matrices), periodic=periodic),
+            Cell(TriclinicFrame.from_matrix(matrices * A), periodic=periodic),
             jnp.array([cutoff, 1.4]),
         )
         system = jnp.array([1, 0, 1, 0, 0, 1, 1, 0, 0, 1])
@@ -163,7 +164,7 @@ class TestCachedCellList:
         # Preserve integer image offsets outside the primary periodic box.
         frac += jnp.asarray(periodic) * jnp.arange(10)[:, None] % 3
         points = make_lh(
-            jnp.einsum("ni,nij->nj", frac, matrices[system]),
+            jnp.einsum("ni,nij->nj", frac, matrices[system]) * A,
             system,
             jnp.array([0, 1, 0, 1, 2, 3, 4, 5, 6, 7]),
         )
@@ -171,7 +172,7 @@ class TestCachedCellList:
             tuple(ParticleId(i) for i in (12, 17, 21, 30, 44, 59, 65, 73, 86, 91)),
             replace(
                 points.data,
-                positions=points.data.positions.at[-2:].set(jnp.inf),
+                positions=points.data.positions.at[-2:].set(jnp.inf * A),
                 inclusion=points.data.inclusion.apply_mask(jnp.arange(10) < 8),
             ),
         )
@@ -187,7 +188,7 @@ class TestCachedCellList:
         if mode == "queried_keys":
             # A call must rebuild from updated positions, including crossed bins.
             points = points.map_data(
-                lambda p: replace(p, positions=p.positions.at[2].add(1.1))
+                lambda p: replace(p, positions=p.positions.at[2].add(1.1 * A))
             )
             kwargs[mode] = Index(
                 (points.keys[2], points.keys[5], points.keys[8]), jnp.array([2, 1, 0])
@@ -199,7 +200,7 @@ class TestCachedCellList:
                 tuple(ParticleId(i) for i in (801, 802, 803)),
                 replace(
                     query.data,
-                    positions=query.data.positions + jnp.array([0.13, 0.09, 0]),
+                    positions=query.data.positions + jnp.array([0.13, 0.09, 0]) * A,
                     inclusion=Index(
                         vocabulary, query.data.inclusion.indices_in(vocabulary)
                     ),
@@ -227,7 +228,7 @@ class TestCachedCellList:
     @pytest.mark.parametrize("cached", [False, True])
     @pytest.mark.parametrize("mode", ["full", "queried_keys", "queries", "empty_keys"])
     def test_empty_query(self, mode, cached):
-        points = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, int))
+        points = make_lh(jnp.zeros((2, 3)) * A, jnp.zeros(2, int))
         queries = points
         if mode in ("full", "empty_keys"):
             points = points.subset(Index(points.keys, jnp.zeros(0, int)))
@@ -256,7 +257,7 @@ class TestCachedCellList:
 
     def test_selector_reuses_an_updated_table(self):
         points = make_lh(
-            jnp.array([[1.0, 1.0, 1.0], [1.5, 1.0, 1.0], [6.0, 1.0, 1.0]]),
+            jnp.array([[1.0, 1.0, 1.0], [1.5, 1.0, 1.0], [6.0, 1.0, 1.0]]) * A,
             jnp.zeros(3, int),
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12, jnp.array([3.2]))
@@ -265,7 +266,9 @@ class TestCachedCellList:
         )
         table = build_cell_list_cache(points, systems, cutoffs, (), layout)
         moved = points.map_data(
-            lambda p: replace(p, positions=p.positions.at[2].set(jnp.array([2, 1, 1])))
+            lambda p: replace(
+                p, positions=p.positions.at[2].set(jnp.array([2.0, 1.0, 1.0]) * A)
+            )
         )
         index = Index(points.keys, jnp.array([2]))
         rows = table.bin_rows(moved.subset(index), systems, ())
@@ -283,7 +286,7 @@ class TestCachedCellList:
 
     def test_edge_capacity_and_query_contract(self):
         points = make_lh(
-            jnp.array([[0.1, 0.1, 0.1], [0.2, 0.1, 0.1]]), jnp.zeros(2, int)
+            jnp.array([[0.1, 0.1, 0.1], [0.2, 0.1, 0.1]]) * A, jnp.zeros(2, int)
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 4, jnp.array([5.0]))
         layout = CellListCacheParameters.estimate(points, systems, cutoffs)
@@ -302,7 +305,7 @@ class TestCellListCache:
         self, max_count: int | None
     ):
         particles = make_lh(
-            jnp.array([[1.0, 1.0, 1.0], [4.0, 1.0, 1.0]]), jnp.zeros(2, int)
+            jnp.array([[1.0, 1.0, 1.0], [4.0, 1.0, 1.0]]) * A, jnp.zeros(2, int)
         )
         particles = bind(particles, lambda p: p.data.inclusion.max_count).set(max_count)
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12, jnp.array([3.0]))
@@ -335,7 +338,7 @@ class TestCellListCache:
         # otherwise make system 0's cell the fullest with five rows.
         system = jnp.array([1, 0, 1, 1, 0, 1, 0, 0, 0])
         positions = jnp.where(system[:, None] == 0, 1.0, 13.0) * jnp.ones(3)
-        particles = make_lh(positions, system)
+        particles = make_lh(positions * A, system)
         inclusion = particles.data.inclusion
         particles = bind(particles, lambda p: p.data.inclusion).set(
             Index(inclusion.keys, jnp.where(jnp.arange(9) < 6, system, 2))
@@ -363,7 +366,7 @@ class TestCellListCache:
         # A short z edge needs several images, so blocks are not culled.
         centers = np.array(list(np.ndindex(2, 2, 1))) * 6.0 + 3.0
         particles = make_lh(
-            jnp.asarray(np.repeat(centers, counts, axis=0)),
+            jnp.asarray(np.repeat(centers, counts, axis=0)) * A,
             jnp.zeros(sum(counts), int),
         )
         systems, cutoffs = systems_from_lvecs(
@@ -392,11 +395,11 @@ class TestCellListCache:
         self, length, n_systems, periodic, expected_layout
     ):
         particles = make_lh(
-            jax.random.uniform(jax.random.key(74), (5 * n_systems, 3)) * length,
+            jax.random.uniform(jax.random.key(74), (5 * n_systems, 3)) * length * A,
             jnp.repeat(jnp.arange(n_systems), 5),
         )
         frame = TriclinicFrame.from_matrix(
-            jnp.tile(jnp.eye(3) * length, (n_systems, 1, 1))
+            jnp.tile(jnp.eye(3) * length, (n_systems, 1, 1)) * A
         )
         systems, cutoffs = make_systems(
             Cell(frame, periodic=periodic), jnp.full(n_systems, 6.0)
@@ -417,7 +420,8 @@ class TestCellListCache:
         self, key_layout, key_chunk_size, expected_chunk
     ):
         particles = make_lh(
-            jax.random.uniform(jax.random.key(77), (6, 3)) * 18.0, jnp.zeros(6, int)
+            jax.random.uniform(jax.random.key(77), (6, 3)) * 18.0 * A,
+            jnp.zeros(6, int),
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 18.0, jnp.array([6.0]))
         parameters = CellListCacheParameters.estimate(
@@ -441,7 +445,7 @@ class TestCellListCache:
         positions = (corners[:, None] + rng.random((27, 32, 3)) * 7.0).reshape(-1, 3)
         n = 864 * n_systems
         particles = make_lh(
-            jnp.asarray(np.repeat(positions, n_systems, axis=0)),
+            jnp.asarray(np.repeat(positions, n_systems, axis=0)) * A,
             jnp.arange(n) % n_systems,
         )
         systems, cutoffs = systems_from_lvecs(
@@ -468,7 +472,7 @@ class TestCellListCache:
             bounds.upper,
             systems.data.cell.vectors[0],
             systems.data.cell.perpendicular_lengths[0],
-            6.0,
+            6.0 * A,
             (True, True, True),
         )
         union = jnp.zeros_like(near)
@@ -482,8 +486,8 @@ class TestCellListCache:
     )
     def test_blocks_need_the_minimum_image(self, lengths, cutoff):
         positions = jax.random.uniform(jax.random.key(76), (60, 3)) * jnp.array(lengths)
-        particles = make_lh(positions, jnp.zeros(60, int))
-        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array(lengths))[None])
+        particles = make_lh(positions * A, jnp.zeros(60, int))
+        frame = TriclinicFrame.from_matrix(jnp.diag(jnp.array(lengths))[None] * A)
         systems, cutoffs = make_systems(
             Cell(frame, periodic=(True, True, True)), jnp.array([cutoff])
         )
@@ -503,7 +507,7 @@ class TestCellListCache:
 
     def test_rejection_same_cell_and_overflow(self):
         particles = make_lh(
-            jnp.array([[1.0, 1.0, 1.0], [1.5, 1.0, 1.0], [4.0, 1.0, 1.0]]),
+            jnp.array([[1.0, 1.0, 1.0], [1.5, 1.0, 1.0], [4.0, 1.0, 1.0]]) * A,
             jnp.zeros(3, int),
         )
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 12.0, jnp.array([3.0]))
@@ -518,7 +522,7 @@ class TestCellListCache:
 
         def proposed(position):
             query = particles.subset(index).map_data(
-                lambda p: replace(p, positions=jnp.array([position]))
+                lambda p: replace(p, positions=jnp.array([position]) * A)
             )
             return table.bin_rows(query, systems, jnp.zeros(1))
 
@@ -567,7 +571,7 @@ class TestSpatialOrder:
         inactive = np.zeros(320, bool)
         inactive[rng.choice(256, 8, replace=False)] = True
         inactive[256 + rng.choice(64, 8, replace=False)] = True
-        particles = make_lh(jnp.asarray(positions), jnp.asarray(system))
+        particles = make_lh(jnp.asarray(positions) * A, jnp.asarray(system))
         inclusion = Index(particles.data.inclusion.keys, np.where(inactive, 2, system))
         particles = particles.map_data(lambda p: replace(p, inclusion=inclusion))
         systems, cutoffs = systems_from_lvecs(
@@ -620,7 +624,7 @@ class TestSpatialOrder:
 
 def _interleaved_points(positions, system, active):
     """Particles of interleaved systems; inactive rows keep their system."""
-    points = make_lh(jnp.asarray(positions), jnp.asarray(system))
+    points = make_lh(jnp.asarray(positions) * A, jnp.asarray(system))
     inclusion = points.data.inclusion
     n_systems = len(inclusion.keys)
     inclusion = Index(inclusion.keys, jnp.where(active, system, n_systems))
@@ -850,7 +854,15 @@ class TestBlockCulling:
         skipped = projected = 0
         for cutoff in (1.5, 3.0, 4.5):
             near = np.asarray(
-                near_fn(queries, lower, upper, matrix, perpendicular, cutoff, periodic)
+                near_fn(
+                    queries,
+                    lower,
+                    upper,
+                    jnp.asarray(matrix) * A,
+                    jnp.asarray(perpendicular) * A,
+                    cutoff * A,
+                    periodic,
+                )
             )
             assert not near[:, -1].any()
             # A query inside a block's box is never culled from it.

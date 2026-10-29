@@ -38,13 +38,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -55,6 +55,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -85,19 +86,19 @@ class InversionParameters:
         labels: Species labels, shape `(n_species,)`.
         omega0: Equilibrium out-of-plane angles [radians],
             shape `(n_species, n_species, n_species, n_species)`.
-        k: Force constant or barrier [energy],
+        k: Force constant or barrier,
             shape `(n_species, n_species, n_species, n_species)`.
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    omega0: Array  # (n_species, n_species, n_species, n_species)
-    k: Array  # (n_species, n_species, n_species, n_species)
+    omega0: Array  # (n_species, n_species, n_species, n_species) radians
+    k: units.Energy  # (n_species, n_species, n_species, n_species)
 
     @classmethod
     def from_uff(
         cls,
         labels: tuple[str, ...],
-        inversion_barrier: Array,
+        inversion_barrier: units.Energy,
         omega0: Array | None = None,
     ) -> "InversionParameters":
         r"""Create inversion parameters using UFF formulas.
@@ -130,7 +131,7 @@ type InversionInput = GraphPotentialInput[
 
 def inversion_energy(
     inp: InversionInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     r"""Compute UFF-style inversion energy for all inversion centers.
 
     Args:
@@ -162,14 +163,15 @@ def inversion_energy(
     r_jl = graph.edge_shifts[:, 2]  # (n_edges, 3)
 
     # Normal to the plane k-j-l
-    n = jnp.cross(r_jk, r_jl)  # (n_edges, 3)
-    n_norm = jnp.linalg.norm(n, axis=-1, keepdims=True)
-    eps = 1e-10
-    n_unit = n / (n_norm + eps)
+    n = units.cross(r_jk, r_jl)  # (n_edges, 3)
+    n_norm = units.norm(n, axis=-1, keepdims=True)
+    n_unit = n / (n_norm + jnp.asarray(1e-10, n_norm.dtype) * u.angstrom**2)
 
     # Out-of-plane angle: sin(omega) = (r_ji . n) / |r_ji|
-    r_ji_norm = jnp.linalg.norm(r_ji, axis=-1)
-    sin_omega = jnp.einsum("ij,ij->i", r_ji, n_unit) / (r_ji_norm + eps)
+    r_ji_norm = units.norm(r_ji, axis=-1)
+    sin_omega = units.einsum("ij,ij->i", r_ji, n_unit) / (
+        r_ji_norm + jnp.asarray(1e-10, r_ji_norm.dtype) * u.angstrom
+    )
     sin_omega = jnp.clip(sin_omega, -1.0, 1.0)
     omega = jnp.arcsin(sin_omega)  # radians
 
@@ -191,7 +193,7 @@ def inversion_energy(
 
     # For non-sp2, k is the barrier E_barrier at omega=0
     barrier_factor = c0 + c1 + c2
-    k_scaled = jnp.where(
+    k_scaled = units.where(
         is_sp2,
         k,
         k / jnp.maximum(barrier_factor, 1e-10),

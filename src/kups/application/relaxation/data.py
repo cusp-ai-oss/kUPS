@@ -6,25 +6,39 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import ase
 import jax.numpy as jnp
 from jax import Array
 from pydantic import BaseModel
 
+from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
+from kups.core import units
+from kups.core.cell import (
+    AnyPeriodicity,
+    Cell,
+    DeformedFrame,
+    MatrixLogFrame,
+    zero_gradient_cell,
+)
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, IsState, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, tree_zeros_like
-from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
+from kups.core.units import catalog as u
+from kups.core.utils.jax import dataclass, field
+from kups.potential.common.geometry import (
+    PositionsAndCell,
+    PositionsAndCellIndex,
+    PositionsAndCellTree,
+)
 from kups.relaxation.config import TransformationConfig
 
 
@@ -42,7 +56,7 @@ class RelaxParticles(Particles):
             ``positions_only``. The force source and ASE-fmax convergence quantity.
     """
 
-    position_gradients: Array
+    position_gradients: units.Force
     # pyrefly: ignore[bad-assignment]
     exclusion: Index[ExclusionId] = field(default=None, kw_only=True)
 
@@ -51,7 +65,7 @@ class RelaxParticles(Particles):
             object.__setattr__(self, "exclusion", default_exclusion(len(self.charges)))
 
     @property
-    def forces(self) -> Array:
+    def forces(self) -> units.Force:
         """Atomic forces, the negative position gradient."""
         return -self.position_gradients
 
@@ -67,7 +81,7 @@ class RelaxSystems:
     stored on :attr:`cell`'s frame (the matrix-log deformation under
     ``cell_filter``). The ASE-fmax convergence quantity for the cell; the
     atoms-ride-the-cell coupling is already folded in by the filter pullback."""
-    potential_energy: Array
+    potential_energy: units.Energy
     """Potential energy per system, shape ``(n_systems,)``."""
 
 
@@ -92,9 +106,9 @@ type HasRelaxData = IsState[RelaxParticles, RelaxSystems]
 def relax_parameters(
     particles: Table[ParticleId, RelaxParticles],
     systems: Table[SystemId, RelaxSystems],
-) -> PositionsAndCell:
+) -> PositionsAndCell[units.Length]:
     """Raw ``(positions, cell)``, shaped like the optimizer DOFs."""
-    return PositionsAndCell(
+    return PositionsAndCellTree(
         particles.map_data(lambda p: p.positions), systems.map_data(lambda s: s.cell)
     )
 
@@ -107,9 +121,9 @@ def relax_index_prefix(
     return PositionsAndCellIndex(particles.data.system, systems.index)
 
 
-def relax_gradients(state: HasRelaxData) -> PositionsAndCell:
+def relax_gradients(state: HasRelaxData) -> PositionsAndCell[units.Force]:
     """The cached DOF gradients ``∂E/∂u`` held in a relaxation state."""
-    return PositionsAndCell(
+    return PositionsAndCellTree(
         state.particles.map_data(lambda p: p.position_gradients),
         state.systems.map_data(lambda s: s.cell_gradients),
     )
@@ -124,10 +138,14 @@ class RelaxRunConfig(BaseModel):
     """Maximum number of optimisation steps."""
     seed: int | None
     """Random seed. None for time-based."""
-    force_tolerance: float
-    """Convergence threshold for max atomic force (eV/Å)."""
+    force_tolerance: Annotated[units.Force, Scalar]
+    """Convergence threshold for max atomic force."""
     optimizer: TransformationConfig
-    """List of Optax transform specifications passed to `make_optimizer`."""
+    """List of Optax transform specifications passed to `make_optimizer`.
+
+    Their settings are bare numbers in the base units (Å, eV), e.g.
+    ``max_step_size`` in Å, since the optimizer runs on magnitudes.
+    """
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
 
@@ -154,15 +172,17 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
     )
     return RelaxSystems(
         cell=cell,
-        cell_gradients=tree_zeros_like(cell),
-        potential_energy=jnp.zeros(cell.vectors.shape[0], cell.vectors.dtype),
+        cell_gradients=zero_gradient_cell(cell),
+        potential_energy=units.zeros(
+            cell.vectors.shape[0], u.eV, dtype=cell.vectors.dtype
+        ),
     )
 
 
 def relax_particles(
     particles: Particles,
     *,
-    position_gradients: Array | None = None,
+    position_gradients: units.Force | None = None,
     exclusion: Index[ExclusionId] | None = None,
 ) -> RelaxParticles:
     """Relaxation particle rows from plain particles, gradients zeroed by default."""
@@ -174,7 +194,11 @@ def relax_particles(
         labels=particles.labels,
         system=particles.system,
         position_gradients=(
-            jnp.zeros_like(particles.positions)
+            units.zeros(
+                particles.positions.shape,
+                u.eV / u.angstrom,
+                dtype=particles.positions.dtype,
+            )
             if position_gradients is None
             else position_gradients
         ),

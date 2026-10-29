@@ -11,10 +11,14 @@ import numpy.testing as npt
 import pytest
 
 from kups.application.utils.particles import Particles, particles_from_arrays
+from kups.core import units
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, VacuumCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import InclusionId, Label, ParticleId, SystemId
+from kups.core.units import catalog as u
+from kups.core.units import testing
+from test.units import AMU, CHARGE, A
 
 
 class TestParticlesCreation:
@@ -122,8 +126,8 @@ class TestParticlesFromAse:
         assert particles.data.positions.shape == (len(atoms), 3)
 
         # Check masses
-        npt.assert_allclose(
-            particles.data.masses, jnp.asarray(atoms.get_masses()), rtol=1e-5
+        testing.assert_allclose(
+            particles.data.masses, jnp.asarray(atoms.get_masses()), AMU, rtol=1e-5
         )
 
         # Check atomic numbers
@@ -133,7 +137,7 @@ class TestParticlesFromAse:
         )
 
         # Check charges default to zeros
-        npt.assert_array_equal(particles.data.charges, jnp.zeros(len(atoms)))
+        testing.assert_allclose(particles.data.charges, jnp.zeros(len(atoms)), CHARGE)
 
         # Check labels
         assert particles.data.labels.keys == ("Cu",)
@@ -177,7 +181,7 @@ class TestParticlesFromAse:
         charges = np.array([1.0, -1.0])
         atoms.info["_atom_type_partial_charge"] = charges
         particles, _, _ = particles_from_ase(atoms)
-        npt.assert_allclose(particles.data.charges, jnp.asarray(charges))
+        testing.assert_allclose(particles.data.charges, jnp.asarray(charges), CHARGE)
 
     def test_from_file_path(self, tmp_path):
         from ase import Atoms
@@ -190,7 +194,7 @@ class TestParticlesFromAse:
         write(str(path), atoms)
         particles, cell, uc_transform = particles_from_ase(str(path))
         assert len(particles) == 1
-        npt.assert_array_equal(particles.data.atomic_numbers, jnp.array([18]))
+        npt.assert_allclose(particles.data.atomic_numbers, jnp.array([18]))
 
     def test_uc_transform_produces_lower_triangular(self):
         from ase.build import bulk
@@ -201,9 +205,9 @@ class TestParticlesFromAse:
         _, cell, _ = particles_from_ase(atoms)
         lv = cell.vectors
         # Lower-triangular: upper triangle (excluding diagonal) should be zero
-        npt.assert_allclose(lv[..., 0, 1], 0.0, atol=1e-10)
-        npt.assert_allclose(lv[..., 0, 2], 0.0, atol=1e-10)
-        npt.assert_allclose(lv[..., 1, 2], 0.0, atol=1e-10)
+        testing.assert_allclose(lv[..., 0, 1], 0.0, A, atol=1e-10)
+        testing.assert_allclose(lv[..., 0, 2], 0.0, A, atol=1e-10)
+        testing.assert_allclose(lv[..., 1, 2], 0.0, A, atol=1e-10)
 
 
 class TestParticlesFromAsePbcDispatch:
@@ -266,22 +270,51 @@ class TestParticlesFromArrays:
     @staticmethod
     def _valid_inputs():
         return {
-            "positions": np.array([[0.2, 0.4, 0.6], [1.1, 1.3, 1.5]]),
-            "cell_vectors": np.diag([4.0, 5.0, 6.0]),
+            "positions": jnp.array([[0.2, 0.4, 0.6], [1.1, 1.3, 1.5]]) * A,
+            "cell_vectors": jnp.diag(jnp.array([4.0, 5.0, 6.0])) * A,
             "periodicity": (True, True, True),
-            "masses": np.array([22.99, 35.45]),
+            "masses": jnp.array([22.99, 35.45]) * u.amu,
             "atomic_numbers": np.array([11, 17]),
             "labels": ["Na", "Cl"],
         }
+
+    def test_quantity_inputs_convert_units(self):
+        """nm positions match their Å counterparts."""
+        inputs = self._valid_inputs()
+        expected, _, _ = particles_from_arrays(**inputs)
+        inputs["positions"] = inputs["positions"].to(u.nm) * u.nm
+        actual, _, _ = particles_from_arrays(**inputs)
+        self._assert_particle_parity(actual, expected)
+
+    def test_quantity_input_wrong_dimension_raises(self):
+        inputs = self._valid_inputs()
+        inputs["positions"] = inputs["positions"].to(A) * u.eV
+        with pytest.raises(units.DimensionError):
+            particles_from_arrays(**inputs)
+
+    @pytest.mark.parametrize(
+        ("argument", "value"),
+        [
+            ("positions", np.array([[0.2, 0.4, 0.6], [1.1, 1.3, 1.5]])),
+            ("cell_vectors", np.diag([4.0, 5.0, 6.0])),
+            ("masses", np.array([22.99, 35.45])),
+            ("charges", np.array([0.75, -0.75])),
+        ],
+    )
+    def test_plain_magnitudes_are_rejected(self, argument, value):
+        inputs = self._valid_inputs()
+        inputs[argument] = value
+        with pytest.raises(TypeError, match=argument):
+            particles_from_arrays(**inputs)
 
     @staticmethod
     def _assert_particle_parity(actual, expected):
         assert actual.keys == expected.keys
         assert all(isinstance(key, ParticleId) for key in actual.keys)
-        npt.assert_allclose(actual.data.positions, expected.data.positions)
-        npt.assert_allclose(actual.data.masses, expected.data.masses)
+        testing.assert_allclose(actual.data.positions, expected.data.positions, A)
+        testing.assert_allclose(actual.data.masses, expected.data.masses, AMU)
         npt.assert_array_equal(actual.data.atomic_numbers, expected.data.atomic_numbers)
-        npt.assert_allclose(actual.data.charges, expected.data.charges)
+        testing.assert_allclose(actual.data.charges, expected.data.charges, CHARGE)
         assert actual.data.labels.keys == expected.data.labels.keys
         npt.assert_array_equal(actual.data.labels.value, expected.data.labels.value)
         assert actual.data.system.keys == expected.data.system.keys
@@ -296,11 +329,11 @@ class TestParticlesFromArrays:
         charges = np.array([0.75, -0.75])
         atoms = Atoms(
             "NaCl",
-            positions=inputs["positions"],
-            cell=inputs["cell_vectors"],
+            positions=np.asarray(inputs["positions"].to(A)),
+            cell=np.asarray(inputs["cell_vectors"].to(A)),
             pbc=True,
         )
-        atoms.set_masses(inputs["masses"])
+        atoms.set_masses(np.asarray(inputs["masses"].to(u.amu)))
         atoms.info["_atom_type_partial_charge"] = charges
         atoms.info["_atom_site_label"] = inputs["labels"]
 
@@ -310,7 +343,7 @@ class TestParticlesFromArrays:
         inputs["periodicity"] = np.array([True, True, True], dtype=bool)
         actual_particles, actual_cell, actual_transform = particles_from_arrays(
             **inputs,
-            charges=charges,
+            charges=jnp.asarray(charges) * u.e,
         )
 
         self._assert_particle_parity(actual_particles, expected_particles)
@@ -319,8 +352,8 @@ class TestParticlesFromArrays:
         assert type(actual_cell.frame) is type(expected_cell.frame)
         assert isinstance(actual_cell.frame, TriclinicFrame)
         assert actual_cell.periodic == expected_cell.periodic
-        npt.assert_allclose(actual_cell.vectors, expected_cell.vectors)
-        npt.assert_allclose(actual_cell.frame.tril, expected_cell.frame.tril)
+        testing.assert_allclose(actual_cell.vectors, expected_cell.vectors, A)
+        testing.assert_allclose(actual_cell.frame.tril, expected_cell.frame.tril, A)
         probe = jnp.array([[0.25, 0.5, 0.75], [-0.4, 1.2, 0.3]])
         npt.assert_allclose(
             actual_transform(probe), expected_transform(probe), atol=1e-12
@@ -348,10 +381,10 @@ class TestParticlesFromArrays:
             atoms
         )
         actual_particles, actual_cell, actual_transform = particles_from_arrays(
-            positions=positions,
-            cell_vectors=cell_vectors,
+            positions=positions * A,
+            cell_vectors=cell_vectors * A,
             periodicity=jnp.array([True, False, True]),
-            masses=masses,
+            masses=masses * u.amu,
             atomic_numbers=atomic_numbers,
             labels=labels,
         )
@@ -360,14 +393,20 @@ class TestParticlesFromArrays:
         assert type(actual_cell) is Cell
         assert actual_cell.periodic == (True, False, True)
         assert all(type(value) is bool for value in actual_cell.periodic)
-        npt.assert_allclose(actual_cell.vectors, expected_cell.vectors, atol=1e-12)
-        npt.assert_allclose(
+        testing.assert_allclose(
+            actual_cell.vectors, expected_cell.vectors, A, atol=1e-12
+        )
+        testing.assert_allclose(
             actual_particles.data.positions,
-            actual_transform(positions),
+            actual_transform(positions * A),
+            A,
             atol=1e-12,
         )
-        npt.assert_allclose(
-            jnp.triu(actual_cell.vectors, k=1), jnp.zeros((3, 3)), atol=1e-12
+        testing.assert_allclose(
+            units.apply(jnp.triu, actual_cell.vectors, k=1),
+            units.zeros((3, 3), A),
+            A,
+            atol=1e-12,
         )
         probe = jnp.array([[0.6, -0.2, 0.9], [1.1, 0.7, -0.5]])
         npt.assert_allclose(
@@ -377,24 +416,8 @@ class TestParticlesFromArrays:
     def test_omitted_charges_default_to_floating_zeros(self):
         particles, _, _ = particles_from_arrays(**self._valid_inputs())
 
-        npt.assert_array_equal(particles.data.charges, jnp.zeros(2))
+        testing.assert_allclose(particles.data.charges, jnp.zeros(2), CHARGE)
         assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
-
-    def test_integer_masses_and_charges_are_promoted(self):
-        inputs = self._valid_inputs()
-        inputs["positions"] = np.array([[0, 1, 2], [1, 2, 3]], dtype=int)
-        inputs["cell_vectors"] = np.diag(np.array([4, 5, 6], dtype=int))
-        inputs["masses"] = np.array([23, 35], dtype=int)
-        charges = np.array([1, -1], dtype=int)
-
-        particles, cell, _ = particles_from_arrays(**inputs, charges=charges)
-
-        assert jnp.issubdtype(particles.data.masses.dtype, jnp.floating)
-        assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
-        assert jnp.issubdtype(particles.data.positions.dtype, jnp.floating)
-        assert jnp.issubdtype(cell.vectors.dtype, jnp.floating)
-        npt.assert_array_equal(particles.data.masses, jnp.array([23.0, 35.0]))
-        npt.assert_array_equal(particles.data.charges, jnp.array([1.0, -1.0]))
 
     def test_numpy_boolean_mask_constructs_periodic_cell(self):
         inputs = self._valid_inputs()
@@ -428,8 +451,8 @@ class TestParticlesFromArrays:
     @pytest.mark.parametrize(
         ("argument", "value"),
         [
-            ("positions", np.zeros((2, 2))),
-            ("cell_vectors", np.eye(2)),
+            ("positions", jnp.zeros((2, 2)) * A),
+            ("cell_vectors", jnp.eye(2) * A),
         ],
         ids=["positions", "cell-vectors"],
     )
@@ -443,9 +466,9 @@ class TestParticlesFromArrays:
     @pytest.mark.parametrize(
         ("argument", "value"),
         [
-            ("masses", np.ones(1)),
+            ("masses", jnp.ones(1) * u.amu),
             ("atomic_numbers", np.array([11, 17, 19])),
-            ("charges", np.zeros(1)),
+            ("charges", jnp.zeros(1) * u.e),
         ],
     )
     def test_mismatched_particle_field_length(self, argument, value):
@@ -484,22 +507,11 @@ class TestParticlesFromArrays:
         with pytest.raises(TypeError, match="atomic_numbers"):
             particles_from_arrays(**inputs)
 
-    @pytest.mark.parametrize(
-        ("argument", "value"),
-        [
-            ("positions", np.zeros((2, 3), dtype=bool)),
-            ("cell_vectors", np.eye(3, dtype=complex)),
-            ("masses", np.array(["23", "35"])),
-            ("charges", np.array([1.0, object()], dtype=object)),
-            ("atomic_numbers", np.array([True, False])),
-        ],
-        ids=["boolean", "complex", "string", "object", "atomic-boolean"],
-    )
-    def test_incompatible_physical_dtype(self, argument, value):
+    def test_boolean_atomic_numbers_are_rejected(self):
         inputs = self._valid_inputs()
-        inputs[argument] = value
+        inputs["atomic_numbers"] = np.array([True, False])
 
-        with pytest.raises(TypeError, match=argument):
+        with pytest.raises(TypeError, match="atomic_numbers"):
             particles_from_arrays(**inputs)
 
     @pytest.mark.parametrize(

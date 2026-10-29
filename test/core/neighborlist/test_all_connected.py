@@ -18,6 +18,7 @@ from kups.core.neighborlist.all_connected import (
     InclusionGroupSelector,
     all_connected_neighborlist,
 )
+from test.units import A
 
 from ._builders import (
     make_lh,
@@ -29,7 +30,9 @@ from ._builders import (
 
 
 def _systems(n=1, box=100.0):
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(n, 0) * box))
+    cell = PeriodicCell(
+        TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(n, 0) * box) * A)
+    )
     systems, _ = make_systems(cell, jnp.full((n,), 10.0))
     return systems
 
@@ -48,7 +51,7 @@ class TestInclusionGroupSelector:
 class TestAllConnectedNeighborlist:
     def test_connects_all_distinct_exclusion_pairs(self):
         lh = make_lh(
-            jnp.zeros((3, 3)),
+            jnp.zeros((3, 3)) * A,
             jnp.zeros(3, dtype=int),
             exclusion_ids=jnp.array([0, 1, 2]),
             inclusion_max_count=3,
@@ -66,7 +69,7 @@ class TestAllConnectedNeighborlist:
     def test_shared_exclusion_segment_is_not_connected(self):
         # Particles 0 and 1 share exclusion id 0; only pairs involving 2 survive.
         lh = make_lh(
-            jnp.zeros((3, 3)),
+            jnp.zeros((3, 3)) * A,
             jnp.zeros(3, dtype=int),
             exclusion_ids=jnp.array([0, 0, 1]),
             inclusion_max_count=3,
@@ -76,7 +79,7 @@ class TestAllConnectedNeighborlist:
 
     def test_separate_inclusion_segments_do_not_connect(self):
         lh = make_lh(
-            jnp.zeros((4, 3)),
+            jnp.zeros((4, 3)) * A,
             jnp.array([0, 0, 1, 1]),
             exclusion_ids=jnp.array([0, 1, 2, 3]),
             inclusion_max_count=2,
@@ -92,7 +95,7 @@ class TestAllConnectedNeighborlist:
 
     def test_queried_keys_returns_only_touched_pairs(self):
         lh = make_lh(
-            jnp.zeros((3, 3)),
+            jnp.zeros((3, 3)) * A,
             jnp.zeros(3, dtype=int),
             exclusion_ids=jnp.array([0, 1, 2]),
             inclusion_max_count=3,

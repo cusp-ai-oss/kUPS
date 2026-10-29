@@ -27,6 +27,7 @@ from kups.core.neighborlist.adaptive import AdaptiveNeighborList
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
+from test.units import A
 
 from .._builders import EvalState, make_lh, make_systems, valid_edge_set
 
@@ -35,9 +36,9 @@ def _fixture(n: int = 30, cutoff: float = 3.5):
     rng = np.random.default_rng(0)
     L = 12.0
     positions = jnp.asarray(rng.uniform(1.0, L - 1.0, size=(n, 3)))
-    cell = PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None]))
-    lh = make_lh(positions, jnp.zeros(n, dtype=int))
-    systems, cutoffs = make_systems(cell, jnp.array([cutoff]))
+    cell = PeriodicCell(OrthogonalFrame(jnp.array([L, L, L])[None] * A))
+    lh = make_lh(positions * A, jnp.zeros(n, dtype=int))
+    systems, cutoffs = make_systems(cell, jnp.array([cutoff]) * A)
     params = UniversalNeighborlistParameters(
         avg_edges=64, avg_candidates=64, avg_image_candidates=64, cells=64
     )

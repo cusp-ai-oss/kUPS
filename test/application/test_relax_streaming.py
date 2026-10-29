@@ -35,6 +35,7 @@ from kups.application.relaxation.streaming import (
 )
 from kups.application.utils.particles import particles_from_ase
 from kups.application.utils.propagate import make_cycle_function
+from kups.core import units
 from kups.core.cell import Cell, MatrixLogFrame, OrthogonalFrame
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, bind, identity_lens
@@ -49,6 +50,8 @@ from kups.core.propagator import (
 from kups.core.result import as_result_function
 from kups.core.stream import RefillGate, reserve_slots
 from kups.core.typing import Label, ParticleId, SystemId
+from kups.core.units import catalog as u
+from kups.core.units import testing
 from kups.core.utils.jax import dataclass as state_dataclass
 from kups.core.utils.jax import jit, tree_concat, tree_map
 from kups.potential.classical.lennard_jones import LennardJonesParameters
@@ -67,7 +70,9 @@ SPECIES = (Label("Ar"),)
 CAPACITY = 8
 type Batch = StreamingRelaxState[ChainOptState]
 LJ = LennardJonesParameters.from_dict(
-    cutoff=5.0, parameters={"Ar": (3.405, 0.010326)}, mixing_rule="lorentz_berthelot"
+    cutoff=5.0 * u.angstrom,
+    parameters={"Ar": (3.405 * u.angstrom, 0.010326 * u.eV)},
+    mixing_rule="lorentz_berthelot",
 )
 
 
@@ -88,7 +93,7 @@ class Setup:
     step: Propagator[Batch]
     state: Batch
     reset: OptReset[ChainOptState]
-    potential: Potential[Batch, PositionsAndCell, EmptyType, Patch[Batch]]
+    potential: Potential[Batch, PositionsAndCell[units.Force], EmptyType, Patch[Batch]]
 
 
 def _setup(
@@ -107,24 +112,25 @@ def _setup(
     parameters = (
         bind(LJ)
         .focus(lambda p: p.cutoff)
-        .set(Table(reservations.keys, jnp.full(n_slots, 5.0)))
+        .set(Table(reservations.keys, jnp.full(n_slots, 5.0) * u.angstrom))
     )
     potential = make_lennard_jones_from_state(
         state_lens, parameters=parameters, gradient=gradient
     )
-    idle = idle_payload(CAPACITY, SPECIES, (True, True, True), 5.0)
-    opt: ResettableChain[PositionsAndCell] = resettable_chain(
+    idle = idle_payload(CAPACITY, SPECIES, (True, True, True), 5.0 * u.angstrom)
+    opt: ResettableChain[PositionsAndCell[units.Length]] = resettable_chain(
         Stateless(optax.scale(-0.1))
     )
     if optimizer == "lbfgs":
         opt = resettable_chain(
-            ScaleByAseLbfgs[PositionsAndCell](memory_size=3),
-            MaxStepSize[PositionsAndCell](0.2),
+            ScaleByAseLbfgs[PositionsAndCell[units.Length]](memory_size=3),
+            MaxStepSize[PositionsAndCell[units.Length]](0.2),
             Stateless(optax.scale(-1.0)),
         )
     elif optimizer == "fire":
         opt = resettable_chain(
-            Stateless(optax.scale(-1.0)), ScaleByFire[PositionsAndCell](dt_start=0.1)
+            Stateless(optax.scale(-1.0)),
+            ScaleByFire[PositionsAndCell[units.Length]](dt_start=0.1),
         )
     step, init, reset = make_streaming_relax_propagator(
         state_lens,
@@ -132,7 +138,7 @@ def _setup(
         opt,
         gradient,
         reservations,
-        force_tolerance=tolerance,
+        force_tolerance=tolerance * u.eV / u.angstrom,
         max_steps=max_steps,
         include_cell=optimize_cell,
     )
@@ -251,20 +257,23 @@ def test_refill_exhaustion_and_evaluated_results(
         )
         result = evaluate(state)
         result.raise_assertion()
-        npt.assert_allclose(
+        testing.assert_allclose(
             row.systems.potential_energy[0],
             result.value.total_energies.data[0],
+            u.eV,
             atol=1e-12,
         )
-        npt.assert_allclose(
+        testing.assert_allclose(
             row.position_gradients[0],
             result.value.gradients.positions.data[:CAPACITY],
+            u.eV / u.angstrom,
             atol=1e-12,
         )
         if max_steps == 0 or tolerance:
             original = structures[int(row.ordinal[0])][0].data.positions
             npt.assert_array_equal(
-                row.particles.positions[0, : len(original)], original
+                row.particles.positions[0, : len(original)].to(u.angstrom),
+                original.to(u.angstrom),
             )
 
 
@@ -286,17 +295,29 @@ def test_streamed_updates_match_fresh_single_structure_runs(
             optimizer=optimizer,
             optimize_cell=optimize_cell,
         )
-        npt.assert_allclose(
-            row.particles.positions, alone[0].particles.positions, atol=1e-12
+        testing.assert_allclose(
+            row.particles.positions,
+            alone[0].particles.positions,
+            u.angstrom,
+            atol=1e-12,
         )
-        npt.assert_allclose(
-            row.position_gradients, alone[0].position_gradients, atol=1e-12
+        testing.assert_allclose(
+            row.position_gradients,
+            alone[0].position_gradients,
+            u.eV / u.angstrom,
+            atol=1e-12,
         )
-        npt.assert_allclose(
-            row.systems.cell.vectors, alone[0].systems.cell.vectors, atol=1e-12
+        testing.assert_allclose(
+            row.systems.cell.vectors,
+            alone[0].systems.cell.vectors,
+            u.angstrom,
+            atol=1e-12,
         )
-        npt.assert_allclose(
-            row.systems.potential_energy, alone[0].systems.potential_energy, atol=1e-12
+        testing.assert_allclose(
+            row.systems.potential_energy,
+            alone[0].systems.potential_energy,
+            u.eV,
+            atol=1e-12,
         )
 
 
@@ -319,7 +340,9 @@ def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
         ordinal = int(row.ordinal[0])
         assert int(row.step[0]) == (0 if ordinal == 1 else max_steps)
         original = structures[ordinal][0].data.positions
-        moved = jnp.abs(row.particles.positions[0, : len(original)] - original).max()
+        moved = jnp.abs(
+            (row.particles.positions[0, : len(original)] - original).to(u.angstrom)
+        ).max()
         assert bool(moved > 1e-3) == (ordinal != 1)  # stepped jobs really moved
         alone, _ = _run(
             [structures[ordinal]],
@@ -328,11 +351,17 @@ def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
             tolerance=tolerance,
             optimizer=optimizer,
         )
-        npt.assert_allclose(
-            row.particles.positions, alone[0].particles.positions, atol=1e-12
+        testing.assert_allclose(
+            row.particles.positions,
+            alone[0].particles.positions,
+            u.angstrom,
+            atol=1e-12,
         )
-        npt.assert_allclose(
-            row.position_gradients, alone[0].position_gradients, atol=1e-12
+        testing.assert_allclose(
+            row.position_gradients,
+            alone[0].position_gradients,
+            u.eV / u.angstrom,
+            atol=1e-12,
         )
 
 
@@ -355,7 +384,7 @@ def test_pack_rejects_invalid_structures() -> None:
             [(particles, cell), (particles, slab)], 8, SPECIES, [0, 1]
         )
     sheared = MatrixLogFrame.from_matrix(
-        jnp.array([[5.3, 0.5, 0.0], [0.0, 5.4, 0.0], [0.0, 0.0, 5.5]])
+        jnp.array([[5.3, 0.5, 0.0], [0.0, 5.4, 0.0], [0.0, 0.0, 5.5]]) * u.angstrom
     )
     upper = bind(cell).focus(lambda c: c.frame).set(sheared)
     batched = jax.tree.map(lambda x: jnp.stack([x, x]), cell)
@@ -389,7 +418,7 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
         resettable_chain(Stateless(optax.scale(-0.1))),
         POSITIONS_ONLY,
         setup.slots,
-        force_tolerance=0.0,
+        force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
         include_cell=False,
     )
@@ -418,7 +447,9 @@ def test_cell_frames_and_classes_share_the_idle_signature() -> None:
     structures = _structures()
     particles, cell = structures[0]
     orthogonal = (
-        bind(cell).focus(lambda c: c.frame).set(OrthogonalFrame(jnp.diag(cell.vectors)))
+        bind(cell)
+        .focus(lambda c: c.frame)
+        .set(OrthogonalFrame(jnp.diag(cell.vectors.to(u.angstrom)) * u.angstrom))
     )
     structures[0] = particles, orthogonal
     # A plain Cell instead of the PeriodicCell that Cell.from_pbc builds.
@@ -428,7 +459,10 @@ def test_cell_frames_and_classes_share_the_idle_signature() -> None:
     assert sorted(int(row.ordinal[0]) for row in rows) == [0, 1, 2]
     for row in rows:
         original = structures[int(row.ordinal[0])]
-        npt.assert_array_equal(row.systems.cell.vectors[0], original[1].vectors)
+        npt.assert_array_equal(
+            row.systems.cell.vectors[0].to(u.angstrom),
+            original[1].vectors.to(u.angstrom),
+        )
 
 
 def test_factory_preserves_native_optimizer_state_type() -> None:
@@ -440,10 +474,10 @@ def test_factory_preserves_native_optimizer_state_type() -> None:
     _, init, reset = make_streaming_relax_propagator(
         state_lens,
         potential,
-        ScaleByFire[PositionsAndCell](),
+        ScaleByFire[PositionsAndCell[units.Length]](),
         POSITIONS_ONLY,
         setup.slots,
-        force_tolerance=0.0,
+        force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
         include_cell=False,
     )
@@ -478,16 +512,17 @@ def _rejected_by_the_type_checker(setup: Setup) -> None:
         chain(Stateless(optax.scale(-1.0))),  # pyrefly: ignore[bad-argument-type]
         POSITIONS_ONLY,
         setup.slots,
-        force_tolerance=0.0,
+        force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
     )
     make_streaming_relax_propagator(
         identity_lens(StreamingRelaxState[ChainOptState]),
         setup.potential,
-        ScaleByFire[PositionsAndCell](),  # pyrefly: ignore[bad-argument-type]
+        # pyrefly: ignore[bad-argument-type]
+        ScaleByFire[PositionsAndCell[units.Length]](),
         POSITIONS_ONLY,
         setup.slots,
-        force_tolerance=0.0,
+        force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
     )
 

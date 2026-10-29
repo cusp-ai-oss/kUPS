@@ -12,10 +12,9 @@ adapters that build a ``Geometry`` from a carrier live with their carriers
 in [kups.potential.classical.ewald][]).
 """
 
-from typing import NamedTuple, no_type_check
+from typing import NamedTuple, TypeVar, no_type_check
 
-from jax import Array
-
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -26,7 +25,7 @@ from kups.core.typing import HasPositionsAndSystemIndex, IsState, ParticleId, Sy
 class PositionsAndSystemIndex(NamedTuple):
     """Per-particle geometric data: cartesian positions + system assignment."""
 
-    positions: Array
+    positions: units.Length
     system: Index[SystemId]
 
 
@@ -44,16 +43,19 @@ class PositionsAndCellTree[P, C](NamedTuple):
     cell: C
 
 
+_P = TypeVar("_P")
+
 PositionsAndCell = PositionsAndCellTree[
-    Table[ParticleId, Array], Table[SystemId, Cell[AnyPeriodicity]]
+    Table[ParticleId, _P], Table[SystemId, Cell[AnyPeriodicity]]
 ]
 """Optimizer DOFs / gradient payload of the standard cell filters.
 
 ``positions`` is a per-particle table of DOF coordinates (``∂E/∂r`` when this
 carries a gradient); ``cell`` is a per-system table of the cell (its frame
-parameters carrying ``∂E/∂h`` for a gradient). Values, gradients and their
-``PositionsAndCellIndex`` share one ``PositionsAndCellTree`` class, so their tree
-structures match.
+parameters carrying ``∂E/∂h`` for a gradient). The parameter is
+``units.Length`` for the DOFs and ``units.Force`` for a gradient payload.
+Values, gradients and their ``PositionsAndCellIndex`` share one
+``PositionsAndCellTree`` class, so their tree structures match.
 """
 
 PositionsAndCellIndex = PositionsAndCellTree[Index[SystemId], Index[SystemId]]

@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from jax import Array
-
 from kups.application.relaxation.data import (
     HasRelaxData,
     RelaxParticles,
@@ -14,6 +12,7 @@ from kups.application.relaxation.data import (
     relax_gradients,
     relax_index_prefix,
 )
+from kups.core import units
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
@@ -47,15 +46,15 @@ class RelaxStepData:
     Attributes:
         atoms: Particle data at this step.
         potential_energy: Potential energy per system.
-        max_force: Maximum atomic force magnitude per system (eV/Å); non-finite
+        max_force: Maximum atomic force magnitude per system; non-finite
             forces are reported as ``inf``.
         stress_tensor: Stress tensor per system, shape (..., 3, 3).
     """
 
     atoms: Table[ParticleId, RelaxParticles]
-    potential_energy: Array
-    max_force: Array
-    stress_tensor: Array
+    potential_energy: units.Energy
+    max_force: units.Force
+    stress_tensor: units.Pressure
 
     @staticmethod
     def from_state(state: HasRelaxData) -> RelaxStepData:

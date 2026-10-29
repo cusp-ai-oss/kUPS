@@ -10,6 +10,8 @@ import jax.numpy as jnp
 from kups.application.mcmc.analysis import analyze_mcmc_file
 from kups.application.mcmc.data import AdsorbateConfig, HostConfig, RunConfig
 from kups.application.simulations.mcmc_rigid import Config, EwaldConfig, LJConfig
+from kups.core import units
+from kups.core.units import catalog as u
 
 BOX = 14.0  # box side (Å); cutoff 5.0 < box/2 for minimum image
 
@@ -45,12 +47,12 @@ def tmp_file(suffix: str, content: str | None = None) -> str:
 def co2() -> AdsorbateConfig:
     # Three-site charged CO2 (TraPPE): exercises Ewald + rigid rotation.
     return AdsorbateConfig(
-        critical_temperature=303.75,
-        critical_pressure=7.84e6,
+        critical_temperature="303.75 K",
+        critical_pressure="7.84e6 Pa",
         acentric_factor=0.22394,
-        positions=((0.0, 0.0, 0.0), (-1.16, 0.0, 0.0), (1.16, 0.0, 0.0)),
+        positions={"angstrom": [[0.0, 0.0, 0.0], [-1.16, 0.0, 0.0], [1.16, 0.0, 0.0]]},
         symbols=("C_co2", "O_co2", "O_co2"),
-        charges=(0.7, -0.35, -0.35),
+        charges={"e": [0.7, -0.35, -0.35]},
     )
 
 
@@ -59,13 +61,15 @@ def co2_config(
 ) -> Config:
     return Config(
         adsorbates=(
-            co2() if charged else co2().model_copy(update={"charges": (0.0,) * 3}),
+            co2()
+            if charged
+            else co2().model_copy(update={"charges": units.zeros(3, u.e)}),
         ),
         hosts=(
             HostConfig(
                 cif_file=tmp_file(".cif", EMPTY_CIF),
-                pressure=1e4,
-                temperature=298.15,
+                pressure="1e4 Pa",
+                temperature="298.15 K",
                 init_adsorbates=init_adsorbates,
                 cell_replication=1,
             ),
@@ -79,17 +83,17 @@ def co2_config(
             seed=42,
         ),
         lj=LJConfig(
-            cutoff=5.0,
+            cutoff="5 angstrom",
             tail_correction=True,
             mixing_rule="lorentz_berthelot",
-            # (sigma [Å], epsilon [eV]); X1 is the host pseudo-type (no LJ).
+            # X1 is the host pseudo-type, which carries no LJ interaction.
             parameters={
-                "O_co2": (3.05, 0.0068077),
-                "C_co2": (2.8, 0.0023267),
+                "O_co2": ("3.05 angstrom", "0.0068077 eV"),
+                "C_co2": ("2.8 angstrom", "0.0023267 eV"),
                 "X1": (None, None),
             },
         ),
-        ewald=EwaldConfig(real_cutoff=5.0, precision=1e-3),
+        ewald=EwaldConfig(real_cutoff="5 angstrom", precision=1e-3),
         max_num_adsorbates=4,
     )
 
@@ -105,6 +109,6 @@ def assert_readable(out_file: str) -> None:
     results = analyze_mcmc_file(out_file, n_blocks=2)
     assert len(results) == 1
     result = next(iter(results.values()))
-    assert jnp.isfinite(result.energy.mean).all().item()
+    assert jnp.isfinite(result.energy.mean.to(u.eV)).all().item()
     assert jnp.isfinite(result.loading.mean).all().item()
     assert (result.loading.mean >= 0.0).all().item()

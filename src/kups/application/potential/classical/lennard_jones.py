@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol, overload
 
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, const_lens, identity_lens
@@ -109,9 +110,9 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[Any] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -139,16 +140,16 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
         IsLJState[
             HasCache[
                 LennardJonesParameters,
-                KahanSummand[PotentialOut[PositionsAndCell, EmptyType]],
+                KahanSummand[PotentialOut[PositionsAndCell[units.Force], EmptyType]],
             ]
         ],
     ],
     probe: Probe[State, P, IsParticleProbe[IsLJGraphParticles]],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[Any] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 @overload
@@ -168,9 +169,9 @@ def make_lennard_jones_from_state[State](
     probe: None = None,
     *,
     parameters: LennardJonesParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[Any] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -190,14 +191,16 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
 def make_lennard_jones_from_state[State, P: Patch[Any]](
     state: Lens[
         State,
-        IsCachedLJGraphState[KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]],
+        IsCachedLJGraphState[
+            KahanSummand[PotentialOut[PositionsAndCell[units.Force], EmptyType]]
+        ],
     ],
     probe: Probe[State, P, IsParticleProbe[IsLJGraphParticles]],
     *,
     parameters: LennardJonesParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[Any] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 def make_lennard_jones_from_state(
@@ -205,7 +208,7 @@ def make_lennard_jones_from_state(
     probe: Any = None,
     *,
     parameters: LennardJonesParameters | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a LJ potential from a typed state, optionally with incremental updates.
@@ -296,9 +299,9 @@ def make_lennard_jones_tail_correction_from_state[
     state: Lens[InState, State],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     composition: RigidBodyComposition[InState, HasLabels] | None = None,
-) -> Potential[InState, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[InState, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -316,16 +319,16 @@ def make_lennard_jones_tail_correction_from_state[State](
     state: Lens[State, IsLJGraphState],
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     composition: RigidBodyComposition[State, HasLabels] | None = None,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 def make_lennard_jones_tail_correction_from_state(
     state: Any,
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     composition: RigidBodyComposition[Any, HasLabels] | None = None,
 ) -> Any:
     """Create a global tail-corrected LJ potential from a typed state.
@@ -373,7 +376,7 @@ def global_lennard_jones_tail_correction_pressure_from_state(
     state: IsGlobalTailCorrectedIsLJState,
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters | None = None,
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Pressure]:
     """Create long-range pressure correction from a typed state.
 
     When ``parameters`` is given it is bound with a constant lens and the state

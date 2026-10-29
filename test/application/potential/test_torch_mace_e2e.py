@@ -56,6 +56,7 @@ from kups.core.data import Table  # noqa: E402
 from kups.core.neighborlist import UniversalNeighborlistParameters  # noqa: E402
 from kups.core.typing import ParticleId, SystemId  # noqa: E402
 from kups.core.utils.jax import dataclass  # noqa: E402
+from test.units import EV, FORCE, A  # noqa: E402
 
 
 @dataclass
@@ -219,8 +220,8 @@ def test_kups_pipeline_matches_mace_calculator(tmp_path):
     out.raise_assertion()
     pot_out = out.value.data
 
-    kups_energy = float(np.asarray(pot_out.total_energies.data).sum())
-    kups_pos_grad = np.asarray(pot_out.gradients.positions.data)  # (N, 3)
+    kups_energy = float(pot_out.total_energies.data.to(EV).sum())
+    kups_pos_grad = np.asarray(pot_out.gradients.positions.data.to(FORCE))  # (N, 3)
     kups_forces_triclinic = -kups_pos_grad
 
     # ``relax_state_from_ase`` rotates positions into a lower-triangular cell
@@ -228,8 +229,10 @@ def test_kups_pipeline_matches_mace_calculator(tmp_path):
     # forces obey ``f_kups = Q^T @ f_ase`` ⇒ ``f_ase = Q @ f_kups``. Extract Q
     # by sending each basis vector through ``uc_transform``: row i of the
     # result is row i of Q.
-    _, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    Q = np.asarray(jnp.stack([uc_transform(jnp.eye(3)[i]) for i in range(3)], axis=0))
+    _, uc_transform = to_lower_triangular(jnp.asarray(atoms.cell.array) * A)
+    Q = np.asarray(
+        jnp.stack([uc_transform(jnp.eye(3)[i] * A).to(A) for i in range(3)], axis=0)
+    )
     kups_forces = kups_forces_triclinic @ Q.T  # batched f_ase = Q @ f_kups
 
     # Stress in the kUPS (lower-triangular) frame, recovered from
@@ -249,7 +252,7 @@ def test_kups_pipeline_matches_mace_calculator(tmp_path):
             positions=state.particles.data.positions,
             cell=state.systems.data.cell,
             system=state.particles.data.system,
-        )[0]
+        )[0].to(EV / A**3)
     )
     kups_stress = -Q @ kups_stress_triclinic @ Q.T
 

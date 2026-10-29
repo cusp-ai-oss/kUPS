@@ -119,9 +119,9 @@ class ConstantSchedule[Value](Schedule[Array, Value]):
 
     Example:
         ```python
-        schedule = ConstantSchedule(value=jnp.array(300.0))
-        # Always returns 300.0 regardless of step or current value
-        new_temp = schedule(step, current_temp)  # Returns 300.0
+        schedule = ConstantSchedule(value=300.0 * u.K)
+        # Always returns 300 K regardless of step or current value
+        new_temp = schedule(step, current_temp)  # Returns 300 K
         ```
     """
 
@@ -182,11 +182,11 @@ class LinearSchedule[Value](Schedule[Array, Value]):
         ```python
         # Temperature ramp from 300K to 500K over 10000 steps
         schedule = LinearSchedule(
-            start=jnp.array(300.0),
-            end=jnp.array(500.0),
+            start=300.0 * u.K,
+            end=500.0 * u.K,
             total_steps=jnp.array(10000)
         )
-        temp = schedule(jnp.array(5000), current)  # Returns 400.0
+        temp = schedule(jnp.array(5000), current)  # Returns 400 K
 
         # Can also interpolate PyTrees
         schedule = LinearSchedule(
@@ -227,12 +227,12 @@ class ExponentialSchedule[Value](Schedule[Array, Value]):
 
     Example:
         ```python
-        # Exponential cooling with 0.1% decay per step, minimum 100K
+        # Exponential cooling with 0.1% decay per step, minimum 100 K
         schedule = ExponentialSchedule(
             rate=jnp.array(0.999),
-            bounds=(jnp.array(100.0), None)
+            bounds=(100.0 * u.K, None)
         )
-        new_temp = schedule(step, current_temp)  # Decays toward 100K
+        new_temp = schedule(step, current_temp)  # Decays toward 100 K
         ```
     """
 
@@ -266,10 +266,10 @@ class StepFunctionSchedule[Value](Schedule[Array, Value]):
 
     Example:
         ```python
-        # 300 for steps 0-999, 350 from step 1000 on.
+        # 300 K for steps 0-999, 350 K from step 1000 on.
         schedule = StepFunctionSchedule(
             steps=jnp.array([0, 1000]),
-            values=(jnp.array(300.0), jnp.array(350.0)),
+            values=(300.0 * u.K, 350.0 * u.K),
         )
         ```
     """
@@ -308,11 +308,11 @@ class CosineAnnealingSchedule[Value](Schedule[Array, Value]):
         ```python
         # Cosine annealing from 500K to 300K over 10000 steps
         schedule = CosineAnnealingSchedule(
-            min_value=jnp.array(300.0),
-            max_value=jnp.array(500.0),
+            min_value=300.0 * u.K,
+            max_value=500.0 * u.K,
             total_steps=jnp.array(10000)
         )
-        temp = schedule(jnp.array(5000), current)  # Returns 400.0 (midpoint)
+        temp = schedule(jnp.array(5000), current)  # Returns 400 K (midpoint)
         ```
     """
 
@@ -403,8 +403,8 @@ class PropertyScheduler[State, Input, Value](Scheduler[State, Input]):
         temp_scheduler = PropertyScheduler(
             lens=lens(lambda s: s.temperature),
             schedule=LinearSchedule(
-                start=jnp.array(500.0),
-                end=jnp.array(300.0),
+                start=500.0 * u.K,
+                end=300.0 * u.K,
                 total_steps=jnp.array(10000)
             )
         )
