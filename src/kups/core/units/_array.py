@@ -18,16 +18,24 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
+from kups.core.units._base import active_base
 from kups.core.units._core import (
     Quantity,
     _agree,
+    _joint,
     _lift,
+    _lower,
+    _mag,
     _no_index,
     _norm_impl,
+    _operand_dtype,
+    _reduce_axis,
     _sqrt_impl,
     apply,
+    dim_of,
 )
-from kups.core.units._precision import _check_dtype
+from kups.core.units._precision import _check_dtype, _checked_cast
+from kups.core.units._unit import ONE, _require_unit
 
 if TYPE_CHECKING:
     from kups.core.units._core import (
@@ -65,7 +73,7 @@ if TYPE_CHECKING:
         _E_M,
         _E_S,
     )
-    from kups.core.units._unit import Unit
+    from kups.core.units._unit import Dimensionless, Unit
 
 
 # named overloads catch odd-exponent dimensions, which type-level ``//`` would floor
@@ -139,6 +147,142 @@ def sqrt(x: Any) -> Any:
       The root in ``x``'s base; plain when dimensionless.
     """
     return _sqrt_impl(x)
+
+
+# Reductions keeping the dimension. ``min``, ``max`` and ``sum`` shadow builtins,
+# which this module never uses.
+
+
+@overload
+def sum(x: ArrayLike, axis: Any = ..., keepdims: bool = ...) -> jax.Array: ...
+@overload
+def sum(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    axis: Any = ...,
+    keepdims: bool = ...,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def sum(x: Any, axis: Any = None, keepdims: bool = False) -> Any:
+    """Sum over an axis, keeping the dimension.
+
+    Args:
+      x: a quantity or plain array.
+      axis: axis or axes to reduce, or None for all.
+      keepdims: whether to keep the reduced axes with length 1.
+
+    Returns:
+      The sum in ``x``'s base; plain when dimensionless.
+    """
+    return apply(jnp.sum, x, axis=axis, keepdims=keepdims)
+
+
+@overload
+def mean(x: ArrayLike, axis: Any = ..., keepdims: bool = ...) -> jax.Array: ...
+@overload
+def mean(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    axis: Any = ...,
+    keepdims: bool = ...,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def mean(x: Any, axis: Any = None, keepdims: bool = False) -> Any:
+    """Mean over an axis, keeping the dimension.
+
+    Args:
+      x: a quantity or plain array.
+      axis: axis or axes to reduce, or None for all.
+      keepdims: whether to keep the reduced axes with length 1.
+
+    Returns:
+      The mean in ``x``'s base; plain when dimensionless.
+    """
+    return apply(jnp.mean, x, axis=axis, keepdims=keepdims)
+
+
+@overload
+def min(x: ArrayLike, axis: Any = ..., keepdims: bool = ...) -> jax.Array: ...
+@overload
+def min(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    axis: Any = ...,
+    keepdims: bool = ...,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def min(x: Any, axis: Any = None, keepdims: bool = False) -> Any:
+    """Minimum over an axis, keeping the dimension.
+
+    Args:
+      x: a quantity or plain array.
+      axis: axis or axes to reduce, or None for all.
+      keepdims: whether to keep the reduced axes with length 1.
+
+    Returns:
+      The minimum in ``x``'s base; plain when dimensionless.
+
+    Raises:
+      DimensionError: if ``axis`` is a quantity.
+    """
+    _reduce_axis("min", axis)
+    return apply(jnp.min, x, axis=axis, keepdims=keepdims)
+
+
+@overload
+def max(x: ArrayLike, axis: Any = ..., keepdims: bool = ...) -> jax.Array: ...
+@overload
+def max(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    axis: Any = ...,
+    keepdims: bool = ...,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def max(x: Any, axis: Any = None, keepdims: bool = False) -> Any:
+    """Maximum over an axis, keeping the dimension.
+
+    Args:
+      x: a quantity or plain array.
+      axis: axis or axes to reduce, or None for all.
+      keepdims: whether to keep the reduced axes with length 1.
+
+    Returns:
+      The maximum in ``x``'s base; plain when dimensionless.
+
+    Raises:
+      DimensionError: if ``axis`` is a quantity.
+    """
+    _reduce_axis("max", axis)
+    return apply(jnp.max, x, axis=axis, keepdims=keepdims)
+
+
+def prod(x: Any, axis: Any = None, dtype: Any = None, keepdims: bool = False) -> Any:
+    """Product over an axis; the dimension is raised to the number of factors.
+
+    Args:
+      x: a quantity or plain array.
+      axis: axis or axes to reduce, or None for all.
+      dtype: dtype to accumulate in, or None for ``x``'s.
+      keepdims: whether to keep the reduced axes with length 1.
+
+    Returns:
+      The product, of dimension ``dim(x)**n`` for ``n`` reduced factors; plain
+      when dimensionless.
+    """
+    if isinstance(x, Quantity):
+        return x.prod(axis=axis, dtype=dtype, keepdims=keepdims)
+    return jnp.prod(x, axis=axis, dtype=dtype, keepdims=keepdims)
+
+
+@overload
+def absolute(x: ArrayLike) -> jax.Array: ...
+@overload
+def absolute(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def absolute(x: Any) -> Any:
+    """Elementwise absolute value; ``abs(q)`` is equivalent.
+
+    Args:
+      x: a quantity or plain array.
+
+    Returns:
+      The absolute value in ``x``'s base; plain when dimensionless.
+    """
+    return apply(jnp.abs, x)
 
 
 # Ops whose operands share one dimension, which the result keeps.
@@ -325,6 +469,62 @@ def where(cond: Any, x: Any, y: Any) -> Any:
 
 
 @overload
+def clip(
+    x: ArrayLike, lo: ArrayLike | None = None, hi: ArrayLike | None = None
+) -> jax.Array: ...
+@overload
+def clip(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    lo: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | float | None = None,
+    hi: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | float | None = None,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def clip(x: Any, lo: Any = None, hi: Any = None) -> Any:
+    """Clamp ``x`` between bounds of its dimension.
+
+    Args:
+      x: a quantity or plain array.
+      lo: lower bound of ``x``'s dimension, or None.
+      hi: upper bound of ``x``'s dimension, or None.
+
+    Returns:
+      The result in the common base; plain when dimensionless.
+
+    Raises:
+      DimensionError: if a bound's dimension is not ``x``'s.
+    """
+    bounds = [b for b in (lo, hi) if b is not None]
+    mags, dim, bs = _agree([x, *bounds], "clip")
+    rest = iter(mags[1:])
+    low = None if lo is None else next(rest)
+    high = None if hi is None else next(rest)
+    return _lift(jnp.clip(mags[0], low, high), dim, bs)
+
+
+@overload
+def select_n(which: ArrayLike, *cases: ArrayLike) -> jax.Array: ...
+@overload
+def select_n(
+    which: ArrayLike, *cases: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | float
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def select_n(which: Any, *cases: Any) -> Any:
+    """Elementwise choice between cases of one dimension, by index.
+
+    Args:
+      which: integer or boolean index into ``cases``; a quantity is refused.
+      *cases: the candidates, all of one dimension.
+
+    Returns:
+      The result in the common base; plain when dimensionless.
+
+    Raises:
+      DimensionError: if ``which`` is a quantity, or two cases' dimensions differ.
+    """
+    _no_index("select_n", "which", which)
+    mags, dim, bs = _agree(list(cases), "select between")
+    return _lift(jax.lax.select_n(which, *mags), dim, bs)
+
+
+@overload
 def stack(qs: Sequence[ArrayLike], axis: int = 0) -> jax.Array: ...
 @overload
 def stack(
@@ -414,3 +614,103 @@ def linspace(
     _check_dtype(dt, dim, bs, "linspace")
     out = jnp.linspace(mags[0], mags[1], num, endpoint, dtype=dtype)
     return _lift(out, dim, bs)
+
+
+# Constructors from a shape and a unit.
+
+
+@overload
+def zeros(shape: Any, unit: Dimensionless, dtype: Any = ...) -> jax.Array: ...
+@overload
+def zeros(
+    shape: Any, unit: Unit[_E_M, _E_KG, _E_S, _E_A, _E_K], dtype: Any = ...
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def zeros(shape: Any, unit: Any, dtype: Any = None) -> Any:
+    """Zeros of the given shape, carrying ``unit``'s dimension.
+
+    Args:
+      shape: shape of the result.
+      unit: the unit whose dimension the result carries.
+      dtype: dtype of the result, or None for jax's default float.
+
+    Returns:
+      The zeros in the active base; plain when dimensionless.
+
+    Raises:
+      TypeError: if ``unit`` is not a Unit.
+      DimensionError: if ``unit`` has a dimension and ``dtype`` is not floating.
+    """
+    _require_unit(unit, "the unit of the zeros")
+    bs = active_base()
+    _check_dtype(
+        jnp.result_type(float if dtype is None else dtype), unit.dim, bs, "zeros"
+    )
+    return _lift(jnp.zeros(shape, dtype), unit.dim, bs)
+
+
+@overload
+def ones(shape: Any, unit: Dimensionless, dtype: Any = ...) -> jax.Array: ...
+@overload
+def ones(
+    shape: Any, unit: Unit[_E_M, _E_KG, _E_S, _E_A, _E_K], dtype: Any = ...
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def ones(shape: Any, unit: Any, dtype: Any = None) -> Any:
+    """Array of the given shape with every element equal to one ``unit``.
+
+    Args:
+      shape: shape of the result.
+      unit: the unit each element is one of.
+      dtype: dtype of the result, or None for jax's default float.
+
+    Returns:
+      The result in the active base; plain when dimensionless.
+
+    Raises:
+      TypeError: if ``unit`` is not a Unit.
+      DimensionError: if ``unit`` has a dimension and ``dtype`` is not floating, or
+        the unit's magnitude does not fit in it.
+    """
+    _require_unit(unit, "the unit of the ones")
+    return _full_impl(shape, unit, dtype, "ones")
+
+
+@overload
+def full(shape: Any, fill: ArrayLike, dtype: Any = ...) -> jax.Array: ...
+@overload
+def full(
+    shape: Any,
+    fill: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | Unit[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    dtype: Any = ...,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+def full(shape: Any, fill: Any, dtype: Any = None) -> Any:
+    """Array of the given shape filled with ``fill``, keeping its dimension.
+
+    Args:
+      shape: shape of the result.
+      fill: a quantity, a Unit (meaning one of it), or a plain value.
+      dtype: dtype of the result, or None for ``fill``'s.
+
+    Returns:
+      The result in ``fill``'s base; plain when dimensionless.
+
+    Raises:
+      DimensionError: if ``fill`` has a dimension and ``dtype`` is not floating,
+        or a narrowing cast destroys a concrete finite nonzero magnitude.
+    """
+    return _full_impl(shape, fill, dtype, "full")
+
+
+def _full_impl(shape: Any, fill: Any, dtype: Any, name: str) -> Any:
+    """Check the fill's dtype, convert it to the base, and broadcast it to ``shape``."""
+    bs = _joint(fill)
+    dt = _operand_dtype((fill,), dtype)
+    if dt is None:
+        dt = jnp.result_type(_lower(fill))
+    dim = dim_of(fill)
+    _check_dtype(dt, dim, bs, name)
+    # a dimensionless unit's scale is a float even for an integer result
+    scale_dtype = dt if jnp.issubdtype(dt, jnp.inexact) else jnp.result_type(float)
+    m, _ = _mag(fill, bs, scale_dtype)
+    if dim != ONE and dtype is not None:
+        m = _checked_cast(m, dtype, bs)
+    return _lift(jnp.full(shape, m, dtype), dim, bs)

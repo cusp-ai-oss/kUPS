@@ -570,14 +570,16 @@ def test_mirror_surface():
         "hessian", "inv", "is_leaf", "is_quantity", "jacfwd", "jacrev", "linspace",
         "maximum", "minimum", "norm", "ones_like", "qr", "relabel", "set_base",
         "solve", "sqrt", "stack", "tree_map", "value_and_grad", "vdot", "vectorize",
-        "vjp", "where", "zeros_like",
+        "vjp", "where", "zeros_like", "Log", "absolute", "clip", "full", "max",
+        "mean", "min", "ones", "prod", "select_n", "stop_gradient", "sum", "svd",
+        "tree_flatten", "tree_leaves", "zeros",
     }  # fmt: skip
     assert set(units.__all__) == surface | dimensions | {
         f"{name}Unit" for name in dimensions
     }
-    # a body that is one apply() call only forwards; the *_like constructors are the
-    # exception, since jnp's own refuses a quantity
-    forwards = {"zeros_like", "ones_like"}
+    # a body that is one apply() call only forwards; the *_like constructors and the
+    # free spellings of Quantity methods are the exception
+    forwards = {"zeros_like", "ones_like", "sum", "mean", "min", "max", "absolute"}
     found = set()
     for name in units.__all__:
         fn = getattr(units, name)
@@ -774,3 +776,38 @@ def test_apply_under_transforms():
     # an index measures nothing, so labelling one is refused
     with pytest.raises(units.DimensionError, match="index, a count or a mask"):
         jax.vmap(lambda c: units.apply(jnp.argmax, units.norm(c, axis=-1)))(cells)
+
+
+def test_free_functions():
+    q: Any = arr([[1.0, -2.0], [3.0, -4.0]]) * u.angstrom
+    for name in ("sum", "mean", "min", "max"):
+        out = getattr(units, name)(q, axis=0)
+        npt.assert_allclose(out.to(u.angstrom), getattr(jnp, name)(q.value, axis=0))
+    npt.assert_allclose(units.absolute(q).to(u.angstrom), jnp.abs(q.value))
+    assert units.dim_of(units.prod(q, axis=1)) == units.dim_of(u.angstrom**2)
+    npt.assert_allclose(
+        units.clip(q, 0.0, 2.0 * u.angstrom).to(u.angstrom), [[1, 0], [2, 0]]
+    )
+    picked = units.select_n(arr([[0, 1], [1, 0]]), q, -q)
+    npt.assert_allclose(picked.to(u.angstrom), [[1, 2], [-3, -4]])
+    npt.assert_allclose(units.zeros((2,), u.eV).to(u.eV), [0, 0])
+    npt.assert_allclose(units.ones((2,), u.nm).to(u.angstrom), [10, 10])
+    npt.assert_allclose(units.full((2,), 3.0 * u.K).to(u.K), [3, 3])
+    s = units.svd(q, compute_uv=False)
+    npt.assert_allclose(s.to(u.angstrom), jnp.linalg.svd(q.value, compute_uv=False))
+    assert units.dim_of(units.stop_gradient(q)) == units.dim_of(q)
+    assert units.tree_leaves({"a": q, "b": 1.0})[0] is q
+    with pytest.raises(units.DimensionError):
+        units.clip(q, 1.0 * u.eV)
+
+
+def test_log():
+    p: Any = arr([1.0, 10.0]) * u.bar
+    log = units.Log.of(p, u.Pa)
+    npt.assert_allclose(log.log, jnp.log(arr([1e5, 1e6])))
+    npt.assert_allclose(log.exp().to(u.bar), [1.0, 10.0], rtol=1e-12)
+    assert jax.tree.leaves(log) == [log.log]
+    assert jit(lambda x: x)(log).ref == u.Pa
+    assert log[1:].shape == (1,)
+    with pytest.raises(units.DimensionError):
+        units.Log.of(p, u.eV)

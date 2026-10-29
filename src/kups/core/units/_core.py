@@ -910,6 +910,30 @@ def is_leaf(x: object) -> bool:
     return isinstance(x, Quantity)
 
 
+def tree_flatten(x: Any) -> tuple[list[Any], Any]:
+    """Flatten a pytree, treating each quantity as a single leaf.
+
+    Args:
+      x: any pytree.
+
+    Returns:
+      The leaves (each quantity one leaf) and the treedef that reassembles them.
+    """
+    return jax.tree.flatten(x, is_leaf=is_leaf)
+
+
+def tree_leaves(x: Any) -> list[Any]:
+    """The leaves of a pytree, with each quantity as one leaf.
+
+    Args:
+      x: any pytree.
+
+    Returns:
+      The leaf list.
+    """
+    return jax.tree.leaves(x, is_leaf=is_leaf)
+
+
 def tree_map(f: Callable[..., Any], x: Any, *rest: Any) -> Any:
     """Map over a pytree's leaves, passing each quantity to ``f`` whole.
 

@@ -28,7 +28,8 @@ Model:
   ``grad``, ``value_and_grad``, ``jacrev``, ``jacfwd``, ``hessian`` and ``vjp``
   label derivatives ``dim(out) / dim(arg)``. The array and linear algebra functions
   here cover the cases ``jnp`` rejects; ``apply`` wraps any other function and
-  ``relabel`` states a dimension the type algebra cannot compute.
+  ``relabel`` states a dimension the type algebra cannot compute. ``Log`` holds
+  ``log(x / ref)`` with a static reference unit, for values spanning many decades.
 
 Caveats:
   * ``jax.grad`` gives a gradient the primal's dimension. This is silently wrong
@@ -45,16 +46,27 @@ Caveats:
 from kups.core.units import catalog as catalog
 from kups.core.units import constants as constants
 from kups.core.units._array import (
+    absolute,
+    clip,
     concatenate,
+    full,
     full_like,
     linspace,
+    max,
     maximum,
+    mean,
+    min,
     minimum,
     norm,
+    ones,
     ones_like,
+    prod,
+    select_n,
     sqrt,
     stack,
+    sum,
     where,
+    zeros,
     zeros_like,
 )
 from kups.core.units._base import (
@@ -102,6 +114,8 @@ from kups.core.units._core import (
     from_dim,
     is_leaf,
     is_quantity,
+    tree_flatten,
+    tree_leaves,
     tree_map,
 )
 from kups.core.units._linalg import (
@@ -112,14 +126,17 @@ from kups.core.units._linalg import (
     inv,
     qr,
     solve,
+    svd,
     vdot,
 )
+from kups.core.units._log import Log
 from kups.core.units._transforms import (
     grad,
     hessian,
     jacfwd,
     jacrev,
     relabel,
+    stop_gradient,
     value_and_grad,
     vectorize,
     vjp,
@@ -165,6 +182,7 @@ __all__ = [
     # core types
     "Quantity",
     "Unit",
+    "Log",
     "Dimensionless",
     "DimensionError",
     # dimension aliases
@@ -234,6 +252,8 @@ __all__ = [
     "is_quantity",
     "is_leaf",
     "tree_map",
+    "tree_leaves",
+    "tree_flatten",
     # dimensions
     "dim_of",
     "base_of",
@@ -249,6 +269,7 @@ __all__ = [
     "hessian",
     "vjp",
     "relabel",
+    "stop_gradient",
     # transforms
     "vectorize",
     "apply",
@@ -258,6 +279,15 @@ __all__ = [
     "minimum",
     "maximum",
     "where",
+    "clip",
+    "select_n",
+    "absolute",
+    # reductions
+    "sum",
+    "mean",
+    "min",
+    "max",
+    "prod",
     # linear algebra
     "det",
     "inv",
@@ -267,11 +297,15 @@ __all__ = [
     "solve",
     "qr",
     "eigh",
+    "svd",
     # joining
     "stack",
     "concatenate",
     # constructors
     "linspace",
+    "zeros",
+    "ones",
+    "full",
     "zeros_like",
     "ones_like",
     "full_like",
