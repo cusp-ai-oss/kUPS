@@ -1044,8 +1044,7 @@ class TestDeformedFrame:
         cell_factor = jnp.array([1.0, 2.0, 4.0])
         frame = DeformedFrame.from_frame(base, cell_factor=cell_factor)
         deformation = cast(LogTriclinicFrame, frame.deformation)
-        # Stored per parameter slot (shares ``tril``'s leading dim); ``factor``
-        # exposes the per-system value.
+        # One value per system, sharing ``tril``'s leading dim.
         assert deformation.cell_factor.shape == (3, 1)
         npt.assert_allclose(deformation.tril, 0.0)
         batched = DeformedFrame(
@@ -1075,6 +1074,28 @@ class TestDeformedFrame:
 
         grad = jax.grad(loss)(cell_factor)
         npt.assert_allclose(grad, 0.0)
+
+    @pytest.mark.parametrize("deformation", [LogTriclinicFrame, MatrixLogFrame])
+    def test_system_slices_and_gathers(
+        self, deformation: type[LogTriclinicFrame | MatrixLogFrame]
+    ):
+        """A one-row slice or a gather by system index gives each system its own
+        base, deformation and ``cell_factor``."""
+        scale = jnp.array([1.0, 1.5, 2.0])[:, None, None]
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC * scale)
+        # Distinct diagonal entries keep MatrixLogFrame's eig-based logm accurate.
+        strain = jnp.eye(3) + scale * jnp.array(
+            [[0.1, 0.0, 0.0], [0.05, -0.1, 0.0], [0.02, 0.03, 0.2]]
+        )
+        cell_factor = jnp.array([1.0, 2.0, 4.0])
+        frame = DeformedFrame(
+            base, deformation.from_matrix(strain, cell_factor=cell_factor)
+        )
+        expected = base.vectors @ strain
+        for i in range(3):
+            npt.assert_allclose(frame[i : i + 1].vectors[0], expected[i], atol=1e-6)
+        ids = jnp.array([2, 0, 1, 1])
+        npt.assert_allclose(frame[ids].vectors, expected[ids], atol=1e-6)
 
 
 _M_ROTATED = jnp.array([[2.0, 0.3, -0.1], [0.4, 3.0, 0.2], [-0.2, 0.5, 4.0]])[
@@ -1145,7 +1166,7 @@ class TestMatrixLogFrame:
 
     def test_base_roundtrip_exactness(self):
         """``DeformedFrame.from_frame(.., MatrixLogFrame)`` at identity deformation
-        reproduces the triclinic reference (exact triangular log of the base)."""
+        reproduces the triclinic reference, which it keeps as the base."""
         ref = TriclinicFrame.from_matrix(_M_TRICLINIC)
         frame = DeformedFrame.from_frame(
             ref, cell_factor=8.0, deformation=MatrixLogFrame
