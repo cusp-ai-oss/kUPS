@@ -137,7 +137,15 @@ class Resettable[Params, OptState](Optimizer[Params, OptState]):
 
 
 def apply_updates[Params](parameters: Params, updates: Params) -> Params:
-    """Add ``updates`` to ``parameters`` leaf by leaf."""
+    """Add each update to its parameter, keeping the parameter's dtype.
+
+    Args:
+        parameters: The parameter pytree.
+        updates: A pytree of the same structure and leaf shapes.
+
+    Returns:
+        The updated parameters, with ``None`` leaves left in place.
+    """
     # pyrefly: ignore[bad-argument-type, bad-return]
     return optax.apply_updates(parameters, updates)
 

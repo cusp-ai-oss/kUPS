@@ -56,6 +56,14 @@ def remove_center_of_mass_momentum(
     ``p_i <- p_i - m_i * sum_j(p_j) / sum_j(m_j)``, independently for each
     system index. This is the mass-metric projection for the canonical ensemble
     conditioned on zero total momentum.
+
+    Args:
+        momenta: Particle momenta, shape ``(n_atoms, 3)``.
+        masses: Particle masses, shape ``(n_atoms,)``.
+        system: Per-atom system index.
+
+    Returns:
+        Momenta with each system's total momentum removed, shape ``(n_atoms, 3)``.
     """
     total_momentum = system.sum_over(momenta)
     total_mass = system.sum_over(masses).data
