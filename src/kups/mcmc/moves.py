@@ -64,7 +64,6 @@ from kups.core.typing import (
 )
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, key_chain
-from kups.core.utils.math import triangular_3x3_matmul
 from kups.core.utils.position import (
     center_of_mass,
     to_absolute_positions,
@@ -290,7 +289,7 @@ def propose_reinsertion(
     rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
     abs_offsets = Table(
         systems.keys,
-        triangular_3x3_matmul(systems.data.cell.vectors, rel_offsets),
+        systems.data.cell.frame.to_real(rel_offsets),
     )
     new_positions = translate_groups(abs_offsets, rotated_particles, systems)
     return ParticlePositionChanges(particle_ids=selected, new_positions=new_positions)
@@ -628,7 +627,7 @@ def insert_random_motif(
     new_positions = motifs.data.positions[particle_idx]
     # Rotate and translate
     rel_offsets = jax.random.uniform(next(chain), shape=(n_sys, 3))
-    abs_offsets = triangular_3x3_matmul(cell.data.vectors, rel_offsets)
+    abs_offsets = cell.data.frame.to_real(rel_offsets)
     rotations = Quaternion.random(next(chain), (n_sys,))
     sys_idx = Index(cell.keys, ins_system_ids)
     new_positions = (

@@ -12,7 +12,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import Capacity, CapacityError, LensCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
+from kups.core.cell import Cell, MaterializedFrame, PeriodicCell, TriclinicFrame
 from kups.core.data import WithIndices
 from kups.core.data.buffered import Buffered, system_view
 from kups.core.data.index import Index
@@ -28,6 +28,7 @@ from kups.mcmc.moves import (
     ExchangeMove,
     delete_random_motif,
     insert_random_motif,
+    propose_reinsertion,
     random_rotate_groups,
     random_select_groups,
     translate_groups,
@@ -1324,6 +1325,28 @@ class TestInsertRandomMotif:
         assert result.particles.indices.shape[0] > 0
         assert result.groups.indices.shape[0] > 0
         assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
+
+
+@pytest.mark.parametrize("reinsert", [False, True], ids=["insert", "reinsert"])
+def test_random_placement_rotates_with_general_frame(reinsert: bool):
+    """Random placements follow a frame whose vectors are not lower triangular."""
+    particles, groups, motifs, cells = _exchange_state()
+    rotation = jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
+    cap = LensCapacity(1, lens(lambda x: x, cls=int))
+
+    @jax.jit
+    def place(vectors: Array) -> Array:
+        cell = cells.set_data(PeriodicCell(MaterializedFrame.from_matrix(vectors)))
+        key = jax.random.key(0)
+        if reinsert:
+            systems = cell.set_data(CellData(cell.data))
+            moved = propose_reinsertion(key, particles, groups, systems, cap)
+            return moved.new_positions
+        inserted = insert_random_motif(key, motifs, particles, groups, cell, cap)
+        return inserted.particles.data.data.new_positions
+
+    vectors = cells.data.vectors
+    npt.assert_allclose(place(vectors @ rotation), place(vectors) @ rotation, atol=1e-5)
 
 
 class TestDeleteRandomMotif:
