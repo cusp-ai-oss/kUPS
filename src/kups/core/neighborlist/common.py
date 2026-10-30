@@ -39,7 +39,7 @@ from kups.core.lens import bind
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.types import (
     CandidateBatch,
-    NeighborListPoints,
+    FractionalPoints,
     NeighborListSystems,
     PipelineContext,
 )
@@ -172,8 +172,8 @@ def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array
 
 def _get_candidate_images(
     candidates: Candidates,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Array,
     out_size: Capacity[int],
@@ -229,8 +229,8 @@ def _get_candidate_images(
 
 def _minimum_image_shifts(
     candidates: Candidates,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
 ) -> Array:
     """Compute minimum-image fractional shifts for each candidate pair."""
@@ -244,8 +244,8 @@ def _minimum_image_mask(
     replicated: Candidates,
     offsets: Array,
     idx: Array,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     num_candidates: int,
 ) -> Array:
@@ -278,8 +278,8 @@ def _minimum_image_mask(
 
 def make_batch_with_mic(
     candidates: Candidates,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
 ) -> CandidateBatch[Literal[2]]:
     """Pack raw candidates with minimum-image shifts; ``is_minimum_image=all-True``."""
@@ -305,8 +305,8 @@ def candidates_to_batch(
 
 def replicate_for_images(
     candidates: Candidates,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Table[SystemId, Array],
     max_image_candidates: Capacity[int] | None,

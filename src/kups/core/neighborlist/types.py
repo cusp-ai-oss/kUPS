@@ -49,7 +49,25 @@ class NeighborListPoints(
     HasExclusionIndex,
     Protocol,
 ):
-    """Particle data a neighbor list reads: positions, system, inclusion and exclusion indices."""
+    """Particle data a neighbor list is called with, in real-space positions."""
+
+
+class FractionalPoints(
+    HasSystemIndex,
+    HasInclusionIndex,
+    HasExclusionIndex,
+    Protocol,
+):
+    """Particle data inside a pipeline, in fractional positions.
+
+    [`_prepare`][kups.core.neighborlist.pipeline._prepare] converts the
+    real-space positions a neighbor list is called with into cell-relative
+    coordinates, so every phase behind it -- selector, masks, compactor,
+    postprocessors -- reads dimensionless positions.
+    """
+
+    @property
+    def positions(self) -> Array: ...
 
 
 class NeighborListSystems(HasCell[AnyPeriodicity], Protocol):
@@ -163,8 +181,8 @@ class PipelineContext:
             self-graph or bipartite query.
     """
 
-    keys: Table[ParticleId, NeighborListPoints]
-    queries: Table[ParticleId, NeighborListPoints] | None  # noqa: KUP002
+    keys: Table[ParticleId, FractionalPoints]
+    queries: Table[ParticleId, FractionalPoints] | None  # noqa: KUP002
     systems: Table[SystemId, NeighborListSystems]
     queried_keys: Index[ParticleId] | None  # noqa: KUP002
 
@@ -185,12 +203,12 @@ class PipelineContext:
         return tuple(sorted(self.keys.keys + self.queries.keys))
 
     @property
-    def edge_query_table(self) -> Table[ParticleId, NeighborListPoints]:
+    def edge_query_table(self) -> Table[ParticleId, FractionalPoints]:
         """Table holding the second endpoint of each pair."""
         return self.queries if self.queries is not None else self.keys
 
     @property
-    def query_table(self) -> Table[ParticleId, NeighborListPoints]:
+    def query_table(self) -> Table[ParticleId, FractionalPoints]:
         """Table used to enumerate query candidates.
 
         ``queries`` is reserved for true bipartite calls. ``queried_keys``
@@ -205,7 +223,7 @@ class PipelineContext:
 
     def endpoints[D: int](
         self, batch: CandidateBatch[D]
-    ) -> tuple[NeighborListPoints, NeighborListPoints]:
+    ) -> tuple[FractionalPoints, FractionalPoints]:
         """Key and query rows of each candidate pair."""
         query = self.edge_query_table
         return (
