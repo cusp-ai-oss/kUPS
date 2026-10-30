@@ -147,6 +147,7 @@ ignore = ["E741"]
 [tool.pyrefly]
 infer-with-first-use = false
 preset = "strict"
+search-path = ["src", "ci/statistical", "ci/statistical/lammps"]
 # Optional extras (hf/uma/mace); type-checked when installed, ignored otherwise.
 ignore-missing-imports = [
     "torch",
