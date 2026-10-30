@@ -7,7 +7,7 @@ import pathlib
 import re
 import warnings
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -100,11 +100,28 @@ def test_unit_catalogue():
     # unit times magnitudes attaches, in either order, and so does the quotient
     assert val(u.angstrom * 3.0) == 3.0 and val(3.0 * u.angstrom) == 3.0
     assert list((u.angstrom * arr([1.0, 2.0])).value) == [1.0, 2.0]
+    seq: Any = [1.0, 2.0]  # Any: the stubs type magnitudes as ArrayLike
+    assert list((u.angstrom * seq).value) == list((seq * u.angstrom).value) == seq
+    assert list((u.angstrom / seq).value) == [1.0, 0.5]
     assert val(u.angstrom / 4.0) == 0.25 and val(4.0 / u.angstrom) == 4.0
     q = 3.0 * u.eV
     assert val(u.eV * q) == val(q * u.eV) and float(u.eV / q) == pytest.approx(1 / 3)
+
+    class Scaled:
+        def __rmul__(self, other: Any) -> str:
+            return f"scaled by {other}"
+
+    assert u.m * Scaled() == "scaled by m"  # an unrecognised operand defers
+
+    class Pair(NamedTuple):
+        a: float
+        b: float
+
+    pair: Any = Pair(1.0, 2.0)  # a tuple subclass is not stacked into magnitudes
+    with pytest.raises(TypeError, match="can't multiply sequence"):
+        _ = u.m * pair
     text: Any = "x"  # Any: a static checker rejects this too
-    with pytest.raises(TypeError, match="not a valid JAX array type"):
+    with pytest.raises(TypeError, match="can't multiply sequence"):
         _ = u.m * text
 
 
