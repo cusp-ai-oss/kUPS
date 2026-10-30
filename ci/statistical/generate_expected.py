@@ -14,6 +14,7 @@ import jax
 import jax.numpy as jnp
 import yaml
 from expected_values import AnalysisResult, ExpectedSpec, ObservableSpec
+from jax import Array
 from validate import ANALYZERS
 
 from kups.core.utils.block_average import BlockAverageResult
@@ -21,7 +22,7 @@ from kups.core.utils.block_average import BlockAverageResult
 jax.config.update("jax_enable_x64", True)
 
 
-def block_result_to_expected(result: BlockAverageResult) -> ObservableSpec:
+def block_result_to_expected(result: BlockAverageResult[Array]) -> ObservableSpec:
     """Convert BlockAverageResult to expected values dict.
 
     Args:

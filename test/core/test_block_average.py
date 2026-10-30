@@ -1,17 +1,23 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Protocol
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.block_average import (
     BlockAverageResult,
     BlockTransformResult,
     block_average,
+    block_average_from_blocks,
     block_transform,
+    compute_block_means,
     optimal_block_average,
 )
 
@@ -348,3 +354,56 @@ class TestBlockAverageStatisticalProperties:
 
         block_sizes = np.asarray(result.block_sizes)
         assert np.all(np.diff(block_sizes) > 0)
+
+
+class _Statistics(Protocol):
+    def __call__[T: units.Measured](self, x: T, /) -> tuple[T, ...]: ...
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        pytest.param(lambda x: (compute_block_means(x, n_blocks=8),), id="block_means"),
+        pytest.param(lambda x: block_average_from_blocks(x)[:2], id="from_blocks"),
+        pytest.param(lambda x: block_average(x, n_blocks=8)[:2], id="block_average"),
+        pytest.param(lambda x: block_transform(x)[1:], id="block_transform"),
+        pytest.param(lambda x: optimal_block_average(x)[:2], id="optimal"),
+    ],
+)
+def test_quantity_keeps_dimension(fn: _Statistics):
+    """Energies go through as their magnitudes and every statistic is an energy."""
+    data = jnp.sin(0.3 * jnp.arange(64.0))[:, None] * jnp.array([1.0, 2.0])
+    for got, want in zip(fn(data * u.eV), fn(data), strict=True):
+        assert units.dim_of(got) == units.dim_of(u.eV)
+        npt.assert_allclose(got.to(u.eV), want, rtol=1e-6)
+
+
+def test_optimal_block_size_does_not_depend_on_the_base():
+    """The plateau search reads relative SEM changes, whatever base holds them."""
+    rng = np.random.default_rng(0)
+    noise = rng.normal(size=4096)
+    # AR(1) series, so the SEM keeps growing over the first block sizes
+    series = np.zeros_like(noise)
+    for i in range(1, len(noise)):
+        series[i] = 0.95 * series[i - 1] + noise[i]
+    energy = jnp.asarray(1e-3 * series) * u.eV
+    with units.base(units.SI):
+        in_si = energy.rebase()
+    atomistic = optimal_block_average(energy)
+    si = optimal_block_average(in_si)
+    assert atomistic.n_blocks == si.n_blocks
+    npt.assert_allclose(si.sem.to(u.eV), atomistic.sem.to(u.eV), rtol=1e-12)
+
+
+def test_plain_arrays_keep_the_absolute_sem_floor():
+    """Plain magnitudes compare SEM changes against 1e-10, as before units."""
+    rng = np.random.default_rng(0)
+    noise = rng.normal(size=4096)
+    series = np.zeros_like(noise)
+    for i in range(1, len(noise)):
+        series[i] = 0.95 * series[i - 1] + noise[i]
+    tiny = jnp.asarray(1e-10 * series)
+    # the floor shrinks the relative changes of SEMs near 1e-10, so the plateau
+    # comes at the first block size; a quantity reads only its own changes
+    assert optimal_block_average(tiny).n_blocks == 1024
+    assert optimal_block_average(tiny * u.eV).n_blocks == 4
