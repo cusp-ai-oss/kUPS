@@ -108,7 +108,8 @@ class CosineAngleParameters:
             linear_tol: Tolerance for detecting linear angles [radians]
 
         Returns:
-            CosineAngleParameters with full interaction matrices
+            CosineAngleParameters with full interaction matrices; `k` is in
+            kcal/mol/rad^2, as Eq. 13 takes lengths in Å.
         """
         nt = bond_angle.shape[0]
 
@@ -127,12 +128,12 @@ class CosineAngleParameters:
         r_ik_sq = r_ij**2 + r_jk**2 - 2 * r_ij * r_jk * cos_theta0
         r_ik = jnp.sqrt(jnp.maximum(r_ik_sq, 1e-10))
 
-        # Force constant (Eq. 13)
+        # Force constant (Eq. 13); its beta = 664.12 / (r_ij r_jk) cancels the
+        # explicit r_ij r_jk factor.
         Z_i = effective_charge[:, None, None]
         Z_k = effective_charge[None, None, :]
-        prefactor = 664.12 / (r_ij * r_jk)
         term = 3 * r_ij * r_jk * (1 - cos_theta0**2) - r_ik_sq * cos_theta0
-        K = jnp.abs(prefactor * Z_i * Z_k / (r_ik**5) * term)
+        K = jnp.abs(664.12 * Z_i * Z_k * term / r_ik**5)
 
         return cls(
             labels=tuple(map(Label, labels)), theta0=theta0, k=K, linear_tol=linear_tol
