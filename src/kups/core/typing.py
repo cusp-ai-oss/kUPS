@@ -142,6 +142,18 @@ class HasPositions(Protocol):
 
 
 @runtime_checkable
+class HasFractionalPositions(Protocol):
+    """Protocol for entities with fractional position data.
+
+    Attributes:
+        positions: Array of fractional positions for each entity (e.g., atoms).
+    """
+
+    @property
+    def positions(self) -> Array: ...
+
+
+@runtime_checkable
 class HasMomenta(Protocol):
     """Protocol for entities with momentum data.
 

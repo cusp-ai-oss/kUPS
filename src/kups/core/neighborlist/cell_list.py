@@ -26,6 +26,7 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.pipeline import build_radius_graph
 from kups.core.neighborlist.types import (
     CandidateBatch,
+    FractionalPoints,
     IsNeighborListState,
     NeighborListPoints,
     NeighborListSystems,
@@ -152,8 +153,8 @@ class IsCellListParams(Protocol):
 
 
 def _cell_list_subselect(
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Array,
     max_num_cells: Capacity[int],
@@ -168,7 +169,7 @@ def _cell_list_subselect(
     bins = num_cells(systems.data, cutoffs)
     max_num_cells = max_num_cells.generate_assertion(bins.prod(axis=-1).max())
 
-    def assign(points: NeighborListPoints) -> Array:
+    def assign(points: FractionalPoints) -> Array:
         return assign_cells(
             points.positions,
             points.system.indices_in(systems.keys),
