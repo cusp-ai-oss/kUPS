@@ -7,6 +7,7 @@ import pathlib
 import re
 import warnings
 from decimal import Decimal
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -106,8 +107,22 @@ def test_unit_catalogue():
     assert val(u.angstrom / 4.0) == 0.25 and val(4.0 / u.angstrom) == 4.0
     q = 3.0 * u.eV
     assert val(u.eV * q) == val(q * u.eV) and float(u.eV / q) == pytest.approx(1 / 3)
-    with pytest.raises(TypeError, match="not a valid JAX array type"):
-        _ = u.m * "x"  # pyrefly: ignore[unsupported-operation]
+
+    class Scaled:
+        def __rmul__(self, other: object) -> str:
+            return f"scaled by {other}"
+
+    assert u.m * Scaled() == "scaled by m"  # an unrecognised operand defers
+
+    seqs: list[Any] = [[1.0, 2.0], (1.0, 2.0), "x"]  # sequences defer
+    for seq in seqs:
+        for unit in (u.m, u.mol):  # Dimensionless overrides the reflected operators
+            with pytest.raises(TypeError, match="can't multiply sequence"):
+                _ = unit * seq
+            with pytest.raises(TypeError, match="can't multiply sequence"):
+                _ = seq * unit
+            with pytest.raises(TypeError, match="unsupported operand"):
+                _ = seq / unit
 
 
 def test_constant_read_in_trace():

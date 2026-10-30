@@ -264,7 +264,7 @@ class Unit(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
     def __rmul__(self, x: ArrayLike) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
     def __rmul__(self, x: ArrayLike) -> jax.Array | Quantity[int, int, int, int, int]:
         """Attach this unit to plain magnitudes."""
-        return _attach(x, self)
+        return _forward(x, self)
 
     @overload
     def __rtruediv__(self: Dimensionless, x: ArrayLike) -> jax.Array: ...
@@ -281,7 +281,7 @@ class Unit(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
     ) -> jax.Array | AnyUnit | Quantity[int, int, int, int, int]:
         """``1 / unit`` is the reciprocal unit; other ``x`` give ``x * self**-1``."""
         inv = self**-1
-        return inv if type(x) is int and x == 1 else _attach(x, inv)
+        return inv if type(x) is int and x == 1 else _forward(x, inv)
 
 
 type AnyUnit = Unit[int, int, int, int, int]
@@ -306,7 +306,7 @@ else:
 
         # ``1 / u.mol`` is just the number 1/N_A, unlike ``1 / u.fs`` which is a unit.
         def __rtruediv__(self, x):
-            return _attach(x, self**-1)
+            return _forward(x, self**-1)
 
     _dimensionless = Dimensionless
 
@@ -423,10 +423,10 @@ def _forward(
     unit: AnyUnit,
     invert: bool = False,
 ) -> jax.Array | Quantity[int, int, int, int, int]:
-    """Attach ``unit`` to plain magnitudes; return NotImplemented for quantities."""
-    from kups.core.units._core import is_quantity  # avoids a cycle
+    """Attach ``unit`` to plain magnitudes; return NotImplemented for other operands."""
+    from kups.core.units._core import _operand, is_quantity  # avoids a cycle
 
-    if is_quantity(x):
+    if is_quantity(x) or not _operand(x):
         return NotImplemented
     return _attach(1 / x if invert else x, unit)
 
