@@ -26,12 +26,16 @@ from kups.core.storage import HDF5StorageReader
 ARGON_MASS_AMU = 39.948  # Atomic mass of argon
 
 
+type Metrics = dict[str, float]
+"""Named diagnostics a check reports alongside its verdict."""
+
+
 def validate_energy_conservation(
     total_energy: np.ndarray,
     n_atoms: int,
     max_drift_per_atom_per_step: float = 1e-8,
     max_relative_fluctuation: float = 5e-4,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate energy conservation in NVE simulation.
 
     For a symplectic integrator, energy oscillates around a shadow Hamiltonian
@@ -40,6 +44,15 @@ def validate_energy_conservation(
     2. Bounded fluctuations: relative std(E)/|<E>| < 0.05%
 
     These thresholds are appropriate for typical MD timesteps (1-2 fs).
+
+    Args:
+        total_energy: Total energy per step in eV.
+        n_atoms: Number of atoms.
+        max_drift_per_atom_per_step: Largest allowed drift in eV/atom/step.
+        max_relative_fluctuation: Largest allowed std(E)/|<E>|.
+
+    Returns:
+        Whether both checks pass, and the drift and fluctuation metrics.
     """
     n_steps = len(total_energy)
     steps = np.arange(n_steps)
@@ -75,14 +88,23 @@ def validate_equipartition(
     temperature: np.ndarray,
     degrees_of_freedom: int,
     rtol: float = 0.02,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate equipartition theorem: <KE> = (DOF/2) * k_B * T.
 
     For a system in thermal equilibrium, the average kinetic energy
     should equal (DOF/2) * k_B * T.
+
+    Args:
+        kinetic_energy: Kinetic energy per step in eV.
+        temperature: Temperature per step in K.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        rtol: Largest allowed relative error of <KE>.
+
+    Returns:
+        Whether <KE> matches equipartition, and the compared energies.
     """
-    mean_ke = np.mean(kinetic_energy)
-    mean_temp = np.mean(temperature)
+    mean_ke = float(np.mean(kinetic_energy))
+    mean_temp = float(np.mean(temperature))
 
     # Expected KE from equipartition
     expected_ke = 0.5 * degrees_of_freedom * BOLTZMANN_CONSTANT * mean_temp
@@ -109,12 +131,21 @@ def validate_temperature_fluctuations(
     temperature: np.ndarray,
     degrees_of_freedom: int,
     max_ratio: float = 0.95,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate temperature fluctuations are smaller than canonical ensemble.
 
     For the canonical ensemble: <(dT)^2> / <T>^2 = 2 / DOF
     For microcanonical (NVE), fluctuations MUST be smaller since total energy
     is fixed. This is a fundamental property of the microcanonical ensemble.
+
+    Args:
+        temperature: Temperature per step in K.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        max_ratio: Largest allowed ratio of measured to canonical relative
+            variance.
+
+    Returns:
+        Whether the fluctuations are below canonical, and the variance metrics.
     """
     mean_temp = np.mean(temperature)
     temp_var = np.var(temperature)
@@ -146,11 +177,21 @@ def validate_pressure_virial(
     kinetic_energy: np.ndarray,
     volume: float,
     max_pressure_cv: float = 0.5,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Check pressure consistency with virial theorem.
 
     Ideal gas contribution: P_ideal = N * k_B * T / V = 2/3 * KE / V
     The excess pressure from interactions should be stable (bounded fluctuations).
+
+    Args:
+        pressure: Pressure per step in eV/Å³.
+        kinetic_energy: Kinetic energy per step in eV.
+        volume: Cell volume in Å³.
+        max_pressure_cv: Largest allowed coefficient of variation of the pressure.
+
+    Returns:
+        Whether the pressure is finite with bounded fluctuations, and the
+        pressure metrics.
     """
     mean_pressure = float(np.mean(pressure))
     std_pressure = float(np.std(pressure))
@@ -169,9 +210,9 @@ def validate_pressure_virial(
     passed = finite_ok and cv_ok
 
     return passed, {
-        "mean_pressure_Pa": mean_pressure,
-        "ideal_gas_pressure_Pa": ideal_pressure,
-        "excess_pressure_Pa": excess_pressure,
+        "mean_pressure": mean_pressure,
+        "ideal_gas_pressure": ideal_pressure,
+        "excess_pressure": excess_pressure,
         "pressure_std": std_pressure,
         "pressure_cv": pressure_cv,
         "max_pressure_cv": max_pressure_cv,
@@ -179,6 +220,11 @@ def validate_pressure_virial(
 
 
 def main() -> int:
+    """Report every NVE physics check for the simulation output.
+
+    Returns:
+        Zero when every check passes.
+    """
     parser = argparse.ArgumentParser(
         description="Validate MD simulation against physical properties"
     )
@@ -264,9 +310,9 @@ def main() -> int:
     passed, info = validate_pressure_virial(pressure, kinetic_energy, volume)
     status = "PASS" if passed else "FAIL"
     print(f"4. Pressure Consistency: {status}")
-    print(f"   <P>: {info['mean_pressure_Pa']:.4e} Pa")
-    print(f"   Ideal gas P: {info['ideal_gas_pressure_Pa']:.4e} Pa")
-    print(f"   Excess P: {info['excess_pressure_Pa']:.4e} Pa")
+    print(f"   <P>: {info['mean_pressure']:.4e} eV/A^3")
+    print(f"   Ideal gas P: {info['ideal_gas_pressure']:.4e} eV/A^3")
+    print(f"   Excess P: {info['excess_pressure']:.4e} eV/A^3")
     print(
         f"   Pressure CV: {info['pressure_cv']:.4f} (max: {info['max_pressure_cv']:.2f})"
     )

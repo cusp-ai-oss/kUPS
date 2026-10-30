@@ -8,11 +8,20 @@ from __future__ import annotations
 
 import argparse
 import math
+from typing import Any
 
 from lammps_reference_utils import CASES, load_kups_expected, load_reference_stats
 
 
-def _compare_to_kups(current: dict) -> bool:
+def _compare_to_kups(current: dict[str, Any]) -> bool:
+    """Compare the LAMMPS statistics of every case against the kUPS references.
+
+    Args:
+        current: LAMMPS expected values keyed by case name.
+
+    Returns:
+        Whether every compared observable agrees within its case's tolerance.
+    """
     ok = True
     for case, config in CASES.items():
         if not config.get("compare_to_kups", False):
@@ -50,6 +59,11 @@ def _compare_to_kups(current: dict) -> bool:
 
 
 def main() -> int:
+    """Load the committed LAMMPS statistics and compare them to the kUPS ones.
+
+    Returns:
+        Zero when every comparison passes.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--skip-kups-compare",

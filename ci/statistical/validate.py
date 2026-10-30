@@ -43,16 +43,32 @@ SIM_ENV = {**os.environ, "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
 
 
 def _analyze_mcmc_first_system(path: Path) -> MCMCAnalysisResult:
+    """Analyze an MCMC output and return its first system's result.
+
+    Args:
+        path: HDF5 output of an MCMC run.
+
+    Returns:
+        Block-averaged analysis of the first system.
+    """
     results = analyze_mcmc_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 
 def _analyze_md_first_system(path: Path) -> MDAnalysisResult:
+    """Analyze an MD output and return its first system's result.
+
+    Args:
+        path: HDF5 output of an MD run.
+
+    Returns:
+        Block-averaged analysis of the first system.
+    """
     results = analyze_md_file(path, n_blocks=N_BLOCKS)
     return next(iter(results.values()))
 
 
-ANALYZERS: dict[str, Callable[[Path], Any]] = {
+ANALYZERS: dict[str, Callable[[Path], MCMCAnalysisResult | MDAnalysisResult]] = {
     "nvt": _analyze_mcmc_first_system,
     "gcmc": _analyze_mcmc_first_system,
     "md": _analyze_md_first_system,
@@ -62,10 +78,19 @@ ANALYZERS: dict[str, Callable[[Path], Any]] = {
 def run_simulations(
     specs: list[tuple[str, Path, str]],
 ) -> dict[str, bool]:
-    """Run simulations in parallel. Returns {name: success} mapping."""
-    procs: list[tuple[str, subprocess.Popen]] = []
+    """Run simulations in parallel.
+
+    Args:
+        specs: ``(name, config_path, sim_type)`` per simulation.
+
+    Returns:
+        Whether each simulation exited successfully, keyed by name. Simulations
+        of an unknown type are skipped and absent.
+    """
+    procs: list[tuple[str, subprocess.Popen[bytes]]] = []
 
     def _kill_all() -> None:
+        """Terminate every simulation still running."""
         for _, p in procs:
             if p.poll() is None:
                 try:
@@ -112,7 +137,18 @@ def validate_observable(
     expected_sem: float | list[float],
     tolerance_sigmas: float = DEFAULT_TOLERANCE_SIGMAS,
 ) -> bool:
-    """Check if measured value is within tolerance."""
+    """Check if measured value is within tolerance.
+
+    Args:
+        name: Observable name, for the report.
+        result: Measured block average.
+        expected_mean: Expected mean, a list for a non-scalar observable.
+        expected_sem: Expected standard error, shaped like `expected_mean`.
+        tolerance_sigmas: How many reference SEMs the means may differ by.
+
+    Returns:
+        Whether every element is within tolerance.
+    """
     exp_mean = jnp.asarray(expected_mean).flatten()
     exp_sem = jnp.asarray(expected_sem).flatten()
     measured_mean = jnp.asarray(result.mean).flatten()
@@ -146,8 +182,18 @@ def validate_observable(
     return all_pass
 
 
-def validate(path: Path, sim_type: str, obs: dict) -> bool:
-    """Validate simulation results against expected observables."""
+def validate(path: Path, sim_type: str, obs: dict[str, Any]) -> bool:
+    """Validate simulation results against expected observables.
+
+    Args:
+        path: HDF5 output to analyze.
+        sim_type: Simulation kind, `md`, `nvt` or `gcmc`.
+        obs: Expected values keyed by analysis field name.
+
+    Returns:
+        Whether every expected observable is within tolerance; `True` when the
+        check is skipped for an unsupported type or fewer than two blocks.
+    """
     analyze = ANALYZERS.get(sim_type)
     if not analyze:
         print(f"  ⚠ Skipped: unsupported type {sim_type}")
@@ -169,7 +215,11 @@ def validate(path: Path, sim_type: str, obs: dict) -> bool:
 
 
 def main() -> int:
-    """Run simulations and validate outputs."""
+    """Run simulations and validate outputs.
+
+    Returns:
+        Zero when every simulation ran and every observable is within tolerance.
+    """
     parser = argparse.ArgumentParser(description="Validate simulation outputs")
     parser.add_argument(
         "name",
@@ -196,7 +246,7 @@ def main() -> int:
         expected_files = sorted(EXPECTED_DIR.glob("*.yaml"))
 
     # Load all specs
-    specs: list[tuple[str, dict]] = []
+    specs: list[tuple[str, dict[str, Any]]] = []
     for expected_file in expected_files:
         with open(expected_file) as f:
             spec = yaml.safe_load(f)
