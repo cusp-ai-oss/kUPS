@@ -28,8 +28,8 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.neighborlist.types import (
     CandidateBatch,
+    FractionalPoints,
     NeighborList,
-    NeighborListPoints,
     NeighborListSystems,
     PipelineContext,
 )
@@ -347,8 +347,8 @@ def run_nl(
 @jax.jit
 def _replicate(
     candidates: Candidates,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Table[SystemId, Array],
     image_candidates: Capacity[int] | None,
@@ -360,8 +360,8 @@ def _replicate(
 
 def replicate(
     candidates: Candidates,
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     cutoffs: Table[SystemId, Array],
     image_candidates: Capacity[int] | None,
