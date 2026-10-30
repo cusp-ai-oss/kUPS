@@ -34,45 +34,42 @@ class LogFugacityResult(NamedTuple):
 
 
 @jit
-@vectorize(signature="(),(),(n),(n),(n),(n),(n,n)->(n),(n)")
-def _peng_robinson_log_fugacity(
-    pressure: Array,
-    temperature: Array,
-    critical_pressure: Array,
-    critical_temperature: Array,
+@vectorize(signature="(n),(n),(n),(n),(n,n)->(n),(n)")
+def _peng_robinson_log_coefficient(
+    reduced_pressure: Array,
+    reduced_temperature: Array,
     acentric_factor: Array,
     fraction: Array,
     interaction: Array,
 ) -> tuple[Array, Array]:
-    """Compute log fugacity coefficients and compressibility factors using the Peng-Robinson equation of state.
+    """Log fugacity coefficients and compressibility factors from Peng-Robinson.
 
-    This function implements the Peng-Robinson cubic equation of state for gas mixtures to calculate
-    the natural logarithm of fugacity coefficients and compressibility factors. The Peng-Robinson EOS
-    is particularly suitable for hydrocarbon systems and provides good accuracy for both liquid and
-    vapor phases.
+    The equation of state is a correlation in the reduced variables ``P/Pc`` and
+    ``T/Tc``, so everything here is a dimensionless ratio and the pressure the
+    fugacity is proportional to enters at the caller.
 
     The computation involves:
-    1. Calculating reduced pressure (Pr) and temperature (Tr) using critical properties
-    2. Computing the temperature-dependent parameter m from acentric factors
-    3. Determining attractive (A) and repulsive (B) parameters for each component
-    4. Mixing rules for multi-component systems with binary interaction parameters
-    5. Solving the cubic equation for compressibility factor Z
-    6. Computing fugacity coefficients from the equation of state derivatives
-    7. Selecting the appropriate root (gas phase) based on thermodynamic stability
+    1. Computing the temperature-dependent parameter m from acentric factors
+    2. Determining attractive (A) and repulsive (B) parameters for each component
+    3. Mixing rules for multi-component systems with binary interaction parameters
+    4. Solving the cubic equation for compressibility factor Z
+    5. Computing fugacity coefficients from the equation of state derivatives
+    6. Selecting the appropriate root (gas phase) based on thermodynamic stability
 
     Args:
-        pressure: System pressure [Pa]
-        temperature: System temperature [K]
-        critical_pressure: Critical pressure for each component [Pa], shape (n,)
-        critical_temperature: Critical temperature for each component [K], shape (n,)
+        reduced_pressure: Pressure over each component's critical pressure [-],
+            shape (n,)
+        reduced_temperature: Temperature over each component's critical
+            temperature [-], shape (n,)
         acentric_factor: Acentric factor for each component [-], shape (n,)
         fraction: Mole fraction of each component [-], shape (n,)
         interaction: Binary interaction parameters [-], shape (n,n)
 
     Returns:
         tuple containing:
-            - log_fugacity: Natural logarithm of fugacity for each component [ln(Pa)], shape (n,)
-            - compressibility: Compressibility factor Z [-], scalar
+            - log_coefficient: Natural logarithm of the fugacity coefficient of
+              each component [-], shape (n,)
+            - compressibility: Compressibility factor Z [-], shape (n,)
 
     Notes:
         - Fugacity is related to chemical potential: μᵢ = μᵢ⁰ + RT ln(fᵢ)
@@ -80,14 +77,12 @@ def _peng_robinson_log_fugacity(
         - The gas phase root is selected by choosing the solution with minimum fugacity coefficient
         - Binary interaction parameters kᵢⱼ modify the attractive parameter: aᵢⱼ = (1-kᵢⱼ)√(aᵢaⱼ)
     """
-    n = critical_pressure.size
-    Pr = pressure / critical_pressure
-    Tr = temperature / critical_temperature
+    n = reduced_pressure.size
     m = 0.37464 + 1.54226 * acentric_factor - 0.26992 * acentric_factor**2
-    sqrt_alpha = 1 + m * (1 - (Tr**0.5))
+    sqrt_alpha = 1 + m * (1 - (reduced_temperature**0.5))
 
-    A = 0.45724 * Pr / Tr**2 * sqrt_alpha**2
-    B = 0.0778 * Pr / Tr
+    A = 0.45724 * reduced_pressure / reduced_temperature**2 * sqrt_alpha**2
+    B = 0.0778 * reduced_pressure / reduced_temperature
 
     Aij = (1 - interaction) * jnp.sqrt(jnp.outer(A, A))
     Bmix = jnp.vdot(fraction, B)
@@ -120,23 +115,19 @@ def _peng_robinson_log_fugacity(
 
     SQ2 = jnp.sqrt(2)
     dA_dyi = 2 * jnp.einsum("ab,b->a", Aij, fraction)[:, None]
-    ln_fugacity_coeff = (
+    log_coefficient = (
         (B[:, None] / Bmix) * (safe_Z - 1)
         - jnp.log(safe_Z - Bmix)
         - (Amix / (2 * SQ2 * Bmix))
         * (dA_dyi / Amix - B[:, None] / Bmix)
         * jnp.log((safe_Z + (1 + SQ2) * Bmix) / (safe_Z + (1 - SQ2) * Bmix))
     )
-    # For component i in a mixture: f_i = phi_i * y_i * p
-    ln_fugacity = ln_fugacity_coeff + jnp.log(pressure) + jnp.log(fraction)[:, None]
-    # Select gas phase fugacity: lowest ln_fugacity_coeff among valid roots.
+    # Select gas phase fugacity: lowest log_coefficient among valid roots.
     # https://github.com/iRASPA/RASPA2/blob/6498ab1eec9c8e0f063dcd0d71dd7add372c529b/src/equations_of_state.c#L364
     solution_idx = jnp.argmin(
-        jnp.where(valid_solutions, ln_fugacity_coeff, jnp.inf), axis=1
+        jnp.where(valid_solutions, log_coefficient, jnp.inf), axis=1
     )
-    ln_fugacity = ln_fugacity[jnp.arange(n), solution_idx]
-    Z_selected = safe_Z[solution_idx]
-    return ln_fugacity, Z_selected
+    return log_coefficient[jnp.arange(n), solution_idx], safe_Z[solution_idx]
 
 
 def peng_robinson_log_fugacity(
@@ -192,14 +183,14 @@ def peng_robinson_log_fugacity(
         Z = result.compressibility
         ```
     """
-    return LogFugacityResult(
-        *_peng_robinson_log_fugacity(
-            pressure,
-            temperature,
-            critical_pressure,
-            critical_temperature,
-            acentric_factor,
-            composition,
-            interaction,
-        )
+    pressure = jnp.asarray(pressure)
+    log_coefficient, compressibility = _peng_robinson_log_coefficient(
+        pressure[..., None] / critical_pressure,
+        jnp.asarray(temperature)[..., None] / critical_temperature,
+        acentric_factor,
+        composition,
+        interaction,
     )
+    # f_i = phi_i * y_i * P, whose factors add in the log domain.
+    log_fugacity = log_coefficient + jnp.log(pressure)[..., None] + jnp.log(composition)
+    return LogFugacityResult(log_fugacity, compressibility)
