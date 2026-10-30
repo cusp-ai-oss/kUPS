@@ -48,8 +48,8 @@ from kups.core.utils.jax import (
     jit,
     key_chain,
     tree_structure,
-    tree_where_broadcast_last,
 )
+from kups.core.utils.ops import where_broadcast_last
 
 
 class StateProperty[State, Property](Protocol):
@@ -648,7 +648,7 @@ class ResetOnErrorPropagator[State](Propagator[State]):
     def __call__(self, key: Array, state: State) -> State:
         new_state = self.propagator(key, state)
         mask = check_assertions(jax.tree.leaves(new_state)[0])
-        result_state = tree_where_broadcast_last(mask, new_state, state)
+        result_state = where_broadcast_last(mask, new_state, state)
         return result_state
 
 
