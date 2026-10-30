@@ -62,11 +62,21 @@ class IsMCMCStepData(Protocol):
 class MCMCAnalysisResult:
     """Results from MCMC simulation analysis for a single system.
 
+    The stress and pressure fields are ``None`` for a run logged without stress.
+
     Attributes:
         energy: Average total potential energy with SEM (eV).
         loading: Average particle count per species with SEM (dimensionless).
         heat_of_adsorption: Per-species heat of adsorption with SEM (eV).
         total_heat_of_adsorption: Composition-weighted total heat of adsorption (eV).
+        stress: Average total stress tensor with SEM (eV/Å³).
+        stress_potential: Configurational component of the stress.
+        stress_tail_correction: Tail-correction component of the stress.
+        stress_ideal_gas: Ideal-gas component of the stress.
+        pressure: One third of the total stress' trace, with SEM (eV/Å³).
+        pressure_potential: Configurational component of the pressure.
+        pressure_tail_correction: Tail-correction component of the pressure.
+        pressure_ideal_gas: Ideal-gas component of the pressure.
     """
 
     energy: BlockAverageResult
@@ -105,6 +115,10 @@ def _analyze_single_system(
         stress_potential: Configurational stress component.
         stress_tail_correction: Tail correction stress component.
         stress_ideal_gas: Ideal gas stress component.
+
+    Returns:
+        The system's energy, loading, heat of adsorption and, when ``stress`` is
+        given, stress and pressure averages.
     """
     if n_blocks is None:
         energy_result = optimal_block_average(energy)
@@ -133,6 +147,15 @@ def _analyze_single_system(
     def _stress_and_pressure(
         s: Array | None,
     ) -> tuple[BlockAverageResult | None, BlockAverageResult | None]:
+        """Block-average a stress time series and its pressure.
+
+        Args:
+            s: Stress time series, shape ``(n_steps, 3, 3)``, or ``None``.
+
+        Returns:
+            The averaged stress tensor and one third of its trace, or two
+            ``None`` when ``s`` is ``None``.
+        """
         if s is None:
             return None, None
         return (
@@ -195,6 +218,8 @@ def _analyze_mcmc(
     for i, sys_id in enumerate(system_keys):
         motif_cols = [j for j, label in enumerate(count_keys) if label[0] == sys_id]
         s = all_stress[:, i]
+        # A run without a stress logger leaves the total stress zero throughout,
+        # which the result reports as absent rather than as a zero average.
         has_stress = bool(jnp.any(s != 0))
         results[sys_id] = _analyze_single_system(
             energy=all_energy[:, i].reshape(-1),
@@ -264,7 +289,12 @@ def _per_cycle_widom_means(
 ) -> tuple[Array, Array]:
     """Difference cumulative-cycle snapshots into per-cycle ⟨W⟩ and ⟨ΔU·W⟩.
 
-    Returns arrays of shape ``(n_cycles, n_systems)``.
+    Args:
+        per_step: Cumulative ``WidomStatistics`` time series.
+
+    Returns:
+        The dimensionless Boltzmann weight and the energy-weighted one (eV),
+        each of shape ``(n_cycles, n_systems)``.
     """
     sum_w = per_step.data.sum_boltzmann
     sum_du_w = per_step.data.sum_delta_u_boltzmann
@@ -292,6 +322,16 @@ def _analyze_single_widom_system(
     μ_ex, K_H, q_st are derived from the block-averaged means of W and ΔU·W
     via the canonical formulas; per-block ratio-then-average estimators are
     biased (Jensen) and would not converge to the canonical quantities.
+
+    Args:
+        mean_w_per_cycle: Per-cycle Boltzmann weight ⟨W⟩, shape ``(n_cycles,)``.
+        mean_du_w_per_cycle: Per-cycle ⟨ΔU·W⟩ (eV), shape ``(n_cycles,)``.
+        temperature: The system's temperature (K).
+        volume: The system's cell volume (Å³).
+        n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
+
+    Returns:
+        The system's Widom results.
     """
     if n_blocks is None:
         w_result = optimal_block_average(mean_w_per_cycle)
@@ -339,7 +379,6 @@ def _analyze_single_widom_system(
     )
 
 
-@no_jax_tracing
 @no_jax_tracing
 def _analyze_widom(
     per_step: Table[SystemId, WidomStatistics],
@@ -402,8 +441,17 @@ def analyze_widom_file(
     hdf5_path: str | Path,
     n_blocks: int | None = None,
 ) -> dict[SystemId, WidomAnalysisResult]:
-    """Analyze a ``kups_mcmc_widom`` HDF5 output, reading only system metadata
-    and the per-cycle Widom statistics."""
+    """Analyze a ``kups_mcmc_widom`` HDF5 output.
+
+    Reads only the system metadata and the per-cycle Widom statistics.
+
+    Args:
+        hdf5_path: Path to the HDF5 output file.
+        n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
+
+    Returns:
+        Per-system Widom results keyed by ``SystemId``.
+    """
     with HDF5StorageReader[WidomLoggedData[Any]](hdf5_path) as reader:
         systems = reader.focus_group(lambda s: s.fixed).read(select=lambda d: d.systems)
         per_step = reader.focus_group(lambda s: s.per_step)[...]
