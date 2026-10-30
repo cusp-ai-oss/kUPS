@@ -242,7 +242,7 @@ class HasTemperature(Protocol):
     """Protocol for entities with temperature parameters.
 
     Attributes:
-        temperature: Temperature array [energy units], shape `(n_systems,)`.
+        temperature: Temperature array [K], shape `(n_systems,)`.
     """
 
     @property
@@ -254,8 +254,8 @@ class HasLogActivity(Protocol):
     """Protocol for entities with chemical activity parameters.
 
     Attributes:
-        log_activity: Natural log of chemical activity per species [dimensionless],
-            shape `(n_systems, n_species)`.
+        log_activity: Natural log of the chemical activity ``fugacity / kT`` per
+            species, with the activity in Å⁻³, shape `(n_systems, n_species)`.
     """
 
     @property
@@ -331,7 +331,7 @@ class HasStressTensor(Protocol):
     r"""Protocol for systems with computed virial stress tensor.
 
     Attributes:
-        stress_tensor: Virial stress tensor $\mathbf{W}$ (units: energy).
+        stress_tensor: Virial stress tensor $\mathbf{W}$ (units: energy/length³).
     """
 
     @property
