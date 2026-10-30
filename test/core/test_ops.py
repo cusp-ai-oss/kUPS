@@ -3,17 +3,22 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.ops import (
     compact_indices,
     expand_last_dims,
     first_true_indices,
     pad_axis,
     segment_max,
+    select_n,
     where_broadcast_last,
 )
 
@@ -48,6 +53,40 @@ class TestWhereBroadcastLast:
             jnp.array(True), jnp.array([1, 2]), jnp.array([3, 4])
         )
         npt.assert_array_equal(result, [1, 2])
+
+
+_X = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+_Y = jnp.array([[5.0, 6.0], [7.0, 8.0]])
+
+
+class _Select(Protocol):
+    def __call__[T: units.Measured](self, x: T, y: T, /) -> T: ...
+
+
+_SELECTS = [
+    pytest.param(
+        lambda x, y: where_broadcast_last(jnp.array([True, False]), x, y), id="where"
+    ),
+    pytest.param(
+        lambda x, y: select_n(jnp.array([[0, 1], [1, 0]]), x, y), id="select_n"
+    ),
+]
+
+
+@pytest.mark.parametrize("fn", _SELECTS)
+def test_selects_keep_dimension(fn: _Select):
+    """A length selects on its magnitudes and comes back a length."""
+    out = fn(_X * u.angstrom, _Y * u.angstrom)
+    assert units.dim_of(out) == units.dim_of(u.angstrom)
+    npt.assert_array_equal(out.to(u.angstrom), fn(_X, _Y))
+
+
+@pytest.mark.parametrize("other", [_Y, _Y * u.eV], ids=["plain", "energy"])
+@pytest.mark.parametrize("fn", _SELECTS)
+def test_selects_reject_other_dimension(fn: _Select, other: units.Measured):
+    """A length selects only against a length, never a plain operand."""
+    with pytest.raises(units.DimensionError):
+        fn(_X * u.angstrom, other)
 
 
 class TestPadAxis:

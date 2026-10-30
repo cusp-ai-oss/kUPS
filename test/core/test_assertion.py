@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import (
     ELEMENTWISE_MAX,
     FIRST_FAILURE,
@@ -27,6 +28,7 @@ from kups.core.assertion import (
 )
 from kups.core.capacity import CapacityError, LensCapacityFix
 from kups.core.lens import lens
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 
 
@@ -1605,3 +1607,16 @@ class TestLoopMerge:
     def test_loop_merge_is_kept_on_the_assertion(self):
         (a,) = _scan_over(_LOOP_XS, loop_merge=FIRST_FAILURE)
         assert a.loop_merge is FIRST_FAILURE
+
+
+def test_quantities_bind_as_magnitudes():
+    """A length in ``fmt_args`` or ``like`` reaches the primitives as its magnitudes."""
+    x = jnp.array([1.0, -2.0]) * u.angstrom
+
+    def f(x: units.Length) -> Array:
+        runtime_assert(jnp.all(x.value > 0), "got {v}", fmt_args={"v": x})
+        return check_assertions(x)
+
+    ok, (assertion,) = with_runtime_assertions(f)(x)
+    assert not ok
+    np.testing.assert_array_equal(assertion.fmt_args["v"], x.to(u.angstrom))

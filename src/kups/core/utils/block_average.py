@@ -12,16 +12,17 @@ of the standard error.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from kups.core.utils.jax import jit, no_jax_tracing
+from kups.core import units
+from kups.core.utils.jax import jit, no_jax_tracing, tree_stack
 
 
-class BlockAverageResult(NamedTuple):
+class BlockAverageResult[T: units.Measured](NamedTuple):
     """Result of block averaging analysis.
 
     Attributes:
@@ -32,12 +33,12 @@ class BlockAverageResult(NamedTuple):
         n_blocks: Number of blocks used in the analysis.
     """
 
-    mean: Array
-    sem: Array
+    mean: T
+    sem: T
     n_blocks: int
 
 
-def compute_block_means(data: Array, n_blocks: int, axis: int = 0) -> Array:
+def compute_block_means[T: units.Measured](data: T, n_blocks: int, axis: int = 0) -> T:
     """Compute per-block means without aggregating across blocks.
 
     This is the core building block for block averaging. Use this when you need
@@ -70,21 +71,26 @@ def compute_block_means(data: Array, n_blocks: int, axis: int = 0) -> Array:
     block_size = n_samples // n_blocks
     n_used = block_size * n_blocks
 
-    # Slice to use only complete blocks
-    slices: list[slice | int] = [slice(None)] * data.ndim
-    slices[axis] = slice(0, n_used)
-    data = data[tuple(slices)]
+    def means(x: Array) -> Array:
+        # Slice to use only complete blocks
+        slices: list[slice | int] = [slice(None)] * x.ndim
+        slices[axis] = slice(0, n_used)
+        x = x[tuple(slices)]
 
-    # Reshape to (n_blocks, block_size, ...)
-    new_shape = list(data.shape)
-    new_shape[axis : axis + 1] = [n_blocks, block_size]
-    data = data.reshape(new_shape)
+        # Reshape to (n_blocks, block_size, ...)
+        new_shape = list(x.shape)
+        new_shape[axis : axis + 1] = [n_blocks, block_size]
+        x = x.reshape(new_shape)
 
-    # Block means along the block_size axis (axis + 1)
-    return jnp.mean(data, axis=axis + 1)
+        # Block means along the block_size axis (axis + 1)
+        return jnp.mean(x, axis=axis + 1)
+
+    return units.apply(means, data)
 
 
-def block_average_from_blocks(block_values: Array, axis: int = 0) -> BlockAverageResult:
+def block_average_from_blocks[T: units.Measured](
+    block_values: T, axis: int = 0
+) -> BlockAverageResult[T]:
     """Compute block average statistics from pre-computed block values.
 
     Use this when you have already computed per-block values (e.g., derived
@@ -106,17 +112,18 @@ def block_average_from_blocks(block_values: Array, axis: int = 0) -> BlockAverag
         ```
     """
     n_blocks = block_values.shape[axis]
-    mean = jnp.mean(block_values, axis=axis)
-    sem = jnp.std(block_values, axis=axis, ddof=1) / jnp.sqrt(n_blocks)
-    return BlockAverageResult(mean, sem, n_blocks)
+    mean = units.apply(jnp.mean, block_values, axis=axis)
+    sem = units.apply(jnp.std, block_values, axis=axis, ddof=1) / jnp.sqrt(n_blocks)
+    # Both statistics keep ``block_values``' dimension, so ``T`` holds.
+    return cast(BlockAverageResult[T], BlockAverageResult(mean, sem, n_blocks))
 
 
 @jit(static_argnames=("n_blocks", "axis"))
-def block_average(
-    data: Array,
+def block_average[T: units.Measured](
+    data: T,
     n_blocks: int,
     axis: int = 0,
-) -> BlockAverageResult:
+) -> BlockAverageResult[T]:
     """Compute block average statistics for error estimation.
 
     Divides the time series into blocks and uses the variance of block means
@@ -161,7 +168,7 @@ def block_average(
     return block_average_from_blocks(block_means, axis)
 
 
-class BlockTransformResult(NamedTuple):
+class BlockTransformResult[T: units.Measured](NamedTuple):
     """Result of block transformation analysis.
 
     Attributes:
@@ -173,16 +180,16 @@ class BlockTransformResult(NamedTuple):
     """
 
     block_sizes: Array
-    sems: Array
-    mean: Array
+    sems: T
+    mean: T
 
 
-def block_transform(
-    data: Array,
+def block_transform[T: units.Measured](
+    data: T,
     n_blocks_range: Sequence[int] | None = None,
     axis: int = 0,
     min_blocks: int = 4,
-) -> BlockTransformResult:
+) -> BlockTransformResult[T]:
     """Compute SEM across a range of block sizes for plateau detection.
 
     Performs block averaging for multiple block counts to enable identification
@@ -224,31 +231,21 @@ def block_transform(
             if max_blocks // (2**i) >= min_blocks
         ]
 
-    block_sizes: list[int] = []
-    sems: list[Array] = []
-    mean = None
-
-    for n_blocks in n_blocks_range:
-        result = block_average(data, n_blocks=n_blocks, axis=axis)
-        block_sizes.append(n_samples // n_blocks)
-        sems.append(result.sem)
-        if mean is None:
-            mean = result.mean
-
+    results = [block_average(data, n_blocks=n, axis=axis) for n in n_blocks_range]
     return BlockTransformResult(
-        block_sizes=jnp.array(block_sizes),
-        sems=jnp.stack(sems),
-        mean=mean,  # type: ignore[arg-type]
+        block_sizes=jnp.array([n_samples // n for n in n_blocks_range]),
+        sems=tree_stack(*(r.sem for r in results)),
+        mean=results[0].mean,
     )
 
 
 @no_jax_tracing
-def optimal_block_average(
-    data: Array,
+def optimal_block_average[T: units.Measured](
+    data: T,
     axis: int = 0,
     min_blocks: int = 4,
     rtol: float = 0.05,
-) -> BlockAverageResult:
+) -> BlockAverageResult[T]:
     """Automatically select optimal block size and compute block average.
 
     Performs block transformation analysis and detects the plateau where SEM
@@ -277,8 +274,9 @@ def optimal_block_average(
     """
     transform = block_transform(data, axis=axis, min_blocks=min_blocks)
 
-    # SEMs are ordered from small to large block sizes
-    sems = np.asarray(transform.sems)
+    # SEMs are ordered from small to large block sizes; the plateau test needs
+    # only their magnitudes.
+    sems = np.asarray(units.magnitudes(transform.sems))
     block_sizes = np.asarray(transform.block_sizes)
 
     # Compute relative change in SEM between consecutive block sizes

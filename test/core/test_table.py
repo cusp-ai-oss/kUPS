@@ -3,14 +3,20 @@
 
 from __future__ import annotations
 
+from typing import Protocol, overload
+
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
+from jax import Array
 
+from kups.core import units
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import GroupId, Label, ParticleId, SystemId
+from kups.core.units import E_A, E_K, E_KG, E_M, E_S
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 
 
@@ -218,6 +224,20 @@ class TestAt:
         npt.assert_array_equal(updated, [1.0, 99.0, 3.0])
 
 
+class _ScaleOp(Protocol):
+    @overload
+    def __call__(
+        self, t: Table[SystemId, Array], unit: float, /
+    ) -> Table[SystemId, Array]: ...
+    @overload
+    def __call__(
+        self,
+        t: Table[SystemId, units.Quantity[E_M, E_KG, E_S, E_A, E_K]],
+        unit: units.Unit[E_M, E_KG, E_S, E_A, E_K],
+        /,
+    ) -> Table[SystemId, units.Quantity[E_M, E_KG, E_S, E_A, E_K]]: ...
+
+
 class TestTableOperators:
     def test_table_table_ops(self):
         a = Table.arange(jnp.array([10.0, 20.0, 30.0]), label=SystemId)
@@ -240,6 +260,24 @@ class TestTableOperators:
         c = Table.arange(jnp.array([1.0, 2.0]), label=SystemId)
         with pytest.raises(AssertionError):
             a + c
+
+    @pytest.mark.parametrize(
+        "fn",
+        [
+            pytest.param(lambda t, unit: 0.5 * t, id="rmul"),
+            pytest.param(lambda t, unit: 1.0 * unit + t, id="radd"),
+            pytest.param(lambda t, unit: sum([t, t], 0.0 * unit), id="sum"),
+        ],
+    )
+    def test_reflected_ops_keep_dimension(self, fn: _ScaleOp):
+        """Scalars on the left reach the data, a length staying a length."""
+        data = jnp.array([10.0, 20.0, 30.0])
+        out = fn(Table.arange(data * u.angstrom, label=SystemId), u.angstrom)
+        assert isinstance(out, Table) and out.cls is SystemId
+        assert units.dim_of(out.data) == units.dim_of(u.angstrom)
+        npt.assert_array_equal(
+            out.data.to(u.angstrom), fn(Table.arange(data, label=SystemId), 1.0).data
+        )
 
 
 class TestGetitem:

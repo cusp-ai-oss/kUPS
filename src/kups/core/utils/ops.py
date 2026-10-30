@@ -7,11 +7,16 @@ Provides helper functions for array dimension expansion, conditional selection
 with automatic broadcasting, and axis-specific padding.
 """
 
+from __future__ import annotations
+
+from typing import Any, overload
+
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.tree_util import tree_map
 from jax.typing import ArrayLike
+
+from kups.core import units
 
 
 def expand_last_dims(operand: Array, other: Array | tuple[int, ...]) -> Array:
@@ -43,22 +48,33 @@ def expand_last_dims(operand: Array, other: Array | tuple[int, ...]) -> Array:
     return jnp.expand_dims(operand, axis=tuple(range(len(operand.shape), len(other))))
 
 
+@overload
+def where_broadcast_last[T: units.Measured](condition: Array, x: T, y: T) -> T: ...
+@overload
+def where_broadcast_last(condition: Array, x: ArrayLike, y: ArrayLike) -> Array: ...
+
+
 def where_broadcast_last(
-    condition: Array, x: Array | ArrayLike, y: Array | ArrayLike
-) -> Array:
+    condition: Array, x: units.Measured | ArrayLike, y: units.Measured | ArrayLike
+) -> units.Measured | ArrayLike:
     """Element-wise ``jnp.where`` with ``condition`` broadcast on trailing dims.
 
     Expands ``condition`` to match the shapes of ``x`` and ``y`` before
     selecting, so a lower-rank condition naturally broadcasts over trailing
-    feature dimensions.
+    feature dimensions. Quantity operands keep their dimension.
 
     Args:
         condition: Boolean array used for selection.
         x: Values selected where ``condition`` is ``True``.
-        y: Values selected where ``condition`` is ``False``.
+        y: Values selected where ``condition`` is ``False``, measuring what
+            ``x`` does.
 
     Returns:
-        Array with shape ``broadcast(x, y)``.
+        Values with shape ``broadcast(x, y)``, measuring what ``x``/``y`` do.
+
+    Raises:
+        DimensionError: If ``x`` and ``y`` differ in dimension, a plain operand
+            next to a quantity included.
 
     Example:
         ```python
@@ -70,10 +86,12 @@ def where_broadcast_last(
     """
     if x is y and isinstance(x, Array):
         return x
-    x, y = tree_map(jnp.asarray, (x, y))
-    x, y = jnp.broadcast_arrays(x, y)
-    expanded_condition = expand_last_dims(condition, x)
-    return jnp.where(expanded_condition, x, y)
+
+    def _where(a: Any, b: Any) -> Any:
+        shape = jnp.broadcast_shapes(jnp.shape(a), jnp.shape(b))
+        return units.where(expand_last_dims(condition, shape), a, b)
+
+    return units.tree_map(_where, x, y)
 
 
 def segment_max(data: Array, segment_ids: Array, num_segments: int) -> Array:
@@ -120,7 +138,7 @@ def pad_axis(operand: Array, to_pad: tuple[int, int], axis: int) -> Array:
     return jnp.pad(operand, padding)
 
 
-def select_n(which: Array, *cands: Array) -> Array:
+def select_n[T](which: Array, *cands: T) -> T:
     """Like ``jax.lax.select_n`` but short-circuits when all candidates are identical.
 
     At trace time, if every candidate is the *same* tracer (``is`` check),
@@ -129,15 +147,16 @@ def select_n(which: Array, *cands: Array) -> Array:
 
     Args:
         which: Integer array indexing into ``cands``.
-        *cands: Candidate arrays to select from.
+        *cands: Candidate arrays or quantities to select from, all measuring the
+            same thing.
 
     Returns:
-        The selected array, or ``cands[0]`` directly if all candidates
+        The selected candidate, or ``cands[0]`` directly if all candidates
         are the same object.
     """
     if all(c is cands[0] for c in cands[1:]):
         return cands[0]
-    return jax.lax.select_n(which, *cands)
+    return units.tree_map(lambda *c: units.select_n(which, *c), *cands)
 
 
 # Block width when reducing long masks to per-block occupancy.

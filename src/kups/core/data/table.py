@@ -46,6 +46,14 @@ class SupportsAdd[T](Protocol):
     def __add__(self, other: T) -> Self: ...
 
 
+class SupportsRAdd[T, R](Protocol):
+    def __radd__(self, other: T, /) -> R: ...
+
+
+class SupportsRMul[T, R](Protocol):
+    def __rmul__(self, other: T, /) -> R: ...
+
+
 class SupportsSub[T](Protocol):
     def __sub__(self, other: T) -> Self: ...
 
@@ -459,6 +467,11 @@ class Table(Batched, Generic[TKey, TData]):
     def __add__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a + b, self, other)
 
+    def __radd__[D, R](
+        self: Table[TKey, SupportsRAdd[D, R]], other: D
+    ) -> Table[TKey, R]:
+        return _table_operator(lambda a, b: b + a, self, other)
+
     @overload
     def __sub__(
         self: Table[TKey, SupportsSub[TData]], other: Table[TKey, TData]
@@ -480,6 +493,11 @@ class Table(Batched, Generic[TKey, TData]):
     ) -> Table[TKey, TData]: ...
     def __mul__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a * b, self, other)
+
+    def __rmul__[D, R](
+        self: Table[TKey, SupportsRMul[D, R]], other: D
+    ) -> Table[TKey, R]:
+        return _table_operator(lambda a, b: b * a, self, other)
 
     @overload
     def __truediv__(
