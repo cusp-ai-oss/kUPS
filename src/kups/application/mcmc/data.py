@@ -292,7 +292,8 @@ class MCMCSystems:
             accumulator, each entry of shape ``(n_systems,)``. Monte Carlo folds
             per-move energy changes into it, so the compensation keeps changes
             far below ``ulp`` of the total from being lost.
-        log_fugacity: Log fugacity per species (dimensionless), shape ``(n_systems, n_species)``.
+        log_fugacity: Log of the fugacity (eV/Å³) per species, shape
+            ``(n_systems, n_species)``.
         cell_gradients: Energy gradients w.r.t. the cell, defaults to zeros.
     """
 
