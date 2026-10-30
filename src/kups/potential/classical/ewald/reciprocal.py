@@ -217,6 +217,21 @@ def _structure_factor_full(
     ``grid_index`` locates the k-vectors inside the phase grid, shaped
     ``(n_systems, n_kvecs)``, and is required there; NumPy indices let the grid
     be cropped to the rows the k-vectors occupy.
+
+    Args:
+        positions: Particle positions, ``(n_particles, 3)``.
+        charges: Signed particle charges, ``(n_particles,)``.
+        kvecs: Cartesian reciprocal vectors, ``(n_systems, n_kvecs, 3)``.
+        inverse_vectors: Inverse cell matrices for the phase grid, ``(n_systems, 3, 3)``.
+        batch_mask: System of each particle.
+        bound: Phase-grid axis bounds; ``(0, 0, 0)`` disables the grid.
+        particle_chunk_size: Maximum particles per tile.
+        k_chunk_size: Maximum k-vectors per tile.
+        tiled: Force bounded explicit tiles.
+        grid_index: Positions of the k-vectors in the phase grid.
+
+    Returns:
+        Real and imaginary structure factors, ``(n_systems, n_kvecs, 2)``.
     """
     if particle_chunk_size < 1 or k_chunk_size < 1:
         raise ValueError("Reciprocal chunk sizes must be positive")
