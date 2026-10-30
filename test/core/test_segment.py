@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import partial
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,8 @@ import pytest
 from jax import Array
 from jax.typing import ArrayLike, DTypeLike
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.segment import bincount, segment_sum, segment_take
 
 type Case = tuple[Array, Array, int]
@@ -523,7 +526,7 @@ class TestSegmentSum:
         # A dropped update writes nothing, so there is no slot to fill and the sum
         # takes no `fill_value`, no more than `jax.ops.segment_sum` does.
         with pytest.raises(TypeError, match="fill_value"):
-            # pyrefly: ignore [unexpected-keyword]
+            # pyrefly: ignore [no-matching-overload]
             segment_sum(data, POISON, 4, fill_value=1.0)
 
     @pytest.mark.parametrize("mode", MODES)
@@ -721,3 +724,31 @@ class TestSegmentTake:
                 segment_take(table, POISON, mode=mode)
         with pytest.raises(ValueError, match="fill_value.*clip"):
             segment_take(table, POISON, mode="clip", fill_value=9.0)
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        pytest.param(lambda x, unit: segment_sum(x * unit, POISON[:3], 2), id="sum"),
+        pytest.param(
+            lambda x, unit: segment_sum(x * unit, jnp.zeros(3, int), 1), id="sum_one"
+        ),
+        pytest.param(
+            lambda x, unit: segment_take(x * unit, POISON, fill_value=-1.0 * unit),
+            id="take",
+        ),
+    ],
+)
+def test_quantity_keeps_dimension(fn: Callable[[Array, Any], Any]) -> None:
+    """A length goes through as its magnitudes and comes back a length."""
+    rows = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    out = fn(rows, u.angstrom)
+    assert units.dim_of(out) == units.dim_of(u.angstrom)
+    npt.assert_allclose(out.to(u.angstrom), fn(rows, 1.0))
+
+
+def test_take_rejects_fill_of_another_dimension() -> None:
+    """A fill must measure what the data does."""
+    with pytest.raises(units.DimensionError, match="fill_value"):
+        # pyrefly: ignore[no-matching-overload]
+        segment_take(jnp.ones((3, 2)) * u.angstrom, POISON, fill_value=7.0 * u.eV)

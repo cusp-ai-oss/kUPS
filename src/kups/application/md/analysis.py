@@ -67,14 +67,14 @@ class MDAnalysisResult:
         n_steps: Number of simulation steps analyzed.
     """
 
-    potential_energy: BlockAverageResult
-    kinetic_energy: BlockAverageResult
-    total_energy: BlockAverageResult
-    temperature: BlockAverageResult
+    potential_energy: BlockAverageResult[Array]
+    kinetic_energy: BlockAverageResult[Array]
+    total_energy: BlockAverageResult[Array]
+    temperature: BlockAverageResult[Array]
     energy_drift: float
     energy_drift_per_atom: float
-    pressure: BlockAverageResult
-    volume: BlockAverageResult
+    pressure: BlockAverageResult[Array]
+    volume: BlockAverageResult[Array]
     n_atoms: int
     n_steps: int
 

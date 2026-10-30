@@ -23,8 +23,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import Capacity
 from kups.core.lens import bind
+from kups.core.units._typed import _E_A, _E_K, _E_KG, _E_M, _E_S
 from kups.core.utils.jax import (
     ScatterArgs,
     dataclass,
@@ -571,7 +573,16 @@ class Index[Key: SupportsSorting]:
         cls = new if isinstance(new, type) else None
         return Index(new_keys, self._indices, max_count=self.max_count, _cls=cls)
 
-    def sum_over(self, array: Array) -> Table[Key, Array]:
+    @overload
+    def sum_over(self, array: Array) -> Table[Key, Array]: ...
+    @overload
+    def sum_over(
+        self, array: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+    ) -> Table[Key, units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]]: ...
+
+    def sum_over(
+        self, array: Array | units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+    ) -> Table[Key, Array | units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]]:
         """Sums ``array`` values grouped by this index via segment sum.
 
         Uses a native sum for one key and wider accumulation for multiple keys,
@@ -591,7 +602,16 @@ class Index[Key: SupportsSorting]:
             _cls=self._cls,
         )
 
-    def max_over(self, array: Array) -> Table[Key, Array]:
+    @overload
+    def max_over(self, array: Array) -> Table[Key, Array]: ...
+    @overload
+    def max_over(
+        self, array: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+    ) -> Table[Key, units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]]: ...
+
+    def max_over(
+        self, array: Array | units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+    ) -> Table[Key, Array] | Table[Key, units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]]:
         """Takes max of ``array`` values grouped by this index via segment max.
 
         Args:
@@ -602,8 +622,10 @@ class Index[Key: SupportsSorting]:
         """
         from kups.core.data.table import Table
 
-        out = segment_max(array, self._indices, self.num_labels)
-        return Table(self.keys, out, _cls=self._cls)
+        def _max(array: Array) -> Array:
+            return segment_max(array, self._indices, self.num_labels)
+
+        return Table(self.keys, units.apply(_max, array), _cls=self._cls)
 
     @staticmethod
     def find[L: SupportsSorting](obj: PyTree, cls: type[L]) -> Index[L]:

@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 import scipy.linalg
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.math import _expm_small, solve_affine_ode
 
 
@@ -126,6 +128,36 @@ def test_segment_path_matches_per_row():
     got = solve_affine_ode(A, b, x0, dt, segment=segment)
     expected = jax.vmap(solve_affine_ode)(A[segment], b, x0, dt[segment])
     np.testing.assert_allclose(got, expected, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+def test_quantities_keep_x0_dimension(segmented: bool):
+    """Time units cancel in ``A dt`` and ``b dt``, so the magnitudes match plain input."""
+    rng = np.random.default_rng(5)
+    segment = jnp.asarray([0, 1, 1])
+    A = jnp.asarray(np.tril(rng.standard_normal((2, 3, 3))))
+    dt = jnp.asarray([0.1, 0.25])
+    b = jnp.asarray(rng.standard_normal((3, 3)))
+    x0 = jnp.asarray(rng.standard_normal((3, 3)))
+    if not segmented:
+        A, dt, segment = A[segment], dt[segment, None, None], None
+    out = solve_affine_ode(
+        A / u.fs, b * u.angstrom / u.fs, x0 * u.angstrom, dt * u.fs, segment=segment
+    )
+    assert units.dim_of(out) == units.dim_of(u.angstrom)
+    expected = solve_affine_ode(A, b, x0, dt, segment=segment)
+    np.testing.assert_allclose(out.to(u.angstrom), expected, rtol=1e-6)
+
+
+def test_rejects_mismatched_dimensions():
+    """``A dt`` must be dimensionless and ``b dt`` must carry ``x0``'s dimension."""
+    A, x, dt = jnp.eye(2), jnp.ones(2), 0.1 * u.fs
+    with pytest.raises(units.DimensionError, match="solve_affine_ode"):
+        # pyrefly: ignore[no-matching-overload]
+        solve_affine_ode(A / u.fs, x * u.eV / u.fs, x * u.angstrom, dt)
+    with pytest.raises(units.DimensionError, match="solve_affine_ode"):
+        # pyrefly: ignore[no-matching-overload]
+        solve_affine_ode(A, x * u.angstrom / u.fs, x * u.angstrom, dt)
 
 
 @pytest.mark.parametrize("scale", [1e-8, 1e-3, 1.0, 30.0, 1e2, 1e3])

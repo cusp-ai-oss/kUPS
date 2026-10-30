@@ -57,7 +57,7 @@ ANALYZERS: dict[str, Callable[[Path], MCMCAnalysisResult | MDAnalysisResult]] = 
 }
 
 
-def block_result_to_expected(result: BlockAverageResult) -> dict[str, Any]:
+def block_result_to_expected(result: BlockAverageResult[Any]) -> dict[str, Any]:
     """Convert BlockAverageResult to expected values dict.
 
     Args:
