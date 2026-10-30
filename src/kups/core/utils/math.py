@@ -18,6 +18,20 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
+from kups.core.units._typed import (
+    _E_A,
+    _E_K,
+    _E_KG,
+    _E_M,
+    _E_S,
+    _F_A,
+    _F_K,
+    _F_KG,
+    _F_M,
+    _F_S,
+)
+from kups.core.units._unit import Dim
 from kups.core.utils.jax import dataclass, jit, vectorize
 
 
@@ -408,33 +422,19 @@ class MatmulSide(StrEnum):
 
 
 @jit(static_argnames=("lower", "side"))
-def triangular_3x3_matmul(
+def _triangular_3x3_matmul(
     L: Array, x: Array, *, lower: bool = True, side: MatmulSide | str = MatmulSide.RIGHT
 ) -> Array:
-    """Optimized matrix-vector multiplication for triangular 3×3 matrices.
-
-    Exploits triangular structure to avoid computing with known-zero elements
-    and supports broadcasting over leading dimensions. Scalar products fuse
-    with neighboring operations, unlike small batched dots.
+    """Magnitude kernel for triangular 3×3 matrix-vector multiplication.
 
     Args:
         L: Array of shape `(..., 3, 3)` containing triangular matrices.
         x: Array of shape `(..., 3)` containing vectors to multiply.
         lower: Whether `L` is lower (True) or upper (False) triangular.
-        side: Multiplication side:
-            - `"right"`: Computes `xL`
-            - `"left"`: Computes `Lx`
+        side: Multiplication side, `"right"` for `xL` and `"left"` for `Lx`.
 
     Returns:
         Shape `(..., 3)` containing the result.
-
-    Example:
-        ```python
-        L = jnp.array([[1, 0, 0], [2, 3, 0], [4, 5, 6]])
-        x = jnp.array([1.0, 2.0, 3.0])
-        result = triangular_3x3_matmul(L, x, lower=True, side="right")
-        # Computes x @ L efficiently
-        ```
     """
     side = MatmulSide(side)
     if side is MatmulSide.LEFT:
@@ -450,6 +450,79 @@ def triangular_3x3_matmul(
         ],
         axis=-1,
     )
+
+
+@overload
+def triangular_3x3_matmul(
+    L: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    x: units.Quantity[_F_M, _F_KG, _F_S, _F_A, _F_K],
+    *,
+    lower: bool = True,
+    side: MatmulSide | str = MatmulSide.RIGHT,
+) -> units.Quantity[
+    _E_M + _F_M, _E_KG + _F_KG, _E_S + _F_S, _E_A + _F_A, _E_K + _F_K
+]: ...
+@overload
+def triangular_3x3_matmul(
+    L: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    x: Array,
+    *,
+    lower: bool = True,
+    side: MatmulSide | str = MatmulSide.RIGHT,
+) -> units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+@overload
+def triangular_3x3_matmul(
+    L: Array,
+    x: units.Quantity[_F_M, _F_KG, _F_S, _F_A, _F_K],
+    *,
+    lower: bool = True,
+    side: MatmulSide | str = MatmulSide.RIGHT,
+) -> units.Quantity[_F_M, _F_KG, _F_S, _F_A, _F_K]: ...
+@overload
+def triangular_3x3_matmul(
+    L: Array,
+    x: Array,
+    *,
+    lower: bool = True,
+    side: MatmulSide | str = MatmulSide.RIGHT,
+) -> Array: ...
+def triangular_3x3_matmul(
+    L: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | Array,
+    x: units.Quantity[_F_M, _F_KG, _F_S, _F_A, _F_K] | Array,
+    *,
+    lower: bool = True,
+    side: MatmulSide | str = MatmulSide.RIGHT,
+) -> (
+    units.Quantity[_E_M + _F_M, _E_KG + _F_KG, _E_S + _F_S, _E_A + _F_A, _E_K + _F_K]
+    | Array
+):
+    """Optimized matrix-vector multiplication for triangular 3×3 matrices.
+
+    Exploits triangular structure to avoid computing with known-zero elements
+    and supports broadcasting over leading dimensions. Scalar products fuse
+    with neighboring operations, unlike small batched dots. The product
+    carries the dimensions of both operands, as a matrix multiplication does.
+
+    Args:
+        L: Matrices of shape `(..., 3, 3)`, triangular.
+        x: Vectors of shape `(..., 3)` to multiply.
+        lower: Whether `L` is lower (True) or upper (False) triangular.
+        side: Multiplication side:
+            - `"right"`: Computes `xL`
+            - `"left"`: Computes `Lx`
+
+    Returns:
+        Shape `(..., 3)` containing the result.
+
+    Example:
+        ```python
+        L = jnp.array([[1, 0, 0], [2, 3, 0], [4, 5, 6]]) * u.angstrom
+        x = jnp.array([1.0, 2.0, 3.0])
+        result = triangular_3x3_matmul(L, x, lower=True, side="right")
+        # Computes x @ L efficiently, in Angstrom
+        ```
+    """
+    return units.apply(_triangular_3x3_matmul, L, x, lower=lower, side=side)
 
 
 @runtime_checkable
@@ -622,7 +695,7 @@ class DiagonalSquareMatrix(LowerTriangularSquareMatrix):
 
 
 @jit
-def solve_affine_ode(
+def _solve_affine_ode(
     A: Array,
     b: Array,
     x0: Array,
@@ -630,30 +703,14 @@ def solve_affine_ode(
     *,
     segment: Array | None = None,
 ) -> Array:
-    r"""Solve the affine ODE $\dot{x} = A\,x + b$ exactly over $[0, \Delta t]$.
-
-    Computes
-
-    $$x(\Delta t) = e^{A\,\Delta t}\,x_0 + \varphi_1(A\,\Delta t)\,\Delta t\,b,
-    \qquad \varphi_1(M) = M^{-1}(e^{M} - I).$$
-
-    Uses the augmented-matrix trick (Al-Mohy & Higham 2011) so that a single
-    matrix exponential delivers both terms and the formula is well-defined
-    even when ``A`` has zero eigenvalues:
-
-    $$\exp\!\left(\Delta t \begin{bmatrix} A & b \\ 0 & 0 \end{bmatrix}\right)
-      = \begin{bmatrix} e^{A\,\Delta t} & \varphi_1(A\,\Delta t)\,\Delta t\,b \\ 0 & 1 \end{bmatrix}.$$
+    """Magnitude kernel for [solve_affine_ode][kups.core.utils.math.solve_affine_ode].
 
     Args:
-        A: Coefficient matrix, shape ``(..., n, n)``. Any shape (triangular
-            or general) is accepted; ``expm`` handles all cases.
+        A: Coefficient matrix, shape ``(..., n, n)``.
         b: Constant inhomogeneous term, shape ``(..., n)``.
         x0: Initial state, shape ``(..., n)``.
-        dt: Scalar timestep (broadcastable to the batch shape).
-        segment: Optional segment id per row. Then ``A`` and ``dt`` are given per
-            segment, shape ``(S, n, n)`` and ``(S,)``, and ``b``, ``x0`` per row,
-            shape ``(R, n)``. The exponential is computed once per segment, not per
-            row, without data-dependent branches (finite for ``|A dt|_1 < 2**15``).
+        dt: Scalar timestep.
+        segment: Optional segment id per row.
 
     Returns:
         State at ``dt``, shape ``(..., n)``.
@@ -670,6 +727,93 @@ def solve_affine_ode(
     M = jnp.concatenate([A_padded, zero_row], axis=-2)  # (..., n+1, n+1)
     E = jax.scipy.linalg.expm(M * dt)
     return jnp.einsum("...ij,...j->...i", E[..., :n, :n], x0) + E[..., :n, n]
+
+
+@overload
+def solve_affine_ode(
+    A: units.Frequency,
+    b: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    x0: units.Quantity[_E_M, _E_KG, _E_S + 1, _E_A, _E_K],
+    dt: units.Time,
+    *,
+    segment: Array | None = None,
+) -> units.Quantity[_E_M, _E_KG, _E_S + 1, _E_A, _E_K]: ...
+@overload
+def solve_affine_ode(
+    A: Array,
+    b: Array,
+    x0: Array,
+    dt: Array | float,
+    *,
+    segment: Array | None = None,
+) -> Array: ...
+def solve_affine_ode(
+    A: units.Frequency | Array,
+    b: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | Array,
+    x0: units.Quantity[_E_M, _E_KG, _E_S + 1, _E_A, _E_K] | Array,
+    dt: units.Time | Array | float,
+    *,
+    segment: Array | None = None,
+) -> units.Quantity[_E_M, _E_KG, _E_S + 1, _E_A, _E_K] | Array:
+    r"""Solve the affine ODE $\dot{x} = A\,x + b$ exactly over $[0, \Delta t]$.
+
+    Computes
+
+    $$x(\Delta t) = e^{A\,\Delta t}\,x_0 + \varphi_1(A\,\Delta t)\,\Delta t\,b,
+    \qquad \varphi_1(M) = M^{-1}(e^{M} - I).$$
+
+    Uses the augmented-matrix trick (Al-Mohy & Higham 2011) so that a single
+    matrix exponential delivers both terms and the formula is well-defined
+    even when ``A`` has zero eigenvalues:
+
+    $$\exp\!\left(\Delta t \begin{bmatrix} A & b \\ 0 & 0 \end{bmatrix}\right)
+      = \begin{bmatrix} e^{A\,\Delta t} & \varphi_1(A\,\Delta t)\,\Delta t\,b \\ 0 & 1 \end{bmatrix}.$$
+
+    The augmented matrix mixes ``A`` (per unit time) with ``b`` (``x`` per unit
+    time), which no single dimension can label, so quantities are lowered to
+    their base magnitudes and the result is labelled with ``x0``'s dimension.
+
+    Args:
+        A: Coefficient matrix, shape ``(..., n, n)``. Any shape (triangular
+            or general) is accepted; ``expm`` handles all cases. Carries
+            inverse time.
+        b: Constant inhomogeneous term, shape ``(..., n)``. Carries ``x0``'s
+            dimension per unit time.
+        x0: Initial state, shape ``(..., n)``. Fixes the dimension of the result.
+        dt: Scalar timestep (broadcastable to the batch shape).
+        segment: Optional segment id per row. Then ``A`` and ``dt`` are given per
+            segment, shape ``(S, n, n)`` and ``(S,)``, and ``b``, ``x0`` per row,
+            shape ``(R, n)``. The exponential is computed once per segment, not per
+            row, without data-dependent branches (finite for ``|A dt|_1 < 2**15``).
+
+    Returns:
+        State at ``dt``, shape ``(..., n)``, in ``x0``'s dimension.
+
+    Raises:
+        DimensionError: If ``A * dt`` is not dimensionless or ``b * dt`` does not
+            carry ``x0``'s dimension.
+    """
+    if _dim_times(A, dt) != units.ONE or _dim_times(b, dt) != units.dim_of(x0):
+        raise units.DimensionError(
+            "solve_affine_ode: A * dt must be dimensionless and b * dt must carry "
+            "x0's dimension."
+        )
+    return units.apply(
+        _solve_affine_ode, A, b, x0, dt, segment=segment, dim=units.dim_of(x0)
+    )
+
+
+def _dim_times(x: object, y: object) -> Dim:
+    """Dimension of the product of ``x`` and ``y``.
+
+    Args:
+        x: Any value; a plain one is dimensionless.
+        y: Any value; a plain one is dimensionless.
+
+    Returns:
+        The exponentwise sum of their dimension exponents.
+    """
+    return tuple(a + b for a, b in zip(units.dim_of(x), units.dim_of(y), strict=True))
 
 
 def _expm_small(M: Array, max_squarings: int = 16, order: int = 12) -> Array:

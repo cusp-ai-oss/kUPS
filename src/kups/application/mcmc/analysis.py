@@ -79,18 +79,18 @@ class MCMCAnalysisResult:
         pressure_ideal_gas: Ideal-gas component of the pressure.
     """
 
-    energy: BlockAverageResult
-    loading: BlockAverageResult
-    heat_of_adsorption: BlockAverageResult
-    total_heat_of_adsorption: BlockAverageResult
-    stress: BlockAverageResult | None = None
-    stress_potential: BlockAverageResult | None = None
-    stress_tail_correction: BlockAverageResult | None = None
-    stress_ideal_gas: BlockAverageResult | None = None
-    pressure: BlockAverageResult | None = None
-    pressure_potential: BlockAverageResult | None = None
-    pressure_tail_correction: BlockAverageResult | None = None
-    pressure_ideal_gas: BlockAverageResult | None = None
+    energy: BlockAverageResult[Array]
+    loading: BlockAverageResult[Array]
+    heat_of_adsorption: BlockAverageResult[Array]
+    total_heat_of_adsorption: BlockAverageResult[Array]
+    stress: BlockAverageResult[Array] | None = None
+    stress_potential: BlockAverageResult[Array] | None = None
+    stress_tail_correction: BlockAverageResult[Array] | None = None
+    stress_ideal_gas: BlockAverageResult[Array] | None = None
+    pressure: BlockAverageResult[Array] | None = None
+    pressure_potential: BlockAverageResult[Array] | None = None
+    pressure_tail_correction: BlockAverageResult[Array] | None = None
+    pressure_ideal_gas: BlockAverageResult[Array] | None = None
 
 
 @no_jax_tracing
@@ -146,7 +146,7 @@ def _analyze_single_system(
 
     def _stress_and_pressure(
         s: Array | None,
-    ) -> tuple[BlockAverageResult | None, BlockAverageResult | None]:
+    ) -> tuple[BlockAverageResult[Array] | None, BlockAverageResult[Array] | None]:
         """Block-average a stress time series and its pressure.
 
         Args:
@@ -278,9 +278,9 @@ class WidomAnalysisResult:
             test-particle limit.
     """
 
-    excess_chemical_potential: BlockAverageResult
-    henry_coefficient: BlockAverageResult
-    heat_of_adsorption: BlockAverageResult
+    excess_chemical_potential: BlockAverageResult[Array]
+    henry_coefficient: BlockAverageResult[Array]
+    heat_of_adsorption: BlockAverageResult[Array]
 
 
 @no_jax_tracing

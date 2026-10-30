@@ -10,11 +10,15 @@ interpolation compared to Euler angles.
 
 from __future__ import annotations
 
+from typing import overload
+
 import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Sliceable
+from kups.core.units._typed import _E_A, _E_K, _E_KG, _E_M, _E_S
 
 from .jax import dataclass, vectorize
 
@@ -118,39 +122,49 @@ class Quaternion(Sliceable):
         """
         return Quaternion(self.components * jnp.array([1, -1, -1, -1]))
 
-    def __rmatmul__(self, other: object) -> Array:
+    @overload
+    def __rmatmul__(
+        self, other: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+    ) -> units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+    @overload
+    def __rmatmul__(self, other: Array) -> Array: ...
+    def __rmatmul__(
+        self, other: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | Array
+    ) -> units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | Array:
         """Rotate a 3D vector or batch of vectors by this quaternion.
 
         Implements the operation ``point @ quaternion`` to apply the rotation
-        represented by the quaternion to one or more 3D points.
+        represented by the quaternion to one or more 3D points. The rotation
+        matrix is dimensionless, so a quantity keeps its dimension.
 
         Args:
-            other: Array of shape ``(..., 3)`` representing 3D point(s).
+            other: Array or quantity of shape ``(..., 3)`` representing 3D
+                point(s).
 
         Returns:
-            Rotated point(s) with the same shape as input.
+            Rotated point(s) with the same shape and dimension as the input.
 
         Raises:
-            TypeError: If ``other`` is not a JAX array.
+            TypeError: If ``other`` is neither a JAX array nor a quantity.
             ValueError: If the last dimension of ``other`` is not 3.
 
         Example:
             ```python
             q = Quaternion.random(jax.random.PRNGKey(0))
-            point = jnp.array([1.0, 0.0, 0.0])
+            point = jnp.array([1.0, 0.0, 0.0]) * u.angstrom
             rotated = point @ q
             ```
         """
-        if not isinstance(other, jax.Array):
+        if not isinstance(other, jax.Array) and not units.is_quantity(other):
             raise TypeError(
                 f"Unsupported type for right multiplication: {type(other)}. "
-                "Expected Array."
+                "Expected Array or Quantity."
             )
         if other.shape[-1] != 3:
             raise ValueError(
                 f"Expected last dimension of other to be 3, got {other.shape[-1]}"
             )
-        return jnp.einsum("...ij,...j->...i", self.as_matrix(), other)
+        return units.einsum("...ij,...j->...i", self.as_matrix(), other)
 
     def __mul__(self, other: object) -> Quaternion:
         """Compose two rotations via quaternion multiplication.

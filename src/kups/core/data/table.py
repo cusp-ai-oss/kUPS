@@ -459,6 +459,9 @@ class Table(Batched, Generic[TKey, TData]):
     def __add__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a + b, self, other)
 
+    def __radd__(self, other: Any) -> Table[TKey, TData]:
+        return _table_operator(lambda a, b: b + a, self, other)
+
     @overload
     def __sub__(
         self: Table[TKey, SupportsSub[TData]], other: Table[TKey, TData]
@@ -480,6 +483,9 @@ class Table(Batched, Generic[TKey, TData]):
     ) -> Table[TKey, TData]: ...
     def __mul__(self, other: Any) -> Table[TKey, TData]:
         return _table_operator(lambda a, b: a * b, self, other)
+
+    def __rmul__(self, other: Any) -> Table[TKey, TData]:
+        return _table_operator(lambda a, b: b * a, self, other)
 
     @overload
     def __truediv__(

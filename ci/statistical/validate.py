@@ -132,7 +132,7 @@ def run_simulations(
 
 def validate_observable(
     name: str,
-    result: BlockAverageResult,
+    result: BlockAverageResult[Any],
     expected_mean: float | list[float],
     expected_sem: float | list[float],
     tolerance_sigmas: float = DEFAULT_TOLERANCE_SIGMAS,

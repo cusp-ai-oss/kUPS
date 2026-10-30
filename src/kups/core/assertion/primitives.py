@@ -26,6 +26,7 @@ from kups.core.utils._jax_compat import (
     manual_axes_kwarg,
     register_dce_rule,
 )
+from kups.core.utils.units import Measured, magnitudes
 
 _TRACEBACK_MARKER: Final[str] = "\nAssertion created at:\n"
 
@@ -137,7 +138,7 @@ def _capture_traceback() -> str:
 def runtime_assert[State, FixArgs](
     predicate: Array,
     message: str = "",
-    fmt_args: dict[str, Array] | None = None,
+    fmt_args: dict[str, Measured] | None = None,
     exception_type: type[Exception] = AssertionError,
     static_info: dict[str, Any] | None = None,
     fix_fn: Fix[State, FixArgs] | None = None,
@@ -155,7 +156,8 @@ def runtime_assert[State, FixArgs](
     Args:
         predicate: A boolean array indicating whether the assertion passes
         message: Error message with optional format placeholders (e.g., "Value {val} is invalid")
-        fmt_args: Dictionary mapping format placeholder names to values
+        fmt_args: Dictionary mapping format placeholder names to values; a
+            quantity is formatted as its magnitudes in its own base.
         exception_type: Type of exception to raise if assertion fails during checking
         static_info: Additional metadata for debugging (not traced by JAX)
         fix_fn: Optional function to repair state when assertion fails
@@ -217,8 +219,9 @@ def runtime_assert[State, FixArgs](
     # Convert static_info to hashable format (tuple of key-value pairs)
     static_info_hashable = tuple(sorted(static_info.items()))
 
-    # Prepare inputs: predicate, fmt_args values, fix_args flattened (if present)
-    inputs = [predicate, *fmt_args.values()]
+    # Prepare inputs: predicate, fmt_args values, fix_args flattened (if present).
+    # Primitives bind JAX values only, so quantities enter as their magnitudes.
+    inputs = [magnitudes(predicate), *map(magnitudes, fmt_args.values())]
     fix_args_tree = None
     if not isinstance(fix_args, _NO_ARGS):
         # Flatten fix_args PyTree and add to inputs
@@ -237,17 +240,18 @@ def runtime_assert[State, FixArgs](
     )
 
 
-def check_assertions(like: Array | None = None) -> Array:
+def check_assertions(like: Measured | None = None) -> Array:
     """A primitive that returns a scalar bool. When not wrapped in with_runtime_assertions,
     it always returns True. When wrapped, it will return the conjunction of all
     runtime assertions in the current context.
 
     Args:
-        like: An array whose device placement and sharding will be used for the output.
-            If None, the output will be placed on the default device.
+        like: A value whose device placement and sharding will be used for the
+            output; a quantity's magnitudes are read. If None, the output will
+            be placed on the default device.
     Returns:
         A scalar boolean array indicating whether all assertions pass.
     """
     if like is None:
         like = jnp.array(True, dtype=jnp.bool)
-    return check_assertion_p.bind(like)
+    return check_assertion_p.bind(magnitudes(like))

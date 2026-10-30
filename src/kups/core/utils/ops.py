@@ -7,11 +7,17 @@ Provides helper functions for array dimension expansion, conditional selection
 with automatic broadcasting, and axis-specific padding.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, overload
+
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.tree_util import tree_map
 from jax.typing import ArrayLike
+
+if TYPE_CHECKING:
+    from kups.core.utils.units import Measured
 
 
 def expand_last_dims(operand: Array, other: Array | tuple[int, ...]) -> Array:
@@ -43,14 +49,25 @@ def expand_last_dims(operand: Array, other: Array | tuple[int, ...]) -> Array:
     return jnp.expand_dims(operand, axis=tuple(range(len(operand.shape), len(other))))
 
 
-def where_broadcast_last(
-    condition: Array, x: Array | ArrayLike, y: Array | ArrayLike
-) -> Array:
+@overload
+def where_broadcast_last[T: Measured](
+    condition: Array, x: T, y: T | ArrayLike
+) -> T: ...
+@overload
+def where_broadcast_last[T: Measured](
+    condition: Array, x: T | ArrayLike, y: T
+) -> T: ...
+@overload
+def where_broadcast_last(condition: Array, x: ArrayLike, y: ArrayLike) -> Array: ...
+
+
+def where_broadcast_last(condition: Array, x: Any, y: Any) -> Any:
     """Element-wise ``jnp.where`` with ``condition`` broadcast on trailing dims.
 
     Expands ``condition`` to match the shapes of ``x`` and ``y`` before
     selecting, so a lower-rank condition naturally broadcasts over trailing
-    feature dimensions.
+    feature dimensions. Quantity operands keep their dimension; a quantity
+    meeting a plain operand reads it as magnitudes in the quantity's base.
 
     Args:
         condition: Boolean array used for selection.
@@ -58,7 +75,7 @@ def where_broadcast_last(
         y: Values selected where ``condition`` is ``False``.
 
     Returns:
-        Array with shape ``broadcast(x, y)``.
+        Values with shape ``broadcast(x, y)``, measuring what ``x``/``y`` do.
 
     Example:
         ```python
@@ -70,10 +87,37 @@ def where_broadcast_last(
     """
     if x is y and isinstance(x, Array):
         return x
-    x, y = tree_map(jnp.asarray, (x, y))
-    x, y = jnp.broadcast_arrays(x, y)
-    expanded_condition = expand_last_dims(condition, x)
-    return jnp.where(expanded_condition, x, y)
+    x, y = _match_structure(x, y)
+
+    def _where(a: ArrayLike, b: ArrayLike) -> Array:
+        a, b = jnp.broadcast_arrays(jnp.asarray(a), jnp.asarray(b))
+        return jnp.where(expand_last_dims(condition, a), a, b)
+
+    return jax.tree.map(_where, x, y)
+
+
+def _match_structure(x: Any, y: Any) -> tuple[Any, Any]:
+    """Give a plain operand the structure of a labelled single-leaf one.
+
+    A quantity is a pytree node over its magnitudes, so a plain operand meeting
+    one is read as magnitudes in the quantity's base.
+
+    Args:
+        x: First operand, a pytree such as a quantity or a plain array.
+        y: Second operand, a pytree such as a quantity or a plain array.
+
+    Returns:
+        ``(x, y)`` with a plain leaf operand rewrapped in the other's single-leaf
+        structure; unchanged when the structures already match or neither applies.
+    """
+    xt, yt = jax.tree.structure(x), jax.tree.structure(y)
+    if xt == yt:
+        return x, y
+    if jax.tree_util.treedef_is_leaf(yt) and xt.num_leaves == 1:
+        return x, xt.unflatten([y])
+    if jax.tree_util.treedef_is_leaf(xt) and yt.num_leaves == 1:
+        return yt.unflatten([x]), y
+    return x, y
 
 
 def segment_max(data: Array, segment_ids: Array, num_segments: int) -> Array:
@@ -120,7 +164,7 @@ def pad_axis(operand: Array, to_pad: tuple[int, int], axis: int) -> Array:
     return jnp.pad(operand, padding)
 
 
-def select_n(which: Array, *cands: Array) -> Array:
+def select_n[T](which: Array, *cands: T) -> T:
     """Like ``jax.lax.select_n`` but short-circuits when all candidates are identical.
 
     At trace time, if every candidate is the *same* tracer (``is`` check),
@@ -129,15 +173,16 @@ def select_n(which: Array, *cands: Array) -> Array:
 
     Args:
         which: Integer array indexing into ``cands``.
-        *cands: Candidate arrays to select from.
+        *cands: Candidate arrays or quantities to select from, all measuring the
+            same thing.
 
     Returns:
-        The selected array, or ``cands[0]`` directly if all candidates
+        The selected candidate, or ``cands[0]`` directly if all candidates
         are the same object.
     """
     if all(c is cands[0] for c in cands[1:]):
         return cands[0]
-    return jax.lax.select_n(which, *cands)
+    return jax.tree.map(lambda *c: jax.lax.select_n(which, *c), *cands)
 
 
 # Block width when reducing long masks to per-block occupancy.

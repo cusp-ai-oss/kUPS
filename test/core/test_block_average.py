@@ -1,17 +1,24 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Callable
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.block_average import (
     BlockAverageResult,
     BlockTransformResult,
     block_average,
+    block_average_from_blocks,
     block_transform,
+    compute_block_means,
     optimal_block_average,
 )
 
@@ -348,3 +355,21 @@ class TestBlockAverageStatisticalProperties:
 
         block_sizes = np.asarray(result.block_sizes)
         assert np.all(np.diff(block_sizes) > 0)
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        pytest.param(lambda x: (compute_block_means(x, n_blocks=8),), id="block_means"),
+        pytest.param(lambda x: block_average_from_blocks(x)[:2], id="from_blocks"),
+        pytest.param(lambda x: block_average(x, n_blocks=8)[:2], id="block_average"),
+        pytest.param(lambda x: block_transform(x)[1:], id="block_transform"),
+        pytest.param(lambda x: optimal_block_average(x)[:2], id="optimal"),
+    ],
+)
+def test_quantity_keeps_dimension(fn: Callable[[Any], Any]):
+    """Energies go through as their magnitudes and every statistic is an energy."""
+    data = jnp.sin(0.3 * jnp.arange(64.0))[:, None] * jnp.array([1.0, 2.0])
+    for got, want in zip(fn(data * u.eV), fn(data), strict=True):
+        assert units.dim_of(got) == units.dim_of(u.eV)
+        npt.assert_allclose(got.to(u.eV), want, rtol=1e-6)
