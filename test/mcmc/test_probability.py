@@ -9,16 +9,18 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import lens
 from kups.core.patch import Accept, ComposedPatch, WithPatch
 from kups.core.potential import CachedPotential, Potential, PotentialOut
 from kups.core.typing import GroupId, MotifId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.mcmc.probability import BoltzmannLogProbabilityRatio, motif_counts
+from test.units import EV, assert_close
 
 # -- helpers for motif_counts tests --
 
@@ -121,7 +123,7 @@ class TestMotifCounts:
 class MockState:
     """Mock state class for testing."""
 
-    temperature: Array
+    temperature: Table[SystemId, units.Temperature]
     last_potential_out: KahanSummand[PotentialOut]
 
 
@@ -140,8 +142,10 @@ class TestNVTProbabilityRatio:
     def setup_class(cls):
         """Set up test fixtures."""
         cls.n_systems = 3
-        cls.temperature = jnp.array([300.0, 350.0, 400.0])
-        cls.old_energies = jnp.array([-100.0, -150.0, -200.0])
+        cls.temperature = Table.arange(
+            jnp.array([300.0, 350.0, 400.0]) * u.K, label=SystemId
+        )
+        cls.old_energies = jnp.array([-100.0, -150.0, -200.0]) * EV
         cls.last_potential_out = KahanSummand.init(
             PotentialOut(
                 total_energies=Table.arange(cls.old_energies, label=SystemId),
@@ -190,7 +194,7 @@ class TestNVTProbabilityRatio:
 
     def test_result_and_patch_structure(self):
         """Test return type is WithPatch wrapping a ComposedPatch with correct patch."""
-        new_energies = jnp.array([-105.0, -155.0, -205.0])
+        new_energies = jnp.array([-105.0, -155.0, -205.0]) * EV
         potential_patch = MockPatch("potential_patch")
         mock_potential = self.create_mock_potential(new_energies, potential_patch)
         probability_calc = BoltzmannLogProbabilityRatio(
@@ -214,16 +218,16 @@ class TestNVTProbabilityRatio:
     )
     def test_exact_boltzmann_ratio(self, delta_e):
         """Verify (E_old - E_new) / (T * kB) for various energy differences."""
-        new_energies = self.old_energies + delta_e
+        new_energies = self.old_energies + delta_e * EV
         mock_potential = self.create_mock_potential(new_energies)
         probability_calc = BoltzmannLogProbabilityRatio(
             temperature=self.temperature_view, potential=mock_potential
         )
         result = probability_calc(self.state, self.test_patch)
         expected = (self.old_energies - new_energies) / (
-            self.temperature * BOLTZMANN_CONSTANT
+            units.constants.k_B * self.temperature.data
         )
-        npt.assert_allclose(result.data.data, expected, rtol=1e-10)
+        assert_close(result.data.data, expected, rtol=1e-10)
 
     def test_infinite_energy_is_certain_accept_or_reject(self):
         """A blocked state (inf energy) escapes with certainty; entering rejects."""
@@ -232,7 +236,7 @@ class TestNVTProbabilityRatio:
             last_potential_out=KahanSummand.init(
                 PotentialOut(
                     total_energies=Table.arange(
-                        jnp.full(self.n_systems, jnp.inf), label=SystemId
+                        jnp.full(self.n_systems, jnp.inf) * EV, label=SystemId
                     ),
                     gradients=(),
                     hessians=(),
@@ -247,17 +251,21 @@ class TestNVTProbabilityRatio:
 
         enter = BoltzmannLogProbabilityRatio(
             temperature=self.temperature_view,
-            potential=self.create_mock_potential(jnp.full(self.n_systems, jnp.inf)),
+            potential=self.create_mock_potential(
+                jnp.full(self.n_systems, jnp.inf) * EV
+            ),
         )(self.state, self.test_patch)
         npt.assert_array_equal(enter.data.data, -jnp.inf)
 
     def test_temperature_dependence_exact(self):
         """Test exact temperature dependence of probability ratio."""
         energy_increase = 5.0
-        new_energies = self.old_energies + energy_increase
+        new_energies = self.old_energies + energy_increase * EV
 
-        low_temp = jnp.array([100.0, 100.0, 100.0])
-        high_temp = jnp.array([1000.0, 1000.0, 1000.0])
+        low_temp = Table.arange(jnp.array([100.0, 100.0, 100.0]) * u.K, label=SystemId)
+        high_temp = Table.arange(
+            jnp.array([1000.0, 1000.0, 1000.0]) * u.K, label=SystemId
+        )
 
         mock_potential = self.create_mock_potential(new_energies)
 
@@ -275,17 +283,20 @@ class TestNVTProbabilityRatio:
         )
         result_high = probability_calc_high(high_temp_state, self.test_patch)
 
-        expected_log_low = -energy_increase / (low_temp * BOLTZMANN_CONSTANT)
-        expected_log_high = -energy_increase / (high_temp * BOLTZMANN_CONSTANT)
+        expected_log_low = -energy_increase * EV / (units.constants.k_B * low_temp.data)
+        expected_log_high = (
+            -energy_increase * EV / (units.constants.k_B * high_temp.data)
+        )
 
-        npt.assert_allclose(result_low.data.data, expected_log_low, rtol=1e-10)
-        npt.assert_allclose(result_high.data.data, expected_log_high, rtol=1e-10)
+        assert_close(result_low.data.data, expected_log_low, rtol=1e-10)
+        assert_close(result_high.data.data, expected_log_high, rtol=1e-10)
 
     def test_boltzmann_constant_scaling_exact(self):
         """Test exact Boltzmann constant scaling."""
-        old_energy = jnp.array([0.0])
-        new_energy = jnp.array([BOLTZMANN_CONSTANT])
-        temperature = jnp.array([1.0])
+        old_energy = jnp.array([0.0]) * EV
+        new_energy = units.constants.k_B * (1.0 * u.K)
+        new_energy = units.stack([new_energy])
+        temperature = Table.arange(jnp.array([1.0]) * u.K, label=SystemId)
 
         simple_potential_out = KahanSummand.init(
             PotentialOut(
@@ -306,35 +317,35 @@ class TestNVTProbabilityRatio:
         result = probability_calc(simple_state, self.test_patch)
 
         expected_log_ratio = jnp.array([-1.0])
-        npt.assert_allclose(result.data.data, expected_log_ratio, rtol=1e-15)
+        assert_close(result.data.data, expected_log_ratio, rtol=1e-15)
 
     def test_scalar_temperature_broadcasting(self):
         """Test scalar temperature broadcasts against vector energies."""
-        scalar_temp = jnp.array([500.0])
+        scalar_temp = Table.arange(jnp.array([500.0]) * u.K, label=SystemId)
         scalar_potential_out = KahanSummand.init(
             PotentialOut(
-                total_energies=Table.arange(jnp.array([-100.0]), label=SystemId),
+                total_energies=Table.arange(jnp.array([-100.0]) * EV, label=SystemId),
                 gradients=(),
                 hessians=(),
             )
         )
         scalar_state = MockState(scalar_temp, scalar_potential_out)
-        new_energies = jnp.array([-105.0])
+        new_energies = jnp.array([-105.0]) * EV
         mock_potential = self.create_mock_potential(new_energies)
         probability_calc = BoltzmannLogProbabilityRatio(
             temperature=self.temperature_view, potential=mock_potential
         )
         result = probability_calc(scalar_state, self.test_patch)
-        expected = (jnp.array([-100.0]) - new_energies) / (
-            scalar_temp * BOLTZMANN_CONSTANT
+        expected = (jnp.array([-100.0]) * EV - new_energies) / (
+            units.constants.k_B * scalar_temp.data
         )
-        npt.assert_allclose(result.data.data, expected, rtol=1e-10)
+        assert_close(result.data.data, expected, rtol=1e-10)
 
     def test_single_system(self):
         """Test with a single system."""
-        single_temp = jnp.array([300.0])
-        single_old_energy = jnp.array([-100.0])
-        single_new_energy = jnp.array([-105.0])
+        single_temp = Table.arange(jnp.array([300.0]) * u.K, label=SystemId)
+        single_old_energy = jnp.array([-100.0]) * EV
+        single_new_energy = jnp.array([-105.0]) * EV
 
         single_potential_out = KahanSummand.init(
             PotentialOut(
@@ -356,9 +367,9 @@ class TestNVTProbabilityRatio:
 
         assert probability_ratio_and_patch.data.data.shape == (1,)
         expected_log_ratio = (single_old_energy - single_new_energy) / (
-            single_temp * BOLTZMANN_CONSTANT
+            units.constants.k_B * single_temp.data
         )
-        npt.assert_allclose(
+        assert_close(
             probability_ratio_and_patch.data.data,
             expected_log_ratio,
             rtol=1e-10,
@@ -378,10 +389,13 @@ class TestCompensatedEnergyDifference:
 
     def _state(self) -> MockState:
         energies = Table.arange(
-            jnp.full((1,), self.BASE, dtype=self.DTYPE), label=SystemId
+            jnp.full((1,), self.BASE, dtype=self.DTYPE) * EV, label=SystemId
         )
         return MockState(
-            jnp.full((1,), self.TEMPERATURE, dtype=self.DTYPE),
+            Table.arange(
+                jnp.full((1,), self.TEMPERATURE, dtype=self.DTYPE) * u.K,
+                label=SystemId,
+            ),
             KahanSummand.init(PotentialOut(energies, (), ())),
         )
 
@@ -397,7 +411,9 @@ class TestCompensatedEnergyDifference:
         ) -> WithPatch[Any, MockPatch]:
             keys = cache.get(state).value.total_energies.keys
             delta = PotentialOut(
-                Table(keys, jnp.full((1,), self.DELTA, dtype=self.DTYPE)), (), ()
+                Table(keys, jnp.full((1,), self.DELTA, dtype=self.DTYPE) * EV),
+                (),
+                (),
             )
             summand = cache.get(state) + delta
             if include_compensate:
@@ -415,12 +431,12 @@ class TestCompensatedEnergyDifference:
         """The log ratio stays exact over many accepted moves; the values do not."""
         potential = self._cached_potential()
         ratio = BoltzmannLogProbabilityRatio(
-            temperature=lambda s: Table.arange(s.temperature, label=SystemId),
+            temperature=lambda s: s.temperature,
             potential=potential,
         )
         accept = Table.arange(jnp.ones(1, dtype=bool), label=SystemId)
-        kt = self.TEMPERATURE * BOLTZMANN_CONSTANT
-        expected = -self.DELTA / kt
+        kt = units.constants.k_B * (self.TEMPERATURE * u.K)
+        expected = -self.DELTA * EV / kt
 
         def step(state: MockState, _: None) -> tuple[MockState, tuple[Array, Array]]:
             old = potential.cached_value(state)
@@ -436,10 +452,10 @@ class TestCompensatedEnergyDifference:
             step, self._state(), length=self.N_STEPS
         )
 
-        npt.assert_allclose(compensated, expected, rtol=1e-4)
+        assert_close(compensated, expected, rtol=1e-4)
         assert bool(jnp.all(jnp.abs(naive - expected) > 0.5 * abs(expected)))
-        npt.assert_allclose(
+        assert_close(
             potential.cached_value(final).total.total_energies.data,
-            self.BASE + self.N_STEPS * self.DELTA,
+            (self.BASE + self.N_STEPS * self.DELTA) * EV,
             rtol=1e-7,
         )

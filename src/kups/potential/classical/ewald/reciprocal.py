@@ -6,6 +6,8 @@
 ``_structure_factor_full`` selects factored phase grids on CPU, direct sums on
 GPU, or bounded explicit tiles. The tiled path also bounds derivative workspace
 when ``tiled=True``. Each kernel accepts signed charges for incremental deltas.
+``_structure_factor_full`` takes quantities; the kernels behind it run on
+magnitudes in Å, 1/Å and e.
 """
 
 from __future__ import annotations
@@ -16,8 +18,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.segment import segment_sum
@@ -199,10 +203,10 @@ def _structure_factor_grid(
 
 
 def _structure_factor_full(
-    positions: Array,
-    charges: Array,
-    kvecs: Array,
-    inverse_vectors: Array | None = None,
+    positions: units.Length,
+    charges: units.Charge,
+    kvecs: units.Wavenumber,
+    inverse_vectors: units.Wavenumber | None = None,
     *,
     batch_mask: Index[SystemId],
     bound: ReciprocalGridBound = (0, 0, 0),
@@ -210,7 +214,7 @@ def _structure_factor_full(
     k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
     tiled: bool = False,
     grid_index: Array | np.ndarray | None = None,
-) -> Array:
+) -> units.Charge:
     """Select CPU phase grids, fused GPU values, or tiled explicit sums.
 
     Signed charges allow the same reduction to evaluate incremental deltas.
@@ -233,6 +237,35 @@ def _structure_factor_full(
     Returns:
         Real and imaginary structure factors, ``(n_systems, n_kvecs, 2)``.
     """
+    sf = _structure_factor_magnitudes(
+        positions.to(u.angstrom),
+        charges.to(u.e),
+        kvecs.to(1 / u.angstrom),
+        None if inverse_vectors is None else inverse_vectors.to(1 / u.angstrom),
+        batch_mask=batch_mask,
+        bound=bound,
+        particle_chunk_size=particle_chunk_size,
+        k_chunk_size=k_chunk_size,
+        tiled=tiled,
+        grid_index=grid_index,
+    )
+    return sf * u.e
+
+
+def _structure_factor_magnitudes(
+    positions: Array,
+    charges: Array,
+    kvecs: Array,
+    inverse_vectors: Array | None,
+    *,
+    batch_mask: Index[SystemId],
+    bound: ReciprocalGridBound,
+    particle_chunk_size: int,
+    k_chunk_size: int,
+    tiled: bool,
+    grid_index: Array | np.ndarray | None,
+) -> Array:
+    """``_structure_factor_full`` on magnitudes in Å, e and 1/Å."""
     if particle_chunk_size < 1 or k_chunk_size < 1:
         raise ValueError("Reciprocal chunk sizes must be positive")
     n, ns, nk = len(positions), batch_mask.num_labels, kvecs.shape[1]

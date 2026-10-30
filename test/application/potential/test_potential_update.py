@@ -30,6 +30,7 @@ from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
 from kups.application.potential.classical.morse import make_morse_bond_from_state
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data import WithCache, WithIndices
@@ -48,6 +49,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.cosine_angle import CosineAngleParameters
@@ -59,6 +61,7 @@ from kups.potential.classical.harmonic import (
 from kups.potential.classical.inversion import InversionParameters
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.potential.classical.morse import MorseBondParameters
+from test.units import EV, A, allclose
 
 # ---------------------------------------------------------------------------
 # Shared dataclasses
@@ -71,25 +74,25 @@ _PARTICLE_INDEX = tuple(ParticleId(i) for i in range(N_PARTICLES))
 
 EmptyCache = KahanSummand[PotentialOut[EmptyType, EmptyType]]
 _empty_cache = KahanSummand.init(
-    PotentialOut(Table.arange(jnp.zeros(1), label=SystemId), EMPTY, EMPTY)
+    PotentialOut(Table.arange(jnp.zeros(1) * EV, label=SystemId), EMPTY, EMPTY)
 )
 
 
 @dataclass
 class ParticleData:
-    positions: Array
+    positions: units.Length
     labels: Index[str]
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
     atomic_numbers: Array
-    charges: Array
+    charges: units.Charge
 
 
 @dataclass
 class SystemData:
     cell: Cell
-    cutoff: Array
+    cutoff: units.Length
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +119,7 @@ class State:
     inversion_parameters: WithCache[InversionParameters, EmptyCache]
 
     def neighborlist(
-        self, cutoffs: Table[SystemId, Array]
+        self, cutoffs: Table[SystemId, units.Length]
     ) -> AllDenseNearestNeighborList:
         return AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(N_PARTICLES**2),
@@ -162,13 +165,13 @@ class EdgeSetProbe4:
 # Particle / state builders
 # ---------------------------------------------------------------------------
 
-_INITIAL_POSITIONS = jnp.array(
-    [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [1.5, 1.5, 0.0], [1.5, 1.5, 1.5]]
+_INITIAL_POSITIONS = (
+    jnp.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [1.5, 1.5, 0.0], [1.5, 1.5, 1.5]]) * A
 )
 
 
 def _make_particles(
-    positions: Array,
+    positions: units.Length,
     system_ids: Array,
 ) -> Table[ParticleId, ParticleData]:
     labels = Index.new(["A", "B", "A", "B"])
@@ -182,7 +185,7 @@ def _make_particles(
         inclusion=inclusion,
         exclusion=exclusion,
         atomic_numbers=jnp.array([6, 8, 6, 8], dtype=int),
-        charges=jnp.array([0.1, -0.1, 0.1, -0.1]),
+        charges=jnp.array([0.1, -0.1, 0.1, -0.1]) * u.e,
     )
     return Table.arange(data, label=ParticleId)
 
@@ -207,13 +210,13 @@ class _CommonParts(NamedTuple):
     inv: InversionParameters
 
 
-def _build_common(positions: Array | None = None) -> _CommonParts:
+def _build_common(positions: units.Length | None = None) -> _CommonParts:
     if positions is None:
         positions = _INITIAL_POSITIONS
     system_ids = jnp.zeros(N_PARTICLES, dtype=int)
     particles = _make_particles(positions, system_ids)
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-    systems = Table.arange(SystemData(cell, jnp.array([5.0])), label=SystemId)
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0 * A))
+    systems = Table.arange(SystemData(cell, jnp.array([5.0]) * A), label=SystemId)
     pidx = particles.keys
     ns = N_SPECIES
     return _CommonParts(
@@ -225,44 +228,46 @@ def _build_common(positions: Array | None = None) -> _CommonParts:
         inversion_edge_indices=_make_edge_indices(pidx, jnp.array([[1, 0, 2, 3]])),
         lj=LennardJonesParameters(
             labels=_LABELS,
-            sigma=jnp.ones((ns, ns)),
-            epsilon=jnp.ones((ns, ns)) * 0.5,
-            cutoff=Table((SystemId(0),), jnp.array([5.0])),
+            sigma=jnp.ones((ns, ns)) * A,
+            epsilon=jnp.ones((ns, ns)) * 0.5 * EV,
+            cutoff=Table((SystemId(0),), jnp.array([5.0]) * A),
         ),
         hb=HarmonicBondParameters(
-            labels=_LABELS, x0=jnp.ones((ns, ns)) * 1.5, k=jnp.ones((ns, ns)) * 100.0
+            labels=_LABELS,
+            x0=jnp.ones((ns, ns)) * 1.5 * A,
+            k=jnp.ones((ns, ns)) * 100.0 * EV / A**2,
         ),
         ha=HarmonicAngleParameters(
             labels=_LABELS,
             theta0=jnp.ones((ns, ns, ns)) * 109.5,
-            k=jnp.ones((ns, ns, ns)) * 50.0,
+            k=jnp.ones((ns, ns, ns)) * 50.0 * EV,
         ),
         mb=MorseBondParameters(
             labels=_LABELS,
-            r0=jnp.ones((ns, ns)) * 1.5,
-            D=jnp.ones((ns, ns)) * 2.0,
-            alpha=jnp.ones((ns, ns)),
+            r0=jnp.ones((ns, ns)) * 1.5 * A,
+            D=jnp.ones((ns, ns)) * 2.0 * EV,
+            alpha=jnp.ones((ns, ns)) / A,
         ),
         ca=CosineAngleParameters(
             labels=_LABELS,
             theta0=jnp.ones((ns, ns, ns)) * jnp.radians(109.5),
-            k=jnp.ones((ns, ns, ns)) * 50.0,
+            k=jnp.ones((ns, ns, ns)) * 50.0 * EV,
         ),
         dh=DihedralParameters(
             labels=_LABELS,
-            V=jnp.ones((ns, ns, ns, ns)) * 2.0,
+            V=jnp.ones((ns, ns, ns, ns)) * 2.0 * EV,
             n=jnp.ones((ns, ns, ns, ns), dtype=int) * 3,
             phi0=jnp.ones((ns, ns, ns, ns)) * jnp.pi,
         ),
         inv=InversionParameters(
             labels=_LABELS,
             omega0=jnp.zeros((ns, ns, ns, ns)),
-            k=jnp.ones((ns, ns, ns, ns)) * 6.0,
+            k=jnp.ones((ns, ns, ns, ns)) * 6.0 * EV,
         ),
     )
 
 
-def _make_state(positions: Array | None = None) -> State:
+def _make_state(positions: units.Length | None = None) -> State:
     c = _build_common(positions)
     ec = _empty_cache
     return State(
@@ -307,7 +312,7 @@ def state_lens() -> Lens[State, State]:
 class PerturbationSpec(NamedTuple):
     name: str
     indices: Array
-    new_positions: Array
+    new_positions: units.Length
     new_system_ids: Array | None = None
     edge_updates: dict[str, tuple[Array, Any]] | None = None
 
@@ -320,7 +325,7 @@ class PotentialConfig(NamedTuple):
 
 
 def _test_nl_factory(
-    state: Any, cutoffs: Table[SystemId, Array]
+    state: Any, cutoffs: Table[SystemId, units.Length]
 ) -> AllDenseNearestNeighborList:
     return AllDenseNearestNeighborList(
         avg_edges=FixedCapacity(N_PARTICLES**2),
@@ -360,8 +365,8 @@ _POTENTIALS: list[PotentialConfig] = [
 
 
 def _move_multiple() -> PerturbationSpec:
-    new_pos = _INITIAL_POSITIONS.at[0].add(jnp.array([0.3, 0.1, 0.2]))
-    new_pos = new_pos.at[2].add(jnp.array([-0.1, 0.2, 0.15]))
+    new_pos = _INITIAL_POSITIONS.at[0].add(jnp.array([0.3, 0.1, 0.2]) * A)
+    new_pos = new_pos.at[2].add(jnp.array([-0.1, 0.2, 0.15]) * A)
     return PerturbationSpec("move_multiple", jnp.array([0, 2]), new_pos)
 
 
@@ -430,7 +435,7 @@ _PARTICLES_LENS = lens(lambda s: s.particles, cls=State)
 
 def _make_point_changes(
     state: State,
-    new_positions: Array,
+    new_positions: units.Length,
     indices: Array,
     new_system: Index[SystemId] | None = None,
 ) -> WithIndices[ParticleId, ParticleData]:
@@ -575,7 +580,7 @@ def _assert_incremental_matches_full(
     @jax.jit
     def energies(
         state: State, pos_patch: IndexLensPatch[State, Any]
-    ) -> tuple[Array, Array]:
+    ) -> tuple[units.Energy, units.Energy]:
         # 1. Full eval to populate cache
         out_full = updates_pot(state, patch=None)
         state_cached: State = out_full.patch(
@@ -590,7 +595,7 @@ def _assert_incremental_matches_full(
         return e_incr, basic_pot(ref_state).data.total_energies.data
 
     e_incr, e_full = energies(state, _make_patch(spec))
-    assert jnp.allclose(e_incr, e_full, atol=1e-6), (
+    assert allclose(e_incr, e_full, atol=1e-6), (
         f"{name}-{spec.name}: incremental {e_incr} != full {e_full}"
     )
 
@@ -617,11 +622,15 @@ class TestFromState:
         out = potential(state)
         e1 = out.data.total_energies.data
         assert e1.shape == (1,)
-        assert jnp.isfinite(e1).all(), f"{name}: energy is not finite: {e1}"
+        assert jnp.isfinite(e1.to(EV)).all(), f"{name}: energy is not finite: {e1}"
 
         # 2. Energy changes with perturbed positions
-        perturbed_positions = state.particles.data.positions + jnp.array(
-            [[0.3, 0.1, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [0.1, -0.3, 0.0]]
+        perturbed_positions = (
+            state.particles.data.positions
+            + jnp.array(
+                [[0.3, 0.1, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [0.1, -0.3, 0.0]]
+            )
+            * A
         )
         d = state.particles.data
         new_data = ParticleData(
@@ -637,9 +646,7 @@ class TestFromState:
         sl = identity_lens(State)
         state2 = sl.focus(lambda s: s.particles).set(state, new_particles)
         e2 = potential(state2).data.total_energies.data
-        assert not jnp.allclose(e1, e2), (
-            f"{name}: energy did not change after perturbation"
-        )
+        assert not allclose(e1, e2), f"{name}: energy did not change after perturbation"
 
 
 class TestFromStateWithUpdates:
@@ -689,7 +696,7 @@ class TestLJConstantParameters:
         )
         e_state = state_pot(state).data.total_energies.data
         e_const = const_pot(state).data.total_energies.data
-        assert jnp.allclose(e_state, e_const)
+        assert allclose(e_state, e_const)
 
     def test_incremental_matches_full(
         self,

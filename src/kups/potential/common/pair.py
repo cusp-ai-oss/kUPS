@@ -11,11 +11,13 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.lens import View
 from kups.core.neighborlist.masks import ExclusionMask, InBoundsMask, InclusionMatchMask
 from kups.core.neighborlist.types import CandidateBatch, PipelineContext
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field
 
@@ -29,8 +31,8 @@ class PairBatch(NamedTuple):
     sanitized before a consumer evaluates singular pair kernels.
     """
 
-    rij: Array
-    r2: Array
+    rij: units.Length
+    r2: units.Area
     system: Index[SystemId]
     valid: Array
     inclusion: Array
@@ -72,8 +74,8 @@ class PairBatch(NamedTuple):
             query_frames = jax.tree.map(
                 lambda x: x[:, None], frames[query_table.data.system]
             )
-            rij = query_frames.to_real(delta).reshape(-1, 3)
-        r2 = jnp.sum(rij**2, axis=-1)
+            rij = query_frames.to_real(delta).reshape((-1, 3))
+        r2 = units.sum(rij**2, axis=-1)
         return cls(
             rij,
             r2,
@@ -110,11 +112,11 @@ class PairKernel[Params, Feat](Protocol):
         parameters: Params,
         features_i: Feat,
         features_j: Feat,
-        rij: Array,
-        r2: Array,
+        rij: units.Length,
+        r2: units.Area,
         system: Index[SystemId],
         /,
-    ) -> Array:
+    ) -> units.Energy:
         """Evaluate the interaction without reducing its pair axes.
 
         Args:
@@ -127,7 +129,7 @@ class PairKernel[Params, Feat](Protocol):
             system: System ids for selecting per-system parameters.
 
         Returns:
-            Energies with shape ``pair_shape``, in the potential's energy units.
+            Energies with shape ``pair_shape``.
         """
         ...
 
@@ -164,7 +166,7 @@ class PairTerm[Params, Part, Feat](Protocol):
         ...
 
     @property
-    def cutoffs(self) -> View[Params, Table[SystemId, Array]]:
+    def cutoffs(self) -> View[Params, Table[SystemId, units.Length]]:
         """Select per-system search radii; a singleton table applies to all systems."""
         ...
 
@@ -184,7 +186,7 @@ class PairTerm[Params, Part, Feat](Protocol):
         left: Feat,
         right: Feat,
         pairs: PairBatch,
-    ) -> Array:
+    ) -> units.Energy:
         """Return pair energies after applying this term's cutoff and masks.
 
         ``left`` and ``right`` contain endpoint features broadcastable over
@@ -236,7 +238,7 @@ class PairEnergy[Params, Part, Feat]:
 
     kernel: PairKernel[Params, Feat] = field(static=True)
     features: View[Part, Feat] = field(static=True)
-    cutoffs: View[Params, Table[SystemId, Array]] = field(static=True)
+    cutoffs: View[Params, Table[SystemId, units.Length]] = field(static=True)
     inclusion: bool = field(static=True, default=True)
     exclusion: bool = field(static=True, default=True)
 
@@ -257,7 +259,7 @@ class PairEnergy[Params, Part, Feat]:
         left: Feat,
         right: Feat,
         pairs: PairBatch,
-    ) -> Array:
+    ) -> units.Energy:
         cutoffs = self.cutoffs(parameters)
         cutoff = cutoffs.data[0] if cutoffs.size == 1 else cutoffs[pairs.system]
         keep = pairs.valid & (pairs.r2 < cutoff**2)
@@ -265,9 +267,11 @@ class PairEnergy[Params, Part, Feat]:
             keep &= pairs.inclusion
         if self.exclusion:
             keep &= pairs.exclusion
-        rij = jnp.where(keep[..., None], pairs.rij, 1.0)
-        r2 = jnp.where(keep, pairs.r2, 3.0)
-        return jnp.where(
+        rij = units.where(
+            keep[..., None], pairs.rij, units.full_like(pairs.rij, u.angstrom)
+        )
+        r2 = units.where(keep, pairs.r2, units.full_like(pairs.r2, 3 * u.angstrom**2))
+        return units.where(
             keep,
             self.kernel(
                 parameters,
@@ -353,12 +357,14 @@ class PairEnergySum[Params, Part, Feat]:
     def exclusion(self) -> bool:
         return all(term.exclusion for term in self.terms)
 
-    def cutoffs(self, parameters: Params, /) -> Table[SystemId, Array]:
+    def cutoffs(self, parameters: Params, /) -> Table[SystemId, units.Length]:
         tables = [term.cutoffs(parameters) for term in self.terms]
         # A singleton cutoff broadcasts to every system, as elsewhere in kUPS.
         target = max(tables, key=lambda t: t.size)
         return target.set_data(
-            jnp.stack([Table.broadcast_to(t, target).data for t in tables]).max(axis=0)
+            units.stack([Table.broadcast_to(t, target).data for t in tables]).max(
+                axis=0
+            )
         )
 
     def evaluate(
@@ -367,7 +373,7 @@ class PairEnergySum[Params, Part, Feat]:
         left: tuple[Feat, ...],
         right: tuple[Feat, ...],
         pairs: PairBatch,
-    ) -> Array:
+    ) -> units.Energy:
         values = [
             term.evaluate(parameters, a, b, pairs)
             for term, a, b in zip(self.terms, left, right, strict=True)

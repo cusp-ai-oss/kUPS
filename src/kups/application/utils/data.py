@@ -5,10 +5,35 @@
 
 from __future__ import annotations
 
-from jax import Array
+from typing import Any, Final
 
+from jax import Array
+from pydantic import AfterValidator
+
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.utils.jax import dataclass
+
+
+def _scalar[Q: units.Quantity[Any, Any, Any, Any, Any]](quantity: Q) -> Q:
+    """Reject a quantity that is not 0-d, so pydantic reports it.
+
+    Args:
+        quantity: The validated field value.
+
+    Returns:
+        ``quantity`` unchanged.
+
+    Raises:
+        ValueError: If ``quantity`` is not 0-d.
+    """
+    if quantity.ndim != 0:
+        raise ValueError(f"expected a scalar, got shape {quantity.shape}")
+    return quantity
+
+
+Scalar: Final[AfterValidator] = AfterValidator(_scalar)
+"""Pydantic marker for a scalar quantity field: ``Annotated[units.Length, Scalar]``."""
 
 
 @dataclass
@@ -19,14 +44,14 @@ class Atoms:
         positions: Cartesian coordinates, shape ``(n_atoms, 3)``.
         species: Integer species indices, shape ``(n_atoms,)``.
         charges: Partial charges, shape ``(n_atoms,)``.
-        masses: Atomic masses (amu), shape ``(n_atoms,)``.
+        masses: Atomic masses, shape ``(n_atoms,)``.
         atomic_numbers: Atomic numbers, shape ``(n_atoms,)``.
     """
 
-    positions: Array
+    positions: units.Length
     species: Array
-    charges: Array
-    masses: Array
+    charges: units.Charge
+    masses: units.Mass
     atomic_numbers: Array
 
 
@@ -41,8 +66,8 @@ class Adsorbates:
         atoms: Per-atom data for all adsorbate atoms.
     """
 
-    critical_temperatures: Array
-    critical_pressures: Array
+    critical_temperatures: units.Temperature
+    critical_pressures: units.Pressure
     acentric_factors: Array
     atoms: Atoms
 

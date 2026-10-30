@@ -25,8 +25,12 @@ from kups.core.neighborlist import (
     dense_cost,
 )
 from kups.core.result import as_result_function
+from kups.core.units import catalog as u
+from kups.core.units import testing
 
 from ._builders import cutoff_table, make_adaptive_state, make_lh, make_systems
+
+_A = u.angstrom
 
 
 def _always_cheapest(num_particles: int, num_systems: int) -> float:
@@ -105,7 +109,7 @@ class TestAdaptiveNeighborList:
                 | CellListNeighborList
                 | AllDenseNearestNeighborList,
             )
-            npt.assert_array_equal(impl.cutoffs.data, jnp.array([2.0]))
+            testing.assert_allclose(impl.cutoffs.data, jnp.array([2.0]) * _A, _A)
 
     @pytest.mark.parametrize(
         "implementation,inclusion,exclusion",
@@ -127,12 +131,12 @@ class TestAdaptiveNeighborList:
             ),
         )
         particles = make_lh(
-            jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]) * _A,
             jnp.zeros(2, dtype=int),
             jnp.zeros(2, dtype=int),
         ).map_data(lambda p: replace(p, inclusion=Index.integer(jnp.arange(2))))
         systems, cutoffs = make_systems(
-            PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
+            PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0) * _A)), jnp.array([4.4])
         )
         neighbors = AdaptiveNeighborList.from_state(state, cutoffs)
         candidate = neighbors.implementations[implementation % 3]
@@ -178,10 +182,10 @@ class TestAdaptiveNeighborList:
 
     @pytest.mark.parametrize("implementation", [0, 1, 2])
     def test_pair_candidates_empty(self, implementation: int):
-        particles = make_lh(jnp.zeros((1, 3)), jnp.zeros(1, dtype=int))
+        particles = make_lh(jnp.zeros((1, 3)) * _A, jnp.zeros(1, dtype=int))
         particles = particles.subset(Index(particles.keys, jnp.empty(0, dtype=int)))
         systems, cutoffs = make_systems(
-            PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([2.0])
+            PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0) * _A)), jnp.array([2.0])
         )
         neighbors = AdaptiveNeighborList.from_state(make_adaptive_state(1, 1), cutoffs)
         neighbors = replace(

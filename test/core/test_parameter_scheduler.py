@@ -6,7 +6,10 @@
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
+from jax import Array
 
+from kups.core import units
 from kups.core.lens import SimpleLens
 from kups.core.parameter_scheduler import (
     AcceptanceHistory,
@@ -15,10 +18,12 @@ from kups.core.parameter_scheduler import (
     acceptance_target_schedule,
 )
 from kups.core.schedule import PropertyScheduler
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
+from test.units import A, assert_close
 
 
-def get_scheduler_params(state: "SimpleTestState") -> ParameterSchedulerState:
+def get_scheduler_params(state: "SimpleTestState") -> ParameterSchedulerState[Array]:
     """Get scheduler parameters from test state."""
     return state.scheduler_params
 
@@ -27,7 +32,7 @@ def get_scheduler_params(state: "SimpleTestState") -> ParameterSchedulerState:
 class SimpleTestState:
     """Simple test state for parameter scheduler testing."""
 
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 2.0]),
             multiplicity=jnp.array([2.0, 2.0]),
@@ -46,7 +51,7 @@ class SimpleTestState:
 
 @dataclass
 class BoundedUpperState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 2.0]),
             multiplicity=jnp.array([3.0, 3.0]),
@@ -64,7 +69,7 @@ class BoundedUpperState:
 
 @dataclass
 class BoundedLowerState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 2.0]),
             multiplicity=jnp.array([4.0, 4.0]),
@@ -82,7 +87,7 @@ class BoundedLowerState:
 
 @dataclass
 class BoundedBothState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 5.0]),
             multiplicity=jnp.array([2.0, 2.0]),
@@ -100,7 +105,7 @@ class BoundedBothState:
 
 @dataclass
 class SingleSystemState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.5]),
             multiplicity=jnp.array([1.5]),
@@ -118,7 +123,7 @@ class SingleSystemState:
 
 @dataclass
 class NegativeCorrelationState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 2.0]),
             multiplicity=jnp.array([3.0, 3.0]),
@@ -136,7 +141,7 @@ class NegativeCorrelationState:
 
 @dataclass
 class PositiveCorrelationState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 2.0]),
             multiplicity=jnp.array([3.0, 3.0]),
@@ -154,7 +159,7 @@ class PositiveCorrelationState:
 
 @dataclass
 class BatchSchedulerState:
-    scheduler_params: ParameterSchedulerState = field(
+    scheduler_params: ParameterSchedulerState[Array] = field(
         default_factory=lambda: ParameterSchedulerState(
             value=jnp.array([1.0, 2.0]),
             multiplicity=jnp.array([2.0, 2.0]),
@@ -403,3 +408,19 @@ class TestJAXCompatibility:
         result = jax.vmap(scheduler, in_axes=(0, 0))(stacked, batch_acc)
         assert result.scheduler_params.value.shape == (batch_size, 2)
         assert result.scheduler_params.history.values.shape == (batch_size, 2, 4)
+
+
+class TestQuantityValue:
+    def test_length_value_keeps_dimension_and_checks_bounds(self):
+        state = ParameterSchedulerState.create(
+            2, initial_value=0.5 * A, upper_bound=0.6 * A, history_length=1
+        )
+        assert_close(state.bounds[0], jnp.zeros(2) * A)
+        result = acceptance_target_schedule(jnp.array([1.0, 0.0]), state)
+        assert_close(result.value, jnp.array([0.5 * 1.1, 0.5 / 1.1]) * A)
+
+        mismatched = ParameterSchedulerState.create(
+            1, initial_value=0.5 * A, upper_bound=0.45 * u.eV, history_length=1
+        )
+        with pytest.raises(units.DimensionError):
+            acceptance_target_schedule(jnp.array([1.0]), mismatched)

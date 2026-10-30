@@ -5,10 +5,8 @@
 
 from __future__ import annotations
 
-import jax.numpy as jnp
-from jax import Array
-
 from kups.application.relaxation.data import RelaxParticles, RelaxSystems
+from kups.core import units
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import IsState, ParticleId, SystemId
@@ -43,20 +41,20 @@ class RelaxStepData:
     Attributes:
         atoms: Particle data at this step.
         potential_energy: Potential energy per system.
-        max_force: Maximum atomic force magnitude per system (eV/Å).
+        max_force: Maximum atomic force magnitude per system.
         stress_tensor: Stress tensor per system, shape (..., 3, 3).
     """
 
     atoms: Table[ParticleId, RelaxParticles]
-    potential_energy: Array
-    max_force: Array
-    stress_tensor: Array
+    potential_energy: units.Energy
+    max_force: units.Force
+    stress_tensor: units.Pressure
 
     @staticmethod
     def from_state(state: HasRelaxData) -> RelaxStepData:
         """Extract per-step logging data from a relaxation state."""
         forces = state.particles.data.forces
-        force_norms = jnp.linalg.norm(forces, axis=-1)
+        force_norms = units.norm(forces, axis=-1)
         max_force = state.particles.data.system.max_over(force_norms).data
         return RelaxStepData(
             atoms=state.particles,

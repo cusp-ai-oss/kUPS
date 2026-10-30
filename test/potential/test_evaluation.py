@@ -3,19 +3,18 @@
 
 """Tests for the one-shot potential evaluation helpers."""
 
-import jax
 import jax.numpy as jnp
-import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.lens import lens
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.ewald import EwaldParameters
-from kups.potential.classical.ewald.potential import TO_STANDARD_UNITS
 from kups.potential.classical.lennard_jones import (
     LennardJonesParameters,
     lennard_jones_energy,
@@ -25,11 +24,12 @@ from kups.potential.common.evaluation import (
     evaluate_radius_graph_potential,
 )
 from kups.potential.common.graph import PointCloud
+from test.units import EV, A, as_length, assert_close
 
 
 @dataclass
 class _Particles:
-    positions: jax.Array
+    positions: units.Length
     labels: Index[Label]
     system: Index[SystemId]
     inclusion: Index[InclusionId]
@@ -50,7 +50,7 @@ def test_evaluate_radius_graph_potential_lj():
 
     particles = Table.arange(
         _Particles(
-            positions=positions,
+            positions=as_length(positions),
             labels=Index.new([Label("A"), Label("B"), Label("A"), Label("B")]),
             system=Index.new([SystemId(0)] * n),
             inclusion=Index.new([InclusionId(0)] * n),
@@ -60,15 +60,15 @@ def test_evaluate_radius_graph_potential_lj():
     )
     systems = Table.arange(
         _Systems(
-            cell=PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+            cell=PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A))
         ),
         label=SystemId,
     )
     lj_params = LennardJonesParameters(
         labels=(Label("A"), Label("B")),
-        sigma=jnp.ones((2, 2)),
-        epsilon=jnp.ones((2, 2)) * 0.5,
-        cutoff=Table((SystemId(0),), jnp.array([5.0])),
+        sigma=jnp.ones((2, 2)) * A,
+        epsilon=jnp.ones((2, 2)) * 0.5 * EV,
+        cutoff=Table((SystemId(0),), jnp.array([5.0]) * A),
     )
 
     result = evaluate_radius_graph_potential(
@@ -80,17 +80,18 @@ def test_evaluate_radius_graph_potential_lj():
 
     energies = result.total_energies.data
     assert energies.shape == (1,)
-    assert jnp.isfinite(energies).all()
-    assert energies[0] != 0.0
+    magnitudes = energies.to(EV)
+    assert jnp.isfinite(magnitudes).all()
+    assert magnitudes[0] != 0.0
 
 
 @dataclass
 class _ChargedParticles(_Particles):
-    charges: jax.Array
+    charges: units.Charge
 
 
 def _rock_salt(r0: float, systems: int) -> PointCloud:
-    """Conventional rock-salt cells (8 ions) with nearest-neighbour distance r0."""
+    """Conventional rock-salt cells (8 ions) with nearest-neighbour distance r0 in Å."""
     corners = jnp.array(
         [[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], dtype=float
     )
@@ -98,16 +99,16 @@ def _rock_salt(r0: float, systems: int) -> PointCloud:
     n = 8 * systems
     particles = Table.arange(
         _ChargedParticles(
-            positions=jnp.tile(corners * r0, (systems, 1)),
+            positions=as_length(jnp.tile(corners * r0, (systems, 1))),
             labels=Index.new([Label("A")] * n),
             system=Index.new([SystemId(i // 8) for i in range(n)]),
             inclusion=Index.new([InclusionId(i // 8) for i in range(n)]),
             exclusion=Index.new([ExclusionId(i) for i in range(n)]),
-            charges=jnp.tile(charges, systems),
+            charges=jnp.tile(charges, systems) * u.e,
         ),
         label=ParticleId,
     )
-    cell = jnp.broadcast_to(jnp.eye(3) * 2 * r0, (systems, 3, 3))
+    cell = jnp.broadcast_to(jnp.eye(3) * 2 * r0, (systems, 3, 3)) * A
     systems_table = Table.arange(
         _Systems(cell=PeriodicCell(TriclinicFrame.from_matrix(cell))), label=SystemId
     )
@@ -119,10 +120,12 @@ def test_evaluate_ewald_potential_rock_salt_madelung(systems):
     """The full Ewald sum reproduces the rock-salt Madelung energy."""
     r0 = 2.8
     cloud = _rock_salt(r0, systems)
-    parameters = EwaldParameters.make(cloud.particles, cloud.systems, real_cutoff=5.0)
+    parameters = EwaldParameters.make(
+        cloud.particles, cloud.systems, real_cutoff=5.0 * A
+    )
     result = evaluate_ewald_potential(
         cloud, parameters, gradient_lens=lens(lambda x: x.particles.data.positions)
     )
-    expected = -4 * 1.747564594633 * TO_STANDARD_UNITS / r0
-    npt.assert_allclose(result.total_energies.data, expected, rtol=1e-6)
-    npt.assert_allclose(result.gradients, 0.0, atol=1e-6)
+    expected = -4 * 1.747564594633 * units.constants.k_e * u.e**2 / (r0 * A)
+    assert_close(result.total_energies.data, expected, rtol=1e-6)
+    assert_close(result.gradients, jnp.zeros((8 * systems, 3)), atol=1e-6)

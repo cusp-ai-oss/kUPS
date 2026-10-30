@@ -11,7 +11,7 @@ a ``Pipeline`` internally inside their ``__call__``.
 
 from __future__ import annotations
 
-from typing import Literal, overload
+from typing import Literal, cast, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -32,6 +32,7 @@ from kups.core.neighborlist.types import (
     CandidateBatch,
     CandidateSelector,
     Compactor,
+    FractionalPoints,
     Mask,
     NeighborListPoints,
     NeighborListSystems,
@@ -168,16 +169,27 @@ def _prepare(
     )
     frames = systems.map_data(lambda s: s.cell.frame.materialize())
     keys_frame = frames[keys.data.system]
-    keys = bind(keys, lambda x: x.data.positions).apply(keys_frame.to_fractional)
+    # ``to_fractional`` replaces the positions in place, which the lens cannot
+    # express as a change of protocol, so the cast records the new coordinates.
+    frac_keys = cast(
+        Table[ParticleId, FractionalPoints],
+        bind(keys, lambda x: x.data.positions).set(
+            keys_frame.to_fractional(keys.data.positions)
+        ),
+    )
+    frac_queries: Table[ParticleId, FractionalPoints] | None = None
     if queries is not None:
         queries_frame = frames[queries.data.system]
-        queries = bind(queries, lambda x: x.data.positions).apply(
-            queries_frame.to_fractional
+        frac_queries = cast(
+            Table[ParticleId, FractionalPoints],
+            bind(queries, lambda x: x.data.positions).set(
+                queries_frame.to_fractional(queries.data.positions)
+            ),
         )
 
     return PipelineContext(
-        keys=keys,
-        queries=queries,
+        keys=frac_keys,
+        queries=frac_queries,
         systems=systems,
         queried_keys=(
             queried_keys.update_labels(keys.keys) if queried_keys is not None else None

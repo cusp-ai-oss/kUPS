@@ -20,8 +20,11 @@ from kups.core.neighborlist.masks import (
     QueriedKeysDedupMask,
     TouchesQueriedKeysMask,
 )
+from kups.core.units import catalog as u
 
 from ._builders import after, make_batch, make_lh, make_pipeline_ctx
+
+_A = u.angstrom
 
 
 class TestInBoundsMask:
@@ -114,11 +117,11 @@ class TestDistanceCutoffMask:
     def test_filters_by_distance_squared(self):
         positions = jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0], [0.8, 0.0, 0.0]])
         lh = make_lh(positions, jnp.zeros(3, dtype=int))
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * _A))
         ctx = make_pipeline_ctx(lh, cell=cell)
         batch = make_batch(lh.keys, jnp.array([0, 0, 1]), jnp.array([1, 2, 2]))
         # Distances: 0.3, 0.8, 0.5. cutoff^2 = 0.55^2 = 0.3025 -> keep [T, F, T].
-        cutoffs = Table(ctx.systems.keys, jnp.array([0.55]))
+        cutoffs = Table(ctx.systems.keys, jnp.array([0.55]) * _A)
         result = DistanceCutoffMask(cutoffs=cutoffs)(batch, ctx)
         assert result.tolist() == [True, False, True]
 

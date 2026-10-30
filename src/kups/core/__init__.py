@@ -27,7 +27,7 @@ type safety, and compatibility with JAX transformations.
 
 ### Utilities
 - **[parameter_scheduler][kups.core.parameter_scheduler]**: Adaptive parameter tuning (step sizes, temperatures)
-- **[constants][kups.core.constants]**: Physical constants and unit conversions
+- **[units][kups.core.units]**: Dimensioned JAX arrays (Quantity), unit catalog and physical constants
 - **[utils][kups.core.utils]**: Mathematical utilities, JAX helpers, functional programming tools
 - **[storage][kups.core.storage]**: HDF5-based trajectory logging
 

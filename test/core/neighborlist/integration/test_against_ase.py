@@ -30,8 +30,11 @@ from kups.core.neighborlist import (
     UniversalNeighborlistParameters,
 )
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 
 from .._builders import EvalState, make_lh, make_systems, pad, run_nl, valid_ids
+
+_A = u.angstrom
 
 
 def _atoms_to_cell(atoms: ase.Atoms) -> Cell:
@@ -39,7 +42,7 @@ def _atoms_to_cell(atoms: ase.Atoms) -> Cell:
     matrix is lower-triangular. Use ``_ensure_lower_triangular`` to bring
     arbitrary ASE inputs onto this branch first."""
     lvecs = jnp.asarray(np.asarray(atoms.cell.array))[None]
-    return PeriodicCell(TriclinicFrame.from_matrix(lvecs))
+    return PeriodicCell(TriclinicFrame.from_matrix(lvecs * _A))
 
 
 def _ensure_lower_triangular(atoms: ase.Atoms) -> ase.Atoms:
@@ -101,10 +104,11 @@ def _capacities(small: bool) -> UniversalNeighborlistParameters:
 
 def _build_state(atoms: ase.Atoms, cutoff: float) -> tuple[EvalState, Table]:
     """Construct an ``EvalState`` from an ``ase.Atoms`` and a scalar cutoff."""
-    positions = jnp.asarray(np.asarray(atoms.get_positions()))
+    # ASE reports positions and cutoffs in Angstrom.
+    positions = jnp.asarray(np.asarray(atoms.get_positions())) * _A
     particles = make_lh(positions, jnp.zeros(len(atoms), dtype=int))
     systems, cutoff_table = make_systems(
-        _atoms_to_cell(atoms), jnp.array([float(cutoff)])
+        _atoms_to_cell(atoms), jnp.array([float(cutoff)]) * _A
     )
     small = len(atoms) <= _PADDED
     if small:
@@ -155,7 +159,7 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
 
     edges = result.value
     ids = valid_ids(edges.indices)
-    disp = np.asarray(edges.difference_vectors(state.particles, state.systems))[:, 0, :]
+    disp = edges.difference_vectors(state.particles, state.systems).to(_A)[:, 0, :]
     valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
     return ids[:, 0], ids[:, 1], disp[valid]
 
@@ -324,7 +328,7 @@ class TestEnsureLowerTriangular:
         atoms = ase.build.bulk("Cu", "fcc", a=3.61).repeat((2, 2, 2))
         rotated = _ensure_lower_triangular(atoms)
         cell = _atoms_to_cell(rotated)
-        perp = np.asarray(cell.perpendicular_lengths)
+        perp = cell.perpendicular_lengths.to(_A)
         npt.assert_(np.all(np.isfinite(perp)), f"perp not finite: {perp}")
         npt.assert_(np.all(perp > 0), f"perp not strictly positive: {perp}")
 

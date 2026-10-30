@@ -15,8 +15,8 @@ from typing import Any, Callable, Literal, cast
 import jax
 import jax.core
 import jax.numpy as jnp
-from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Periodic3D
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View, lens
@@ -175,7 +175,7 @@ def evaluate_radius_graph_potential[
     point_cloud: PointCloud[P, S],
     parameters: Parameters,
     *,
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     energy_fn: EnergyFunction[
         _RadiusGraphEvalState,
         GraphPotentialInput[Parameters, P, S, Literal[2]],
@@ -244,11 +244,11 @@ def evaluate_radius_graph_potential[
 class _EwaldRadiusGraphPointsImpl:
     """Wraps IsEwaldPointData with inclusion/exclusion for short-range evaluation."""
 
-    positions: Array
+    positions: units.Length
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
-    charges: Array
+    charges: units.Charge
 
 
 @no_jax_tracing

@@ -16,13 +16,21 @@ import scipy.optimize
 from jax import Array
 from scipy.special import erfc
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, Periodic3D
 from kups.core.data import Table
 from kups.core.neighborlist import NeighborListPoints
 from kups.core.typing import DTypeLike, HasCell, HasCharges, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field, is_traced, no_jax_tracing
 
 type ReciprocalGridBound = tuple[int, int, int]
+
+type SquaredChargePerLength = units.Quantity[-1, 0, 2, 2, 0]
+"""Dimension of the Ewald truncation-error estimates: an energy over ``k_e``."""
+
+# Unit of the host-side truncation-error magnitudes.
+_ERROR_UNIT = u.e**2 / u.angstrom
 
 # Default reciprocal workspace limits and backends that use phase grids.
 _DEFAULT_RECIPROCAL_PARTICLE_CHUNK = 1024
@@ -55,10 +63,10 @@ class EwaldParameters:
     evaluations; ``float32`` is much faster on GPUs with slow double precision.
     """
 
-    alpha: Table[SystemId, Array]  # (n_graphs,)
-    cutoff: Table[SystemId, Array]  # (n_graphs,)
+    alpha: Table[SystemId, units.Wavenumber]  # (n_graphs,)
+    cutoff: Table[SystemId, units.Length]  # (n_graphs,)
     reciprocal_lattice_shifts: Table[SystemId, Array]  # (n_graphs, n_kvecs, 3)
-    k_max: Table[SystemId, Array]
+    k_max: Table[SystemId, units.Wavenumber]
     reciprocal_shift_bound: ReciprocalGridBound = field(static=True, default=(0, 0, 0))
     reciprocal_particle_chunk_size: int = field(
         static=True, default_factory=_default_reciprocal_particle_chunk
@@ -75,7 +83,7 @@ class EwaldParameters:
         charges: Table[ParticleId, IsEwaldPointData],
         cell: Table[SystemId, HasCell[Periodic3D]],
         epsilon_total: float = 1e-8,
-        real_cutoff: float | None = None,
+        real_cutoff: units.Length | None = None,
         *,
         reciprocal_particle_chunk_size: int | None = None,
         reciprocal_k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
@@ -86,8 +94,9 @@ class EwaldParameters:
         Args:
             charges: Particle table with charges and system assignments.
             cell: System table with periodic cells.
-            epsilon_total: Target combined real-space and reciprocal-space error.
-            real_cutoff: Optional fixed real-space cutoff in Å.
+            epsilon_total: Target combined real-space and reciprocal-space error,
+                as a plain magnitude in e²/Å (an energy over the Coulomb constant).
+            real_cutoff: Optional fixed real-space cutoff.
             reciprocal_particle_chunk_size: Maximum particles per response tile;
                 defaults to 8192 on GPU and 1024 elsewhere.
             reciprocal_k_chunk_size: Maximum explicit k-vectors per tile; also sets the grid workspace budget.
@@ -98,22 +107,22 @@ class EwaldParameters:
         """
         n_systems = len(cell.keys)
         sys_idx = np.asarray(charges.data.system.indices_in(cell.keys))
-        charge_values = np.asarray(charges.data.charges)
+        charge_values = charges.data.charges
         cell_list = [cell.data.cell[i] for i in range(n_systems)]
         estimates = [
             estimate_ewald_parameters(
                 charge_values[sys_idx == i],
-                u,
+                system_cell,
                 real_cutoff=real_cutoff,
                 epsilon_total=epsilon_total,
             )
-            for i, u in enumerate(cell_list)
+            for i, system_cell in enumerate(cell_list)
         ]
         return cls.from_cutoffs(
             cell,
-            alpha=cell.set_data(jnp.asarray([est.alpha for est in estimates])),
-            cutoff=cell.set_data(jnp.asarray([est.real_cutoff for est in estimates])),
-            k_max=cell.set_data(jnp.asarray([est.k_max for est in estimates])),
+            alpha=cell.set_data(units.stack([est.alpha for est in estimates])),
+            cutoff=cell.set_data(units.stack([est.real_cutoff for est in estimates])),
+            k_max=cell.set_data(units.stack([est.k_max for est in estimates])),
             reciprocal_particle_chunk_size=reciprocal_particle_chunk_size,
             reciprocal_k_chunk_size=reciprocal_k_chunk_size,
             reciprocal_dtype=reciprocal_dtype,
@@ -124,9 +133,9 @@ class EwaldParameters:
     def from_cutoffs(
         cls,
         cell: Table[SystemId, HasCell[Periodic3D]],
-        alpha: Table[SystemId, Array],
-        cutoff: Table[SystemId, Array],
-        k_max: Table[SystemId, Array],
+        alpha: Table[SystemId, units.Wavenumber],
+        cutoff: Table[SystemId, units.Length],
+        k_max: Table[SystemId, units.Wavenumber],
         *,
         reciprocal_particle_chunk_size: int | None = None,
         reciprocal_k_chunk_size: int = _DEFAULT_RECIPROCAL_K_CHUNK,
@@ -136,9 +145,9 @@ class EwaldParameters:
 
         Args:
             cell: System table with periodic cells.
-            alpha: Screening parameters in 1/Å.
-            cutoff: Real-space cutoffs in Å.
-            k_max: Reciprocal cutoffs in 1/Å.
+            alpha: Screening parameters.
+            cutoff: Real-space cutoffs.
+            k_max: Reciprocal cutoffs.
             reciprocal_particle_chunk_size: Maximum particles per response tile;
                 defaults to 8192 on GPU and 1024 elsewhere.
             reciprocal_k_chunk_size: Maximum k-vectors per tile.
@@ -170,11 +179,11 @@ class EwaldParameters:
 class EwaldParameterEstimates:
     """Estimated optimal Ewald parameters for given accuracy."""
 
-    alpha: float
-    real_cutoff: float
-    k_max: float
-    error_real: float
-    error_recip: float
+    alpha: units.Wavenumber
+    real_cutoff: units.Length
+    k_max: units.Wavenumber
+    error_real: SquaredChargePerLength
+    error_recip: SquaredChargePerLength
 
 
 def _minimize_on_grid(
@@ -193,28 +202,32 @@ def _cutoff_for_error(
 
 @no_jax_tracing
 def estimate_ewald_parameters(
-    charges: Array | np.ndarray,
+    charges: units.Charge,
     cell: Cell[AnyPeriodicity],
     /,
-    real_cutoff: float | None = None,
-    alpha: float | None = None,
+    real_cutoff: units.Length | None = None,
+    alpha: units.Wavenumber | None = None,
     epsilon_total: float = 1e-8,
 ) -> EwaldParameterEstimates:
     """Estimate cutoffs and screening for one system before JIT compilation.
 
     Split ``epsilon_total`` equally between real and reciprocal error targets.
+    The search runs on magnitudes in Å and e.
 
     Args:
-        charges: Charges in e for one system, shaped ``(n_particles,)``.
+        charges: Charges of one system, shaped ``(n_particles,)``.
         cell: Single simulation cell.
-        real_cutoff: Optional fixed real-space cutoff in Å; otherwise optimized.
-        alpha: Optional screening parameter in 1/Å; ignored with a fixed real cutoff.
-        epsilon_total: Target combined real-space and reciprocal-space error.
+        real_cutoff: Optional fixed real-space cutoff; otherwise optimized.
+        alpha: Optional screening parameter; ignored with a fixed real cutoff.
+        epsilon_total: Target combined real-space and reciprocal-space error, as
+            a plain magnitude in e²/Å (an energy over the Coulomb constant).
 
     Returns:
         Screening, cutoffs and estimated errors.
     """
-    charges_np = np.asarray(charges)
+    fixed_cutoff = None if real_cutoff is None else float(real_cutoff.to(u.angstrom))
+    fixed_alpha = None if alpha is None else float(alpha.to(1 / u.angstrom))
+    charges_np = np.asarray(charges.to(u.e))
     net_charge = float(charges_np.astype(np.float64).sum())
     if abs(net_charge) > 1e-6:
         warnings.warn(
@@ -222,10 +235,10 @@ def estimate_ewald_parameters(
             "the neutralizing-background correction will be applied.",
             stacklevel=2,
         )
-    volume = np.asarray(cell.volume)
+    volume = np.asarray(cell.volume.to(u.angstrom**3))
     squared_charge = np.vdot(charges_np, charges_np)
     n_particles = charges_np.size
-    max_radius = float(np.min(cell.perpendicular_lengths, axis=0)) / 2
+    max_radius = float(np.min(cell.perpendicular_lengths.to(u.angstrom), axis=0)) / 2
     target = epsilon_total / 2
     lattice_length = volume ** (1 / 3)
 
@@ -262,69 +275,79 @@ def estimate_ewald_parameters(
         real_cost = rc**3 * n_particles / volume * 4 / 3 * np.pi
         return float(real_cost + n_kvecs)
 
-    if real_cutoff is not None:
+    if fixed_cutoff is not None:
         # erfc(alpha * cutoff) = cutoff * target fixes alpha for this cutoff.
         result = scipy.optimize.minimize_scalar(
-            lambda z: abs(erfc(z) - real_cutoff * target)
+            lambda z: abs(erfc(z) - fixed_cutoff * target)
         )
         if not result.success:
             raise ValueError("Failed to find alpha for given real space cutoff.")
-        alpha_opt = result.x / real_cutoff
-        rc_opt = real_cutoff
+        alpha_opt = result.x / fixed_cutoff
+        rc_opt = fixed_cutoff
         kc_opt = 2 * alpha_opt * np.sqrt(-np.log(target))
     else:
         alpha_opt = (
             _minimize_on_grid(total_cost, (0.001, 2), samples=400)
-            if alpha is None
-            else alpha
+            if fixed_alpha is None
+            else fixed_alpha
         )
         rc_opt, kc_opt = cutoffs(alpha_opt)
         if rc_opt <= 0 or kc_opt <= 0 or rc_opt == np.inf or kc_opt == np.inf:
             raise ValueError("Invalid cutoff values computed")
 
     return EwaldParameterEstimates(
-        alpha=alpha_opt,
-        real_cutoff=rc_opt,
-        k_max=kc_opt,
-        error_real=real_error(rc_opt, alpha_opt),
-        error_recip=reciprocal_error(kc_opt, alpha_opt),
+        alpha=alpha_opt / u.angstrom,
+        real_cutoff=rc_opt * u.angstrom,
+        k_max=kc_opt / u.angstrom,
+        error_real=real_error(rc_opt, alpha_opt) * _ERROR_UNIT,
+        error_recip=reciprocal_error(kc_opt, alpha_opt) * _ERROR_UNIT,
     )
 
 
 def _reciprocal_vectors(cell: Cell[AnyPeriodicity]) -> np.ndarray:
-    """Reciprocal lattice vectors (rows, including the 2π factor) on the host."""
-    return np.asarray(cell.inverse_vectors).mT * 2 * np.pi
+    """Reciprocal lattice vectors in 1/Å (rows, with the 2π factor) on the host."""
+    return np.asarray(cell.inverse_vectors.to(1 / u.angstrom)).mT * 2 * np.pi
 
 
-@no_jax_tracing
-def reciprocal_grid_bound(cell: Cell[AnyPeriodicity], kmax: float) -> int:
-    """Uniform coefficient bound enclosing the reciprocal kmax sphere.
-
-    Args:
-        cell: Cell defining the reciprocal lattice.
-        kmax: Maximum reciprocal-vector magnitude in 1/Å.
-
-    Returns:
-        Integer bound enclosing the reciprocal cutoff sphere.
-    """
+def _grid_bound(cell: Cell[AnyPeriodicity], kmax: float) -> int:
+    """Coefficient bound enclosing a sphere of radius ``kmax`` in 1/Å."""
     min_length = np.linalg.svd(_reciprocal_vectors(cell), compute_uv=False).min()
     return int(np.ceil(kmax / min_length))
 
 
+def _kvecs_within(cell: Cell[AnyPeriodicity], kmax: float) -> np.ndarray:
+    """Half-space coefficients within a sphere of radius ``kmax`` in 1/Å."""
+    vecs = reciprocal_grid_shifts(_grid_bound(cell, kmax))
+    kvecs = vecs @ _reciprocal_vectors(cell)
+    return vecs[np.sum(kvecs**2, axis=-1) <= kmax**2]
+
+
 @no_jax_tracing
-def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: float) -> np.ndarray:
+def reciprocal_grid_bound(cell: Cell[AnyPeriodicity], kmax: units.Wavenumber) -> int:
+    """Uniform coefficient bound enclosing the reciprocal kmax sphere.
+
+    Args:
+        cell: Cell defining the reciprocal lattice.
+        kmax: Maximum reciprocal-vector magnitude.
+
+    Returns:
+        Integer bound enclosing the reciprocal cutoff sphere.
+    """
+    return _grid_bound(cell, float(kmax.to(1 / u.angstrom)))
+
+
+@no_jax_tracing
+def kvecs_from_kmax(cell: Cell[AnyPeriodicity], kmax: units.Wavenumber) -> np.ndarray:
     """Integer half-space lattice coefficients within the reciprocal kmax sphere.
 
     Args:
         cell: Cell defining the reciprocal lattice.
-        kmax: Maximum reciprocal-vector magnitude in 1/Å.
+        kmax: Maximum reciprocal-vector magnitude.
 
     Returns:
         Integer half-space lattice coefficients shaped ``(n_kvecs, 3)``.
     """
-    vecs = reciprocal_grid_shifts(reciprocal_grid_bound(cell, kmax))
-    kvecs = vecs @ _reciprocal_vectors(cell)
-    return vecs[np.sum(kvecs**2, axis=-1) <= kmax**2]
+    return _kvecs_within(cell, float(kmax.to(1 / u.angstrom)))
 
 
 def reciprocal_grid_index(
@@ -369,7 +392,7 @@ def reciprocal_grid_shifts(bound: int | ReciprocalGridBound) -> np.ndarray:
 
 @no_jax_tracing
 def prepare_reciprocal_shifts(
-    cells: Cell[Periodic3D], k_max: Array, *, grid: bool
+    cells: Cell[Periodic3D], k_max: units.Wavenumber, *, grid: bool
 ) -> tuple[Array, ReciprocalGridBound]:
     """Batch sphere-filtered shifts, padded to a common count.
 
@@ -378,16 +401,16 @@ def prepare_reciprocal_shifts(
 
     Args:
         cells: Batched cells, one per system.
-        k_max: Reciprocal cutoffs in 1/Å, shaped ``(n_systems,)``.
+        k_max: Reciprocal cutoffs, shaped ``(n_systems,)``.
         grid: Whether to return the enclosing phase-grid bound.
 
     Returns:
         Padded integer shifts ``(n_systems, n_kvecs, 3)`` and the grid bound.
     """
-    cutoffs = np.asarray(k_max)
+    cutoffs = np.asarray(k_max.to(1 / u.angstrom))
     if np.any(~np.isfinite(cutoffs)) or np.any(cutoffs < 0):
         raise ValueError("Reciprocal cutoffs must be finite and nonnegative")
-    shifts = [kvecs_from_kmax(cells[i], k) for i, k in enumerate(cutoffs)]
+    shifts = [_kvecs_within(cells[i], float(k)) for i, k in enumerate(cutoffs)]
     if not shifts:
         return jnp.zeros((0, 0, 3), dtype=int), (0, 0, 0)
     capacity = max(map(len, shifts))

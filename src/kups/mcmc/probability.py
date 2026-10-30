@@ -28,8 +28,8 @@ from typing import Any, Protocol
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
-from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, Patch, Probe, WithPatch
@@ -52,6 +52,21 @@ from kups.core.typing import (
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.math import log_factorial_ratio
+
+
+def _boltzmann_exponent(
+    energy_difference: units.Energy, temperature: units.Temperature
+) -> Array:
+    """Boltzmann exponent ``dE / kT``, dimensionless.
+
+    Args:
+        energy_difference: Energy change of the proposed move.
+        temperature: Target temperature.
+
+    Returns:
+        The exponent entering the acceptance probability.
+    """
+    return energy_difference / (units.constants.k_B * temperature)
 
 
 @dataclass
@@ -94,7 +109,7 @@ class BoltzmannLogProbabilityRatio[State, Move: Patch[Any]](
         ```
     """
 
-    temperature: View[State, Table[SystemId, Array]] = field(static=True)
+    temperature: View[State, Table[SystemId, units.Temperature]] = field(static=True)
     potential: CachedPotential[State, Any, Any, Move] = field(static=True)
 
     @jit
@@ -106,7 +121,7 @@ class BoltzmannLogProbabilityRatio[State, Move: Patch[Any]](
         temperature = self.temperature(state)
 
         energy_difference = old.difference(potential_out.data).total_energies
-        log_ratio = energy_difference / (temperature * BOLTZMANN_CONSTANT)
+        log_ratio = Table.transform(_boltzmann_exponent)(energy_difference, temperature)
         out_patch = potential_out.patch
         return WithPatch(log_ratio, out_patch)
 
@@ -140,12 +155,14 @@ class LogFugacityRatio[State, Move: Patch[Any]](LogProbabilityRatioFn[State, Mov
         patched_particle_counts: Probe for particle counts after applying patch
 
     Note:
-        Activity is fugacity divided by k_B T: $a = f/(k_B T)$.
+        Activity is fugacity divided by k_B T: $a = f/(k_B T)$, a number density.
         The log_activity should be computed from equation of state (e.g., Peng-Robinson).
     """
 
-    log_activity: View[State, Table[SystemId, Array]] = field(static=True)
-    volume: View[State, Table[SystemId, Array]] = field(static=True)
+    log_activity: View[State, Table[SystemId, units.Log[units.NumberDensityUnit]]] = (
+        field(static=True)
+    )
+    volume: View[State, Table[SystemId, units.Volume]] = field(static=True)
     particle_counts: View[State, Table[SystemId, Array]] = field(static=True)
     patched_particle_counts: Probe[State, Move, Table[SystemId, Array]] = field(
         static=True
@@ -164,8 +181,13 @@ class LogFugacityRatio[State, Move: Patch[Any]](LogProbabilityRatioFn[State, Mov
         )
 
         @Table.transform
-        def inner(la: Array, vol: Array, c: Array, pc: Array) -> Array:
-            ln_fV = la + jnp.log(vol[:, None])
+        def inner(
+            la: units.Log[units.NumberDensityUnit],
+            vol: units.Volume,
+            c: Array,
+            pc: Array,
+        ) -> Array:
+            ln_fV = la.log + jnp.log(vol * la.ref)[:, None]
             ln_fact_ratio = log_factorial_ratio(c, pc)
             ln_ratio = (pc - c) * ln_fV + ln_fact_ratio
             ln_ratio = jnp.where(pc == c, 0.0, ln_ratio)

@@ -40,6 +40,7 @@ from typing import Any, Callable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.lens import Lens
 from kups.core.patch import Patch
@@ -50,13 +51,12 @@ from kups.core.propagator import (
     Propagator,
 )
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
+from kups.core.utils.units import magnitudes
 
 type LogAcceptanceRatio = Array
 r"""Log Metropolis acceptance ratio $\ln\alpha$ [dimensionless]."""
-
-type Energy = Array
-r"""Potential energy [energy]."""
 
 type ParticleCount = Array
 r"""Macrostate particle count $N$ [dimensionless, integer]."""
@@ -113,7 +113,7 @@ class WidomStatistics:
     """
 
     sum_boltzmann: Array
-    sum_delta_u_boltzmann: Array
+    sum_delta_u_boltzmann: units.Energy
     n_samples: Array
 
     @staticmethod
@@ -128,7 +128,7 @@ class WidomStatistics:
         """
         return WidomStatistics(
             sum_boltzmann=jnp.zeros(n_systems),
-            sum_delta_u_boltzmann=jnp.zeros(n_systems),
+            sum_delta_u_boltzmann=units.zeros(n_systems, u.eV),
             n_samples=jnp.zeros(n_systems, dtype=int),
         )
 
@@ -140,7 +140,9 @@ class WidomStatistics:
         """
         return tree_zeros_like(self)
 
-    def update(self, ln_alpha: LogAcceptanceRatio, delta_u: Energy) -> WidomStatistics:
+    def update(
+        self, ln_alpha: LogAcceptanceRatio, delta_u: units.Energy
+    ) -> WidomStatistics:
         r"""Accumulate one ghost insertion.
 
         Args:
@@ -277,14 +279,16 @@ class EnergyCumulants:
     which is what the flat-histogram Taylor extrapolation consumes.
 
     Attributes:
-        mean: $\kappa_1 = \langle E \rangle$, shape ``(n_systems,)`` [energy].
+        mean: $\kappa_1 = \langle E \rangle$, shape ``(n_systems,)``.
         cumulants: $\kappa_2, \ldots, \kappa_P$ stacked along the trailing
             axis (leading axes stay per-system, so tables/vmap batch over
             them), shape ``(n_systems, max_order - 1)``; entry ``[..., k - 2]``
-            holds $\kappa_k$ [energy$^k$].
+            holds $\kappa_k$ [energy$^k$]. Each entry carries a different
+            power of energy, so the stack stays a plain array of magnitudes
+            in the active base.
     """
 
-    mean: Energy
+    mean: units.Energy
     cumulants: Array
 
     @property
@@ -312,15 +316,17 @@ class EnergyMoments:
 
     Attributes:
         count: Number of samples accumulated, shape ``(n_systems,)``.
-        mean: Running sample mean $\bar{x}_n$, shape ``(n_systems,)`` [energy].
+        mean: Running sample mean $\bar{x}_n$, shape ``(n_systems,)``.
         central_sums: $M_2, \ldots, M_P$ stacked along the trailing axis
             (leading axes stay per-system, so tables/vmap batch over them),
             shape ``(n_systems, max_order - 1)``; entry ``[..., p - 2]`` holds
-            $M_p$ [energy$^p$].
+            $M_p$ [energy$^p$]. Each entry carries a different power of
+            energy, so the stack stays a plain array of magnitudes in the
+            active base.
     """
 
     count: Array
-    mean: Energy
+    mean: units.Energy
     central_sums: Array
 
     @property
@@ -342,7 +348,7 @@ class EnergyMoments:
         assert max_order >= 2, "at least mean and variance must be tracked"
         return EnergyMoments(
             count=jnp.zeros(n_systems, dtype=int),
-            mean=jnp.zeros(n_systems),
+            mean=units.zeros(n_systems, u.eV),
             central_sums=jnp.zeros((n_systems, max_order - 1)),
         )
 
@@ -354,7 +360,7 @@ class EnergyMoments:
         """
         return tree_zeros_like(self)
 
-    def update(self, energy: Energy) -> EnergyMoments:
+    def update(self, energy: units.Energy) -> EnergyMoments:
         r"""Incorporate one per-system energy sample (Pébay single-sample update).
 
         With $\delta = x - \bar{x}_{n-1}$ and $\delta_n = \delta / n$, the
@@ -379,14 +385,15 @@ class EnergyMoments:
         n_prev = nf - 1.0
         delta = energy - self.mean
         delta_n = delta / nf
+        d = magnitudes(delta_n)
 
         old = {p: self.central_sums[..., p - 2] for p in range(2, self.max_order + 1)}
         new_sums = [
             old[p]
             # Cross terms re-centre the old sums onto the new mean; M_1 = 0
             # and the M_0 = n - 1 term is folded into the tail below.
-            + sum(comb(p, k) * (-delta_n) ** k * old[p - k] for k in range(1, p - 1))
-            + delta_n**p * n_prev * (n_prev ** (p - 1) + (-1.0) ** p)
+            + sum(comb(p, k) * (-d) ** k * old[p - k] for k in range(1, p - 1))
+            + d**p * n_prev * (n_prev ** (p - 1) + (-1.0) ** p)
             for p in range(2, self.max_order + 1)
         ]
         return EnergyMoments(

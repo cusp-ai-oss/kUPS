@@ -11,6 +11,8 @@ from __future__ import annotations
 import jax.numpy as jnp
 import pytest
 
+from test.units import FORCE, A, assert_close
+
 # Skip entire module if torch not available
 torch = pytest.importorskip("torch", minversion="2.0.0")
 
@@ -193,7 +195,7 @@ class TestLoadMACE:
         assert isinstance(mliap, TorchMliap)
         assert isinstance(mliap.wrapper.module, MACEModule)
         assert mliap.compute_cell_gradients
-        assert float(mliap.cutoff.data[0]) == pytest.approx(4.5)
+        assert_close(mliap.cutoff.data, [4.5])
 
     def test_load_overrides_cutoff(self, tmp_path):
         from kups.potential.mliap.torch import load_mace
@@ -202,8 +204,8 @@ class TestLoadMACE:
         model_path = tmp_path / "mock_mace.model"
         torch.save(mock, model_path)
 
-        mliap = load_mace(model_path, device="cpu", cutoff=6.0)
-        assert float(mliap.cutoff.data[0]) == pytest.approx(6.0)
+        mliap = load_mace(model_path, device="cpu", cutoff=6.0 * A)
+        assert_close(mliap.cutoff.data, [6.0])
 
     def test_load_nonexistent_file_raises(self):
         from kups.potential.mliap.torch import load_mace
@@ -278,28 +280,28 @@ class TestProjectGradOntoFrame:
 
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.array([[2.0, 0, 0], [0.5, 3.0, 0], [0.1, 0.2, 4.0]])
+                jnp.array([[2.0, 0, 0], [0.5, 3.0, 0], [0.1, 0.2, 4.0]]) * A
             )
         )
-        cell_grad = jnp.arange(9.0).reshape(3, 3)
+        cell_grad = jnp.arange(9.0).reshape(3, 3) * FORCE
         out = _project_grad_onto_frame(cell, cell_grad)
 
         # Frame type (not a vjp cotangent tuple) must survive for downstream
         # ``gradients.cell.data.vectors`` consumers.
         assert isinstance(out, PeriodicCell)
         assert isinstance(out.frame, TriclinicFrame)
-        assert jnp.allclose(out.frame.tril, jnp.array([0.0, 3.0, 4.0, 6.0, 7.0, 8.0]))
+        assert_close(out.frame.tril, [0.0, 3.0, 4.0, 6.0, 7.0, 8.0])
 
     def test_preserves_orthogonal_frame_and_projects_diagonal(self):
         from kups.core.cell import OrthogonalFrame, PeriodicCell
         from kups.potential.mliap.torch.interface import _project_grad_onto_frame
 
-        cell = PeriodicCell(OrthogonalFrame(jnp.array([2.0, 3.0, 4.0])))
-        cell_grad = jnp.arange(9.0).reshape(3, 3)
+        cell = PeriodicCell(OrthogonalFrame(jnp.array([2.0, 3.0, 4.0]) * A))
+        cell_grad = jnp.arange(9.0).reshape(3, 3) * FORCE
         out = _project_grad_onto_frame(cell, cell_grad)
 
         assert isinstance(out.frame, OrthogonalFrame)
-        assert jnp.allclose(out.frame.lengths, jnp.array([0.0, 4.0, 8.0]))
+        assert_close(out.frame.lengths, [0.0, 4.0, 8.0])
 
 
 class TestUniversalInterfaceAPI:
@@ -327,8 +329,7 @@ class TestUniversalInterfaceAPI:
 
         mock = MockMACEModel(num_species=5)
         module = MACEModule(mock, species_to_index=torch.arange(6), num_species=5)
-        mliap = TorchMliap.from_module(module, cutoff=5.0)
+        mliap = TorchMliap.from_module(module, cutoff=5.0 * A)
         assert isinstance(mliap, TorchMliap)
-        assert float(mliap.cutoff.data[0]) == pytest.approx(5.0)
         assert mliap.wrapper.requires_grad
-        assert jnp.allclose(mliap.cutoff.data, jnp.array([5.0]))
+        assert_close(mliap.cutoff.data, [5.0])

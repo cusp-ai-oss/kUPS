@@ -14,8 +14,7 @@ in [kups.potential.classical.ewald][]).
 
 from typing import NamedTuple, no_type_check
 
-from jax import Array
-
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -26,7 +25,7 @@ from kups.core.typing import HasPositionsAndSystemIndex, IsState, ParticleId, Sy
 class PositionsAndSystemIndex(NamedTuple):
     """Per-particle geometric data: cartesian positions + system assignment."""
 
-    positions: Array
+    positions: units.Length
     system: Index[SystemId]
 
 
@@ -37,15 +36,20 @@ class Geometry(NamedTuple):
     systems: Table[SystemId, Cell[AnyPeriodicity]]
 
 
-class PositionsAndCell(NamedTuple):
+class PositionsAndCell[P](NamedTuple):
     """Optimizer DOFs / gradient payload of the standard cell filters.
 
     ``positions`` is a per-particle table of DOF coordinates (``∂E/∂r`` when this
     carries a gradient); ``cell`` is a per-system table of the cell (its frame
     parameters carrying ``∂E/∂h`` for a gradient).
+
+    ``P`` is the dimension the positions carry: a length for the degrees of
+    freedom themselves, and ``units.Force`` for a gradient payload, whose cell
+    frame likewise holds ``dE/dh`` in its parameters as
+    [Frame.parameter_gradient][kups.core.cell.Frame.parameter_gradient] returns it.
     """
 
-    positions: Table[ParticleId, Array]
+    positions: Table[ParticleId, P]
     cell: Table[SystemId, Cell[AnyPeriodicity]]
 
 
@@ -57,8 +61,8 @@ type IsStateWithParticlesAndCell = IsState[
 @no_type_check
 def position_and_cell_idx_view(
     state: IsStateWithParticlesAndCell,
-) -> PotentialOut[PositionsAndCell, EmptyType]:
-    """Patch index structure matching the ``PositionsAndCell`` filter codomain.
+) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
+    """Patch index structure matching a ``PositionsAndCell`` gradient payload.
 
     The per-particle system index masks the position rows and the systems index
     masks every ``Cell`` leaf.

@@ -13,7 +13,6 @@ from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from jax import Array
 
@@ -22,6 +21,7 @@ from kups.application.potential.filter import (
     POSITIONS_AND_CELL,
     POSITIONS_ONLY,
 )
+from kups.core import units
 from kups.core.cell import (
     Cell,
     DeformedFrame,
@@ -39,6 +39,7 @@ from kups.potential.common.geometry import (
 )
 from kups.potential.common.graph import GRAPH_GEOMETRY
 from kups.potential.mliap.direct import filter_pullback
+from test.units import FORCE, as_length, assert_close
 
 jax.config.update("jax_enable_x64", True)
 
@@ -69,7 +70,9 @@ def _frechet_cell(
     cf: Array | float = 1.0,
 ) -> Cell[Any]:
     """Build a batched DeformedFrame-backed Cell from stacked basis matrices."""
-    frame = DeformedFrame.from_frame(TriclinicFrame.from_matrix(h), cell_factor=cf)
+    frame = DeformedFrame.from_frame(
+        TriclinicFrame.from_matrix(as_length(h)), cell_factor=cf
+    )
     if periodic == (True, True, True):
         return PeriodicCell(frame)
     return Cell(frame, periodic=periodic)
@@ -79,15 +82,18 @@ def _make_input(positions: Array, system_ids: Sequence[int], cell: Cell[Any]) ->
     """Assemble a fabricated graph input from positions, ids and a batched cell."""
     sys_index = Index.new([SystemId(s) for s in system_ids])
     particles = Table.arange(
-        PositionsAndSystemIndex(positions, sys_index), label=ParticleId
+        PositionsAndSystemIndex(as_length(positions), sys_index), label=ParticleId
     )
     systems = Table(tuple(SystemId(k) for k in sorted(set(system_ids))), _SysData(cell))
     return _Input(_PointCloud(particles, systems))
 
 
 def _direct_gradients(
-    cell: Cell[Any], system_keys: tuple[SystemId, ...], g_r: Array, dE_dh: Array
-) -> PositionsAndCell:
+    cell: Cell[Any],
+    system_keys: tuple[SystemId, ...],
+    g_r: units.Force,
+    dE_dh: units.Force,
+) -> PositionsAndCell[units.Force]:
     """Pack physical ``(∂E/∂r, ∂E/∂h|_r)`` as direct-model ``PositionsAndCell``.
 
     The partial cell gradient ``dE_dh`` (lower-triangular) is stored in a
@@ -106,16 +112,16 @@ def _direct_gradients(
     )
 
 
-def _physical_gradients(geom: Geometry) -> tuple[Array, Array]:
+def _physical_gradients(geom: Geometry) -> tuple[units.Force, units.Force]:
     """Hand-made ``(∂E/∂r, ∂E/∂h|_r)`` with lower-triangular cell block."""
     r = geom.particles.data.positions
     h = geom.systems.data.vectors
-    g_r = 0.1 * jnp.arange(r.size, dtype=r.dtype).reshape(r.shape)
-    dE_dh = 0.05 * jnp.arange(h.size, dtype=h.dtype).reshape(h.shape)
+    g_r = 0.1 * jnp.arange(r.size, dtype=r.dtype).reshape(r.shape) * FORCE
+    dE_dh = 0.05 * jnp.arange(h.size, dtype=h.dtype).reshape(h.shape) * FORCE
     return g_r, dE_dh * jnp.tril(jnp.ones((3, 3)))
 
 
-def _single() -> tuple[_Input, Array, Array]:
+def _single() -> tuple[_Input, units.Force, units.Force]:
     h = jnp.array([[[3.8, 0.0, 0.0], [0.4, 3.7, 0.0], [0.2, 0.3, 3.9]]])
     r = jnp.array([[0.1, 0.2, 0.3], [2.0, 1.0, 0.5], [1.0, 2.5, 3.0]])
     inp = _make_input(r, [0, 0, 0], _frechet_cell(h, cf=3.0))
@@ -123,7 +129,7 @@ def _single() -> tuple[_Input, Array, Array]:
     return inp, g_r, dE_dh
 
 
-def _multi() -> tuple[_Input, Array, Array]:
+def _multi() -> tuple[_Input, units.Force, units.Force]:
     h = jnp.array(
         [
             [[3.8, 0.0, 0.0], [0.4, 3.7, 0.0], [0.2, 0.3, 3.9]],
@@ -139,7 +145,9 @@ def _multi() -> tuple[_Input, Array, Array]:
 _CASES = {"single": _single, "multi": _multi}
 
 
-def _gradients_for(inp: _Input, g_r: Array, dE_dh: Array) -> PositionsAndCell:
+def _gradients_for(
+    inp: _Input, g_r: units.Force, dE_dh: units.Force
+) -> PositionsAndCell[units.Force]:
     geom = GRAPH_GEOMETRY.get(inp)
     return _direct_gradients(geom.systems.data, inp.graph.systems.keys, g_r, dE_dh)
 
@@ -163,27 +171,27 @@ def test_frechet_pullback_matches_total_lattice_gradient(name: str):
     g_u = filter_pullback(
         GRAPH_GEOMETRY.get(inp), _gradients_for(inp, g_r, dE_dh), FRECHET_FILTER
     )
-    np.testing.assert_allclose(g_u.positions.data, g_r, atol=1e-9)
+    assert_close(g_u.positions.data, g_r, atol=1e-9)
 
     system = geom.particles.data.system
-    s0 = jnp.einsum(
+    s0 = units.einsum(
         "ni,nij->nj",
         geom.particles.data.positions,
         Table(system.keys, cell.inverse_vectors)[system],
     )
 
-    def e_total(tril: Array) -> Array:
+    def e_total(tril: Array) -> units.Energy:
         f = DeformedFrame(frame.base, LogTriclinicFrame(tril, deformation.cell_factor))
         h = f.vectors
-        r = jnp.einsum("ni,nij->nj", s0, Table(system.keys, h)[system])
-        return jnp.sum(g_r * r) + jnp.sum(dE_dh * h)
+        r = units.einsum("ni,nij->nj", s0, Table(system.keys, h)[system])
+        return units.sum(g_r * r) + units.sum(dE_dh * h)
 
-    truth = jax.grad(e_total)(deformation.tril)
+    truth = units.grad(e_total)(deformation.tril)
     out_frame = g_u.cell.data.frame
     assert isinstance(out_frame, DeformedFrame)
     out_deformation = out_frame.deformation
     assert isinstance(out_deformation, LogTriclinicFrame)
-    np.testing.assert_allclose(out_deformation.tril, truth, atol=1e-8)
+    assert_close(out_deformation.tril, truth, atol=1e-8)
 
 
 @pytest.mark.parametrize("name", _CASES)
@@ -193,7 +201,7 @@ def test_positions_only_pullback_equals_force(name: str):
     g_u = filter_pullback(
         GRAPH_GEOMETRY.get(inp), _gradients_for(inp, g_r, dE_dh), POSITIONS_ONLY
     )
-    np.testing.assert_allclose(g_u.positions.data, g_r, atol=1e-9)
+    assert_close(g_u.positions.data, g_r, atol=1e-9)
 
 
 @pytest.mark.parametrize("name", _CASES)
@@ -208,6 +216,6 @@ def test_position_and_cell_pullback_is_partial(name: str):
     g_u = filter_pullback(
         GRAPH_GEOMETRY.get(inp), _gradients_for(inp, g_r, dE_dh), POSITIONS_AND_CELL
     )
-    np.testing.assert_allclose(g_u.positions.data, g_r, atol=1e-9)
+    assert_close(g_u.positions.data, g_r, atol=1e-9)
     dE_dh_back = geom.systems.data.frame.vectors_gradient(g_u.cell.data.frame)
-    np.testing.assert_allclose(dE_dh_back, dE_dh, atol=1e-8)
+    assert_close(dE_dh_back, dE_dh, atol=1e-8)

@@ -17,8 +17,11 @@ from kups.core.neighborlist.all_dense import (
 )
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.result import as_result_function
+from kups.core.units import catalog as u
 
 from ._builders import EvalState, cutoff_table, make_lh, make_systems
+
+_A = u.angstrom
 
 
 class TestAllSubselect:
@@ -26,7 +29,7 @@ class TestAllSubselect:
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A)),
             jnp.array([1.0]),
         )
         candidates = _all_subselect(lh, rh, systems)
@@ -43,14 +46,14 @@ class TestMultiSystemWarning:
         lh = make_lh(jnp.zeros((4, 3)), jnp.array([0, 0, 1, 1]))
         systems, _ = make_systems(
             PeriodicCell(
-                TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, 0) * 10.0)
+                TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(2, 0) * 10.0) * _A)
             ),
             jnp.array([1.0, 1.0]),
         )
         nl = AllDenseNearestNeighborList(
             avg_edges=FixedCapacity(32),
             avg_image_candidates=FixedCapacity(32),
-            cutoffs=cutoff_table(jnp.array([1.0, 1.0])),
+            cutoffs=cutoff_table(jnp.array([1.0, 1.0]) * _A),
         )
         with caplog.at_level(logging.WARNING):
             result = as_result_function(nl)(keys=lh, systems=systems)
@@ -62,7 +65,7 @@ class TestFromState:
     def test_from_state_wires_lens_capacities(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A)),
             jnp.array([2.0]),
         )
         params = UniversalNeighborlistParameters(
@@ -70,7 +73,7 @@ class TestFromState:
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
         nl = AllDenseNearestNeighborList.from_state(
-            state, cutoff_table(jnp.array([2.0]))
+            state, cutoff_table(jnp.array([2.0]) * _A)
         )
 
         assert isinstance(nl.avg_edges, LensCapacity)

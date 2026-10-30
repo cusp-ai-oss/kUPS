@@ -10,19 +10,22 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import optax
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.lens import lens
 from kups.core.patch import ExplicitPatch, IdPatch, WithPatch
 from kups.core.potential import PotentialOut
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass
-from kups.relaxation.optimizer import Optimizer, chain
+from kups.core.utils.units import magnitudes_of
+from kups.relaxation.optimizer import Optimizer, apply_updates, chain, relabel_like
 from kups.relaxation.propagator import RelaxationPropagator
 from kups.relaxation.transforms import (
     ScaleByAseLbfgs,
     ScaleByBacktrackingLinesearch,
     ScaleByMoreThuenteLinesearch,
 )
+from test.units import EV, A, assert_close
 
 
 @dataclass
@@ -82,6 +85,23 @@ class QuadraticPotentialWithPatch:
                 hessians=(),
             ),
             ExplicitPatch(payload=jnp.array(1), apply_fn=apply_fn),
+        )
+
+
+class DimensionedQuadraticPotential:
+    """Mock potential: E = 0.5 * k * ||x||^2 with x a length, grad = k * x."""
+
+    def __call__(self, state: PotentialState, patch=None):
+        del patch
+        k = 1.0 * EV / A**2
+        energy = 0.5 * k * units.sum(state.positions**2)
+        return WithPatch(
+            PotentialOut(
+                total_energies=Table.arange(units.stack([energy]), label=SystemId),
+                gradients=k * state.positions,
+                hessians=(),
+            ),
+            IdPatch(),
         )
 
 
@@ -182,3 +202,37 @@ class TestRelaxationPropagator:
         for _ in range(8):
             state = propagator(key, state)
         npt.assert_allclose(state.positions, jnp.zeros(2), atol=1e-6)
+
+    def test_dimensioned_positions_converge(self):
+        """Length positions relax through a line search and stay lengths."""
+        optimizer: Optimizer[Any, Any] = chain(
+            optax.scale(-1.0), ScaleByMoreThuenteLinesearch()
+        )
+        positions = jnp.array([5.0, -3.0]) * A
+        state = PotentialState(
+            positions=positions, opt_state=optimizer.init(magnitudes_of(positions))
+        )
+        propagator = jax.jit(
+            RelaxationPropagator(
+                potential=DimensionedQuadraticPotential(),
+                property=lens(lambda s: s.positions, cls=PotentialState),
+                opt_state=lens(lambda s: s.opt_state),
+                optimizer=optimizer,
+            )
+        )
+        for _ in range(5):
+            state = propagator(jax.random.key(0), state)
+        assert_close(state.positions, jnp.zeros(2) * A, atol=1e-6)
+
+
+def test_relabel_and_apply_updates_keep_dimensions():
+    """Steps on magnitudes are relabelled per leaf; logs keep their reference."""
+    params = (
+        jnp.array([1.0, 2.0]) * A,
+        units.Log.from_logs(jnp.zeros(2), 1 / A**3),
+    )
+    steps = jax.tree.map(lambda x: jnp.full_like(x, 0.5), magnitudes_of(params))
+    new_x, new_log = apply_updates(params, relabel_like(params, steps))
+    assert_close(new_x, jnp.array([1.5, 2.5]) * A)
+    npt.assert_allclose(new_log.log, jnp.full(2, 0.5))
+    assert new_log.ref == params[1].ref

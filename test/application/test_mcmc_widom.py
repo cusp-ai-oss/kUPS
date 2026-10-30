@@ -9,7 +9,6 @@ import tempfile
 
 import jax
 import jax.numpy as jnp
-import numpy.testing as npt
 import pytest
 
 from kups.application.mcmc.analysis import analyze_widom_file
@@ -28,6 +27,7 @@ from kups.application.simulations.mcmc_widom import (
     run,
 )
 from kups.core.propagator import Propagator
+from test.units import EV, A, assert_close
 
 L = 10.0  # box side (Å)
 
@@ -69,10 +69,10 @@ def _ar_adsorbate() -> AdsorbateConfig:
     # A single-site neutral Ar pseudo-adsorbate: same LJ params as host atoms,
     # no charges (Ewald path is skipped via state.is_charged == False).
     return AdsorbateConfig(
-        critical_temperature=150.7,
-        critical_pressure=4.86e6,
+        critical_temperature="150.7 K",
+        critical_pressure="4.86e6 Pa",
         acentric_factor=-0.002,
-        positions=((0.0, 0.0, 0.0),),
+        positions={"angstrom": [[0.0, 0.0, 0.0]]},
         symbols=("Ar",),
     )
 
@@ -80,8 +80,8 @@ def _ar_adsorbate() -> AdsorbateConfig:
 def _host(cif_file: str, blocking_spheres=((),)) -> HostConfig:
     return HostConfig(
         cif_file=cif_file,
-        pressure=1e5,
-        temperature=300.0,
+        pressure="1e5 Pa",
+        temperature="300 K",
         init_adsorbates=(0,),
         adsorbate_composition=(1.0,),
         adsorbate_interaction=((0.0,),),
@@ -92,15 +92,15 @@ def _host(cif_file: str, blocking_spheres=((),)) -> HostConfig:
 def _lj() -> LJConfig:
     # σ, ε in (Å, eV); vanilla UFF Ar from trappe.yaml.
     return LJConfig(
-        parameters={"Ar": (3.446, 0.008023)},
-        cutoff=4.5,
+        parameters={"Ar": ("3.446 angstrom", "0.008023 eV")},
+        cutoff="4.5 angstrom",
         tail_correction=False,
         mixing_rule="lorentz_berthelot",
     )
 
 
 def _ewald() -> EwaldConfig:
-    return EwaldConfig(real_cutoff=4.5, precision=1.0e-4)
+    return EwaldConfig(real_cutoff="4.5 angstrom", precision=1.0e-4)
 
 
 def _tmp_h5() -> str:
@@ -131,7 +131,9 @@ def _config(host: HostConfig, run_config: WidomRunConfig | None = None) -> Confi
     )
 
 
-_SPHERES = ((BlockingSphereConfig(center=(5.0, 5.0, 5.0), radius=2.0),),)
+_SPHERES = (
+    (BlockingSphereConfig(center={"angstrom": [5.0, 5.0, 5.0]}, radius="2 angstrom"),),
+)
 
 
 class TestInitState:
@@ -153,9 +155,7 @@ class TestInitState:
     def test_blocking_spheres_flow_through(self, blocked_state):
         assert blocked_state.has_blocking_spheres
         assert blocked_state.blocking_spheres_parameters.radii.shape[0] == 1
-        npt.assert_allclose(
-            blocked_state.blocking_spheres_parameters.radii, jnp.array([2.0])
-        )
+        assert_close(blocked_state.blocking_spheres_parameters.radii, jnp.array([2.0]))
 
     def test_spheres_on_one_host_of_a_batch(self):
         # Sizing the blocking neighbor list must cover the sphere-free host too.
@@ -229,8 +229,9 @@ class TestRun:
         results = analyze_widom_file(config.run.out_file, n_blocks=2)
         assert len(results) == 1
         result = next(iter(results.values()))
-        assert jnp.isfinite(result.excess_chemical_potential.mean).item()
-        assert jnp.isfinite(result.henry_coefficient.mean).item()
-        assert jnp.isfinite(result.heat_of_adsorption.mean).item()
-        assert float(result.henry_coefficient.mean) > 0.0
-        assert float(result.henry_coefficient.sem) >= 0.0
+        per_energy = A**3 / EV
+        assert jnp.isfinite(result.excess_chemical_potential.mean.to(EV)).item()
+        assert jnp.isfinite(result.henry_coefficient.mean.to(per_energy)).item()
+        assert jnp.isfinite(result.heat_of_adsorption.mean.to(EV)).item()
+        assert float(result.henry_coefficient.mean.to(per_energy)) > 0.0
+        assert float(result.henry_coefficient.sem.to(per_energy)) >= 0.0

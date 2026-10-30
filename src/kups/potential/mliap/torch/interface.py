@@ -17,7 +17,9 @@ Example:
     from kups.potential.mliap.torch.interface import TorchMliap
 
     # A backend provides a Module with the universal forward contract:
-    model = TorchMliap.from_module(my_module, cutoff=6.0, compute_cell_gradients=True)
+    model = TorchMliap.from_module(
+        my_module, cutoff=6.0 * u.angstrom, compute_cell_gradients=True
+    )
 
     # Wire into a kUPS Potential:
     potential = make_torch_mliap_from_state(state_lens, gradient=POSITIONS_AND_CELL)
@@ -36,6 +38,7 @@ import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, View, bind
@@ -51,6 +54,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.functools import constant
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
@@ -154,6 +158,7 @@ class AtomGraphInput(TypedDict):
     Mirrors the JAX [AtomGraphInput][kups.potential.mliap.tojax.AtomGraphInput].
     Shapes use ``N`` atoms, ``B`` systems, and ``E`` edges (each padded by one
     extra atom/system to work around backends that cannot handle empty graphs).
+    Positions and cells are magnitudes in Å.
     """
 
     pos: Array  # (N, 3)
@@ -172,9 +177,9 @@ class TorchMliapForward(Protocol):
 
     The module must accept an ``AtomGraphInput`` dict and return a dict with:
 
-    - ``"energy"``: ``(B,)`` per-system total energies.
-    - ``"position_gradients"``: ``(N, 3)`` :math:`\\partial E / \\partial r`.
-    - ``"cell_gradients"``: ``(B, 3, 3)`` :math:`\\partial E / \\partial h`,
+    - ``"energy"``: ``(B,)`` per-system total energies in eV.
+    - ``"position_gradients"``: ``(N, 3)`` :math:`\\partial E / \\partial r` in eV/Å.
+    - ``"cell_gradients"``: ``(B, 3, 3)`` :math:`\\partial E / \\partial h` in eV/Å,
       required only when ``compute_cell_gradients=True``.
 
     Outputs are gradients (not forces); adapters around models that natively
@@ -195,26 +200,26 @@ class TorchMliap:
     """Container for a torch MLFF wired into JAX.
 
     Attributes:
-        cutoff: Per-system cutoff radius [Å].
+        cutoff: Per-system cutoff radius.
         wrapper: ``TorchModuleWrapper`` over the MLFF module.
         compute_cell_gradients: Whether the module returns ``"cell_gradients"``.
     """
 
-    cutoff: Table[SystemId, Array]
+    cutoff: Table[SystemId, units.Length]
     wrapper: TorchModuleWrapper = field(static=True)
     compute_cell_gradients: bool = field(static=True, default=False)
 
     @staticmethod
     def from_module(
         module: torch.nn.Module,
-        cutoff: float,
+        cutoff: units.Length,
         compute_cell_gradients: bool = False,
     ) -> "TorchMliap":
         """Wrap a torch.nn.Module that returns energy and gradients.
 
         Args:
             module: torch ``nn.Module`` satisfying ``TorchMliapForward``.
-            cutoff: Interaction cutoff radius [Å].
+            cutoff: Interaction cutoff radius.
             compute_cell_gradients: Whether the module returns
                 ``"cell_gradients"`` for stress computation.
 
@@ -223,7 +228,7 @@ class TorchMliap:
         """
         wrapper = TorchModuleWrapper(module, requires_grad=True)
         return TorchMliap(
-            cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
+            cutoff=Table((SystemId(0),), units.stack([cutoff])),
             wrapper=wrapper,
             compute_cell_gradients=compute_cell_gradients,
         )
@@ -256,10 +261,12 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
         Prepared inputs in the universal schema (no padding).
     """
     n_sys = graph.systems.data.cell.vectors.shape[0]
-    positions = graph.particles.data.positions
+    # The torch modules read plain magnitudes in Angstrom; strip explicitly
+    # rather than relying on the active base being atomistic.
+    positions = graph.particles.data.positions.to(u.angstrom)
     atomic_numbers = graph.particles.data.atomic_numbers
     batch = graph.particles.data.system.raw_indices
-    cell = graph.systems.data.cell.vectors
+    cell = graph.systems.data.cell.vectors.to(u.angstrom)
     pbc = jnp.broadcast_to(
         jnp.asarray(graph.systems.data.cell.periodic, dtype=bool), (n_sys, 3)
     )
@@ -278,7 +285,7 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
     )
 
 
-def _project_grad_onto_frame[C: Cell[Any]](cell: C, cell_grad: Array) -> C:
+def _project_grad_onto_frame[C: Cell[Any]](cell: C, cell_grad: units.Force) -> C:
     """Express a raw ``∂E/∂h`` matrix in ``cell``'s frame parameter space.
 
     Delegates to [`Frame.parameter_gradient`][kups.core.cell.Frame.parameter_gradient],
@@ -295,12 +302,13 @@ def torch_mliap_model_fn[
     S: HasCell[AnyPeriodicity],
 ](
     inp: TorchMliapInput[P, S],
-) -> WithPatch[PotentialOut[PositionsAndCell, EmptyType], IdPatch[Any]]:
+) -> WithPatch[PotentialOut[PositionsAndCell[units.Force], EmptyType], IdPatch[Any]]:
     """Run a ``TorchMliap`` on a graph input and package the result.
 
     Always packages ``"cell_gradients"`` into a ``PositionsAndCell`` gradients
     structure (the module must produce them); downstream consumers that only
-    need forces let XLA prune the unused cell-gradient ops.
+    need forces let XLA prune the unused cell-gradient ops. The positions
+    carry ``∂E/∂r`` and the cell frame ``∂E/∂h`` in its parameters.
 
     Args:
         inp: Graph potential input bundling the model and graph.
@@ -332,16 +340,19 @@ def torch_mliap_model_fn[
     # about precision and downstream ``lax.scan``/optax pipelines see
     # consistent types.
     out_dtype = input_dict["pos"].dtype
-    energy = result["energy"].astype(out_dtype)
-    pos_grad = result["position_gradients"][unsort_order].astype(out_dtype)
+    # The model returns plain magnitudes in eV and Angstrom, labelled here.
+    energy = result["energy"].astype(out_dtype) * u.eV
+    pos_grad = result["position_gradients"][unsort_order].astype(out_dtype) * (
+        u.eV / u.angstrom
+    )
     # Zero padded-particle force rows: their system index is the OOB sentinel,
     # which the downstream ``cell[system]`` gather (e.g. in the filter pullback)
     # silently clamps to a real system, contaminating its virial.
     valid = inp.graph.particles.data.system.valid_mask
-    pos_grad = jnp.where(valid[:, None], pos_grad, 0.0)
+    pos_grad = units.where(valid[:, None], pos_grad, 0.0)
     energy_table = Table.arange(energy, label=SystemId)
 
-    cell_grad = result["cell_gradients"].astype(out_dtype)
+    cell_grad = result["cell_gradients"].astype(out_dtype) * (u.eV / u.angstrom)
     # Project the raw ∂E/∂h onto the input frame's parameter space,
     # preserving its type for downstream stress/relaxation consumers.
     new_cell = _project_grad_onto_frame(inp.graph.systems.data.cell, cell_grad)
@@ -366,11 +377,13 @@ def make_torch_mliap_potential[
     systems_view: View[State, Table[SystemId, S]],
     neighborlist_view: View[State, NNList],
     model: View[State, TorchMliap] | TorchMliap,
-    patch_idx_view: View[State, PotentialOut[PositionsAndCell, EmptyType]]
+    patch_idx_view: View[State, PotentialOut[PositionsAndCell[units.Force], EmptyType]]
     | None = None,
-    out_cache_lens: Lens[State, KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]]
+    out_cache_lens: Lens[
+        State, KahanSummand[PotentialOut[PositionsAndCell[units.Force], EmptyType]]
+    ]
     | None = None,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[State]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[State]]: ...
 
 
 @overload
@@ -384,13 +397,15 @@ def make_torch_mliap_potential[
     systems_view: View[State, Table[SystemId, S]],
     neighborlist_view: View[State, NNList],
     model: View[State, TorchMliap] | TorchMliap,
-    patch_idx_view: View[State, PotentialOut[PositionsAndCell, EmptyType]]
+    patch_idx_view: View[State, PotentialOut[PositionsAndCell[units.Force], EmptyType]]
     | None = None,
-    out_cache_lens: Lens[State, KahanSummand[PotentialOut[PositionsAndCell, EmptyType]]]
+    out_cache_lens: Lens[
+        State, KahanSummand[PotentialOut[PositionsAndCell[units.Force], EmptyType]]
+    ]
     | None = None,
     *,
-    gradient: Lens[Geometry, PositionsAndCell],
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[State]]: ...
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[State]]: ...
 
 
 def make_torch_mliap_potential(
@@ -400,7 +415,7 @@ def make_torch_mliap_potential(
     model: Any,
     patch_idx_view: Any | None = None,
     out_cache_lens: Any | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
 ) -> Any:
     """Create a kUPS ``Potential`` from a ``TorchMliap``.
 
@@ -432,7 +447,9 @@ def make_torch_mliap_potential(
 
         def model_fn[P: IsTorchMliapParticles, S: HasCell[AnyPeriodicity]](
             inp: TorchMliapInput[P, S],
-        ) -> WithPatch[PotentialOut[PositionsAndCell, EmptyType], IdPatch[Any]]:
+        ) -> WithPatch[
+            PotentialOut[PositionsAndCell[units.Force], EmptyType], IdPatch[Any]
+        ]:
             result = torch_mliap_model_fn(inp)
             data = result.data
             geometry = GRAPH_GEOMETRY.get(inp)

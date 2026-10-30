@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
+import pydantic
 import pytest
 
 from kups.application.mcmc.data import (
@@ -26,8 +27,8 @@ from kups.application.mcmc.data import (
     estimate_occupied_volume,
     mcmc_state_from_config,
 )
+from kups.core import units
 from kups.core.cell import PeriodicCell, TriclinicFrame
-from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Index, Table
 from kups.core.typing import (
     GroupId,
@@ -37,7 +38,9 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.kahan import KahanSummand
+from test.units import EV, A, assert_close
 
 L = 10.0  # cubic box side (Ang)
 
@@ -57,22 +60,22 @@ def _write_cif(atoms: ase.Atoms) -> str:
 
 def _co2_config() -> AdsorbateConfig:
     return AdsorbateConfig(
-        critical_temperature=304.2,
-        critical_pressure=7.38e6,
+        critical_temperature=304.2 * u.K,
+        critical_pressure=7.38e6 * u.Pa,
         acentric_factor=0.224,
-        positions=((0.0, 0.0, 0.0), (-1.16, 0.0, 0.0), (1.16, 0.0, 0.0)),
+        positions=jnp.array([[0.0, 0.0, 0.0], [-1.16, 0.0, 0.0], [1.16, 0.0, 0.0]]) * A,
         symbols=("C_co2", "O_co2", "O_co2"),
     )
 
 
 def _ch4_config() -> AdsorbateConfig:
     return AdsorbateConfig(
-        critical_temperature=190.6,
-        critical_pressure=4.6e6,
+        critical_temperature=190.6 * u.K,
+        critical_pressure=4.6e6 * u.Pa,
         acentric_factor=0.011,
-        positions=((0.0, 0.0, 0.0),),
+        positions=jnp.zeros((1, 3)) * A,
         symbols=("CH4_sp3",),
-        masses=(16.043,),
+        masses=jnp.array([16.043]) * u.amu,
     )
 
 
@@ -86,8 +89,8 @@ def _host(
     interaction = tuple(tuple(0.0 for _ in range(n_species)) for _ in range(n_species))
     return HostConfig(
         cif_file=cif_file,
-        pressure=1e5,
-        temperature=temperature,
+        pressure=1e5 * u.Pa,
+        temperature=temperature * u.K,
         init_adsorbates=init_adsorbates,
         adsorbate_composition=comp,
         adsorbate_interaction=interaction,
@@ -104,8 +107,9 @@ class TestAdsorbateConfig:
 
     def test_auto_derived_masses(self):
         cfg = _co2_config()
-        assert len(cfg.masses) == 3
-        assert all(m > 0 for m in cfg.masses)
+        masses = cfg.masses.to(u.amu)
+        assert masses.shape == (3,)
+        assert jnp.all(masses > 0)
 
     def test_unrecognised_symbols_without_masses_raise(self):
         """United-atom pseudo-symbols have no ASE mass; silently deriving 0
@@ -113,10 +117,10 @@ class TestAdsorbateConfig:
         atomic numbers or masses."""
         with pytest.raises(ValueError, match="unrecognised symbols"):
             AdsorbateConfig(
-                critical_temperature=190.6,
-                critical_pressure=4.6e6,
+                critical_temperature=190.6 * u.K,
+                critical_pressure=4.6e6 * u.Pa,
                 acentric_factor=0.011,
-                positions=((0.0, 0.0, 0.0),),
+                positions=jnp.zeros((1, 3)) * A,
                 symbols=("CH4_sp3",),
             )
 
@@ -124,35 +128,44 @@ class TestAdsorbateConfig:
         """Explicit atomic numbers resolve masses even for symbols ASE does
         not know; an atomic number of 0 marks a massless virtual site."""
         cfg = AdsorbateConfig(
-            critical_temperature=647.1,
-            critical_pressure=2.21e7,
+            critical_temperature=647.1 * u.K,
+            critical_pressure=2.21e7 * u.Pa,
             acentric_factor=0.344,
-            positions=(
-                (0.0, 0.0, 0.0),
-                (0.76, 0.59, 0.0),
-                (-0.76, 0.59, 0.0),
-                (0.0, 0.15, 0.0),
-            ),
+            positions=jnp.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.76, 0.59, 0.0],
+                    [-0.76, 0.59, 0.0],
+                    [0.0, 0.15, 0.0],
+                ]
+            )
+            * A,
             symbols=("Ow", "Hw", "Hw", "Mw"),
             atomic_numbers=(8, 1, 1, 0),
         )
-        npt.assert_allclose(cfg.masses, (15.999, 1.008, 1.008, 0.0), atol=1e-3)
+        npt.assert_allclose(
+            cfg.masses.to(u.amu), (15.999, 1.008, 1.008, 0.0), atol=1e-3
+        )
 
-    def test_per_atom_length_mismatch_raises(self):
+    @pytest.mark.parametrize(
+        ("positions", "masses"), [((1, 3), [16.043, 16.043]), ((1, 2), [16.043])]
+    )
+    def test_per_atom_length_mismatch_raises(self, positions, masses):
         with pytest.raises(ValueError, match="one per symbol"):
             AdsorbateConfig(
-                critical_temperature=190.6,
-                critical_pressure=4.6e6,
+                critical_temperature=190.6 * u.K,
+                critical_pressure=4.6e6 * u.Pa,
                 acentric_factor=0.011,
-                positions=((0.0, 0.0, 0.0),),
+                positions=jnp.zeros(positions) * A,
                 symbols=("CH4_sp3",),
-                masses=(16.043, 16.043),
+                masses=jnp.array(masses) * u.amu,
             )
 
     def test_auto_derived_charges(self):
         cfg = _co2_config()
-        assert len(cfg.charges) == 3
-        assert all(c == 0.0 for c in cfg.charges)
+        charges = cfg.charges.to(u.e)
+        assert charges.shape == (3,)
+        npt.assert_array_equal(charges, jnp.zeros(3))
 
     def test_as_particles_shape(self):
         cfg = _co2_config()
@@ -190,11 +203,23 @@ class TestHostOnly:
         # host group sentinel motif
         assert not self.particles2.data.group.valid_mask.any()
         # system fields
-        npt.assert_allclose(self.systems2.data.temperature, jnp.array([300.0]))
+        assert_close(self.systems2.data.temperature, jnp.array([300.0]))
         assert self.systems2.data.log_fugacity.shape == (1, 1)
-        assert jnp.isfinite(self.systems2.data.log_fugacity).all()
-        assert float(self.systems2.data.log_fugacity[0, 0]) < 0
-        npt.assert_allclose(self.systems2.data.potential_energy.total, jnp.array([0.0]))
+        # A near-ideal reservoir at 1 bar: the fugacity is positive and no larger
+        # than the pressure it was computed from.
+        fugacity = self.systems2.data.log_fugacity.exp().to(u.Pa)
+        assert jnp.all(jnp.isfinite(fugacity))
+        assert jnp.all((fugacity > 0) & (fugacity <= 1e5))
+        assert_close(self.systems2.data.potential_energy.total, jnp.array([0.0]))
+
+
+def test_host_config_rejects_non_scalar_temperature():
+    with pytest.raises(pydantic.ValidationError, match="expected a scalar"):
+        HostConfig(
+            cif_file="unused.cif",
+            pressure=1e5 * u.Pa,
+            temperature={"K": [300.0, 310.0]},
+        )
 
 
 @pytest.mark.parametrize("replication", [1, (2, 1, 3)])
@@ -204,9 +229,9 @@ def test_cell_replication_tiles_wrapped_host(replication):
     host = _host(_write_cif(atoms)).model_copy(update={"cell_replication": replication})
     particles, _, systems, _ = _call(host, [_co2_config()], key=jax.random.key(0))
     reps = np.broadcast_to(replication, 3)
-    npt.assert_allclose(systems.data.cell.vectors[0], np.diag(reps) * L, atol=1e-5)
+    assert_close(systems.data.cell.vectors[0], np.diag(reps) * L, atol=1e-5)
     # Each host atom appears once per tile, inside one supercell span.
-    positions = np.asarray(particles.data.positions)
+    positions = np.asarray(particles.data.positions.to(A))
     assert len(positions) == 2 * reps.prod()
     assert np.all(np.ptp(positions, axis=0) < reps * L)
     images = np.round(positions / L, 4) % 1
@@ -236,8 +261,8 @@ class TestWithInitialAdsorbates:
         # adsorbate motif assignment
         npt.assert_array_equal(self.groups.data.motif.value, [0, 0])
         # adsorbate positions within box
-        assert jnp.all(jnp.isfinite(self.particles.data.positions))
-        ads_pos = self.particles.data.positions[2:]
+        assert jnp.all(jnp.isfinite(self.particles.data.positions.to(A)))
+        ads_pos = self.particles.data.positions[2:].to(A)
         assert jnp.all(ads_pos > -L) and jnp.all(ads_pos < 2 * L)
 
 
@@ -259,8 +284,9 @@ class TestMultipleSpecies:
         npt.assert_array_equal(self.groups.data.motif.value, [0, 1])
         # log fugacity shape and values
         assert self.systems.data.log_fugacity.shape == (1, 2)
-        assert jnp.isfinite(self.systems.data.log_fugacity).all()
-        assert jnp.all(self.systems.data.log_fugacity < 0)
+        fugacity = self.systems.data.log_fugacity.exp().to(u.Pa)
+        assert jnp.all(jnp.isfinite(fugacity))
+        assert jnp.all((fugacity > 0) & (fugacity <= 1e5))
 
 
 def _build_motifs(*configs: AdsorbateConfig):
@@ -282,22 +308,22 @@ class TestMakeMolecule:
     def test_positions_offset_by_com(self):
         """Offsets from COM preserve bond lengths after random rotation."""
         motifs = _build_motifs(_co2_config())
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * L) * A))
         particles, _ = _make_molecule(motifs, _motif_index(0), cell, jax.random.key(42))
 
         pos = particles.data.positions
         com = pos.mean(axis=0)
         offsets = pos - com[None, :]
-        ref = jnp.array(_co2_config().positions)
-        npt.assert_allclose(
-            jnp.linalg.norm(offsets, axis=-1),
-            jnp.linalg.norm(ref, axis=-1),
+        ref = _co2_config().positions
+        assert_close(
+            units.norm(offsets, axis=-1),
+            units.norm(ref, axis=-1),
             atol=1e-5,
         )
 
     def test_labels_match_motif(self):
         motifs = _build_motifs(_co2_config())
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * L) * A))
         particles, _ = _make_molecule(motifs, _motif_index(0), cell, jax.random.key(0))
         labels = particles.data.labels
         assert Label("C_co2") in labels.keys
@@ -306,13 +332,13 @@ class TestMakeMolecule:
 
     def test_group_has_correct_motif(self):
         motifs = _build_motifs(_co2_config(), _ch4_config())
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * L) * A))
         _, group = _make_molecule(motifs, _motif_index(1), cell, jax.random.key(0))
         npt.assert_array_equal(group.data.motif.value, [1])
 
     def test_single_group_created(self):
         motifs = _build_motifs(_co2_config())
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * L))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * L) * A))
         _, group = _make_molecule(motifs, _motif_index(0), cell, jax.random.key(0))
 
         assert len(group.keys) == 1
@@ -338,16 +364,24 @@ class TestSystemFields:
 
     def test_all(self):
         # cell matches input
-        diag = jnp.diag(self.systems_default.data.cell.vectors[0])
-        npt.assert_allclose(diag, jnp.full(3, L), atol=1e-5)
+        diag = units.apply(jnp.diag, self.systems_default.data.cell.vectors[0])
+        assert_close(diag, jnp.full(3, L), atol=1e-5)
         # temperature
-        npt.assert_allclose(self.systems_450.data.temperature, jnp.array([450.0]))
+        assert_close(self.systems_450.data.temperature, jnp.array([450.0]))
         # log activity computed
-        assert self.systems_multi.data.log_fugacity.shape == (1, 2)
-        assert jnp.all(self.systems_multi.data.log_fugacity < 0)
-        log_act = self.systems_multi.data.log_activity
+        systems = self.systems_multi.data
+        assert systems.log_fugacity.shape == (1, 2)
+        fugacity = systems.log_fugacity.exp().to(u.Pa)
+        assert jnp.all((fugacity > 0) & (fugacity <= 1e5))
+        log_act = systems.log_activity
         assert log_act.shape == (1, 2)
-        assert jnp.all(log_act > self.systems_multi.data.log_fugacity)
+        # a·kT == f: adding the thermal energy back to the activity returns the
+        # fugacity; both sides are compared as logs in pascal.
+        thermal = units.constants.k_B * systems.temperature
+        lhs = log_act.log + jnp.log((thermal[:, None] * log_act.ref).to(u.Pa))
+        f = systems.log_fugacity
+        rhs = f.log + jnp.log((1.0 * f.ref).to(u.Pa))
+        npt.assert_allclose(lhs - rhs, 0.0, atol=1e-12)
 
 
 def _particles(
@@ -360,10 +394,10 @@ def _particles(
     group = group if group is not None else [0] * n
     return Table.arange(
         MCMCParticles(
-            positions=jnp.zeros((n, 3)),
-            masses=jnp.ones(n),
+            positions=units.zeros((n, 3), A),
+            masses=jnp.ones(n) * u.amu,
             atomic_numbers=jnp.asarray(atomic_numbers),
-            charges=jnp.zeros(n),
+            charges=units.zeros(n, u.e),
             labels=Index.new([Label("X")] * n),
             system=Index.integer(np.asarray(system), label=SystemId),
             group=Index.integer(np.asarray(group), label=GroupId, max_count=n),
@@ -386,7 +420,7 @@ class TestEstimateOccupiedVolume:
             _particles([1, 8, 6, 1], [0, 0, 1, 1]), lambda p: p.system
         )
         assert vol.keys == (SystemId(0), SystemId(1))
-        npt.assert_allclose(
+        assert_close(
             vol.data,
             jnp.array(
                 [
@@ -402,7 +436,7 @@ class TestEstimateOccupiedVolume:
         particles = _particles([1, 8, 6], [0, 0, 0], group=[0, 1, 1])
         vol = estimate_occupied_volume(particles, lambda p: p.group)
         assert vol.keys == (GroupId(0), GroupId(1))
-        npt.assert_allclose(
+        assert_close(
             vol.data,
             jnp.array([_sphere_volume(1), _sphere_volume(8) + _sphere_volume(6)]),
             rtol=1e-5,
@@ -411,12 +445,12 @@ class TestEstimateOccupiedVolume:
     def test_undefined_radius_contributes_zero(self):
         # Sc (Z=21) has no tabulated vdW radius -> treated as zero volume.
         vol = estimate_occupied_volume(_particles([21, 8], [0, 0]), lambda p: p.system)
-        npt.assert_allclose(vol.data, jnp.array([_sphere_volume(8)]), rtol=1e-5)
+        assert_close(vol.data, jnp.array([_sphere_volume(8)]), rtol=1e-5)
 
     def test_jit(self):
         particles = _particles([1, 8, 6, 1], [0, 0, 1, 1])
         fn = lambda p: estimate_occupied_volume(p, lambda x: x.system)  # noqa: E731
-        npt.assert_allclose(jax.jit(fn)(particles).data, fn(particles).data)
+        assert_close(jax.jit(fn)(particles).data, fn(particles).data)
 
 
 def _motifs(species: list[list[int]]) -> Table[MotifParticleId, MotifParticles]:
@@ -426,10 +460,10 @@ def _motifs(species: list[list[int]]) -> Table[MotifParticleId, MotifParticles]:
     n = len(atomic_numbers)
     return Table.arange(
         MotifParticles(
-            positions=jnp.zeros((n, 3)),
-            masses=jnp.ones(n),
+            positions=units.zeros((n, 3), A),
+            masses=jnp.ones(n) * u.amu,
             atomic_numbers=jnp.asarray(atomic_numbers),
-            charges=jnp.zeros(n),
+            charges=units.zeros(n, u.e),
             labels=Index.new([Label("X")] * n),
             motif=Index.integer(np.asarray(motif_ids), label=MotifId),
         ),
@@ -444,16 +478,17 @@ def _systems(
 
     Args:
         sides: Cubic cell side length (Ang) per system.
-        log_fugacity: Log fugacity assigned to every system.
+        log_fugacity: Log fugacity assigned to every system, against eV per cubic
+            Angstrom, so the activity comes out per cubic Angstrom.
     """
     n = len(sides)
-    frames = TriclinicFrame.from_matrix(jnp.stack([jnp.eye(3) * s for s in sides]))
+    frames = TriclinicFrame.from_matrix(jnp.stack([jnp.eye(3) * s for s in sides]) * A)
     return Table.arange(
         MCMCSystems(
             cell=PeriodicCell(frames),
-            temperature=jnp.full(n, 300.0),
-            potential_energy=KahanSummand.init(jnp.zeros(n)),
-            log_fugacity=jnp.full((n, 1), log_fugacity),
+            temperature=jnp.full(n, 300.0) * u.K,
+            potential_energy=KahanSummand.init(units.zeros(n, EV)),
+            log_fugacity=units.Log.from_logs(jnp.full((n, 1), log_fugacity), EV / A**3),
         ),
         label=SystemId,
     )
@@ -514,7 +549,8 @@ class TestEstimateMaxAdsorbates:
         particles = _particles([8], [0])
         free = L**3 - _sphere_volume(8)
         capacity = free / _sphere_volume(1)
-        activity = np.exp(-17.0 - np.log(300.0 * BOLTZMANN_CONSTANT))
+        kt = (units.constants.k_B * 300.0 * u.K).to(EV)
+        activity = np.exp(-17.0 - np.log(kt))
         ideal = activity * free * 1e4  # default max_enhancement
         assert ideal < capacity  # fugacity-limited, not saturation-limited
         result = estimate_max_adsorbates(

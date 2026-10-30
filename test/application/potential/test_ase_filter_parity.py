@@ -33,10 +33,13 @@ from kups.application.potential.classical.lennard_jones import (
 )
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_AND_CELL
 from kups.application.relaxation.data import RelaxState, relax_state_from_ase
+from kups.core import units
 from kups.core.cell import DeformedFrame, LogTriclinicFrame, TriclinicFrame
 from kups.core.lens import NestedLens, SimpleLens, identity_lens, lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.units import catalog as u
 from kups.core.utils.math import triangular_3x3_from_tril
+from kups.core.utils.units import magnitudes, magnitudes_of
 from kups.observables.stress import stress_via_virial_theorem
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.potential.common.geometry import (
@@ -47,6 +50,7 @@ from kups.potential.common.geometry import (
 from kups.relaxation.optimizer import chain
 from kups.relaxation.propagator import RelaxationPropagator
 from kups.relaxation.transforms import MaxStepSize, ScaleByAseLbfgs
+from test.units import EV, FORCE, A, assert_close
 
 jax.config.update("jax_enable_x64", True)
 
@@ -74,7 +78,9 @@ def _ase_system():
 def _kups_state(atoms: Atoms) -> tuple[RelaxState, LennardJonesParameters]:
     particles, systems = relax_state_from_ase(atoms)
     lj = LennardJonesParameters.from_dict(
-        cutoff=RC, parameters={"Ar": (SIGMA, EPS)}, mixing_rule="lorentz_berthelot"
+        cutoff=RC * A,
+        parameters={"Ar": (SIGMA * A, EPS * EV)},
+        mixing_rule="lorentz_berthelot",
     )
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
@@ -95,7 +101,7 @@ def test_atomic_forces_match_ase_cell_filters() -> None:
     out = make_lennard_jones_from_state(
         state_lens, parameters=lj, gradient=FRECHET_FILTER
     )(state).data
-    forces = -np.asarray(out.gradients.positions.data)
+    forces = -out.gradients.positions.data.to(FORCE)
     assert np.allclose(ucf, forces, atol=1e-10)
     assert np.allclose(fcf, forces, atol=1e-10)
 
@@ -116,7 +122,7 @@ def test_stress_matches_ase():
     systems = state.systems.map_data(
         lambda s: dataclasses.replace(s, cell_gradients=out.gradients.cell.data)
     )
-    sigma = np.asarray(stress_via_virial_theorem(particles, systems).data[0])
+    sigma = stress_via_virial_theorem(particles, systems).data[0].to(u.eV / A**3)
     assert np.allclose(atoms.get_stress(voigt=False), -sigma, atol=1e-12)
 
 
@@ -136,10 +142,10 @@ def test_frechet_transform_matches_expm_frechet() -> None:
         expected[mu, nu] = np.sum(
             expm_frechet(log_deform, direction, compute_expm=False) * cell_grad
         )
-    base = TriclinicFrame.from_matrix(jnp.eye(3)[None])
+    base = TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)
     frame = DeformedFrame(base, LogTriclinicFrame(a[None], jnp.ones(1)))
-    grad = frame.parameter_gradient(jnp.asarray(cell_grad)[None])
-    ours = np.asarray(cast(LogTriclinicFrame, grad.deformation).tril[0])
+    grad = frame.parameter_gradient(jnp.asarray(cell_grad)[None] * FORCE)
+    ours = cast(LogTriclinicFrame, grad.deformation).tril[0].to(u.eV)
     assert np.allclose(ours, expected[np.tril_indices(3)], atol=1e-9)
 
 
@@ -147,15 +153,17 @@ def test_unitcell_transform_is_linear():
     """``UnitCellFilter``'s deformation-gradient pullback is linear: a linear
     ``DeformedFrame(base, TriclinicFrame)`` round-trips parameter<->cartesian cell
     gradients exactly (orthonormal Jacobian), unlike the Frechet exp map."""
-    base = TriclinicFrame.from_matrix(jnp.eye(3)[None])
+    base = TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)
     frame = DeformedFrame(
-        base, TriclinicFrame(jnp.array([1.05, 0.02, 0.98, -0.01, 0.03, 1.10])[None])
+        base,
+        TriclinicFrame(jnp.array([1.05, 0.02, 0.98, -0.01, 0.03, 1.10])[None] * A),
     )
-    cell_grad = jnp.array(
-        [[0.20, -0.07, 0.11], [-0.07, 0.05, 0.15], [0.11, 0.15, -0.20]]
-    )[None]
+    cell_grad = (
+        jnp.array([[0.20, -0.07, 0.11], [-0.07, 0.05, 0.15], [0.11, 0.15, -0.20]])[None]
+        * FORCE
+    )
     roundtrip = frame.vectors_gradient(frame.parameter_gradient(cell_grad))
-    assert np.allclose(roundtrip, jnp.tril(cell_grad), atol=1e-12)
+    assert_close(roundtrip, units.apply(jnp.tril, cell_grad), atol=1e-12)
 
 
 ALPHA = 70.0
@@ -235,7 +243,9 @@ def _kups_relaxer(max_step: float | None):
     """
     filter_lens = FRECHET_FILTER
     lj = LennardJonesParameters.from_dict(
-        cutoff=RC, parameters={"Ar": (SIGMA, EPS)}, mixing_rule="lorentz_berthelot"
+        cutoff=RC * A,
+        parameters={"Ar": (SIGMA * A, EPS * EV)},
+        mixing_rule="lorentz_berthelot",
     )
     geometry = SimpleLens[RelaxState, Geometry](
         lambda s: Geometry(
@@ -266,11 +276,14 @@ def _kups_relaxer(max_step: float | None):
     @jax.jit
     def max_dof_gradient(s: RelaxState):  # ASE-fmax in the filter's DOFs
         grad = potential(s).data.gradients
-        force = jnp.max(jnp.linalg.norm(grad.positions.data, axis=-1))
+        force = jnp.max(units.norm(grad.positions.data, axis=-1).to(FORCE))
         # Frame-agnostic max|∂E/∂u_cell|: the only non-zero cell-gradient leaves are
-        # the deformation parameters (LogTriclinic tril / MatrixLog log_matrix).
-        cell_leaves = jax.tree.leaves(grad.cell)
-        cell_dof = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in cell_leaves]))
+        # the deformation parameters (LogTriclinic tril / MatrixLog log_matrix), and
+        # ASE holds them all to one tolerance, so the comparison is on magnitudes.
+        cell_leaves = units.tree_leaves(grad.cell)
+        cell_dof = jnp.max(
+            jnp.stack([jnp.max(jnp.abs(magnitudes(x))) for x in cell_leaves])
+        )
         return jnp.maximum(force, cell_dof)
 
     return optimizer, property_lens, step, max_dof_gradient
@@ -294,7 +307,8 @@ def _relax_kups(
     optimizer, property_lens, step, max_dof_gradient = _kups_relaxer(max_step)
     index_prefix = PositionsAndCell(state.particles.data.system, state.systems.index)  # type: ignore[arg-type]  # Index leaves; init only reads the per-system keys
     state = dataclasses.replace(
-        state, opt_state=optimizer.init(property_lens.get(state), index_prefix)
+        state,
+        opt_state=optimizer.init(magnitudes_of(property_lens.get(state)), index_prefix),
     )
     n, limit = 0, steps if steps is not None else 500
     while n < limit:
@@ -302,8 +316,8 @@ def _relax_kups(
             break
         state = step(state)
         n += 1
-    cell = np.asarray(state.systems.data.cell.vectors[0])
-    return n, cell, np.asarray(state.particles.data.positions)
+    cell = np.asarray(state.systems.data.cell.vectors[0].to(A))
+    return n, cell, np.asarray(state.particles.data.positions.to(A))
 
 
 @pytest.mark.parametrize("n_steps", [1, 2])

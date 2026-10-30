@@ -11,10 +11,13 @@ import numpy.testing as npt
 import pytest
 
 from kups.application.utils.particles import Particles, particles_from_arrays
+from kups.core import units
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame, VacuumCell
 from kups.core.data.index import Index
 from kups.core.data.table import Table
 from kups.core.typing import InclusionId, Label, ParticleId, SystemId
+from kups.core.units import catalog as u
+from test.units import A, assert_close
 
 
 class TestParticlesCreation:
@@ -122,9 +125,7 @@ class TestParticlesFromAse:
         assert particles.data.positions.shape == (len(atoms), 3)
 
         # Check masses
-        npt.assert_allclose(
-            particles.data.masses, jnp.asarray(atoms.get_masses()), rtol=1e-5
-        )
+        assert_close(particles.data.masses, jnp.asarray(atoms.get_masses()), rtol=1e-5)
 
         # Check atomic numbers
         npt.assert_array_equal(
@@ -133,7 +134,7 @@ class TestParticlesFromAse:
         )
 
         # Check charges default to zeros
-        npt.assert_array_equal(particles.data.charges, jnp.zeros(len(atoms)))
+        assert_close(particles.data.charges, jnp.zeros(len(atoms)))
 
         # Check labels
         assert particles.data.labels.keys == ("Cu",)
@@ -177,7 +178,7 @@ class TestParticlesFromAse:
         charges = np.array([1.0, -1.0])
         atoms.info["_atom_type_partial_charge"] = charges
         particles, _, _ = particles_from_ase(atoms)
-        npt.assert_allclose(particles.data.charges, jnp.asarray(charges))
+        assert_close(particles.data.charges, jnp.asarray(charges))
 
     def test_from_file_path(self, tmp_path):
         from ase import Atoms
@@ -190,7 +191,7 @@ class TestParticlesFromAse:
         write(str(path), atoms)
         particles, cell, uc_transform = particles_from_ase(str(path))
         assert len(particles) == 1
-        npt.assert_array_equal(particles.data.atomic_numbers, jnp.array([18]))
+        assert_close(particles.data.atomic_numbers, jnp.array([18]))
 
     def test_uc_transform_produces_lower_triangular(self):
         from ase.build import bulk
@@ -201,9 +202,9 @@ class TestParticlesFromAse:
         _, cell, _ = particles_from_ase(atoms)
         lv = cell.vectors
         # Lower-triangular: upper triangle (excluding diagonal) should be zero
-        npt.assert_allclose(lv[..., 0, 1], 0.0, atol=1e-10)
-        npt.assert_allclose(lv[..., 0, 2], 0.0, atol=1e-10)
-        npt.assert_allclose(lv[..., 1, 2], 0.0, atol=1e-10)
+        assert_close(lv[..., 0, 1], 0.0, atol=1e-10)
+        assert_close(lv[..., 0, 2], 0.0, atol=1e-10)
+        assert_close(lv[..., 1, 2], 0.0, atol=1e-10)
 
 
 class TestParticlesFromAsePbcDispatch:
@@ -274,14 +275,40 @@ class TestParticlesFromArrays:
             "labels": ["Na", "Cl"],
         }
 
+    def test_quantity_inputs_convert_units(self):
+        """Quantity inputs are converted; nm positions match their Å magnitudes."""
+        inputs = self._valid_inputs()
+        expected, _, _ = particles_from_arrays(**inputs)
+        actual, _, _ = particles_from_arrays(
+            positions=jnp.asarray(inputs["positions"]) / 10.0 * u.nm,
+            cell_vectors=jnp.asarray(inputs["cell_vectors"]) * A,
+            periodicity=inputs["periodicity"],
+            masses=jnp.asarray(inputs["masses"]) * u.amu,
+            atomic_numbers=inputs["atomic_numbers"],
+            labels=inputs["labels"],
+        )
+        self._assert_particle_parity(actual, expected)
+
+    def test_quantity_input_wrong_dimension_raises(self):
+        inputs = self._valid_inputs()
+        with pytest.raises(units.DimensionError):
+            particles_from_arrays(
+                positions=jnp.asarray(inputs["positions"]) * u.eV,  # type: ignore[arg-type]
+                cell_vectors=inputs["cell_vectors"],
+                periodicity=inputs["periodicity"],
+                masses=inputs["masses"],
+                atomic_numbers=inputs["atomic_numbers"],
+                labels=inputs["labels"],
+            )
+
     @staticmethod
     def _assert_particle_parity(actual, expected):
         assert actual.keys == expected.keys
         assert all(isinstance(key, ParticleId) for key in actual.keys)
-        npt.assert_allclose(actual.data.positions, expected.data.positions)
-        npt.assert_allclose(actual.data.masses, expected.data.masses)
+        assert_close(actual.data.positions, expected.data.positions)
+        assert_close(actual.data.masses, expected.data.masses)
         npt.assert_array_equal(actual.data.atomic_numbers, expected.data.atomic_numbers)
-        npt.assert_allclose(actual.data.charges, expected.data.charges)
+        assert_close(actual.data.charges, expected.data.charges)
         assert actual.data.labels.keys == expected.data.labels.keys
         npt.assert_array_equal(actual.data.labels.value, expected.data.labels.value)
         assert actual.data.system.keys == expected.data.system.keys
@@ -319,12 +346,10 @@ class TestParticlesFromArrays:
         assert type(actual_cell.frame) is type(expected_cell.frame)
         assert isinstance(actual_cell.frame, TriclinicFrame)
         assert actual_cell.periodic == expected_cell.periodic
-        npt.assert_allclose(actual_cell.vectors, expected_cell.vectors)
-        npt.assert_allclose(actual_cell.frame.tril, expected_cell.frame.tril)
+        assert_close(actual_cell.vectors, expected_cell.vectors)
+        assert_close(actual_cell.frame.tril, expected_cell.frame.tril)
         probe = jnp.array([[0.25, 0.5, 0.75], [-0.4, 1.2, 0.3]])
-        npt.assert_allclose(
-            actual_transform(probe), expected_transform(probe), atol=1e-12
-        )
+        assert_close(actual_transform(probe), expected_transform(probe), atol=1e-12)
 
     def test_jax_non_lower_triangular_joint_transformation(self):
         from ase import Atoms
@@ -360,24 +385,24 @@ class TestParticlesFromArrays:
         assert type(actual_cell) is Cell
         assert actual_cell.periodic == (True, False, True)
         assert all(type(value) is bool for value in actual_cell.periodic)
-        npt.assert_allclose(actual_cell.vectors, expected_cell.vectors, atol=1e-12)
-        npt.assert_allclose(
+        assert_close(actual_cell.vectors, expected_cell.vectors, atol=1e-12)
+        assert_close(
             actual_particles.data.positions,
             actual_transform(positions),
             atol=1e-12,
         )
-        npt.assert_allclose(
-            jnp.triu(actual_cell.vectors, k=1), jnp.zeros((3, 3)), atol=1e-12
+        assert_close(
+            units.apply(jnp.triu, actual_cell.vectors, k=1),
+            units.zeros((3, 3), A),
+            atol=1e-12,
         )
         probe = jnp.array([[0.6, -0.2, 0.9], [1.1, 0.7, -0.5]])
-        npt.assert_allclose(
-            actual_transform(probe), expected_transform(probe), atol=1e-12
-        )
+        assert_close(actual_transform(probe), expected_transform(probe), atol=1e-12)
 
     def test_omitted_charges_default_to_floating_zeros(self):
         particles, _, _ = particles_from_arrays(**self._valid_inputs())
 
-        npt.assert_array_equal(particles.data.charges, jnp.zeros(2))
+        assert_close(particles.data.charges, jnp.zeros(2))
         assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
 
     def test_integer_masses_and_charges_are_promoted(self):
@@ -393,8 +418,8 @@ class TestParticlesFromArrays:
         assert jnp.issubdtype(particles.data.charges.dtype, jnp.floating)
         assert jnp.issubdtype(particles.data.positions.dtype, jnp.floating)
         assert jnp.issubdtype(cell.vectors.dtype, jnp.floating)
-        npt.assert_array_equal(particles.data.masses, jnp.array([23.0, 35.0]))
-        npt.assert_array_equal(particles.data.charges, jnp.array([1.0, -1.0]))
+        assert_close(particles.data.masses, jnp.array([23.0, 35.0]))
+        assert_close(particles.data.charges, jnp.array([1.0, -1.0]))
 
     def test_numpy_boolean_mask_constructs_periodic_cell(self):
         inputs = self._valid_inputs()

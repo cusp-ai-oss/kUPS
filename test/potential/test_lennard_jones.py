@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -15,6 +16,7 @@ from kups.core.lens import view
 from kups.core.neighborlist import Edges
 from kups.core.patch import WithPatch
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
@@ -28,11 +30,12 @@ from kups.potential.classical.lennard_jones import (
     pair_tail_corrected_lennard_jones_energy,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph
+from test.units import EV, A, as_length, assert_close
 
 
 @dataclass
 class _LJPointData:
-    positions: jax.Array
+    positions: units.Length
     labels: Index[str]
     system: Index[SystemId]
 
@@ -40,24 +43,26 @@ class _LJPointData:
 @dataclass
 class _SystemData:
     cell: Cell
-    cutoff: jax.Array
+    cutoff: units.Length
 
 
 def _make_particles(
-    positions: jax.Array,
+    positions: jax.Array | units.Length,
     species: list[str],
     system_ids: jax.Array,
 ) -> Table[ParticleId, _LJPointData]:
     labels = Index.new(species)
     system = Index.new(system_ids)
-    return Table.arange(_LJPointData(positions, labels, system), label=ParticleId)
+    return Table.arange(
+        _LJPointData(as_length(positions), labels, system), label=ParticleId
+    )
 
 
 def _make_systems(
     lattice_vectors: jax.Array, cutoff: jax.Array
 ) -> Table[SystemId, _SystemData]:
-    cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
-    return Table.arange(_SystemData(cell, cutoff), label=SystemId)
+    cell = PeriodicCell(TriclinicFrame.from_matrix(as_length(lattice_vectors)))
+    return Table.arange(_SystemData(cell, as_length(cutoff)), label=SystemId)
 
 
 def _make_graph(
@@ -98,10 +103,18 @@ def _make_point_cloud_graph(
 _LABELS = ("A", "B")
 
 
-def _cutoff(*vals: float) -> Table[SystemId, jax.Array]:
+def _cutoff(*vals: float) -> Table[SystemId, units.Length]:
+    """One cutoff per system, in Angstrom.
+
+    Args:
+        *vals: The cutoffs' magnitudes.
+
+    Returns:
+        The cutoffs as a table keyed by ``SystemId``.
+    """
     return Table(
         tuple(SystemId(i) for i in range(len(vals))),
-        jnp.array(list(vals)),
+        jnp.array(list(vals)) * A,
     )
 
 
@@ -114,15 +127,15 @@ _jit_global_tail_pressure = jax.jit(global_lennard_jones_tail_correction_pressur
 class TestLennardJonesParameters:
     @classmethod
     def setup_class(cls):
-        cls.sigma = jnp.array([2.8, 3.05])
-        cls.epsilon = jnp.array([27.0, 79.0])
+        cls.sigma = jnp.array([2.8, 3.05]) * A
+        cls.epsilon = jnp.array([27.0, 79.0]) * EV
 
     def test_initialization(self):
         params = LennardJonesParameters.from_lorentz_berthelot_mixing(
             labels=_LABELS, sigma=self.sigma, epsilon=self.epsilon, cutoff=_cutoff(12.0)
         )
-        npt.assert_allclose(params.sigma, jnp.array([[2.8, 2.925], [2.925, 3.05]]))
-        npt.assert_allclose(
+        assert_close(params.sigma, jnp.array([[2.8, 2.925], [2.925, 3.05]]))
+        assert_close(
             params.epsilon,
             jnp.array([[27.0, 46.18441296], [46.18441296, 79.0]]),
         )
@@ -130,19 +143,28 @@ class TestLennardJonesParameters:
     def test_single_species(self):
         params = LennardJonesParameters.from_lorentz_berthelot_mixing(
             labels=("X",),
-            sigma=jnp.array([2.8]),
-            epsilon=jnp.array([27.0]),
+            sigma=jnp.array([2.8]) * A,
+            epsilon=jnp.array([27.0]) * EV,
             cutoff=_cutoff(12.0),
         )
-        npt.assert_allclose(params.sigma, jnp.array([[2.8]]))
-        npt.assert_allclose(params.epsilon, jnp.array([[27.0]]))
+        assert_close(params.sigma, jnp.array([[2.8]]))
+        assert_close(params.epsilon, jnp.array([[27.0]]))
+
+    def test_from_dict_none_defaults(self):
+        params = LennardJonesParameters.from_dict(
+            cutoff=12.0 * A,
+            parameters={"X": (None, None), "Y": (3.0 * A, 4.0 * EV)},
+            mixing_rule="lorentz_berthelot",
+        )
+        assert_close(params.sigma, jnp.array([[1.0, 2.0], [2.0, 3.0]]))
+        assert_close(params.epsilon, jnp.zeros((2, 2)).at[1, 1].set(4.0))
 
     def test_2d_input_error(self):
         try:
             LennardJonesParameters.from_lorentz_berthelot_mixing(
                 labels=_LABELS,
-                sigma=jnp.array([[2.8, 3.05]]),
-                epsilon=jnp.array([27.0]),
+                sigma=jnp.array([[2.8, 3.05]]) * A,
+                epsilon=jnp.array([27.0]) * EV,
                 cutoff=_cutoff(12.0),
             )
             assert False, "Should have raised"
@@ -153,8 +175,8 @@ class TestLennardJonesParameters:
 class TestLennardJonesEnergy:
     @classmethod
     def setup_class(cls):
-        cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]])
-        cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]])
+        cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]]) * A
+        cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]]) * EV
         cls.parameters = LennardJonesParameters(
             labels=_LABELS,
             sigma=cls.sigma,
@@ -180,8 +202,9 @@ class TestLennardJonesEnergy:
         result = energy_fn(GraphPotentialInput(self.parameters, self.graph))
         assert isinstance(result, WithPatch)
         assert result.data.data.shape == (1,)
-        expected = 4 * e[0, 1] * ((s[0, 1] / 1.0) ** 12 - (s[0, 1] / 1.0) ** 6)
-        assert jnp.isclose(result.data.data[0] * 2, expected, rtol=1e-6)
+        r = 1.0 * A
+        expected = 4 * e[0, 1] * ((s[0, 1] / r) ** 12 - (s[0, 1] / r) ** 6)
+        assert_close(result.data.data[0] * 2, expected, rtol=1e-6)
 
         # Same species A-A at r=1.5
         graph_aa = _make_graph(
@@ -194,8 +217,10 @@ class TestLennardJonesEnergy:
             jnp.array([[[0.0, 0.0, 0.0]]]),
         )
         result_aa = energy_fn(GraphPotentialInput(self.parameters, graph_aa))
-        expected_aa = 4 * e[0, 0] * ((s[0, 0] / 1.5) ** 12 - (s[0, 0] / 1.5) ** 6)
-        assert jnp.isclose(result_aa.data.data[0] * 2, expected_aa, rtol=1e-6)
+        expected_aa = (
+            4 * e[0, 0] * ((s[0, 0] / (1.5 * A)) ** 12 - (s[0, 0] / (1.5 * A)) ** 6)
+        )
+        assert_close(result_aa.data.data[0] * 2, expected_aa, rtol=1e-6)
 
         # Beyond cutoff -> ~0
         graph_far = _make_graph(
@@ -208,7 +233,7 @@ class TestLennardJonesEnergy:
             jnp.array([[[0.0, 0.0, 0.0]]]),
         )
         result_far = energy_fn(GraphPotentialInput(self.parameters, graph_far))
-        assert jnp.abs(result_far.data.data[0]) < 1e-10
+        assert jnp.abs(result_far.data.data[0].to(EV)) < 1e-10
 
         # Multiple pairs (3 particles)
         graph_mp = _make_graph(
@@ -221,21 +246,21 @@ class TestLennardJonesEnergy:
             jnp.zeros((3, 1, 3)),
         )
         result_mp = energy_fn(GraphPotentialInput(self.parameters, graph_mp))
-        e01 = 4 * e[0, 1] * ((s[0, 1] / 1.0) ** 12 - (s[0, 1] / 1.0) ** 6)
-        e02 = 4 * e[0, 0] * ((s[0, 0] / 1.0) ** 12 - (s[0, 0] / 1.0) ** 6)
-        r12 = jnp.sqrt(2.0)
+        e01 = 4 * e[0, 1] * ((s[0, 1] / (1.0 * A)) ** 12 - (s[0, 1] / (1.0 * A)) ** 6)
+        e02 = 4 * e[0, 0] * ((s[0, 0] / (1.0 * A)) ** 12 - (s[0, 0] / (1.0 * A)) ** 6)
+        r12 = jnp.sqrt(2.0) * A
         e12 = 4 * e[1, 0] * ((s[1, 0] / r12) ** 12 - (s[1, 0] / r12) ** 6)
-        assert jnp.isclose(result_mp.data.data[0] * 2, e01 + e02 + e12, rtol=1e-6)
+        assert_close(result_mp.data.data[0] * 2, e01 + e02 + e12, rtol=1e-6)
 
         # Zero epsilon -> zero energy
         params_zero = LennardJonesParameters(
             labels=_LABELS,
             sigma=s,
-            epsilon=jnp.zeros((2, 2)),
+            epsilon=jnp.zeros((2, 2)) * EV,
             cutoff=_cutoff(12.0),
         )
         result_zero = energy_fn(GraphPotentialInput(params_zero, self.graph))
-        assert jnp.isclose(result_zero.data.data[0], 0.0, atol=1e-10)
+        assert_close(result_zero.data.data[0], 0.0, atol=1e-10)
 
         # Very close particles -> large positive energy
         graph_close = _make_graph(
@@ -248,8 +273,8 @@ class TestLennardJonesEnergy:
             jnp.array([[[0.0, 0.0, 0.0]]]),
         )
         result_close = energy_fn(GraphPotentialInput(self.parameters, graph_close))
-        assert result_close.data.data[0] > 1e6
-        assert jnp.isfinite(result_close.data.data[0])
+        assert result_close.data.data[0].to(EV) > 1e6
+        assert jnp.isfinite(result_close.data.data[0].to(EV))
 
         # Symmetry (reverse edge direction)
         r1 = result.data.data[0]
@@ -263,7 +288,7 @@ class TestLennardJonesEnergy:
             self.graph.edges.shifts,
         )
         r2 = energy_fn(GraphPotentialInput(self.parameters, graph_rev)).data.data[0]
-        assert jnp.isclose(r1, r2, rtol=1e-10)
+        assert_close(r1, r2, rtol=1e-10)
 
     def test_multiple_graphs(self):
         graph = _make_graph(
@@ -285,10 +310,10 @@ class TestLennardJonesEnergy:
         result = lennard_jones_energy(GraphPotentialInput(self.parameters, graph))
         assert result.data.data.shape == (2,)
         s, e = self.sigma[0, 1], self.epsilon[0, 1]
-        e0 = 4 * e * ((s / 1.0) ** 12 - (s / 1.0) ** 6)
-        e1 = 4 * e * ((s / 2.0) ** 12 - (s / 2.0) ** 6)
-        assert jnp.isclose(result.data.data[0] * 2, e0, rtol=1e-6)
-        assert jnp.isclose(result.data.data[1] * 2, e1, rtol=1e-6)
+        e0 = 4 * e * ((s / (1.0 * A)) ** 12 - (s / (1.0 * A)) ** 6)
+        e1 = 4 * e * ((s / (2.0 * A)) ** 12 - (s / (2.0 * A)) ** 6)
+        assert_close(result.data.data[0] * 2, e0, rtol=1e-6)
+        assert_close(result.data.data[1] * 2, e1, rtol=1e-6)
 
     def test_energy_is_differentiable(self):
         """Test that jax.grad works through lennard_jones_energy."""
@@ -296,16 +321,16 @@ class TestLennardJonesEnergy:
         def energy_fn(sigma, epsilon):
             params = LennardJonesParameters(
                 labels=_LABELS,
-                sigma=sigma,
-                epsilon=epsilon,
+                sigma=sigma * A,
+                epsilon=epsilon * EV,
                 cutoff=_cutoff(12.0),
             )
-            return lennard_jones_energy(
-                GraphPotentialInput(params, self.graph)
-            ).data.data.sum()
+            return units.sum(
+                lennard_jones_energy(GraphPotentialInput(params, self.graph)).data.data
+            ).to(EV)
 
         grad_sigma, grad_epsilon = jax.grad(energy_fn, argnums=(0, 1))(
-            self.sigma, self.epsilon
+            self.sigma.to(A), self.epsilon.to(EV)
         )
         assert grad_sigma.shape == self.sigma.shape
         assert grad_epsilon.shape == self.epsilon.shape
@@ -333,14 +358,16 @@ class TestLennardJonesEnergy:
         n_entries = n_species * n_species
         params = LennardJonesParameters(
             labels=labels[::-1] if reverse_labels else labels,
-            sigma=jnp.linspace(2.8, 3.6, n_entries).reshape(n_species, n_species),
-            epsilon=jnp.linspace(20.0, 80.0, n_entries).reshape(n_species, n_species),
+            sigma=jnp.linspace(2.8, 3.6, n_entries).reshape(n_species, n_species) * A,
+            epsilon=jnp.linspace(20.0, 80.0, n_entries).reshape(n_species, n_species)
+            * EV,
             cutoff=_cutoff(12.0),
         )
         # Species index into the parameter labels.
         species_i = (3 * jnp.arange(n_queries)[:, None] + 2) % n_species
         species_j = (5 * jnp.arange(n_keys)[None, :] + 1) % n_species
         r2 = jnp.linspace(9.0, 20.0, n_queries * n_keys).reshape(n_queries, n_keys)
+        r2 = r2 * A**2
 
         def atom_labels(species):
             return Index(labels, n_species - 1 - species if reverse_labels else species)
@@ -350,7 +377,7 @@ class TestLennardJonesEnergy:
                 params,
                 atom_labels(species_i),
                 atom_labels(species_j),
-                jnp.zeros((*r2.shape, 3)),
+                jnp.zeros((*r2.shape, 3)) * A,
                 r2,
                 Index((SystemId(0),), jnp.zeros(n_queries, int)),
             )
@@ -360,26 +387,26 @@ class TestLennardJonesEnergy:
             c6 = (sigma**2 / r2) ** 3
             return 4 * params.epsilon[species_i, species_j] * (c6**2 - c6)
 
-        npt.assert_allclose(energy(params), expected(params), rtol=1e-12)
-        grads = jax.grad(lambda p: energy(p).sum())(params)
-        expected_grads = jax.grad(lambda p: expected(p).sum())(params)
-        npt.assert_allclose(grads.sigma, expected_grads.sigma, rtol=1e-12)
-        npt.assert_allclose(grads.epsilon, expected_grads.epsilon, rtol=1e-12)
+        assert_close(energy(params), expected(params), rtol=1e-12)
+        grads = units.grad(lambda p: units.sum(energy(p)))(params)
+        expected_grads = units.grad(lambda p: units.sum(expected(p)))(params)
+        assert_close(grads.sigma, expected_grads.sigma, rtol=1e-12)
+        assert_close(grads.epsilon, expected_grads.epsilon, rtol=1e-12)
 
     def test_pair_kernel_keeps_parameter_dtype(self):
         """Per-species row selection does not promote float32 parameters."""
         params = LennardJonesParameters(
             labels=("A", "B"),
-            sigma=jnp.full((2, 2), 3.0, jnp.float32),
-            epsilon=jnp.full((2, 2), 50.0, jnp.float32),
+            sigma=jnp.full((2, 2), 3.0, jnp.float32) * A,
+            epsilon=jnp.full((2, 2), 50.0, jnp.float32) * EV,
             cutoff=_cutoff(12.0),
         )
-        r2 = jnp.full((1, 4), 16.0, jnp.float32)
+        r2 = jnp.full((1, 4), 16.0, jnp.float32) * A**2
         energy = lennard_jones_pair_kernel(
             params,
             Index(("A", "B"), jnp.zeros((1, 1), int)),
             Index(("A", "B"), jnp.array([[0, 1, 0, 1]])),
-            jnp.zeros((*r2.shape, 3), jnp.float32),
+            jnp.zeros((*r2.shape, 3), jnp.float32) * A,
             r2,
             Index((SystemId(0),), jnp.zeros(1, int)),
         )
@@ -389,8 +416,8 @@ class TestLennardJonesEnergy:
 class TestPairTailCorrectedLennardJonesEnergy:
     @classmethod
     def setup_class(cls):
-        cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]])
-        cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]])
+        cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]]) * A
+        cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]]) * EV
         cls.lj_params = LennardJonesParameters(
             labels=_LABELS,
             sigma=cls.sigma,
@@ -422,7 +449,7 @@ class TestPairTailCorrectedLennardJonesEnergy:
             truncation_radius=_cutoff(1.5),
         )
         corrected_nc = energy_fn(GraphPotentialInput(params_nc, self.graph)).data.data
-        npt.assert_allclose(corrected_nc, target)
+        assert_close(corrected_nc, target)
 
         # Boundary regime (cutoff just above r)
         params_b = PairTailCorrectedLennardJonesParameters(
@@ -433,7 +460,7 @@ class TestPairTailCorrectedLennardJonesEnergy:
             truncation_radius=_cutoff(1.0),
         )
         corrected_b = energy_fn(GraphPotentialInput(params_b, self.graph)).data.data
-        npt.assert_allclose(corrected_b, target)
+        assert_close(corrected_b, target)
 
         # Corrected regime (truncation_radius < r < cutoff)
         params_c = PairTailCorrectedLennardJonesParameters(
@@ -444,8 +471,8 @@ class TestPairTailCorrectedLennardJonesEnergy:
             truncation_radius=_cutoff(0.8),
         )
         corrected_c = energy_fn(GraphPotentialInput(params_c, self.graph)).data.data
-        npt.assert_array_less(corrected_c, target)
-        npt.assert_array_less(0.0, corrected_c)
+        npt.assert_array_less(corrected_c.to(EV), target.to(EV))
+        npt.assert_array_less(0.0, corrected_c.to(EV))
 
         # Outside regime (r > cutoff)
         params_o = PairTailCorrectedLennardJonesParameters(
@@ -456,15 +483,17 @@ class TestPairTailCorrectedLennardJonesEnergy:
             truncation_radius=_cutoff(0.8),
         )
         result_o = energy_fn(GraphPotentialInput(params_o, self.graph)).data.data
-        npt.assert_allclose(result_o, 0.0)
+        assert_close(result_o, 0.0)
 
 
 class TestGlobalTailCorrectedLennardJonesEnergy:
     @classmethod
     def setup_class(cls):
-        cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]])
-        cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]])
-        cls.cells = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
+        cls.sigma = jnp.array([[1.0, 1.2], [1.2, 1.0]]) * A
+        cls.epsilon = jnp.array([[1.0, 0.8], [0.8, 1.0]]) * EV
+        cls.cells = PeriodicCell(
+            TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A)
+        )
         cls.parameters = GlobalTailCorrectedLennardJonesParameters(
             labels=_LABELS,
             sigma=cls.sigma,
@@ -499,31 +528,33 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
             * (term1**3 / 3 - term1)
         ).sum()
         assert result.data.data.shape == (1,)
-        npt.assert_allclose(result.data.data, target, rtol=1e-6)
+        assert_close(result.data.data, target, rtol=1e-6)
 
     def test_prepared_parameters_follow_changes(self):
         parameters = GlobalTailCorrectedLennardJonesParameters.from_dict(
-            cutoff=12.0,
-            parameters={"A": (1.0, 1.0), "B": (1.2, 0.8)},
+            cutoff=12.0 * A,
+            parameters={"A": (1.0 * A, 1.0 * EV), "B": (1.2 * A, 0.8 * EV)},
             mixing_rule="lorentz_berthelot",
         )
 
         def energy(scale):
             scaled = replace(parameters, epsilon=parameters.epsilon * scale)
-            return global_lennard_jones_tail_correction_energy(
-                GraphPotentialInput(scaled, self.graph)
-            ).data.data.sum()
+            return units.sum(
+                global_lennard_jones_tail_correction_energy(
+                    GraphPotentialInput(scaled, self.graph)
+                ).data.data
+            )
 
         reference = energy(1.0)
-        value, derivative = jax.jit(jax.value_and_grad(energy))(2.0)
-        npt.assert_allclose(value, 2 * reference)
-        npt.assert_allclose(derivative, reference)
+        value, derivative = jax.jit(units.value_and_grad(energy))(2.0)
+        assert_close(value, 2 * reference)
+        assert_close(derivative, reference)
 
         disabled = replace(
             parameters, tail_corrected=jnp.zeros_like(parameters.tail_corrected)
         )
         result = _jit_global_tail_energy(GraphPotentialInput(disabled, self.graph))
-        npt.assert_array_equal(result.data.data, 0)
+        npt.assert_array_equal(result.data.data.to(EV), 0)
 
     @pytest.mark.parametrize("backend", ["cpu", "gpu"])
     def test_heterogeneous_tail_cutoffs_and_parameter_derivatives(
@@ -544,24 +575,27 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
         counts = jnp.array([[2.0, 1.0], [0.0, 2.0], [1.0, 0.0]])
         mask = jnp.array([[True, False], [True, True]])
 
+        # Magnitudes in Angstrom and eV, so jacrev differentiates plain arrays.
         def actual(sigma, epsilon, cutoff):
             params = replace(
                 self.parameters,
-                sigma=sigma,
-                epsilon=epsilon,
+                sigma=sigma * A,
+                epsilon=epsilon * EV,
                 tail_corrected=mask,
-                cutoff=Table.arange(cutoff, label=SystemId),
+                cutoff=Table.arange(cutoff * A, label=SystemId),
             )
             inp = GraphPotentialInput(params, graph)
             return jnp.stack(
                 [
-                    global_lennard_jones_tail_correction_energy(inp).data.data,
-                    global_lennard_jones_tail_correction_pressure(inp).data.data,
+                    global_lennard_jones_tail_correction_energy(inp).data.data.to(EV),
+                    global_lennard_jones_tail_correction_pressure(inp).data.data.to(
+                        EV / A**3
+                    ),
                 ]
             )
 
         def reference(sigma, epsilon, cutoff):
-            volume = graph.systems.data.cell.volume
+            volume = graph.systems.data.cell.volume.to(A**3)
             density = counts[:, :, None] * counts[:, None, :] / volume[:, None, None]
             base = density * mask * epsilon * sigma**3
             ratio = (sigma / cutoff[:, None, None]) ** 3
@@ -574,7 +608,7 @@ class TestGlobalTailCorrectedLennardJonesEnergy:
             )
             return jnp.stack([energy, pressure])
 
-        args = (self.sigma, self.epsilon, jnp.array([3.0, 4.0, 5.0]))
+        args = (self.sigma.to(A), self.epsilon.to(EV), jnp.array([3.0, 4.0, 5.0]))
         npt.assert_allclose(jax.jit(actual)(*args), reference(*args), rtol=1e-12)
         derivatives = jax.jit(jax.jacrev(actual, argnums=(0, 1, 2)))(*args)
         expected = jax.jacrev(reference, argnums=(0, 1, 2))(*args)
@@ -587,8 +621,8 @@ class TestGlobalTailCorrectionPressure:
     def setup_class(cls):
         cls.parameters = GlobalTailCorrectedLennardJonesParameters(
             labels=_LABELS,
-            sigma=jnp.array([[1.0, 1.2], [1.2, 1.0]]),
-            epsilon=jnp.array([[1.0, 0.8], [0.8, 1.0]]),
+            sigma=jnp.array([[1.0, 1.2], [1.2, 1.0]]) * A,
+            epsilon=jnp.array([[1.0, 0.8], [0.8, 1.0]]) * EV,
             tail_corrected=jnp.ones((2, 2), dtype=jnp.bool_),
             cutoff=_cutoff(12.0),
         )
@@ -608,7 +642,7 @@ class TestGlobalTailCorrectionPressure:
         )
         assert isinstance(result, WithPatch)
         assert result.data.data.shape == (1,)
-        assert jnp.isfinite(result.data.data[0])
+        assert jnp.isfinite(result.data.data[0].to(u.eV / A**3))
 
         # Disabled interactions
         params_disabled = GlobalTailCorrectedLennardJonesParameters(
@@ -622,7 +656,7 @@ class TestGlobalTailCorrectionPressure:
             GraphPotentialInput(params_disabled, self.graph)
         )
         assert result_d.data.data.shape == (1,)
-        assert jnp.isfinite(result_d.data.data[0])
+        assert jnp.isfinite(result_d.data.data[0].to(u.eV / A**3))
 
 
 class TestPotentialFactoryFunctions:
@@ -635,8 +669,8 @@ class TestPotentialFactoryFunctions:
         systems = _make_systems(jnp.eye(3)[None] * 10.0, jnp.array([12.0]))
         params = GlobalTailCorrectedLennardJonesParameters(
             labels=_LABELS,
-            sigma=jnp.array([[1.0, 1.2], [1.2, 1.0]]),
-            epsilon=jnp.array([[1.0, 0.8], [0.8, 1.0]]),
+            sigma=jnp.array([[1.0, 1.2], [1.2, 1.0]]) * A,
+            epsilon=jnp.array([[1.0, 0.8], [0.8, 1.0]]) * EV,
             tail_corrected=jnp.ones((2, 2), dtype=jnp.bool_),
             cutoff=_cutoff(12.0),
         )
@@ -649,4 +683,4 @@ class TestPotentialFactoryFunctions:
         result = pressure_fn(jax.random.key(42), state)
         assert isinstance(result, Table)
         assert result.data.shape == (1,)
-        assert jnp.isfinite(result.data[0])
+        assert jnp.isfinite(result.data[0].to(u.eV / A**3))

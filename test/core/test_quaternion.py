@@ -9,8 +9,8 @@ import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.quaternion import Quaternion
+from test.units import A
 
 
 class TestQuaternionBasics:
@@ -181,9 +181,9 @@ class TestQuaternionVectorRotation:
     def test_length_rotates_to_length(self):
         q = Quaternion(jnp.array([[0.5, 0.5, 0.5, 0.5], [0.6, 0.8, 0.0, 0.0]]))
         positions = jnp.array([[1.0, 2.0, 3.0], [-0.5, 0.0, 4.0]])
-        rotated = positions * u.angstrom @ q
-        assert units.dim_of(rotated) == units.dim_of(u.angstrom)
-        npt.assert_allclose(rotated.to(u.angstrom), positions @ q, rtol=1e-6)
+        rotated = positions * A @ q
+        assert units.dim_of(rotated) == units.dim_of(A)
+        npt.assert_allclose(rotated.to(A), positions @ q, rtol=1e-6)
 
 
 class TestQuaternionEdgeCases:

@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
@@ -47,7 +48,6 @@ from kups.core.potential import (
     EMPTY,
     EMPTY_LENS,
     EmptyType,
-    Energy,
     Potential,
     PotentialOut,
     SummedPotential,
@@ -55,6 +55,7 @@ from kups.core.potential import (
     sum_potentials,
 )
 from kups.core.typing import DTypeLike, HasCell, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import (
     astype_floating,
     dataclass,
@@ -81,13 +82,13 @@ from kups.potential.common.pair import PairBatch, PairEnergy, PairEnergySum, Pai
 
 
 @jax.disable_jit(False)
-def sum_chunks[Rows](
-    consume: Callable[[Rows], Array],
+def sum_chunks[Rows, Out: (Array, units.Energy)](
+    consume: Callable[[Rows], Out],
     rows: Rows,
     chunk_size: int,
     *,
     active: Callable[[Rows], Array] | None = None,
-) -> Array:
+) -> Out:
     """Sum a consumer over equally sized chunks of an already padded pytree.
 
     Only the reduced output crosses chunk boundaries; reverse mode recomputes
@@ -109,11 +110,12 @@ def sum_chunks[Rows](
         lambda x: jax.ShapeDtypeStruct((chunk_size, *x.shape[1:]), x.dtype), rows
     )
     output = jax.eval_shape(consume, sample)
-    initial = jnp.zeros(output.shape, output.dtype)
+    # Map over the output's leaves so a quantity keeps its dimension.
+    initial: Out = jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), output)
     if jax.tree.leaves(rows)[0].shape[0] == 0:
         return initial
 
-    def evaluate(chunk: Rows) -> Array:
+    def evaluate(chunk: Rows) -> Out:
         if active is None:
             return consume(chunk)
         return skip_on_cpu(active(chunk), consume, lambda _: initial, chunk)
@@ -122,7 +124,7 @@ def sum_chunks[Rows](
         return evaluate(rows)
 
     @jax.checkpoint
-    def body(total: Array, chunk: Rows) -> tuple[Array, None]:
+    def body(total: Out, chunk: Rows) -> tuple[Out, None]:
         return total + evaluate(chunk), None
 
     total, _ = jax.lax.scan(body, initial, chunks)
@@ -132,9 +134,9 @@ def sum_chunks[Rows](
 class _QueryGeometry(NamedTuple):
     """Per-query lattice vectors, perpendicular widths and culling radius."""
 
-    matrix: Array
-    perpendicular: Array
-    limit: Array
+    matrix: units.Length
+    perpendicular: units.Length
+    limit: units.Length
 
 
 MAX_UNROLLED_QUERY_ROWS = 16
@@ -250,7 +252,9 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     def _sum_dtype(self, inp: FusedPotentialInput[Params, Part, Feat]) -> jnp.dtype:
         """Wider of the kernel and input precision, in which energies are summed."""
         positions = inp.cloud.particles.data.positions
-        return jnp.result_type(self.dtype, positions, *jax.tree.leaves(inp.parameters))
+        return jnp.result_type(
+            self.dtype, positions.dtype, *jax.tree.leaves(inp.parameters)
+        )
 
     def _energies(
         self,
@@ -259,7 +263,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         keys: CellRows[Feat] | None,
         index: Array,
         mask: View[CandidateBatch[Literal[2]], Array] | None = None,
-    ) -> Array:
+    ) -> units.Energy:
         """Energies of query ``rows`` against ``keys``, or against each other."""
         dtype = self._sum_dtype(inp)
         parameters, systems, rows, keys = astype_floating(
@@ -301,8 +305,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         rows: CellRows[Feat],
         keys: CellRows[Feat],
         usable: Array,
-        matrix: Array,
-    ) -> Array:
+        matrix: units.Length,
+    ) -> units.Energy:
         """Minimum-image energies of query rows against a flat batch of keys.
 
         ``usable`` selects pairs, broadcastable to ``(q, k)``; ``matrix`` holds
@@ -338,7 +342,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             for j in range(3)
         ]
         r2 = real[0] * real[0] + real[1] * real[1] + real[2] * real[2]
-        rij = jnp.stack(real, axis=-1)
+        rij = units.stack(real, axis=-1)
         key_inclusion, query_inclusion = Index.match(keys.inclusion, rows.inclusion)
         key_exclusion, query_exclusion = Index.match(keys.exclusion, rows.exclusion)
         pairs = PairBatch(
@@ -360,7 +364,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         keys: CellRows[Feat],
         index: Array,
         usable: Array,
-    ) -> Array:
+    ) -> units.Energy:
         """Minimum-image energies of each query row against its own key slots.
 
         ``index`` and ``usable`` hold each row's key slots and pair mask,
@@ -371,8 +375,11 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         gathered = jax.tree.map(lambda x: x[index], keys)
 
         def row(
-            query: CellRows[Feat], key: CellRows[Feat], usable: Array, matrix: Array
-        ) -> Array:
+            query: CellRows[Feat],
+            key: CellRows[Feat],
+            usable: Array,
+            matrix: units.Length,
+        ) -> units.Energy:
             query = jax.tree.map(lambda x: x[None], query)
             return self._block_energies(inp, query, key, usable[None], matrix[None])[0]
 
@@ -386,7 +393,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         geometry: _QueryGeometry,
         phases: tuple[int, ...],
         dtype: jnp.dtype,
-    ) -> Array:
+    ) -> units.Energy:
         """Environment energies of query rows from the slot blocks near them.
 
         ``excluded`` masks the slots of removed rows, ``(n_slots + 1,)``. Rows
@@ -438,12 +445,12 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                 return mask
             return jnp.any(jax.vmap(row)(jnp.arange(span.start, span.stop)), axis=0)
 
-        def traverse(span: slice, mask: Array) -> Array:
+        def traverse(span: slice, mask: Array) -> units.Energy:
             sub = jax.tree.map(lambda x: x[span], rows)
             matrix = geometry.matrix[span]
             blocks = compact_indices(mask, n_batches * batch)
 
-            def evaluate(i: int | Array) -> Array:
+            def evaluate(i: int | Array) -> units.Energy:
                 chunk = jax.lax.dynamic_slice(blocks, (i * batch,), (batch,))
                 present = chunk < n_blocks
                 chunk = jnp.minimum(chunk, n_blocks - 1)
@@ -472,13 +479,15 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         masks = [near(span) for span in spans]
         actives = [jnp.any(valid[span]) for span in spans]
 
-        def separate() -> Array:
-            return jnp.concatenate(
+        def separate() -> units.Energy:
+            return units.concatenate(
                 [
                     jax.lax.cond(
                         active,
                         lambda span=span, mask=mask: traverse(span, mask),
-                        lambda span=span: jnp.zeros(span.stop - span.start, dtype),
+                        lambda span=span: units.zeros(
+                            span.stop - span.start, u.eV, dtype
+                        ),
                     )
                     for span, mask, active in zip(spans, masks, actives)
                 ]
@@ -500,7 +509,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         weights: Array,
         removed: Array,
         phases: tuple[int, ...],
-    ) -> Array:
+    ) -> units.Energy:
         """Culled local evaluation: one traversal per query phase plus mutual pairs.
 
         Query geometry is computed once and shared by all phases; phases
@@ -511,14 +520,14 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         cutoff = Table.broadcast_to(self.pair.cutoffs(inp.parameters), systems).data
         # Absorb roundoff between the bounds and the evaluated distances.
         margin = max(1e-9, 4 * jnp.finfo(self.dtype).eps)
-        limit = cutoff * (1 + margin) + margin
+        limit = cutoff * (1 + margin) + margin * u.angstrom
         n = rows.frac.shape[0]
         # A single system broadcasts instead of gathering and segment-summing.
         if systems.size == 1:
             geometry = _QueryGeometry(
-                jnp.broadcast_to(cell.vectors, (n, 3, 3)),
-                jnp.broadcast_to(cell.perpendicular_lengths, (n, 3)),
-                jnp.broadcast_to(limit, (n,)),
+                units.apply(jnp.broadcast_to, cell.vectors, (n, 3, 3)),
+                units.apply(jnp.broadcast_to, cell.perpendicular_lengths, (n, 3)),
+                units.apply(jnp.broadcast_to, limit, (n,)),
             )
         else:
             geometry = _QueryGeometry(
@@ -549,7 +558,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         rows: CellRows[Feat],
         slots: Array,
         excluded: Array,
-    ) -> Array:
+    ) -> units.Energy:
         # Excluded slots drop out of the pairs as inactive keys.
         keys = bind(table.rows, lambda r: r.inclusion).apply(
             lambda inclusion: inclusion.apply_mask(~excluded)
@@ -562,7 +571,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             own = Table(b.query_idx.keys, own)[b.query_idx]
             return jnp.not_equal(*Index.match(b.key_idx, own)) | ~b.is_minimum_image
 
-        def consume(index: Array) -> Array:
+        def consume(index: Array) -> units.Energy:
             if self.layout.max_images_per_pair == 1:
                 own = index == slots[:, None]
                 return self._row_energies(inp, rows, keys, index, ~own)
@@ -601,8 +610,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         excluded: Array,
         weights: Array,
         query_chunk_size: int,
-    ) -> Array:
-        def consume(chunk: tuple[CellRows[Feat], Array, Array]) -> Array:
+    ) -> units.Energy:
+        def consume(chunk: tuple[CellRows[Feat], Array, Array]) -> units.Energy:
             rows, slots, weights = chunk
             energies = self._sum_keys(inp, table, rows, slots, excluded)
             systems = inp.cloud.systems
@@ -626,7 +635,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             active=lambda chunk: jnp.any(chunk[0].inclusion.valid_mask),
         )
 
-    def _full(self, inp: FusedFullInput[Params, Part, Feat]) -> Array:
+    def _full(self, inp: FusedFullInput[Params, Part, Feat]) -> units.Energy:
         table = self.build_cell_list_cache(inp.parameters, inp.cloud)
         n = table.sentinel_slot
         return self._sum_environment(
@@ -642,7 +651,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     def _local(
         self,
         inp: FusedLocalInput[Params, Part, Feat],
-    ) -> tuple[Array, CellRows[Feat], Array]:
+    ) -> tuple[units.Energy, CellRows[Feat], Array]:
         table = inp.cell_table
         queries = inp.queries
         parts = [
@@ -714,7 +723,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     def __call__(
         self,
         inp: FusedPotentialInput[Params, Part, Feat],
-    ) -> WithPatch[Table[SystemId, Energy], Patch[State]]:
+    ) -> WithPatch[Table[SystemId, units.Energy], Patch[State]]:
         keys = inp.cloud.systems.keys
         if isinstance(inp, FusedFullInput):
             return WithPatch(Table(keys, self._full(inp)), IdPatch[State]())
@@ -934,14 +943,16 @@ class FusedPotentialCache[Feat]:
         )
         energy = KahanSummand.init(
             PotentialOut(
-                cloud.systems.set_data(jnp.zeros(cloud.systems.size)), EMPTY, EMPTY
+                cloud.systems.set_data(units.zeros(cloud.systems.size, u.eV)),
+                EMPTY,
+                EMPTY,
             )
         )
         return FusedPotentialCache(table, energy, layout, dtype=dtype)
 
 
 def _check_pair_neighborlist(
-    neighbors: NeighborList[Literal[2]], cutoffs: Table[SystemId, Array]
+    neighbors: NeighborList[Literal[2]], cutoffs: Table[SystemId, units.Length]
 ) -> None:
     """Check the radius-graph semantics required when replacing a traversal."""
     if type(neighbors) is AdaptiveNeighborList:

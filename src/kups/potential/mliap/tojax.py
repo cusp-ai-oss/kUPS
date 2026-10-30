@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array, export
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
 from kups.core.lens import Lens, View
@@ -25,8 +26,9 @@ from kups.core.neighborlist import (
     NeighborListPoints,
 )
 from kups.core.patch import IdPatch, Patch, WithPatch
-from kups.core.potential import Energy, PotentialOut
+from kups.core.potential import PotentialOut
 from kups.core.typing import HasAtomicNumbers, HasCell, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field, sequential_vmap_with_vjp
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.msgpack import deserialize as msgpack_deserialize
@@ -39,7 +41,10 @@ from kups.potential.common.graph import (
 
 
 class AtomGraphInput(TypedDict):
-    """Typed dictionary for jaxified model graph input."""
+    """Typed dictionary for jaxified model graph input.
+
+    Positions and cells are magnitudes in Å; the model returns energies in eV.
+    """
 
     pos: Array  # (N, 3)
     atomic_numbers: Array  # (N,)
@@ -66,12 +71,12 @@ class TojaxedMliap:
     """Jaxified model container.
 
     Attributes:
-        cutoff: Model cutoff radius [Angstrom].
+        cutoff: Model cutoff radius.
         params: Model parameters as a list of arrays.
         model: Exported JAX model.
     """
 
-    cutoff: Table[SystemId, Array]
+    cutoff: Table[SystemId, units.Length]
     params: list[Array]
     model: export.Exported = field(static=True)
 
@@ -96,7 +101,10 @@ class TojaxedMliap:
             with zf.open("params.msgpack") as f:
                 params = list(msgpack_deserialize(f.read()))
         return TojaxedMliap(
-            cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
+            cutoff=Table(
+                (SystemId(0),),
+                units.stack([cutoff * u.angstrom]),
+            ),
             params=params,
             model=model,
         )
@@ -122,7 +130,7 @@ type JaxifiedInput = GraphPotentialInput[
 
 def tojaxed_energy(
     inp: JaxifiedInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     """Compute energy using a jaxified model.
 
     Prepares graph data and calls the exported model.
@@ -138,7 +146,7 @@ def tojaxed_energy(
     n_sys = graph.systems.data.cell.vectors.shape[0] + 1
 
     positions = jnp.pad(
-        graph.particles.data.positions,
+        graph.particles.data.positions.to(u.angstrom),
         ((0, 1), (0, 0)),
         constant_values=0,
     )
@@ -152,7 +160,7 @@ def tojaxed_energy(
         (0, 1),
         constant_values=graph.particles.data.system.num_labels,
     )
-    cell = graph.systems.data.cell.vectors
+    cell = graph.systems.data.cell.vectors.to(u.angstrom)
     cell = jnp.concatenate([cell, jnp.zeros((1, 3, 3))], axis=0)
 
     edge_indices = graph.edges.indices.indices_in(graph.particles.keys)
@@ -168,7 +176,7 @@ def tojaxed_energy(
         charge=jnp.zeros(n_sys),
         spin=jnp.zeros(n_sys),
     )
-    energy = sequential_vmap_with_vjp(inp.parameters.call)(input_dict)
+    energy = sequential_vmap_with_vjp(inp.parameters.call)(input_dict) * u.eV
     return WithPatch(
         graph.systems.set_data(energy[:-1]), IdPatch[Any]()
     )  # Remove padding

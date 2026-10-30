@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 from jax import Array
-from jax.typing import ArrayLike
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.neighborlist.types import NeighborListSystems
@@ -29,8 +29,8 @@ from kups.core.utils.jax import dataclass
 
 
 def effective_build_radii(
-    cutoffs: Array, skin: ArrayLike, cell: Cell[AnyPeriodicity]
-) -> Array:
+    cutoffs: units.Length, skin: units.Length, cell: Cell[AnyPeriodicity]
+) -> units.Length:
     """Per-system build radius: ``cutoff + skin``, clamped to a single image.
 
     Reusing stored edges keeps exactly one periodic image per pair, so the
@@ -41,16 +41,18 @@ def effective_build_radii(
     incomplete list. No clamp applies in vacuum.
 
     Args:
-        cutoffs: True cutoffs (Å), ``(n_sys,)``.
-        skin: Requested skin width (Å).
+        cutoffs: True cutoffs, ``(n_sys,)``.
+        skin: Requested skin width.
         cell: ``(n_sys,)``-batched cell the build runs in.
 
     Returns:
-        Build radii (Å), ``(n_sys,)``. ``radii - cutoffs`` is the effective skin.
+        Build radii, ``(n_sys,)``. ``radii - cutoffs`` is the effective skin.
     """
     perp = cell.perpendicular_lengths
-    limit = 0.5 * jnp.min(jnp.where(jnp.array(cell.periodic), perp, jnp.inf), axis=-1)
-    return jnp.minimum(cutoffs + skin, limit)
+    limit = 0.5 * units.min(
+        units.where(jnp.array(cell.periodic), perp, jnp.inf * perp.unit), axis=-1
+    )
+    return units.minimum(cutoffs + skin, limit)
 
 
 @dataclass
@@ -67,7 +69,7 @@ class SkinReference:
         cell: ``(n_sys,)``-batched cell at the build.
     """
 
-    positions: Array
+    positions: units.Length
     cell: Cell[AnyPeriodicity]
 
 
@@ -76,18 +78,18 @@ class SkinMargin:
     """Per-system completeness accounting of a stored skin list.
 
     Attributes:
-        consumed: Worst-case distance (Å) by which atom motion and cell
+        consumed: Worst-case distance by which atom motion and cell
             deformation since the build can have pulled a non-listed pair
             inward, ``(n_sys,)``.
-        budget: Distance (Å) such a pair had to spare at build time — the
+        budget: Distance such a pair had to spare at build time — the
             effective skin ``r_build - cutoff``, ``(n_sys,)``.
     """
 
-    consumed: Array
-    budget: Array
+    consumed: units.Length
+    budget: units.Length
 
     @property
-    def headroom(self) -> Array:
+    def headroom(self) -> units.Length:
         """``budget - consumed``; the stored list is complete while ``>= 0``."""
         return self.budget - self.consumed
 
@@ -118,8 +120,8 @@ def skin_margin(
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
     systems: Table[SystemId, NeighborListSystems],
     reference: SkinReference,
-    cutoffs: Table[SystemId, Array],
-    skin: ArrayLike,
+    cutoffs: Table[SystemId, units.Length],
+    skin: units.Length,
 ) -> Table[SystemId, SkinMargin]:
     """How much of the skin list's safety margin the geometry has used up.
 
@@ -158,24 +160,24 @@ def skin_margin(
         particles: Current particle table (positions and system index).
         systems: Current system table (cells).
         reference: Positions and cell snapshot taken at the last build.
-        cutoffs: True cutoffs (Å) per system.
-        skin: Requested skin width (Å) the list was built with.
+        cutoffs: True cutoffs per system.
+        skin: Requested skin width the list was built with.
 
     Returns:
         Per-system [`SkinMargin`][kups.core.neighborlist.verlet.SkinMargin]
-        table (``consumed`` and ``budget``, both in Å).
+        table (``consumed`` and ``budget``, both lengths).
     """
     cell_now = systems.data.cell
     system = particles.data.system
     cutoff_values = Table.broadcast_to(cutoffs, systems).data
     deform = reference.cell.inverse_vectors @ cell_now.vectors  # d_now = d_ref @ F
     # u_i = x_i - x_i_ref @ F, min-image wrapped
-    co_moved = jnp.einsum(
+    co_moved = units.einsum(
         "ni,nij->nj", reference.positions, systems.set_data(deform)[system]
     )
     residual = systems[system].cell.wrap(particles.data.positions - co_moved)
-    u_max = particles.data.system.max_over(jnp.linalg.norm(residual, axis=-1)).data
-    u_max = jnp.maximum(u_max, 0.0)  # empty segments reduce to -inf
+    u_max = particles.data.system.max_over(units.norm(residual, axis=-1)).data
+    u_max = units.maximum(u_max, 0.0)  # empty segments reduce to -inf
     # σ_min(F) from the smallest eigenvalue of the 3x3 Gram matrix F Fᵀ (the
     # clamp guards tiny negative rounding noise).
     gram = deform @ jnp.swapaxes(deform, -1, -2)

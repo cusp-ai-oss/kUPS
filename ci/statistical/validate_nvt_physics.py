@@ -19,8 +19,13 @@ from pathlib import Path
 import numpy as np
 
 from kups.application.md.logging import MDLoggedData
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.storage import HDF5StorageReader
+from kups.core.units import catalog as u
+
+_BOLTZMANN_EV_PER_K = float((units.constants.k_B * u.K).to(u.eV))
+"""Boltzmann constant in eV per kelvin, the units the logged data is read in."""
+
 
 type Metrics = dict[str, float | str]
 """Named diagnostics a check reports alongside its verdict."""
@@ -127,7 +132,7 @@ def validate_equipartition(
         Whether <KE> matches equipartition, and the compared energies.
     """
     mean_ke = float(np.mean(kinetic_energy))
-    expected_ke = 0.5 * degrees_of_freedom * BOLTZMANN_CONSTANT * target_temperature
+    expected_ke = 0.5 * degrees_of_freedom * _BOLTZMANN_EV_PER_K * target_temperature
 
     relative_error = (
         abs(mean_ke - expected_ke) / expected_ke if expected_ke != 0 else 0.0
@@ -284,17 +289,17 @@ def main() -> int:
         init_data = reader.focus_group(lambda state: state.init)[...]
         step_data = reader.focus_group(lambda state: state.step)[...]
 
-    positions = np.asarray(init_data.atoms.data.positions)
+    positions = np.asarray(init_data.atoms.data.positions.to(u.angstrom))
     dof = int(3 * positions.shape[0] - 3)
-    lattice = np.asarray(init_data.systems.data.cell.vectors[0])
-    potential_energy = np.asarray(step_data.potential_energy).flatten()
-    kinetic_energy = np.asarray(step_data.kinetic_energy).flatten()
+    lattice = np.asarray(init_data.systems.data.cell.vectors[0].to(u.angstrom))
+    potential_energy = np.asarray(step_data.potential_energy.to(u.eV)).flatten()
+    kinetic_energy = np.asarray(step_data.kinetic_energy.to(u.eV)).flatten()
 
     n_atoms = positions.shape[0]
     n_steps = len(potential_energy)
     volume = abs(np.linalg.det(lattice))
 
-    temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
+    temperature = 2 * kinetic_energy / (_BOLTZMANN_EV_PER_K * dof)
 
     print(f"NVT Physics Validation: {args.hdf5_path.name}")
     print(f"  Atoms: {n_atoms}, Steps: {n_steps}, DOF: {dof}")

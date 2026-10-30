@@ -12,11 +12,13 @@ J. Am. Chem. Soc. 114, 10024-10035. DOI: 10.1021/ja00051a040
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
+
 
 def compute_uff_bond_length(
-    bond_radius: Array,
+    bond_radius: units.Length,
     electronegativity: Array,
-) -> Array:
+) -> units.Length:
     r"""Compute UFF bond lengths with electronegativity correction.
 
     Implements UFF Equations 2 and 4:
@@ -24,7 +26,7 @@ def compute_uff_bond_length(
     - $r_{EN} = \frac{r_i r_j (\sqrt{\chi_i} - \sqrt{\chi_j})^2}{\chi_i r_i + \chi_j r_j}$ (Eq. 4)
 
     Args:
-        bond_radius: Valence bond radii [Å], shape `(n_species,)`
+        bond_radius: Valence bond radii, shape `(n_species,)`
         electronegativity: GMP electronegativity, shape `(n_species,)`
 
     Returns:
@@ -35,5 +37,9 @@ def compute_uff_bond_length(
 
     sqrt_chi_diff = jnp.sqrt(chi_i) - jnp.sqrt(chi_j)
     denom = chi_i * r_i + chi_j * r_j
-    r_EN = jnp.where(jnp.abs(denom) > 1e-10, r_i * r_j * sqrt_chi_diff**2 / denom, 0.0)
+    r_EN = units.where(
+        units.absolute(denom) > 1e-10 * (r_i + r_j),
+        r_i * r_j * sqrt_chi_diff**2 / denom,
+        0.0,
+    )
     return r_i + r_j - r_EN

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
@@ -57,9 +58,9 @@ def make_torch_mliap_from_state[State, Focus: IsTorchMliapState](
     state: Lens[State, Focus],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     neighborlist_factory: NeighborListFactory[Focus] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -67,16 +68,16 @@ def make_torch_mliap_from_state[State, Focus: IsTorchMliapGraphState](
     state: Lens[State, Focus],
     *,
     parameters: TorchMliap,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     neighborlist_factory: NeighborListFactory[Focus] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 def make_torch_mliap_from_state(
     state: Any,
     *,
     parameters: TorchMliap | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a torch MLFF potential from a typed state.

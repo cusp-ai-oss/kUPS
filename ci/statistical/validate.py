@@ -19,10 +19,17 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
 import jax.numpy as jnp
-import yaml
+from expected_values import (
+    AnalysisResult,
+    ExpectedSpec,
+    ObservableSpec,
+    load_expected,
+    magnitudes_in,
+)
 
 from kups.application.mcmc.analysis import MCMCAnalysisResult, analyze_mcmc_file
 from kups.application.md.analysis import MDAnalysisResult, analyze_md_file
+from kups.core import units
 from kups.core.utils.block_average import BlockAverageResult
 
 jax.config.update("jax_enable_x64", True)
@@ -68,7 +75,7 @@ def _analyze_md_first_system(path: Path) -> MDAnalysisResult:
     return next(iter(results.values()))
 
 
-ANALYZERS: dict[str, Callable[[Path], MCMCAnalysisResult | MDAnalysisResult]] = {
+ANALYZERS: dict[str, Callable[[Path], AnalysisResult]] = {
     "nvt": _analyze_mcmc_first_system,
     "gcmc": _analyze_mcmc_first_system,
     "md": _analyze_md_first_system,
@@ -133,8 +140,7 @@ def run_simulations(
 def validate_observable(
     name: str,
     result: BlockAverageResult[Any],
-    expected_mean: float | list[float],
-    expected_sem: float | list[float],
+    spec: ObservableSpec,
     tolerance_sigmas: float = DEFAULT_TOLERANCE_SIGMAS,
 ) -> bool:
     """Check if measured value is within tolerance.
@@ -142,16 +148,21 @@ def validate_observable(
     Args:
         name: Observable name, for the report.
         result: Measured block average.
-        expected_mean: Expected mean, a list for a non-scalar observable.
-        expected_sem: Expected standard error, shaped like `expected_mean`.
+        spec: Expected mean and SEM, with the unit they are read in.
         tolerance_sigmas: How many reference SEMs the means may differ by.
 
     Returns:
         Whether every element is within tolerance.
     """
-    exp_mean = jnp.asarray(expected_mean).flatten()
-    exp_sem = jnp.asarray(expected_sem).flatten()
-    measured_mean = jnp.asarray(result.mean).flatten()
+    unit = spec.get("unit")
+    exp_mean = jnp.asarray(spec["expected_mean"]).flatten()
+    exp_sem = jnp.asarray(spec["expected_sem"]).flatten()
+    try:
+        measured_mean = magnitudes_in(result.mean, unit).flatten()
+    except (ValueError, units.DimensionError) as err:
+        print(f"  ✗ {name}: {err}")
+        return False
+    in_unit = f" {unit}" if unit else ""
 
     all_pass = True
     for i, (m, e, es) in enumerate(zip(measured_mean, exp_mean, exp_sem)):
@@ -172,17 +183,19 @@ def validate_observable(
         sem_str = f"{ref_sem:.4g}" if ref_sem > 1e-10 else f"{ref_sem:.2e}"
         if diff <= max_diff:
             print(
-                f"  ✓ {name}{suffix}: {float(m):.4g} (expected {float(e):.4g}, σ={sem_str})"
+                f"  ✓ {name}{suffix}: {float(m):.4g}{in_unit} "
+                f"(expected {float(e):.4g}, σ={sem_str})"
             )
         else:
             print(
-                f"  ✗ {name}{suffix}: {float(m):.4g} != {float(e):.4g} (diff={diff:.4g} > {tolerance_sigmas}σ={max_diff:.4g})"
+                f"  ✗ {name}{suffix}: {float(m):.4g}{in_unit} != {float(e):.4g} "
+                f"(diff={diff:.4g} > {tolerance_sigmas}σ={max_diff:.4g})"
             )
             all_pass = False
     return all_pass
 
 
-def validate(path: Path, sim_type: str, obs: dict[str, Any]) -> bool:
+def validate(path: Path, sim_type: str, obs: dict[str, ObservableSpec]) -> bool:
     """Validate simulation results against expected observables.
 
     Args:
@@ -209,7 +222,7 @@ def validate(path: Path, sim_type: str, obs: dict[str, Any]) -> bool:
     for key, expected in obs.items():
         value = getattr(result, key)
         if isinstance(value, BlockAverageResult):
-            if not validate_observable(key, value, **expected):
+            if not validate_observable(key, value, expected):
                 all_pass = False
     return all_pass
 
@@ -245,12 +258,10 @@ def main() -> int:
     else:
         expected_files = sorted(EXPECTED_DIR.glob("*.yaml"))
 
-    # Load all specs
-    specs: list[tuple[str, dict[str, Any]]] = []
-    for expected_file in expected_files:
-        with open(expected_file) as f:
-            spec = yaml.safe_load(f)
-        specs.append((expected_file.stem, spec))
+    specs: list[tuple[str, ExpectedSpec]] = [
+        (expected_file.stem, load_expected(expected_file))
+        for expected_file in expected_files
+    ]
 
     # Run all simulations in parallel
     sim_results: dict[str, bool] = {}
@@ -281,9 +292,7 @@ def main() -> int:
             print(f"  ⚠ Skipped: output not found ({hdf5_path})")
             continue
 
-        if not validate(
-            hdf5_path, spec["simulation_type"], spec.get("observables", {})
-        ):
+        if not validate(hdf5_path, spec["simulation_type"], spec["observables"]):
             all_pass = False
 
     return 0 if all_pass else 1

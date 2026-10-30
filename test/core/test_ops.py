@@ -12,7 +12,6 @@ import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.ops import (
     compact_indices,
     expand_last_dims,
@@ -22,6 +21,7 @@ from kups.core.utils.ops import (
     select_n,
     where_broadcast_last,
 )
+from test.units import A
 
 
 class TestExpandLastDims:
@@ -64,26 +64,24 @@ _Y = jnp.array([[5.0, 6.0], [7.0, 8.0]])
     "fn",
     [
         pytest.param(
-            lambda unit: where_broadcast_last(
-                jnp.array([True, False]), _X * unit, _Y * unit
-            ),
+            lambda u: where_broadcast_last(jnp.array([True, False]), _X * u, _Y * u),
             id="where",
         ),
         pytest.param(
-            lambda unit: where_broadcast_last(jnp.array([True, False]), _X * unit, 0.0),
+            lambda u: where_broadcast_last(jnp.array([True, False]), _X * u, 0.0),
             id="where_plain_operand",
         ),
         pytest.param(
-            lambda unit: select_n(jnp.array([[0, 1], [1, 0]]), _X * unit, _Y * unit),
+            lambda u: select_n(jnp.array([[0, 1], [1, 0]]), _X * u, _Y * u),
             id="select_n",
         ),
     ],
 )
 def test_selects_keep_dimension(fn: Callable[[Any], Any]):
     """A length selects on its magnitudes and comes back a length."""
-    out = fn(u.angstrom)
-    assert units.dim_of(out) == units.dim_of(u.angstrom)
-    npt.assert_array_equal(out.to(u.angstrom), fn(1.0))
+    out = fn(A)
+    assert units.dim_of(out) == units.dim_of(A)
+    npt.assert_array_equal(out.to(A), fn(1.0))
 
 
 class TestPadAxis:

@@ -19,7 +19,12 @@ from kups.core.lens import Lens
 from kups.core.potential import Potential
 from kups.core.propagator import Propagator
 from kups.core.utils.jax import dataclass, field
-from kups.relaxation.optimizer import Optimizer, apply_updates
+from kups.core.utils.units import magnitudes_of
+from kups.relaxation.optimizer import (
+    Optimizer,
+    apply_updates,
+    relabel_like,
+)
 
 
 @dataclass
@@ -39,12 +44,19 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
     state. This allows potentials to update internal state (e.g., neighbor lists)
     at each relaxation step.
 
+    The optimizer runs on magnitudes: parameters, gradients and energies enter
+    it in their own base (ATOMISTIC by default: Å, eV, amu), and the step it
+    returns is relabelled with each parameter's dimension before it is applied.
+    Numeric hyperparameters of the transforms are read in the same base.
+
     Type Parameters:
         State: The simulation state type
-        PyTree: The type of the property being optimized (must match Potential's gradient type)
+        PyTree: The type of the property being optimized
 
     Attributes:
-        potential: Potential that computes energy and gradients of type PyTree
+        potential: Potential computing ``∂E/∂`` of the property, structured like
+            it with each leaf in energy over that leaf's dimension (e.g.
+            ``PositionsAndCell[units.Force]`` for ``PositionsAndCell[units.Length]``)
         property: Lens to get/set the property being optimized
         opt_state: Lens to get/set the optimizer state
         optimizer: Gradient transformation
@@ -80,7 +92,7 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         ```
     """
 
-    potential: Potential[State, PyTree, Any, Any] = field(static=True)
+    potential: Potential[State, Any, Any, Any] = field(static=True)
     property: Lens[State, PyTree] = field(static=True)
     opt_state: Lens[State, OptState] = field(static=True)
     optimizer: Optimizer[PyTree, OptState] = field(static=True)
@@ -90,8 +102,8 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         params = self.property.get(state)
 
         def value_and_grad_fn(p: PyTree) -> tuple[Any, PyTree]:
-            out = self.potential(self.property.set(state, p)).data
-            return out.total_energies, out.gradients
+            out = self.potential(self.property.set(state, relabel_like(params, p))).data
+            return magnitudes_of(out.total_energies), magnitudes_of(out.gradients)
 
         potential_out = self.potential(state)
         grad = potential_out.data.gradients
@@ -106,16 +118,18 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
         # grad, energies (the current per-system energies) and value_and_grad_fn
         # are the per-system objective the line-search transforms read; standard
         # transforms ignore them.
+        # Transforms combine parameters and gradients of different dimensions.
+        mag_grad = magnitudes_of(grad)
         updates, new_opt_state = self.optimizer.update(
-            grad,
+            mag_grad,
             opt_state_current,
-            params,
-            grad=grad,
-            energies=energies,
+            magnitudes_of(params),
+            grad=mag_grad,
+            energies=magnitudes_of(energies),
             value_and_grad_fn=value_and_grad_fn,
         )
 
-        new_params = apply_updates(params, updates)
+        new_params = apply_updates(params, relabel_like(params, updates))
         state = self.property.set(state, new_params)
         state = self.opt_state.set(state, new_opt_state)
         return state

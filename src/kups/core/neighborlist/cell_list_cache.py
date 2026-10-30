@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import AnyPeriodicity
@@ -124,7 +125,7 @@ class CellListCacheParameters:
         cls,
         particles: Table[ParticleId, NeighborListPoints],
         systems: Table[SystemId, HasCell[AnyPeriodicity]],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
         *,
         chunk_size: int = 64,
         occupancy_factor: float = 2.0,
@@ -214,7 +215,9 @@ class CellListCacheParameters:
 
 
 @jit
-def _cell_grid(systems: HasCell[AnyPeriodicity], cutoff: Array) -> tuple[Array, Array]:
+def _cell_grid(
+    systems: HasCell[AnyPeriodicity], cutoff: units.Length
+) -> tuple[Array, Array]:
     """Per-system bin counts and periodic-image window widths."""
     return num_cells(systems, cutoff), candidate_image_counts(systems.cell, cutoff)
 
@@ -235,7 +238,7 @@ def _occupancy(
 
 def _estimate_block_batch(
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    cutoff: Array,
+    cutoff: units.Length,
     active: np.ndarray,
     n_rows: int,
     block_size: int,
@@ -245,9 +248,10 @@ def _estimate_block_batch(
     Counts, per system, the blocks of its ``active`` rows within ``cutoff``
     plus three quarters of a block edge at its mean density, with headroom.
     """
-    volume = np.asarray(systems.data.cell.volume)
+    length = cutoff.unit
+    volume = np.asarray(systems.data.cell.volume.to(length**3))
     density = np.maximum(active, 1) / volume
-    reach = np.asarray(cutoff) + 0.75 * (block_size / density) ** (1 / 3)
+    reach = np.asarray(cutoff.to(length)) + 0.75 * (block_size / density) ** (1 / 3)
     near = np.minimum(1.0, 4 / 3 * math.pi * reach**3 / volume) * active
     blocks = math.ceil(AUTO_BLOCK_BATCH_HEADROOM * float(near.sum()) / block_size)
     n_blocks = -(-n_rows // block_size)
@@ -345,7 +349,7 @@ def cell_rows[Data](
     system = Index(systems.keys, system_ids)
     frames = systems.map_data(lambda s: s.cell.frame.materialize())
     frac = frames[system].to_fractional(
-        jnp.where(active[:, None], points.positions, 0.0)
+        units.where(active[:, None], points.positions, 0.0)
     )
     frac, cell = assign_cells(
         frac, system_ids, active, bins, max_cells, systems.data.cell
@@ -486,7 +490,7 @@ def cell_candidates[Data](
     queries: CellRows[Data] | None,
     index: Array,
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     max_images_per_pair: int,
 ) -> tuple[CandidateBatch[Literal[2]], PipelineContext]:
     """Adapt a cell-table query to the standard neighbor pipeline.
@@ -641,9 +645,9 @@ def near_blocks(
     frac: Array,
     lower: Array,
     upper: Array,
-    matrix: Array,
-    perpendicular: Array,
-    cutoff: Array,
+    matrix: units.Length,
+    perpendicular: units.Length,
+    cutoff: units.Length,
     periodic: tuple[bool, bool, bool],
 ) -> Array:
     """Blocks that may hold a key within the cutoff of one query.
@@ -667,6 +671,9 @@ def near_blocks(
     Returns:
         ``(b,)`` mask, False only for blocks provably beyond the cutoff.
     """
+    # The bounds are evaluated on magnitudes in the cutoff's unit.
+    unit = cutoff.unit
+    lattice, widths, radius = matrix.to(unit), perpendicular.to(unit), cutoff.to(unit)
     centers: list[Array] = []
     halves: list[Array] = []
     beyond: list[Array] = []
@@ -682,18 +689,18 @@ def near_blocks(
             wraps.append(magnitude + half >= 0.5 - 1e-12)
         else:
             gap = jnp.abs(center) - half
-        beyond.append(gap * perpendicular[axis] >= cutoff)
+        beyond.append(gap * widths[axis] >= radius)
         centers.append(center)
         halves.append(half)
-    v = [sum(centers[a] * matrix[a, j] for a in range(3)) for j in range(3)]
+    v = [sum(centers[a] * lattice[a, j] for a in range(3)) for j in range(3)]
     distance2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
     support = sum(
-        halves[a] * jnp.abs(sum(matrix[a, j] * v[j] for j in range(3)))
+        halves[a] * jnp.abs(sum(lattice[a, j] * v[j] for j in range(3)))
         for a in range(3)
     )
     # |v| - support / |v| >= cutoff, without square roots or divisions.
     excess = distance2 - support
-    projected = (excess > 0) & (excess * excess >= cutoff * cutoff * distance2)
+    projected = (excess > 0) & (excess * excess >= radius * radius * distance2)
     for w in wraps:
         projected &= ~w
     far = beyond[0] | beyond[1] | beyond[2]
@@ -703,7 +710,7 @@ def near_blocks(
 def build_cell_list_cache[Data](
     particles: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     data: Data,
     parameters: CellListCacheParameters,
 ) -> CellListCache[Data]:
@@ -744,7 +751,7 @@ def build_cell_list_cache[Data](
         rows.frac,
         rows.system,
         rows.cell < n_cells,
-        systems.map_data(lambda s: s.cell.perpendicular_lengths),
+        systems.map_data(lambda s: s.cell.perpendicular_lengths.value),
         n_pad,
         block_size,
     )

@@ -12,6 +12,7 @@ from kups.core.data import Index, Table
 from kups.core.neighborlist.dense import DenseNearestNeighborList, _dense_subselect
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 
 from ._builders import (
     EvalState,
@@ -24,13 +25,15 @@ from ._builders import (
     valid_pairs,
 )
 
+_A = u.angstrom
+
 
 class TestDenseSubselect:
     def test_pairs_never_cross_systems(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.array([0, 0, 1, 1]))
         systems, _ = make_systems(
             PeriodicCell(
-                TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, 0) * 10.0)
+                TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(2, 0) * 10.0) * _A)
             ),
             jnp.array([1.0, 1.0]),
         )
@@ -44,7 +47,7 @@ class TestDenseSubselect:
     def test_self_pairs_present(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A)),
             jnp.array([1.0]),
         )
         candidates = _dense_subselect(lh, lh, systems, FixedCapacity(8))
@@ -57,14 +60,14 @@ class TestFromState:
     def test_from_state_builds_lens_capacities_and_carries_cutoffs(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0)),
+            PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * _A)),
             jnp.array([2.0]),
         )
         params = UniversalNeighborlistParameters(
             avg_edges=16, avg_candidates=32, avg_image_candidates=32, cells=64
         )
         state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
-        cutoffs = cutoff_table(jnp.array([2.5]))
+        cutoffs = cutoff_table(jnp.array([2.5]) * _A)
 
         nl = DenseNearestNeighborList.from_state(state, cutoffs)
 

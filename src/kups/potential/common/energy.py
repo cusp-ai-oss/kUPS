@@ -25,12 +25,12 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.lens import Lens, View
 from kups.core.patch import ComposedPatch, IdPatch, IndexLensPatch, Patch, WithPatch
 from kups.core.potential import (
     CompensatedPotentialResult,
-    Energy,
     Potential,
     PotentialOut,
     PotentialResult,
@@ -174,8 +174,8 @@ class IdentityComposer[Input](SumComposer[Input, Input, Patch[Any]]):
 # We need this union since while IdPatch is assignable to Patch[State], pyright does not
 # correctly infer this when provided as a generic argument.
 type EnergyAndCachePatch[State] = (
-    WithPatch[Table[SystemId, Energy], Patch[State]]
-    | WithPatch[Table[SystemId, Energy], IdPatch[State]]
+    WithPatch[Table[SystemId, units.Energy], Patch[State]]
+    | WithPatch[Table[SystemId, units.Energy], IdPatch[State]]
 )
 
 
@@ -345,6 +345,8 @@ class PotentialFromEnergy[
             h_inp = self.hessian_lens.get(g_inp)
             h_tree = tree_structure(h_inp)
             h_inp_list = h_tree.flatten_up_to(h_inp)
+            # One entry per differentiated array; a quantity is a single entry.
+            q_tree = tree_structure(h_inp, is_leaf=units.is_leaf)
 
             # We need two nested functions here, the outer one is for Hessians
             # which must be a subset of the gradients.
@@ -355,18 +357,20 @@ class PotentialFromEnergy[
                 # The inner function is for computing the potential and gradients.
                 def _potential(
                     g_inp: Gradients,
-                ) -> tuple[Table[SystemId, Energy], EnergyAndCachePatch[State]]:
+                ) -> tuple[Table[SystemId, units.Energy], EnergyAndCachePatch[State]]:
                     patched_input = self.gradient_lens.set(inp, g_inp)
                     energy_out = self.energy_fn(patched_input)
                     return energy_out.data, energy_out
 
                 h_inp = h_tree.unflatten(h_inp_list)
                 patched_g_inp = self.hessian_lens.set(g_inp, h_inp)
-                energies, vjp_fn, energy_result = jax.vjp(
+                energies, vjp_fn, energy_result = units.vjp(
                     _potential, patched_g_inp, has_aux=True
                 )
-                gradients = vjp_fn(jax.tree.map(jnp.ones_like, energies))[0]
-                flat_out = h_tree.flatten_up_to(self.hessian_lens.get(gradients))
+                # The cotangent seed carries the energy's dimension.
+                gradients = vjp_fn(jax.tree.map(units.ones_like, energies))[0]
+                # Gradient labels differ from the inputs'; differentiate magnitudes.
+                flat_out = jax.tree.leaves(self.hessian_lens.get(gradients))
                 return flat_out, (gradients, energy_result)
 
             # Energy and gradients computation + Hessian linearization
@@ -376,7 +380,7 @@ class PotentialFromEnergy[
 
             # Hessian computation
             h_vals: list[Array] = []
-            for i, idx in enumerate(h_tree.flatten_up_to(h_idx)):
+            for i, idx in enumerate(q_tree.flatten_up_to(h_idx)):
 
                 @jax.vmap
                 def hessian_vec_fn(idx: Array) -> Array:
@@ -394,7 +398,21 @@ class PotentialFromEnergy[
                     return out.ravel().at[b].get(mode="fill", fill_value=0)
 
                 h_vals.append(hessian_vec_fn(idx))
-            hessians = h_tree.unflatten(h_vals)
+            # Each d2E/dx2 block has dimension dim(E) / dim(x)^2.
+            energy_dim = units.dim_of(energy_result.data.data)
+            hessians = q_tree.unflatten(
+                [
+                    units.relabel(
+                        h,
+                        tuple(
+                            e - 2 * d
+                            for e, d in zip(energy_dim, units.dim_of(x), strict=True)
+                        ),
+                        units.base_of(x) if units.is_quantity(x) else None,
+                    )
+                    for h, x in zip(h_vals, q_tree.flatten_up_to(h_inp), strict=True)
+                ]
+            )
 
             # Output
             out = PotentialOut(energy_result.data, gradients, hessians)

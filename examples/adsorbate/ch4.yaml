@@ -1,10 +1,11 @@
-critical_temperature: 190.564
-critical_pressure: 4_599_200
+critical_temperature: "190.564 K"
+critical_pressure: "4599200 Pa"
 acentric_factor: 0.01142
 positions:
-  - [0, 0, 0]
+  angstrom:
+    - [0, 0, 0]
 symbols:
   - "CH4"
 atomic_numbers: [6] # carbon backbone of the united atom
-masses: [16.043] # united-atom mass (C + 4 H) — not derivable from Z
-charges: [0.0]
+masses: {amu: [16.043]} # united-atom mass (C + 4 H) — not derivable from Z
+charges: {e: [0.0]}

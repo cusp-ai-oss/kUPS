@@ -30,23 +30,28 @@ from kups.application.md.data import (
     md_state_from_particles_and_cell,
 )
 from kups.application.utils.particles import Particles, particles_from_arrays
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
-from kups.core.constants import BOLTZMANN_CONSTANT, FEMTO_SECOND, PASCAL
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, Label, ParticleId, SystemId
+from kups.core.units import catalog as u
+from test.units import EV, FORCE, A, assert_close
+
+MOMENTUM = u.amu * A / u.fs
+"""The unit the builder's momenta and cell momentum carry."""
 
 
 @pytest.fixture
 def md_config() -> MdParameters:
     """Return a complete MD configuration for builder tests."""
     return MdParameters(
-        temperature=300.0,
-        time_step=1.0,
-        friction_coefficient=0.01,
-        thermostat_time_constant=100.0,
-        target_pressure=1.0e5,
-        pressure_coupling_time=1.0e3,
-        compressibility=4.5e-10,
+        temperature="300 K",
+        time_step="1 fs",
+        friction_coefficient="0.01 1/fs",
+        thermostat_time_constant="100 fs",
+        target_pressure="1e5 Pa",
+        pressure_coupling_time="1e3 fs",
+        compressibility="4.5e-10 1/Pa",
         minimum_scale_factor=0.9,
         integrator="verlet",
         initialize_momenta=False,
@@ -64,6 +69,7 @@ def _cell() -> Cell[AnyPeriodicity]:
                     [0.25, 0.75, 6.0],
                 ]
             )
+            * A
         ),
         (True, True, True),
     )
@@ -81,10 +87,11 @@ def _particles(
     return Table(
         keys,
         Particles(
-            positions=jnp.arange(n_particles * 3, dtype=float).reshape(n_particles, 3),
-            masses=jnp.arange(1, n_particles + 1, dtype=float),
+            positions=jnp.arange(n_particles * 3, dtype=float).reshape(n_particles, 3)
+            * A,
+            masses=jnp.arange(1, n_particles + 1, dtype=float) * u.amu,
             atomic_numbers=jnp.full(n_particles, 18, dtype=int),
-            charges=jnp.zeros(n_particles),
+            charges=jnp.zeros(n_particles) * u.e,
             labels=Index(
                 (Label("Ar"),),
                 jnp.zeros(n_particles, dtype=int),
@@ -98,15 +105,11 @@ def _particles(
 
 def _assert_tree_allclose(actual: object, expected: object) -> None:
     """Compare two PyTrees numerically, including structure."""
-    actual_structure = jax.tree_util.tree_structure(actual)
-    expected_structure = jax.tree_util.tree_structure(expected)
+    actual_leaves, actual_structure = units.tree_flatten(actual)
+    expected_leaves, expected_structure = units.tree_flatten(expected)
     assert actual_structure == expected_structure
-    for actual_leaf, expected_leaf in zip(
-        jax.tree_util.tree_leaves(actual),
-        jax.tree_util.tree_leaves(expected),
-        strict=True,
-    ):
-        npt.assert_allclose(actual_leaf, expected_leaf, rtol=1e-12, atol=1e-12)
+    for actual_leaf, expected_leaf in zip(actual_leaves, expected_leaves, strict=True):
+        assert_close(actual_leaf, expected_leaf, rtol=1e-12, atol=1e-12)
 
 
 def test_public_builder_signature_and_export() -> None:
@@ -144,11 +147,11 @@ def test_builder_preserves_identity_and_geometry(md_config: MdParameters) -> Non
     )
     assert systems.keys == (system_key,)
     npt.assert_array_equal(
-        md_particles.data.positions,
-        particles.data.positions,
+        md_particles.data.positions.to(A),
+        particles.data.positions.to(A),
     )
     assert systems.data.cell.vectors.shape == (1, 3, 3)
-    npt.assert_array_equal(systems.data.cell.vectors[0], cell.vectors)
+    npt.assert_array_equal(systems.data.cell.vectors[0].to(A), cell.vectors.to(A))
 
 
 def test_empty_particles_are_rejected(md_config: MdParameters) -> None:
@@ -388,7 +391,7 @@ def test_key_alone_controls_momentum_initialization(
         key=None,
     )
 
-    npt.assert_array_equal(zero_particles.data.momenta, jnp.zeros((3, 3)))
+    npt.assert_array_equal(zero_particles.data.momenta.to(MOMENTUM), jnp.zeros((3, 3)))
 
     key = jax.random.key(41)
     no_initialize_config = md_config.model_copy(update={"initialize_momenta": False})
@@ -399,19 +402,21 @@ def test_key_alone_controls_momentum_initialization(
         key=key,
     )
     masses = particles.data.masses
-    standard_deviation = jnp.sqrt(masses * md_config.temperature * BOLTZMANN_CONSTANT)
+    standard_deviation = units.sqrt(
+        masses * units.constants.k_B * md_config.temperature
+    )
     raw_momenta = jax.random.normal(key, (3, 3)) * standard_deviation[:, None]
     expected_momenta = raw_momenta - masses[:, None] * (
         raw_momenta.sum(axis=0) / masses.sum()
     )
 
-    npt.assert_allclose(
+    assert_close(
         sampled_particles.data.momenta,
         expected_momenta,
         rtol=1e-12,
         atol=1e-12,
     )
-    npt.assert_allclose(
+    assert_close(
         sampled_particles.data.momenta.sum(axis=0),
         jnp.zeros(3),
         atol=1e-12,
@@ -444,7 +449,7 @@ def test_builder_initial_zero_state_and_pytree_contract(
         expected = getattr(particles.data, field_name)
         assert actual.shape == expected.shape
         assert actual.dtype == expected.dtype
-        npt.assert_array_equal(actual, expected)
+        assert_close(actual, expected, rtol=0, atol=0)
     assert md_particles.data.labels.keys == particles.data.labels.keys
     assert md_particles.data.system.keys == particles.data.system.keys
     npt.assert_array_equal(
@@ -458,38 +463,38 @@ def test_builder_initial_zero_state_and_pytree_contract(
     assert md_particles.data.position_gradients.shape == (3, 3)
     assert md_particles.data.position_gradients.dtype == particles.data.positions.dtype
     npt.assert_array_equal(
-        md_particles.data.position_gradients,
-        jnp.zeros_like(particles.data.positions),
+        md_particles.data.position_gradients.to(FORCE),
+        jnp.zeros((3, 3)),
     )
     assert md_particles.data.momenta.shape == (3, 3)
     assert md_particles.data.momenta.dtype == jnp.zeros((3, 3)).dtype
-    npt.assert_array_equal(md_particles.data.momenta, jnp.zeros((3, 3)))
+    npt.assert_array_equal(md_particles.data.momenta.to(MOMENTUM), jnp.zeros((3, 3)))
     assert md_particles.data.exclusion.keys == tuple(ExclusionId(i) for i in range(3))
     npt.assert_array_equal(md_particles.data.exclusion.value, jnp.arange(3))
 
     assert systems.data.cell.vectors.shape == (1, 3, 3)
     assert systems.data.cell.vectors.dtype == cell.vectors.dtype
-    npt.assert_array_equal(systems.data.cell.vectors[0], cell.vectors)
-    assert jax.tree_util.tree_structure(
+    npt.assert_array_equal(systems.data.cell.vectors[0].to(A), cell.vectors.to(A))
+    gradient_leaves, gradient_structure = units.tree_flatten(
         systems.data.cell_gradients
-    ) == jax.tree_util.tree_structure(systems.data.cell)
-    for gradient_leaf, cell_leaf in zip(
-        jax.tree_util.tree_leaves(systems.data.cell_gradients),
-        jax.tree_util.tree_leaves(systems.data.cell),
-        strict=True,
-    ):
+    )
+    cell_leaves, cell_structure = units.tree_flatten(systems.data.cell)
+    assert gradient_structure == cell_structure
+    for gradient_leaf, cell_leaf in zip(gradient_leaves, cell_leaves, strict=True):
         assert gradient_leaf.shape == cell_leaf.shape
         assert gradient_leaf.dtype == cell_leaf.dtype
-        npt.assert_array_equal(gradient_leaf, jnp.zeros_like(cell_leaf))
+        assert_close(gradient_leaf, units.zeros_like(gradient_leaf), rtol=0, atol=0)
     assert systems.data.cell_momentum.shape == (1, 3, 3)
     assert systems.data.cell_momentum.dtype == jnp.zeros((1, 3, 3)).dtype
-    npt.assert_array_equal(systems.data.cell_momentum, jnp.zeros((1, 3, 3)))
+    npt.assert_array_equal(
+        systems.data.cell_momentum.to(MOMENTUM), jnp.zeros((1, 3, 3))
+    )
     assert systems.data.potential_energy.shape == (1,)
     assert systems.data.potential_energy.dtype == jnp.array([0.0]).dtype
-    npt.assert_array_equal(systems.data.potential_energy, jnp.array([0.0]))
+    npt.assert_array_equal(systems.data.potential_energy.to(EV), jnp.array([0.0]))
 
-    particle_leaves, particle_structure = jax.tree_util.tree_flatten(md_particles.data)
-    system_leaves, system_structure = jax.tree_util.tree_flatten(systems.data)
+    particle_leaves, particle_structure = units.tree_flatten(md_particles.data)
+    system_leaves, system_structure = units.tree_flatten(systems.data)
     assert len(particle_leaves) == 9
     assert len(system_leaves) == 5
     assert (
@@ -526,99 +531,96 @@ def test_integrator_parameters_and_unit_conversions(
     params = systems.data.integrator_params
 
     assert type(params) is expected_type
-    npt.assert_allclose(
-        params.time_step,
-        [config.time_step * FEMTO_SECOND],
-        rtol=1e-12,
-    )
+    assert_close(params.time_step, config.time_step[None], rtol=1e-12)
     match params:
         case VerletParams():
             pass
         case BAOABLangevinParams():
-            npt.assert_allclose(params.temperature, [config.temperature])
-            npt.assert_allclose(
+            assert_close(params.temperature, config.temperature[None])
+            assert_close(
                 params.friction_coefficient,
-                [config.friction_coefficient / FEMTO_SECOND],
+                config.friction_coefficient[None],
                 rtol=1e-12,
             )
         case CSVRParams():
-            npt.assert_allclose(params.temperature, [config.temperature])
-            npt.assert_allclose(
+            assert_close(params.temperature, config.temperature[None])
+            assert_close(
                 params.thermostat_time_constant,
-                [config.thermostat_time_constant * FEMTO_SECOND],
+                config.thermostat_time_constant[None],
                 rtol=1e-12,
             )
         case CSVRNPTParams():
-            npt.assert_allclose(params.temperature, [config.temperature])
-            npt.assert_allclose(
+            assert_close(params.temperature, config.temperature[None])
+            assert_close(
                 params.thermostat_time_constant,
-                [config.thermostat_time_constant * FEMTO_SECOND],
+                config.thermostat_time_constant[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.target_pressure,
-                [config.target_pressure * PASCAL],
+                config.target_pressure[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.pressure_coupling_time,
-                [config.pressure_coupling_time * FEMTO_SECOND],
+                config.pressure_coupling_time[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.compressibility,
-                [config.compressibility / PASCAL],
+                config.compressibility[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.minimum_scale_factor,
                 [config.minimum_scale_factor],
                 rtol=1e-12,
             )
         case BAOABNPTLangevinParams():
-            npt.assert_allclose(params.temperature, [config.temperature])
-            gamma = config.friction_coefficient / FEMTO_SECOND
-            tau_p = config.pressure_coupling_time * FEMTO_SECOND
-            compressibility = config.compressibility / PASCAL
-            npt.assert_allclose(
+            assert_close(params.temperature, config.temperature[None])
+            gamma = config.friction_coefficient
+            tau_p = config.pressure_coupling_time
+            compressibility = config.compressibility
+            assert_close(
                 params.friction_coefficient,
-                [gamma],
+                gamma[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.target_pressure,
-                [config.target_pressure * PASCAL],
+                config.target_pressure[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.pressure_coupling_time,
-                [tau_p],
+                tau_p[None],
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.compressibility,
-                [compressibility],
+                compressibility[None],
                 rtol=1e-12,
             )
             cell_vectors = systems.data.cell.vectors
-            volume = jnp.abs(jnp.linalg.det(cell_vectors))[0]
-            diagonal = jnp.diagonal(cell_vectors[0])
+            volume = units.absolute(units.det(cell_vectors))[0]
+            diagonal = cell_vectors[0].diagonal()
             per_column = (
                 3.0
                 * volume
                 * (tau_p / (2.0 * jnp.pi)) ** 2
                 / (compressibility * diagonal**2)
             )
-            expected_mass = jnp.tril(
-                jnp.broadcast_to(per_column[None, None, :], (1, 3, 3))
+            expected_mass = units.apply(
+                jnp.tril,
+                units.apply(jnp.broadcast_to, per_column[None, None, :], (1, 3, 3)),
             )
-            expected_friction = jnp.tril(jnp.full((1, 3, 3), gamma))
-            npt.assert_allclose(
+            expected_friction = units.apply(jnp.tril, units.full((1, 3, 3), gamma))
+            assert_close(
                 params.barostat_mass,
                 expected_mass,
                 rtol=1e-12,
             )
-            npt.assert_allclose(
+            assert_close(
                 params.barostat_friction,
                 expected_friction,
                 rtol=1e-12,

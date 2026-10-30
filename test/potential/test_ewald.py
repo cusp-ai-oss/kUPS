@@ -13,6 +13,7 @@ import pytest
 from jax import Array, random
 from scipy.special import erfc
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
     Cell,
@@ -28,11 +29,11 @@ from kups.core.lens import bind, lens
 from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.coulomb import coulomb_vacuum_energy
 from kups.potential.classical.ewald import (
-    TO_STANDARD_UNITS,
     EwaldCache,
     EwaldLongRangeInput,
     EwaldParameters,
@@ -54,14 +55,15 @@ from kups.potential.classical.ewald.reciprocal import (
     _structure_factor_full,
 )
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
+from test.units import EV, A, as_length, as_unit, assert_close
 
 
 @dataclass
 class PointCloudParticles:
     """Simple point cloud particles with positions, charges, and system index."""
 
-    positions: Array
-    charges: Array
+    positions: units.Length
+    charges: units.Charge
     system: Index[SystemId]
     inclusion: Index[InclusionId]
     exclusion: Index[ExclusionId]
@@ -72,7 +74,7 @@ class SystemData:
     """System data with cell and cutoff."""
 
     cell: Cell[Periodic3D]
-    cutoff: Array
+    cutoff: units.Length
 
 
 # The Madelung constant for a simple cubic lattice
@@ -81,9 +83,13 @@ class SystemData:
 MADELUNG_CONSTANT = -1.7475646
 
 
+E_CHARGE = u.e
+"""The charge unit a test's plain charges are read in."""
+
+
 def _make_particle_data(
-    positions: Array,
-    charges: Array,
+    positions: Array | units.Length,
+    charges: Array | units.Charge,
     n_systems: int = 1,
     *,
     system_ids: Array | None = None,
@@ -106,8 +112,8 @@ def _make_particle_data(
     excl_keys = tuple(ExclusionId(i) for i in range(int(exclusion_ids.max()) + 1))
 
     return PointCloudParticles(
-        positions=positions,
-        charges=charges,
+        positions=as_length(positions),
+        charges=as_unit(charges, E_CHARGE),
         system=Index(system_keys, system_ids, inclusion_max_count, _cls=SystemId),
         inclusion=Index(
             incl_keys, inclusion_ids, inclusion_max_count, _cls=InclusionId
@@ -118,11 +124,13 @@ def _make_particle_data(
     )
 
 
-def _make_systems(cell: Cell[Periodic3D], cutoff: Array) -> Table[SystemId, SystemData]:
+def _make_systems(
+    cell: Cell[Periodic3D], cutoff: Array | units.Length
+) -> Table[SystemId, SystemData]:
     """Build a Table[SystemId, SystemData] from a batched Cell and cutoff."""
     n_sys = cell.volume.shape[0]
     keys = tuple(SystemId(i) for i in range(n_sys))
-    return Table(keys, SystemData(cell=cell, cutoff=cutoff))
+    return Table(keys, SystemData(cell=cell, cutoff=as_length(cutoff)))
 
 
 def _build_neighborlist(particles, systems, n_particles):
@@ -155,13 +163,19 @@ def _build_neighborlist(particles, systems, n_particles):
 
 
 def _parameters(cell, alpha, cutoff, k_max):
-    systems = _make_systems(cell[None], jnp.asarray([cutoff]))
+    """One system's parameters; plain magnitudes are read in Å and 1/Å."""
+    dtype = cell.vectors.dtype
+
+    def column(value, unit):
+        return units.stack([as_unit(value, unit)]).astype(dtype)
+
+    systems = _make_systems(cell[None], column(cutoff, A))
     return EwaldParameters.from_cutoffs(
         systems,
-        systems.set_data(jnp.asarray([alpha], dtype=cell.vectors.dtype)),
-        systems.set_data(jnp.asarray([cutoff], dtype=cell.vectors.dtype)),
-        systems.set_data(jnp.asarray([k_max], dtype=cell.vectors.dtype)),
-        reciprocal_dtype=cell.vectors.dtype,
+        systems.set_data(column(alpha, 1 / A)),
+        systems.set_data(column(cutoff, A)),
+        systems.set_data(column(k_max, 1 / A)),
+        reciprocal_dtype=dtype,
     )
 
 
@@ -169,7 +183,7 @@ def _parameters(cell, alpha, cutoff, k_max):
 def _total_energy(
     params: EwaldParameters,
     graph: HyperGraph[PointCloudParticles, SystemData, Any],
-) -> Array:
+) -> units.Energy:
     """Total Ewald energy of the first system."""
     sr_inp = GraphPotentialInput(params, graph)
     lr_inp = EwaldLongRangeInput(PointCloud(graph.particles, graph.systems), params)
@@ -200,7 +214,7 @@ class TestEwald:
         parameters = TestReciprocalReduction()._input().parameters
         alpha = jnp.array([0.2] if singleton_alpha else [0.2, 0.3, 0.5, 0.4], dtype)
         parameters = bind(parameters, lambda p: p.alpha).set(
-            Table.arange(alpha, label=SystemId)
+            Table.arange(alpha / A, label=SystemId)
         )
         system = Index.integer(jnp.array([[0], [2]]), n=4, label=SystemId)
         distance = jnp.array([[0.02, 0.9, 2.3, 6.1], [0.1, 1.1, 3.3, 5.5]], dtype)
@@ -208,13 +222,20 @@ class TestEwald:
         right = jnp.array([-0.2, 0.7, 0.0, 0.3], dtype)
 
         def energy(r2: Array) -> Array:
+            """Pair energies in eV of squared distances in Å²."""
             return ewald_short_range_pair_kernel(
-                parameters, left, right, jnp.zeros((*r2.shape, 3)), r2, system
-            )
+                parameters,
+                left * E_CHARGE,
+                right * E_CHARGE,
+                jnp.zeros((*r2.shape, 3), dtype) * A,
+                r2 * A**2,
+                system,
+            ).to(EV)
 
         a = np.asarray(alpha[0] if singleton_alpha else alpha[jnp.array([0, 2]), None])
         r = np.asarray(distance)
-        qq = TO_STANDARD_UNITS * np.asarray(left * right)
+        k_e = float(units.constants.k_e.to(EV * A / E_CHARGE**2))
+        qq = k_e * np.asarray(left * right)
         screened = erfc(a * r)
         expected = qq * screened / r
         derivative = (
@@ -249,8 +270,8 @@ class TestEwald:
         )
         particles = Table.arange(pdata, label=ParticleId)
 
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 100.0))
-        systems = _make_systems(cell, jnp.array([50.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 100.0) * A))
+        systems = _make_systems(cell, jnp.array([50.0]) * A)
 
         # Manually build bonded-pair edges: (0,1), (1,0), (2,3), (3,2)
         edge_idx = jnp.array([[0, 1], [1, 0], [2, 3], [3, 2]])
@@ -263,7 +284,11 @@ class TestEwald:
         graph = HyperGraph(particles=particles, systems=systems, edges=edges)
         result = coulomb_vacuum_energy(GraphPotentialInput(None, graph))
 
-        npt.assert_allclose(result.data.data[0], -2.0 * TO_STANDARD_UNITS, rtol=1e-5)
+        assert_close(
+            result.data.data[0],
+            -2.0 * E_CHARGE**2 / A * units.constants.k_e,
+            rtol=1e-5,
+        )
 
     def test_exclusion_correction_pbc_cross_boundary_bond(self):
         """Exclusion correction uses minimum-image distance for a bond across the boundary."""
@@ -279,8 +304,8 @@ class TestEwald:
         )
         particles = Table.arange(pdata, label=ParticleId)
 
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 20.0))
-        systems = _make_systems(cell, jnp.array([50.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 20.0) * A))
+        systems = _make_systems(cell, jnp.array([50.0]) * A)
 
         # Manually build edges for the cross-boundary bond: (0,1), (1,0)
         # Particle 0 at x=1, particle 1 at x=19, box=20.
@@ -297,7 +322,11 @@ class TestEwald:
         graph = HyperGraph(particles=particles, systems=systems, edges=edges)
         result = coulomb_vacuum_energy(GraphPotentialInput(None, graph))
 
-        npt.assert_allclose(result.data.data[0], -0.5 * TO_STANDARD_UNITS, rtol=1e-5)
+        assert_close(
+            result.data.data[0],
+            -0.5 * E_CHARGE**2 / A * units.constants.k_e,
+            rtol=1e-5,
+        )
 
     def test_ewald_potential_excludes_bonded_pairs(self):
         """Ewald(all pairs) - vacuum Coulomb(excluded pairs) gives exclusion-corrected energy.
@@ -309,11 +338,15 @@ class TestEwald:
             [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [10.0, 0.0, 0.0], [11.5, 0.0, 0.0]]
         )
         charges = jnp.array([1.0, -1.0, 1.0, -1.0])
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * 20.0))
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix((jnp.eye(3, dtype=float) * 20.0) * A)
+        )
 
         # The exclusion-correction identity is independent of Ewald precision
         # (e_excl is checked analytically), so a coarse k-space suffices here.
-        estimates = estimate_ewald_parameters(charges, cell, epsilon_total=1e-3)
+        estimates = estimate_ewald_parameters(
+            as_unit(charges, E_CHARGE), cell, epsilon_total=1e-3
+        )
         params = _parameters(
             cell, estimates.alpha, estimates.real_cutoff, estimates.k_max
         )
@@ -347,13 +380,14 @@ class TestEwald:
         e_with_excl = e_atomic - e_excl
 
         # Cross-check: analytic vacuum Coulomb for the two bonds
+        q = as_unit(charges, E_CHARGE)
         e_excl_analytic = (
-            charges[0] * charges[1] / 1.5 + charges[2] * charges[3] / 1.5
-        ) * TO_STANDARD_UNITS
-        npt.assert_allclose(e_excl, e_excl_analytic, rtol=1e-5)
+            q[0] * q[1] / (1.5 * A) + q[2] * q[3] / (1.5 * A)
+        ) * units.constants.k_e
+        assert_close(e_excl, e_excl_analytic, rtol=1e-5)
 
         # Verify the corrected energy is consistent
-        npt.assert_allclose(e_with_excl, e_atomic - e_excl_analytic, rtol=1e-4)
+        assert_close(e_with_excl, e_atomic - e_excl_analytic, rtol=1e-4)
 
     def test_ewald_summation(self):
         eps = 5e-5
@@ -371,18 +405,24 @@ class TestEwald:
             dtype=float,
         )
         charges = jnp.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0], dtype=float)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * 2))
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix((jnp.eye(3, dtype=float) * 2) * A)
+        )
 
         with npt.assert_raises(ValueError):
-            estimate_ewald_parameters(charges, cell, epsilon_total=eps)
+            estimate_ewald_parameters(
+                as_unit(charges, E_CHARGE), cell, epsilon_total=eps
+            )
 
         # The cell needs to be at least as large as the cutoff
         REPEATS = 5
         cell, (positions, charges) = make_supercell(
-            cell, REPEATS, (positions, charges), lens(lambda x: x[0])
+            cell, REPEATS, (as_length(positions), charges), lens(lambda x: x[0])
         )
-        estimates = estimate_ewald_parameters(charges, cell, epsilon_total=eps)
-        assert estimates.error_real < eps, (
+        estimates = estimate_ewald_parameters(
+            as_unit(charges, E_CHARGE), cell, epsilon_total=eps
+        )
+        assert estimates.error_real < eps * E_CHARGE**2 / A, (
             f"Real space target accuracy cannot be reached. {estimates.error_real}"
         )
         params = _parameters(
@@ -400,9 +440,11 @@ class TestEwald:
             systems=systems,
             edges=edges,
         )
+        # The Madelung constant is the energy in units of k_e q^2 / a, with the
+        # lattice constant a = 1 Angstrom for this cell.
         npt.assert_allclose(
             MADELUNG_CONSTANT * (REPEATS**3) * 4,
-            _total_energy(params, graph) / TO_STANDARD_UNITS,
+            _total_energy(params, graph) * A / (units.constants.k_e * E_CHARGE**2),
             rtol=eps,
         )
 
@@ -411,35 +453,39 @@ class TestEwald:
         L = 10.0
         positions = jnp.array([[0.0, 0.0, 0.0], [3.0, 3.0, 3.0], [6.0, 6.0, 6.0]])
         charges = jnp.array([1.0, 1.0, 0.5])  # Q = 2.5
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * L))
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix((jnp.eye(3, dtype=float) * L) * A)
+        )
         alpha = 0.4
         params = _parameters(cell, alpha, 5.0, 0.0)
         pdata = _make_particle_data(positions, charges, n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
-        systems = _make_systems(cell[None], jnp.array([5.0]))
+        systems = _make_systems(cell[None], jnp.array([5.0]) * A)
         edges = _build_neighborlist(particles, systems, len(charges))
         graph = HyperGraph(particles=particles, systems=systems, edges=edges)
 
         e_net = ewald_net_charge_energy(GraphPotentialInput(params, graph)).data.data[0]
-        Q, V = 2.5, L**3
-        expected = -jnp.pi / (2 * V * alpha**2) * Q**2 * TO_STANDARD_UNITS
-        npt.assert_allclose(e_net, expected, rtol=1e-6)
+        Q, V = 2.5 * E_CHARGE, (L * A) ** 3
+        expected = -jnp.pi / (2 * V * (alpha / A) ** 2) * Q**2 * units.constants.k_e
+        assert_close(e_net, expected, rtol=1e-6)
 
     def test_zero_kvector_excluded(self):
         """The k=0 reciprocal mode is excluded (prefactor 0); net charge replaces it."""
         L = 10.0
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * L))
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix((jnp.eye(3, dtype=float) * L) * A)
+        )
         params = _parameters(cell, 0.4, 5.0, 1.0)
         pdata = _make_particle_data(jnp.zeros((1, 3)), jnp.array([1.0]), n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
-        systems = _make_systems(cell[None], jnp.array([5.0]))
+        systems = _make_systems(cell[None], jnp.array([5.0]) * A)
         inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
 
         pref = prefactor(inp)
-        zero = np.all(np.asarray(inp.kvecs[0]) == 0, axis=-1)
+        zero = np.all(np.asarray(inp.kvecs[0].to(1 / A)) == 0, axis=-1)
         assert zero.any() and not zero.all()
-        npt.assert_array_equal(pref[0, zero], 0.0)
-        assert bool(jnp.all(pref[0, ~zero] > 0))
+        npt.assert_array_equal(pref[0, zero].to(1 / A), 0.0)
+        assert bool(jnp.all(pref[0, ~zero].to(1 / A) > 0))
 
     def test_net_charge_total_energy_alpha_stable(self):
         """For Q != 0 the total energy is finite and ~independent of alpha.
@@ -450,19 +496,21 @@ class TestEwald:
         L = 12.0
         positions = jnp.array([[0.0, 0.0, 0.0], [6.0, 6.0, 6.0]])
         charges = jnp.array([1.0, 1.0])  # Q = 2, non-neutral
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3, dtype=float) * L))
+        cell = PeriodicCell(
+            TriclinicFrame.from_matrix((jnp.eye(3, dtype=float) * L) * A)
+        )
 
         rc = 5.0
         pdata = _make_particle_data(positions, charges, n_systems=1)
         particles = Table.arange(pdata, label=ParticleId)
-        systems = _make_systems(cell[None], jnp.array([rc]))
+        systems = _make_systems(cell[None], jnp.array([rc]) * A)
         edges = _build_neighborlist(particles, systems, len(charges))
         graph = HyperGraph(particles=particles, systems=systems, edges=edges)
 
         e_lo = _total_energy(_parameters(cell, 0.5, rc, 6.0), graph)
         e_hi = _total_energy(_parameters(cell, 1.0, rc, 6.0), graph)  # alpha doubled
-        assert bool(jnp.isfinite(e_lo)) and bool(jnp.isfinite(e_hi))
-        npt.assert_allclose(e_lo, e_hi, atol=5e-3, rtol=1e-3)
+        assert bool(jnp.isfinite(e_lo.to(EV))) and bool(jnp.isfinite(e_hi.to(EV)))
+        assert_close(e_lo, e_hi, atol=5e-3, rtol=1e-3)
 
 
 class TestEwaldParametersMake:
@@ -482,12 +530,14 @@ class TestEwaldParametersMake:
         )
         systems = Table.arange(
             SystemData(
-                cell=PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10)),
-                cutoff=jnp.array([4.0]),
+                cell=PeriodicCell(
+                    TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10 * A)
+                ),
+                cutoff=jnp.array([4.0]) * A,
             ),
             label=SystemId,
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
+        params = EwaldParameters.make(particles, systems, real_cutoff=4.0 * A)
         assert params.reciprocal_particle_chunk_size == expected
         direct = EwaldParameters(
             params.alpha, params.cutoff, params.reciprocal_lattice_shifts, params.k_max
@@ -510,12 +560,12 @@ class TestEwaldParametersMake:
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId
         )
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * L))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * L) * A))
         systems = Table.arange(
-            SystemData(cell=cell, cutoff=jnp.array([4.0])),
+            SystemData(cell=cell, cutoff=jnp.array([4.0]) * A),
             label=SystemId,
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
+        params = EwaldParameters.make(particles, systems, real_cutoff=4.0 * A)
         assert params.alpha.data.shape == (1,)
         assert float(params.alpha.data[0]) > 0
         assert len(params.cutoff.keys) == 1
@@ -545,13 +595,13 @@ class TestEwaldParametersMake:
             SystemData(
                 cell=PeriodicCell(
                     TriclinicFrame.from_matrix(
-                        jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 20.0])
+                        jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 20.0]) * A
                     )
                 ),
-                cutoff=jnp.array([4.0, 4.0]),
+                cutoff=jnp.array([4.0, 4.0]) * A,
             ),
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=4.0)
+        params = EwaldParameters.make(particles, systems, real_cutoff=4.0 * A)
         assert params.alpha.data.shape == (2,)
         assert len(params.cutoff.keys) == 2
         assert params.k_max.data.shape == (2,)
@@ -565,7 +615,7 @@ class TestEwaldParametersMake:
         original = parameters_module.estimate_ewald_parameters
 
         def recorded(charges, cell, **kwargs):
-            estimated.append(np.asarray(charges).tolist())
+            estimated.append(np.asarray(charges.to(E_CHARGE)).tolist())
             return original(charges, cell, **kwargs)
 
         monkeypatch.setattr(parameters_module, "estimate_ewald_parameters", recorded)
@@ -578,10 +628,12 @@ class TestEwaldParametersMake:
             label=ParticleId,
         )
         cell = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 8.0]))
+            TriclinicFrame.from_matrix(
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 8.0]) * A
+            )
         )
         params = EwaldParameters.make(
-            particles, _make_systems(cell, jnp.array([4.0, 4.0])), real_cutoff=4.0
+            particles, _make_systems(cell, jnp.array([4.0, 4.0])), real_cutoff=4.0 * A
         )
         assert estimated == [[1.0, -1.0, 0.5, -0.5], [2.0, -2.0]]
         assert params.alpha.data.shape == (2,)
@@ -593,13 +645,13 @@ class TestEwaldParametersMake:
         particles = Table.arange(
             _make_particle_data(positions, charges), label=ParticleId
         )
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 5.0))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 5.0) * A))
         systems = Table.arange(
-            SystemData(cell=cell, cutoff=jnp.array([2.0])),
+            SystemData(cell=cell, cutoff=jnp.array([2.0]) * A),
             label=SystemId,
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=2.0)
-        npt.assert_allclose(params.cutoff.data[0], 2.0)
+        params = EwaldParameters.make(particles, systems, real_cutoff=2.0 * A)
+        assert_close(params.cutoff.data[0], 2.0)
 
 
 class TestStructureFactorCache:
@@ -629,10 +681,10 @@ class TestStructureFactorCache:
         grid = jnp.stack(
             jnp.meshgrid(*(3 * [jnp.arange(self.REPEATS)]), indexing="ij"), axis=-1
         ).reshape(-1, 3)
-        positions = (grid * (self.L / self.REPEATS)).astype(self.DTYPE)
+        positions = (grid * (self.L / self.REPEATS)).astype(self.DTYPE) * A
         charges = ((-1.0) ** grid.sum(-1)).astype(self.DTYPE)
         cell = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.eye(3, dtype=self.DTYPE) * self.L)
+            TriclinicFrame.from_matrix((jnp.eye(3, dtype=self.DTYPE) * self.L) * A)
         )
         params = _parameters(cell, 0.35, 3.0, 3.0)
         systems = _make_systems(cell[None], params.cutoff.data)
@@ -642,7 +694,7 @@ class TestStructureFactorCache:
         )
 
         def make_input(
-            pos: Array,
+            pos: units.Length,
             cache: EwaldCache[Any, Any] | None = None,
             changes: WithIndices[ParticleId, PointCloudParticles] | None = None,
         ) -> EwaldLongRangeInput[Any]:
@@ -660,13 +712,13 @@ class TestStructureFactorCache:
 
         return particles, make_input
 
-    def _cache(self, summand: KahanSummand[Array]) -> EwaldCache[Any, Any]:
+    def _cache(self, summand: KahanSummand[units.Charge]) -> EwaldCache[Any, Any]:
         """Wrap a structure factor accumulator in an otherwise-zero cache."""
         return bind(
             EwaldCache.make(1, summand.value.shape[1]), lambda c: c.structure_factor
         ).set(summand)
 
-    def _walk(self, compensated: bool) -> tuple[Array, Array]:
+    def _walk(self, compensated: bool) -> tuple[units.Charge, units.Length]:
         """Run a chain of single-particle moves, returning final S(k) and positions.
 
         Args:
@@ -682,8 +734,9 @@ class TestStructureFactorCache:
         deltas = random.normal(random.key(1), (self.N_STEPS, 3), self.DTYPE) * 1e-4
 
         def step(
-            carry: tuple[KahanSummand[Array], Array], move: tuple[Array, Array]
-        ) -> tuple[tuple[KahanSummand[Array], Array], None]:
+            carry: tuple[KahanSummand[units.Charge], units.Length],
+            move: tuple[Array, Array],
+        ) -> tuple[tuple[KahanSummand[units.Charge], units.Length], None]:
             sk, pos = carry
             idx, delta = move
             previous = WithIndices(
@@ -695,12 +748,14 @@ class TestStructureFactorCache:
             )
             if not compensated:
                 sk = KahanSummand.init(sk.value)
-            new_pos = pos.at[idx].add(delta)
+            new_pos = pos.at[idx].add(delta * A)
             sk, _ = structure_factor(make_input(new_pos, self._cache(sk), previous))
             return (sk, new_pos), None
 
         @jax.jit
-        def walk(positions: Array) -> tuple[KahanSummand[Array], Array]:
+        def walk(
+            positions: units.Length,
+        ) -> tuple[KahanSummand[units.Charge], units.Length]:
             sk0, _ = structure_factor(make_input(positions))
             return jax.lax.scan(step, (sk0, positions), (moved, deltas))[0]
 
@@ -708,12 +763,12 @@ class TestStructureFactorCache:
         # Without compensation only the running sum survives, as before this change.
         return (sk.total if compensated else sk.value), pos
 
-    def _reference(self, positions: Array) -> np.ndarray:
-        """Structure factor of `positions` in float64, shape ``(n_kvecs, 2)``."""
+    def _reference(self, positions: units.Length) -> np.ndarray:
+        """Structure factor in e of `positions` in float64, shape ``(n_kvecs, 2)``."""
         particles, make_input = self._setup()
-        kvecs = np.asarray(make_input(positions).kvecs[0], dtype=np.float64)
-        phase = np.asarray(positions, dtype=np.float64) @ kvecs.T
-        q = np.asarray(particles.data.charges, dtype=np.float64)[:, None]
+        kvecs = np.asarray(make_input(positions).kvecs[0].to(1 / A), dtype=np.float64)
+        phase = np.asarray(positions.to(A), dtype=np.float64) @ kvecs.T
+        q = np.asarray(particles.data.charges.to(E_CHARGE), dtype=np.float64)[:, None]
         return np.stack(
             [(q * np.cos(phase)).sum(0), (q * np.sin(phase)).sum(0)], axis=-1
         )
@@ -723,7 +778,7 @@ class TestStructureFactorCache:
         walks = {compensated: self._walk(compensated) for compensated in (True, False)}
         reference = self._reference(walks[True][1])
         errors = {
-            compensated: float(np.abs(np.asarray(sk[0]) - reference).max())
+            compensated: float(np.abs(np.asarray(sk[0].to(E_CHARGE)) - reference).max())
             for compensated, (sk, _) in walks.items()
         }
         assert errors[True] < errors[False] / 4, errors
@@ -759,7 +814,7 @@ class TestReciprocalReduction:
                 (None, None, None)
             )
         )
-        npt.assert_allclose(actual.total, expected.total, rtol=1e-12, atol=1e-12)
+        assert_close(actual.total, expected.total, rtol=1e-12, atol=1e-12)
 
     def _input(
         self,
@@ -789,15 +844,17 @@ class TestReciprocalReduction:
         )
         cells = PeriodicCell(
             TriclinicFrame.from_matrix(
-                matrix[None] * jnp.linspace(1.0, 1.3, batch, dtype=dtype)[:, None, None]
+                matrix[None]
+                * jnp.linspace(1.0, 1.3, batch, dtype=dtype)[:, None, None]
+                * A
             )
         )
         systems = _make_systems(cells, jnp.full(batch, 3.0, dtype))
         params = EwaldParameters.from_cutoffs(
             systems,
-            systems.set_data(jnp.full(batch, 0.35, dtype)),
-            systems.set_data(jnp.full(batch, 3.0, dtype)),
-            systems.set_data(jnp.asarray(k_max[:batch], dtype)),
+            systems.set_data(jnp.full(batch, 0.35, dtype) / A),
+            systems.set_data(jnp.full(batch, 3.0, dtype) * A),
+            systems.set_data(jnp.asarray(k_max[:batch], dtype) / A),
             reciprocal_particle_chunk_size=chunks[0],
             reciprocal_k_chunk_size=chunks[1],
             reciprocal_dtype=dtype,
@@ -807,13 +864,14 @@ class TestReciprocalReduction:
         return EwaldLongRangeInput(PointCloud(particles, systems), params)
 
     def _reference(self, inp):
+        """Structure factors in e from float64 trigonometry, per system."""
         p = inp.point_cloud.particles.data
-        kv = np.asarray(inp.kvecs, dtype=np.float64)
+        kv = np.asarray(inp.kvecs.to(1 / A), dtype=np.float64)
         result = np.zeros((*kv.shape[:2], 2))
         for s in range(len(kv)):
             mask = np.asarray(p.system.isin(Index(p.system.keys, jnp.array([s]))))
-            phase = np.asarray(p.positions, dtype=np.float64)[mask] @ kv[s].T
-            q = np.asarray(p.charges, dtype=np.float64)[mask, None]
+            phase = np.asarray(p.positions.to(A), dtype=np.float64)[mask] @ kv[s].T
+            q = np.asarray(p.charges.to(E_CHARGE), dtype=np.float64)[mask, None]
             result[s] = np.stack(
                 ((q * np.cos(phase)).sum(0), (q * np.sin(phase)).sum(0)), axis=-1
             )
@@ -827,10 +885,21 @@ class TestReciprocalReduction:
         # The two out-of-bounds probe rows deliberately carry real old data:
         # neither may subtract a particle.
         old = jax.tree.map(lambda a: a[jnp.array([0, 2, 3, 5, 18, 0, 0])], p.data)
+        dtype = p.data.positions.dtype
+
+        def value(x, unit):
+            return jnp.asarray(x, dtype) * unit
+
         new = bind(p.data, lambda x: (x.positions, x.charges, x.system)).set(
             (
-                p.data.positions.at[jnp.array([0, 2, 3, 5])].add(0.05).at[18].set(1.0),
-                p.data.charges.at[3].set(0.7).at[18].set(-0.6),
+                p.data.positions.at[jnp.array([0, 2, 3, 5])]
+                .add(value(0.05, A))
+                .at[18]
+                .set(value(1.0, A)),
+                p.data.charges.at[3]
+                .set(value(0.7, E_CHARGE))
+                .at[18]
+                .set(value(-0.6, E_CHARGE)),
                 bind(p.data.system)
                 .at(jnp.array([0, 2, 18]))
                 .set(
@@ -876,25 +945,23 @@ class TestReciprocalReduction:
         actual, _ = jax.jit(structure_factor)(inp)
         # Grid/direct phase evaluation rounds differently in float32.
         tol = 5e-6 if dtype == jnp.float32 else 2e-13
-        npt.assert_allclose(actual.total, self._reference(inp), atol=tol, rtol=tol)
+        assert_close(actual.total, self._reference(inp), atol=tol, rtol=tol)
 
         proposal = self._proposal(inp)
         updated, patch = jax.jit(structure_factor)(proposal)
-        npt.assert_allclose(
-            updated.total, self._reference(proposal), atol=tol, rtol=tol
-        )
+        assert_close(updated.total, self._reference(proposal), atol=tol, rtol=tol)
         accept = inp.point_cloud.systems.set_data(
             jnp.array([True, False, True, False][:batch])
         )
         accepted = jax.jit(lambda c: patch(c, accept))(proposal.cache)
         for name in ("value", "compensate"):
             npt.assert_array_equal(
-                getattr(accepted.structure_factor, name),
-                jnp.where(
+                getattr(accepted.structure_factor, name).to(E_CHARGE),
+                units.where(
                     accept.data[:, None, None],
                     getattr(updated, name),
                     getattr(proposal.cache.structure_factor, name),
-                ),
+                ).to(E_CHARGE),
             )
 
     def test_float32_structure_factors_of_float64_inputs(self):
@@ -903,12 +970,10 @@ class TestReciprocalReduction:
             lambda p: dataclasses.replace(p, reciprocal_dtype=jnp.float32)
         )
         full, _ = jax.jit(structure_factor)(inp)
-        npt.assert_allclose(full.total, self._reference(inp), atol=5e-6, rtol=5e-6)
+        assert_close(full.total, self._reference(inp), atol=5e-6, rtol=5e-6)
         proposal = self._proposal(inp)
         updated, _ = jax.jit(structure_factor)(proposal)
-        npt.assert_allclose(
-            updated.total, self._reference(proposal), atol=5e-6, rtol=5e-6
-        )
+        assert_close(updated.total, self._reference(proposal), atol=5e-6, rtol=5e-6)
 
     @pytest.mark.parametrize("batch", [1, 4])
     def test_constant_grid_matches_traced(self, batch):
@@ -933,16 +998,18 @@ class TestReciprocalReduction:
                 )
             )
 
-        def evaluate(x: EwaldLongRangeInput[Any]) -> tuple[Array, Array]:
+        def evaluate(
+            x: EwaldLongRangeInput[Any],
+        ) -> tuple[units.Charge, units.Energy]:
             return structure_factor(x)[0].total, ewald_long_range_energy(x).data.data
 
         for x in inputs:
             # Closing over the input keeps its shifts concrete under jit.
             constant, energy = jax.jit(functools.partial(evaluate, x))()
             traced, traced_energy = jax.jit(evaluate)(x)
-            npt.assert_allclose(constant, self._reference(x), atol=2e-13)
-            npt.assert_allclose(constant, traced, atol=2e-13)
-            npt.assert_allclose(energy, traced_energy, rtol=1e-12)
+            assert_close(constant, self._reference(x), atol=2e-13)
+            assert_close(constant, traced, atol=2e-13)
+            assert_close(energy, traced_energy, rtol=1e-12)
 
         def total(x, positions):
             x = bind(x, lambda y: y.point_cloud.particles.data.positions).set(positions)
@@ -951,10 +1018,10 @@ class TestReciprocalReduction:
         # Closing over the input keeps the shifts concrete under jit; the
         # proposal differentiates the incremental delta's JVP.
         x = inputs[1]
-        pos = jnp.nan_to_num(x.point_cloud.particles.data.positions)
-        npt.assert_allclose(
-            jax.jit(jax.grad(functools.partial(total, x)))(pos),
-            jax.jit(jax.grad(total, 1))(x, pos),
+        pos = units.apply(jnp.nan_to_num, x.point_cloud.particles.data.positions)
+        assert_close(
+            jax.jit(units.grad(functools.partial(total, x)))(pos),
+            jax.jit(units.grad(total, 1))(x, pos),
             rtol=1e-12,
             atol=1e-12,
         )
@@ -973,13 +1040,15 @@ class TestReciprocalReduction:
     def test_cached_derivatives_match_full_energy(self, grid, batch, chunks):
         proposal = self._proposal(self._input(grid, chunks=chunks, batch=batch))
         p = proposal.point_cloud.particles.data
-        # Keep differentiation inputs finite, including inactive particle slots.
-        pos, q = jnp.nan_to_num(p.positions), jnp.nan_to_num(p.charges)
+        # Differentiate magnitudes in Å and e, finite in inactive particle slots.
+        pos = jnp.nan_to_num(p.positions.to(A))
+        q = jnp.nan_to_num(p.charges.to(E_CHARGE))
         cells = proposal.point_cloud.systems.data.cell
 
         def energy(pos, q, scale, incremental):
+            """Long-range energy in eV."""
             particles = proposal.point_cloud.particles.set_data(
-                bind(p, lambda x: (x.positions, x.charges)).set((pos, q))
+                bind(p, lambda x: (x.positions, x.charges)).set((pos * A, q * E_CHARGE))
             )
             systems = proposal.point_cloud.systems.map_data(
                 lambda s: bind(s, lambda x: x.cell).set(
@@ -991,7 +1060,7 @@ class TestReciprocalReduction:
             )
             if not incremental:
                 inp = bind(inp, lambda x: x.changes_from_prev).set(None)
-            return ewald_long_range_energy(inp).data.data.sum()
+            return ewald_long_range_energy(inp).data.data.sum().to(EV)
 
         # Cell derivatives are taken at the cached cell, as in the virial path;
         # an actual cell move must rebuild the structure factors.
@@ -1043,7 +1112,7 @@ class TestReciprocalReduction:
         proposal = self._proposal(inp)
         stale = bind(proposal, lambda x: x.point_cloud).set(inp.point_cloud)
         energy = jax.jit(lambda x: ewald_long_range_energy(x).data.data)
-        npt.assert_allclose(energy(stale), energy(proposal), rtol=1e-12)
+        assert_close(energy(stale), energy(proposal), rtol=1e-12)
 
     @pytest.mark.parametrize("batch", [1, 4])
     def test_net_charge_energy_per_system(self, batch):
@@ -1060,14 +1129,21 @@ class TestReciprocalReduction:
         p = particles.data
         net_charge = np.array(
             [
-                np.where(p.system.isin(Index.new([key])), p.charges, 0).sum()
+                np.where(
+                    p.system.isin(Index.new([key])), p.charges.to(E_CHARGE), 0
+                ).sum()
                 for key in systems.keys
             ]
         )
         alpha, volume = inp.parameters.alpha.data, systems.data.cell.volume
-        expected = -np.pi / (2 * volume * alpha**2) * net_charge**2 * TO_STANDARD_UNITS
-        npt.assert_allclose(energy, expected, rtol=1e-12)
-        assert np.all((energy != 0) == (net_charge != 0))
+        expected = (
+            -np.pi
+            / (2 * volume * alpha**2)
+            * (net_charge * E_CHARGE) ** 2
+            * units.constants.k_e
+        )
+        assert_close(energy, expected, rtol=1e-12)
+        assert np.all((energy.to(EV) != 0) == (net_charge != 0))
 
     @pytest.mark.parametrize("empty", ["particles", "kvecs", "changes"])
     def test_empty_inputs(self, empty):
@@ -1100,7 +1176,7 @@ class TestReciprocalReduction:
             if empty == "changes"
             else self._reference(inp)
         )
-        npt.assert_allclose(sk.total, expected, atol=2e-13)
+        assert_close(sk.total, expected, atol=2e-13)
 
     def test_invalid_chunk_size(self):
         inp = self._input()
@@ -1133,10 +1209,10 @@ class TestReciprocalShifts:
     @pytest.mark.parametrize("kmax", [0.0, 1.0, 2.5])
     def test_kvecs_from_kmax_match_brute_force_sphere(self, kmax):
         matrix = jnp.array([[6.0, 0.0, 0.0], [1.5, 7.0, 0.0], [-1.0, 2.0, 9.0]])
-        cell = PeriodicCell(TriclinicFrame.from_matrix(matrix))
-        bound = reciprocal_grid_bound(cell, kmax)
+        cell = PeriodicCell(TriclinicFrame.from_matrix(matrix * A))
+        bound = reciprocal_grid_bound(cell, kmax / A)
         assert isinstance(bound, int)
-        actual = kvecs_from_kmax(cell, kmax)
+        actual = kvecs_from_kmax(cell, kmax / A)
         assert isinstance(actual, np.ndarray)
         grid = np.stack(
             np.meshgrid(
@@ -1158,8 +1234,8 @@ class TestReciprocalShifts:
         assert isinstance(bound, tuple) and len(bound) == 3
         if not grid:
             assert bound == (0, 0, 0)
-        actual = np.asarray(jax.jit(lambda x: x.kvecs)(inp))
-        cells = np.asarray(inp.point_cloud.systems.data.cell.vectors)
+        actual = np.asarray(jax.jit(lambda x: x.kvecs)(inp).to(1 / A))
+        cells = np.asarray(inp.point_cloud.systems.data.cell.vectors.to(A))
         shifts = np.stack(
             np.meshgrid(
                 np.arange(9), np.arange(-8, 9), np.arange(-8, 9), indexing="ij"
@@ -1167,11 +1243,12 @@ class TestReciprocalShifts:
             axis=-1,
         ).reshape(-1, 3)
         reference_energy = []
+        k_e = float(units.constants.k_e.to(EV * A / E_CHARGE**2))
         p = inp.point_cloud.particles.data
         for s, cell in enumerate(cells):
             vectors = shifts @ (2 * np.pi * np.linalg.inv(cell).T)
             squared = (vectors**2).sum(-1)
-            inside = squared <= float(inp.parameters.k_max.data[s]) ** 2
+            inside = squared <= float(inp.parameters.k_max.data[s].to(1 / A)) ** 2
             expected = vectors[inside]
             selected = actual[s]
             # Compaction pads with k=0, whose weight is zero.
@@ -1182,21 +1259,16 @@ class TestReciprocalShifts:
             )
             active = inside & (squared > 0)
             mask = np.asarray(p.system.isin(Index.new([SystemId(s)])))
-            q, pos = np.asarray(p.charges)[mask], np.asarray(p.positions)[mask]
+            q = np.asarray(p.charges.to(E_CHARGE))[mask]
+            pos = np.asarray(p.positions.to(A))[mask]
             sf = (q[:, None] * np.exp(1j * (pos @ vectors[active].T))).sum(0)
             k2 = squared[active]
             weights = (2 - (shifts[active, 0] == 0)) * 2 * np.pi / np.linalg.det(cell)
-            weights *= np.exp(-k2 / (4 * float(inp.parameters.alpha.data[s]) ** 2)) / k2
-            reference_energy.append(
-                np.sum(weights * np.abs(sf) ** 2) * TO_STANDARD_UNITS
-            )
+            alpha = float(inp.parameters.alpha.data[s].to(1 / A))
+            weights *= np.exp(-k2 / (4 * alpha**2)) / k2
+            reference_energy.append(np.sum(weights * np.abs(sf) ** 2) * k_e)
         energy = jax.jit(ewald_long_range_energy)(inp).data.data
-        npt.assert_allclose(
-            energy,
-            reference_energy,
-            atol=2e-13,
-            rtol=2e-13,
-        )
+        assert_close(energy, np.array(reference_energy), atol=2e-13, rtol=2e-13)
 
     def test_zero_cutoff_has_no_reciprocal_energy(self):
         inp = TestReciprocalReduction()._input()
@@ -1204,21 +1276,19 @@ class TestReciprocalShifts:
             inp.point_cloud.systems,
             inp.parameters.alpha,
             inp.parameters.cutoff,
-            inp.parameters.k_max.map_data(jnp.zeros_like),
+            inp.parameters.k_max.map_data(units.zeros_like),
         )
         assert parameters.reciprocal_shift_bound == (0, 0, 0)
         inp = bind(inp, lambda x: x.parameters).set(parameters)
-        npt.assert_array_equal(jax.jit(prefactor)(inp), 0)
-        npt.assert_allclose(
-            jax.jit(ewald_long_range_energy)(inp).data.data, 0, atol=2e-13
-        )
+        npt.assert_array_equal(jax.jit(prefactor)(inp).to(1 / A), 0)
+        assert_close(jax.jit(ewald_long_range_energy)(inp).data.data, 0.0, atol=2e-13)
 
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
     def test_cutoff_boundary_and_padding(self, dtype):
         inp = TestReciprocalReduction()._input(dtype=dtype)
         cells = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.broadcast_to(jnp.eye(3, dtype=dtype) * 10, (4, 3, 3))
+                jnp.broadcast_to(jnp.eye(3, dtype=dtype) * 10, (4, 3, 3)) * A
             )
         )
         inp = bind(inp, lambda x: x.point_cloud.systems.data.cell).set(cells)
@@ -1227,19 +1297,19 @@ class TestReciprocalShifts:
             systems,
             inp.parameters.alpha,
             inp.parameters.cutoff,
-            systems.set_data(jnp.full(4, 2 * jnp.pi / 10, dtype)),
+            systems.set_data(jnp.full(4, 2 * jnp.pi / 10, dtype) / A),
         )
         inp = bind(inp, lambda x: x.parameters).set(params)
         result = jax.jit(as_result_function(lambda x: x.kvecs))(inp)
         result.raise_assertion()
-        assert np.isfinite(np.asarray(result.value)).all()
+        assert np.isfinite(np.asarray(result.value.to(1 / A))).all()
         n_kvecs = params.reciprocal_lattice_shifts.data.shape[1]
         padded = bind(inp, lambda x: x.parameters.reciprocal_lattice_shifts.data).apply(
             lambda shifts: jnp.pad(shifts, ((0, 0), (0, 5), (0, 0)))
         )
         padded_vectors = jax.jit(lambda x: x.kvecs)(padded)
-        npt.assert_allclose(padded_vectors[:, :n_kvecs], result.value)
-        npt.assert_array_equal(padded_vectors[:, n_kvecs:], 0)
+        assert_close(padded_vectors[:, :n_kvecs], result.value)
+        npt.assert_array_equal(padded_vectors[:, n_kvecs:].to(1 / A), 0)
 
     def test_grid_index_locates_grid_shifts(self):
         bound = (1, 2, 3)
@@ -1263,10 +1333,10 @@ class TestReciprocalShifts:
         )
         weights = jax.jit(prefactor)(inp)
         outside = (
-            jnp.sum(inp.kvecs**2, axis=-1) > inp.parameters.k_max.data[:, None] ** 2
+            units.sum(inp.kvecs**2, axis=-1) > inp.parameters.k_max.data[:, None] ** 2
         )
         assert bool(outside.any())
-        npt.assert_array_equal(weights[outside], 0)
+        npt.assert_array_equal(weights[outside].to(1 / A), 0)
         npt.assert_array_equal(inp.parameters.reciprocal_lattice_shifts.data, shifts)
 
 

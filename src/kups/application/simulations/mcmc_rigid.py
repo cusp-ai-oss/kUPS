@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 import jax
 import jax.numpy as jnp
@@ -48,7 +48,9 @@ from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_tail_correction_from_state,
 )
 from kups.application.potential.filter import POSITIONS_AND_CELL
+from kups.application.utils.data import Scalar
 from kups.application.utils.propagate import make_cycle_function
+from kups.core import units
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
@@ -85,6 +87,8 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
+from kups.core.units.pydantic import UnitsModel
 from kups.core.utils.jax import (
     dataclass,
     enable_unrolled_threefry,
@@ -130,11 +134,18 @@ logging.basicConfig(
 )
 
 
-class LJConfig(BaseModel):
+class LJConfig(UnitsModel):
     """Lennard-Jones potential configuration."""
 
-    cutoff: float
-    parameters: dict[str, tuple[float | None, float | None]]
+    cutoff: Annotated[units.Length, Scalar]
+    parameters: dict[
+        str,
+        tuple[
+            Annotated[units.Length, Scalar] | None,
+            Annotated[units.Energy, Scalar] | None,
+        ],
+    ]
+    """Mapping label -> (sigma, epsilon); a null pair means no interaction."""
     tail_correction: bool
     mixing_rule: MixingRule
 
@@ -154,10 +165,10 @@ class LJConfig(BaseModel):
         )
 
 
-class EwaldConfig(BaseModel):
+class EwaldConfig(UnitsModel):
     """Ewald summation configuration."""
 
-    real_cutoff: float
+    real_cutoff: Annotated[units.Length, Scalar]
     precision: float
 
 
@@ -196,10 +207,10 @@ class MCMCStateBase:
     ewald_parameters: WithCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]
     blocking_spheres_parameters: BlockingSpheresParameters
     blocking_spheres_neighborlist_params: UniversalNeighborlistParameters
-    translation_params: Table[SystemId, ParameterSchedulerState]
-    rotation_params: Table[SystemId, ParameterSchedulerState]
-    reinsertion_params: Table[SystemId, ParameterSchedulerState]
-    exchange_params: Table[SystemId, ParameterSchedulerState]
+    translation_params: Table[SystemId, ParameterSchedulerState[units.Length]]
+    rotation_params: Table[SystemId, ParameterSchedulerState[Array]]
+    reinsertion_params: Table[SystemId, ParameterSchedulerState[Array]]
+    exchange_params: Table[SystemId, ParameterSchedulerState[Array]]
 
     @property
     def move_capacity(self) -> Capacity[int]:
@@ -213,7 +224,7 @@ class MCMCStateBase:
         return bind(self, lambda x: x.particles.data).apply(MCMCParticles.guest_only)
 
     def blocking_spheres_neighborlist(
-        self, cutoffs: Table[SystemId, Array]
+        self, cutoffs: Table[SystemId, units.Length]
     ) -> NeighborList[Literal[2]]:
         return DenseNearestNeighborList.new(
             self, lens(lambda x: x.blocking_spheres_neighborlist_params), cutoffs
@@ -235,7 +246,7 @@ class MCMCStateBase:
 class MCMCState(MCMCStateBase):
     """Rigid-body MCMC state with an initialized persistent pair cache."""
 
-    cell_tables: FusedPotentialCache[tuple[Index[Label] | Array, ...]]
+    cell_tables: FusedPotentialCache[tuple[Index[Label] | units.Charge, ...]]
 
 
 @dataclass
@@ -354,8 +365,8 @@ def _is_charged(
     motifs: Table[MotifParticleId, MotifParticles],
 ) -> bool:
     return (
-        jnp.abs(particles.data.charges).sum().item() > 0
-        or jnp.abs(motifs.data.charges).sum().item() > 0
+        units.absolute(particles.data.charges).sum().item() > 0
+        or units.absolute(motifs.data.charges).sum().item() > 0
     )
 
 
@@ -366,7 +377,7 @@ def init_cell_tables(
     lj_parameters: GlobalTailCorrectedLennardJonesParameters,
     ewald_parameters: EwaldParameters,
     dtype: DTypeLike = jnp.float64,
-) -> FusedPotentialCache[tuple[Index[Label] | Array, ...]]:
+) -> FusedPotentialCache[tuple[Index[Label] | units.Charge, ...]]:
     """Initialize the shared pair cache from the simulation's input data."""
     lj: PairEnergy[
         tuple[GlobalTailCorrectedLennardJonesParameters, EwaldParameters],
@@ -483,7 +494,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
     neighborlist_params = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts + num_buffer_particles,
         system,
-        tree_map(jnp.maximum, lj_params.cutoff, ewald_params.cutoff),
+        tree_map(units.maximum, lj_params.cutoff, ewald_params.cutoff),
     )
     if blocking_spheres.radii.shape[0] > 0:
         # Systems without spheres have no radius to size from, so use the batch-wide max.
@@ -496,7 +507,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
     else:
         blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
     logging.info(f"Estimated neighbor list parameters: {neighborlist_params}")
-    min_half_box = float(system.data.cell.perpendicular_lengths.min() / 2)
+    min_half_box = units.min(system.data.cell.perpendicular_lengths) / 2
     cell_tables = init_cell_tables(
         particles, motifs, system, lj_params, ewald_params, config.kernel_dtype
     )
@@ -511,14 +522,21 @@ def init_state(key: Array, config: Config) -> MCMCState:
             lj_params,
             KahanSummand.init(
                 PotentialOut(
-                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
+                    Table.arange(units.zeros(n_sys, u.eV), label=SystemId),
+                    EMPTY,
+                    EMPTY,
                 )
             ),
         ),
         ewald_parameters=WithCache(ewald_params, EwaldCache.make(n_sys, n_kvecs)),
         blocking_spheres_parameters=blocking_spheres,
         translation_params=Table.arange(
-            ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
+            ParameterSchedulerState.create(
+                n_sys,
+                initial_value=0.1 * u.angstrom,
+                lower_bound=0.0 * u.angstrom,
+                upper_bound=min_half_box,
+            ),
             label=SystemId,
         ),
         rotation_params=Table.arange(
@@ -544,7 +562,7 @@ def make_guest_stress(
     # ``(U_tail / V) * I`` to the configurational stress on top of the
     # closed-form ``p_tail`` added below, double-counting it.
     potentials: list[
-        Potential[MCMCState, PositionsAndCell, EmptyType, Patch[MCMCState]]
+        Potential[MCMCState, PositionsAndCell[units.Force], EmptyType, Patch[MCMCState]]
     ] = [
         make_lennard_jones_from_state(state_lens, gradient=POSITIONS_AND_CELL),
     ]

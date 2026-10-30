@@ -25,11 +25,15 @@ from kups.application.relaxation.data import (
 from kups.application.relaxation.simulation import make_relax_propagator
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
+from kups.core import units
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.units import catalog as u
+from kups.core.units import testing
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
+from test.units import FORCE, A
 
 
 def _ar_cif(rattle: float) -> str:
@@ -79,7 +83,7 @@ def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Con
             out_file=out_file,
             max_steps=5,
             seed=42,
-            force_tolerance=0.5,
+            force_tolerance="0.5 eV/angstrom",
             optimizer=[
                 {"transform": "scale_by_ase_lbfgs", "memory_size": 10, "alpha": 70},
                 {"transform": "max_step_size", "max_step_size": 0.2},
@@ -88,8 +92,8 @@ def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Con
             optimize_cell=optimize_cell,
         ),
         potential=LjPotentialConfig(
-            cutoff=5.0,
-            parameters={"Ar": (3.405, 0.010326)},  # (sigma [Å], epsilon [eV])
+            cutoff="5 angstrom",
+            parameters={"Ar": ("3.405 angstrom", "0.010326 eV")},
             mixing_rule="lorentz_berthelot",
         ),
         inp_files=(inp_file,),
@@ -109,8 +113,8 @@ class TestRun:
         results = analyze_relax_file(out_file)
         assert len(results) == 1
         result = next(iter(results.values()))
-        assert jnp.isfinite(jnp.asarray(result.final_energy)).item()
-        assert jnp.isfinite(jnp.asarray(result.final_max_force)).item()
+        assert jnp.isfinite(result.final_energy.to(u.eV)).item()
+        assert jnp.isfinite(result.final_max_force.to(FORCE)).item()
         assert result.n_steps >= 1
 
 
@@ -159,16 +163,19 @@ class TestCellRelaxation:
         # for the off-equilibrium fcc-Ar cell).
         state, stepped = cell_step
         assert not jnp.allclose(
-            stepped.systems.data.cell.vectors, state.systems.data.cell.vectors
+            stepped.systems.data.cell.vectors.to(A),
+            state.systems.data.cell.vectors.to(A),
         )
 
         # optimize_cell=False: positions move but the cell is held fixed.
         state0, stepped0 = position_step
         npt.assert_array_equal(
-            stepped0.systems.data.cell.vectors, state0.systems.data.cell.vectors
+            stepped0.systems.data.cell.vectors.to(A),
+            state0.systems.data.cell.vectors.to(A),
         )
         assert not jnp.allclose(
-            stepped0.particles.data.positions, state0.particles.data.positions
+            stepped0.particles.data.positions.to(A),
+            state0.particles.data.positions.to(A),
         )
 
     def test_converged_value_matches_fmax(self, position_step):
@@ -176,9 +183,9 @@ class TestCellRelaxation:
         # which equals the physical ∂E/∂r, so max|∂E/∂u| is exactly ASE's fmax.
         _, stepped = position_step
         dof = stepped.particles.data.position_gradients  # ∂E/∂u == ∂E/∂r here
-        fmax = jnp.max(jnp.linalg.norm(stepped.particles.data.forces, axis=-1))
-        max_dof = jnp.max(jnp.linalg.norm(dof, axis=-1))
-        npt.assert_allclose(max_dof, fmax, atol=1e-12)
+        fmax = units.max(units.norm(stepped.particles.data.forces, axis=-1))
+        max_dof = units.max(units.norm(dof, axis=-1))
+        testing.assert_allclose(max_dof, fmax, FORCE, atol=1e-12)
 
     def test_stress_not_double_counted(self, cell_step):
         # cell_gradients caches the *partial* dE/dh|_r, the correct stress source.
@@ -200,13 +207,15 @@ class TestCellRelaxation:
             dataclasses.replace(stepped.systems.data, cell_gradients=total.data)
         )
         sigma_total = stress_via_virial_theorem(stepped.particles, sys_total).data
-        assert not jnp.allclose(sigma_partial, sigma_total)
+        gpa = u.GPa
+        assert not jnp.allclose(sigma_partial.to(gpa), sigma_total.to(gpa))
 
         # The difference is exactly the position-virial term (notebook section 9).
         positions = stepped.particles.data.positions
         g_r = stepped.particles.data.position_gradients
         system = stepped.particles.data.system
         volume = stepped.systems.data.cell.volume[:, None, None]
-        low = jnp.tril(system.sum_over(jnp.einsum("ni,nj->nij", positions, g_r)).data)
-        pos_term = -(low + low.mT - low * jnp.eye(3)) / volume
-        npt.assert_allclose(sigma_total - sigma_partial, pos_term, atol=1e-10)
+        outer = units.einsum("ni,nj->nij", positions, g_r)
+        low = units.apply(jnp.tril, system.sum_over(outer).data)
+        pos_term = -(low + low.swapaxes(-1, -2) - low * jnp.eye(3)) / volume
+        testing.assert_allclose(sigma_total - sigma_partial, pos_term, gpa, atol=1e-10)

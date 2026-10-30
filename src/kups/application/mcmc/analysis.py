@@ -18,7 +18,7 @@ from kups.application.mcmc.logging import (
     WidomFixedData,
     WidomLoggedData,
 )
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core import units
 from kups.core.data import Table
 from kups.core.storage import HDF5StorageReader
 from kups.core.typing import HasTemperature, MotifId, SystemId
@@ -44,7 +44,7 @@ class IsMCMCSystemStepData(Protocol):
     """Contract for per-system step data."""
 
     @property
-    def potential_energy(self) -> Array: ...
+    def potential_energy(self) -> units.Energy: ...
     @property
     def guest_stress(self) -> StressResult: ...
 
@@ -62,54 +62,56 @@ class IsMCMCStepData(Protocol):
 class MCMCAnalysisResult:
     """Results from MCMC simulation analysis for a single system.
 
-    The stress and pressure fields are ``None`` for a run logged without stress.
+    Every average is a dimensioned quantity, so a caller reads it in whatever
+    unit it names; the loadings are counts and stay plain. The stress and
+    pressure fields are ``None`` for a run logged without stress.
 
     Attributes:
-        energy: Average total potential energy with SEM (eV).
+        energy: Average total potential energy with SEM.
         loading: Average particle count per species with SEM (dimensionless).
-        heat_of_adsorption: Per-species heat of adsorption with SEM (eV).
-        total_heat_of_adsorption: Composition-weighted total heat of adsorption (eV).
-        stress: Average total stress tensor with SEM (eV/Å³).
+        heat_of_adsorption: Per-species heat of adsorption with SEM.
+        total_heat_of_adsorption: Composition-weighted total heat of adsorption.
+        stress: Average total stress tensor with SEM.
         stress_potential: Configurational component of the stress.
         stress_tail_correction: Tail-correction component of the stress.
         stress_ideal_gas: Ideal-gas component of the stress.
-        pressure: One third of the total stress' trace, with SEM (eV/Å³).
+        pressure: One third of the total stress' trace, with SEM.
         pressure_potential: Configurational component of the pressure.
         pressure_tail_correction: Tail-correction component of the pressure.
         pressure_ideal_gas: Ideal-gas component of the pressure.
     """
 
-    energy: BlockAverageResult[Array]
+    energy: BlockAverageResult[units.Energy]
     loading: BlockAverageResult[Array]
-    heat_of_adsorption: BlockAverageResult[Array]
-    total_heat_of_adsorption: BlockAverageResult[Array]
-    stress: BlockAverageResult[Array] | None = None
-    stress_potential: BlockAverageResult[Array] | None = None
-    stress_tail_correction: BlockAverageResult[Array] | None = None
-    stress_ideal_gas: BlockAverageResult[Array] | None = None
-    pressure: BlockAverageResult[Array] | None = None
-    pressure_potential: BlockAverageResult[Array] | None = None
-    pressure_tail_correction: BlockAverageResult[Array] | None = None
-    pressure_ideal_gas: BlockAverageResult[Array] | None = None
+    heat_of_adsorption: BlockAverageResult[units.Energy]
+    total_heat_of_adsorption: BlockAverageResult[units.Energy]
+    stress: BlockAverageResult[units.Pressure] | None = None
+    stress_potential: BlockAverageResult[units.Pressure] | None = None
+    stress_tail_correction: BlockAverageResult[units.Pressure] | None = None
+    stress_ideal_gas: BlockAverageResult[units.Pressure] | None = None
+    pressure: BlockAverageResult[units.Pressure] | None = None
+    pressure_potential: BlockAverageResult[units.Pressure] | None = None
+    pressure_tail_correction: BlockAverageResult[units.Pressure] | None = None
+    pressure_ideal_gas: BlockAverageResult[units.Pressure] | None = None
 
 
 @no_jax_tracing
 def _analyze_single_system(
-    energy: Array,
+    energy: units.Energy,
     counts: Array,
-    temperature: float,
+    temperature: units.Temperature,
     n_blocks: int | None,
-    stress: Array | None = None,
-    stress_potential: Array | None = None,
-    stress_tail_correction: Array | None = None,
-    stress_ideal_gas: Array | None = None,
+    stress: units.Pressure | None = None,
+    stress_potential: units.Pressure | None = None,
+    stress_tail_correction: units.Pressure | None = None,
+    stress_ideal_gas: units.Pressure | None = None,
 ) -> MCMCAnalysisResult:
     """Run block-averaging analysis for one system.
 
     Args:
         energy: Potential energy time series, shape ``(n_steps,)``.
         counts: Particle count time series, shape ``(n_steps, n_species)``.
-        temperature: System temperature in K.
+        temperature: System temperature.
         n_blocks: Number of blocks, or ``None`` for automatic selection.
         stress: Total stress tensor time series, shape ``(n_steps, 3, 3)``.
         stress_potential: Configurational stress component.
@@ -122,6 +124,7 @@ def _analyze_single_system(
     """
     if n_blocks is None:
         energy_result = optimal_block_average(energy)
+        # ``n_blocks`` is a JAX array here; ``block_average`` needs a hashable int.
         n_blocks = int(energy_result.n_blocks)
     else:
         energy_result = block_average(energy, n_blocks=n_blocks)
@@ -134,10 +137,10 @@ def _analyze_single_system(
     NN_blocks = compute_block_means(counts[..., None] * counts[:, None], n_blocks)
 
     cov = NN_blocks - N_blocks[..., None] * N_blocks[:, None, :]
-    cov_inv = jnp.linalg.inv(cov)
+    cov_inv: Array = jnp.linalg.inv(cov)
     diff = UN_blocks - U_blocks[:, None] * N_blocks
-    hoa_blocks = jnp.einsum("bi,bij->bj", diff, cov_inv)
-    hoa_blocks -= temperature * BOLTZMANN_CONSTANT
+    hoa_blocks = units.einsum("bi,bij->bj", diff, cov_inv)
+    hoa_blocks -= units.constants.k_B * temperature
     heat_of_adsorption = block_average_from_blocks(hoa_blocks)
 
     weights = N_blocks / N_blocks.sum(axis=1, keepdims=True)
@@ -145,8 +148,11 @@ def _analyze_single_system(
     total_heat_of_adsorption = block_average_from_blocks(total_hoa_blocks)
 
     def _stress_and_pressure(
-        s: Array | None,
-    ) -> tuple[BlockAverageResult[Array] | None, BlockAverageResult[Array] | None]:
+        s: units.Pressure | None,
+    ) -> tuple[
+        BlockAverageResult[units.Pressure] | None,
+        BlockAverageResult[units.Pressure] | None,
+    ]:
         """Block-average a stress time series and its pressure.
 
         Args:
@@ -160,7 +166,7 @@ def _analyze_single_system(
             return None, None
         return (
             block_average(s, n_blocks=n_blocks),
-            block_average(jnp.trace(s, axis1=-2, axis2=-1) / 3, n_blocks=n_blocks),
+            block_average(s.trace(axis1=-2, axis2=-1) / 3, n_blocks=n_blocks),
         )
 
     stress_result, pressure_result = _stress_and_pressure(stress)
@@ -187,10 +193,10 @@ def _analyze_single_system(
 @no_jax_tracing
 def _analyze_mcmc(
     system_keys: tuple[SystemId, ...],
-    temperatures: Array,
+    temperatures: units.Temperature,
     count_keys: tuple[tuple[SystemId, MotifId], ...],
     count_data: Array,
-    all_energy: Array,
+    all_energy: units.Energy,
     guest_stress: StressResult,
     n_blocks: int | None,
 ) -> dict[SystemId, MCMCAnalysisResult]:
@@ -198,7 +204,7 @@ def _analyze_mcmc(
 
     Args:
         system_keys: System identifiers, one per energy/stress column.
-        temperatures: Per-system temperature (K), shape ``(n_systems,)``.
+        temperatures: Per-system temperature, shape ``(n_systems,)``.
         count_keys: ``(system, motif)`` key per particle-count column.
         count_data: Particle counts, shape ``(n_steps, n_columns)``.
         all_energy: Potential energy, shape ``(n_steps, n_systems)``.
@@ -220,11 +226,11 @@ def _analyze_mcmc(
         s = all_stress[:, i]
         # A run without a stress logger leaves the total stress zero throughout,
         # which the result reports as absent rather than as a zero average.
-        has_stress = bool(jnp.any(s != 0))
+        has_stress = bool(jnp.any(s.value != 0))
         results[sys_id] = _analyze_single_system(
             energy=all_energy[:, i].reshape(-1),
             counts=count_data[:, motif_cols].reshape(-1, len(motif_cols)),
-            temperature=float(temperatures[i]),
+            temperature=temperatures[i],
             n_blocks=n_blocks,
             stress=s if has_stress else None,
             stress_potential=stress_potential[:, i] if has_stress else None,
@@ -271,40 +277,43 @@ def analyze_mcmc(
 class WidomAnalysisResult:
     """Block-averaged Widom outputs for a single system.
 
+    Each field is a dimensioned quantity, so a caller reads it in whatever unit
+    it names.
+
     Attributes:
-        excess_chemical_potential: $\\mu^\\mathrm{ex}$ with SEM (eV).
-        henry_coefficient: $K_H$ with SEM (Å³/eV).
-        heat_of_adsorption: $q_\\mathrm{st}$ with SEM (eV); Vlugt 2008 eq. 16,
-            test-particle limit.
+        excess_chemical_potential: $\\mu^\\mathrm{ex}$ with SEM (an energy).
+        henry_coefficient: $K_H$ with SEM (a volume per energy).
+        heat_of_adsorption: $q_\\mathrm{st}$ with SEM (an energy); Vlugt 2008
+            eq. 16, test-particle limit.
     """
 
-    excess_chemical_potential: BlockAverageResult[Array]
-    henry_coefficient: BlockAverageResult[Array]
-    heat_of_adsorption: BlockAverageResult[Array]
+    excess_chemical_potential: BlockAverageResult[units.Energy]
+    henry_coefficient: BlockAverageResult[units.Compressibility]
+    heat_of_adsorption: BlockAverageResult[units.Energy]
 
 
 @no_jax_tracing
 def _per_cycle_widom_means(
     per_step: Table[SystemId, WidomStatistics],
-) -> tuple[Array, Array]:
+) -> tuple[Array, units.Energy]:
     """Difference cumulative-cycle snapshots into per-cycle ⟨W⟩ and ⟨ΔU·W⟩.
 
     Args:
         per_step: Cumulative ``WidomStatistics`` time series.
 
     Returns:
-        The dimensionless Boltzmann weight and the energy-weighted one (eV),
-        each of shape ``(n_cycles, n_systems)``.
+        The dimensionless Boltzmann weight and the energy-weighted one, each of
+        shape ``(n_cycles, n_systems)``.
     """
     sum_w = per_step.data.sum_boltzmann
     sum_du_w = per_step.data.sum_delta_u_boltzmann
     n = per_step.data.n_samples.astype(jnp.float64)
 
     zero_w = jnp.zeros_like(sum_w[:1])
-    zero_du = jnp.zeros_like(sum_du_w[:1])
+    zero_du = units.zeros_like(sum_du_w[:1])
     zero_n = jnp.zeros_like(n[:1])
     delta_w = jnp.diff(jnp.concatenate([zero_w, sum_w], axis=0), axis=0)
-    delta_du_w = jnp.diff(jnp.concatenate([zero_du, sum_du_w], axis=0), axis=0)
+    delta_du_w = sum_du_w - units.concatenate([zero_du, sum_du_w[:-1]], axis=0)
     delta_n = jnp.diff(jnp.concatenate([zero_n, n], axis=0), axis=0)
     return delta_w / delta_n, delta_du_w / delta_n
 
@@ -312,9 +321,9 @@ def _per_cycle_widom_means(
 @no_jax_tracing
 def _analyze_single_widom_system(
     mean_w_per_cycle: Array,
-    mean_du_w_per_cycle: Array,
-    temperature: float,
-    volume: float,
+    mean_du_w_per_cycle: units.Energy,
+    temperature: units.Temperature,
+    volume: units.Volume,
     n_blocks: int | None,
 ) -> WidomAnalysisResult:
     """Block-average per-cycle Widom samples into μ_ex / K_H / q_st with SEM.
@@ -325,13 +334,13 @@ def _analyze_single_widom_system(
 
     Args:
         mean_w_per_cycle: Per-cycle Boltzmann weight ⟨W⟩, shape ``(n_cycles,)``.
-        mean_du_w_per_cycle: Per-cycle ⟨ΔU·W⟩ (eV), shape ``(n_cycles,)``.
-        temperature: The system's temperature (K).
-        volume: The system's cell volume (Å³).
+        mean_du_w_per_cycle: Per-cycle ⟨ΔU·W⟩, shape ``(n_cycles,)``.
+        temperature: The system's temperature.
+        volume: The system's cell volume.
         n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
 
     Returns:
-        The system's Widom results.
+        The system's Widom results, each carrying its own dimension.
     """
     if n_blocks is None:
         w_result = optimal_block_average(mean_w_per_cycle)
@@ -343,17 +352,17 @@ def _analyze_single_widom_system(
     block_du_w = compute_block_means(mean_du_w_per_cycle, n_blocks)
 
     mean_w = jnp.mean(block_w)
-    mean_du_w = jnp.mean(block_du_w)
+    mean_du_w = units.mean(block_du_w)
     var_w = jnp.var(block_w, ddof=1)
-    var_du_w = jnp.var(block_du_w, ddof=1)
+    var_du_w = block_du_w.var(ddof=1)
     # Block-level covariance for the ratio's delta-method SE.
     cov_w_du_w = (
-        jnp.mean((block_w - mean_w) * (block_du_w - mean_du_w))
+        units.mean((block_w - mean_w) * (block_du_w - mean_du_w))
         * n_blocks
         / (n_blocks - 1)
     )
 
-    kT = temperature * BOLTZMANN_CONSTANT
+    kT = units.constants.k_B * temperature
 
     mu_ex = -kT * jnp.log(mean_w)
     se_mu_ex = kT * w_result.sem / mean_w
@@ -370,7 +379,7 @@ def _analyze_single_widom_system(
         + ratio**2 * inv_w**2 * var_w
         - 2 * ratio * inv_w**2 * cov_w_du_w
     ) / n_blocks
-    se_q_st = jnp.sqrt(jnp.maximum(var_q_st, 0.0))
+    se_q_st = units.sqrt(units.maximum(var_q_st, 0.0))
 
     return WidomAnalysisResult(
         excess_chemical_potential=BlockAverageResult(mu_ex, se_mu_ex, n_blocks),
@@ -383,8 +392,8 @@ def _analyze_single_widom_system(
 def _analyze_widom(
     per_step: Table[SystemId, WidomStatistics],
     system_keys: tuple[SystemId, ...],
-    temperatures: Array,
-    volumes: Array,
+    temperatures: units.Temperature,
+    volumes: units.Volume,
     n_blocks: int | None,
 ) -> dict[SystemId, WidomAnalysisResult]:
     """Block-average per-system Widom statistics into μ_ex / K_H / q_st.
@@ -392,8 +401,8 @@ def _analyze_widom(
     Args:
         per_step: Cumulative ``WidomStatistics`` time series.
         system_keys: System identifiers, one per column.
-        temperatures: Per-system temperature (K), shape ``(n_systems,)``.
-        volumes: Per-system cell volume (Å³), shape ``(n_systems,)``.
+        temperatures: Per-system temperature, shape ``(n_systems,)``.
+        volumes: Per-system cell volume, shape ``(n_systems,)``.
         n_blocks: Number of blocks; ``None`` uses ``optimal_block_average``.
 
     Returns:
@@ -405,8 +414,8 @@ def _analyze_widom(
         results[sys_id] = _analyze_single_widom_system(
             mean_w[:, i],
             mean_du_w[:, i],
-            float(temperatures[i]),
-            float(volumes[i]),
+            temperatures[i],
+            volumes[i],
             n_blocks,
         )
     return results

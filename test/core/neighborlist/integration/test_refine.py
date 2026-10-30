@@ -14,9 +14,12 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.neighborlist import RefineCutoffNeighborList, RefineMaskNeighborList
+from kups.core.units import catalog as u
+from kups.core.units import testing
 
 from .._builders import (
     after,
@@ -29,6 +32,8 @@ from .._builders import (
     valid_ids,
 )
 
+_A = u.angstrom
+
 
 class TestRefineCutoffNeighborList:
     """Test cases for ``RefineCutoffNeighborList``."""
@@ -36,8 +41,9 @@ class TestRefineCutoffNeighborList:
     def _create_test_pointset(self, positions, batch_mask=None, exclusion_offset=0):
         if batch_mask is None:
             batch_mask = jnp.zeros(len(positions), dtype=int)
+        # The public API takes real-space lengths, read here in Angstrom.
         return make_lh(
-            positions, batch_mask, jnp.arange(len(positions)) + exclusion_offset
+            positions * _A, batch_mask, jnp.arange(len(positions)) + exclusion_offset
         )
 
     def _create_candidate_edges(
@@ -56,7 +62,7 @@ class TestRefineCutoffNeighborList:
         rh_indices = jnp.array([1, 2, 3, 2, 3, 3])
         candidates = self._create_candidate_edges(lh_indices, rh_indices)
 
-        cutoffs = jnp.array([1.5])  # Should only include distance 1.0 edges
+        cutoffs = jnp.array([1.5]) * _A  # Should only include distance 1.0 edges
 
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -71,13 +77,11 @@ class TestRefineCutoffNeighborList:
         assert edges.degree == 2
 
         edge_positions = lh[edges.indices].positions
-        distances = jnp.linalg.norm(
-            edge_positions[:, 1] - edge_positions[:, 0], axis=-1
-        )
+        distances = units.norm(edge_positions[:, 1] - edge_positions[:, 0], axis=-1)
         valid_distances = distances[edges.indices.valid_mask.all(axis=-1)]
 
         if len(valid_distances) > 0:
-            assert jnp.all(valid_distances <= cutoffs[0] + 1e-6), (
+            assert jnp.all(valid_distances <= cutoffs[0] + 1e-6 * _A), (
                 "All distances should be within cutoff"
             )
 
@@ -89,14 +93,14 @@ class TestRefineCutoffNeighborList:
         lh = self._create_test_pointset(positions)
 
         lattice_vectors = jnp.eye(3)[None] * 3.0
-        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors))
+        cell = PeriodicCell(TriclinicFrame.from_matrix(lattice_vectors * _A))
 
         lh_indices = jnp.array([0, 1, 2, 3])
         rh_indices = jnp.array([1, 0, 3, 2])
         shifts = jnp.array([[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]])
         candidates = self._create_candidate_edges(lh_indices, rh_indices, shifts=shifts)
 
-        cutoffs = jnp.array([2.1])
+        cutoffs = jnp.array([2.1]) * _A
 
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -121,7 +125,7 @@ class TestRefineCutoffNeighborList:
         rh_indices = jnp.array([0, 1])
         candidates = self._create_candidate_edges(lh_indices, rh_indices)
 
-        cutoffs = jnp.array([1.1])
+        cutoffs = jnp.array([1.1]) * _A
 
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -131,7 +135,7 @@ class TestRefineCutoffNeighborList:
 
         rh_update, queried_keys = make_rh(
             lh,
-            update_positions,
+            update_positions * _A,
             jnp.zeros(len(update_positions), dtype=int),
             queried_keys,
         )
@@ -154,7 +158,7 @@ class TestRefineCutoffNeighborList:
         lh = self._create_test_pointset(lh_positions)
         rh_update, queried_keys = make_rh(
             lh,
-            jnp.array([[100.4, 0.0, 0.0]]),
+            jnp.array([[100.4, 0.0, 0.0]]) * _A,
             jnp.zeros(1, dtype=int),
             jnp.array([2]),
             exclusion_ids=jnp.array([20]),
@@ -166,7 +170,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(4),
-            cutoffs=cutoff_table(jnp.array([1.0])),
+            cutoffs=cutoff_table(jnp.array([1.0]) * _A),
         )
 
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
@@ -189,7 +193,7 @@ class TestRefineCutoffNeighborList:
         lh = self._create_test_pointset(lh_positions)
         rh, _ = make_rh(
             lh,
-            jnp.array([[100.4, 0.0, 0.0]]),
+            jnp.array([[100.4, 0.0, 0.0]]) * _A,
             jnp.zeros(1, dtype=int),
             jnp.array([0]),
             exclusion_ids=jnp.array([20]),
@@ -201,7 +205,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(4),
-            cutoffs=cutoff_table(jnp.array([1.0])),
+            cutoffs=cutoff_table(jnp.array([1.0]) * _A),
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([1.0]))
 
@@ -224,7 +228,7 @@ class TestRefineCutoffNeighborList:
         lh = self._create_test_pointset(lh_positions, exclusion_offset=0)
         rh_update, queried_keys = make_rh(
             lh,
-            jnp.array([[1.0, 0.0, 0.0]]),
+            jnp.array([[1.0, 0.0, 0.0]]) * _A,
             jnp.zeros(1, dtype=int),
             jnp.array([1]),
             exclusion_ids=jnp.array([0]),
@@ -236,7 +240,7 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(4),
-            cutoffs=cutoff_table(jnp.array([2.0])),
+            cutoffs=cutoff_table(jnp.array([2.0]) * _A),
         )
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
 
@@ -253,7 +257,9 @@ class TestRefineCutoffNeighborList:
         rh_indices = jnp.array([1])
         candidates = self._create_candidate_edges(lh_indices, rh_indices)
 
-        cutoffs = jnp.array([0.1])  # Much smaller than distance between points (1.0)
+        cutoffs = (
+            jnp.array([0.1]) * _A
+        )  # Much smaller than distance between points (1.0)
 
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -286,7 +292,7 @@ class TestRefineCutoffNeighborList:
         rh_indices = jnp.array([1, 0, 3, 2, 2, 0])
         candidates = self._create_candidate_edges(lh_indices, rh_indices)
 
-        cutoffs = jnp.array([1.5, 1.5])
+        cutoffs = jnp.array([1.5, 1.5]) * _A
 
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -309,7 +315,7 @@ class TestRefineCutoffNeighborList:
         rh_indices = jnp.array([0, 1, 2])  # Self-interactions
         candidates = self._create_candidate_edges(lh_indices, rh_indices)
 
-        cutoffs = jnp.array([2.0])
+        cutoffs = jnp.array([2.0]) * _A
 
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
@@ -333,14 +339,16 @@ class TestRefineCutoffNeighborList:
             refinement_nl = RefineCutoffNeighborList(
                 candidates=candidates,
                 avg_edges=FixedCapacity(5),
-                cutoffs=cutoff_table(jnp.array([2.0])),
+                cutoffs=cutoff_table(jnp.array([2.0]) * _A),
             )
-            _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([2.0]))
+            _sys, _cut = systems_from_lvecs(
+                jnp.eye(3)[None] * 1000.0 * _A, jnp.array([2.0]) * _A
+            )
             edges = refinement_nl(keys=lh, systems=_sys)
 
             if len(edges) > 0:
                 diff_vectors = edges.difference_vectors(lh, _sys)
-                distances = jnp.linalg.norm(diff_vectors, axis=-1)
+                distances = units.norm(diff_vectors, axis=-1).to(_A)
                 return jnp.sum(distances**2)
             else:
                 return 0.0
@@ -362,10 +370,12 @@ class TestRefineCutoffNeighborList:
         refinement_nl = RefineCutoffNeighborList(
             candidates=candidates,
             avg_edges=FixedCapacity(5),
-            cutoffs=cutoff_table(jnp.array([10.0])),
+            cutoffs=cutoff_table(jnp.array([10.0]) * _A),
         )
 
-        _sys, _cut = systems_from_lvecs(jnp.eye(3)[None] * 1000.0, jnp.array([10.0]))
+        _sys, _cut = systems_from_lvecs(
+            jnp.eye(3)[None] * 1000.0 * _A, jnp.array([10.0]) * _A
+        )
         edges = refinement_nl(keys=lh, systems=_sys)
 
         if len(edges) > 0:
@@ -379,7 +389,7 @@ class TestRefineCutoffNeighborList:
                 valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
                 for edge, diff in zip(valid_ids(edges.indices), diff_vectors[valid]):
                     expected_diff = positions[edge[1]] - positions[edge[0]]
-                    npt.assert_allclose(diff[0], expected_diff, rtol=1e-10)
+                    testing.assert_allclose(diff[0], expected_diff * _A, _A, rtol=1e-10)
 
 
 class TestRefineMaskNeighborList:

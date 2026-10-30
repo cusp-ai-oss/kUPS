@@ -28,6 +28,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity
 from kups.core.cell import AnyPeriodicity, Cell
@@ -115,7 +116,7 @@ class ParticlePositionChanges:
     """
 
     particle_ids: Index[ParticleId]
-    new_positions: Array
+    new_positions: units.Length
 
 
 def random_select_groups(
@@ -153,7 +154,7 @@ def random_select_groups(
 class _RotPositions:
     """Internal: positions with group index for rotation helpers."""
 
-    positions: Array
+    positions: units.Length
     group: Index[GroupId]
 
 
@@ -162,7 +163,7 @@ def random_rotate_groups(
     particles: Table[ParticleId, HasPositionsGroupSystem],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
     step_width: Array,
-) -> Array:
+) -> units.Length:
     """Rotate molecular groups around their centers of mass.
 
     Args:
@@ -198,10 +199,10 @@ def random_rotate_groups(
 
 
 def translate_groups(
-    translations: Table[SystemId, Array],
+    translations: Table[SystemId, units.Length],
     particles: Table[ParticleId, HasPositionsAndSystemIndex],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-) -> Array:
+) -> units.Length:
     """Apply rigid body translations to particles with periodic wrapping.
 
     Args:
@@ -224,7 +225,7 @@ def propose_group_translation(
     particles: BatchedPositions,
     groups: Table[GroupId, HasSystemIndex],
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    step_width: Table[SystemId, Array],
+    step_width: Table[SystemId, units.Length],
     capacity: Capacity[int],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
 ) -> ParticlePositionChanges:
@@ -299,7 +300,7 @@ def propose_particle_translation(
     key: Array,
     particles: BatchedPositions,
     systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    step_width: Table[SystemId, Array],
+    step_width: Table[SystemId, units.Length],
     distribution: SymmetricTranslationDistribution = jax.random.normal,
 ) -> ParticlePositionChanges:
     """Propose a random single-particle translation (one particle per system)."""
@@ -338,7 +339,7 @@ class ParticleTranslationMove[State](MonteCarloMove[State, ParticlePositionChang
 
     positions: View[State, BatchedPositions] = field(static=True)
     systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]] = field(static=True)
-    step_width: View[State, Table[SystemId, Array]] = field(static=True)
+    step_width: View[State, Table[SystemId, units.Length]] = field(static=True)
     distribution: SymmetricTranslationDistribution = field(
         static=True, default=jax.random.normal
     )
@@ -374,7 +375,7 @@ class GroupTranslationMove[State](MonteCarloMove[State, ParticlePositionChanges]
     particles: View[State, BatchedPositions] = field(static=True)
     groups: View[State, Table[GroupId, HasSystemIndex]] = field(static=True)
     systems: View[State, Table[SystemId, HasCell[AnyPeriodicity]]] = field(static=True)
-    step_width: View[State, Table[SystemId, Array]] = field(static=True)
+    step_width: View[State, Table[SystemId, units.Length]] = field(static=True)
     capacity: View[State, Capacity[int]] = field(static=True)
     distribution: SymmetricTranslationDistribution = field(
         static=True, default=jax.random.normal
@@ -469,7 +470,7 @@ class IsMotifData(Protocol):
     """
 
     @property
-    def positions(self) -> Array: ...
+    def positions(self) -> units.Length: ...
     @property
     def motif(self) -> Index[MotifId]: ...
 
@@ -496,7 +497,7 @@ class ExchangeParticleData:
         motif: Motif-template index for each particle.
     """
 
-    new_positions: Array
+    new_positions: units.Length
     group: Index[GroupId]
     system: Index[SystemId]
     motif: Index[MotifParticleId]
@@ -732,7 +733,7 @@ def delete_random_motif(
     n_deleted = selected.shape[0]
 
     del_particle_data = ExchangeParticleData(
-        new_positions=jnp.zeros((n_deleted, 3), dtype=particles.data.positions.dtype),
+        new_positions=units.zeros_like(particles.data.positions, shape=(n_deleted, 3)),
         system=Index.integer(
             jnp.full(n_deleted, n_sys),
             n=n_sys,
@@ -890,21 +891,23 @@ class IsTranslationState(IsMCMCMoveState, Protocol):
     """State protocol for group translation MCMC moves."""
 
     @property
-    def translation_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def translation_params(
+        self,
+    ) -> Table[SystemId, ParameterSchedulerState[units.Length]]: ...
 
 
 class IsRotationState(IsMCMCMoveState, Protocol):
     """State protocol for group rotation MCMC moves."""
 
     @property
-    def rotation_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def rotation_params(self) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
 
 
 class IsReinsertionState(IsMCMCMoveState, Protocol):
     """State protocol for particle reinsertion MCMC moves."""
 
     @property
-    def reinsertion_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def reinsertion_params(self) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
 
 
 class IsDisplacementState(
@@ -927,7 +930,7 @@ class IsGCMCState(IsDisplacementState, Protocol):
     @property
     def motifs(self) -> Table[MotifParticleId, IsMotifData]: ...
     @property
-    def exchange_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def exchange_params(self) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
 
 
 class IsExchangeState(IsMCMCMoveState, Protocol):
@@ -942,11 +945,11 @@ class IsExchangeState(IsMCMCMoveState, Protocol):
     @property
     def motifs(self) -> Table[MotifParticleId, IsMotifData]: ...
     @property
-    def exchange_params(self) -> Table[SystemId, ParameterSchedulerState]: ...
+    def exchange_params(self) -> Table[SystemId, ParameterSchedulerState[Array]]: ...
 
 
-def _scheduler[S](
-    params_lens: Lens[S, Table[SystemId, ParameterSchedulerState]],
+def _scheduler[S, Q](
+    params_lens: Lens[S, Table[SystemId, ParameterSchedulerState[Q]]],
 ) -> Scheduler[S, Table[SystemId, Array]]:
     """Create a PropertyScheduler for acceptance-based step-width tuning."""
     return PropertyScheduler(params_lens, Table.transform(acceptance_target_schedule))

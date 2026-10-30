@@ -103,6 +103,9 @@ def get_transformations(
 def make_optimizer(transformations: TransformationConfig) -> Optimizer[Any, Any]:
     """Create a chained optimizer from a list of transform configs.
 
+    The optimizer runs on magnitudes, so numeric hyperparameters (step sizes,
+    norms, timesteps) are read in the parameters' base, ATOMISTIC by default.
+
     Args:
         transformations: List of transform specifications.
 

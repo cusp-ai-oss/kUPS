@@ -26,10 +26,13 @@ Example:
 """
 
 from enum import Enum
+from typing import Any, overload
 
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
+from kups.core.units._typed import _E_A, _E_K, _E_KG, _E_M, _E_S
 from kups.core.utils.jax import dataclass, field
 
 
@@ -59,7 +62,7 @@ class AcceptanceHistory:
 
 
 @dataclass
-class ParameterSchedulerState:
+class ParameterSchedulerState[V]:
     """State for parameter scheduling algorithm.
 
     Contains both the parameter value being scheduled and the configuration
@@ -77,12 +80,12 @@ class ParameterSchedulerState:
     Example:
         ```python
         state = ParameterSchedulerState(
-            value=jnp.array([0.1, 0.2]),  # Step sizes for 2 systems
+            value=jnp.array([0.1, 0.2]) * u.angstrom,  # Step sizes for 2 systems
             multiplicity=jnp.array([1.5, 1.5]),
             target=jnp.array([0.4, 0.4]),
             tolerance=jnp.array([0.05, 0.05]),
             correlation=Correlation.NEGATIVE,
-            bounds=(jnp.array([0.01, 0.01]), jnp.array([1.0, 1.0])),
+            bounds=(jnp.array([0.01, 0.01]) * u.angstrom, jnp.array([1.0, 1.0]) * u.angstrom),
             history=AcceptanceHistory(
                 values=jnp.zeros((2, 10)),
                 index=jnp.array([0, 0]),
@@ -91,14 +94,15 @@ class ParameterSchedulerState:
         ```
     """
 
-    value: Array
+    value: V
     multiplicity: Array
     target: Array
     tolerance: Array
     correlation: Correlation = field(static=True)
-    bounds: tuple[Array | None, Array | None]
+    bounds: tuple[V | None, V | None]
     history: AcceptanceHistory
 
+    @overload
     @classmethod
     def create(
         cls,
@@ -111,7 +115,39 @@ class ParameterSchedulerState:
         lower_bound: float = 0.0,
         upper_bound: float | None = None,
         history_length: int = 100,
-    ) -> "ParameterSchedulerState":
+    ) -> "ParameterSchedulerState[Array]": ...
+    @overload
+    @classmethod
+    def create(
+        cls,
+        n_systems: int = 1,
+        *,
+        initial_value: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+        multiplicity: float = 1.1,
+        target: float = 0.5,
+        tolerance: float = 0.05,
+        correlation: Correlation = Correlation.NEGATIVE,
+        lower_bound: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | float = 0.0,
+        upper_bound: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | None = None,
+        history_length: int = 100,
+    ) -> """ParameterSchedulerState[
+        units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+    ]""": ...
+    @classmethod
+    def create(
+        cls,
+        n_systems: int = 1,
+        initial_value: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | float = 0.1,
+        multiplicity: float = 1.1,
+        target: float = 0.5,
+        tolerance: float = 0.05,
+        correlation: Correlation = Correlation.NEGATIVE,
+        lower_bound: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | float = 0.0,
+        upper_bound: units.Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]
+        | float
+        | None = None,
+        history_length: int = 100,
+    ) -> "ParameterSchedulerState[Any]":
         """Create a ParameterSchedulerState with sensible defaults for ~50 % acceptance.
 
         Args:
@@ -130,8 +166,10 @@ class ParameterSchedulerState:
                 negatively with acceptance. Step sizes use
                 [Correlation.NEGATIVE][kups.core.parameter_scheduler.Correlation]
                 (larger step → lower acceptance).
-            lower_bound: Minimum allowed parameter value (inclusive). Set to
-                ``0.0`` for step sizes; use ``-inf`` for unconstrained minima.
+            lower_bound: Minimum allowed parameter value (inclusive), in
+                ``initial_value``'s dimension; a plain ``0.0`` takes its unit. Set
+                to ``0.0`` for step sizes; use ``-inf`` (times the unit for a
+                quantity) for unconstrained minima.
             upper_bound: Maximum allowed parameter value (inclusive), or
                 ``None`` for no upper constraint.
             history_length: Number of recent MC moves recorded in the circular
@@ -141,16 +179,17 @@ class ParameterSchedulerState:
         Returns:
             Initialised [ParameterSchedulerState][kups.core.parameter_scheduler.ParameterSchedulerState].
         """
-        upper: Array | None = (
-            jnp.full((n_systems,), upper_bound) if upper_bound is not None else None
+        value: Any = units.full((n_systems,), initial_value)
+        upper = (
+            units.full((n_systems,), upper_bound) if upper_bound is not None else None
         )
         return cls(
-            value=jnp.full((n_systems,), initial_value),
+            value=value,
             multiplicity=jnp.full((n_systems,), multiplicity),
             target=jnp.full((n_systems,), target),
             tolerance=jnp.full((n_systems,), tolerance),
             correlation=correlation,
-            bounds=(jnp.full((n_systems,), lower_bound), upper),
+            bounds=(units.full_like(value, lower_bound), upper),
             history=AcceptanceHistory(
                 values=jnp.zeros((n_systems, history_length)),
                 index=jnp.zeros((n_systems,), dtype=int),
@@ -158,9 +197,9 @@ class ParameterSchedulerState:
         )
 
 
-def acceptance_target_schedule(
-    input: Array, current: ParameterSchedulerState
-) -> ParameterSchedulerState:
+def acceptance_target_schedule[V](
+    input: Array, current: ParameterSchedulerState[V]
+) -> ParameterSchedulerState[V]:
     """Adjust parameter values to achieve target acceptance rate.
 
     Implements multiplicative adjustment based on acceptance history:
@@ -191,14 +230,15 @@ def acceptance_target_schedule(
         multiplicity = 1 / current.multiplicity
 
     mask = avg_acceptance < current.target
-    new_value = jnp.where(
-        mask, current.value * multiplicity, current.value / multiplicity
+    state: ParameterSchedulerState[Any] = current
+    new_value = units.where(
+        mask, state.value * multiplicity, state.value / multiplicity
     )
-    new_value = jnp.clip(new_value, *current.bounds)
+    new_value = units.clip(new_value, *state.bounds)
 
     accept_mask = jnp.abs(avg_acceptance - current.target) > current.tolerance
-    new_value = jnp.where(accept_mask, new_value, current.value)
-    result_value = jnp.where(new_indices == 0, new_value, current.value)
+    new_value = units.where(accept_mask, new_value, state.value)
+    result_value = units.where(new_indices == 0, new_value, state.value)
 
     return ParameterSchedulerState(
         value=result_value,

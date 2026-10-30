@@ -17,6 +17,7 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
+from kups.core import units
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
@@ -35,7 +36,9 @@ from kups.core.propagator import (
 )
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import IsState, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import jit
+from kups.core.utils.units import magnitudes_of
 from kups.potential.common.geometry import (
     Geometry,
     PositionsAndCell,
@@ -66,9 +69,9 @@ class OptInit(Protocol):
 
 def make_relax_propagator[State: IsRelaxState](
     state_lens: Lens[State, State],
-    potential: Potential[State, Any, EmptyType, Any],
-    optimizer: Optimizer[PositionsAndCell, Any],
-    gradient: Lens[Geometry, PositionsAndCell],
+    potential: Potential[State, PositionsAndCell[units.Force], EmptyType, Any],
+    optimizer: Optimizer[PositionsAndCell[units.Length], Any],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
 ) -> tuple[Propagator[State], OptInit]:
     """Build a relaxation propagator with step counting and error recovery.
 
@@ -96,7 +99,9 @@ def make_relax_propagator[State: IsRelaxState](
             x.systems.map_data(lambda s: s.cell),
         )
 
-    def cached_out(x: State) -> PotentialOut[PositionsAndCell, EmptyType]:
+    def cached_out(
+        x: State,
+    ) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
         return PotentialOut(
             x.systems.map_data(lambda s: s.potential_energy),
             PositionsAndCell(
@@ -107,7 +112,9 @@ def make_relax_propagator[State: IsRelaxState](
         )
 
     @no_type_check
-    def cached_index(x: State) -> PotentialOut[PositionsAndCell, EmptyType]:
+    def cached_index(
+        x: State,
+    ) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
         return PotentialOut(
             x.systems.index,
             PositionsAndCell(x.particles.data.system, x.systems.index),
@@ -124,7 +131,10 @@ def make_relax_propagator[State: IsRelaxState](
         )
         # pyrefly: ignore [bad-argument-type]
         prefix = PositionsAndCell(particles.data.system, systems.index)
-        return optimizer.init(params, prefix)
+        # The optimizer's memory holds magnitudes, as its update does: a
+        # transform mixes a parameter with its gradient, so dimensions live at
+        # the propagator boundary rather than inside the chain.
+        return optimizer.init(magnitudes_of(params), prefix)
 
     pot = CachedPotential(potential, lens(cached_out), cached_index)
     relax_prop = RelaxationPropagator(
@@ -155,20 +165,33 @@ def run_relax[State: IsRelaxState](
 
     @jit
     def converged_value(s: State) -> Array:
-        max_dof = jnp.max(jnp.linalg.norm(s.particles.data.position_gradients, axis=-1))
+        # ASE holds every filter DOF gradient to one tolerance in eV/Angstrom, and
+        # cell_factor makes the cell parameters' gradients that size by construction,
+        # so the comparison runs on ATOMISTIC magnitudes (eV, Angstrom) rather than
+        # on a common dimension.
+        forces = units.norm(s.particles.data.position_gradients, axis=-1)
+        max_dof = jnp.max(forces.to(u.eV / u.angstrom))
         if config.optimize_cell:
-            leaves = jax.tree.leaves(s.systems.data.cell_gradients)
+            cell_grads = units.tree_map(
+                lambda g: (
+                    g.rebase(units.ATOMISTIC).value if units.is_quantity(g) else g
+                ),
+                s.systems.data.cell_gradients,
+            )
+            leaves = jax.tree.leaves(cell_grads)
             cell_dof = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in leaves]))
             max_dof = jnp.maximum(max_dof, cell_dof)
-        return max_dof < config.force_tolerance
+        return max_dof < config.force_tolerance.to(u.eV / u.angstrom)
 
     def converged(s: State) -> bool:
         return bool(converged_value(s))
 
     @jit
     def _postfix_jit(s: State) -> dict[str, Array]:
-        e = jnp.asarray(s.systems.data.potential_energy).sum()
-        fmax = jnp.max(jnp.linalg.norm(s.particles.data.forces, axis=-1))
+        e = s.systems.data.potential_energy.to(u.eV).sum()
+        fmax = jnp.max(
+            units.norm(s.particles.data.forces, axis=-1).to(u.eV / u.angstrom)
+        )
         return {"E[eV]": e, "fmax[eV/Å]": fmax}
 
     def _postfix(s: State) -> dict[str, Any]:

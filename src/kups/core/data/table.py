@@ -381,9 +381,9 @@ class Table(Batched, Generic[TKey, TData]):
         Example::
 
             >>> species = Table(("H", "O"), jnp.array([1, 8]))
-            >>> masses  = Table.new(("O", "H"), jnp.array([16.0, 1.0]))
+            >>> masses  = Table.new(("O", "H"), jnp.array([16.0, 1.0]) * u.amu)
             >>> joined  = Table.join(species, masses)
-            >>> joined.data  # (array([1, 8]), array([1.0, 16.0]))
+            >>> joined.data  # (array([1, 8]), [1.0, 16.0] amu)
         """
         if not others:
             raise ValueError("merge_tables requires at least two arguments")

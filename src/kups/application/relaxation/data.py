@@ -6,25 +6,34 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import ase
-import jax.numpy as jnp
 import optax
 from jax import Array
-from pydantic import BaseModel
 
+from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
     default_exclusion,
     particles_from_ase,
 )
-from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
+from kups.core import units
+from kups.core.cell import (
+    AnyPeriodicity,
+    Cell,
+    DeformedFrame,
+    MatrixLogFrame,
+    zero_gradient_cell,
+)
 from kups.core.data import Table
 from kups.core.data.index import Index
 from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, tree_zeros_like
+from kups.core.units import catalog as u
+from kups.core.units.pydantic import UnitsModel
+from kups.core.utils.jax import dataclass, field
 from kups.relaxation.config import TransformationConfig
 
 
@@ -42,7 +51,7 @@ class RelaxParticles(Particles):
             ``positions_only``. The force source and ASE-fmax convergence quantity.
     """
 
-    position_gradients: Array
+    position_gradients: units.Force
     exclusion: Index[ExclusionId] = field(default=None, kw_only=True)  # type: ignore
 
     def __post_init__(self) -> None:
@@ -50,7 +59,7 @@ class RelaxParticles(Particles):
             object.__setattr__(self, "exclusion", default_exclusion(len(self.charges)))
 
     @property
-    def forces(self) -> Array:
+    def forces(self) -> units.Force:
         """Atomic forces, the negative position gradient."""
         return -self.position_gradients
 
@@ -66,7 +75,7 @@ class RelaxSystems:
     stored on :attr:`cell`'s frame (the lower-triangular log-deformation entries
     under ``cell_filter``). The ASE-fmax convergence quantity for the cell; the
     atoms-ride-the-cell coupling is already folded in by the filter pullback."""
-    potential_energy: Array
+    potential_energy: units.Energy
     """Potential energy per system, shape (1,)."""
 
 
@@ -85,7 +94,7 @@ class RelaxState:
     step: Array
 
 
-class RelaxRunConfig(BaseModel):
+class RelaxRunConfig(UnitsModel):
     """Configuration for a relaxation run."""
 
     out_file: str | Path
@@ -94,8 +103,8 @@ class RelaxRunConfig(BaseModel):
     """Maximum number of optimisation steps."""
     seed: int | None
     """Random seed. None for time-based."""
-    force_tolerance: float
-    """Convergence threshold for max atomic force (eV/Å)."""
+    force_tolerance: Annotated[units.Force, Scalar]
+    """Convergence threshold for max atomic force."""
     optimizer: TransformationConfig
     """List of Optax transform specifications passed to `make_optimizer`."""
     optimize_cell: bool
@@ -123,7 +132,11 @@ def relax_state_from_ase(
             charges=p.data.charges,
             labels=p.data.labels,
             system=p.data.system,
-            position_gradients=jnp.zeros_like(p.data.positions),
+            position_gradients=units.zeros(
+                p.data.positions.shape,
+                u.eV / u.angstrom,
+                dtype=p.data.positions.dtype,
+            ),
         ),
     )
     # cell_factor = per-system atom count (ASE's exp_cell_factor) balances the
@@ -139,8 +152,8 @@ def relax_state_from_ase(
     systems = Table.arange(
         RelaxSystems(
             cell=cell,
-            cell_gradients=tree_zeros_like(cell),
-            potential_energy=jnp.zeros(n_systems),
+            cell_gradients=zero_gradient_cell(cell),
+            potential_energy=units.zeros(n_systems, u.eV),
         ),
         label=SystemId,
     )

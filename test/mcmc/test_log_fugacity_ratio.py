@@ -5,18 +5,21 @@ import jax.numpy as jnp
 import numpy.testing as npt
 from jax import Array
 
+from kups.core import units
 from kups.core.data.table import Table
 from kups.core.patch import IdPatch
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.math import log_factorial_ratio
 from kups.mcmc.probability import LogFugacityRatio
+from test.units import A
 
 
 @dataclass
 class MockState:
-    log_fug: Table[SystemId, Array]
-    volume: Table[SystemId, Array]
+    log_fug: Table[SystemId, units.Log[units.NumberDensityUnit]]
+    volume: Table[SystemId, units.Volume]
     counts: Table[SystemId, Array]
 
 
@@ -28,11 +31,13 @@ class MockPatch:
         return state
 
 
-def get_log_fugacity(state: MockState) -> Table[SystemId, Array]:
+def get_log_fugacity(
+    state: MockState,
+) -> Table[SystemId, units.Log[units.NumberDensityUnit]]:
     return state.log_fug
 
 
-def get_volume(state: MockState) -> Table[SystemId, Array]:
+def get_volume(state: MockState) -> Table[SystemId, units.Volume]:
     return state.volume
 
 
@@ -46,11 +51,11 @@ def get_patched_counts(state: MockState, patch: MockPatch) -> Table[SystemId, Ar
 
 class TestLogFugacityRatio:
     def setup_method(self):
-        # 3 systems, 1 species; friendly values for exact checks
+        # 3 systems, 1 species; activity 2/Å³ given against 1/nm³
         self.log_fug = Table.arange(
-            jnp.log(jnp.array([[2.0], [2.0], [2.0]])), label=SystemId
+            units.Log.of(jnp.full((3, 1), 2.0) / A**3, 1 / u.nm**3), label=SystemId
         )
-        self.volume = Table.arange(jnp.array([1.0, 2.0, 3.0]), label=SystemId)
+        self.volume = Table.arange(jnp.array([1.0, 2.0, 3.0]) * A**3, label=SystemId)
         self.counts = Table.arange(jnp.array([[0], [1], [2]]), label=SystemId)
 
         self.state = MockState(self.log_fug, self.volume, self.counts)
@@ -70,8 +75,8 @@ class TestLogFugacityRatio:
         assert isinstance(res.patch, IdPatch)
         out = res.data.data
 
-        ln_f = self.log_fug.data[0]
-        ln_V = jnp.log(self.volume.data)
+        ln_f = jnp.log(2.0)
+        ln_V = jnp.log(self.volume.data.to(A**3))
         ln_fV = ln_f + ln_V
         counts = self.counts.data[:, 0]
         patched = counts + 1
@@ -85,8 +90,8 @@ class TestLogFugacityRatio:
         res = self.ln_ratio(self.state, patch)
         out = res.data.data
 
-        ln_f = self.log_fug.data[0]
-        ln_V = jnp.log(self.volume.data)
+        ln_f = jnp.log(2.0)
+        ln_V = jnp.log(self.volume.data.to(A**3))
         counts = c[:, 0]
         patched = counts - 1
         mask = counts > 0
@@ -98,9 +103,10 @@ class TestLogFugacityRatio:
     def test_multispecies_mixed_changes(self):
         """Two species; mixed +/- per system; sum over species."""
         log_fug = Table.arange(
-            jnp.log(jnp.array([[2.0, 5.0], [2.0, 5.0]])), label=SystemId
+            units.Log.from_logs(jnp.log(jnp.array([[2.0, 5.0], [2.0, 5.0]])), 1 / A**3),
+            label=SystemId,
         )
-        volume = Table.arange(jnp.array([1.5, 0.5]), label=SystemId)
+        volume = Table.arange(jnp.array([1.5, 0.5]) * A**3, label=SystemId)
         counts = Table.arange(jnp.array([[2, 3], [4, 1]]), label=SystemId)
         state = MockState(log_fug, volume, counts)
 
@@ -117,8 +123,8 @@ class TestLogFugacityRatio:
         res = ln_ratio(state, patch)
         out = res.data.data
 
-        ln_V = jnp.log(volume.data)[:, None]
-        ln_fV = log_fug.data + ln_V
+        ln_V = jnp.log(volume.data.to(A**3))[:, None]
+        ln_fV = log_fug.data.log + ln_V
         patched_counts = counts.data + delta
         expected_mat = delta * ln_fV + log_factorial_ratio(counts.data, patched_counts)
         expected = expected_mat.sum(axis=-1)

@@ -27,13 +27,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -44,6 +44,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.uff_utils import compute_uff_bond_length
@@ -74,13 +75,13 @@ class CosineAngleParameters:
     Attributes:
         labels: Species labels, shape `(n_species,)`.
         theta0: Equilibrium angles [radians], shape `(n_species, n_species, n_species)`.
-        k: Force constants [energy], shape `(n_species, n_species, n_species)`.
+        k: Force constants, shape `(n_species, n_species, n_species)`.
         linear_tol: Tolerance for detecting linear angles [radians].
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    theta0: Array  # (n_species, n_species, n_species)
-    k: Array  # (n_species, n_species, n_species)
+    theta0: Array  # (n_species, n_species, n_species) radians
+    k: units.Energy  # (n_species, n_species, n_species)
     linear_tol: Array = field(default_factory=lambda: jnp.radians(5))
 
     @classmethod
@@ -88,9 +89,9 @@ class CosineAngleParameters:
         cls,
         labels: tuple[str, ...],
         bond_angle: Array,
-        bond_radius: Array,
+        bond_radius: units.Length,
         electronegativity: Array,
-        effective_charge: Array,
+        effective_charge: units.Charge,
         linear_tol: Array = jnp.radians(5),
     ) -> "CosineAngleParameters":
         r"""Create angle parameters using UFF formulas.
@@ -102,38 +103,38 @@ class CosineAngleParameters:
         Args:
             labels: Species labels, shape `(n_species,)`
             bond_angle: Natural valence angle [radians], shape `(n_species,)`
-            bond_radius: Valence bond radii [A], shape `(n_species,)`
+            bond_radius: Valence bond radii, shape `(n_species,)`
             electronegativity: GMP electronegativity, shape `(n_species,)`
             effective_charge: Effective atomic charge Z*, shape `(n_species,)`
             linear_tol: Tolerance for detecting linear angles [radians]
 
         Returns:
-            CosineAngleParameters with full interaction matrices; `k` is in
-            kcal/mol/rad^2, as Eq. 13 takes lengths in Å.
+            CosineAngleParameters with full interaction matrices
         """
         nt = bond_angle.shape[0]
 
         # theta0 from central atom (index j in i-j-k)
         theta0 = bond_angle[None, :, None] * jnp.ones((nt, nt, nt))
 
-        # Compute bond lengths for all pairs
         r_bond = compute_uff_bond_length(bond_radius, electronegativity)
 
         # r_ij = r_bond[i, j], r_jk = r_bond[j, k]
         r_ij = r_bond[:, :, None]
         r_jk = r_bond[None, :, :]
 
-        # r_ik using law of cosines
+        # r_ik using law of cosines, floored relative to the bond lengths so a
+        # degenerate i-j-k stays differentiable.
         cos_theta0 = jnp.cos(theta0)
         r_ik_sq = r_ij**2 + r_jk**2 - 2 * r_ij * r_jk * cos_theta0
-        r_ik = jnp.sqrt(jnp.maximum(r_ik_sq, 1e-10))
+        r_ik = units.sqrt(units.maximum(r_ik_sq, 1e-10 * r_ij * r_jk))
 
-        # Force constant (Eq. 13); its beta = 664.12 / (r_ij r_jk) cancels the
-        # explicit r_ij r_jk factor.
+        # Force constant (Eq. 13) with beta = 664.12 / (r_ij r_jk): 664.12 kcal Å / mol
+        # is 2 k_e, and the empirical form takes lengths in Å, hence the Å^2.
         Z_i = effective_charge[:, None, None]
         Z_k = effective_charge[None, None, :]
+        beta = 2 * units.constants.k_e * u.angstrom**2 / (r_ij * r_jk)
         term = 3 * r_ij * r_jk * (1 - cos_theta0**2) - r_ik_sq * cos_theta0
-        K = jnp.abs(664.12 * Z_i * Z_k * term / r_ik**5)
+        K = units.absolute(beta * Z_i * Z_k * r_ij * r_jk * term / r_ik**5)
 
         return cls(
             labels=tuple(map(Label, labels)), theta0=theta0, k=K, linear_tol=linear_tol
@@ -165,7 +166,7 @@ def _compute_cosine_coefficients(theta0: Array) -> tuple[Array, Array, Array]:
 
 def cosine_angle_energy(
     inp: CosineAngleInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     r"""Compute UFF-style cosine angle energy for all angles.
 
     Calculates energy using the general cosine form:
@@ -194,8 +195,8 @@ def cosine_angle_energy(
 
     # Compute current angle
     v1, v2 = graph.edge_shifts[:, 0], graph.edge_shifts[:, 1]
-    cos_theta = jnp.einsum("ij,ij->i", v1, v2) / (
-        jnp.linalg.norm(v1, axis=-1) * jnp.linalg.norm(v2, axis=-1)
+    cos_theta = units.einsum("ij,ij->i", v1, v2) / (
+        units.norm(v1, axis=-1) * units.norm(v2, axis=-1)
     )
     cos_theta = jnp.clip(cos_theta, -1.0, 1.0)
 
@@ -211,7 +212,7 @@ def cosine_angle_energy(
     cos_2theta = 2.0 * cos_theta**2 - 1.0
     energy_general = k * (c0 + c1 * cos_theta + c2 * cos_2theta)
 
-    edge_energy = jnp.where(is_linear, energy_linear, energy_general)
+    edge_energy = units.where(is_linear, energy_linear, energy_general)
 
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())

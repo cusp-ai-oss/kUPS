@@ -18,6 +18,7 @@ ci/statistical/
 │   │   └── host/          # LAMMPS data files
 │   ├── expected/          # kUPS-format YAML stats from LAMMPS
 │   └── outputs/           # Generated LAMMPS .dat tables (ignored)
+├── expected_values.py     # Expected-value YAML schema, units and conversions
 ├── validate.py            # Validation script (runs in CI)
 ├── run_reference.py       # Run all reference sims and generate expected values
 ├── generate_expected.py   # Generate expected values from a single HDF5 file
@@ -61,6 +62,28 @@ ci/statistical/
    uv run python ci/statistical/validate.py
    ```
 
+## Expected Value Format
+
+Each observable names the unit its numbers are read in, so a committed reference
+states what it measures rather than leaving a bare magnitude:
+
+```yaml
+observables:
+  potential_energy:
+    unit: eV
+    expected_mean: -15.312422778007482
+    expected_sem: 0.009194239751082566
+  loading:                      # dimensionless, so no unit
+    expected_mean: 50.0
+    expected_sem: 0.0
+```
+
+A tensor-valued observable such as `stress` holds nested lists under the same
+keys. `expected_values.py` owns this schema, the unit per dimension, and the
+conversions both `generate_expected.py` and `validate.py` read them through: a
+measured value is converted into the unit the file names, so a reference in the
+wrong unit fails instead of comparing raw magnitudes.
+
 ## Validation Logic
 
 The validator compares measured values against expected values using a statistical tolerance (default: 5 sigma). A test passes if:
@@ -80,9 +103,10 @@ The YAML SEMs use the same fixed 5-block average
 calculation as kUPS expected-value generation. LAMMPS `press` is converted
 from total pressure to the configurational pressure currently stored as kUPS MD
 `pressure` by subtracting the kinetic contribution, then converted from bar to
-kUPS internal pressure units. CI compares the committed LAMMPS YAML stats to
-the kUPS MD NVE, NVT, and NPT references without requiring LAMMPS or `.dat`
-tables to be present.
+`eV/angstrom^3`, the unit the YAML then names. CI compares the committed LAMMPS
+YAML stats to the kUPS MD NVE, NVT, and NPT references without requiring LAMMPS
+or `.dat` tables to be present, and refuses to compare two observables written
+in different units.
 
 To regenerate the LAMMPS YAMLs on a machine with `lmp` installed:
 
