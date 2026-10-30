@@ -29,10 +29,10 @@ repos:
 
       - id: pyrefly
         name: pyrefly check
-        entry: uv run pyrefly check src/
+        entry: uv run pyrefly check src/ ci/statistical/
         language: system
         types: [python]
-        files: ^src/
+        files: ^(src|ci/statistical)/
         pass_filenames: false
 
       - id: clear-notebook-output
