@@ -16,6 +16,7 @@ from fractions import Fraction as Frac
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, overload
 
 import jax
+import numpy as np
 from jax.typing import ArrayLike
 
 from kups.core.units._typed import _E_A, _E_K, _E_KG, _E_M, _E_S
@@ -452,10 +453,12 @@ def _derive(factors: Factors, dim: Dim, scale: float) -> AnyUnit:
 
 
 def _forward(x: Any, unit: AnyUnit, invert: bool = False) -> Any:
-    """Attach ``unit`` to plain magnitudes; return NotImplemented for quantities."""
-    from kups.core.units._core import is_quantity  # avoids a cycle
+    """Attach ``unit`` to plain magnitudes; return NotImplemented for other operands."""
+    from kups.core.units._core import _operand, is_quantity  # avoids a cycle
 
-    if is_quantity(x):
+    if type(x) in (list, tuple):
+        x = np.asarray(x)
+    if is_quantity(x) or not _operand(x):
         return NotImplemented
     return _attach(1 / x if invert else x, unit)
 
