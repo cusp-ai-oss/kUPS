@@ -47,7 +47,7 @@ from kups.core.propagator import (
     Propagator,
     propose_mixed,
 )
-from kups.core.schedule import PropertyScheduler
+from kups.core.schedule import PropertyScheduler, Scheduler
 from kups.core.typing import (
     DTypeLike,
     GroupId,
@@ -947,9 +947,7 @@ class IsExchangeState(IsMCMCMoveState, Protocol):
 
 def _scheduler[S](
     params_lens: Lens[S, Table[SystemId, ParameterSchedulerState]],
-) -> PropertyScheduler[
-    S, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
-]:
+) -> Scheduler[S, Table[SystemId, Array]]:
     """Create a PropertyScheduler for acceptance-based step-width tuning."""
     return PropertyScheduler(params_lens, Table.transform(acceptance_target_schedule))
 
@@ -1036,11 +1034,7 @@ def make_displacement_mcmc_propagator[State, Move: Patch[Any]](
     """
     propose_fns: list[ChangesFn[State, ParticlePositionChanges]] = []
     wts: list[float] = []
-    schedulers: list[
-        PropertyScheduler[
-            State, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
-        ]
-    ] = []
+    schedulers: list[Scheduler[State, Table[SystemId, Array]]] = []
 
     if translation_weight > 0:
         propose_fns.append(
@@ -1184,29 +1178,16 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
 
         return wrapper  # type: ignore[return-value]
 
-    def _sched(
-        params_lens: Lens[State, Table[SystemId, ParameterSchedulerState]],
-    ) -> PropertyScheduler[
-        State, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
-    ]:
-        return PropertyScheduler(
-            params_lens, Table.transform(acceptance_target_schedule)
-        )
-
     propose_fns: list[ChangesFn[State, ExchangeChanges]] = []
     wts: list[float] = []
-    schedulers: list[
-        PropertyScheduler[
-            State, Table[SystemId, Array], Table[SystemId, ParameterSchedulerState]
-        ]
-    ] = []
+    schedulers: list[Scheduler[State, Table[SystemId, Array]]] = []
 
     # Displacement moves (symmetric, lifted to ExchangeChanges)
     _moves: list[
         tuple[
             float,
             Callable[[Array, State], ParticlePositionChanges],
-            Lens[State, Table[SystemId, ParameterSchedulerState]],
+            Scheduler[State, Table[SystemId, Array]],
         ]
     ] = []
     if translation_weight > 0:
@@ -1221,7 +1202,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     Table(i.translation_params.keys, i.translation_params.data.value),
                     i.move_capacity,
                 ),
-                state.focus(lambda x: x.translation_params),
+                _scheduler(state.focus(lambda x: x.translation_params)),
             )
         )
     if rotation_weight > 0:
@@ -1236,7 +1217,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     Table(i.rotation_params.keys, i.rotation_params.data.value),
                     i.move_capacity,
                 ),
-                state.focus(lambda x: x.rotation_params),
+                _scheduler(state.focus(lambda x: x.rotation_params)),
             )
         )
     if reinsertion_weight > 0:
@@ -1250,7 +1231,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
                     i.systems,
                     i.move_capacity,
                 ),
-                state.focus(lambda x: x.reinsertion_params),
+                _scheduler(state.focus(lambda x: x.reinsertion_params)),
             )
         )
     if exchange_weight <= 0:
@@ -1266,14 +1247,14 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
             _patch,
             tuple(_symmetric(fn) for _, fn, _ in _moves),
             probability_fn,
-            tuple(_sched(params_lens) for _, _, params_lens in _moves),
+            tuple(scheduler for _, _, scheduler in _moves),
             weights=tuple(w for w, _, _ in _moves),
         )
 
-    for w, fn, params_lens in _moves:
+    for w, fn, scheduler in _moves:
         propose_fns.append(_lift_to_exchange(_symmetric(fn)))
         wts.append(w)
-        schedulers.append(_sched(params_lens))
+        schedulers.append(scheduler)
 
     # Exchange move (insert/delete, also symmetric)
     if exchange_weight > 0:
@@ -1305,7 +1286,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
 
         propose_fns.append(_symmetric(_propose_exchange))
         wts.append(exchange_weight)
-        schedulers.append(_sched(state.focus(lambda x: x.exchange_params)))
+        schedulers.append(_scheduler(state.focus(lambda x: x.exchange_params)))
 
     return MCMCPropagator(
         patch_fn,
