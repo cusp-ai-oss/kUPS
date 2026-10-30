@@ -29,7 +29,7 @@ Example:
     def readout_fn(emb, msg): return linear(emb + msg)
 
     config = LocalMLIAPData(
-        cutoff=jnp.array([6.0]),
+        cutoff=Table((SystemId(0),), jnp.array([6.0])),
         init_function=init_fn,
         edge_function=edge_fn,
         readout_function=readout_fn,

@@ -31,6 +31,15 @@ class Optimizer[Params, OptState](Protocol):
 
 
 def apply_updates[Params](parameters: Params, updates: Params) -> Params:
+    """Add each update to its parameter, keeping the parameter's dtype.
+
+    Args:
+        parameters: The parameter pytree.
+        updates: A pytree of the same structure and leaf shapes.
+
+    Returns:
+        The updated parameters, with ``None`` leaves left in place.
+    """
     return optax.apply_updates(parameters, updates)  # type: ignore
 
 

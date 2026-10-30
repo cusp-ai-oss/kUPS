@@ -25,7 +25,8 @@ class LogFugacityResult(NamedTuple):
     """Result of fugacity calculation.
 
     Attributes:
-        log_fugacity: Natural logarithm of fugacity for each component [ln(Pa)]
+        log_fugacity: Natural logarithm of fugacity for each component, in the
+            unit of the pressure passed in
         compressibility: Compressibility factor Z = PV/(nRT) [-]
     """
 
@@ -61,9 +62,9 @@ def _peng_robinson_log_fugacity(
     7. Selecting the appropriate root (gas phase) based on thermodynamic stability
 
     Args:
-        pressure: System pressure [Pa]
+        pressure: System pressure, in the unit of ``critical_pressure``
         temperature: System temperature [K]
-        critical_pressure: Critical pressure for each component [Pa], shape (n,)
+        critical_pressure: Critical pressure for each component, shape (n,)
         critical_temperature: Critical temperature for each component [K], shape (n,)
         acentric_factor: Acentric factor for each component [-], shape (n,)
         fraction: Mole fraction of each component [-], shape (n,)
@@ -71,7 +72,8 @@ def _peng_robinson_log_fugacity(
 
     Returns:
         tuple containing:
-            - log_fugacity: Natural logarithm of fugacity for each component [ln(Pa)], shape (n,)
+            - log_fugacity: Natural logarithm of fugacity for each component, in the
+              unit of ``pressure``, shape (n,)
             - compressibility: Compressibility factor Z [-], scalar
 
     Notes:
@@ -164,9 +166,9 @@ def peng_robinson_log_fugacity(
     dependent correction factor based on the acentric factor.
 
     Args:
-        pressure: System pressure [Pa]
+        pressure: System pressure, in the unit of ``critical_pressure``
         temperature: System temperature [K]
-        critical_pressure: Critical pressure for each component [Pa], shape `(n,)`
+        critical_pressure: Critical pressure for each component, shape `(n,)`
         critical_temperature: Critical temperature for each component [K], shape `(n,)`
         acentric_factor: Acentric factor for each component [-], shape `(n,)`
         composition: Mole fraction of each component [-], shape `(n,)`. Default: pure component
