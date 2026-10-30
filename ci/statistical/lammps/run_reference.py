@@ -20,6 +20,11 @@ from lammps_reference_utils import (
 
 
 def main() -> int:
+    """Run the selected LAMMPS cases and rewrite their YAML statistics.
+
+    Returns:
+        Zero once every case has been analyzed.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "cases",

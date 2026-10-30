@@ -63,13 +63,13 @@ ci/statistical/
 
 ## Validation Logic
 
-The validator compares measured values against expected values using a statistical tolerance (default: 5 sigma). A test passes if:
+The validator compares measured values against expected values using a statistical tolerance (default: 10 sigma). A test passes if:
 
 ```
-|measured_mean - expected_mean| <= 5 * sqrt(measured_sem^2 + expected_sem^2)
+|measured_mean - expected_mean| <= 10 * expected_sem
 ```
 
-This accounts for statistical uncertainty in both the reference and measured values.
+An observable whose expected SEM is zero (below `1e-10`) passes within 1% of its expected mean instead.
 
 ## LAMMPS References
 

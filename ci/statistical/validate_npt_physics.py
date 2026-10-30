@@ -20,13 +20,25 @@ from kups.application.md.logging import MDLoggedData
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.storage import HDF5StorageReader
 
+type Metrics = dict[str, float]
+"""Named diagnostics a check reports alongside its verdict."""
+
 
 def validate_temperature_stability(
     temperature: np.ndarray,
     target_temperature: float,
     rtol: float = 0.05,
-) -> tuple[bool, dict]:
-    """Validate that mean temperature matches target within 5%."""
+) -> tuple[bool, Metrics]:
+    """Validate that mean temperature matches target.
+
+    Args:
+        temperature: Temperature per step in K.
+        target_temperature: Thermostat target in K.
+        rtol: Largest allowed relative error of the mean.
+
+    Returns:
+        Whether the mean is within tolerance, and the temperature metrics.
+    """
     mean_temp = float(np.mean(temperature))
     relative_error = abs(mean_temp - target_temperature) / target_temperature
     return relative_error < rtol, {
@@ -42,12 +54,23 @@ def validate_temperature_fluctuations(
     degrees_of_freedom: int,
     min_ratio: float = 0.5,
     max_ratio: float = 2.0,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate temperature fluctuations match canonical ensemble.
 
     For the canonical ensemble: <(dT)^2> / <T>^2 = 2 / DOF.
     NPT has slightly larger fluctuations than NVT due to volume coupling,
     so we use wider bounds (0.5-2.0) than the NVT validation (0.7-1.3).
+
+    Args:
+        temperature: Temperature per step in K.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        min_ratio: Smallest allowed ratio of measured to canonical relative
+            variance.
+        max_ratio: Largest allowed ratio of measured to canonical relative
+            variance.
+
+    Returns:
+        Whether the ratio lies within bounds, and the variance metrics.
     """
     mean_temp = float(np.mean(temperature))
     temp_var = float(np.var(temperature))
@@ -66,11 +89,18 @@ def validate_temperature_fluctuations(
 def validate_volume_stability(
     volume: np.ndarray,
     max_relative_drift: float = 0.10,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate volume is not drifting monotonically.
 
     Compares mean volume of first and second half of trajectory.
     A drift > 10% indicates the barostat hasn't equilibrated.
+
+    Args:
+        volume: Cell volume per step in Å³.
+        max_relative_drift: Largest allowed relative change between the means.
+
+    Returns:
+        Whether the drift is below the threshold, and both half means.
     """
     half = len(volume) // 2
     mean_first = float(np.mean(volume[:half]))
@@ -88,11 +118,20 @@ def validate_volume_fluctuations(
     volume: np.ndarray,
     min_cv: float = 0.001,
     max_cv: float = 0.20,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate volume fluctuations are present and bounded.
 
     The coefficient of variation (std/mean) should be positive (barostat is active)
     and less than 20% (system is in a condensed phase, not exploding).
+
+    Args:
+        volume: Cell volume per step in Å³.
+        min_cv: Smallest allowed coefficient of variation.
+        max_cv: Largest allowed coefficient of variation.
+
+    Returns:
+        Whether the coefficient of variation lies within bounds, and the volume
+        metrics.
     """
     mean_vol = float(np.mean(volume))
     std_vol = float(np.std(volume))
@@ -111,8 +150,18 @@ def validate_equipartition(
     degrees_of_freedom: int,
     target_temperature: float,
     rtol: float = 0.05,
-) -> tuple[bool, dict]:
-    """Validate equipartition: <KE> = (DOF/2) * kB * T within 5%."""
+) -> tuple[bool, Metrics]:
+    """Validate equipartition: <KE> = (DOF/2) * kB * T.
+
+    Args:
+        kinetic_energy: Kinetic energy per step in eV.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        target_temperature: Thermostat target in K.
+        rtol: Largest allowed relative error of <KE>.
+
+    Returns:
+        Whether <KE> matches equipartition, and the compared energies.
+    """
     mean_ke = float(np.mean(kinetic_energy))
     expected_ke = 0.5 * degrees_of_freedom * BOLTZMANN_CONSTANT * target_temperature
     relative_error = (
@@ -127,6 +176,11 @@ def validate_equipartition(
 
 
 def main() -> int:
+    """Report every NPT physics check for the simulation output.
+
+    Returns:
+        Zero when every check passes.
+    """
     parser = argparse.ArgumentParser(
         description="Validate NPT MD simulation against isobaric-isothermal ensemble properties"
     )

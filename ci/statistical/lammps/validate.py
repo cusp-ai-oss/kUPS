@@ -9,29 +9,42 @@ from __future__ import annotations
 import argparse
 import math
 
-from lammps_reference_utils import CASES, load_kups_expected, load_reference_stats
+from lammps_reference_utils import (
+    CASES,
+    ExpectedSpec,
+    load_kups_expected,
+    load_reference_stats,
+    scalar,
+)
 
 
-def _compare_to_kups(current: dict) -> bool:
+def _compare_to_kups(current: dict[str, ExpectedSpec]) -> bool:
+    """Compare the LAMMPS statistics of every case against the kUPS references.
+
+    Args:
+        current: LAMMPS expected values keyed by case name.
+
+    Returns:
+        Whether every compared observable agrees within its case's tolerance.
+    """
     ok = True
     for case, config in CASES.items():
-        if not config.get("compare_to_kups", False):
+        if not config["compare_to_kups"]:
             continue
         kups_expected = load_kups_expected(config["kups_expected"])
         max_z = float(config["max_z"])
         abs_tolerances = config.get("abs_tolerances", {})
         print(f"\n{case} vs kUPS {config['kups_expected']} ({max_z:g} sigma)")
-        compare_observables = config.get("compare_observables", config["observables"])
-        for lammps_obs, kups_obs in compare_observables.items():
+        for lammps_obs, kups_obs in config["compare_observables"].items():
             if kups_obs not in kups_expected:
                 print(f"  SKIP {lammps_obs}: no kUPS {kups_obs} expected value")
                 continue
             lmp_stats = current[case]["observables"][kups_obs]
             kups_stats = kups_expected[kups_obs]
-            lmp_mean = float(lmp_stats["expected_mean"])
-            lmp_sem = float(lmp_stats["expected_sem"])
-            kups_mean = float(kups_stats["expected_mean"])
-            kups_sem = float(kups_stats["expected_sem"])
+            lmp_mean = scalar(lmp_stats["expected_mean"])
+            lmp_sem = scalar(lmp_stats["expected_sem"])
+            kups_mean = scalar(kups_stats["expected_mean"])
+            kups_sem = scalar(kups_stats["expected_sem"])
             delta = abs(lmp_mean - kups_mean)
             abs_tol = float(abs_tolerances.get(lammps_obs, 0.0))
             combined = math.sqrt(lmp_sem**2 + kups_sem**2)
@@ -50,6 +63,11 @@ def _compare_to_kups(current: dict) -> bool:
 
 
 def main() -> int:
+    """Load the committed LAMMPS statistics and compare them to the kUPS ones.
+
+    Returns:
+        Zero when every comparison passes.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--skip-kups-compare",
