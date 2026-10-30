@@ -21,6 +21,7 @@ from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.pipeline import build_radius_graph
 from kups.core.neighborlist.types import (
     CandidateBatch,
+    FractionalPoints,
     IsNeighborListState,
     NeighborListPoints,
     NeighborListSystems,
@@ -42,8 +43,8 @@ class IsDenseNeighborlistParams(Protocol):
 
 
 def _dense_subselect(
-    keys: Table[ParticleId, NeighborListPoints],
-    queries: Table[ParticleId, NeighborListPoints],
+    keys: Table[ParticleId, FractionalPoints],
+    queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
     max_num_candidates: Capacity[int],
 ) -> Candidates:
