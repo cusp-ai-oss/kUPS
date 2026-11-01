@@ -33,6 +33,7 @@ from ._builders import (
     make_systems,
     replicate,
     systems_from_lvecs,
+    valid_pairs,
 )
 
 
@@ -272,6 +273,53 @@ class TestReplicateForImages:
         # One minimum image per candidate: the system-0 copy plus system-1's.
         assert int(batch.is_minimum_image.sum()) == 2
         assert bool(batch.is_minimum_image[0])
+
+    def test_padding_candidates_take_no_images(self):
+        # Two real candidates (1 + 8 images) followed by two padding rows. The
+        # padding rows belong to no system: they add no image rows even though the
+        # last system replicates, and the trailing output rows stay padding.
+        systems, _ = systems_from_lvecs(
+            jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 1.0]), jnp.array([2.0, 0.8])
+        )
+        lh = make_lh(
+            jnp.array(
+                [[0.05, 0.0, 0.0], [0.15, 0.0, 0.0], [0.0, 0.0, 0.0], [0.3, 0.0, 0.0]]
+            ),
+            jnp.array([0, 0, 1, 1]),
+        )
+        candidates = Candidates(
+            key_idx=Index(lh.keys, jnp.array([0, 2, 4, 4])),
+            query_idx=Index(lh.keys, jnp.array([1, 3, 4, 4])),
+        )
+        cutoffs = cutoff_table(jnp.array([2.0, 0.8]))
+        exact = replicate(candidates, lh, lh, systems, cutoffs, FixedCapacity(9))
+        assert valid_pairs(exact.key_idx, exact.query_idx) == [(0, 1)] + [(2, 3)] * 8
+        assert int(exact.is_minimum_image.sum()) == 2
+
+        padded = replicate(candidates, lh, lh, systems, cutoffs, FixedCapacity(16))
+        assert valid_pairs(padded.key_idx, padded.query_idx) == [(0, 1)] + [(2, 3)] * 8
+        assert not np.asarray(padded.key_idx.valid_mask[9:]).any()
+        assert not np.asarray(padded.is_minimum_image[9:]).any()
+        npt.assert_array_equal(
+            np.asarray(padded.edges.shifts[:9]), np.asarray(exact.edges.shifts)
+        )
+
+    def test_replication_needs_more_rows_than_candidates(self):
+        # One candidate with 8 images and 7 padding rows: the 8 image rows fit a
+        # capacity of 8, but so many rows take the single-copy path, which would
+        # drop 7 of the images. The capacity must grow instead.
+        candidates, lh, systems = self._one_candidate(
+            box=1.0, cutoff=0.8, p0=[0.0, 0.0, 0.0], p1=[0.3, 0.0, 0.0]
+        )
+        padded = Candidates(
+            key_idx=Index(lh.keys, jnp.array([0] + [2] * 7)),
+            query_idx=Index(lh.keys, jnp.array([1] + [2] * 7)),
+        )
+        cutoffs = cutoff_table(jnp.array([0.8]))
+        with pytest.raises(CapacityError):
+            replicate(padded, lh, lh, systems, cutoffs, FixedCapacity(8))
+        batch = replicate(padded, lh, lh, systems, cutoffs, FixedCapacity(9))
+        assert valid_pairs(batch.key_idx, batch.query_idx) == [(0, 1)] * 8
 
     def test_uses_rh_positions_for_minimum_image(self):
         # Bipartite: the rhs endpoint lives in a separate ``rh`` table, so the
