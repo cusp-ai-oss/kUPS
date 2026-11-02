@@ -14,6 +14,7 @@ import pytest
 from kups.core import units
 from kups.core.units import (
     Area,
+    Energy,
     Length,
     Quantity,
 )
@@ -25,8 +26,29 @@ from ._helpers import (
     eye,
     jit,
     ty,
+    x64_mode,
     zeros_like,
 )
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
+def test_astype_preserves_values_and_base(compiled: bool):
+    q = arr([0.0, -1.25, 2.5, np.inf, -np.inf, np.nan]) * u.eV
+
+    def cast(x: Energy) -> Energy:
+        return x.astype(jnp.float32)
+
+    out = (jit(cast) if compiled else cast)(q)
+    assert out.bs is units.ATOMISTIC
+    assert out.dim == q.dim
+    assert out.dtype == jnp.float32
+    npt.assert_array_equal(out.value, q.value.astype(jnp.float32))
+    with (
+        x64_mode(False),
+        pytest.warns(UserWarning, match="not available"),
+        pytest.raises(units.DimensionError, match="magnitudes are unavailable"),
+    ):
+        out.astype(jnp.float64)
 
 
 @pytest.mark.parametrize("system", [units.SI, units.ATOMISTIC])

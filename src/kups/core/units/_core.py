@@ -9,7 +9,7 @@ at construction, and a dimensionless result decays to a plain ``jax.Array``. A
 quantity is a pytree with the magnitudes as its single leaf and the dimension and
 base as metadata.
 
-Methods share the helpers here; dtype checks and scale factors live in
+Methods share the helpers here; dtype and range checks live in
 ``units._precision``.
 """
 
@@ -43,10 +43,20 @@ from typing_extensions import TypedDict, TypeIs
 
 from kups.core.units._base import BaseSystem, _require_base, active_base
 from kups.core.units._precision import (
+    _X64_HINT,
     _base_scale,
     _cast_advice,
+    _check_canonical,
     _check_dtype,
+    _check_host,
+    _check_rescaled,
+    _checked_cast,
+    _host,
+    _other_base,
+    _precision_warning,
     _rebase_factor,
+    _require_normal,
+    _widen,
 )
 from kups.core.units._typed import _E_A, _E_K, _E_KG, _E_M, _E_S
 from kups.core.units._unit import (
@@ -604,7 +614,7 @@ class Quantity(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
         return _concrete(self, "q.tolist()").tolist()
 
     def astype(self, dtype: DTypeLike) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
-        """Cast the magnitudes to another dtype."""
+        """Cast the magnitudes to another dtype, refusing casts that corrupt them."""
         bs = _joint(self)
         lx, dx = _mag(self, bs, _operand_dtype((self,), dtype))
         dt = jnp.result_type(dtype)
@@ -615,7 +625,7 @@ class Quantity(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
                 "q.to(unit).astype(dtype) or q.value.astype(dtype) for unlabelled "
                 "magnitudes."
             )
-        return _lift(jnp.astype(lx, dtype), dx, bs)
+        return _lift(_checked_cast(lx, dtype, bs), dx, bs)
 
     # signatures follow jnp
     def transpose(
@@ -1093,7 +1103,10 @@ def from_dim(
             "from_dim reads plain numbers. Take q.value for the magnitudes in q's own "
             "base, or units.relabel(q, dim) to read them as something else."
         )
+    src = _host(magnitudes)
     v = jnp.asarray(magnitudes)
+    if src is not None:  # jax narrows a float64 host input when x64 is off
+        _check_host(src, 1.0, v.dtype, "reading these magnitudes")
     if jnp.issubdtype(v.dtype, jnp.complexfloating):
         raise DimensionError(
             f"kups.core.units: complex magnitudes are not supported ({v.dtype}); take "
@@ -1138,8 +1151,19 @@ def _operand_dtype(
 
 
 def _unit_mag(unit: AnyUnit, bs: BaseSystem, dtype: DTypeLike | None = None) -> float:
-    """One ``unit`` as a magnitude in ``bs``."""
-    return unit.scale / _base_scale(bs, unit.dim)
+    """One ``unit`` as a magnitude in ``bs``, checked to be normal in ``dtype``."""
+    f = unit.scale / _base_scale(bs, unit.dim)
+    if f == 1.0:
+        return f
+    dtype = jnp.result_type(float) if dtype is None else jnp.dtype(dtype)
+    _require_normal(
+        f,
+        dtype,
+        f"one {unit} is {f!r} in base {bs.name}",
+        f"so using it as an operand or a fill would destroy the magnitudes. Instead "
+        f"{_widen(dtype)}work in a base where {unit} is O(1){_other_base(bs)}.",
+    )
+    return f
 
 
 def _mag[T](
@@ -1156,7 +1180,16 @@ def _mag[T](
     f = _rebase_factor(x.bs, bs, x.dim, x.dtype)
     if f == 1.0:
         return lo, x.dim
-    return lo * f, x.dim
+    out = lo * f
+    _check_rescaled(
+        lo,
+        out,
+        f"re-expressing {x.bs.symbol(x.dim) or '1'!r} from base "
+        f"{x.bs.name} in base {bs.name}",
+        bs,
+        f,
+    )
+    return out, x.dim
 
 
 def from_unit(x: ArrayLike, unit: AnyUnit) -> jax.Array | AnyQuantity:
@@ -1170,9 +1203,11 @@ def from_unit(x: ArrayLike, unit: AnyUnit) -> jax.Array | AnyQuantity:
       The quantity, in the active base; a plain array if ``unit`` is dimensionless.
 
     Raises:
-      DimensionError: if the magnitudes are complex.
+      DimensionError: if the magnitudes are complex, or if canonicalizing them
+        would turn a finite nonzero magnitude into zero or infinity.
     """
     bs = active_base()
+    src = _host(x)
     v = jnp.asarray(x)
     if jnp.issubdtype(v.dtype, jnp.complexfloating):
         raise DimensionError(
@@ -1184,9 +1219,21 @@ def from_unit(x: ArrayLike, unit: AnyUnit) -> jax.Array | AnyQuantity:
         v, v.dtype if jnp.issubdtype(v.dtype, jnp.floating) else jnp.result_type(float)
     )
     f = unit.scale / _base_scale(bs, unit.dim)
+    if src is not None:  # host check: exact, no device round trip
+        _check_host(src, f, v.dtype, f"attaching {unit} in base {bs.name}")
     if f == 1.0:
         return _lift(v, unit.dim, bs)
-    return _lift(v * f, unit.dim, bs)
+    _precision_warning(unit, bs, f, v.dtype)
+    _require_normal(
+        f,
+        v.dtype,
+        f"attaching {unit} in base {bs.name} needs a factor of {f!r}",
+        f"so the magnitudes would be destroyed. Enable {_X64_HINT}, or work in a "
+        f"base where {unit} is O(1){_other_base(bs)}.",
+    )
+    out = v * f
+    _check_canonical(v, out, unit, bs, f)
+    return _lift(out, unit.dim, bs)
 
 
 def _to(q: object, unit: AnyUnit) -> jax.Array:
@@ -1216,11 +1263,24 @@ def _to(q: object, unit: AnyUnit) -> jax.Array:
             f"{unit!r}: rescaling requires floating magnitudes; "
             f"{_cast_advice(q.dtype)}."
         )
+    f = b / unit.scale
+    _require_normal(
+        f,
+        q.dtype,
+        f"expressing {q.bs.symbol(q.dim) or '1'!r} in {unit!r} needs a factor of {f!r}",
+        "so the magnitudes would come back as zero or nan. Set jax_enable_x64, or "
+        "measure in a unit closer to the magnitudes' own size.",
+    )
     if b == 1.0:
-        return out / unit.scale
-    if unit.scale == 1.0:
-        return out * b
-    return out * (b / unit.scale)
+        res = out / unit.scale
+    elif unit.scale == 1.0:
+        res = out * b
+    else:
+        res = out * f  # single rescale, no unchecked intermediate
+    _check_rescaled(
+        out, res, f"expressing {q.bs.symbol(q.dim) or '1'!r} in {unit!r}", q.bs, f
+    )
+    return res
 
 
 def _sym(d: Dim, bs: BaseSystem) -> str:
