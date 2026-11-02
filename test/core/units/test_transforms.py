@@ -11,14 +11,17 @@ import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import Energy, Length, Mass, Velocity, VelocityUnit
+from kups.core.units import Energy, Length, Mass, Momentum, Velocity, VelocityUnit
 from kups.core.units import catalog as u
 
 from ._helpers import (
+    arange,
     arr,
+    checkpoint,
     jit,
     lax_cond,
     lax_switch,
+    ty,
     val,
 )
 
@@ -30,6 +33,24 @@ class _State(TypedDict):
 
 
 SPEED: VelocityUnit = (u.eV / u.amu) ** Fraction(1, 2)  # the atomistic velocity unit
+
+
+def test_vmap():
+    vs = arr([1.0, 2.0, 3.0]) * SPEED
+    m = 2.0 * u.amu
+
+    def ke(v: Velocity) -> Energy:
+        return 0.5 * m * v**2
+
+    def momentum(v: Velocity) -> Momentum:
+        return v * m
+
+    out = jax.vmap(ke)(vs)
+    assert out.shape == (3,) and list(out.value) == [1.0, 4.0, 9.0]
+    assert list(jit(jax.vmap(momentum))(vs).value) == [2.0, 4.0, 6.0]
+    xs = arange(6.0).reshape(2, 3) * u.angstrom
+    assert list(jax.vmap(lambda x: x.sum(), in_axes=1)(xs).value) == [3.0, 5.0, 7.0]
+    assert jax.vmap(momentum, out_axes=0)(vs).shape == (3,)
 
 
 def test_aot_recheck():
@@ -205,3 +226,24 @@ def test_stop_gradient():
     tree = jax.lax.stop_gradient({"r": r, "n": arr([3.0])})
     assert units.dim_of(tree["r"]) == units.dim_of(u.angstrom)
     assert not units.is_quantity(tree["n"])
+
+
+def test_checkpoint():
+    def energy(r: Length) -> Energy:
+        return (r * r).sum() / (1.0 * u.angstrom**2) * (1.0 * u.eV)
+
+    ck = checkpoint(energy)
+    r = arr([1.0, 2.0, 3.0]) * u.angstrom
+    assert float(energy(r).to(u.eV)) == 14.0
+    assert float(jax.jit(ck)(r).to(u.eV)) == 14.0
+    _, ys = jax.lax.scan(lambda c, _: (c, ck(c)), r, None, length=2)
+    npt.assert_allclose(ys.to(u.eV), [14.0, 14.0])
+    total = jax.lax.fori_loop(0, 3, lambda i, acc: acc + ck(r), 0.0 * u.eV)
+    assert float(total.to(u.eV)) == 42.0
+    rows = arr([[1.0, 2.0], [3.0, 4.0]]) * u.angstrom
+    npt.assert_allclose(jax.jit(jax.vmap(ck))(rows).to(u.eV), [5.0, 25.0])
+    # the checkpointed results are quantities again
+    assert float(jax.jit(lambda x: ck(x) / (1.0 * u.eV))(x=r)) == 14.0
+    # untraced, remat returns the same type the function itself returns
+    assert ty(ck(r)) == ty(energy(r))
+    assert float(ck(r).to(u.eV)) == 14.0

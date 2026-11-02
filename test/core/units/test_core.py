@@ -40,6 +40,7 @@ from kups.core.units._unit import Atom
 
 from ._helpers import (
     ASE_TIME,
+    arange,
     arr,
     eye,
     jit,
@@ -325,6 +326,17 @@ def test_jit_cache_key():
     assert val(at) == 1.0  # the original value is unchanged
 
 
+def test_iteration():
+    # list(q) must not fall back to the sequence protocol (jax clamps indices)
+    q = arr([1.0, 2.0, 3.0]) * u.angstrom
+    assert len(q) == 3
+    assert [val(x) for x in q] == [1.0, 2.0, 3.0]
+    # length is static, so len works inside a trace
+    assert val(jit(lambda x: (x * 0 + len(x) * u.angstrom).sum())(q)) == 9.0
+    with pytest.raises(TypeError, match="0-d quantity"):
+        len(1.0 * u.m)
+
+
 def test_complex_rejected():
     with pytest.raises(units.DimensionError, match="complex"):
         _ = arr([1.0 + 2.0j]) * u.m
@@ -370,6 +382,19 @@ def test_plain_times_quantity():
     q = ones((2, 2)) * u.m
     assert ty(jit(left)(q)) == ty(jit(right)(q))
     assert jit(mat)(q).shape == (2, 2)
+
+
+def test_transpose():
+    # transpose is registered on Quantity, so jit/vmap compositions work
+    def times_s(v: Length) -> Quantity[1, 0, 1, 0, 0]:
+        return v * (2.0 * u.s)
+
+    def tr(z: Length) -> Length:
+        return z.transpose()
+
+    xs = arange(6.0).reshape(2, 3) * u.m
+    assert jit(jax.vmap(times_s, out_axes=1))(xs).shape == (3, 2)
+    assert jit(tr)(xs).shape == (3, 2)
 
 
 def test_cold_warm_agree():
@@ -603,6 +628,17 @@ def test_treedef_equality():
     with units.base(units.SI):
         elsewhere = struct(1.0 * u.m)
     assert struct(1.0 * u.m) != elsewhere  # a different base
+
+
+def test_unflatten():
+    q = arr([1.0, 2.0]) * u.angstrom
+    leaves, td = jax.tree.flatten(q)
+    back = jax.tree.unflatten(td, leaves)
+    assert ty(back) == ty(q)
+    assert float(back.sum().to(u.angstrom)) == 3.0
+    relabelled = jax.tree.unflatten(td, [arr([3.0, 4.0])])
+    assert ty(relabelled) == "float64[2]{Å|atomistic}"
+    assert float(relabelled.sum().to(u.angstrom)) == 7.0
 
 
 def test_no_global_registration(monkeypatch: pytest.MonkeyPatch):

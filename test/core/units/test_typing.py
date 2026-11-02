@@ -103,10 +103,16 @@ def test_quantity_algebra():
     assert_type(r / (2.0 * u.fs), Velocity)
     assert_type(r / r, jax.Array)  # identical dimensions cancel to plain magnitudes
     assert_type(r.rebase(units.SI), Length)
+    assert_type(r.mean(), Length)
+    assert_type(r.T, Length)
+    assert_type(r.sum(), Length)
     assert_type(r.to(u.nm), jax.Array)  # same dimension, another unit
     assert_type(r.value, jax.Array)
     assert_type(r < r, jax.Array)
     assert_type(float(r), float)
+    rs = arr([1.0, 2.0]) * u.angstrom
+    assert_type(rs.at[0].add(r), Length)
+    assert_type(rs.at[0].get(), Length)
     assert_type(r.sqrt(), OddExponentRoot)  # m^(1/2) is not an integer exponent
     _ = r.sqrt() * 2.0  # pyrefly: ignore[unsupported-operation]
 
@@ -206,6 +212,8 @@ def test_quantity_surface_types():
     assert_type(cell @ r, Area)  # a matrix of lengths times a length
     assert_type(r % r, Length)  # a remainder keeps the shared dimension
     assert_type(r // r, jax.Array)  # and a count cancels it
+    assert_type(r.var(ddof=1), Area)  # a variance squares the dimension
+    assert_type(r.at[0].get(mode="fill", fill_value=0.0 * u.angstrom), Length)
     # apply keeps the dimension for one operand; dim= or a second operand gives Any
     assert_type(units.apply(jnp.tril, cell), Length)
     assert_type(units.apply(jnp.cumsum, r), Length)
@@ -238,6 +246,8 @@ def test_dimension_mismatch():
     # so is a plain zero
     with pytest.raises(units.DimensionError):
         r + 0.0  # pyrefly: ignore[unsupported-operation]
+    with pytest.raises(units.DimensionError):
+        r.at[0].set(0.0)  # pyrefly: ignore[bad-argument-type]
 
 
 def test_narrowing_and_methods():
@@ -251,7 +261,21 @@ def test_narrowing_and_methods():
     else:
         assert_type(leaf, jax.Array)
     r = arr([1.0, 2.0]) * u.angstrom
+    assert_type(r.ravel(), Length)  # the method keeps the dimension
+    assert_type(r.repeat(2), Length)
+    assert_type(r.sort(), Length)
+    assert_type(r.std(), Length)
+    assert_type(r.take(jnp.array([0])), Length)
+    assert_type(r.var(), Area)  # the variance of a length is an area
     assert_type((r * r).sqrt(), Length)  # sqrt halves the exponents
+    assert_type(r.dot(r), Area)
+    assert_type(r.dot(arr([1.0, 2.0])), Length)  # a plain operand keeps it
+    assert_type(r.argmin(), jax.Array)  # an index measures nothing
+    assert_type(r.any(), jax.Array)
+    assert_type(r.nonzero(), tuple[jax.Array, ...])
+    assert_type(r.repeat(jnp.array([1, 3]), axis=0), Length)
+    assert_type(r.copy(), Length)
+    assert_type(r.size, int)
     assert_type(r % (2.0 * u.angstrom), Length)  # a remainder keeps it
     assert_type(r // (2.0 * u.angstrom), jax.Array)  # a count cancels it
     assert_type(f"{r[0]:.3f}", str)  # a numeric spec applies to one magnitude

@@ -36,7 +36,8 @@ Caveats:
     function mislabels it: ``jax.tree.map(jnp.sqrt, 4.0 * u.angstrom**2)`` gives
     ``2.0 Å^2``. Use ``units.tree_map``, or pass ``is_leaf=units.is_leaf``.
   * A plain number never stands in for a dimensioned operand, zero included:
-    ``q + 0`` and ``q > 0`` raise. Write the zero with its unit, ``0.0 * u.eV``.
+    ``q + 0``, ``q > 0`` and ``q.at[i].set(0.0)`` all raise. Write the zero with
+    its unit, ``0.0 * u.eV``.
   * Quantities never become arrays implicitly, and ``==`` raises. Use
     ``q.to(unit)``, ``q.value``, ``float(q)`` or ``q.item()``, and compare with
     ``kups.core.units.testing``.
