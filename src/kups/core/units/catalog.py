@@ -8,12 +8,19 @@
     eV/Å
 
 Each constant is a typed ``Unit``; ``mol``, ``rad`` and ``deg`` are
-``Dimensionless``. ``unit`` looks up a name; names accept SI prefixes.
+``Dimensionless``. ``unit`` looks up a name and ``parse`` reads a number and a
+unit expression. Names accept SI prefixes, and every printed unit name parses
+back.
 """
+
+from __future__ import annotations
 
 import math
 from fractions import Fraction
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final, cast
+
+from lark import Lark, Token, Transformer
+from lark.exceptions import UnexpectedInput
 
 from kups.core.units import _unit as u
 from kups.core.units._unit import (
@@ -34,6 +41,11 @@ from kups.core.units._unit import (
     Unit,
     VoltageUnit,
 )
+
+if TYPE_CHECKING:
+    import jax
+
+    from kups.core.units._core import AnyQuantity
 
 CATALOG: Final[list[AnyUnit]] = []
 
@@ -203,6 +215,26 @@ _REFUSED: Final[dict[str, str]] = {
 # spellings listed in error messages
 _LISTED: Final[str] = ", ".join(sorted(k for k in _SPELLINGS if k != "\u212b"))
 
+# a value is a number and an optional unit expression; '.' is a product inside one,
+# and a product after '/' needs brackets, since W/m.K could mean either grouping
+_GRAMMAR = r"""
+    value: NUMBER product?
+    ?product: product "/" power -> div
+            | "1" "/" power -> reciprocal
+            | factors
+    ?factors: factors ("*" | ".") power -> mul
+            | power
+    ?power: atom ("**" | "^") EXPONENT -> pow
+          | atom ("**" | "^") "(" EXPONENT ")" -> bracketed_pow
+          | atom
+    ?atom: NAME -> name
+         | "(" product ")"
+    NUMBER: /[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/
+    EXPONENT.2: /[+-]?\d+(\/[1-9]\d*)?/
+    NAME: /[^\W\d]\w*/
+    %ignore /\s+/
+"""
+
 
 def _splits(name: str) -> list[tuple[str, AnyUnit]]:
     """Find every split of a name into an SI prefix and an unprefixed unit."""
@@ -277,6 +309,64 @@ def unit(name: str) -> AnyUnit:
     return out
 
 
+def parse(text: str) -> AnyQuantity | jax.Array:
+    """Parse a number and a unit expression into a quantity.
+
+    Args:
+      text: the value to read, e.g. ``"300 K"`` or ``"0.001 eV/angstrom"``.
+
+    Returns:
+      The quantity in the active base, or a plain ``jax.Array`` when dimensionless.
+
+    Raises:
+      DimensionError: if the text is not a number followed by a unit expression.
+    """
+    try:
+        return cast("AnyQuantity | jax.Array", _PARSER.parse(text))
+    except UnexpectedInput as e:
+        raise u.DimensionError(
+            f"kups.core.units: cannot read {text!r} as a value, a number followed by "
+            f"a unit expression as in '300 K' or '0.001 eV/angstrom'; a product "
+            f"after '/' takes brackets, as in 'W/(m.K)', and so does a fractional "
+            f"power, as in 'm^(1/2)':\n{e.get_context(text)}"
+        ) from None
+
+
+class _ToUnit(Transformer[Token, Any]):
+    """Build the quantity bottom-up from the parse tree."""
+
+    def value(self, xs: list[Any]) -> Any:
+        # a bare number is dimensionless; rad is the dimensionless unit with scale 1
+        return float(xs[0]) * (xs[1] if len(xs) > 1 else rad)
+
+    def mul(self, xs: list[AnyUnit]) -> AnyUnit:
+        return xs[0] * xs[1]
+
+    def div(self, xs: list[AnyUnit]) -> AnyUnit:
+        return xs[0] / xs[1]
+
+    def pow(self, xs: list[Any]) -> AnyUnit:
+        if "/" in xs[1]:
+            base = str(xs[0]) if str(xs[0]).isidentifier() else f"({xs[0]})"
+            raise u.DimensionError(
+                f"kups.core.units: a fractional power takes brackets, as in "
+                f"'{base}^({xs[1]})'."
+            )
+        return xs[0] ** Fraction(str(xs[1]))
+
+    def bracketed_pow(self, xs: list[Any]) -> AnyUnit:
+        return xs[0] ** Fraction(str(xs[1]))
+
+    def name(self, xs: list[Token]) -> AnyUnit:
+        return unit(str(xs[0]))
+
+    def reciprocal(self, xs: list[AnyUnit]) -> AnyUnit:
+        return rad / xs[0]
+
+
+_PARSER: Final = Lark(_GRAMMAR, start="value", parser="lalr", transformer=_ToUnit())
+
+
 __all__ = [
     "CATALOG",
     "SI_BASE",
@@ -319,6 +409,7 @@ __all__ = [
     "ms",
     "nm",
     "ns",
+    "parse",
     "ps",
     "rad",
     "rydberg",

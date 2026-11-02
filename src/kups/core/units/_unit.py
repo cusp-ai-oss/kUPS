@@ -450,7 +450,7 @@ def _power(name: str, e: Frac) -> str:
 
 
 def _spell(factors: Factors) -> str:
-    """Spell factors as a unit name, e.g. ``eV^2/Å^2`` or ``m^(1/2)/s``."""
+    """Spell factors as a name ``units.catalog.parse`` can read back."""
     num = ".".join(_power(n, e) for (n, _, _), e in factors if e > 0)
     den = [_power(n, -e) for (n, _, _), e in factors if e < 0]
     if not den:

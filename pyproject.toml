@@ -55,6 +55,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "rich>=13.0",
     "msgpack>=1.1.2",
+    "lark>=1.2",
     "nanoargs>=0.1.1",
     "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
     "hdf5plugin>=6.0.0",

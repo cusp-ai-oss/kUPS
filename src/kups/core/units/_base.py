@@ -180,7 +180,7 @@ class BaseSystem:
           dim: dimension vector.
 
         Returns:
-          The name of ``unit(dim)``; "" for a dimensionless
+          The name of ``unit(dim)``, which parses back; "" for a dimensionless
           ``dim``.
         """
         return "" if dim == ONE else self.unit(dim).name
