@@ -694,10 +694,16 @@ def test_no_global_registration(monkeypatch: pytest.MonkeyPatch):
         assert units.active_base() is units.ATOMISTIC
 
 
-def test_eq_rejected():
+def test_eq_and_grad_rejected():
+    def vecout(z: units.Length) -> jax.Array:
+        return (z / (1 * u.m)).sum() * ones(3)
+
     with pytest.raises(units.DimensionError, match="=="):
         # the declared return type of == is Never
         _ = (1.0 * u.m) == (1.0 * u.m)
+    q = arr([1.0, 2.0, 3.0]) * u.m
+    with pytest.raises(TypeError, match="scalar output"):
+        units.grad(vecout)(q)
 
 
 def test_atomistic_charge():

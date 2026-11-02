@@ -422,6 +422,35 @@ def test_documented_limits():
     npt.assert_allclose(traced.to(u.angstrom), [2.0, 4.0])
     assert units.dim_of(traced) == units.dim_of(u.angstrom)
 
+    def stretch(x: units.Length) -> jax.Array:
+        return (x * x).sum().to(u.angstrom**2)
+
+    # jax's reverse mode labels the cotangent with the primal's dimension,
+    # not the derivative's, so use kups.core.units' spellings
+    assert ty(jax.grad(stretch)(r)) == "float64[2]{Å|atomistic}"
+    assert ty(units.grad(stretch)(r)) == "float64[2]{1/Å|atomistic}"
+    assert ty(jax.vjp(stretch, r)[1](1.0)[0]) == "float64[2]{Å|atomistic}"
+    pull = units.vjp(stretch, r)[1]
+    assert ty(pull(1.0)[0]) == "float64[2]{1/Å|atomistic}"
+
+    @jax.custom_vjp
+    def measured(x: units.Length) -> jax.Array:
+        return x.sum().to(u.angstrom)
+
+    def measured_fwd(x: units.Length) -> tuple[jax.Array, None]:
+        return measured(x), None
+
+    def measured_bwd(
+        _res: None, _ct: jax.Array
+    ) -> tuple[units.Quantity[3, 1, -2, 0, 0]]:
+        # a cotangent whose dimension differs from the primal's
+        return (r * (1.0 * u.eV),)
+
+    measured.defvjp(measured_fwd, measured_bwd)
+    # the treedef carries the dimension, so jax's own structure check catches this
+    with pytest.raises(TypeError, match=r"same container \(pytree\) structure"):
+        jax.grad(measured)(r)
+
 
 def test_catalogue_names_parse_back():
     # every printed unit name, and its reciprocal's, reads back as the same unit
