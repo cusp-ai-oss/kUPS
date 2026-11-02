@@ -3,6 +3,7 @@
 
 """Tests for the array surface: reductions, movers, constructors, and apply."""
 
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,7 @@ from ._helpers import (
     eye,
     jit,
     linalg_norm,
+    ones,
     segment_sum,
     ty,
     val,
@@ -222,6 +224,20 @@ def test_like_under_vmap():
     assert jax.vmap(constant, out_axes=None)(rs).shape == ()
 
 
+def test_apply_override():
+    # det/inv/cross carry the right dimension; apply needs dim= to change one
+    cell = eye(3) * 5.43 * u.angstrom
+    assert units.dim_of(units.det(cell)) == units.dim_of(u.angstrom**3)
+    assert float(units.det(cell).to(u.angstrom**3)) == pytest.approx(5.43**3)
+    assert units.dim_of(units.inv(cell)) == units.dim_of(u.angstrom**-1)
+    assert units.dim_of(units.cross(cell[0], cell[1])) == units.dim_of(u.angstrom**2)
+    assert units.dim_of(
+        units.apply(jnp.linalg.det, cell, dim=units.dim_of(u.angstrom**3))
+    ) == (3, 0, 0, 0, 0)
+    with pytest.raises(units.DimensionError, match="index, a count or a mask"):
+        units.apply(jnp.argsort, units.norm(cell, axis=-1))
+
+
 def test_minimum_maximum():
     r = arr([1.0, 5.0]) * u.angstrom
     cut = 4.0 * u.angstrom
@@ -301,6 +317,61 @@ def test_apply_dim_one():
             units.apply(fn, r)
     # a dimensionless float result needs an explicit dim=ONE; the default labels it
     assert units.dim_of(units.apply(jnp.sign, r)) == units.dim_of(u.angstrom)
+
+
+def test_contractions():
+    # these compute their own dimensions, since apply's product default is wrong here
+    # ewald.py:390's k_squared, with the real subscripts
+    kv = ones((2, 4, 3)) / u.angstrom
+    k2 = units.einsum("bkd,bkd->bk", kv, kv)
+    assert units.dim_of(k2) == units.dim_of(u.angstrom**-2)
+    assert float(k2.to(u.angstrom**-2)[0, 0]) == 3.0
+    # ewald.py:419's k . r, which must be dimensionless
+    assert not units.is_quantity(
+        units.einsum(
+            "psd,pd->ps", ones((5, 4, 3)) / u.angstrom, ones((5, 3)) * u.angstrom
+        )
+    )
+    cell = eye(3) * 2.0 * u.angstrom
+    r = arr([1.0, 2.0, 3.0]) * u.angstrom
+    assert units.dim_of(cell @ r) == units.dim_of(u.angstrom**2)
+    vol = (arr([2.0, 3.0, 4.0]) * u.angstrom).prod()
+    assert units.dim_of(vol) == units.dim_of(u.angstrom**3)
+    assert float(vol.to(u.angstrom**3)) == 24.0
+    rows = ones((2, 3)) * u.angstrom
+    assert units.dim_of(rows.prod(axis=-1)) == units.dim_of(u.angstrom**3)
+    assert units.dim_of(r.var(ddof=1)) == units.dim_of(u.angstrom**2)
+    assert float(r.var(ddof=1).to(u.angstrom**2)) == 1.0
+
+
+def test_decompositions():
+    # named functions, since lift has no rule for a tuple
+    cell = eye(3) * 5.43 * u.angstrom
+    # cell.py:1317's chain: Q is dimensionless and R a length, so sign(diag(R)) is plain
+    q, upper = units.qr(cell.T)
+    assert not units.is_quantity(q)
+    assert units.dim_of(upper) == units.dim_of(u.angstrom)
+    diag = units.apply(jnp.diagonal, upper)
+    assert list(units.apply(jnp.sign, diag, dim=units.ONE)) == [1.0, 1.0, 1.0]
+    assert units.dim_of(units.qr(cell, mode="r")) == units.dim_of(u.angstrom)
+    hess = eye(3) * 2.0 * u.eV / u.angstrom**2
+    w, vecs = units.eigh(hess)
+    assert units.dim_of(w) == units.dim_of(
+        u.eV / u.angstrom**2
+    ) and not units.is_quantity(vecs)
+    npt.assert_allclose(w.to(u.eV / u.angstrom**2), [2.0, 2.0, 2.0])
+    npt.assert_allclose(abs(jnp.linalg.det(vecs)), 1.0)
+    # eigenvalues keep the operand's base, whatever base is active
+    with units.base(units.SI):
+        w_si, _ = units.eigh(hess)
+    assert units.base_of(w_si) == units.ATOMISTIC
+    # slogdet refuses a quantity; take the magnitudes explicitly first
+    sign, logabs = jnp.linalg.slogdet(eye(3) * 2.0)
+    assert float(sign) == 1.0 and float(logabs) == pytest.approx(3 * math.log(2))
+    with pytest.raises(TypeError, match="requires ndarray"):
+        jnp.linalg.slogdet(cell)
+    _, log_of_magnitudes = jnp.linalg.slogdet(cell.to(u.angstrom))
+    assert float(log_of_magnitudes) == pytest.approx(3 * math.log(5.43))
 
 
 def test_constructors():
