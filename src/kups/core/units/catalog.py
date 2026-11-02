@@ -59,7 +59,7 @@ s: Final[TimeUnit] = _u("s", u.TIME)
 A: Final[CurrentUnit] = _u("A", u.CURRENT)
 K: Final[TemperatureUnit] = _u("K", u.TEMPERATURE)
 
-# Named SI derived units and the elementary charge.
+# Named SI derived units; `e` is listed so bases pinning it display charges in e.
 N: Final[ForceUnit] = _u("N", u.FORCE)
 J: Final[EnergyUnit] = _u("J", u.ENERGY)
 Pa: Final[PressureUnit] = _u("Pa", u.PRESSURE)
@@ -112,6 +112,8 @@ deg: Final[Dimensionless] = _u("deg", u.ONE, math.pi / 180.0)
 # aliases
 Da: Final[MassUnit] = amu
 Angstrom: Final[LengthUnit] = angstrom
+
+SI_BASE: Final[tuple[AnyUnit, ...]] = (m, kg, s, A, K)
 
 # Catalogue names plus common alternate spellings.
 _SPELLINGS: Final[dict[str, AnyUnit]] = {x.name: x for x in CATALOG} | {
@@ -277,6 +279,7 @@ def unit(name: str) -> AnyUnit:
 
 __all__ = [
     "CATALOG",
+    "SI_BASE",
     "A",
     "Angstrom",
     "C",
