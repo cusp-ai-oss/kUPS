@@ -23,6 +23,7 @@ from kups.core.units import (
     Dimensionless,
     Energy,
     EnergyUnit,
+    Force,
     ForceUnit,
     Frequency,
     FrequencyUnit,
@@ -32,7 +33,10 @@ from kups.core.units import (
     NumberDensity,
     NumberDensityUnit,
     OddExponentRoot,
+    Pressure,
     Quantity,
+    Stiffness,
+    Time,
     Unit,
     Velocity,
     Volume,
@@ -133,6 +137,87 @@ def test_expression_chain():
     assert_type(sigma / r, jax.Array)
     assert_type(sigma**12, Length12)
     assert_type(sigma**12 / r**12, jax.Array)
+
+
+def test_derivative_types():
+    # a derivative's dimension is the output's over the input's, per order
+    def energy(r: Length) -> Energy:
+        return (1.0 * u.eV) * (u.angstrom / r)
+
+    r = 3.0 * u.angstrom
+    assert_type(units.grad(energy)(r), Force)  # dE/dr is a force
+    assert_type(units.value_and_grad(energy)(r), tuple[Energy, Force])
+    assert_type(units.hessian(energy)(r), Stiffness)  # d2E/dr2 is a stiffness
+    assert_type(jax.vmap(energy)(arr([1.0, 2.0]) * u.angstrom), Energy)  # as is vmap
+    assert float(units.grad(energy)(r).to(u.eV / u.angstrom)) == pytest.approx(
+        -1.0 / 9.0
+    )
+    # an output of the input's dimension (or its square, for hessian) differentiates
+    # to a plain array
+
+    def double(x: Length) -> Length:
+        return 2.0 * x
+
+    def area(x: Length) -> Area:
+        return x * x
+
+    def mix(x: Length, t: Time) -> Length:
+        return x + t * (1.0 * u.angstrom / u.s)
+
+    assert_type(units.grad(double)(r), jax.Array)
+    assert_type(units.value_and_grad(double)(r), tuple[Length, jax.Array])
+    assert_type(units.hessian(area)(r), jax.Array)
+    assert_type(units.vjp(double, r)[1](1.0), tuple[jax.Array])
+    assert_type(units.vjp(double, r)[1](r), tuple[Length])
+    pull = units.vjp(mix, r, 2.0 * u.s)[1]
+    assert_type(pull(1.0), tuple[jax.Array, Velocity])
+    assert not units.is_quantity(units.vjp(double, r)[1](1.0)[0])
+    assert not units.is_quantity(pull(1.0)[0]) and units.is_quantity(pull(1.0)[1])
+    # a seed of the inverse dimension cancels it
+    assert_type(units.vjp(area, r)[1](1.0 / r), tuple[jax.Array])
+    assert not units.is_quantity(units.vjp(area, r)[1](1.0 / r)[0])
+
+
+def test_vjp_types():
+    # the pullback labels each cotangent dim(ct) * dim(out) / dim(primal)
+    def energy(r: Length) -> Energy:
+        return (1.0 * u.eV) * (u.angstrom / r)
+
+    def with_aux(r: Length) -> tuple[Energy, str]:
+        return energy(r), "aux"
+
+    r = 3.0 * u.angstrom
+    assert_type(units.vectorize(energy)(r), Energy)  # signature-preserving
+    assert_type(units.vectorize(energy, signature="()->()")(r), Energy)
+    out, vjp_fn = units.vjp(energy, r)
+    assert_type(out, Energy)
+    assert_type(vjp_fn(1.0), tuple[Force])  # a plain cotangent is dimensionless
+    assert_type(vjp_fn(r), tuple[Energy])
+    _, aux_fn, aux = units.vjp(with_aux, r, has_aux=True)
+    assert_type(aux_fn(1.0), tuple[Force])
+    assert_type(aux, str)
+
+    # a dimensionless output pulls back to one over the primal's dimension
+    def ratio(x: Length) -> jax.Array:
+        return x / (1.0 * u.angstrom)
+
+    assert_type(units.vjp(ratio, r)[1](1.0), tuple[Wavenumber])
+
+    def spring(k: Stiffness, x: Length) -> Energy:
+        return 0.5 * k * x**2
+
+    _, pull2 = units.vjp(spring, 250.0 * u.N / u.m, r)
+    assert_type(pull2(1.0), tuple[Area, Force])
+    assert_type(pull2(1.0 / r), tuple[Length, Stiffness])
+    assert_type(pull2(1.0 / (1.0 * u.angstrom**2)), tuple[jax.Array, Pressure])
+    # jax annotates these Any, so a checker cannot follow a dimension through one
+    assert_type(jax.jvp(energy, (r,), (r,)), tuple[Any, ...])
+    assert_type(jax.lax.cond(True, energy, energy, r), Any)
+    # relabel's dimension is a runtime value, so its result is Any too
+    assert_type(units.relabel(r, units.ONE), Any)
+    assert float(vjp_fn(1.0)[0].to(u.eV / u.angstrom)) == pytest.approx(-1.0 / 9.0)
+    assert float(vjp_fn(r)[0].to(u.eV)) == pytest.approx(-1.0 / 3.0)
+    assert not units.is_quantity(pull2(1.0 / (1.0 * u.angstrom**2))[0])
 
 
 def test_dimensionless_algebra():

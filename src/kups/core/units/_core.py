@@ -1087,8 +1087,13 @@ def from_dim(
             f"{sym(magnitudes.dim, magnitudes.bs)} "
             "already, and "
             "from_dim reads plain numbers. Take q.value for the magnitudes in q's own "
-            "base."
+            "base, or units.relabel(q, dim) to read them as something else."
         )
+    return attach_plain(magnitudes, dim, bs or active_base(), "from_dim")
+
+
+def attach_plain(magnitudes: ArrayLike, dim: Dim, bs: BaseSystem, what: str) -> Any:
+    """Label plain magnitudes ``dim`` in ``bs``; ``what`` names the caller."""
     v = jnp.asarray(magnitudes)
     if jnp.issubdtype(v.dtype, jnp.complexfloating):
         raise DimensionError(
@@ -1096,9 +1101,8 @@ def from_dim(
             "jnp.real/jnp.imag before attaching a dimension"
         )
     v = jnp.astype(v, v.dtype)  # drops weak typing, as from_unit does
-    into = bs or active_base()
-    check_dtype(v.dtype, dim, into, "from_dim")
-    return lift(v, dim, into)
+    check_dtype(v.dtype, dim, bs, what)
+    return lift(v, dim, bs)
 
 
 def joint(*xs: object) -> BaseSystem:

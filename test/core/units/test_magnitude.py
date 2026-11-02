@@ -207,7 +207,7 @@ def test_serialisation():
         units.base_of(arr([1.0]))
     with pytest.raises(units.DimensionError, match="is not a dimension"):
         units.dim_str((1, 0, 0))  # three exponents are not a dimension
-    with pytest.raises(units.DimensionError, match="from_dim reads plain numbers"):
+    with pytest.raises(units.DimensionError, match=r"units\.relabel"):
         units.from_dim(r, units.dim_of(u.eV))  # already labelled
     assert not units.is_quantity(units.from_dim(stored, units.ONE))  # decays
 
@@ -223,14 +223,15 @@ def test_attached_magnitudes_are_not_weak():
 
 
 def test_arraylike_magnitudes():
-    # a scalar-returning apply holds a jax literal rather than an array, and is read
-    # through the same conversion as any ArrayLike
+    # relabel and a scalar-returning apply hold a jax literal rather than an array,
+    # and are read through the same conversion as any ArrayLike
     dim = units.dim_of(u.angstrom)
     at = units.ATOMISTIC
     for q in (
         units.Quantity(3.0, dim, at),
         units.Quantity(np.float64(3.0), dim, at),
         units.Quantity(np.array([3.0]), dim, at),
+        units.relabel(3.0, dim),
         units.apply(lambda a: 3.0, 3.0 * u.angstrom, dim=dim),
     ):
         assert isinstance(q.value, jax.Array)

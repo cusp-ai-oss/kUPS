@@ -29,10 +29,15 @@ Model:
   ``Quantity[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a second
   operand's.
 
-  The array and linear algebra functions here cover the cases ``jnp`` rejects;
-  ``apply`` wraps any other function.
+  ``grad``, ``value_and_grad``, ``hessian`` and ``vjp`` label derivatives
+  ``dim(out) / dim(arg)``, times the cotangent's dimension for ``vjp``. The array
+  and linear algebra functions here cover the cases ``jnp`` rejects; ``apply``
+  wraps any other function and ``relabel`` states a dimension the type algebra
+  cannot compute.
 
 Caveats:
+  * ``jax.grad`` gives a gradient the primal's dimension. This is silently wrong
+    rather than an error; use ``units.grad``.
   * ``jax.tree.map`` over a single tree treats a quantity as a node, so a nonlinear
     function mislabels it: ``jax.tree.map(jnp.sqrt, 4.0 * u.angstrom**2)`` gives
     ``2.0 Å^2``. Use ``units.tree_map``, or pass ``is_leaf=units.is_leaf``.
@@ -130,6 +135,14 @@ from kups.core.units._linalg import (
     einsum,
     inv,
     qr,
+)
+from kups.core.units._transforms import (
+    grad,
+    hessian,
+    relabel,
+    value_and_grad,
+    vectorize,
+    vjp,
 )
 from kups.core.units._typed import E_A, E_K, E_KG, E_M, E_S, F_A, F_K, F_KG, F_M, F_S
 from kups.core.units._unit import (
@@ -268,7 +281,14 @@ __all__ = [
     "F_S",
     "F_A",
     "F_K",
+    # derivatives
+    "grad",
+    "value_and_grad",
+    "hessian",
+    "vjp",
+    "relabel",
     # transforms
+    "vectorize",
     "apply",
     # array functions
     "sqrt",
