@@ -168,6 +168,34 @@ def test_array_surface():
     assert list(units.apply(jnp.flip, f[0]).value) == [2.0, 1.0]
 
 
+def test_masking_and_scatter():
+    r = arr([1.0, 3.0, 7.0]) * u.angstrom
+    cut = 5.0 * u.angstrom
+
+    def energy(z: units.Length) -> units.Energy:
+        # masked 1/r energy: the standard cutoff idiom
+        return units.where(z < cut, (1.0 * u.eV * u.angstrom) / z, 0.0 * u.eV).sum()
+
+    g = units.grad(energy)(r)
+    assert bool(jnp.all(jnp.isfinite(g.value)))  # forces must not be NaN
+    assert float(energy(r).to(u.eV)) == pytest.approx(1 + 1 / 3)
+    assert val(jit(energy)(r)) == val(energy(r))
+    ids = arr([0, 0, 1])
+    per_atom = units.apply(segment_sum, arr([1.0, 2.0, 3.0]) * u.eV, ids, 2)
+    assert [float(x) for x in per_atom.to(u.eV)] == [3.0, 3.0]
+    acc = units.zeros_like(per_atom).at[ids[:2]].add(arr([1.0, 2.0]) * u.eV)
+    assert [float(x) for x in acc.to(u.eV)] == [3.0, 0.0]
+    assert float(acc.at[0].get().to(u.eV)) == 3.0
+    assert [float(x) for x in acc.at[0].set(0.0 * u.eV).to(u.eV)] == [0.0, 0.0]
+    assert [float(x) for x in acc.at[0].multiply(2.0).to(u.eV)] == [6.0, 0.0]
+
+    def scatter(v: units.Energy) -> units.Energy:
+        return units.apply(segment_sum, v, ids, 2).sum()
+
+    assert list(units.grad(scatter)(arr([1.0, 2.0, 3.0]) * u.eV)) == [1.0] * 3
+    assert jax.vmap(units.norm)(arange(6.0).reshape(3, 2) * u.eV).shape == (3,)
+
+
 def test_dimension_checks():
     f = arr([1.0, 2.0]) * u.eV
     d = arr([1.0, 2.0]) * u.angstrom
@@ -221,6 +249,26 @@ def test_like_under_vmap():
     assert list(broadcast.to(u.eV)) == [1.0, 1.0]
     # out_axes=None returns the unbatched constant at its original shape
     assert jax.vmap(constant, out_axes=None)(rs).shape == ()
+
+
+def test_where_needs_sanitized_operand():
+    # where evaluates both branches, so mask the operand before the divide
+    z = arr([1.0, 3.0, 0.0]) * u.angstrom  # a padded neighbour entry
+    strength = 1.0 * u.eV * u.angstrom
+
+    def naive(r: Length) -> Energy:
+        # masks the result: finite energy, NaN force
+        return units.where(r > (0.0 * u.angstrom), strength / r, 0.0 * u.eV).sum()
+
+    def cured(r: Length) -> Energy:
+        # masks the operand first, so the gradient is finite too
+        good = r > (0.0 * u.angstrom)
+        rr = units.where(good, r, 1.0 * u.angstrom)
+        return units.where(good, strength / rr, 0.0 * u.eV).sum()
+
+    assert float(naive(z).to(u.eV)) == pytest.approx(float(cured(z).to(u.eV)))
+    assert not bool(jnp.all(jnp.isfinite(units.grad(naive)(z).value)))
+    assert bool(jnp.all(jnp.isfinite(units.grad(cured)(z).value)))
 
 
 def test_apply_override():
