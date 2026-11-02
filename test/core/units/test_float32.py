@@ -3,6 +3,10 @@
 
 """Float32 tests (x64 off, jax's default): rescales must be right or raise."""
 
+import os
+import subprocess
+import sys
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,9 +15,18 @@ import pytest
 from kups.core import units
 from kups.core.units import E_A, E_K, E_KG, E_M, E_S, Unit
 from kups.core.units import catalog as u
+from kups.core.units import constants as k
 from kups.core.units import testing as ut
 
 from ._helpers import arr, x64_mode
+
+# enables x64 after importing kups.core.units; needs a fresh process
+_LATE_X64 = """
+from kups.core import units
+import jax; jax.config.update('jax_enable_x64', True)
+from kups.core.units import constants as k
+print(k.c.value.dtype, float(k.c.value), float(k.h.value))
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -166,6 +179,31 @@ def test_advice_matches_the_dtype():
                 convert()
             assert "x64" not in str(err.value)
             assert "wider than float16" in str(err.value)
+
+
+def test_constants_follow_base():
+    # in float32 an SI-based h squares to zero
+    assert float((k.h**2).to(u.eV**2 * u.s**2)) > 0.0
+    ryd = float((k.hbar**2 / (2 * k.m_e * k.a_0**2)).to(u.eV))
+    assert ryd == pytest.approx(13.6056931, rel=1e-6)
+    bohr = float((4 * np.pi * k.eps_0 * k.hbar**2 / (k.m_e * k.e**2)).to(u.angstrom))
+    assert bohr == pytest.approx(0.52917721, rel=1e-6)
+
+
+def test_late_x64_switch():
+    # constants are built on first access, so they see the switch
+    env = {key: v for key, v in os.environ.items() if key != "JAX_ENABLE_X64"}
+    out = subprocess.run(
+        [sys.executable, "-c", _LATE_X64],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    ).stdout.split()
+    assert out[0] == "float64"
+    # the atomistic magnitudes, rounded once from the exact value; float32 differs
+    assert float(out[1]) == 30520.38830711602
+    assert float(out[2]) == 0.4062340137536605
 
 
 def test_allclose_float32_rtol():
