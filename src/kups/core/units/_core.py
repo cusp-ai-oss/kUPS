@@ -9,7 +9,7 @@ at construction, and a dimensionless result decays to a plain ``jax.Array``. A
 quantity is a pytree with the magnitudes as its single leaf and the dimension and
 base as metadata.
 
-Methods share the helpers here; dtype checks and scale factors live in
+Methods share the helpers here; dtype and scale-factor checks live in
 ``units._precision``.
 """
 
@@ -46,7 +46,11 @@ from kups.core.units._precision import (
     base_scale,
     cast_advice,
     check_dtype,
+    checked_cast,
+    other_base,
     rebase_factor,
+    require_normal,
+    widen,
 )
 from kups.core.units._typed import E_A, E_K, E_KG, E_M, E_S
 from kups.core.units._unit import (
@@ -569,7 +573,7 @@ class Quantity(Generic[E_M, E_KG, E_S, E_A, E_K]):
         return _concrete(self, "q.tolist()").tolist()
 
     def astype(self, dtype: DTypeLike) -> Quantity[E_M, E_KG, E_S, E_A, E_K]:
-        """Cast the magnitudes to another dtype."""
+        """Cast the magnitudes to another dtype, refusing one x64 being off rules out."""
         dt = jnp.result_type(dtype)
         if self.dim != ONE and not jnp.issubdtype(dt, jnp.floating):
             raise DimensionError(
@@ -579,7 +583,7 @@ class Quantity(Generic[E_M, E_KG, E_S, E_A, E_K]):
                 "q.to(unit).astype(dtype) or q.value.astype(dtype) for unlabelled "
                 "magnitudes."
             )
-        return lift(jnp.astype(lower(self), dtype), self.dim, self.bs)
+        return lift(checked_cast(lower(self), dtype), self.dim, self.bs)
 
     def _rearranged(
         self, fn: Callable[..., jax.Array], *args: object, **kwargs: object
@@ -1109,17 +1113,45 @@ def joint(*xs: object) -> BaseSystem:
     return active_base() if bs is None else bs
 
 
-def _unit_mag(unit: AnyUnit, bs: BaseSystem) -> float:
-    """One ``unit`` as a magnitude in ``bs``."""
-    return unit.scale / base_scale(bs, unit.dim)
+def _promote_arg(x: object) -> object:
+    """``x``'s contribution to dtype promotion, or None."""
+    if isinstance(x, Quantity):
+        return x.dtype
+    if isinstance(x, Unit) or not (hasattr(x, "dtype") or isinstance(x, int | float)):
+        return None
+    return x
+
+
+def operand_dtype(xs: Sequence[object]) -> np.dtype[np.generic] | None:
+    """The dtype a Unit operand's size is held in; None if there is no Unit."""
+    if not any(isinstance(x, Unit) for x in xs):
+        return None
+    args = [a for a in map(_promote_arg, xs) if a is not None]
+    return jnp.result_type(*args, float)
+
+
+def _unit_mag(unit: AnyUnit, bs: BaseSystem, dtype: DTypeLike | None = None) -> float:
+    """One ``unit`` as a magnitude in ``bs``, checked to be normal in ``dtype``."""
+    f = unit.scale / base_scale(bs, unit.dim)
+    if f == 1.0:
+        return f
+    dtype = jnp.result_type(float) if dtype is None else jnp.dtype(dtype)
+    require_normal(
+        f,
+        dtype,
+        f"one {unit} is {f!r} in base {bs.name}",
+        f"so the magnitudes it scales would be destroyed. Instead "
+        f"{widen(dtype)}work in a base where {unit} is O(1){other_base(bs)}.",
+    )
+    return f
 
 
 def mag[T](
-    x: AnyQuantity | AnyUnit | T, bs: BaseSystem
+    x: AnyQuantity | AnyUnit | T, bs: BaseSystem, dtype: DTypeLike | None = None
 ) -> tuple[jax.Array | float | T, Dim]:
     """Magnitudes of ``x`` in base ``bs``, and its dimension."""
     if isinstance(x, Unit):
-        return _unit_mag(x, bs), x.dim
+        return _unit_mag(x, bs, dtype), x.dim
     if not isinstance(x, Quantity):
         return x, ONE
     lo = lower(x)
@@ -1142,7 +1174,8 @@ def from_unit(x: ArrayLike, unit: AnyUnit) -> jax.Array | AnyQuantity:
       The quantity, in the active base; a plain array if ``unit`` is dimensionless.
 
     Raises:
-      DimensionError: if the magnitudes are complex.
+      DimensionError: if the magnitudes are complex, or if the unit's factor in
+        the active base is not a normal number of their dtype.
     """
     bs = active_base()
     v = jnp.asarray(x)
@@ -1155,7 +1188,7 @@ def from_unit(x: ArrayLike, unit: AnyUnit) -> jax.Array | AnyQuantity:
     v = jnp.astype(
         v, v.dtype if jnp.issubdtype(v.dtype, jnp.floating) else jnp.result_type(float)
     )
-    f = unit.scale / base_scale(bs, unit.dim)
+    f = _unit_mag(unit, bs, v.dtype)
     if f == 1.0:
         return lift(v, unit.dim, bs)
     return lift(v * f, unit.dim, bs)
@@ -1188,11 +1221,23 @@ def _to(q: object, unit: AnyUnit) -> jax.Array:
             f"{unit!r}: rescaling requires floating magnitudes; "
             f"{cast_advice(q.dtype)}."
         )
+    f = b / unit.scale
+    # a side of size 1 leaves the other applied alone, so that number is checked too
+    applied = unit.scale if b == 1.0 else b if unit.scale == 1.0 else f
+    for factor in (f,) if applied == f else (f, applied):
+        require_normal(
+            factor,
+            q.dtype,
+            f"expressing {q.bs.symbol(q.dim) or '1'!r} in {unit!r} needs a factor "
+            f"of {factor!r}",
+            f"so the magnitudes would come back as zero or nan. Instead "
+            f"{widen(q.dtype)}measure in a unit closer to the magnitudes' own size.",
+        )
     if b == 1.0:
         return out / unit.scale
     if unit.scale == 1.0:
         return out * b
-    return out * (b / unit.scale)
+    return out * f
 
 
 def sym(d: Dim, bs: BaseSystem) -> str:
@@ -1267,8 +1312,9 @@ def _binop(
     the error.
     """
     bs = joint(x, y)
-    lx, dx = mag(x, bs)
-    ly, dy = mag(y, bs)
+    dt = operand_dtype((x, y))
+    lx, dx = mag(x, bs, dt)
+    ly, dy = mag(y, bs, dt)
     if isinstance(dimop, str):
         if dx != dy:
             raise _mismatch(dimop, dx, dy, bs)
@@ -1381,7 +1427,8 @@ def apply(
         checked_dim(dim, "apply")
     ops = (x, *args, *kwargs.values())
     bs = joint(*ops)
-    mags = [mag(o, bs) for o in ops]
+    dt = operand_dtype(ops)
+    mags = [mag(o, bs, dt) for o in ops]
     n = len(args)
     lo = [m for m, _ in mags]
     out = fn(lo[0], *lo[1 : n + 1], **dict(zip(kwargs, lo[n + 1 :], strict=True)))
@@ -1414,10 +1461,11 @@ def agree(
     ``verb`` names the operation in errors.
     """
     bs = joint(*xs)
+    dt = operand_dtype(xs)
     mags: list[ArrayLike] = []
     dim: Dim | None = None
     for x in xs:
-        lo, d = mag(x, bs)
+        lo, d = mag(x, bs, dt)
         mags.append(lo)
         if dim is None:
             dim = d
@@ -1548,7 +1596,7 @@ def static_fill(
         f = 1.0 if fill.bs == bs else rebase_factor(fill.bs, bs, fill.dim, fill.dtype)
         v, d = float(lo) * f, fill.dim
     elif isinstance(fill, Unit):
-        v, d = _unit_mag(fill, bs), fill.dim
+        v, d = _unit_mag(fill, bs, operand_dtype((x, fill))), fill.dim
     else:
         v, d = 0.0, ONE
     if d != dim:
@@ -1573,8 +1621,9 @@ class _AtRef(Generic[_Q]):
     ) -> tuple[jax.Array, jax.Array, Callable[[jax.Array], _Q]]:
         """Plain numbers for ``x`` and ``v`` in ``x``'s base, and the relabeller."""
         bs = self.x.bs
-        lx, dim = mag(self.x, bs)
-        lv, dv = mag(v, bs)
+        dt = operand_dtype((self.x, v))
+        lx, dim = mag(self.x, bs, dt)
+        lv, dv = mag(v, bs, dt)
         if dv != dim:
             raise _mismatch(verb, dim, dv, bs)
         return jnp.asarray(lx), jnp.asarray(lv), lambda out: lift(out, dim, bs)
@@ -1685,9 +1734,10 @@ class _AtRef(Generic[_Q]):
           DimensionError: if ``v`` carries a dimension (an array holds one).
         """
         bs = self.x.bs
-        lx, dx = mag(self.x, bs)
+        dt = operand_dtype((self.x, v))
+        lx, dx = mag(self.x, bs, dt)
         lx = jnp.asarray(lx)
-        lv, dv = mag(v, bs)
+        lv, dv = mag(v, bs, dt)
         if dv != ONE:
             raise DimensionError(
                 "kups.core.units: q.at[...].multiply needs a dimensionless factor, "
