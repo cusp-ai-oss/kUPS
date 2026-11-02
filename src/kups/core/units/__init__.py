@@ -9,14 +9,27 @@
 
 Model:
   A ``Unit`` is a named multiple of a dimension, five rational exponents over
-  ``(m, kg, s, A, K)``; ``mol`` is dimensionless with scale ``N_A``. ``Unit`` is
-  generic over symbolic integer exponents, so pyrefly tracks dimensions through
-  unit algebra. ``E_M``, ``E_KG``, ``E_S``, ``E_A`` and ``E_K`` are those
-  exponents as type variables, for signatures generic over the dimension, such as
-  ``Unit[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a second operand's.
+  ``(m, kg, s, A, K)``; ``mol`` is dimensionless with scale ``N_A``. A
+  ``BaseSystem`` fixes the units magnitudes are expressed in: ``ATOMISTIC`` (Å,
+  amu, eV, e, K) unless ``set_base`` or a ``with base(...)`` scope chooses
+  another, such as ``SI``.
+
+  ``Unit`` is generic over symbolic integer exponents, so pyrefly tracks
+  dimensions through unit algebra. ``E_M``, ``E_KG``, ``E_S``, ``E_A`` and ``E_K``
+  are those exponents as type variables, for signatures generic over the
+  dimension, such as ``Unit[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a
+  second operand's.
 """
 
 from kups.core.units import catalog as catalog
+from kups.core.units._base import (
+    ATOMISTIC,
+    SI,
+    BaseSystem,
+    active_base,
+    base,
+    set_base,
+)
 from kups.core.units._typed import _E_A as E_A
 from kups.core.units._typed import _E_K as E_K
 from kups.core.units._typed import _E_KG as E_KG
@@ -98,6 +111,13 @@ __all__ = [
     "VoltageUnit",
     "VolumeUnit",
     "WavenumberUnit",
+    # base systems
+    "BaseSystem",
+    "SI",
+    "ATOMISTIC",
+    "base",
+    "set_base",
+    "active_base",
     # dimensions
     "ONE",
     "Dim",

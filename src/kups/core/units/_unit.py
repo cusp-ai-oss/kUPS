@@ -95,6 +95,67 @@ def dpow(a: Dim, e: Frac) -> Dim:
     return _mk(Frac(x) * e for x in a)
 
 
+def exps(d: Dim) -> str:
+    """Format a dimension as its raw exponent list, for error messages.
+
+    Args:
+      d: dimension vector.
+
+    Returns:
+      A string like ``"(m=1, kg=1, s=-2, A=0, K=0)"``.
+    """
+    return "(" + ", ".join(f"{n}={v}" for n, v in zip(AXES, d, strict=True)) + ")"
+
+
+def eliminate(rows: list[list[Frac]], ncols: int) -> int:
+    """Gauss-Jordan eliminate ``rows`` in place over exact rationals.
+
+    Args:
+      rows: matrix rows; extra trailing columns are carried along.
+      ncols: number of leading columns to pivot on.
+
+    Returns:
+      The rank; pivot rows come first, so rows from the rank on are zero in the
+      first ``ncols`` columns.
+    """
+    r = 0
+    for c in range(ncols):
+        p = next((i for i in range(r, len(rows)) if rows[i][c]), None)
+        if p is None:
+            continue
+        rows[r], rows[p] = rows[p], rows[r]
+        inv = rows[r][c]
+        rows[r] = [v / inv for v in rows[r]]
+        for i in range(len(rows)):
+            if i != r and rows[i][c]:
+                f = rows[i][c]
+                rows[i] = [a - f * b for a, b in zip(rows[i], rows[r], strict=True)]
+        r += 1
+    return r
+
+
+def solve(cols: tuple[Dim, ...], target: Dim) -> tuple[Frac, ...] | None:
+    """Write ``target`` as an exact rational combination of ``cols``.
+
+    Args:
+      cols: dimension vectors, assumed independent.
+      target: dimension vector to decompose.
+
+    Returns:
+      Exponents ``x`` with ``sum_j x_j * cols[j] == target``, or None if
+      ``target`` is outside their span.
+    """
+    k = len(cols)
+    mat = [[Frac(c[i]) for c in cols] + [Frac(t)] for i, t in enumerate(target)]
+    r = eliminate(mat, k)
+    if any(row[k] for row in mat[r:]):
+        return None
+    x = [Frac(0)] * k
+    for row in mat[:r]:  # a pivot row leads with a 1 in its pivot column
+        x[next(j for j in range(k) if row[j])] = row[k]
+    return tuple(x)
+
+
 def exponent(e: float | Frac) -> Frac:
     """Convert a dimension exponent to a Fraction.
 
@@ -280,6 +341,16 @@ else:
     type VoltageUnit = Unit
     type VolumeUnit = Unit
     type WavenumberUnit = Unit
+
+
+def _require_unit(unit: object, what: str) -> None:
+    if not isinstance(unit, Unit):
+        raise TypeError(
+            f"kups.core.units: {what} must be a Unit, not {type(unit).__name__} "
+            f"({unit!r}). "
+            "Pass a unit such as u.m or u.eV**-1, without magnitudes. "
+            "Use units.catalog.unit(name) to look up a string."
+        )
 
 
 def _scaled(scale: float, e: Frac) -> float:
