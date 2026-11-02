@@ -8,12 +8,15 @@
     eV/Å
 
 Each constant is a typed ``Unit``; ``mol``, ``rad`` and ``deg`` are
-``Dimensionless``. ``unit`` looks up a name; names accept SI prefixes.
+``Dimensionless``. ``unit`` looks up a name, ``parse`` reads a number and a unit
+expression, and ``require_dim`` checks a value's dimension. Names accept SI
+prefixes, and every printed unit name parses back.
 """
 
 import math
+import re
 from fractions import Fraction
-from typing import Final
+from typing import Any, Final
 
 from kups.core.units import _unit as u
 from kups.core.units._unit import (
@@ -203,6 +206,14 @@ _REFUSED: Final[dict[str, str]] = {
 # spellings listed in error messages
 _LISTED: Final[str] = ", ".join(sorted(k for k in _SPELLINGS if k != "\u212b"))
 
+_NUMBER = r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?"
+# '.' is the product operator inside expressions, so a number token cannot end in one
+_TOKEN_NUMBER = r"[+-]?(?:\d+\.\d+|\d+|\.\d+)(?:[eE][+-]?\d+)?"
+# alternation order matters: `**` must come before `*`, and a number before `\w+`
+_TOKEN = re.compile(rf"\*\*|{_TOKEN_NUMBER}|\w+|[*/.^()]")
+_NUMBER_RE = re.compile(_NUMBER)
+_INTEGER = re.compile(r"[+-]?\d+")
+
 
 def _splits(name: str) -> list[tuple[str, AnyUnit]]:
     """Find every split of a name into an SI prefix and an unprefixed unit."""
@@ -277,6 +288,155 @@ def unit(name: str) -> AnyUnit:
     return out
 
 
+def parse(text: str) -> Any:
+    """Parse a number and a unit expression into a quantity.
+
+    Args:
+      text: the value to read, e.g. ``"300 K"`` or ``"0.001 eV/angstrom"``.
+
+    Returns:
+      The quantity in the active base, or a plain ``jax.Array`` when dimensionless.
+
+    Raises:
+      DimensionError: if the text has no leading number or a bad unit expression.
+    """
+    body = text.strip()
+    lead = _NUMBER_RE.match(body)
+    if lead is None:
+        raise u.DimensionError(
+            f"kups.core.units: cannot read {text!r} as a value: it must start with a "
+            "number, "
+            f"as in '300 K', '2 fs' or '0.001 eV/angstrom'."
+        )
+    rest = body[lead.end() :].strip()
+    # a bare number is dimensionless; rad is the dimensionless unit with scale 1
+    return float(lead.group()) * (_expression(rest, text) if rest else rad)
+
+
+def require_dim(q: object, unit: AnyUnit) -> None:
+    """Check that a value has the same dimension as ``unit``.
+
+    Args:
+      q: a quantity, or any other value (treated as dimensionless).
+      unit: the unit whose dimension the value must match.
+
+    Raises:
+      DimensionError: if the dimensions differ.
+    """
+    from kups.core.units._base import active_base  # avoids a cycle
+    from kups.core.units._core import dim_of  # avoids a cycle
+
+    got = dim_of(q)
+    if got == unit.dim:
+        return
+    raise u.DimensionError(
+        f"kups.core.units: expected a value in {unit.name}, got one in "
+        f"{active_base().symbol(got) or 'no unit at all'}\n"
+        f"  expected {u.exps(unit.dim)}\n  received {u.exps(got)}"
+    )
+
+
+def _expression(text: str, whole: str) -> AnyUnit:
+    """Parse a whole unit expression; ``whole`` is the original text, for errors."""
+    toks = _tokens(text, whole)
+    out, i = _product(toks, 0, whole)
+    if i < len(toks):
+        raise u.DimensionError(
+            f"kups.core.units: cannot read the unit of {whole!r}: expected '*' or '/' "
+            "before "
+            f"{toks[i]!r}."
+        )
+    return out
+
+
+def _product(toks: list[str], i: int, whole: str) -> tuple[AnyUnit, int]:
+    """Parse units joined by ``*``, ``.`` and ``/``, up to a ``)`` or the end."""
+    out, i = _factor(toks, i, whole)
+    while i < len(toks) and toks[i] in ("*", "/", "."):
+        op, (rhs, i) = toks[i], _factor(toks, i + 1, whole)
+        out = out / rhs if op == "/" else out * rhs
+    return out, i
+
+
+def _tokens(text: str, whole: str) -> list[str]:
+    """Split a unit expression into unit, number and operator tokens."""
+    out: list[str] = []
+    pos = 0
+    for m in _TOKEN.finditer(text):
+        if text[pos : m.start()].strip():
+            break
+        out.append(m.group())
+        pos = m.end()
+    if text[pos:].strip():
+        raise u.DimensionError(
+            f"kups.core.units: cannot read the unit of {whole!r}: "
+            f"{text[pos:].strip()!r} is "
+            f"not part of a unit expression."
+        )
+    return out
+
+
+def _factor(toks: list[str], i: int, whole: str) -> tuple[AnyUnit, int]:
+    """Parse one unit or parenthesised group, with its power if any."""
+    if i >= len(toks) or toks[i] == ")":
+        raise u.DimensionError(
+            f"kups.core.units: cannot read the unit of {whole!r}: it ends after an "
+            "operator."
+        )
+    tok = toks[i]
+    if tok == "(":
+        out, i = _product(toks, i + 1, whole)
+        if i >= len(toks) or toks[i] != ")":
+            raise u.DimensionError(
+                f"kups.core.units: cannot read the unit of {whole!r}: a '(' with no "
+                "')'."
+            )
+        return _powered(out, toks, i + 1, whole)
+    if _NUMBER_RE.fullmatch(tok):
+        if float(tok) != 1.0:
+            raise u.DimensionError(
+                f"kups.core.units: cannot read the unit of {whole!r}: {tok!r} is a "
+                "number "
+                f"where a unit belongs; only a leading '1' stands for the "
+                f"dimensionless unit, as in '4.57e-10 1/Pa'."
+            )
+        return rad, i + 1
+    return _powered(unit(tok), toks, i + 1, whole)
+
+
+def _powered(out: AnyUnit, toks: list[str], i: int, whole: str) -> tuple[AnyUnit, int]:
+    """Apply a following ``^`` or ``**`` exponent, if any."""
+    if i < len(toks) and toks[i] in ("**", "^"):
+        power, i = _power(toks, i + 1, whole)
+        out = out**power
+    return out, i
+
+
+def _power(toks: list[str], i: int, whole: str) -> tuple[Fraction, int]:
+    """Parse an exponent: an integer, or a ratio of two integers."""
+    tok = toks[i] if i < len(toks) else ""
+    if not _INTEGER.fullmatch(tok):
+        raise u.DimensionError(
+            f"kups.core.units: cannot read the unit of {whole!r}: {tok!r} is not an "
+            "exponent; "
+            f"an exponent is an integer or a ratio of two, as in 'angstrom^-3' or "
+            f"'amu^1/2'."
+        )
+    num, i = int(tok), i + 1
+    if i + 1 < len(toks) and toks[i] == "/" and _INTEGER.fullmatch(toks[i + 1]):
+        den = int(toks[i + 1])
+        if den == 0:
+            ratio = f"{tok}/{toks[i + 1]}"
+            raise u.DimensionError(
+                f"kups.core.units: cannot read the unit of {whole!r}: {ratio!r} is not "
+                "an "
+                f"exponent; a ratio needs a denominator that is not zero, as in "
+                f"'amu^1/2'."
+            )
+        return Fraction(num, den), i + 2
+    return Fraction(num), i
+
+
 __all__ = [
     "CATALOG",
     "SI_BASE",
@@ -319,8 +479,10 @@ __all__ = [
     "ms",
     "nm",
     "ns",
+    "parse",
     "ps",
     "rad",
+    "require_dim",
     "rydberg",
     "s",
     "unit",
