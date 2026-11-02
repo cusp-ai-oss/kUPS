@@ -23,11 +23,15 @@ from ._helpers import (
     asarray,
     debug_callback,
     debug_print,
+    empty_like,
     eval_shape,
+    full_like,
     np_array,
     np_asarray,
+    ones_like,
     ty,
     val,
+    zeros_like,
 )
 
 type _Op = Callable[..., object]
@@ -80,6 +84,18 @@ def test_jnp_interop():
     assert jax.tree.leaves({"q": q}, is_leaf=units.is_quantity) == [q]
     (leaf,) = jax.tree.leaves({"q": q})
     assert not units.is_quantity(leaf) and list(leaf) == [1.0, 2.0, 3.0]
+
+
+def test_jnp_like_drops_units():
+    # jnp's *_like duck-type shape and dtype, so kups.core.units never sees the call
+    q = arr([1.0, 2.0]) * u.m
+    for fn in (zeros_like, ones_like, empty_like):
+        out = fn(q)
+        assert not units.is_quantity(out) and out.shape == (2,)
+    assert not units.is_quantity(full_like(q, 1.0))
+    assert list(zeros_like(q.value)) == [0.0, 0.0]  # plain arrays untouched
+    assert ty(units.zeros_like(q)) == ty(q)
+    assert ty(units.full_like(q, 1.0 * u.m)) == ty(q)
 
 
 def test_asarray_refused():
