@@ -441,15 +441,18 @@ def _root(x: Frac, d: int) -> float:
         return math.inf
 
 
+def _exact(factors: Factors) -> tuple[Frac, int]:
+    """Return radicand and degree, with the factors' scale = radicand ** (1/degree)."""
+    d = math.lcm(*(e.denominator for _, e in factors))
+    acc = math.prod((Frac(s) ** int(e * d) for (_, _, s), e in factors), start=Frac(1))
+    return acc, d
+
+
 def _magnitude(factors: Factors) -> float:
     """Size of a product of atoms in SI base units, rounded once."""
     if not all(0 < s < math.inf for (_, _, s), _ in factors):
         return math.prod(_scaled(s, e) for (_, _, s), e in factors)
-    d = math.lcm(*(e.denominator for _, e in factors))
-    exact = math.prod(
-        (Frac(s) ** int(e * d) for (_, _, s), e in factors), start=Frac(1)
-    )
-    return _root(exact, d)
+    return _root(*_exact(factors))
 
 
 def _spell(factors: Factors) -> str:

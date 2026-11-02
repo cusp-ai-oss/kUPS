@@ -1,10 +1,12 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the unit catalogue, assertions, and documented limits."""
+"""Tests for the unit catalogue, constants, assertions, and documented limits."""
 
 import pathlib
 import re
+import warnings
+from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
@@ -22,7 +24,9 @@ from kups.core.units import (
     Energy,
     Force,
     Length,
+    Temperature,
     Unit,
+    constants,
 )
 from kups.core.units import catalog as u
 from kups.core.units import testing as ut
@@ -36,6 +40,7 @@ from ._helpers import (
     make_jaxpr,
     ty,
     val,
+    x64_mode,
 )
 
 
@@ -118,6 +123,69 @@ def test_unit_catalogue():
                 _ = seq / unit
 
 
+def test_constant_read_in_trace():
+    # a constant first read inside jit is built eagerly; caching a tracer instead
+    # would make the next eager use recurse until the stack ran out
+    name = "k_B"
+    constants._CACHE.pop((name, jnp.result_type(float), units.active_base()), None)
+
+    @jax.jit
+    def thermal(t: Temperature) -> Energy:
+        return constants.k_B * t
+
+    assert float(thermal(300.0 * u.K).to(u.eV)) == pytest.approx(0.025852, rel=1e-4)
+    cached = constants.k_B
+    assert isinstance(cached, units.Quantity)  # not a tracer
+    assert float((cached * 21).to(u.eV / u.K)) == pytest.approx(
+        21 * 8.617333e-5, rel=1e-5
+    )
+
+
+def test_constant_cache_distinguishes_bases_with_the_same_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(constants, "_CACHE", {})
+    metre = units.BaseSystem("custom", units.SI.pins, units.SI.labels)
+    kilometre = units.BaseSystem(
+        "custom", (u.km, *metre.pins[1:]), ("km", *metre.labels[1:])
+    )
+    for enabled in (False, True):
+        with x64_mode(enabled):
+            for bs, expected in ((metre, 299792458.0), (kilometre, 299792.458)):
+                with units.base(bs):
+                    c = constants.c
+                    assert c.bs == bs
+                    assert c.dtype == jnp.result_type(float)
+                    assert float(c.value) == pytest.approx(expected)
+                    assert constants.c is c
+                    equivalent = units.BaseSystem("renamed", bs.pins, bs.labels)
+                    with units.base(equivalent):
+                        assert constants.c is c
+    assert len(constants._CACHE) == 4
+
+
+def test_constant_rounding():
+    # the algebra is exact rationals, so the only rounding is the final one
+    exact = {  # value in SI base units, to well past float64
+        "c": "299792458",
+        "hbar": "1.05457181764615639e-34",
+        "eps_0": "8.85418781277334739e-12",
+        "k_e": "8987551792.28822621535",
+    }
+    with units.base(units.SI):
+        for name, text in exact.items():
+            want = float(Decimal(text))
+            assert float(getattr(constants, name).value) == want, name
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with units.base(units.ATOMISTIC):
+            # 14.399645478469015956... in eV.angstrom/e^2, so float64 lands here
+            assert float(constants.k_e.value) == 14.399645478469015
+            assert float(constants.e.value) == 1.0  # the base pins the charge
+        assert not [w for w in caught if "kups.core.units:" in str(w.message)]
+
+
 def test_unit_identity():
     # units are equal when their reduced factors are, however they were built
     for unit in (
@@ -144,6 +212,22 @@ def test_reciprocal_unit():
     assert not isinstance(1 / u.mol, units.Unit)  # an empty dimension stays a number
     with pytest.raises(TypeError, match=r"must be a Unit.*without magnitudes"):
         inverse.to(2 / u.eV)  # pyrefly: ignore[bad-argument-type]
+
+
+def test_charge_and_dipole_units():
+    # e, rydberg, invcm and debye, each against its defining expression
+    assert u.e.scale == 1.602176634e-19  # SI-2019 exact, as eV is
+    assert u.rydberg.scale == pytest.approx(u.hartree.scale / 2, rel=1e-14)
+    assert u.invcm.scale == pytest.approx(
+        float(constants.h.to(u.J * u.s)) * 299792458.0 / u.cm.scale, rel=1e-15
+    )
+    assert u.debye.scale == 1e-21 / 299792458.0
+    assert units.dim_of(u.debye) == units.dim_of(u.e * u.angstrom)
+    assert u.invcm.dim == u.rydberg.dim == u.eV.dim
+    assert float((1.0 * u.invcm).to(u.eV)) == pytest.approx(1.2398419843320023e-4)
+    assert float((1.0 * u.debye).to(u.e * u.angstrom)) == pytest.approx(
+        0.20819433270935594
+    )
 
 
 def test_power_units():
@@ -205,6 +289,32 @@ def test_parse():
         u.require_dim(300.0, u.K)
 
 
+def test_constants():
+    # the constants agree with the unit catalogue
+    assert float(constants.m_u.to(u.kg)) == u.amu.scale  # CODATA 2018, exactly
+    assert float(constants.a_0.to(u.m)) == u.bohr.scale
+    assert float(constants.E_h.to(u.J)) == u.hartree.scale
+    ratio = constants.k_e / (1.0 * u.hartree * u.bohr / u.e**2)
+    assert float(ratio) == pytest.approx(1.0, rel=1e-12)  # 8.9e-13: float64 noise
+    assert float(constants.c.to(u.m / u.s)) == 299792458.0
+    assert float(constants.h.to(u.J * u.s)) == 6.62607015e-34
+    assert float(constants.hbar.to(u.J * u.s)) == 1.0545718176461565e-34
+    assert float(constants.e.to(u.e)) == 1.0
+    # stored in eV/K, so this is the nearest float64 to the exact ratio
+    assert float(constants.k_B.to(u.eV / u.K)) == 8.617333262145177e-05
+    assert (constants.N_A, constants.alpha) == (6.02214076e23, 7.2973525693e-3)
+    # the derived two each equal the nearest float64 to the exact rational
+    with units.base(units.SI):
+        assert val(constants.eps_0) == 8.854187812773347e-12
+        assert val(constants.k_e) == 8987551792.288227
+    assert units.dim_of(constants.k_B * (300.0 * u.K)) == units.dim_of(u.eV)
+    assert units.dim_of(constants.eps_0) == units.dim_of(u.C**2 / (u.J * u.m))
+    assert [n for n in dir(constants) if not n.startswith("_")] == [
+        "E_h", "N_A", "a_0", "alpha", "c", "e", "eps_0", "h", "hbar", "k_B", "k_e",
+        "m_e", "m_u",
+    ]  # fmt: skip
+
+
 def test_si_prefixes():
     assert u.unit("km") is u.km and u.unit("kg") is u.kg and u.unit("fs") is u.fs
     assert u.unit("um") is u.unit("µm") is u.unit("\u03bcm") is u.unit("microm")
@@ -222,6 +332,9 @@ def test_si_prefixes():
     ]
     for text, unit, want in reads:
         assert float(u.parse(text).to(unit)) == pytest.approx(want), text
+    prefixed_count = u.parse("2 mmol")  # a prefixed count is still a count
+    assert not units.is_quantity(prefixed_count)
+    assert float(prefixed_count) == pytest.approx(2e-3 * constants.N_A)
     for text, message in (
         ("1 mkm", "carries a prefix already"),
         ("1 kfurlong", "'kfurlong' is not a unit"),
