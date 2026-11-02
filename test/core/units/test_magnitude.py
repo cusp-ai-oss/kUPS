@@ -111,6 +111,31 @@ def test_unit_property():
     assert units.dim_of(r.unit * r.unit) == units.dim_of(u.m**2)
 
 
+def test_arraylike_magnitudes():
+    # relabel and a scalar-returning apply hold a jax literal rather than an array,
+    # and are read through the same conversion as any ArrayLike
+    dim = units.dim_of(u.angstrom)
+    at = units.ATOMISTIC
+    for q in (
+        units.Quantity(3.0, dim, at),
+        units.Quantity(np.float64(3.0), dim, at),
+        units.Quantity(np.array([3.0]), dim, at),
+        units.relabel(3.0, dim),
+        units.apply(lambda a: 3.0, 3.0 * u.angstrom, dim=dim),
+    ):
+        assert isinstance(q.value, jax.Array)
+        assert isinstance(q.to(u.angstrom), jax.Array)
+        assert isinstance(q / q, jax.Array)  # the dimensions cancel
+        assert q.item() == 3.0
+        first = q.at[()] if q.value.ndim == 0 else q.at[0]
+        npt.assert_allclose(first.get().to(u.angstrom), 3.0)
+    n = units.Quantity(np.zeros(3), dim, at)
+    assert n.value.shape == (3,)
+    npt.assert_allclose(n.at[0].set(1.0 * u.angstrom).to(u.angstrom), [1.0, 0.0, 0.0])
+    plus_one = jax.jit(lambda x: (x + 1.0 * u.angstrom).sum())
+    npt.assert_allclose(plus_one(n).to(u.angstrom), 3.0)
+
+
 def test_destructive_casts_refused():
     # astype and .to() raise rather than return zeros or nan; Å^6 is 1e-60 in SI
     with units.base(units.SI):

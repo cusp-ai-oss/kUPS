@@ -50,6 +50,25 @@ def test_placement_keeps_label():
     assert units.dim_of(held) == units.dim_of(u.m) and spec(held) == P("x")
 
 
+def test_jit_shardings_take_quantities():
+    r = jax.device_put(arr([1.0, 2.0, 3.0]) * u.angstrom, SHARDED)
+    k = 2.0 * u.eV / u.angstrom**2
+
+    def energy(x: units.Length) -> units.Energy:
+        return 0.5 * k * x**2
+
+    out = jax.jit(energy, in_shardings=SHARDED, out_shardings=SHARDED)(r)
+    assert spec(out) == P("x")
+    assert units.dim_of(out) == units.dim_of(u.J)
+    assert float(out[1].to(u.eV)) == pytest.approx(4.0)
+    # placement does not weaken the dimension check
+    with pytest.raises(units.DimensionError):
+        out.to(u.m)
+    # the gradient is still labelled dim(out)/dim(arg)
+    force = jax.jit(units.grad(lambda x: energy(x).sum()))(r)
+    assert units.dim_of(force) == units.dim_of(u.eV / u.angstrom)
+
+
 def test_shard_map_and_pmap():
     r = jax.device_put(arr([1.0, 2.0]) * u.angstrom, SHARDED)
     seen: list[bool] = []
@@ -91,6 +110,24 @@ def test_multi_device_placement_keeps_label():
     tree = jax.device_put({"r": r, "n": arange(16.0)}, sharded)
     assert spec(tree["r"]) == P("x") and spec(tree["n"]) == P("x")
     assert units.dim_of(tree["r"]) == units.dim_of(u.m)
+
+
+@needs_four
+def test_multi_device_jit_and_grad():
+    _, sharded = mesh4()
+    r = jax.device_put(arange(1.0, 17.0) * u.angstrom, sharded)
+    k = 2.0 * u.eV / u.angstrom**2
+
+    def energy(x: units.Length) -> units.Energy:
+        return 0.5 * k * x**2
+
+    out = jax.jit(energy, in_shardings=sharded, out_shardings=sharded)(r)
+    assert spec(out) == P("x")
+    assert units.dim_of(out) == units.dim_of(u.J)
+    assert float(out.max().to(u.eV)) == pytest.approx(256.0)  # 0.5*2*16^2
+    force = jax.jit(units.grad(lambda x: energy(x).sum()), in_shardings=sharded)(r)
+    assert units.dim_of(force) == units.dim_of(u.eV / u.angstrom)
+    assert float(force.min().to(u.eV / u.angstrom)) == pytest.approx(2.0)  # 2*1
 
 
 @needs_four

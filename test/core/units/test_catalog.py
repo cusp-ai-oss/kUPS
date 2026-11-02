@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the unit catalogue and assertions."""
+"""Tests for the unit catalogue, assertions, and documented limits."""
 
 import pathlib
 import re
@@ -10,8 +10,12 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
+from jax.core import ShapedArray
+from jax.extend.core import Primitive
+from jax.interpreters import mlir
 
 from kups.core import units
 from kups.core.units import (
@@ -30,6 +34,7 @@ from ._helpers import (
     arr,
     jit,
     make_jaxpr,
+    ty,
     val,
 )
 
@@ -274,6 +279,68 @@ def test_testing_assertions():
     # numpy's own assertion refuses a quantity and points at units.testing
     with pytest.raises(units.DimensionError, match=r"units\.testing"):
         npt.assert_allclose(r, r)
+
+
+def test_documented_limits():
+    # the hard limits, each with the failure it names
+    r = arr([1.0, 2.0]) * u.angstrom
+    # the jaxpr carries no unit and matches the plain-array one exactly
+    text = str(make_jaxpr(lambda x: (x * x).sum())(r))
+    assert text == str(make_jaxpr(lambda x: jnp.sum(x * x))(r.value))
+    assert "Quantity" not in text and "Å" not in text
+    assert ty(r) == "float64[2]{Å|atomistic}"
+    # a quantity never converts to an array implicitly, by either route
+    with pytest.raises(units.DimensionError, match="does not convert to a plain array"):
+        np.asarray(r)
+    with pytest.raises((TypeError, units.DimensionError)):
+        jnp.asarray(r)
+
+    doubled = Primitive("units_test_double")
+    doubled.def_abstract_eval(lambda x: ShapedArray(x.shape, x.dtype))
+    doubled.def_impl(lambda x: 2.0 * x)
+    mlir.register_lowering(
+        doubled, mlir.lower_fun(lambda x: 2.0 * x, multiple_results=False)
+    )
+
+    def public_double(x: jax.Array) -> jax.Array:
+        return doubled.bind(x)
+
+    # a foreign primitive binds arrays; apply hands it the magnitudes
+    with pytest.raises(TypeError, match=r"units\._core\.Quantity"):
+        jax.jit(public_double)(r)
+    npt.assert_allclose(units.apply(public_double, r).to(u.angstrom), [2.0, 4.0])
+    traced = jax.jit(lambda q: units.apply(public_double, q))(r)
+    npt.assert_allclose(traced.to(u.angstrom), [2.0, 4.0])
+    assert units.dim_of(traced) == units.dim_of(u.angstrom)
+
+    def stretch(x: units.Length) -> jax.Array:
+        return (x * x).sum().to(u.angstrom**2)
+
+    # jax's reverse mode labels the cotangent with the primal's dimension,
+    # not the derivative's, so use kups.core.units' spellings
+    assert ty(jax.grad(stretch)(r)) == "float64[2]{Å|atomistic}"
+    assert ty(units.grad(stretch)(r)) == "float64[2]{1/Å|atomistic}"
+    assert ty(jax.vjp(stretch, r)[1](1.0)[0]) == "float64[2]{Å|atomistic}"
+    pull = units.vjp(stretch, r)[1]
+    assert ty(pull(1.0)[0]) == "float64[2]{1/Å|atomistic}"
+
+    @jax.custom_vjp
+    def measured(x: units.Length) -> jax.Array:
+        return x.sum().to(u.angstrom)
+
+    def measured_fwd(x: units.Length) -> tuple[jax.Array, None]:
+        return measured(x), None
+
+    def measured_bwd(
+        _res: None, _ct: jax.Array
+    ) -> tuple[units.Quantity[3, 1, -2, 0, 0]]:
+        # a cotangent whose dimension differs from the primal's
+        return (r * (1.0 * u.eV),)
+
+    measured.defvjp(measured_fwd, measured_bwd)
+    # the treedef carries the dimension, so jax's own structure check catches this
+    with pytest.raises(TypeError, match=r"same container \(pytree\) structure"):
+        jax.grad(measured)(r)
 
 
 def test_deferred_annotations():
