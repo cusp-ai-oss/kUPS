@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 else:
     from typing import TypeVar as IntVar
 
-# E_*: receiver exponents; F_*: other operands'; K: an integer power.
+# E_*: receiver exponents; F_*/G_*: other operands'; K: an integer power.
 E_M = IntVar("E_M")
 E_KG = IntVar("E_KG")
 E_S = IntVar("E_S")
@@ -26,4 +26,9 @@ F_KG = IntVar("F_KG")
 F_S = IntVar("F_S")
 F_A = IntVar("F_A")
 F_K = IntVar("F_K")
+G_M = IntVar("G_M")
+G_KG = IntVar("G_KG")
+G_S = IntVar("G_S")
+G_A = IntVar("G_A")
+G_K = IntVar("G_K")
 K = IntVar("K")
