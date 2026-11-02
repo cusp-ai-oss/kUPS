@@ -117,14 +117,17 @@ def other_base(bs: BaseSystem) -> str:
     return ""
 
 
-def checked_cast(v: ArrayLike, dtype: DTypeLike) -> jax.Array:
-    """Cast magnitudes, refusing a dtype that x64 being off makes unavailable."""
+def checked_cast(v: ArrayLike, dtype: DTypeLike, what: str) -> jax.Array:
+    """Cast magnitudes, refusing a dtype that x64 being off makes unavailable.
+
+    ``what`` names the caller in the error.
+    """
     out = jnp.astype(v, dtype)
     default = isinstance(dtype, type) and dtype in (float, int, complex, bool)
     want = None if default else jnp.dtype(dtype)
     if want is not None and want != jnp.result_type(out):
         raise DimensionError(
-            f"q.astype: {want.name} magnitudes are unavailable with x64 off; "
+            f"{what}: {want.name} magnitudes are unavailable with x64 off; "
             f"jax returns {jnp.result_type(out).name}. Set {X64_HINT} before the "
             f"first jax call."
         )
