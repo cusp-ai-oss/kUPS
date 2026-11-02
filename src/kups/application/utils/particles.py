@@ -235,6 +235,7 @@ def _electronic_scalar(name: str, value: Any) -> Array:
     bounds = np.iinfo(jnp.asarray(0).dtype)
     if integer < bounds.min or integer > bounds.max:
         raise ValueError(f"{name} is outside the active JAX integer range.")
+    # Keep zero for non-molecular tasks; UMA omol requires a positive multiplicity.
     if name == "spin_multiplicity" and integer < 0:
         raise ValueError("spin_multiplicity must be nonnegative.")
     return jnp.asarray(integer, dtype=int)

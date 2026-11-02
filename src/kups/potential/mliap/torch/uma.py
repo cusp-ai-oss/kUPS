@@ -58,6 +58,12 @@ class UMAModule(torch.nn.Module):
     input into the ``AtomicData`` object UMA expects. Returns gradients of
     energy w.r.t. positions (and optionally w.r.t. cell vectors).
 
+    For ``"omol"``, the task-aware input builder reads each system's
+    ``total_charge`` and ``spin_multiplicity``. Missing metadata defaults to
+    0 and 1. Set these values through the MD or relaxation builder keywords,
+    or through ``atoms.info["charge"]`` and ``atoms.info["spin"]`` for ASE input.
+    Other tasks retain zero charge and spin inputs.
+
     The wrapped predict-unit holds its own torch module and manages its own
     device placement; this adapter intentionally does not register it as a
     submodule (it is not an ``nn.Module``).
@@ -194,6 +200,7 @@ class UMAModule(torch.nn.Module):
             return result
 
         if self.task_name == "omol":
+            # Molecular spin is a multiplicity; zero is a non-molecular token.
             for name, lower, upper in (("charge", -100, 100), ("spin", 1, 100)):
                 value = input[name]
                 if (
@@ -318,6 +325,11 @@ def load_uma(
         task_name: UMA inference head — ``"omat"`` (materials),
             ``"omol"`` (molecules), ``"oc20"`` (catalysis),
             ``"odac"`` (MOFs / DAC), ``"omc"`` (molecular crystals).
+            For ``"omol"``, the bound input builder reads per-system
+            ``total_charge`` and ``spin_multiplicity``, defaulting to 0 and 1.
+            Set them through MD or relaxation builder keywords, or ASE
+            ``atoms.info["charge"]`` and ``atoms.info["spin"]``. Other tasks
+            retain zero charge and spin inputs.
         compute_cell_gradients: Whether to also return cell gradients
             (stress). See ``UMAModule`` for convention caveats.
         cutoff: Cutoff radius [Å]. UMA-s-1.2 defaults to 6.0.
