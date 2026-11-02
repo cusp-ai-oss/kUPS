@@ -250,7 +250,7 @@ def _build(name: str, pinned: list[tuple[str, AnyUnit]]) -> BaseSystem:
 
 
 SI = _build("SI", [])
-# charge pinned to e: `1 * u.e` is 1
+# charge pinned to e: `1 * u.e` is 1 and the Coulomb constant is 14.4
 ATOMISTIC = _build(
     "atomistic", [("length", angstrom), ("mass", amu), ("energy", eV), ("charge", e)]
 )

@@ -208,7 +208,7 @@ _ROOTS: Final[dict[str, AnyUnit]] = {
 _DERIVED: dict[str, AnyUnit] = {}
 # Rejected prefixed spellings, keyed by the name they would form, with the reason.
 _REFUSED: Final[dict[str, str]] = {
-    "hbar": "ħ is a constant, and `hbar` reads as it rather "
+    "hbar": "ħ is a constant, units.constants.hbar, and `hbar` reads as it rather "
     "than as a hectobar, which kups.core.units has no spelling for; write the pressure "
     "in bar or Pa",
 }
