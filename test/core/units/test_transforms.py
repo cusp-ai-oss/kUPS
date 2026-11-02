@@ -9,16 +9,35 @@ import jax
 import pytest
 
 from kups.core import units
-from kups.core.units import Energy, Length, Mass, Velocity, VelocityUnit
+from kups.core.units import Energy, Length, Mass, Momentum, Velocity, VelocityUnit
 from kups.core.units import catalog as u
 
 from ._helpers import (
+    arange,
     arr,
     jit,
     val,
 )
 
 SPEED: VelocityUnit = (u.eV / u.amu) ** Fraction(1, 2)  # the atomistic velocity unit
+
+
+def test_vmap():
+    vs = arr([1.0, 2.0, 3.0]) * SPEED
+    m = 2.0 * u.amu
+
+    def ke(v: Velocity) -> Energy:
+        return 0.5 * m * v**2
+
+    def momentum(v: Velocity) -> Momentum:
+        return v * m
+
+    out = jax.vmap(ke)(vs)
+    assert out.shape == (3,) and list(out.value) == [1.0, 4.0, 9.0]
+    assert list(jit(jax.vmap(momentum))(vs).value) == [2.0, 4.0, 6.0]
+    xs = arange(6.0).reshape(2, 3) * u.angstrom
+    assert list(jax.vmap(lambda x: x.sum(), in_axes=1)(xs).value) == [3.0, 5.0, 7.0]
+    assert jax.vmap(momentum, out_axes=0)(vs).shape == (3,)
 
 
 def test_aot_recheck():
