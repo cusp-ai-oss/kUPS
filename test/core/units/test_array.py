@@ -33,6 +33,7 @@ from ._helpers import (
     eye,
     jit,
     linalg_norm,
+    ones,
     segment_sum,
     ty,
     val,
@@ -229,6 +230,44 @@ def test_like_under_vmap():
     assert jax.vmap(constant, out_axes=None)(rs).shape == ()
 
 
+def test_det_inv_cross():
+    # det/inv/cross carry the right dimension
+    cell = eye(3) * 5.43 * u.angstrom
+    assert units.dim_of(units.det(cell)) == units.dim_of(u.angstrom**3)
+    assert float(units.det(cell).to(u.angstrom**3)) == pytest.approx(5.43**3)
+    assert units.dim_of(units.inv(cell)) == units.dim_of(u.angstrom**-1)
+    assert units.dim_of(units.cross(cell[0], cell[1])) == units.dim_of(u.angstrom**2)
+    # the exponent follows the matrix size, also for a batch of 2x2 matrices
+    square = units.stack([eye(2) * 2.0 * u.angstrom, eye(2) * 3.0 * u.angstrom])
+    assert units.dim_of(units.det(square)) == units.dim_of(u.angstrom**2)
+    npt.assert_allclose(units.det(square).to(u.angstrom**2), [4.0, 9.0])
+    # opposite dimensions cancel to a plain array
+    assert not units.is_quantity(units.cross(cell[0], cell[1] / u.angstrom**2))
+    with pytest.raises(units.DimensionError, match="complex"):
+        units.cross(cell[0], arr([1j, 0.0, 0.0]))
+    # einsum's interleaved form, and dim= relabelling the product
+    a, b = arr([[1.0, 2.0]]) * u.angstrom, arr([[3.0], [4.0]]) * u.eV
+    interleaved = units.einsum(a, [0, 1], b, [1, 2])
+    assert units.dim_of(interleaved) == units.dim_of(u.angstrom * u.eV)
+    npt.assert_allclose(interleaved.to(u.angstrom * u.eV), [[11.0]])
+    relabelled = units.einsum("ij,jk->ik", a, b, dim=units.dim_of(u.J))
+    assert units.dim_of(relabelled) == units.dim_of(u.J)
+    npt.assert_allclose(relabelled.value, [[11.0]])
+    # the magnitudes are jnp's, also across bases
+    skew = arr([[2.0, 1.0, 0.0], [0.0, 3.0, 1.0], [1.0, 0.0, 4.0]])
+    npt.assert_allclose(
+        units.inv(skew * u.angstrom).to(1 / u.angstrom), jnp.linalg.inv(skew)
+    )
+    with units.base(units.SI):
+        b = arr([0.0, 1.0, 2.0]) * u.angstrom
+    a = arr([1.0, 2.0, 3.0]) * u.angstrom
+    npt.assert_allclose(
+        units.cross(a, b).to(u.angstrom**2),
+        jnp.cross(arr([1.0, 2.0, 3.0]), arr([0.0, 1.0, 2.0])),
+        rtol=1e-12,
+    )
+
+
 def test_minimum_maximum():
     r = arr([1.0, 5.0]) * u.angstrom
     cut = 4.0 * u.angstrom
@@ -308,6 +347,53 @@ def test_apply_dim_one():
             units.apply(fn, r)
     # a dimensionless float result needs an explicit dim=ONE; the default labels it
     assert units.dim_of(units.apply(jnp.sign, r)) == units.dim_of(u.angstrom)
+
+
+def test_contractions():
+    # einsum labels the result with the product of the operands' dimensions
+    # Ewald's k squared, summed over the vector components
+    kv = ones((2, 4, 3)) / u.angstrom
+    k2 = units.einsum("bkd,bkd->bk", kv, kv)
+    assert units.dim_of(k2) == units.dim_of(u.angstrom**-2)
+    assert float(k2.to(u.angstrom**-2)[0, 0]) == 3.0
+    # Ewald's phase k . r, which must be dimensionless
+    assert not units.is_quantity(
+        units.einsum(
+            "psd,pd->ps", ones((5, 4, 3)) / u.angstrom, ones((5, 3)) * u.angstrom
+        )
+    )
+    # operands in two bases are rebased first, like + does, and agree with jnp
+    with units.base(units.SI):
+        k_si = arr([[1.0, 2.0, 3.0]]) / u.angstrom
+    r = arr([[1.0, 0.0, 2.0]]) * u.angstrom
+    phase = units.einsum("pd,pd->p", k_si, r)
+    npt.assert_allclose(phase, [7.0], rtol=1e-12)
+
+
+def test_decompositions():
+    # named functions, since lift has no rule for a tuple
+    cell = arr([[5.0, 0.0, 0.0], [1.0, 4.0, 0.0], [0.5, 1.5, 3.0]]) * u.angstrom
+    # the cell's QR chain: Q is dimensionless and R a length, rebuilding cell.T
+    with units.base(units.SI):
+        q, upper = units.qr(cell.T)
+    assert not units.is_quantity(q)
+    assert units.dim_of(upper) == units.dim_of(u.angstrom)
+    assert units.base_of(upper) == units.ATOMISTIC  # the operand's base
+    npt.assert_allclose(q @ upper.to(u.angstrom), cell.T.to(u.angstrom), atol=1e-12)
+    npt.assert_allclose(
+        units.qr(cell, mode="r").to(u.angstrom), units.qr(cell)[1].to(u.angstrom)
+    )
+    hess = eye(3) * 2.0 * u.eV / u.angstrom**2
+    w, vecs = units.eigh(hess)
+    assert units.dim_of(w) == units.dim_of(
+        u.eV / u.angstrom**2
+    ) and not units.is_quantity(vecs)
+    npt.assert_allclose(w.to(u.eV / u.angstrom**2), [2.0, 2.0, 2.0])
+    npt.assert_allclose(abs(jnp.linalg.det(vecs)), 1.0)
+    # eigenvalues keep the operand's base, whatever base is active
+    with units.base(units.SI):
+        w_si, _ = units.eigh(hess)
+    assert units.base_of(w_si) == units.ATOMISTIC
 
 
 def test_constructors():
@@ -825,9 +911,10 @@ def test_mirror_surface():
     surface = {
         "ATOMISTIC", "BaseSystem", "DimensionError", "Dimensionless", "ONE",
         "OddExponentRoot", "Quantity", "SI", "Unit", "active_base", "apply", "base",
-        "base_of", "catalog", "concatenate", "dim_of", "dim_str", "from_dim",
-        "full_like", "is_leaf", "is_quantity", "linspace", "maximum", "minimum", "norm",
-        "ones_like", "require_dim", "sqrt", "stack", "tree_map", "where", "zeros_like",
+        "base_of", "catalog", "concatenate", "cross", "det", "dim_of", "dim_str",
+        "eigh", "einsum", "from_dim", "full_like", "inv", "is_leaf", "is_quantity",
+        "linspace", "maximum", "minimum", "norm", "ones_like", "qr", "require_dim", "sqrt",
+        "stack", "tree_map", "where", "zeros_like",
         "Dim", "dmul", "E_M", "E_KG", "E_S", "E_A", "E_K", "F_M", "F_KG", "F_S", "F_A",
         "F_K", "absolute", "clip", "full", "max", "mean", "min", "ones", "prod",
         "select_n", "sum", "tree_flatten", "tree_leaves", "zeros", "Measured",
@@ -837,8 +924,8 @@ def test_mirror_surface():
         f"{name}Unit" for name in dimensions
     }
     # a body that is one apply() call only forwards; the free spellings of Quantity
-    # methods are the exception
-    forwards = {"sum", "mean", "min", "max", "absolute"}
+    # methods, and cross, whose overloads type the product, are the exceptions
+    forwards = {"sum", "mean", "min", "max", "absolute", "cross"}
     found = set()
     for name in units.__all__:
         fn = getattr(units, name)

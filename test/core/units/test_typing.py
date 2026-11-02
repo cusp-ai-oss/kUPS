@@ -37,6 +37,7 @@ from kups.core.units import (
     Velocity,
     Volume,
     VolumeUnit,
+    Wavenumber,
 )
 from kups.core.units import catalog as u
 from kups.core.units import testing as ut
@@ -198,6 +199,18 @@ def test_new_dimension_names():
     assert_type(2.0 * u.angstrom**-3, NumberDensity)
 
 
+def test_linalg_types():
+    # a wrong result dimension should be a checker error rather than a wrong
+    # number at runtime
+    cell = arr([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) * u.angstrom
+    assert_type(units.qr(cell), tuple[jax.Array, Length])
+    assert_type(units.qr(cell, mode="r"), Length)
+    assert_type(units.eigh(cell), tuple[Length, jax.Array])
+    assert_type(units.inv(cell), Wavenumber)
+    assert_type(units.cross(cell[0], cell[1]), Area)
+    assert_type(units.cross(cell[0], cell[1] / (1.0 * u.angstrom**2)), jax.Array)
+
+
 def test_testing_helpers():
     # the helpers pin both sides to the unit's dimension, so a wrong unit in a
     # test is a checker error before it is a DimensionError
@@ -222,6 +235,32 @@ def test_quantity_arraylike():
     assert_type(q.to(u.angstrom), jax.Array)
     assert_type(n.value.shape, tuple[int, ...])
     assert isinstance(q.value, jax.Array) and isinstance(n.to(u.nm), jax.Array)
+
+
+def test_einsum_types():
+    # the result dimension is the product of the operands', whatever the subscripts do
+    A = arr([[1.0, 0.0], [0.0, 1.0]]) * u.angstrom
+    B = arr([[1.0, 0.0], [0.0, 1.0]]) * u.eV
+    p = arr([[1.0, 0.0], [0.0, 1.0]])
+    inv = p / (1.0 * u.angstrom)
+    assert_type(units.einsum("ii->i", A), Length)
+    assert_type(units.einsum("ij,jk->ik", A, A), Area)
+    assert_type(units.einsum("ij,jk->ik", A, B), _EnergyLength)
+    assert_type(units.einsum("ij,jk->ik", A, p), Length)
+    assert_type(units.einsum("ij,jk->ik", p, B), Energy)
+    assert_type(units.einsum("ij,jk->ik", p, p), jax.Array)
+    assert_type(units.einsum("ij,jk->ik", A, inv), jax.Array)  # the product cancels
+    assert_type(units.einsum("ij,jk,kl->il", A, B, inv), Energy)
+    assert_type(units.einsum("ij,jk,kl->il", p, A, p), Length)
+    # two quantities that cancel next to a plain array give a plain array
+    assert_type(units.einsum("ij,jk,kl->il", A, p, inv), jax.Array)
+    assert_type(units.einsum("ij,jk,kl->il", A, inv, p), jax.Array)
+    assert_type(units.einsum("ij,jk,kl->il", p, A, inv), jax.Array)
+    assert not units.is_quantity(units.einsum("ij,jk,kl->il", A, p, inv))
+    # four operands, a runtime dim= and the interleaved form are beyond the overloads
+    assert_type(units.einsum("ij,jk->ik", A, B, dim=units.ONE), Any)
+    assert_type(units.einsum(A, [0, 1], B, [1, 2]), Any)
+    assert_type(units.einsum("ij,jk,kl,lm->im", A, A, A, A), Any)
 
 
 def test_checker_accepts_this_file():
