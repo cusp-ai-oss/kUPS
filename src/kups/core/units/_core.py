@@ -9,8 +9,8 @@ at construction, and a dimensionless result decays to a plain ``jax.Array``. A
 quantity is a pytree with the magnitudes as its single leaf and the dimension and
 base as metadata.
 
-Methods share the helpers here; dtype and range checks live in
-``units._precision``.
+Methods and array functions share the helpers here; dtype and range checks live
+in ``units._precision``.
 """
 
 from __future__ import annotations
@@ -1297,6 +1297,16 @@ def _shape(x: AnyQuantity | ArrayLike) -> tuple[int, ...]:
     return x.shape if isinstance(x, Quantity) else jnp.shape(x)
 
 
+def _no_index(name: str, what: str, x: object) -> None:
+    """Reject a quantity passed where an index or a mask belongs."""
+    if not isinstance(x, Quantity):
+        return
+    raise DimensionError(
+        f"units.{name}: {what} must be a plain integer or boolean array, not "
+        f"{_measures(x)}; it selects rather than measures"
+    )
+
+
 def _reduce_axis(name: str, axis: object) -> None:
     """Reject a quantity or Unit where a reduction expects an axis."""
     if not isinstance(axis, (Quantity, Unit)):
@@ -1538,12 +1548,26 @@ def _sqrt_impl(x: AnyQuantity | ArrayLike) -> Any:
     return _lift(jnp.sqrt(lx), dpow(dim, Frac(1, 2)), bs)
 
 
+@overload
 def _norm_impl(
     x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
-    ord: int | str | None,
+    ord: float | str | None,
     axis: int | tuple[int, ...] | None,
     keepdims: bool,
-) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+@overload
+def _norm_impl(
+    x: ArrayLike,
+    ord: float | str | None,
+    axis: int | tuple[int, ...] | None,
+    keepdims: bool,
+) -> jax.Array: ...
+def _norm_impl(
+    x: AnyQuantity | ArrayLike,
+    ord: float | str | None,
+    axis: int | tuple[int, ...] | None,
+    keepdims: bool,
+) -> AnyQuantity | jax.Array:
     """Vector or matrix norm; ``ord=0`` (a count) is refused for a quantity."""
     if ord == 0 and isinstance(x, Quantity):
         raise DimensionError(

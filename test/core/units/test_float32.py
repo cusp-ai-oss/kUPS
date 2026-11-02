@@ -68,6 +68,39 @@ def test_to_rescales_once():
     assert float((1.0 * u.angstrom**4).to(u.nm**4)) == pytest.approx(1e-4, rel=1e-6)
 
 
+def test_unit_operand_range_guard():
+    # without the guard, in SI 63.6 * u.eV * u.angstrom**6 silently evaluates to 0.0
+    with units.base(units.SI):
+        for build in (
+            lambda: 63.6 * u.eV * u.angstrom**6,
+            lambda: (1e20 * u.m) * (u.fs**3),
+            lambda: (1.0 * u.eV) / u.angstrom**6,
+            lambda: units.full_like(arr([1.0, 1.0]) * u.m**6, u.angstrom**6),
+            lambda: units.full_like(
+                arr([1.0, 1.0]) * u.J / u.m**6, u.eV / u.angstrom**6
+            ),
+            # pyrefly: ignore[no-matching-overload]
+            lambda: units.minimum(1.0 * u.m**4, u.angstrom**4),
+            lambda: jax.jit(lambda q: q * u.angstrom**6)(1.0 * u.eV),
+        ):
+            with pytest.raises(units.DimensionError):
+                build()
+        # suggests x64 when that would give the needed range
+        with pytest.raises(units.DimensionError, match=r"enable jax\.config\.update"):
+            units.full_like(arr([1.0, 1.0]) * u.m**6, u.angstrom**6)
+        # values float32 can hold still work
+        assert units.full_like(arr([1.0, 1.0]) * u.m, u.angstrom).value.shape == (2,)
+    fourth = arr([1.0, 1.0]) * u.angstrom**4
+    with pytest.raises(units.DimensionError):
+        units.full_like(fourth, u.m**4)
+    assert float(((3.0 * u.angstrom) * u.angstrom).to(u.angstrom**2)) == pytest.approx(
+        3.0, rel=1e-6
+    )
+    assert float((5.0 * u.kcal / u.mol + 1.0 * u.eV).to(u.eV)) == pytest.approx(
+        1.2168205, rel=1e-6
+    )
+
+
 def test_destructive_rescale_refused():
     q = jnp.float32(0.05) * u.amu * u.angstrom
     with pytest.raises(units.DimensionError):

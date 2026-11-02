@@ -29,21 +29,37 @@ Model:
   ``Quantity[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a second
   operand's.
 
-  ``apply`` runs a function on the magnitudes and labels its result.
+  The array and linear algebra functions here cover the cases ``jnp`` rejects;
+  ``apply`` wraps any other function.
 
 Caveats:
   * ``jax.tree.map`` over a single tree treats a quantity as a node, so a nonlinear
     function mislabels it: ``jax.tree.map(jnp.sqrt, 4.0 * u.angstrom**2)`` gives
     ``2.0 Å^2``. Use ``units.tree_map``, or pass ``is_leaf=units.is_leaf``.
   * A plain number never stands in for a dimensioned operand, zero included:
-    ``q + 0``, ``q > 0`` and ``q.at[i].set(0.0)`` all raise. Write the zero with
-    its unit, ``0.0 * u.eV``.
+    ``q + 0``, ``q > 0``, ``units.maximum(q, 0.0)`` and ``q.at[i].set(0.0)`` all
+    raise. Write the zero with its unit, ``0.0 * u.eV``, or use
+    ``units.zeros_like(q)``.
   * Quantities never become arrays implicitly, and ``==`` raises. Use
     ``q.to(unit)``, ``q.value``, ``float(q)`` or ``q.item()``, and compare with
-    ``kups.core.units.testing``.
+    ``kups.core.units.testing``. ``jnp.zeros_like`` drops the unit;
+    ``units.zeros_like`` keeps it.
 """
 
 from kups.core.units import catalog as catalog
+from kups.core.units._array import (
+    concatenate,
+    full_like,
+    linspace,
+    maximum,
+    minimum,
+    norm,
+    ones_like,
+    sqrt,
+    stack,
+    where,
+    zeros_like,
+)
 from kups.core.units._base import (
     ATOMISTIC,
     SI,
@@ -91,6 +107,16 @@ from kups.core.units._core import (
     is_leaf,
     is_quantity,
     tree_map,
+)
+from kups.core.units._linalg import (
+    cross,
+    det,
+    eigh,
+    einsum,
+    inv,
+    qr,
+    solve,
+    vdot,
 )
 from kups.core.units._typed import _E_A as E_A
 from kups.core.units._typed import _E_K as E_K
@@ -236,4 +262,27 @@ __all__ = [
     "F_K",
     # transforms
     "apply",
+    # array functions
+    "sqrt",
+    "norm",
+    "minimum",
+    "maximum",
+    "where",
+    # linear algebra
+    "det",
+    "inv",
+    "cross",
+    "vdot",
+    "einsum",
+    "solve",
+    "qr",
+    "eigh",
+    # joining
+    "stack",
+    "concatenate",
+    # constructors
+    "linspace",
+    "zeros_like",
+    "ones_like",
+    "full_like",
 ]

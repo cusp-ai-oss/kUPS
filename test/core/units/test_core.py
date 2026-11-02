@@ -113,6 +113,30 @@ def test_dimension_errors():
     assert "cannot compare" in str(e.value) and "a dimensionless value" in str(e.value)
 
 
+def test_fractional_exponents():
+    assert val(units.sqrt(4.0 * u.angstrom**2)) == 2.0
+    assert units.dim_of(units.sqrt(4.0 * u.m**2)) == (1, 0, 0, 0, 0)
+    assert units.dim_of(units.sqrt(2.0 * u.m)) == (Fraction(1, 2), 0, 0, 0, 0)
+    assert ty(units.sqrt(2.0 * u.angstrom)) == "float64[]{Å^1/2|atomistic}"
+    assert units.dim_of(units.sqrt(2.0 * u.m) ** 2) == (1, 0, 0, 0, 0)
+    assert units.dim_of((3.0 * u.m) ** Fraction(3, 2)) == (
+        Fraction(3, 2),
+        0,
+        0,
+        0,
+        0,
+    )
+    assert units.dim_of(u.m) == (1, 0, 0, 0, 0)  # a Unit reports its own dimension
+    assert units.dim_of(u.eV / u.angstrom) == (1, 1, -2, 0, 0)
+    assert units.dim_of(3.0) == (0, 0, 0, 0, 0)
+
+    def power(q: Length, p: float) -> object:
+        return q**p
+
+    with pytest.raises(units.DimensionError, match="must be a static int or Fraction"):
+        jit(power)(2.0 * u.m, 2.0)  # traced exponent
+
+
 def test_default_base_is_atomistic():
     assert units.active_base() is units.ATOMISTIC
     assert ty(1 * u.nm) == "float64[]{Å|atomistic}"
@@ -653,3 +677,27 @@ def test_no_global_registration(monkeypatch: pytest.MonkeyPatch):
         val(1.0 * u.angstrom + 2.0 * u.angstrom) == 3.0
     )  # the live module is untouched
     assert units.active_base() is units.ATOMISTIC
+
+
+def test_tree_walks():
+    # is_leaf walks hand a function whole quantities; jax's own reach the magnitudes
+    tree = {"len": arr([4.0, 9.0]) * u.angstrom**2, "charge": 9.0 * u.e}
+    assert units.is_leaf(1.0 * u.m)
+    assert not units.is_leaf(arr([1.0])) and not units.is_leaf(u.m)
+    # each quantity is one leaf, and the treedef puts both labels back
+    assert [ty(x) for x in jax.tree.leaves(tree, is_leaf=units.is_leaf)] == [
+        "float64[]{e|atomistic}",
+        "float64[2]{Å^2|atomistic}",
+    ]
+    leaves, td = jax.tree.flatten(tree, is_leaf=units.is_leaf)
+    back = jax.tree.unflatten(td, leaves)
+    assert ty(back["len"]) == ty(tree["len"])
+    assert ty(back["charge"]) == ty(tree["charge"])
+    # a nonlinear function must see the whole quantity, or the label comes out wrong
+    area = {"len": tree["len"]}
+    assert ty(units.tree_map(units.sqrt, area)["len"]) == "float64[2]{Å|atomistic}"
+    assert ty(jax.tree.map(jnp.sqrt, area)["len"]) == "float64[2]{Å^2|atomistic}"
+    # with is_leaf, jnp is handed the whole quantity and refuses it
+    with pytest.raises(TypeError, match="requires ndarray"):
+        jax.tree.map(jnp.sqrt, tree, is_leaf=units.is_leaf)
+    assert val(units.tree_map(lambda q: q * 2, 3.0 * u.angstrom)) == 6.0  # a bare leaf

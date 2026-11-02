@@ -7,9 +7,10 @@ import importlib.util
 import pathlib
 import subprocess
 import sys
-from typing import Never, assert_type
+from typing import Any, Never, assert_type
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.typing import ArrayLike
@@ -32,6 +33,7 @@ from kups.core.units import (
     NumberDensityUnit,
     OddExponentRoot,
     Quantity,
+    Stiffness,
     Unit,
     Velocity,
     Volume,
@@ -48,6 +50,9 @@ type UnknownUnit = Unit[int, int, int, int, int]
 type Length12 = Quantity[12, 0, 0, 0, 0]
 
 
+# more unnamed dimensions; lazy because Quantity is not subscriptable at runtime
+type _EnergyLength = units.Quantity[3, 1, -2, 0, 0]
+type _M4 = units.Quantity[4, 0, 0, 0, 0]
 type _VelocitySquared = units.Quantity[2, 0, -2, 0, 0]
 
 
@@ -147,10 +152,156 @@ def test_equality_raises():
         assert_type(r != r, Never)
 
 
+def test_plain_operand_types():
+    # dimension-agnostic names return plain arrays for plain operands
+    a, cond = arr([1.0, -2.0]), arr([True, False])
+    r = arr([3.0, 4.0]) * u.angstrom
+    assert_type(units.minimum(a, a), jax.Array)
+    assert_type(units.maximum(a, 0.0), jax.Array)
+    assert_type(units.zeros_like(a), jax.Array)
+    assert_type(units.ones_like(a), jax.Array)
+    assert_type(units.where(cond, a, a), jax.Array)
+    assert_type(units.stack([a, a]), jax.Array)
+    assert_type(units.concatenate([a, a]), jax.Array)
+    # a quantity operand still carries the dimension out
+    assert_type(units.minimum(r, r), Length)
+    assert_type(units.maximum(r, 0.0 * u.angstrom), Length)
+    assert_type(units.zeros_like(r), Length)
+    assert_type(units.ones_like(r), Length)
+    assert_type(units.where(cond, r, r), Length)
+    assert_type(r.clip(0.0 * u.angstrom), Length)
+    assert_type(units.stack([r, r]), Length)
+    assert_type(units.concatenate([r, r]), Length)
+
+
+def test_plain_operand_runtime():
+    # the runtime half of the overload contract above
+    a = arr([1.0, -2.0])
+    for value in (
+        units.minimum(a, a),
+        units.maximum(a, 0.0),
+        units.zeros_like(a),
+        units.ones_like(a),
+        units.where(arr([True, False]), a, a),
+        units.stack([a, a]),
+        units.concatenate([a, a]),
+    ):
+        assert not units.is_quantity(value)
+        assert isinstance(value, jax.Array)
+
+
+def test_dimension_mismatch():
+    # mixing dimensions is a checker error before it is a runtime error
+    r, t = 3.0 * u.angstrom, 2.0 * u.s
+    with pytest.raises(units.DimensionError):
+        r + t  # pyrefly: ignore[unsupported-operation]
+    with pytest.raises(units.DimensionError):
+        r < t  # pyrefly: ignore[unsupported-operation]
+    with pytest.raises(units.DimensionError):
+        r.to(u.s)  # pyrefly: ignore[bad-argument-type]
+    # the must-agree names are overloaded, so a mismatch matches no overload
+    with pytest.raises(units.DimensionError):
+        units.minimum(r, t)  # pyrefly: ignore[no-matching-overload]
+    with pytest.raises(units.DimensionError):
+        r % t  # pyrefly: ignore[unsupported-operation]
+    with pytest.raises(units.DimensionError):
+        r // t  # pyrefly: ignore[unsupported-operation]
+    # a dimensionless unit is a mismatch too
+    with pytest.raises(units.DimensionError):
+        r + u.mol  # pyrefly: ignore[unsupported-operation]
+    with pytest.raises(units.DimensionError):
+        r.to(u.mol)  # pyrefly: ignore[bad-argument-type]
+    # so is a plain zero
+    with pytest.raises(units.DimensionError):
+        r + 0.0  # pyrefly: ignore[unsupported-operation]
+    with pytest.raises(units.DimensionError):
+        units.maximum(r, 0.0)  # pyrefly: ignore[no-matching-overload]
+    with pytest.raises(units.DimensionError):
+        r.at[0].set(0.0)  # pyrefly: ignore[bad-argument-type]
+
+
 def test_new_dimension_names():
     assert_type(u.Pa**-1, CompressibilityUnit)
     assert_type(u.angstrom**-3, NumberDensityUnit)
     assert_type(2.0 * u.angstrom**-3, NumberDensity)
+
+
+def test_array_surface_types():
+    # each line mirrors a kUPS call site; a wrong result dimension should be a
+    # checker error rather than a wrong number at runtime
+    r = arr([1.0, 2.0]) * u.angstrom
+    cell = arr([[1.0, 0.0], [0.0, 1.0]]) * u.angstrom
+    force = arr([1.0, 2.0]) * u.eV / u.angstrom
+    assert_type(cell @ r, Area)  # a matrix of lengths times a length
+    assert_type(units.vdot(r, r), Area)
+    assert_type(r.var(ddof=1), Area)  # a variance squares the dimension
+    assert_type(units.solve(cell, force), Stiffness)  # dim(b)/dim(a) is eV/A^2
+    assert_type(units.qr(cell), tuple[jax.Array, Length])
+    assert_type(units.eigh(cell), tuple[Length, jax.Array])
+    assert_type(r % r, Length)  # a remainder keeps the shared dimension
+    assert_type(r // r, jax.Array)  # and a count cancels it
+    assert_type(units.full_like(r, 1.0 * u.angstrom), Length)
+    assert_type(units.linspace(0.0 * u.angstrom, 10.0 * u.angstrom, 5), Length)
+    assert_type(units.zeros_like(r, shape=(4,)), Length)
+    assert_type(r.at[0].get(mode="fill", fill_value=0.0 * u.angstrom), Length)
+    # apply keeps the dimension for one operand; dim= or a second operand gives Any
+    assert_type(units.apply(jnp.tril, cell), Length)
+    assert_type(units.apply(jnp.cumsum, r), Length)
+    assert_type(units.apply(jnp.isfinite, r, dim=units.ONE), Any)
+    assert_type(units.apply(jnp.matmul, cell, cell), Any)
+    # .unit carries the quantity's exponents
+    assert_type(r.unit, LengthUnit)
+    assert_type((5.0 * u.eV).unit, EnergyUnit)
+    assert_type(r.to(r.unit), jax.Array)
+
+
+def test_narrowing_and_methods():
+    # consumers hold leaves as Quantity | jax.Array unions, so is_quantity must
+    # narrow the negative branch too (TypeIs)
+    leaf: Length | jax.Array = 3.0 * u.angstrom
+    if units.is_quantity(leaf):
+        assert_type(leaf.to(u.angstrom), jax.Array)
+        assert_type(leaf.value, jax.Array)
+        assert_type(units.base_of(leaf), units.BaseSystem)
+    else:
+        assert_type(leaf, jax.Array)
+    r = arr([1.0, 2.0]) * u.angstrom
+    assert_type(r.ravel(), Length)  # the method keeps the dimension
+    assert_type(r.repeat(2), Length)
+    assert_type(r.sort(), Length)
+    assert_type(r.std(), Length)
+    assert_type(r.take(jnp.array([0])), Length)
+    assert_type(r.var(), Area)  # the variance of a length is an area
+    # sqrt halves the exponents, written out for the square of every named dimension
+    assert_type(units.sqrt(r * r), Length)
+    assert_type(units.sqrt(r.var()), Length)
+    assert_type(units.sqrt((r * r).mean()), Length)
+    assert_type((r * r).sqrt(), Length)  # and the method agrees
+    assert_type(units.sqrt(arr([4.0, 9.0])), jax.Array)  # plain in, plain out
+    assert_type(units.sqrt(5.0 * u.eV), OddExponentRoot)  # eV^1/2: no integer exponent
+    # even exponents are exact for any dimension
+    eVA = 5.0 * u.eV * r  # eV.angstrom, which no name covers
+    assert_type(units.sqrt(eVA * eVA), _EnergyLength)
+    assert_type(units.sqrt((eVA * eVA).mean()), _EnergyLength)
+    assert_type(units.sqrt((r * r) * (r * r)), Area)  # m^4 -> m^2
+    assert_type(units.sqrt(((r * r) * (r * r)) ** 2), _M4)  # m^8 -> m^4
+    assert_type((r * r).sqrt(), Length)  # the method says the same
+    # known gap: an unnamed odd exponent floors, so this is m/s for m^3/2.kg^1/2/s
+    assert_type(units.sqrt(eVA), Velocity)
+
+    assert_type(r.dot(r), Area)
+    assert_type(r.argmin(), jax.Array)  # an index measures nothing
+    assert_type(r.any(), jax.Array)
+    assert_type(r.nonzero(), tuple[jax.Array, ...])
+    assert_type(r.repeat(jnp.array([1, 3]), axis=0), Length)
+    assert_type(r.copy(), Length)
+    assert_type(r.size, int)
+    assert_type(r % (2.0 * u.angstrom), Length)  # a remainder keeps it
+    assert_type(r // (2.0 * u.angstrom), jax.Array)  # a count cancels it
+    assert_type(f"{r[0]:.3f}", str)  # a numeric spec applies to one magnitude
+    assert_type(units.dim_str(units.dim_of(u.angstrom)), str)
+    # a dimension parsed from text is opaque to the checker
+    assert_type(units.from_dim(arr([1.0, 2.0]), units.dim_from_str("m=1")), Any)
 
 
 def test_testing_helpers():
@@ -177,6 +328,27 @@ def test_quantity_arraylike():
     assert_type(q.to(u.angstrom), jax.Array)
     assert_type(n.value.shape, tuple[int, ...])
     assert isinstance(q.value, jax.Array) and isinstance(n.to(u.nm), jax.Array)
+
+
+def test_einsum_types():
+    # the result dimension is the product of the operands', whatever the subscripts do
+    A = arr([[1.0, 0.0], [0.0, 1.0]]) * u.angstrom
+    B = arr([[1.0, 0.0], [0.0, 1.0]]) * u.eV
+    p = arr([[1.0, 0.0], [0.0, 1.0]])
+    inv = p / (1.0 * u.angstrom)
+    assert_type(units.einsum("ii->i", A), Length)
+    assert_type(units.einsum("ij,jk->ik", A, A), Area)
+    assert_type(units.einsum("ij,jk->ik", A, B), _EnergyLength)
+    assert_type(units.einsum("ij,jk->ik", A, p), Length)
+    assert_type(units.einsum("ij,jk->ik", p, B), Energy)
+    assert_type(units.einsum("ij,jk->ik", p, p), jax.Array)
+    assert_type(units.einsum("ij,jk->ik", A, inv), jax.Array)  # the product cancels
+    assert_type(units.einsum("ij,jk,kl->il", A, B, inv), Energy)
+    assert_type(units.einsum("ij,jk,kl->il", p, A, p), Length)
+    # four operands, a runtime dim= and the interleaved form are beyond the overloads
+    assert_type(units.einsum("ij,jk->ik", A, B, dim=units.ONE), Any)
+    assert_type(units.einsum(A, [0, 1], B, [1, 2]), Any)
+    assert_type(units.einsum("ij,jk,kl,lm->im", A, A, A, A), Any)
 
 
 def test_checker_accepts_this_file():

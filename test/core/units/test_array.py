@@ -1,8 +1,9 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the array surface: reductions, movers, and apply."""
+"""Tests for the array surface: reductions, movers, constructors, and apply."""
 
+import math
 from collections.abc import Callable
 
 import jax
@@ -10,13 +11,16 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
+from jax.typing import DTypeLike
 
 from kups.core import units
 from kups.core.units import (
     Area,
     Energy,
     Length,
+    LengthUnit,
     Quantity,
+    Volume,
 )
 from kups.core.units import catalog as u
 
@@ -25,10 +29,48 @@ from ._helpers import (
     arr,
     eye,
     jit,
+    linalg_norm,
+    ones,
+    segment_sum,
     ty,
+    val,
     x64_mode,
     zeros_like,
 )
+
+
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
+@pytest.mark.parametrize("unit", [u.m, u.cm])
+def test_linspace_requires_floating_dtype(unit: units.Unit, dtype: DTypeLike):
+    def build(unit: units.Unit, dtype: DTypeLike) -> object:
+        return units.linspace(1.0 * unit, 3.0 * unit, 2, dtype=dtype)
+
+    for call in (build, jit(build, static_argnums=(0, 1))):
+        with pytest.raises(units.DimensionError, match="magnitudes cannot carry"):
+            call(unit, dtype)
+
+
+@pytest.mark.parametrize(
+    "name, build",
+    [
+        ("zeros_like", lambda x, one: units.zeros_like(x, dtype=jnp.int32)),
+        ("ones_like", lambda x, one: units.ones_like(x, dtype=jnp.int32)),
+        ("full_like", lambda x, one: units.full_like(x, one, dtype=jnp.int32)),
+    ],
+)
+def test_like_requires_floating_dtype(
+    name: str,
+    build: Callable[[Length | jax.Array, LengthUnit | float], Length | jax.Array],
+):
+    with pytest.raises(units.DimensionError, match=name):
+        build(arr([1.0, 2.0]) * u.m, u.nm)
+    assert build(arr([1.0, 2.0]), 1.0).dtype == jnp.int32
+
+
+def test_dimensionless_linspace_keeps_integer_dtype():
+    out = units.linspace(1, 2, 2, dtype=jnp.int32)
+    assert isinstance(out, jax.Array) and out.dtype == jnp.int32
+    npt.assert_array_equal(out, [1, 2])
 
 
 @pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
@@ -65,6 +107,158 @@ def test_dimension_changing_operations(system: units.BaseSystem, compiled: bool)
     npt.assert_allclose(root.to(u.cm), [[1.0, 2.0], [3.0, 4.0]])
     npt.assert_allclose(product.to(u.cm**4), [[4.0], [144.0]])
     npt.assert_allclose(variance.to(u.cm**4), [32.0, 72.0])
+
+
+def test_array_surface():
+    # eV is pinned, so magnitudes are exact
+    f = arange(1.0, 7.0).reshape(3, 2) * u.eV
+    assert val(f.mean()) == 3.5 and val(f.sum()) == 21.0
+    assert f.sum(axis=0, keepdims=True).shape == (1, 2)
+    assert val(f.min()) == 1.0 and val(f.max()) == 6.0
+    assert val(abs(-f).sum()) == 21.0
+    assert val(units.norm(arr([3.0, 4.0]) * u.eV)) == 5.0
+    # every order is degree 1 in the magnitudes except ord=0, which counts nonzeros
+    assert val(units.norm(arr([3.0, 4.0]) * u.eV, ord=jnp.inf)) == 4.0
+    with pytest.raises(units.DimensionError, match=r"jnp\.count_nonzero"):
+        units.norm(f, ord=0)
+    assert float(units.norm(arr([0.0, 3.0]), ord=0)) == 1.0  # plain arrays untouched
+    assert f.reshape((2, 3)).shape == (2, 3) and f.T.shape == (2, 3)
+    assert f.transpose().shape == (2, 3)
+    # repeat is a method only; generic code calls it on a leaf
+    assert list(f[0].repeat(2).value) == [1.0, 1.0, 2.0, 2.0]
+    assert val(f.std()) == pytest.approx(1.7078251, rel=1e-6)
+    assert val(f.trace()) == 5.0
+    assert val(f.cumsum()[-1]) == 21.0 and f.ravel().shape == (6,)
+    assert f.squeeze().shape == (3, 2) and f.swapaxes(0, 1).shape == (2, 3)
+    assert list(f.diagonal().value) == [1.0, 4.0]
+    assert list(f[0].sort().value) == [1.0, 2.0]
+    assert list(f[0].take(arr([1, 0])).value) == [2.0, 1.0]
+    assert f.copy().shape == (3, 2)
+    assert val(f.var()) == pytest.approx(2.9166667, rel=1e-6)  # eV^2
+    assert units.dim_of(f.var()) == units.dim_of(u.eV**2)
+    assert val(f[0].prod()) == 2.0 and units.dim_of(f[0].prod()) == units.dim_of(
+        u.eV**2
+    )
+    assert val(f[0].dot(f[0])) == 5.0 and units.dim_of(f[0].dot(f[0])) == units.dim_of(
+        u.eV**2
+    )
+    for plain in (f.argmin(), f.argmax(), f[0].argsort(), f.all(), f.any()):
+        assert not units.is_quantity(plain)
+    assert len(f.nonzero()) == 2 and not units.is_quantity(f.nonzero()[0])
+    assert val(jax.jit(lambda q: q.std())(f)) == pytest.approx(1.7078251, rel=1e-6)
+    assert f.repeat(2, axis=0).shape == (6, 2)
+    assert list(f[0].repeat(arr([1, 3])).value) == [1.0, 2.0, 2.0, 2.0]
+    assert f[0].repeat(2, total_repeat_length=3).shape == (3,)
+    assert jax.jit(lambda q: q.repeat(2).sum())(f[0]).to(u.eV) == 6.0
+    assert not hasattr(units, "repeat")
+    assert f.astype(jnp.float32).dtype == jnp.float32
+    assert units.stack([f, f]).shape == (2, 3, 2)
+    assert units.concatenate([f, f], axis=1).shape == (3, 4)
+    assert list(f[0].clip(1.5 * u.eV, None).value) == [1.5, 2.0]
+    assert list(units.where(arr([True, False]), f[0], 0.0 * u.eV).value) == [1.0, 0.0]
+    assert list(units.zeros_like(f[0]).value) == [0.0, 0.0]
+    assert list(units.ones_like(f[0]).value) == [1.0, 1.0]  # one base unit each
+    assert list(units.full_like(f[0], 2.0 * u.eV).value) == [2.0, 2.0]
+    assert float(f[0, 0]) == val(f[0, 0]) == 1.0  # float() is the own-base magnitude
+    # results keep the operand's dimension and base
+    for q in (f.mean(), f.min(), f.norm(), f.T, units.stack([f, f])):
+        assert units.dim_of(q) == (2, 1, -2, 0, 0)
+        assert units.base_of(q) == units.ATOMISTIC
+    # apply is the escape hatch for anything not named above
+    assert list(units.apply(jnp.flip, f[0]).value) == [2.0, 1.0]
+
+
+def test_dimension_checks():
+    f = arr([1.0, 2.0]) * u.eV
+    d = arr([1.0, 2.0]) * u.angstrom
+    mask = arr([True, False])
+    with pytest.raises(units.DimensionError, match="cannot select between"):
+        units.where(mask, f, d)  # pyrefly: ignore[no-matching-overload]
+    with pytest.raises(units.DimensionError, match="cannot clip"):
+        f.clip(d)  # pyrefly: ignore[bad-argument-type]
+    with pytest.raises(units.DimensionError, match="cannot stack"):
+        units.stack([f, d])  # pyrefly: ignore[no-matching-overload]
+    with pytest.raises(units.DimensionError, match="cannot concatenate"):
+        units.concatenate([f, d])  # pyrefly: ignore[no-matching-overload]
+    with pytest.raises(units.DimensionError, match="cannot fill"):
+        units.full_like(f, d)  # pyrefly: ignore[no-matching-overload]
+    with pytest.raises(units.DimensionError, match="cannot add"):
+        f.at[0].add(d)  # pyrefly: ignore[bad-argument-type]
+    with pytest.raises(units.DimensionError, match="dimensionless factor"):
+        f.at[0].multiply(d)  # pyrefly: ignore[bad-argument-type]
+    with pytest.raises(units.DimensionError, match="the condition must be a plain"):
+        units.where(f, f, f)  # pyrefly: ignore[no-matching-overload]
+    with units.base(units.SI):  # bases resolve exactly as they do for +
+        si = 1.0 * u.eV
+        assert units.base_of(units.stack([f, f])) == units.ATOMISTIC  # one base
+        mixed = units.stack([f[0], si])  # two bases: resolved in the active one
+        assert units.base_of(mixed) == units.SI
+        assert list(mixed.value) == [1.602176634e-19, 1.602176634e-19]
+
+
+def test_like_under_vmap():
+    # vmap batches jnp.full_like, so results stay batched instead of becoming constants
+    r = arr([1.0, 2.0, 3.0]) * u.angstrom
+    rs = units.stack([r, r])
+    assert jax.vmap(units.zeros_like)(rs).shape == (2, 3)
+    assert list(jax.vmap(units.ones_like)(rs)[0].value) == [1.0, 1.0, 1.0]
+
+    def filled(x: Length) -> Length:
+        return units.full_like(x, 2.0 * u.angstrom)
+
+    assert jax.vmap(filled)(rs).shape == (2, 3)
+    nan = arr([float("nan"), 1.0]) * u.angstrom
+    assert list(units.zeros_like(nan).value) == [0.0, 0.0]  # a constant, not 0*nan
+
+    def constant(z: Length) -> Energy:
+        # ignores the batched argument, so vmap broadcasts it
+        del z
+        return 1.0 * u.eV
+
+    broadcast = jax.vmap(constant)(rs)
+    assert broadcast.shape == (2,)  # one value per row of the mapped axis
+    assert units.dim_of(broadcast) == units.dim_of(u.eV)
+    assert list(broadcast.to(u.eV)) == [1.0, 1.0]
+    # out_axes=None returns the unbatched constant at its original shape
+    assert jax.vmap(constant, out_axes=None)(rs).shape == ()
+
+
+def test_apply_override():
+    # det/inv/cross carry the right dimension; apply needs dim= to change one
+    cell = eye(3) * 5.43 * u.angstrom
+    assert units.dim_of(units.det(cell)) == units.dim_of(u.angstrom**3)
+    assert float(units.det(cell).to(u.angstrom**3)) == pytest.approx(5.43**3)
+    assert units.dim_of(units.inv(cell)) == units.dim_of(u.angstrom**-1)
+    assert units.dim_of(units.cross(cell[0], cell[1])) == units.dim_of(u.angstrom**2)
+    assert units.dim_of(
+        units.apply(jnp.linalg.det, cell, dim=units.dim_of(u.angstrom**3))
+    ) == (3, 0, 0, 0, 0)
+    with pytest.raises(units.DimensionError, match="index, a count or a mask"):
+        units.apply(jnp.argsort, units.norm(cell, axis=-1))
+
+
+def test_minimum_maximum():
+    r = arr([1.0, 5.0]) * u.angstrom
+    cut = 4.0 * u.angstrom
+    assert [float(x) for x in units.minimum(r, cut).to(u.angstrom)] == [1.0, 4.0]
+    assert [float(x) for x in units.maximum(r, cut).to(u.angstrom)] == [4.0, 5.0]
+    with pytest.raises(units.DimensionError, match=r"units.minimum"):
+        # min's argument is the axis, not a bound
+        r.min(cut)  # pyrefly: ignore[bad-argument-type]
+    with pytest.raises(units.DimensionError, match="cannot take the elementwise"):
+        units.minimum(r, 1.0 * u.eV)  # pyrefly: ignore[no-matching-overload]
+    # jnp spellings fail on their own, since a quantity won't convert to an array
+    slips: list[Callable[[], object]] = [
+        lambda: jnp.where(r > cut, r, 0.0),  # pyrefly: ignore[bad-argument-type]
+        lambda: linalg_norm(r),
+        lambda: jnp.stack([r, r]),  # pyrefly: ignore[bad-argument-type]
+        lambda: jnp.minimum(r, r),  # pyrefly: ignore[bad-argument-type]
+        lambda: segment_sum(r, arr([0, 1]), 2),
+    ]
+    for fn in slips:
+        with pytest.raises((TypeError, ValueError, units.DimensionError)):
+            fn()
+    assert float(linalg_norm(arr([3.0, 4.0]))) == 5.0  # plain arrays untouched
 
 
 def test_apply_keeps_dimension():
@@ -122,6 +316,86 @@ def test_apply_dim_one():
             units.apply(fn, r)
     # a dimensionless float result needs an explicit dim=ONE; the default labels it
     assert units.dim_of(units.apply(jnp.sign, r)) == units.dim_of(u.angstrom)
+
+
+def test_contractions():
+    # these compute their own dimensions, since apply's product default is wrong here
+    # ewald.py:390's k_squared, with the real subscripts
+    kv = ones((2, 4, 3)) / u.angstrom
+    k2 = units.einsum("bkd,bkd->bk", kv, kv)
+    assert units.dim_of(k2) == units.dim_of(u.angstrom**-2)
+    assert float(k2.to(u.angstrom**-2)[0, 0]) == 3.0
+    # ewald.py:419's k . r, which must be dimensionless
+    assert not units.is_quantity(
+        units.einsum(
+            "psd,pd->ps", ones((5, 4, 3)) / u.angstrom, ones((5, 3)) * u.angstrom
+        )
+    )
+    cell = eye(3) * 2.0 * u.angstrom
+    r = arr([1.0, 2.0, 3.0]) * u.angstrom
+    assert units.dim_of(cell @ r) == units.dim_of(u.angstrom**2)
+    assert units.dim_of(units.vdot(r, r)) == units.dim_of(u.angstrom**2)
+    assert float(units.vdot(r, r).to(u.angstrom**2)) == 14.0
+    vol = (arr([2.0, 3.0, 4.0]) * u.angstrom).prod()
+    assert units.dim_of(vol) == units.dim_of(u.angstrom**3)
+    assert float(vol.to(u.angstrom**3)) == 24.0
+    rows = ones((2, 3)) * u.angstrom
+    assert units.dim_of(rows.prod(axis=-1)) == units.dim_of(u.angstrom**3)
+    assert units.dim_of(r.var(ddof=1)) == units.dim_of(u.angstrom**2)
+    assert float(r.var(ddof=1).to(u.angstrom**2)) == 1.0
+
+
+def test_decompositions():
+    # named functions, since lift has no rule for a tuple
+    cell = eye(3) * 5.43 * u.angstrom
+    force = arr([1.0, 2.0, 3.0]) * u.eV / u.angstrom
+    stiffness = units.dim_of(u.eV / u.angstrom**2)
+    x = units.solve(cell, force)
+    assert units.dim_of(x) == stiffness
+    npt.assert_allclose(x.to(u.eV / u.angstrom**2), [1 / 5.43, 2 / 5.43, 3 / 5.43])
+    npt.assert_allclose((cell @ x).to(u.eV / u.angstrom), [1.0, 2.0, 3.0])
+    # cell.py:1317's chain: Q is dimensionless and R a length, so sign(diag(R)) is plain
+    q, upper = units.qr(cell.T)
+    assert not units.is_quantity(q)
+    assert units.dim_of(upper) == units.dim_of(u.angstrom)
+    diag = units.apply(jnp.diagonal, upper)
+    assert list(units.apply(jnp.sign, diag, dim=units.ONE)) == [1.0, 1.0, 1.0]
+    assert units.dim_of(units.qr(cell, mode="r")) == units.dim_of(u.angstrom)
+    hess = eye(3) * 2.0 * u.eV / u.angstrom**2
+    w, vecs = units.eigh(hess)
+    assert units.dim_of(w) == stiffness and not units.is_quantity(vecs)
+    npt.assert_allclose(w.to(u.eV / u.angstrom**2), [2.0, 2.0, 2.0])
+    npt.assert_allclose(abs(jnp.linalg.det(vecs)), 1.0)
+    # eigenvalues keep the operand's base, whatever base is active
+    with units.base(units.SI):
+        w_si, _ = units.eigh(hess)
+    assert units.base_of(w_si) == units.ATOMISTIC
+    # slogdet refuses a quantity; take the magnitudes explicitly first
+    sign, logabs = jnp.linalg.slogdet(eye(3) * 2.0)
+    assert float(sign) == 1.0 and float(logabs) == pytest.approx(3 * math.log(2))
+    with pytest.raises(TypeError, match="requires ndarray"):
+        jnp.linalg.slogdet(cell)
+    _, log_of_magnitudes = jnp.linalg.slogdet(cell.to(u.angstrom))
+    assert float(log_of_magnitudes) == pytest.approx(3 * math.log(5.43))
+
+
+def test_constructors():
+    # shape= exists because a padding buffer may not have an operand to read it from
+    edges = units.linspace(0.0 * u.angstrom, 10.0 * u.angstrom, 5)
+    assert list(edges.to(u.angstrom)) == [0.0, 2.5, 5.0, 7.5, 10.0]
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    assert units.dim_of(centres) == units.dim_of(u.angstrom)
+    r = arr([1.0, 2.0]) * u.angstrom
+    for like in (
+        units.zeros_like(r, shape=(4, 2)),
+        units.ones_like(r, shape=(4, 2)),
+        units.full_like(r, 1.0 * u.angstrom, shape=(4, 2)),
+    ):
+        assert like.shape == (4, 2)
+        assert units.dim_of(like) == units.dim_of(u.angstrom)
+    with pytest.raises(units.DimensionError, match="cannot space"):
+        # pyrefly: ignore[no-matching-overload]
+        units.linspace(0.0 * u.angstrom, 1.0 * u.eV)
 
 
 def test_at_fill_and_drop():
@@ -361,3 +635,30 @@ def test_tree_walk_labels():
     reshaped = jax.tree.unflatten(treedef, [x.reshape(-1) for x in leaves])
     assert reshaped["r"].shape == (6,)
     assert units.dim_of(reshaped["r"]) == units.dim_of(u.angstrom)
+
+
+def test_apply_under_transforms():
+    # apply labels a result under vmap and jit the same way it does eagerly
+    cubed = units.dim_of(u.angstrom**3)
+    cell = eye(3) * 5.43 * u.angstrom
+    cells = units.stack([cell, 2.0 * cell])
+
+    def volume(c: Length) -> Volume:
+        return units.apply(jnp.linalg.det, c, dim=cubed)
+
+    def unnamed(c: Length) -> Length:
+        return units.apply(jnp.linalg.det, c)
+
+    # magnitudes are cubed either way; the label follows the operand, not fn
+    assert units.dim_of(unnamed(cell)) == units.dim_of(u.angstrom)
+    assert units.dim_of(jax.jit(unnamed)(cell)) == units.dim_of(u.angstrom)
+    assert units.dim_of(jax.vmap(unnamed)(cells)) == units.dim_of(u.angstrom)
+    assert units.dim_of(jax.jit(volume)(cell)) == cubed
+    volumes = jax.vmap(volume)(cells).to(u.angstrom**3)
+    npt.assert_allclose(volumes, [5.43**3, (2 * 5.43) ** 3])
+    # a plain operand stays plain under a transform
+    rows = jax.vmap(lambda x: units.apply(jnp.cumsum, x))(arange(6.0).reshape(2, 3))
+    assert not units.is_quantity(rows)
+    # an index measures nothing, so labelling one is refused
+    with pytest.raises(units.DimensionError, match="index, a count or a mask"):
+        jax.vmap(lambda c: units.apply(jnp.argmax, units.norm(c, axis=-1)))(cells)
