@@ -51,6 +51,7 @@ Caveats:
 """
 
 from kups.core.units import catalog as catalog
+from kups.core.units import constants as constants
 from kups.core.units._array import (
     concatenate,
     full_like,
@@ -181,6 +182,7 @@ from kups.core.units._unit import (
 __all__ = [
     # submodules
     "catalog",
+    "constants",
     # core types
     "Quantity",
     "Unit",

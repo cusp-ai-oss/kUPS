@@ -169,3 +169,35 @@ def test_dimension_aliases_exported():
     }
     extra = exported - named - {f"{n}Unit" for n in named}
     assert not extra, f"kups.core.units exports {sorted(extra)} as well"
+
+
+def test_annotations_match_dimensions():
+    # units and constants annotate their own members, so the checker cannot catch
+    # a wrong alias; compare against the dimension read from the value instead
+    table = aliases()
+    for mod, suffix in ((units.catalog, "Unit"), (units.constants, "")):
+        source = (PKG / f"{mod.__name__.split('.')[-1]}.py").read_text()
+        seen = 0
+        tree = ast.parse(source)
+        # constants declares under TYPE_CHECKING, catalog at module level
+        top = list(tree.body)
+        for node in tree.body:
+            if isinstance(node, ast.If):
+                top += node.body + node.orelse
+        for node in top:
+            if not (
+                isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+            ):
+                continue
+            value = getattr(mod, node.target.id)
+            if not hasattr(value, "dim"):  # N_A and alpha are plain floats
+                continue
+            dim = tuple(value.dim)
+            want = "Dimensionless" if not any(dim) else table[dim] + suffix
+            got = ast.unparse(node.annotation).removeprefix("Final[").removesuffix("]")
+            assert got == want, (
+                f"{mod.__name__}.{node.target.id} is annotated {got} but measures "
+                f"{want}"
+            )
+            seen += 1
+        assert seen > 10, f"only {seen} annotations in {mod.__name__}"

@@ -3,7 +3,10 @@
 
 """Tests for the array surface: reductions, movers, constructors, and apply."""
 
+import inspect
 import math
+import re
+import types
 from collections.abc import Callable
 
 import jax
@@ -531,6 +534,88 @@ def test_apply_lowers_operands():
     assert units.dim_of(
         units.apply(jnp.dot, r, r, dim=units.dim_of(u.eV))
     ) == units.dim_of(u.eV)
+
+
+def test_mirror_surface():
+    # kups.core.units names an op only when it computes a dimension or apply can't
+    # express it; everything else is absent and its jnp spelling refuses a quantity
+    q = arr([1.0, 2.0]) * u.angstrom
+    cases: list[tuple[Callable[..., object], str]] = [
+        (jnp.isfinite, "isfinite"),
+        (jnp.sign, "sign"),
+        (jnp.argsort, "argsort"),
+        (jnp.sin, "sin"),
+        (jax.scipy.special.erfc, "erfc"),
+        (jnp.linalg.slogdet, "slogdet"),
+    ]
+    for fn, name in cases:
+        assert name not in units.__all__ and not hasattr(units, name), name
+        with pytest.raises((TypeError, ValueError, units.DimensionError)):
+            fn(q)
+    assert units.dim_of(1.0) == units.ONE  # the guards' spelling is public
+    # the jnp spellings of % and // refuse a quantity; the operators check dimensions
+    agree: list[tuple[Callable[..., object], Callable[..., object], str]] = [
+        (jnp.mod, lambda x, y: x % y, "cannot take the remainder of"),
+        (jnp.floor_divide, lambda x, y: x // y, "cannot floor-divide"),
+        (jnp.matmul, lambda x, y: x @ y, ""),
+    ]
+    for jfn, op, verb in agree:
+        with pytest.raises((TypeError, ValueError, units.DimensionError)):
+            jfn(q, q)
+        if verb:
+            with pytest.raises(units.DimensionError, match=verb):
+                op(q, 1.0 * u.eV)
+    # the whole public surface, so an accidental addition or removal fails
+    dimensions = {
+        "Acceleration", "Action", "Area", "Charge", "Compressibility",
+        "CoulombConstant", "Current", "Density", "DipoleMoment", "Energy", "Entropy",
+        "Force", "Frequency", "Length", "Mass", "Momentum", "NumberDensity",
+        "Permittivity", "Power", "Pressure", "Stiffness", "Temperature", "Time", "Velocity",
+        "Voltage", "Volume", "Wavenumber",
+    }  # fmt: skip
+    surface = {
+        "ATOMISTIC", "BaseSystem", "DimensionError", "Dimensionless", "ONE",
+        "OddExponentRoot",
+        "Quantity", "SI", "Unit", "active_base", "apply", "base", "base_of",
+        "catalog", "concatenate", "constants", "cross", "det", "dim_from_str",
+        "dim_of", "dim_str", "eigh", "einsum", "from_dim", "full_like", "grad",
+        "hessian", "inv", "is_leaf", "is_quantity", "jacfwd", "jacrev", "linspace",
+        "maximum", "minimum", "norm", "ones_like", "qr", "relabel", "set_base",
+        "solve", "sqrt", "stack", "tree_map", "value_and_grad", "vdot", "vectorize",
+        "vjp", "where", "zeros_like", "Dim", "dmul", "E_M", "E_KG", "E_S", "E_A",
+        "E_K", "F_M", "F_KG", "F_S", "F_A", "F_K",
+    }  # fmt: skip
+    assert set(units.__all__) == surface | dimensions | {
+        f"{name}Unit" for name in dimensions
+    }
+    # a body that is one apply() call only forwards; the *_like constructors are the
+    # exception, since jnp's own refuses a quantity
+    forwards = {"zeros_like", "ones_like"}
+    found = set()
+    for name in units.__all__:
+        fn = getattr(units, name)
+        # the filter is over the package, so a forwarder counts wherever it is written;
+        # Dim is a tuple alias, callable but not a function
+        if not callable(fn) or isinstance(fn, types.GenericAlias):
+            continue
+        home = getattr(fn, "__module__", "")
+        assert home.startswith("kups.core.units"), f"units.{name} is defined in {home}"
+        body = inspect.getsource(fn).split('"""')[-1].strip()
+        m = re.search(r"return apply\((.*?)\)\s*$", body, re.DOTALL)
+        if m and "dim=" not in m.group(1):
+            found.add(name)
+    assert found == forwards, f"units.{sorted(found ^ forwards)} only forwards to jnp"
+    batched = arange(6.0).reshape(2, 3) * u.angstrom
+
+    def apply_zeros(x: Length) -> Length:
+        return units.apply(zeros_like, x)
+
+    for out in (jax.vmap(units.zeros_like)(batched), jax.vmap(apply_zeros)(batched)):
+        npt.assert_array_equal(out.value, np.zeros((2, 3)))
+        assert units.dim_of(out) == units.dim_of(u.angstrom)
+    # a constant fill is unbatched, so out_axes=None returns one row
+    assert jax.vmap(units.zeros_like, out_axes=None)(batched).shape == (3,)
+    assert jax.vmap(apply_zeros, out_axes=None)(batched).shape == (3,)
 
 
 def test_operands_must_agree():

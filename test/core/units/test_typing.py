@@ -18,12 +18,16 @@ from jax.typing import ArrayLike
 
 from kups.core import units
 from kups.core.units import (
+    Action,
     Area,
     AreaUnit,
+    Charge,
     CompressibilityUnit,
+    CoulombConstant,
     Dimensionless,
     Energy,
     EnergyUnit,
+    Entropy,
     Force,
     ForceUnit,
     Frequency,
@@ -34,6 +38,7 @@ from kups.core.units import (
     NumberDensity,
     NumberDensityUnit,
     OddExponentRoot,
+    Permittivity,
     Quantity,
     Stiffness,
     Unit,
@@ -41,6 +46,7 @@ from kups.core.units import (
     Volume,
     VolumeUnit,
     Wavenumber,
+    constants,
 )
 from kups.core.units import catalog as u
 from kups.core.units import testing as ut
@@ -278,6 +284,21 @@ def test_dimension_mismatch():
         units.maximum(r, 0.0)  # pyrefly: ignore[no-matching-overload]
     with pytest.raises(units.DimensionError):
         r.at[0].set(0.0)  # pyrefly: ignore[bad-argument-type]
+
+
+def test_constant_types():
+    assert_type(constants.c, Velocity)
+    assert_type(constants.hbar, Action)
+    assert_type(constants.k_B, Entropy)
+    assert_type(constants.eps_0, Permittivity)
+    assert_type(constants.k_e, CoulombConstant)
+    assert_type(constants.k_B * (300.0 * u.K), Energy)  # k_B T is an energy
+    q, r = 1.0 * u.e, 3.0 * u.angstrom
+    assert_type(q, Charge)
+    assert_type(constants.k_e * q * q / r, Energy)  # and so is a Coulomb pair term
+    assert float((constants.k_e * q * q / r).to(u.eV)) == pytest.approx(
+        4.799881826156339
+    )
 
 
 def test_new_dimension_names():
