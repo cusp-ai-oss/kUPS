@@ -241,7 +241,7 @@ def test_initial_hdf5_full_and_selective_reads(builder, tmp_path):
 
 # Pickle stores classes by import path. These stand-ins take the original names
 # while writing, so the files carry the same tree definitions as files written
-# before the metadata fields existed.
+# before the metadata fields existed. The field lists match bc3399d.
 @dataclass
 class _PrechangeMDSystems:
     __module__ = md_data.__name__
