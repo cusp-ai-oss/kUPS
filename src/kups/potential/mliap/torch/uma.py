@@ -335,7 +335,9 @@ def load_uma(
         cutoff: Cutoff radius [Å]. UMA-s-1.2 defaults to 6.0.
         inference_settings: ``"default"`` or ``"turbo"`` (resolved by
             fairchem's ``guess_inference_settings``), or ``"turbo_f64"`` for
-            a compiled, MOLE-merged float64 preset.
+            a compiled, MOLE-merged float64 preset. ``"turbo"`` and
+            ``"turbo_f64"`` merge the experts for one composition, charge and
+            spin, so FAIRChem rejects omol batches whose systems differ in these.
 
     Returns:
         ``TorchMliap`` ready to be wired into the kUPS interface.
