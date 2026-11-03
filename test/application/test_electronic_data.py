@@ -3,8 +3,6 @@
 
 """System electronic metadata survives ingestion, batching, and storage."""
 
-import base64
-import zlib
 from dataclasses import replace
 
 import ase
@@ -13,14 +11,19 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
+from jax import Array
 
+import kups.application.md.data as md_data
+import kups.application.relaxation.data as relax_data
 from kups.application.md.data import (
     MdParameters,
+    VerletParams,
     md_state_from_ase,
     md_state_from_particles_and_cell,
 )
 from kups.application.relaxation.data import relax_state_from_ase
 from kups.application.utils.particles import particles_from_ase
+from kups.core.cell import Cell
 from kups.core.data import Index, Table
 from kups.core.lens import view
 from kups.core.storage import (
@@ -30,7 +33,7 @@ from kups.core.storage import (
     WriterGroupConfig,
 )
 from kups.core.typing import SystemId
-from kups.core.utils.jax import no_post_init
+from kups.core.utils.jax import dataclass, no_post_init
 
 
 def _config():
@@ -236,67 +239,62 @@ def test_initial_hdf5_full_and_selective_reads(builder, tmp_path):
             npt.assert_array_equal(actual, expected)
 
 
-# Compressed HDF5 initial states written at bc3399d044314bde4159f7c0176a283cd914bb0a.
-# Retain the old serialized tree definitions; rebuilding them would miss schema drift.
-_LEGACY_INITIAL_STATES = {
-    "md": (
-        "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"
-    ),
-    "relax": (
-        "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"
-    ),
-}
+# Pickle stores classes by import path. These stand-ins take the original names
+# while writing, so the files carry the same tree definitions as files written
+# before the metadata fields existed.
+@dataclass
+class _PrechangeMDSystems:
+    __module__ = md_data.__name__
+    __qualname__ = "MDSystems"
+
+    cell: Cell
+    integrator_params: VerletParams
+    cell_gradients: Cell
+    cell_momentum: Array
+    potential_energy: Array
+
+
+@dataclass
+class _PrechangeRelaxSystems:
+    __module__ = relax_data.__name__
+    __qualname__ = "RelaxSystems"
+
+    cell: Cell
+    cell_gradients: Cell
+    potential_energy: Array
+
+
+def _write_prechange_initial_state(kind, key, energy, path, monkeypatch):
+    """Write an initial-state file in the layout used before the metadata fields."""
+    _, systems = relax_state_from_ase(_atoms())
+    cell, gradients = systems.data.cell, systems.data.cell_gradients
+    energies = jnp.array([energy])
+    if kind == "md":
+        module, cls = md_data, _PrechangeMDSystems
+        data = cls(
+            cell,
+            VerletParams(jnp.array([0.1])),
+            gradients,
+            jnp.zeros((1, 3, 3)),
+            energies,
+        )
+    else:
+        module, cls = relax_data, _PrechangeRelaxSystems
+        data = cls(cell, gradients, energies)
+    state = Table((SystemId(key),), data)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, cls.__qualname__, cls)
+        with HDF5StorageWriter(
+            path, WriterGroupConfig(lambda x: x, Once()), state, total_steps=1
+        ) as writer:
+            writer.log(state, 0)
 
 
 @pytest.mark.parametrize("kind,key,energy", [("md", 12, 2.5), ("relax", 37, 3.5)])
-def test_prechange_initial_state_reads(kind, key, energy, tmp_path):
+def test_prechange_initial_state_reads(kind, key, energy, tmp_path, monkeypatch):
     """Legacy initial data remain readable without inventing stored metadata."""
     path = tmp_path / "legacy.h5"
-    path.write_bytes(zlib.decompress(base64.b64decode(_LEGACY_INITIAL_STATES[kind])))
+    _write_prechange_initial_state(kind, key, energy, path, monkeypatch)
     with HDF5StorageReader(path) as reader:
         group = reader.focus_group("group")
         full = group.read(...)
