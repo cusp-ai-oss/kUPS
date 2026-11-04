@@ -370,16 +370,7 @@ class TestIsostericHeat:
         assert jnp.all(jnp.isfinite(q))
 
     def test_matches_central_difference(self):
-        """Autodiff q_st must agree with a local central-difference oracle.
-
-        Regression guard: autodiff through Peng-Robinson relies on the custom
-        JVP attached to
-        [`cubic_roots`][kups.core.utils.math.cubic_roots] and the double-where
-        sanitisation in
-        [`peng_robinson_log_fugacity`][kups.mcmc.fugacity.peng_robinson_log_fugacity].
-        A regression in either would show up as a divergence between the
-        autodiff Clausius--Clapeyron result and local finite differences.
-        """
+        """Autodiff q_st agrees with central differences through Peng-Robinson."""
         from kups.mcmc.flat_histogram import _loading_from_temperature_log_pressure
 
         log_qc_sim = jnp.array([0.0, -3.0, -5.0, -6.0])
@@ -453,25 +444,11 @@ class TestWorkingCapacity:
 
 
 class TestAnalyticalLangmuirRoundTrip:
-    """The full TMMC post-processing chain must reproduce a known closed-form
-    isotherm to machine precision when fed consistent synthetic statistics.
+    r"""Full pipeline reproduces an analytic $M$-site Langmuir isotherm.
 
-    Given an $M$-site non-interacting Langmuir model with per-site binding
-    energy $\\varepsilon$,
-
-    $$\\ln Q_c(N) = \\ln\\binom{M}{N} + N \\beta \\varepsilon,$$
-
-    we build transition-matrix counts that exactly satisfy Witman eq 8 and
-    then run the full pipeline:
-
-    C-matrix $\\to$ [`TransitionStatistics.probabilities`][kups.mcmc.widom.TransitionStatistics.probabilities]
-    $\\to$ :func:`reconstruct_log_partition` $\\to$
-    :class:`TMMCSummary` $\\to$ :meth:`TMMCSummary.isotherm`.
-
-    The resulting $\\langle N\\rangle(P)$ is compared against the closed-form
-    Langmuir $\\langle N \\rangle = M\\,x/(1+x)$ with
-    $x = \\beta f(P)\\,\\exp(\\beta\\varepsilon)$. Agreement is expected to
-    float64 precision.
+    Synthetic C-matrix counts satisfying eq 8 for
+    $\ln Q_c(N) = \ln\binom{M}{N} + N\beta\varepsilon$ must give
+    $\langle N \rangle = M x / (1 + x)$, $x = \beta f e^{\beta\varepsilon}$.
     """
 
     def test_isotherm_matches_langmuir_closed_form(self):
@@ -632,13 +609,7 @@ class TestTMMCSummary:
 
 
 class TestBatchedLadders:
-    """A stack of ladders must be bitwise identical to looping over them.
-
-    Every pipeline step reduces along the trailing macrostate axis only, so
-    adding a leading per-system axis cannot change any single system's
-    numbers. This is the exactness guarantee that lets ``mcmc_nvtw``
-    post-process a whole batch of hosts in one call.
-    """
+    """A stack of ladders is bitwise identical to looping over them."""
 
     @staticmethod
     def _inputs() -> tuple[

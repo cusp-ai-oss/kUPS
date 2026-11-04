@@ -193,15 +193,8 @@ class TransitionStatistics:
     $$P(N \to N+1) = \frac{\text{acceptance\_insertion}}
         {n_\text{trials,ins} + n_\text{trials,del}}$$
 
-    by :meth:`probabilities`.
-
-    Shapes: every field's **leading** axis is per-system, shape
-    ``(n_systems,)`` as accumulated --- one entry per parallel simulation box,
-    which for a flat-histogram run is one rung of the macrostate ladder.
-    Post-processing regroups those rungs into a trailing macrostate axis
-    ([MacrostateId][kups.core.typing.MacrostateId]), giving
-    ``(n_systems, n_max + 1)``; every method here is elementwise, so it is
-    indifferent to that regrouping.
+    by :meth:`probabilities`. Fields have a leading per-system axis; all
+    methods are elementwise, so any trailing axes are carried along.
 
     Attributes:
         acceptance_insertion: $\sum \min(1, \alpha_\text{ins})$.
@@ -242,22 +235,7 @@ class TransitionStatistics:
         return tree_zeros_like(self)
 
     def probabilities(self) -> TransitionProbabilities:
-        r"""Normalise the accumulated C-matrix into transition probabilities.
-
-        Applies Witman 2018 eq 7,
-
-        $$P(N \to N + \Delta) = \frac{C(N, N + \Delta)}
-            {\sum_\Delta C(N, N + \Delta)},$$
-
-        elementwise, so the result has whatever shape the accumulator has
-        --- ``(n_systems,)`` as sampled, or ``(n_systems, n_max + 1)`` once
-        post-processing has regrouped the rungs onto a trailing macrostate
-        axis. Never-visited entries yield zero rather than a division by zero.
-
-        Returns:
-            ``TransitionProbabilities(insertion, deletion)``, each shaped like
-            the accumulated fields.
-        """
+        r"""Normalise the C-matrix (Witman 2018 eq 7); unvisited entries give 0."""
         total = self.n_trials_insertion + self.n_trials_deletion
         safe_total = jnp.where(total > 0, total, 1)
         return TransitionProbabilities(
@@ -334,13 +312,6 @@ class EnergyCumulants:
             axis (leading axes stay per-system, so tables/vmap batch over
             them), shape ``(n_systems, max_order - 1)``; entry ``[..., k - 2]``
             holds $\kappa_k$ [energy$^k$].
-
-    Flat-histogram post-processing regroups the leading per-system axis into
-    ``(n_systems, n_max + 1)``, appending a macrostate axis
-    ([MacrostateId][kups.core.typing.MacrostateId]) *before* the moment-order
-    axis: ``mean`` becomes ``(n_systems, n_max + 1)`` and ``cumulants``
-    becomes ``(n_systems, n_max + 1, max_order - 1)``. Indexing an order as
-    ``[..., k - 2]`` is what makes both layouts read the same.
     """
 
     mean: Energy
