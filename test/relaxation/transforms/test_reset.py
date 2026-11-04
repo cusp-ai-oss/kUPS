@@ -472,6 +472,7 @@ class _Forgetful(Resettable[jax.Array, ScaleByFireState]):
 
 def test_resettable_without_layout_cannot_be_built() -> None:
     with pytest.raises(TypeError, match="reset_layout"):
+        # pyrefly: ignore [bad-instantiation]
         _Forgetful()
 
 
