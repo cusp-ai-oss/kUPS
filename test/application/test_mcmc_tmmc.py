@@ -16,16 +16,16 @@ from kups.application.mcmc.data import (
     AdsorbateConfig,
     HostConfig,
 )
-from kups.application.simulations.mcmc_nvtw import (
+from kups.application.simulations.mcmc_rigid import EwaldConfig, LJConfig
+from kups.application.simulations.mcmc_tmmc import (
     Config,
-    NVTWidomRunConfig,
-    NVTWidomState,
+    TMMCRunConfig,
+    TMMCState,
     init_state,
     make_propagator,
     run,
     summarize,
 )
-from kups.application.simulations.mcmc_rigid import EwaldConfig, LJConfig
 
 L = 10.0  # box side (Å)
 N_MAX = 3
@@ -103,12 +103,12 @@ def _tmp_h5() -> str:
     return f.name
 
 
-def _config(host: HostConfig, run_config: NVTWidomRunConfig | None = None) -> Config:
+def _config(host: HostConfig, run_config: TMMCRunConfig | None = None) -> Config:
     return Config(
         adsorbates=(_ar_adsorbate(),),
         host=host,
         run=run_config
-        or NVTWidomRunConfig(
+        or TMMCRunConfig(
             out_file=_tmp_h5(),
             n_max=N_MAX,
             num_cycles=2,
@@ -127,7 +127,7 @@ def _config(host: HostConfig, run_config: NVTWidomRunConfig | None = None) -> Co
 
 class TestInitState:
     @pytest.fixture(scope="class")
-    def state(self) -> NVTWidomState:
+    def state(self) -> TMMCState:
         return init_state(jax.random.key(0), _config(_host(_write_cubic_ar_cif())))
 
     def test_one_system_per_macrostate(self, state):
@@ -174,7 +174,7 @@ class TestRun:
     """End-to-end smoke: a short deterministic run accumulates a valid C-matrix."""
 
     @pytest.fixture(scope="class")
-    def run_result(self) -> tuple[NVTWidomState, Config]:
+    def run_result(self) -> tuple[TMMCState, Config]:
         config = _config(_host(_write_cubic_ar_cif()))
         return run(config), config
 

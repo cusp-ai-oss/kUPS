@@ -1,7 +1,10 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-r"""Flat-histogram (TMMC) $NVT\!+\!W$ Monte Carlo simulation entry point.
+r"""Flat-histogram (TMMC) Monte Carlo simulation entry point.
+
+Samples in the $NVT\!+\!W$ scheme of Witman 2018: canonical ($NVT$) moves at
+each fixed loading plus Widom ($W$) ghost insertions/deletions.
 
 Builds $N_\mathrm{max} + 1$ parallel NVT simulations (one per macrostate
 $N = 0, \ldots, N_\mathrm{max}$) that share a single host framework. Each
@@ -106,8 +109,8 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
 
 
-class NVTWidomRunConfig(BaseModel):
-    """Run-time configuration for an $NVT\\!+\\!W$ TMMC simulation."""
+class TMMCRunConfig(BaseModel):
+    """Run-time configuration for a TMMC simulation."""
 
     out_file: str
     n_max: int
@@ -125,19 +128,19 @@ class NVTWidomRunConfig(BaseModel):
 
 
 class Config(BaseModel):
-    """Top-level $NVT\\!+\\!W$ configuration."""
+    """Top-level TMMC configuration."""
 
     adsorbates: tuple[AdsorbateConfig, ...]
     host: HostConfig
     """Single host framework, replicated across all macrostates."""
-    run: NVTWidomRunConfig
+    run: TMMCRunConfig
     lj: LJConfig
     ewald: EwaldConfig
 
 
 @dataclass
-class NVTWidomState(MCMCStateBase):
-    """State for the $NVT\\!+\\!W$ TMMC simulation.
+class TMMCState(MCMCStateBase):
+    """State for the TMMC simulation.
 
     Inherits every field from [MCMCStateBase][kups.application.simulations.mcmc_rigid.MCMCStateBase]
     so that existing MCMC propagators, potentials, and neighbor-list machinery
@@ -158,7 +161,7 @@ class NVTWidomState(MCMCStateBase):
     macrostate_n: Array
 
 
-def _probe(state: NVTWidomState, update: MCMCStateUpdate) -> MCMCStateUpdate:
+def _probe(state: TMMCState, update: MCMCStateUpdate) -> MCMCStateUpdate:
     del state
     return update
 
@@ -170,8 +173,8 @@ def build_tmmc_state(
     lj: LJConfig,
     ewald: EwaldConfig,
     n_max: int,
-) -> NVTWidomState:
-    """Build a fully-initialised :class:`NVTWidomState`.
+) -> TMMCState:
+    """Build a fully-initialised :class:`TMMCState`.
 
     Parses the host CIF once, fans out a single-system copy per macrostate
     $N \\in \\{0, \\ldots, N_\\mathrm{max}\\}$, unifies them into one batched
@@ -232,7 +235,7 @@ def build_tmmc_state(
         buffer_particles_per_system=num_buffer_particles / n_sys,
     )
 
-    return NVTWidomState(
+    return TMMCState(
         particles=particles,
         groups=groups,
         motifs=motifs,
@@ -254,8 +257,8 @@ def build_tmmc_state(
     )
 
 
-def init_state(key: Array, config: Config) -> NVTWidomState:
-    """Build the batched $NVT\\!+\\!W$ state via :func:`build_tmmc_state`."""
+def init_state(key: Array, config: Config) -> TMMCState:
+    """Build the batched TMMC state via :func:`build_tmmc_state`."""
     return build_tmmc_state(
         key,
         config.host,
@@ -267,11 +270,11 @@ def init_state(key: Array, config: Config) -> NVTWidomState:
 
 
 @dataclass
-class EnergyMomentsObserver(Propagator[NVTWidomState]):
+class EnergyMomentsObserver(Propagator[TMMCState]):
     """Folds ``state.systems.data.potential_energy`` into the Pébay moment
     accumulator at ``state.energy_moments``."""
 
-    def __call__(self, key: Array, state: NVTWidomState) -> NVTWidomState:
+    def __call__(self, key: Array, state: TMMCState) -> TMMCState:
         del key
         energy = state.systems.data.potential_energy.total
         return replace(
@@ -296,9 +299,9 @@ def update_deletion_stats(
 
 
 def make_propagator(
-    state: NVTWidomState,
-    config: NVTWidomRunConfig,
-) -> tuple[Propagator[NVTWidomState], Propagator[NVTWidomState]]:
+    state: TMMCState,
+    config: TMMCRunConfig,
+) -> tuple[Propagator[TMMCState], Propagator[TMMCState]]:
     """Build the init / production propagator pair.
 
     Ewald and blocking spheres are added automatically based on
@@ -310,7 +313,7 @@ def make_propagator(
         call: displacement loop + Widom ghost probes + energy-moments
         observer.
     """
-    state_lens = identity_lens(NVTWidomState)
+    state_lens = identity_lens(TMMCState)
 
     potentials = [
         make_lennard_jones_from_state(state_lens, _probe),
@@ -326,7 +329,7 @@ def make_propagator(
     cached_potential, muvt_ratio = make_muvt_probability_ratio(state_lens, potential)
 
     def displacement_patch_fn(
-        key: Array, state: NVTWidomState, proposal: ParticlePositionChanges
+        key: Array, state: TMMCState, proposal: ParticlePositionChanges
     ) -> MCMCStateUpdate:
         exchange = exchange_changes_from_position_changes(
             proposal, state.particles, state.groups
@@ -342,7 +345,7 @@ def make_propagator(
         rotation_weight=config.rotation_prob,
         reinsertion_weight=config.reinsertion_prob,
     )
-    nvt_loop: Propagator[NVTWidomState] = LoopPropagator(
+    nvt_loop: Propagator[TMMCState] = LoopPropagator(
         nvt_propagator, config.num_displacements_per_cycle
     )
 
@@ -368,7 +371,7 @@ def make_propagator(
         stat_lens=stat_lens,
         update_fn=update_deletion_stats,
     )
-    energy_observer: Propagator[NVTWidomState] = EnergyMomentsObserver()
+    energy_observer: Propagator[TMMCState] = EnergyMomentsObserver()
 
     # The ghost probes discard their patches, so the potential energy is
     # unchanged across the widom loop: sample it once per cycle, outside it.
@@ -383,7 +386,7 @@ def make_propagator(
     return init_prop, production
 
 
-def _reset_accumulators(state: NVTWidomState) -> NVTWidomState:
+def _reset_accumulators(state: TMMCState) -> TMMCState:
     """Zero the C-matrix and energy-moments accumulators."""
     return replace(
         state,
@@ -392,7 +395,7 @@ def _reset_accumulators(state: NVTWidomState) -> NVTWidomState:
     )
 
 
-def run(config: Config) -> NVTWidomState:
+def run(config: Config) -> TMMCState:
     """Initialise, warm up, and run the TMMC production loop."""
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
@@ -422,7 +425,7 @@ def run(config: Config) -> NVTWidomState:
     )
 
 
-def summarize(config: Config, state: NVTWidomState) -> TMMCSummary:
+def summarize(config: Config, state: TMMCState) -> TMMCSummary:
     r"""Regroup the per-macrostate systems into one ladder row of a :class:`TMMCSummary`."""
 
     def ladder[T](per_macrostate: T) -> Table[SystemId, T]:

@@ -18,7 +18,7 @@ ewald:
   precision: 1.e-6
 
 run:
-  out_file: mcmc_nvtw.h5
+  out_file: mcmc_tmmc.h5
   n_max: 20
   num_cycles: 500
   num_warmup_cycles: 100

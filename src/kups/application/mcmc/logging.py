@@ -276,7 +276,7 @@ class TMMCStepData:
 
 @dataclass
 class TMMCLoggedData[S]:
-    """HDF5 writer layout for ``kups_mcmc_nvtw``: thermo state and macrostate
+    """HDF5 writer layout for ``kups_mcmc_tmmc``: thermo state and macrostate
     labels once, cumulative accumulator snapshot per cycle."""
 
     fixed: WriterGroupConfig[S, TMMCFixedData]

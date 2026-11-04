@@ -97,14 +97,14 @@ Compute full adsorption isotherms, isosteric heats, and working capacities from 
 
 | Command | Force Field | Description |
 |---------|-------------|-------------|
-| `kups_mcmc_nvtw` | Lennard-Jones + Ewald | Flat-histogram NVT+W for isotherms and $q_\mathrm{st}$ over a $(T, P)$ range |
+| `kups_mcmc_tmmc` | Lennard-Jones + Ewald | Flat-histogram NVT+W for isotherms and $q_\mathrm{st}$ over a $(T, P)$ range |
 
 ```sh
 cd examples
-kups_mcmc_nvtw mcmc_nvtw.yaml
+kups_mcmc_tmmc mcmc_tmmc.yaml
 ```
 
-Per-cycle accumulator snapshots are written to the HDF5 output file. Post-processing with [`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummary] reconstructs $\ln Q_c(N, V, \beta)$ from the C-matrix, Taylor-extrapolates it in $\beta$ using the collected energy cumulants, and evaluates isotherms and isosteric heats at arbitrary $(T, P)$. The isosteric heat is a [`jax.grad`][jax.grad] through the loading function — including the Peng-Robinson equation of state — with no finite-difference hyperparameter.
+Per-cycle accumulator snapshots are written to the HDF5 output file. Post-processing with [`TMMCSummary`][kups.mcmc.flat_histogram.TMMCSummary] reconstructs $\ln Q_c(N, V, \beta)$ from the C-matrix, Taylor-extrapolates it in $\beta$ using the collected energy cumulants, and evaluates isotherms and isosteric heats at arbitrary $(T, P)$. The isosteric heat is a forward-mode [`jax.jacfwd`][jax.jacfwd] through the loading function — including the Peng-Robinson equation of state — with no finite-difference hyperparameter.
 
 # Machine-learning Force Fields
 

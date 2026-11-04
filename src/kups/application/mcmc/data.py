@@ -414,7 +414,7 @@ class PreparedSystem:
     in a particular macrostate: the parsed host framework, its supercell, the
     combined adsorbate motif templates, and the reservoir log-fugacity. Callers
     that need to build multiple single-system states for the same host (e.g.
-    the flat-histogram ``mcmc_nvtw`` entry point that fans out over
+    the flat-histogram ``mcmc_tmmc`` entry point that fans out over
     macrostates $N = 0, \ldots, N_{\max}$) pay the CIF parse and
     Peng--Robinson evaluation exactly once.
 
@@ -599,7 +599,7 @@ def mcmc_state_from_config(
 class MCMCParameters:
     """Potential, neighbor-list and scheduler parameters derived from a batched state.
 
-    Every MCMC entry point (rigid GCMC, Widom, flat-histogram NVT+W) needs the
+    Every MCMC entry point (rigid GCMC, Widom, flat-histogram TMMC) needs the
     same derived quantities once its particle/group/system tables are unioned
     and buffered; :func:`assemble_mcmc_parameters` computes them and the entry
     point spreads them into its own state dataclass.
