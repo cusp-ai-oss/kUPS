@@ -279,7 +279,7 @@ def test_reset_layout_preserves_concrete_index_type() -> None:
     )
     indices = layout.system_index((PREFIX, X0))
     assert_type(indices, Index[SystemId])
-    npt.assert_array_equal(indices.indices, PREFIX.indices)
+    npt.assert_array_equal(indices.value, PREFIX.value)
 
 
 @pytest.mark.parametrize(
