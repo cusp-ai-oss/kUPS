@@ -155,6 +155,10 @@ class UmaConfig(BaseModel):
     device: Literal["cpu", "cuda"] = "cuda"
     task_name: UMATaskName = "omat"
     inference_settings: UMAInferenceSettings = "default"
+    # Total charge [e] and spin multiplicity 2S + 1, read by the omol head only.
+    # ``spin=None`` uses fairchem's defaults: 1 for omol, 0 for the other heads.
+    charge: int = 0
+    spin: int | None = None
 
     def build[State, Focus: IsTorchMliapGraphState](
         self,
@@ -174,6 +178,8 @@ class UmaConfig(BaseModel):
             task_name=self.task_name,
             compute_cell_gradients=True,
             inference_settings=self.inference_settings,
+            charge=self.charge,
+            spin=self.spin,
         )
         potential = make_torch_mliap_from_state(
             state_lens,
