@@ -55,7 +55,7 @@ from kups.application.potential.classical.lennard_jones import (
 from kups.application.simulations.mcmc_rigid import (
     EwaldConfig,
     LJConfig,
-    MCMCState,
+    MCMCStateBase,
     MCMCStateUpdate,
 )
 from kups.application.utils.propagate import (
@@ -100,9 +100,6 @@ from kups.mcmc.widom import (
 from kups.potential.classical.blocking import (
     BlockingSpheresParameters,
 )
-from kups.potential.classical.lennard_jones import (
-    GlobalTailCorrectedLennardJonesParameters,
-)
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_enable_x64", True)
@@ -139,10 +136,10 @@ class Config(BaseModel):
 
 
 @dataclass
-class NVTWidomState(MCMCState):
+class NVTWidomState(MCMCStateBase):
     """State for the $NVT\\!+\\!W$ TMMC simulation.
 
-    Inherits every field from [MCMCState][kups.application.simulations.mcmc_rigid.MCMCState]
+    Inherits every field from [MCMCStateBase][kups.application.simulations.mcmc_rigid.MCMCStateBase]
     so that existing MCMC propagators, potentials, and neighbor-list machinery
     operate without any adapter layer. Adds three accumulator fields for the
     flat-histogram pipeline:
@@ -204,6 +201,7 @@ def build_tmmc_state(
     n_sys = len(system)
 
     motifs = prepared.motifs
+    lj_params = lj.make_parameters(particles.data.labels.keys + motifs.data.labels.keys)
     max_motif_size = motifs.data.motif.max_count
     assert max_motif_size is not None
     particles, groups, motifs, system = unify_keys_by_cls(
@@ -219,12 +217,6 @@ def build_tmmc_state(
         (groups, num_buffer_groups),
     )
 
-    lj_params = GlobalTailCorrectedLennardJonesParameters.from_dict(
-        cutoff=lj.cutoff,
-        parameters=lj.parameters,
-        mixing_rule=lj.mixing_rule,
-        tail_correction=lj.tail_correction,
-    )
     # Each macrostate replicates the same host, so the same spheres apply to
     # every system.
     blocking_spheres = BlockingSpheresParameters.from_data(
@@ -431,16 +423,22 @@ def run(config: Config) -> NVTWidomState:
 
 
 def summarize(config: Config, state: NVTWidomState) -> TMMCSummary:
-    r"""Bundle the final accumulators into a :class:`TMMCSummary` for post-processing."""
+    r"""Regroup the per-macrostate systems into one ladder row of a :class:`TMMCSummary`."""
+
+    def ladder[T](per_macrostate: T) -> Table[SystemId, T]:
+        """One host row whose trailing axis is the macrostate $N$."""
+        return Table.arange(
+            jax.tree.map(lambda x: x[None], per_macrostate), label=SystemId
+        )
+
     adsorbate = config.adsorbates[0]
-    stats = state.transition_statistics.data
-    beta_sim = 1.0 / (BOLTZMANN_CONSTANT * state.systems.data.temperature[0])
+    systems = state.systems.data
     return TMMCSummary.from_transition_statistics(
-        stats,
-        cumulants=state.energy_moments.data.finalize(),
-        beta_sim=beta_sim,
-        log_fugacity_sim=state.systems.data.log_fugacity[0, 0],
-        adsorbate=AdsorbateEOS(
+        ladder(state.transition_statistics.data),
+        cumulants=ladder(state.energy_moments.data.finalize()),
+        beta_sim=ladder(1.0 / (BOLTZMANN_CONSTANT * systems.temperature[0])),
+        log_fugacity_sim=ladder(systems.log_fugacity[0, 0]),
+        adsorbates=AdsorbateEOS.single_species(
             critical_pressure=adsorbate.critical_pressure,
             critical_temperature=adsorbate.critical_temperature,
             acentric_factor=adsorbate.acentric_factor,
@@ -455,7 +453,7 @@ def main() -> None:
     state = run(config)
     summary = summarize(config, state)
     rich.print("Macrostate N:", state.macrostate_n)
-    rich.print("ln Q_c(N, V, β_sim):", summary.log_partition_sim)
+    rich.print("ln Q_c(N, V, β_sim):", summary.log_partition_sim.data[0])
 
 
 if __name__ == "__main__":

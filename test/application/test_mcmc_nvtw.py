@@ -215,7 +215,8 @@ class TestRun:
     def test_summary_reconstructs_finite_log_partition(self, run_result):
         state, config = run_result
         summary = summarize(config, state)
-        log_qc = summary.log_partition_sim
+        assert len(summary.log_partition_sim) == 1  # one host
+        log_qc = summary.log_partition_sim.data[0]
         assert log_qc.shape == (N_MAX + 1,)
         assert float(log_qc[0]) == 0.0  # anchored at N = 0
         assert bool(jnp.all(jnp.isfinite(log_qc)))
@@ -224,7 +225,7 @@ class TestRun:
         state, config = run_result
         summary = summarize(config, state)
         pressures = jnp.array([1e4, 1e5, 1e6])
-        loading = summary.isotherm(pressures, jnp.asarray(300.0))
+        loading = summary.isotherm(pressures, jnp.asarray(300.0)).data[0]
         assert loading.shape == (3,)
         assert bool(jnp.all(jnp.isfinite(loading)))
         assert bool(jnp.all(loading >= 0.0))
