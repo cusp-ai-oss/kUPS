@@ -39,7 +39,8 @@ def test_reservations_and_owners(n_slots: int, capacity: int) -> None:
     assert slots.data.keys == tuple(ParticleId(i) for i in range(n_slots * capacity))
     assert slots.data.max_count == 1
     npt.assert_array_equal(
-        slots.data.indices, jnp.arange(n_slots * capacity).reshape(n_slots, capacity)
+        slots.data.indices_in(slots.data.keys),
+        jnp.arange(n_slots * capacity).reshape(n_slots, capacity),
     )
 
     owners = slot_owners(slots)
@@ -48,7 +49,8 @@ def test_reservations_and_owners(n_slots: int, capacity: int) -> None:
     assert owners.data.keys == slots.keys
     assert owners.data.max_count == capacity
     npt.assert_array_equal(
-        owners.data.indices, jnp.repeat(jnp.arange(n_slots), capacity)
+        owners.data.indices_in(owners.data.keys),
+        jnp.repeat(jnp.arange(n_slots), capacity),
     )
 
 
@@ -75,11 +77,13 @@ def test_slot_owners_preserve_noncontiguous_keys_and_unreserved_rows(
     assert owners.keys == slots.data.keys
     assert owners.data.keys == slots.keys
     assert owners.data.max_count == 3
-    npt.assert_array_equal(owners.data.indices, [0, 1, 2, 1, 0, 2])
+    npt.assert_array_equal(owners.data.indices_in(owners.data.keys), [0, 1, 2, 1, 0, 2])
     npt.assert_array_equal(
         owners.data.valid_mask, [True, True, False, True, True, False]
     )
-    npt.assert_array_equal(owners[slots.data].indices, [[0, 0, 2], [1, 1, 2]])
+    npt.assert_array_equal(
+        owners[slots.data].indices_in(slots.keys), [[0, 0, 2], [1, 1, 2]]
+    )
 
 
 @pytest.mark.parametrize(
