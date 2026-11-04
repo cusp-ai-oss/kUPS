@@ -143,7 +143,9 @@ def test_slot_rows_lens_translates_between_slot_and_batch_systems(
     rows = gather(slots, table)
     npt.assert_array_equal(rows.value[:, :2], [[4.0, 0.0], [3.0, 1.0]])
     assert rows.system.keys == (SystemId(0),)
-    npt.assert_array_equal(rows.system.indices, [[0, 0, 1], [1, 0, 1]])
+    npt.assert_array_equal(
+        rows.system.indices_in(rows.system.keys), [[0, 0, 1], [1, 0, 1]]
+    )
 
     # Slot 11 empties row 0 and fills its out-of-bounds reservation, which
     # has no row to write; slot 29 fills its padding row 3.
@@ -157,7 +159,9 @@ def test_slot_rows_lens_translates_between_slot_and_batch_systems(
     npt.assert_array_equal(updated.data.value, [-2.0, -5.0, 2.0, -4.0, -1.0, 5.0])
     # Valid rows point at their owner, 11 (index 0) or 29 (index 1); padding
     # is out of bounds (index 2).
-    npt.assert_array_equal(updated.data.system.indices, [2, 1, 1, 1, 0, 0])
+    npt.assert_array_equal(
+        updated.data.system.indices_in(slots.keys), [2, 1, 1, 1, 0, 0]
+    )
 
 
 def test_slot_rows_lens_requires_systems_keyed_by_the_slots() -> None:
