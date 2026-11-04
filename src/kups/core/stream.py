@@ -71,8 +71,11 @@ def slot_owners(
     rows = slots.data
     if rows.ndim != 2:
         raise ValueError("Reservations must have shape (n_slots, capacity).")
-    if not is_traced(rows.indices):
-        reserved = np.asarray(rows.indices)
+    capacity = rows.shape[1]
+    positions = rows.indices_in(rows.keys)
+    if not is_traced(positions):
+        # Sort and compare on the host; Index.counts would compile a bincount.
+        reserved = np.asarray(positions)
         reserved = np.sort(reserved[reserved < len(rows.keys)])
         if (reserved[1:] == reserved[:-1]).any():
             raise ValueError("Slot reservations must be disjoint.")
@@ -80,17 +83,13 @@ def slot_owners(
     owners = Index(
         slots.keys,
         jnp.full(len(rows.keys), no_owner, int),
-        rows.indices.shape[1],
+        capacity,
         _cls=SystemId,
     )
+    # Slot i owns every row it reserves; slots.index is arange(len(slots)).
+    slot_of_reservation = jnp.broadcast_to(jnp.arange(len(slots))[:, None], rows.shape)
     return Table(rows.keys, owners).update(
-        rows,
-        Index(
-            slots.keys,
-            jnp.broadcast_to(slots.index.indices[:, None], rows.indices.shape),
-            rows.indices.shape[1],
-            _cls=SystemId,
-        ),
+        rows, Index(slots.keys, slot_of_reservation, capacity, _cls=SystemId)
     )
 
 
