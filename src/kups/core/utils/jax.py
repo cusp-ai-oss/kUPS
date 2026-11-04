@@ -30,7 +30,6 @@ from typing import (
     NotRequired,
     Protocol,
     Sequence,
-    TypedDict,
     Union,
     cast,
     dataclass_transform,
@@ -45,6 +44,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jax.typing import DTypeLike
+from typing_extensions import TypedDict
 
 from kups.core.utils.ops import where_broadcast_last
 
@@ -874,7 +874,7 @@ def skip_post_init_if_disabled(post_init: Callable[..., None]):
 ScatterModes = Literal["promise_in_bounds", "fill", "drop", "clip"]
 
 
-class ScatterArgs(TypedDict):
+class ScatterArgs(TypedDict, closed=True):
     mode: NotRequired[ScatterModes]
     wrap_negative_indices: NotRequired[bool]
     fill_value: NotRequired[StaticScalar | None]

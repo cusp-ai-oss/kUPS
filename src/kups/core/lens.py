@@ -718,7 +718,7 @@ class IndexLens(BaseLens[S, R]):
 
     lens: Lens[S, R] = field(static=True)
     idxs: Array
-    args: ScatterArgs = field(default_factory=lambda: {}, static=True)
+    args: ScatterArgs = field(default_factory=ScatterArgs, static=True)
 
     @override
     def focus[B](self, where: Callable[[R], B]) -> Lens[S, B]:
