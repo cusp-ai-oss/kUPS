@@ -197,9 +197,20 @@ def tojaxed_energy(
     recompile. Every other ``task_name`` passes zeros.
 
     Charge must lie in ``[-100, 100]`` and multiplicity in ``[1, 100]``.
-    Because the values are traced, this is a runtime assertion: the call
-    still runs, and the ``ValueError`` is raised when the returned ``Result``
-    is checked on the host, as ``propagate_and_fix`` does.
+    Because the values are traced, this is a runtime assertion: the model
+    call still runs, and the ``ValueError`` appears only when the caller wraps
+    the energy function with ``as_result_function`` and checks the ``Result``
+    outside ``jit``, for example with ``raise_assertion()``. The application
+    run loops do this through ``propagate_and_fix``.
+
+    Note:
+        Validated use is one real system per call, with UMA ``omol`` archives
+        from tojax's ``export_uma.py`` (tojax ``0df097c``) exported with
+        ``--symbolic NSE --min-edges-per-system 1 --no-tf32`` and without
+        ``--merge-mole``. That exporter passes the task to FAIRChem for one
+        system only, so results for every later system in a call are
+        unreliable. kUPS does not enforce this limit. The padding system it
+        appends does not count.
 
     Args:
         inp: Graph potential input containing the jaxified model and graph data.
