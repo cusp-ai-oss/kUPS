@@ -4,9 +4,74 @@
 """Shared helpers for the kups.core.units tests (x64 comes from pytest-env)."""
 
 import math
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from typing import Protocol
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from kups.core import units
+
+# jax's own APIs with their signatures hidden from pyrefly: jax's stubs reject
+# quantity arguments and type jit's result as Never
+arr: Callable[..., jax.Array] = jnp.array
+ones: Callable[..., jax.Array] = jnp.ones
+eye: Callable[..., jax.Array] = jnp.eye
+arange: Callable[..., jax.Array] = jnp.arange
+jit = jax.jit
+make_jaxpr = jax.make_jaxpr
+checkpoint = jax.checkpoint
+jax_grad = jax.grad  # jax's reverse mode, not units.grad
+zeros_like: Callable[..., jax.Array] = jnp.zeros_like
+ones_like: Callable[..., jax.Array] = jnp.ones_like
+empty_like: Callable[..., jax.Array] = jnp.empty_like
+full_like: Callable[..., jax.Array] = jnp.full_like
+segment_sum: Callable[..., jax.Array] = jax.ops.segment_sum
+linalg_norm: Callable[..., jax.Array] = jnp.linalg.norm
+lax_cond = jax.lax.cond
+lax_switch = jax.lax.switch
+jnp_vectorize = jnp.vectorize
+eval_shape = jax.eval_shape
+asarray: Callable[..., jax.Array] = jnp.asarray
+debug_print = jax.debug.print
+debug_callback = jax.debug.callback
+np_asarray = np.asarray
+np_array = np.array
+
+
+class _Valued(Protocol):
+    @property
+    def value(self) -> jax.Array: ...
+
 
 # ASE time unit in seconds, derived from ASE's length/mass/energy base
 ASE_TIME = 1.0180505710759415e-14
+
+
+@contextmanager
+def x64_mode(enabled: bool) -> Generator[None, None, None]:
+    """Temporarily set ``jax_enable_x64``."""
+    previous = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def val(q: _Valued) -> float:
+    """Return a quantity's value as a Python float, in its own base."""
+    return float(q.value)
+
+
+def ty(x: object) -> str:
+    """Render dtype, shape and label as ``float64[3]{m|SI}``; jax's for a plain array."""
+    if not units.is_quantity(x):
+        return str(jax.typeof(x))
+    shape = ",".join(map(str, x.shape))
+    return f"{x.dtype.name}[{shape}]{{{x.bs.symbol(x.dim) or '1'}|{x.bs.name}}}"
 
 
 def ulps(a: float, b: float) -> int:
