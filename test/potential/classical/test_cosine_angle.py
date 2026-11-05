@@ -168,3 +168,36 @@ class TestCosineCoefficients:
         assert jnp.isclose(c0, expected[0], rtol=1e-5)
         assert jnp.isclose(c1, expected[1], atol=1e-10, rtol=1e-5)
         assert jnp.isclose(c2, expected[2], rtol=1e-5)
+
+
+class TestFromUff:
+    """Test parameter construction from UFF atomic properties."""
+
+    # UFF H_, O_3 and C_3 parameters (Rappe et al. 1992, Table 1).
+    _UFF_LABELS = ("H_", "O_3", "C_3")
+    _RADIUS = jnp.array([0.354, 0.658, 0.757])
+    _ELECTRONEGATIVITY = jnp.array([4.528, 8.741, 5.343])
+    _CHARGE = jnp.array([0.712, 2.300, 1.912])
+    _ANGLE = jnp.radians(jnp.array([180.0, 104.51, 109.47]))
+
+    def _params(self) -> CosineAngleParameters:
+        return CosineAngleParameters.from_uff(
+            self._UFF_LABELS,
+            self._ANGLE,
+            self._RADIUS,
+            self._ELECTRONEGATIVITY,
+            self._CHARGE,
+        )
+
+    def test_theta0_from_central_atom(self):
+        params = self._params()
+        assert jnp.isclose(jnp.degrees(params.theta0[0, 1, 0]), 104.51, rtol=1e-5)
+
+    @pytest.mark.parametrize(
+        "triplet,expected",
+        [((0, 1, 0), 120.50), ((2, 2, 2), 214.21)],
+        ids=["H-O-H", "C-C-C"],
+    )
+    def test_force_constant(self, triplet, expected):
+        # UFF Eq. 13; reference values from RDKit's UFF in kcal/mol/rad^2.
+        assert jnp.isclose(self._params().k[triplet], expected, rtol=1e-3)
