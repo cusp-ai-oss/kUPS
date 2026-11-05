@@ -20,11 +20,15 @@ from pydantic import BaseModel, Field, model_validator
 from kups.application.utils.particles import Particles, particles_from_ase
 from kups.core.cell import AnyPeriodicity, Cell, is_3d_periodic, make_supercell
 from kups.core.constants import BOLTZMANN_CONSTANT, KELVIN, PASCAL
-from kups.core.data import Index, Table
+from kups.core.data import Index, Table, WithCache
 from kups.core.data.buffered import Buffered
 from kups.core.data.index import SupportsSorting
 from kups.core.lens import bind, lens
+from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.parameter_scheduler import ParameterSchedulerState
+from kups.core.potential import EMPTY, EmptyType, PotentialOut
 from kups.core.typing import (
+    DTypeLike,
     ExclusionId,
     GroupId,
     HasAtomicNumbers,
@@ -35,10 +39,22 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field, jit, key_chain, tree_zeros_like
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    jit,
+    key_chain,
+    tree_map,
+    tree_zeros_like,
+)
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.quaternion import Quaternion
 from kups.mcmc.fugacity import peng_robinson_log_fugacity
+from kups.potential.classical.blocking import BlockingSpheresParameters
+from kups.potential.classical.ewald import EwaldCache, EwaldParameters
+from kups.potential.classical.lennard_jones import (
+    GlobalTailCorrectedLennardJonesParameters,
+)
 
 
 class AdsorbateConfig(BaseModel):
@@ -398,7 +414,7 @@ class PreparedSystem:
     in a particular macrostate: the parsed host framework, its supercell, the
     combined adsorbate motif templates, and the reservoir log-fugacity. Callers
     that need to build multiple single-system states for the same host (e.g.
-    the flat-histogram ``mcmc_nvtw`` entry point that fans out over
+    the flat-histogram ``mcmc_tmmc`` entry point that fans out over
     macrostates $N = 0, \ldots, N_{\max}$) pay the CIF parse and
     Peng--Robinson evaluation exactly once.
 
@@ -577,6 +593,124 @@ def mcmc_state_from_config(
     prepared = prepare_system(host, adsorbates)
     particles, groups, system = place_adsorbates(key, prepared, host.init_adsorbates)
     return particles, groups, system, prepared.motifs
+
+
+@dataclass
+class MCMCParameters:
+    """Potential, neighbor-list and scheduler parameters derived from a batched state.
+
+    Every MCMC entry point (rigid GCMC, Widom, flat-histogram TMMC) needs the
+    same derived quantities once its particle/group/system tables are unioned
+    and buffered; :func:`assemble_mcmc_parameters` computes them and the entry
+    point spreads them into its own state dataclass.
+
+    Attributes:
+        neighborlist_params: Sizing for the LJ/Ewald real-space neighbor list.
+        blocking_spheres_neighborlist_params: Sizing for the blocking-sphere
+            neighbor list (all-zero when no system defines spheres).
+        lj_parameters: Lennard-Jones parameters with a zeroed energy cache.
+        ewald_parameters: Ewald parameters with a zeroed reciprocal-space cache.
+        blocking_spheres_parameters: Per-system blocking spheres, as passed in.
+        translation_params: Translation step-width scheduler, upper-bounded by
+            half the smallest perpendicular box length.
+        rotation_params: Rotation step-width scheduler.
+        reinsertion_params: Reinsertion step-width scheduler.
+        exchange_params: Exchange (insertion/deletion) scheduler.
+    """
+
+    neighborlist_params: UniversalNeighborlistParameters
+    blocking_spheres_neighborlist_params: UniversalNeighborlistParameters
+    lj_parameters: WithCache[
+        GlobalTailCorrectedLennardJonesParameters,
+        KahanSummand[PotentialOut[EmptyType, EmptyType]],
+    ]
+    ewald_parameters: WithCache[EwaldParameters, EwaldCache[EmptyType, EmptyType]]
+    blocking_spheres_parameters: BlockingSpheresParameters
+    translation_params: Table[SystemId, ParameterSchedulerState]
+    rotation_params: Table[SystemId, ParameterSchedulerState]
+    reinsertion_params: Table[SystemId, ParameterSchedulerState]
+    exchange_params: Table[SystemId, ParameterSchedulerState]
+
+
+def assemble_mcmc_parameters(
+    particles: Buffered[ParticleId, MCMCParticles],
+    systems: Table[SystemId, MCMCSystems],
+    lj_parameters: GlobalTailCorrectedLennardJonesParameters,
+    blocking_spheres: BlockingSpheresParameters,
+    *,
+    ewald_precision: float,
+    ewald_real_cutoff: float,
+    buffer_particles_per_system: Table[SystemId, Array] | float,
+    reciprocal_dtype: DTypeLike = jnp.float64,
+) -> MCMCParameters:
+    """Derive the potential, neighbor-list and scheduler parameters of a batched state.
+
+    Args:
+        particles: Buffered particle table of the assembled batch.
+        systems: Per-system table (cell, temperature, fugacity).
+        lj_parameters: Lennard-Jones parameters built from the run config.
+        blocking_spheres: Per-system blocking spheres.
+        ewald_precision: Target Ewald error tolerance.
+        ewald_real_cutoff: Ewald real-space cutoff (Ang).
+        buffer_particles_per_system: Buffer slots to add to each system's
+            particle count when sizing neighbor lists, either per system or as
+            a single value shared by all systems.
+        reciprocal_dtype: Precision of Ewald structure-factor evaluations.
+
+    Returns:
+        The assembled :class:`MCMCParameters`.
+    """
+    n_sys = len(systems)
+    ewald_parameters = EwaldParameters.make(
+        particles,
+        systems,
+        epsilon_total=ewald_precision,
+        real_cutoff=ewald_real_cutoff,
+        reciprocal_dtype=reciprocal_dtype,
+    )
+    n_kvecs = ewald_parameters.reciprocal_lattice_shifts.data.shape[1]
+    buffered_counts = particles.data.system.counts + buffer_particles_per_system
+    neighborlist_params = UniversalNeighborlistParameters.estimate(
+        buffered_counts,
+        systems,
+        tree_map(jnp.maximum, lj_parameters.cutoff, ewald_parameters.cutoff),
+    )
+    if blocking_spheres.radii.shape[0] > 0:
+        # Systems without spheres have no radius to size from, so use the batch-wide max.
+        max_radius = Table((SystemId(0),), blocking_spheres.radii.max(keepdims=True))
+        blocking_nlist = UniversalNeighborlistParameters.estimate(
+            buffered_counts,
+            systems,
+            Table.broadcast_to(max_radius, systems),
+        )
+    else:
+        blocking_nlist = UniversalNeighborlistParameters(0, 0, 0, 0)
+    min_half_box = float(systems.data.cell.perpendicular_lengths.min() / 2)
+
+    def scheduler() -> Table[SystemId, ParameterSchedulerState]:
+        return Table.arange(ParameterSchedulerState.create(n_sys), label=SystemId)
+
+    return MCMCParameters(
+        neighborlist_params=neighborlist_params,
+        blocking_spheres_neighborlist_params=blocking_nlist,
+        lj_parameters=WithCache(
+            lj_parameters,
+            KahanSummand.init(
+                PotentialOut(
+                    Table.arange(jnp.zeros(n_sys), label=SystemId), EMPTY, EMPTY
+                )
+            ),
+        ),
+        ewald_parameters=WithCache(ewald_parameters, EwaldCache.make(n_sys, n_kvecs)),
+        blocking_spheres_parameters=blocking_spheres,
+        translation_params=Table.arange(
+            ParameterSchedulerState.create(n_sys, upper_bound=min_half_box),
+            label=SystemId,
+        ),
+        rotation_params=scheduler(),
+        reinsertion_params=scheduler(),
+        exchange_params=scheduler(),
+    )
 
 
 @jit
