@@ -421,6 +421,18 @@ def test_transpose():
     assert jit(tr)(xs).shape == (3, 2)
 
 
+def test_eq_and_grad_rejected():
+    def vecout(z: units.Length) -> jax.Array:
+        return (z / (1 * u.m)).sum() * ones(3)
+
+    with pytest.raises(units.DimensionError, match="=="):
+        # the declared return type of == is Never
+        _ = (1.0 * u.m) == (1.0 * u.m)
+    q = arr([1.0, 2.0, 3.0]) * u.m
+    with pytest.raises(TypeError, match="scalar output"):
+        units.grad(vecout)(q)
+
+
 def test_cold_warm_agree():
     # a jit cache primed under another base must not leak into this one
     def mixed(x: Energy) -> Energy:

@@ -7,6 +7,7 @@ import importlib.util
 import pathlib
 import subprocess
 import sys
+from collections.abc import Callable
 from typing import Any, Never, assert_type
 
 import jax
@@ -23,6 +24,7 @@ from kups.core.units import (
     Dimensionless,
     Energy,
     EnergyUnit,
+    Force,
     ForceUnit,
     Frequency,
     FrequencyUnit,
@@ -33,10 +35,12 @@ from kups.core.units import (
     NumberDensityUnit,
     OddExponentRoot,
     Quantity,
+    Stiffness,
     Unit,
     Velocity,
     Volume,
     VolumeUnit,
+    Wavenumber,
 )
 from kups.core.units import catalog as u
 from kups.core.units import testing as ut
@@ -131,6 +135,62 @@ def test_expression_chain():
     assert_type(sigma / r, jax.Array)
     assert_type(sigma**12, Length12)
     assert_type(sigma**12 / r**12, jax.Array)
+
+
+def test_derivative_types():
+    # a derivative's dimension is the output's over the input's, per order
+    def energy(r: Length) -> Energy:
+        return (1.0 * u.eV) * (u.angstrom / r)
+
+    r = 3.0 * u.angstrom
+    assert_type(units.grad(energy)(r), Force)  # dE/dr is a force
+    assert_type(units.value_and_grad(energy)(r), tuple[Energy, Force])
+    assert_type(units.hessian(energy)(r), Stiffness)  # d2E/dr2 is a stiffness
+    assert_type(jax.vmap(energy)(arr([1.0, 2.0]) * u.angstrom), Energy)  # as is vmap
+    assert float(units.grad(energy)(r).to(u.eV / u.angstrom)) == pytest.approx(
+        -1.0 / 9.0
+    )
+
+
+def test_vjp_types():
+    # cotangent dimensions depend on the runtime seed, so value assertions pin them
+    def energy(r: Length) -> Energy:
+        return (1.0 * u.eV) * (u.angstrom / r)
+
+    def with_aux(r: Length) -> tuple[Energy, str]:
+        return energy(r), "aux"
+
+    r = 3.0 * u.angstrom
+    assert_type(units.vectorize(energy)(r), Energy)  # signature-preserving
+    assert_type(units.vectorize(energy, signature="()->()")(r), Energy)
+    # the pullback takes an output cotangent and returns dim(out)/dim(primal)
+    out, vjp_fn = units.vjp(energy, r)
+    assert_type(out, Energy)
+    assert_type(vjp_fn(units.ones_like(out)), tuple[Force])
+    assert_type(vjp_fn(1.0), tuple[Force])  # a plain cotangent is magnitudes
+    assert_type(
+        units.vjp(with_aux, r, has_aux=True),
+        tuple[Energy, Callable[[Energy | ArrayLike], tuple[Force]], str],
+    )
+
+    # a dimensionless output pulls back to one over the primal's dimension
+    def ratio(x: Length) -> jax.Array:
+        return x / (1.0 * u.angstrom)
+
+    assert_type(units.vjp(ratio, r)[1](1.0), tuple[Wavenumber])
+
+    def spring(k: Stiffness, x: Length) -> Energy:
+        return 0.5 * k * x**2
+
+    _, pull2 = units.vjp(spring, 250.0 * u.N / u.m, r)
+    assert_type(pull2(1.0 * u.eV), tuple[Area, Force])
+    # jax annotates these Any, so a checker cannot follow a dimension through one
+    assert_type(jax.jvp(energy, (r,), (r,)), tuple[Any, ...])
+    assert_type(units.relabel(r, units.ONE), Any)
+    assert_type(jax.lax.cond(True, energy, energy, r), Any)
+    assert float(vjp_fn(units.ones_like(out))[0].to(u.eV / u.angstrom)) == (
+        pytest.approx(-1.0 / 9.0)
+    )
 
 
 def test_dimensionless_algebra():
