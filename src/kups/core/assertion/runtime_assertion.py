@@ -12,6 +12,7 @@ from typing import Any, Final, override
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.utils.jax import dataclass, field
 
 # Type alias for fix functions that take a state and fix arguments, returning a new state
@@ -130,7 +131,7 @@ class RuntimeAssertion[State, FixArgs]:
 
     predicate: Array
     message: str = field(static=True)
-    fmt_args: dict[str, Array] = field(default_factory=dict)
+    fmt_args: dict[str, units.Measured] = field(default_factory=dict)
     exception_type: type[Exception] = field(static=True, default=AssertionError)
     static_info: dict[str, Any] = field(static=True, default_factory=dict)
     fix_fn: Fix[State, FixArgs] | None = field(static=True, default=None)

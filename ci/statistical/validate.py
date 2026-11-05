@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 import yaml
 from expected_values import ExpectedSpec, Numbers, ObservableSpec
+from jax import Array
 
 from kups.application.mcmc.analysis import MCMCAnalysisResult, analyze_mcmc_file
 from kups.application.md.analysis import MDAnalysisResult, analyze_md_file
@@ -133,7 +134,7 @@ def run_simulations(
 
 def validate_observable(
     name: str,
-    result: BlockAverageResult,
+    result: BlockAverageResult[Array],
     expected_mean: Numbers,
     expected_sem: Numbers,
     tolerance_sigmas: float = DEFAULT_TOLERANCE_SIGMAS,

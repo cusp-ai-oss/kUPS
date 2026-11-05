@@ -46,8 +46,6 @@ from jax import Array
 from jax.typing import DTypeLike
 from typing_extensions import TypedDict
 
-from kups.core.utils.ops import where_broadcast_last
-
 StaticScalar = Union[
     np.bool_,
     np.number,  # NumPy scalar types
@@ -1220,6 +1218,9 @@ def tree_where_broadcast_last[T](accept: Array, tree1: T, tree2: T) -> T:
     Returns:
         Pytree with the same structure, each leaf chosen per ``accept``.
     """
+    # ops imports kups.core.units, which imports this module.
+    from kups.core.utils.ops import where_broadcast_last
+
     return tree_map(lambda a, b: where_broadcast_last(accept, a, b), tree1, tree2)
 
 

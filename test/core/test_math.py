@@ -7,6 +7,8 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.math import (
     DiagonalSquareMatrix,
     GeneralSquareMatrix,
@@ -352,6 +354,28 @@ class TestTriangular3x3Matmul:
         gradients = jax.jit(jax.grad(actual, (0, 1)))(matrix, vectors)
         for left, right in zip(gradients, expected):
             npt.assert_allclose(left, right, rtol=1e-10, atol=1e-12)
+
+    @pytest.mark.parametrize(
+        "lu, xu, unit, side",
+        [
+            (u.angstrom, 1.0, u.angstrom, MatmulSide.RIGHT),
+            (1.0, u.angstrom, u.angstrom, MatmulSide.LEFT),
+            (u.angstrom, u.eV, u.angstrom * u.eV, MatmulSide.RIGHT),
+        ],
+        ids=["matrix", "vectors", "both"],
+    )
+    def test_quantity_carries_both_dimensions(
+        self,
+        lu: units.Unit[int, int, int, int, int] | float,
+        xu: units.Unit[int, int, int, int, int] | float,
+        unit: units.Unit[int, int, int, int, int],
+        side: MatmulSide,
+    ):
+        L = jnp.tril(jax.random.normal(jax.random.key(0), (3, 3)))
+        x = jax.random.normal(jax.random.key(1), (4, 3))
+        out = triangular_3x3_matmul(L * lu, x * xu, side=side)
+        assert units.is_quantity(out) and units.dim_of(out) == units.dim_of(unit)
+        npt.assert_allclose(out.to(unit), triangular_3x3_matmul(L, x, side=side))
 
 
 class TestLogm:

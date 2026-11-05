@@ -9,12 +9,14 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.data.index import (
     Index,
     unify_keys_by_cls,
 )
 from kups.core.typing import ExclusionId, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 
 
@@ -457,6 +459,15 @@ class TestSumOver:
         assert summed.data.dtype == jnp.float32
         expected = jnp.sum(data, keepdims=True) if n == 1 else jnp.array([8.0, 0.0])
         npt.assert_array_equal(summed.data, expected)
+
+    @pytest.mark.parametrize("reduce", ["sum_over", "max_over"])
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_quantity_keeps_dimension(self, reduce: str, n: int) -> None:
+        idx = Index.integer(jnp.array([0, n - 1, 0]), n=n, label=SystemId)
+        data = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        out = getattr(idx, reduce)(data * u.angstrom).data
+        assert units.dim_of(out) == units.dim_of(u.angstrom)
+        npt.assert_allclose(out.to(u.angstrom), getattr(idx, reduce)(data).data)
 
     def test_out_of_bounds_entries_are_dropped(self):
         """The OOB sentinel contributes to no key."""
