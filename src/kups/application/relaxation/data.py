@@ -11,12 +11,14 @@ import ase
 import jax.numpy as jnp
 import optax
 from jax import Array
+from jax.typing import ArrayLike
 from pydantic import BaseModel
 
 from kups.application.utils.particles import (
     Particles,
+    _electronic_metadata,
+    _prepare_ase,
     default_exclusion,
-    particles_from_ase,
 )
 from kups.core.cell import AnyPeriodicity, Cell, DeformedFrame, MatrixLogFrame
 from kups.core.data import Table
@@ -24,7 +26,12 @@ from kups.core.data.index import Index
 from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
-from kups.core.utils.jax import dataclass, field, tree_zeros_like
+from kups.core.utils.jax import (
+    dataclass,
+    field,
+    skip_post_init_if_disabled,
+    tree_zeros_like,
+)
 from kups.relaxation.config import TransformationConfig
 
 
@@ -69,6 +76,24 @@ class RelaxSystems:
     potential_energy: Array
     """Potential energy per system, shape (1,)."""
 
+    total_charge: Array = field(default=None, kw_only=True)  # type: ignore
+    """Integer total charge per system, defaulting to zero."""
+    spin_multiplicity: Array = field(default=None, kw_only=True)  # type: ignore
+    """Integer spin multiplicity per system, defaulting to one."""
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        if self.total_charge is None:
+            object.__setattr__(
+                self, "total_charge", jnp.zeros(self.cell.vectors.shape[:-2], dtype=int)
+            )
+        if self.spin_multiplicity is None:
+            object.__setattr__(
+                self,
+                "spin_multiplicity",
+                jnp.ones(self.cell.vectors.shape[:-2], dtype=int),
+            )
+
 
 @dataclass
 class RelaxState:
@@ -104,17 +129,31 @@ class RelaxRunConfig(BaseModel):
 
 def relax_state_from_ase(
     atoms: ase.Atoms | str | Path,
+    *,
+    total_charge: ArrayLike | None = None,
+    spin_multiplicity: ArrayLike | None = None,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system data from an ASE Atoms object or file.
+
+    Non-None metadata keywords override ``atoms.info["charge"]`` and
+    ``atoms.info["spin"]`` independently. Missing info defaults to 0/1;
+    present invalid values raise unless overridden. Partial charges are unchanged.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
+        total_charge: Integer total charge, defaulting to zero.
+        spin_multiplicity: Nonnegative integer multiplicity, defaulting to one.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
+
+    Raises:
+        TypeError: If selected electronic metadata are not integers.
+        ValueError: If selected metadata have invalid shapes or values.
     """
-    p, cell, _ = particles_from_ase(atoms)
+    (p, cell, _), info = _prepare_ase(atoms)
+    charge, spin = _electronic_metadata(total_charge, spin_multiplicity, info)
     particles = p.set_data(
         RelaxParticles(
             positions=p.data.positions,
@@ -141,6 +180,8 @@ def relax_state_from_ase(
             cell=cell,
             cell_gradients=tree_zeros_like(cell),
             potential_energy=jnp.zeros(n_systems),
+            total_charge=charge[None],
+            spin_multiplicity=spin[None],
         ),
         label=SystemId,
     )

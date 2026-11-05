@@ -330,3 +330,88 @@ def test_kups_pipeline_matches_fairchem_uma(tmp_path):
     np.testing.assert_allclose(kups_energy, fc_energy, atol=1e-5, rtol=1e-6)
     np.testing.assert_allclose(kups_forces, fc_forces, atol=1e-4, rtol=1e-4)
     np.testing.assert_allclose(kups_stress, fc_stress, atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(_REQUIRES_GPU, reason="kUPS torch wrapper requires JAX on CUDA")
+@pytest.mark.parametrize(
+    "name,charge,spin", [("H2CO", 0, 1), ("H3O+", 1, 1), ("CH3", 0, 2)]
+)
+def test_omol_pipeline_matches_fairchem_uma(tmp_path, name, charge, spin):
+    """Molecular energies and force vectors agree with identically conditioned FAIRChem."""
+    import ase
+    import ase.build
+    import jax.numpy as jnp
+    from fairchem.core import FAIRChemCalculator
+    from fairchem.core.units.mlip_unit import load_predict_unit
+
+    from kups.application.potential.filter import POSITIONS_AND_CELL
+    from kups.application.potential.mliap.torch import make_torch_mliap_from_state
+    from kups.core.cell import to_lower_triangular
+    from kups.core.lens import identity_lens
+    from kups.core.result import as_result_function
+    from kups.potential.mliap.torch import load_uma
+
+    if name == "H3O+":
+        atoms = ase.Atoms(
+            "OH3",
+            positions=[
+                [0, 0, 0.15],
+                [0.95, 0, -0.15],
+                [-0.475, 0.823, -0.15],
+                [-0.475, -0.823, -0.15],
+            ],
+        )
+    else:
+        atoms = ase.build.molecule(name)
+    # Finite nonsingular cells also support the bridge's cell-gradient projection.
+    atoms.set_cell([[12, 0, 0], [0.5, 13, 0], [0.25, 0.75, 14]])
+    atoms.set_pbc(False)
+    atoms.info.update(charge=charge, spin=spin)
+    model_path = _resolve_or_create_uma_checkpoint(tmp_path, task_name="omol")
+    reference = load_predict_unit(
+        path=str(model_path), device="cuda", inference_settings="default"
+    )
+    atoms.calc = FAIRChemCalculator(reference, task_name="omol")
+    reference_energy = float(atoms.get_potential_energy())
+    reference_forces = np.asarray(atoms.get_forces())
+
+    model = load_uma(
+        model_path,
+        device="cuda",
+        task_name="omol",
+        compute_cell_gradients=True,
+        inference_settings="default",
+    )
+    particles, systems = relax_state_from_ase(atoms)
+    np.testing.assert_array_equal(systems.data.total_charge, [charge])
+    np.testing.assert_array_equal(systems.data.spin_multiplicity, [spin])
+    state = _TorchMliapGraphState(
+        particles,
+        systems,
+        UniversalNeighborlistParameters.estimate(
+            particles.data.system.counts, systems, model.cutoff
+        ),
+    )
+    potential = make_torch_mliap_from_state(
+        identity_lens(_TorchMliapGraphState),
+        parameters=model,
+        gradient=POSITIONS_AND_CELL,
+    )
+    evaluate = as_result_function(potential)
+    state = evaluate(state, None).fix_or_raise(state)
+    result = evaluate(state, None)
+    result.raise_assertion()
+    output = result.value.data
+    energy = np.asarray(output.total_energies.data).sum()
+    _, transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
+    rotation = np.asarray(transform(jnp.eye(3)))
+    forces = -np.asarray(output.gradients.positions.data) @ rotation.T
+    assert np.isfinite(energy)
+    assert np.isfinite(forces).all()
+    assert all(
+        np.isfinite(np.asarray(leaf)).all()
+        for leaf in jax.tree.leaves(output.gradients.cell)
+    )
+    np.testing.assert_allclose(energy, reference_energy, atol=1e-5, rtol=1e-6)
+    np.testing.assert_allclose(forces, reference_forces, atol=1e-4, rtol=1e-3)
