@@ -4,6 +4,7 @@
 """Tests for conversions, cross-base arithmetic and float32 guards."""
 
 import math
+import warnings
 from collections.abc import Callable
 
 import jax
@@ -14,6 +15,7 @@ from kups.core import units
 from kups.core.units import (
     Length,
     Quantity,
+    _precision,
 )
 from kups.core.units import catalog as u
 
@@ -104,6 +106,20 @@ def test_unit_property():
     assert units.dim_of(r.unit * r.unit) == units.dim_of(u.m**2)
 
 
+def test_destructive_casts_refused():
+    # astype and .to() raise rather than return zeros or nan; Å^6 is 1e-60 in SI
+    with units.base(units.SI):
+        e6 = (arr([1.0, 2.0]) * u.angstrom) ** 6
+        with pytest.raises(units.DimensionError, match=r"q.astype: casting to float32"):
+            e6.astype(jnp.float32)
+        assert (arr([1.0, 2.0]) * u.angstrom).astype(jnp.float32).dtype == jnp.float32
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            f32 = (arr([1.0, 2.0], dtype=jnp.float32) * u.angstrom) ** 6
+        with pytest.raises(units.DimensionError, match="not a normal float32"):
+            f32.to(u.angstrom**6)
+
+
 def test_ulps_saturates():
     # nan compares all-False, so a helper that only walked the gap would call a
     # nan bit-identical; ulps reports its cap instead
@@ -111,6 +127,29 @@ def test_ulps_saturates():
     assert ulps(1.0, math.nextafter(1.0, math.inf)) == 1
     assert ulps(math.nan, 1.0) == 9 and ulps(1.0, math.inf) == 9
     assert ulps(1.0, 1e300) == 9  # beyond the cap, not a near miss
+
+
+def test_attach_runs_one_check(monkeypatch: pytest.MonkeyPatch):
+    # shrinking can only flush and growing can only overflow, so the sign of
+    # log|f| picks one check: one compiled kernel and one device sync, not two
+    seen: list[str] = []
+
+    def spy(name: str, fn: _Count) -> _Count:
+        return lambda v, out: (seen.append(name), fn(v, out))[1]
+
+    monkeypatch.setattr(_precision, "_N_FLUSHED", spy("flush", _precision._N_FLUSHED))
+    monkeypatch.setattr(
+        _precision, "_N_OVERFLOWED", spy("grow", _precision._N_OVERFLOWED)
+    )
+    with units.base(units.SI):
+        _ = arr([1.0, 2.0]) * u.angstrom  # 1e-10 in SI: only a flush is reachable
+    assert seen == ["flush"]
+    seen.clear()
+    _ = arr([1.0, 2.0]) * u.km  # 1e13 in the atomistic base: only overflow
+    assert seen == ["grow"]
+    seen.clear()
+    _ = arr([1.0, 2.0]) * u.angstrom  # a pinned unit is free, so neither runs
+    assert seen == []
 
 
 def test_saturated_unit_refused():
