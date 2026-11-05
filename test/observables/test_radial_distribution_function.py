@@ -21,6 +21,7 @@ from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.observables.radial_distribution_function import (
     RadialDistributionFunction,
+    offline_radial_distribution_function,
     radial_distribution_function,
 )
 
@@ -271,3 +272,27 @@ class TestRadialDistributionFunction:
         )
         assert peak_1 > 0, "Should have a peak near r=1.0"
         assert peak_sqrt2 > 0, "Should have a peak near r=sqrt(2)"
+
+    def test_offline_matches_online(self):
+        """Offline trajectory RDF agrees with the online path frame by frame."""
+        key = jax.random.key(0)
+        n_frames, n_particles = 3, 8
+        positions = jax.random.uniform(key, (n_frames, n_particles, 3)) * 10.0
+        cell = _box10()
+        rmax, bins = 3.0, 12
+
+        offline = offline_radial_distribution_function(positions, cell, rmax, bins)
+        assert offline.shape == (n_frames, bins)
+
+        systems = _make_systems(cell, rmax)
+        nnlist = AllDenseNearestNeighborList(
+            avg_edges=FixedCapacity(n_particles),
+            avg_image_candidates=FixedCapacity(27),
+            cutoffs=Table((SystemId(0),), jnp.array([rmax])),
+        )
+        for frame in range(n_frames):
+            particles = _make_particles(positions[frame], jnp.zeros(n_particles), 1)
+            online = radial_distribution_function(
+                particles, systems, rmax, bins, nnlist
+            )
+            npt.assert_allclose(offline[frame], online[0], rtol=1e-6)

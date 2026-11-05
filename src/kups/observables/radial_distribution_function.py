@@ -79,7 +79,7 @@ def _to_nnlist_points(
     data = positions.data
     n = len(positions)
     inclusion = data.system.to_cls(InclusionId)
-    exclusion = Index.integer(jnp.arange(n, dtype=int), label=ExclusionId)
+    exclusion = Index.integer(jnp.arange(n, dtype=int), n=n, label=ExclusionId)
     return Table(
         positions.keys,
         _NNListPointsImpl(data.positions, data.system, inclusion, exclusion),
@@ -304,7 +304,8 @@ def offline_radial_distribution_function(
     while (out := rdf_with_capacity(capacity)).failed_assertions:
         capacity = out.fix_or_raise(capacity)
     result = out.value
-    result = result.reshape(*positions.shape[:-2], *result.shape[-2:])
+    # Drop the singleton system axis: the offline path builds one system.
+    result = result.reshape(*positions.shape[:-2], result.shape[-1])
     return result
 
 
