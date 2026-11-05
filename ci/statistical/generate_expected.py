@@ -7,62 +7,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import fields
 from pathlib import Path
 
 import jax
-import jax.numpy as jnp
-import yaml
-from expected_values import AnalysisResult, ExpectedSpec, ObservableSpec
-from jax import Array
+from expected_values import dump_expected, expected_from_result
 from validate import ANALYZERS
 
-from kups.core.utils.block_average import BlockAverageResult
-
 jax.config.update("jax_enable_x64", True)
-
-
-def block_result_to_expected(result: BlockAverageResult[Array]) -> ObservableSpec:
-    """Convert BlockAverageResult to expected values dict.
-
-    Args:
-        result: Block average of a single observable.
-
-    Returns:
-        The observable's expected mean and standard error, as scalars for a
-        one-element observable and as lists otherwise.
-    """
-    mean = jnp.atleast_1d(result.mean).tolist()
-    sem = jnp.atleast_1d(result.sem).tolist()
-    return {
-        "expected_mean": mean[0] if len(mean) == 1 else mean,
-        "expected_sem": sem[0] if len(sem) == 1 else sem,
-    }
-
-
-def analysis_result_to_expected(
-    result: AnalysisResult, sim_type: str, hdf5_name: str
-) -> ExpectedSpec:
-    """Convert any analysis result dataclass to expected values dict.
-
-    Args:
-        result: Analysis result whose block-averaged fields are recorded.
-        sim_type: Simulation kind, `md`, `nvt` or `gcmc`.
-        hdf5_name: Name of the output the CI run validates.
-
-    Returns:
-        The expected values of every block-averaged field.
-    """
-    observables: dict[str, ObservableSpec] = {}
-    for field in fields(result):
-        value = getattr(result, field.name)
-        if isinstance(value, BlockAverageResult):
-            observables[field.name] = block_result_to_expected(value)
-    return {
-        "simulation_type": sim_type,
-        "hdf5_output": hdf5_name,
-        "observables": observables,
-    }
 
 
 def main() -> None:
@@ -81,14 +32,11 @@ def main() -> None:
     result = ANALYZERS[args.sim_type](args.hdf5_path)
     # Strip _ref suffix so hdf5_output points to the CI output filename
     ci_name = args.hdf5_path.name.replace("_ref.h5", ".h5")
-    expected = analysis_result_to_expected(result, args.sim_type, ci_name)
+    expected = expected_from_result(result, args.sim_type, ci_name)
 
     stem = args.hdf5_path.stem.removesuffix("_ref")
     output_path = args.output or Path("expected") / f"{stem}.yaml"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w") as f:
-        yaml.dump(expected, f, default_flow_style=False, sort_keys=False)
+    dump_expected(expected, output_path)
 
     print(f"Generated: {output_path}")
 

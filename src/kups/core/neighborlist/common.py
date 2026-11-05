@@ -32,6 +32,7 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.cell import AnyPeriodicity, Cell, MaterializedFrame
 from kups.core.data import Index, Table
@@ -44,12 +45,13 @@ from kups.core.neighborlist.types import (
     PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 
 
 def num_cells(
     systems: NeighborListSystems,
-    cutoff: Array,
+    cutoff: units.Length,
     *,
     eps: float = 1e-6,
 ) -> Array:
@@ -57,17 +59,18 @@ def num_cells(
 
     Args:
         systems: Systems whose cells are binned, batched ``(n_sys,)``.
-        cutoff: Cutoff per system in Å, ``(n_sys,)``.
+        cutoff: Cutoff per system, ``(n_sys,)``.
         eps: Reciprocal face length in 1/Å below which an axis counts as degenerate.
 
     Returns:
         Bin counts of shape ``(n_sys, 3)``, at least one per axis.
     """
     # Reciprocal vectors are the columns of inverse_vectors (row-vector lattices).
-    inv_norms: jax.Array = jnp.linalg.norm(systems.cell.inverse_vectors, axis=-2)
-    face_lengths = 1.0 / jnp.where(inv_norms < eps, jnp.ones_like(inv_norms), inv_norms)
-    num_bins = jnp.maximum((face_lengths / cutoff[..., None]).astype(int), 1)
-    return num_bins
+    inv_norms = units.norm(systems.cell.inverse_vectors, axis=-2).to(1 / u.angstrom)
+    # A degenerate axis falls back to a 1 Å face rather than dividing by ~0.
+    face_lengths = 1.0 / jnp.where(inv_norms < eps, 1.0, inv_norms)
+    bins = face_lengths / cutoff[..., None].to(u.angstrom)
+    return jnp.maximum(bins.astype(int), 1)
 
 
 @dataclass
@@ -153,7 +156,7 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     return jnp.stack([i, j, k], axis=1)
 
 
-def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array:
+def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: units.Length) -> Array:
     """Return per-system, per-axis periodic-image window widths.
 
     Each periodic axis needs ``ceil(2 * cutoff / perpendicular_length)``
@@ -176,7 +179,7 @@ def _get_candidate_images(
     keys: Table[ParticleId, FractionalPoints],
     queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Array,
+    cutoffs: units.Length,
     out_size: Capacity[int],
 ) -> tuple[Array, Array]:
     """Replicate each candidate across its periodic-image window.
@@ -264,7 +267,7 @@ def _minimum_image_mask(
         queries[replicated.query_idx].positions,
         frames[key_points.system],
         offsets,
-    )
+    ).value
     num_segments = num_candidates + 1
     seg_min = jax.ops.segment_min(dist_sq, idx, num_segments=num_segments)
     rows = jnp.arange(dist_sq.shape[0])
@@ -311,7 +314,7 @@ def replicate_for_images(
     keys: Table[ParticleId, FractionalPoints],
     queries: Table[ParticleId, FractionalPoints],
     systems: Table[SystemId, NeighborListSystems],
-    cutoffs: Table[SystemId, Array],
+    cutoffs: Table[SystemId, units.Length],
     max_image_candidates: Capacity[int] | None,
 ) -> CandidateBatch[Literal[2]]:
     """Replicate candidates across their periodic-image windows.
@@ -369,7 +372,7 @@ def real_distance_sq(
     query_positions: Array,
     frames: MaterializedFrame,
     shifts: Array,
-) -> Array:
+) -> units.Area:
     """Squared real-space distance between already-broadcast candidate pairs.
 
     Args:
@@ -383,4 +386,4 @@ def real_distance_sq(
     """
     deltas = key_positions - query_positions - shifts
     real_deltas = frames.to_real(deltas)
-    return jnp.einsum("...d,...d->...", real_deltas, real_deltas)
+    return units.einsum("...d,...d->...", real_deltas, real_deltas)

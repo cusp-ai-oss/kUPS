@@ -15,8 +15,8 @@ from __future__ import annotations
 from typing import Literal, overload
 
 import jax.numpy as jnp
-from jax import Array
 
+from kups.core import units
 from kups.core.capacity import Capacity
 from kups.core.data import Index, Table
 from kups.core.lens import bind
@@ -203,7 +203,7 @@ class RefineCutoffNeighborList:
     Example:
         ```python
         # Compute base neighbor list once with maximum cutoff
-        max_cutoff = 15.0  # Maximum of all potential cutoffs
+        max_cutoff = 15.0 * u.angstrom  # Maximum of all potential cutoffs
         base_edges = base_nl(particles, cells)
 
         # Share across potentials with different cutoffs
@@ -221,7 +221,7 @@ class RefineCutoffNeighborList:
 
     candidates: Edges[Literal[2]]
     avg_edges: Capacity[int]
-    cutoffs: Table[SystemId, Array]
+    cutoffs: Table[SystemId, units.Length]
 
     @overload
     def __call__(

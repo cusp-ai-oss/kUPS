@@ -7,11 +7,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import Periodic3D
-from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.data import Table
 from kups.core.typing import (
     HasCell,
@@ -25,16 +24,18 @@ class IsIdealGasSystems(HasTemperature, HasCell[Periodic3D], Protocol):
     """Systems with temperature and cell for ideal gas pressure."""
 
 
-def _pressure_from_stress(stress: Array) -> Array:
+def _pressure_from_stress(stress: units.Pressure) -> units.Pressure:
     """P = Tr(σ) / 3."""
-    return jnp.trace(stress, axis1=-2, axis2=-1) / 3
+    return stress.trace(axis1=-2, axis2=-1) / 3
 
 
 def _ideal_gas_pressure(
-    particles_per_system: Array, temperature: Array, volume: Array
-) -> Array:
+    particles_per_system: Array,
+    temperature: units.Temperature,
+    volume: units.Volume,
+) -> units.Pressure:
     """P_ideal = N·k_B·T / V."""
-    return particles_per_system * BOLTZMANN_CONSTANT * temperature / volume
+    return particles_per_system * units.constants.k_B * temperature / volume
 
 
 pressure_from_stress = Table.transform(_pressure_from_stress)
@@ -43,7 +44,7 @@ pressure_from_stress = Table.transform(_pressure_from_stress)
 def ideal_gas_pressure(
     counts: Table[SystemId, Array],
     systems: Table[SystemId, IsIdealGasSystems],
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Pressure]:
     """Compute ideal gas pressure P = N·k_B·T / V.
 
     Args:

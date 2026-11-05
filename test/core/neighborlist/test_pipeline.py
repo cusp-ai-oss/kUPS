@@ -27,6 +27,7 @@ from kups.core.neighborlist.pipeline import Pipeline, _prepare
 from kups.core.neighborlist.postprocess import MirrorPairEdges
 from kups.core.neighborlist.refine import PrecomputedEdgesSelector
 from kups.core.typing import SystemId
+from test.units import A
 
 from ._builders import (
     make_edges,
@@ -40,7 +41,7 @@ from ._builders import (
 class TestPrepare:
     def test_converts_positions_to_fractional(self):
         # In a 10 Å cell, real position 5.0 maps to fractional 0.5.
-        lh = make_lh(jnp.array([[5.0, 0.0, 0.0]]), jnp.zeros(1, dtype=int))
+        lh = make_lh(jnp.array([[5.0, 0.0, 0.0]]) * A, jnp.zeros(1, dtype=int))
         systems, _ = systems_from_lvecs(jnp.eye(3)[None] * 10.0, jnp.array([1.0]))
         ctx = _prepare(lh, None, systems, None)
         npt.assert_allclose(
@@ -50,7 +51,8 @@ class TestPrepare:
     def test_resolves_queried_keys_to_raw_array(self):
         lh = make_lh(jnp.zeros((4, 3)), jnp.zeros(4, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         ctx = _prepare(lh, None, systems, Index(lh.keys, jnp.array([1, 3])))
         npt.assert_array_equal(np.asarray(ctx.queried_keys), np.array([1, 3]))
@@ -59,7 +61,8 @@ class TestPrepare:
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         with pytest.raises(
             AssertionError, match="cannot combine queries with queried_keys"
@@ -100,7 +103,7 @@ class TestPipelineComposition:
     def test_distance_only_pipeline(self):
         # Candidates (0,1) and (0,2); only the close pair survives cutoff 1.5.
         positions = jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
-        lh = make_lh(positions, jnp.zeros(3, dtype=int))
+        lh = make_lh(positions * A, jnp.zeros(3, dtype=int))
         candidates = make_edges(jnp.array([0, 0]), jnp.array([1, 2]), n_particles=3)
         systems, cutoffs = systems_from_lvecs(jnp.eye(3)[None] * 10.0, jnp.array([1.5]))
         pipeline = Pipeline[Literal[2]](
@@ -115,7 +118,8 @@ class TestPipelineComposition:
     def test_runs_postprocessors_in_order(self):
         lh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         candidates = make_edges(
             jnp.array([0]),

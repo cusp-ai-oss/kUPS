@@ -22,6 +22,7 @@ from kups.core.data.index import Index
 from kups.core.data.wrappers import WithIndices
 from kups.core.neighborlist import DenseNearestNeighborList, neighborlist_changes
 from kups.core.neighborlist.edges import Edges
+from test.units import A
 
 from .._builders import (
     call_with_retry,
@@ -71,24 +72,24 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([3.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A))
+        systems, cutoffs = make_systems(cell, jnp.array([3.0]) * A)
         nl = self._make_nl(cutoffs)
 
         # --- reference: two separate calls ---
         full_new_pos = positions.at[changed_idx].set(new_positions)
-        lh_after = make_lh(full_new_pos, batch)
+        lh_after = make_lh(full_new_pos * A, batch)
         queried_keys_after = Index(lh_after.keys, changed_idx)
         ref_after = call_with_retry(nl, lh_after, systems, queried_keys_after)
 
-        lh_before = make_lh(positions, batch)
+        lh_before = make_lh(positions * A, batch)
         queried_keys_before = Index(lh_before.keys, changed_idx)
         ref_removed = call_with_retry(nl, lh_before, systems, queried_keys_before)
 
         # --- combined call ---
-        lh = make_lh(positions, batch)
+        lh = make_lh(positions * A, batch)
         rh_table, queried_keys = make_rh(
-            lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
+            lh, new_positions * A, jnp.zeros(M, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems)
@@ -120,13 +121,13 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([1.5]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5]) * A)
         nl = self._make_nl(cutoffs)
 
-        lh = make_lh(positions, batch)
+        lh = make_lh(positions * A, batch)
         rh_table, queried_keys = make_rh(
-            lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
+            lh, new_pos * A, jnp.zeros(1, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems)
@@ -157,15 +158,15 @@ class TestNeighborlistChanges:
         batch = jnp.array([0, 0, 1, 1])
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0]) * A
             )
         )
-        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]) * A)
         nl = self._make_nl(cutoffs)
 
-        lh = make_lh(positions, batch)
+        lh = make_lh(positions * A, batch)
         rh_table, queried_keys = make_rh(
-            lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
+            lh, new_pos * A, jnp.zeros(1, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems)
@@ -201,14 +202,14 @@ class TestNeighborlistChanges:
 
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0])
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 10.0]) * A
             )
         )
-        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5, 1.5]) * A)
         nl = self._make_nl(cutoffs)
 
-        lh = make_lh(positions, batch)
-        rh_table, queried_keys = make_rh(lh, new_pos, rh_batch, changed_idx)
+        lh = make_lh(positions * A, batch)
+        rh_table, queried_keys = make_rh(lh, new_pos * A, rh_batch, changed_idx)
         result = _changes(nl, lh, WithIndices(queried_keys, rh_table), systems)
 
         counts = _edge_counts(result.added)
@@ -224,13 +225,13 @@ class TestNeighborlistChanges:
         changed_idx = jnp.array([1])
 
         batch = jnp.zeros(3, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([1.5]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A))
+        systems, cutoffs = make_systems(cell, jnp.array([1.5]) * A)
         nl = self._make_nl(cutoffs)
 
-        lh = make_lh(positions, batch)
+        lh = make_lh(positions * A, batch)
         rh_table, queried_keys = make_rh(
-            lh, new_pos, jnp.zeros(1, dtype=int), changed_idx
+            lh, new_pos * A, jnp.zeros(1, dtype=int), changed_idx
         )
         rh_with_indices = WithIndices(queried_keys, rh_table)
         result = _changes(nl, lh, rh_with_indices, systems, compaction=compaction)
@@ -251,21 +252,21 @@ class TestNeighborlistChanges:
         new_positions = jax.random.uniform(k3, (M, 3), minval=0.0, maxval=9.0)
 
         batch = jnp.zeros(N, dtype=int)
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * 10.0))
-        systems, cutoffs = make_systems(cell, jnp.array([3.0]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * 10.0) * A))
+        systems, cutoffs = make_systems(cell, jnp.array([3.0]) * A)
         nl = self._make_nl(cutoffs, capacity=64)
 
         full_new_pos = positions.at[changed_idx].set(new_positions)
-        lh_after = make_lh(full_new_pos, batch)
+        lh_after = make_lh(full_new_pos * A, batch)
         queried_keys_after = Index(lh_after.keys, changed_idx)
         ref_after = call_with_retry(nl, lh_after, systems, queried_keys_after)
-        lh_before = make_lh(positions, batch)
+        lh_before = make_lh(positions * A, batch)
         queried_keys_before = Index(lh_before.keys, changed_idx)
         ref_removed = call_with_retry(nl, lh_before, systems, queried_keys_before)
 
-        lh = make_lh(positions, batch)
+        lh = make_lh(positions * A, batch)
         rh_table, queried_keys = make_rh(
-            lh, new_positions, jnp.zeros(M, dtype=int), changed_idx
+            lh, new_positions * A, jnp.zeros(M, dtype=int), changed_idx
         )
         result = _changes(nl, lh, WithIndices(queried_keys, rh_table), systems)
 

@@ -16,8 +16,8 @@ from kups.core.data.index import (
     unify_keys_by_cls,
 )
 from kups.core.typing import ExclusionId, ParticleId, SystemId
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
+from test.units import A
 
 
 class TestNew:
@@ -465,9 +465,9 @@ class TestSumOver:
     def test_quantity_keeps_dimension(self, reduce: str, n: int) -> None:
         idx = Index.integer(jnp.array([0, n - 1, 0]), n=n, label=SystemId)
         data = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        out = getattr(idx, reduce)(data * u.angstrom).data
-        assert units.dim_of(out) == units.dim_of(u.angstrom)
-        npt.assert_allclose(out.to(u.angstrom), getattr(idx, reduce)(data).data)
+        out = getattr(idx, reduce)(data * A).data
+        assert units.dim_of(out) == units.dim_of(A)
+        npt.assert_allclose(out.to(A), getattr(idx, reduce)(data).data)
 
     def test_out_of_bounds_entries_are_dropped(self):
         """The OOB sentinel contributes to no key."""
