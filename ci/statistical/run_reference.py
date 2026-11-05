@@ -30,7 +30,15 @@ SIM_ENV = {**os.environ, "XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
 
 
 def _generate_expected(name: str, sim_type: str) -> bool:
-    """Run generate_expected.py for a single experiment. Returns True on success."""
+    """Run generate_expected.py for a single experiment.
+
+    Args:
+        name: Experiment name, the stem of its reference HDF5 output.
+        sim_type: Simulation kind, `md`, `nvt` or `gcmc`.
+
+    Returns:
+        Whether the expected values were written.
+    """
     hdf5 = SCRIPT_DIR / f"{name}_ref.h5"
     if not hdf5.exists():
         print(f"  ✗ Missing HDF5 output: {hdf5.name}")
@@ -48,6 +56,11 @@ def _generate_expected(name: str, sim_type: str) -> bool:
 
 
 def _regenerate_only() -> int:
+    """Regenerate every expected YAML from the HDF5 outputs already on disk.
+
+    Returns:
+        Zero when every experiment's expected values were written.
+    """
     print(f"Regenerating expected YAMLs for {len(EXPERIMENTS)} experiments")
     failed = [
         name
@@ -63,6 +76,11 @@ def _regenerate_only() -> int:
 
 
 def main() -> int:
+    """Run every reference simulation and generate its expected values.
+
+    Returns:
+        Zero when every simulation and expected-value file succeeded.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--regenerate-only",
@@ -75,11 +93,12 @@ def main() -> int:
         return _regenerate_only()
 
     print(f"Launching {len(EXPERIMENTS)} simulations in parallel")
-    procs: list[tuple[str, str, subprocess.Popen]] = []
+    procs: list[tuple[str, str, subprocess.Popen[bytes]]] = []
 
     # All children join process_group=0 → each becomes its own group leader.
     # We track PIDs and kill individually, but group them for clarity.
     def _kill_all() -> None:
+        """Terminate every simulation still running."""
         for _, _, p in procs:
             if p.poll() is None:
                 os.killpg(p.pid, signal.SIGTERM)
