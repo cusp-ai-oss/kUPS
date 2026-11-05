@@ -101,10 +101,16 @@ def test_quantity_algebra():
     assert_type(r / (2.0 * u.fs), Velocity)
     assert_type(r / r, jax.Array)  # identical dimensions cancel to plain magnitudes
     assert_type(r.rebase(units.SI), Length)
+    assert_type(r.mean(), Length)
+    assert_type(r.T, Length)
+    assert_type(r.sum(), Length)
     assert_type(r.to(u.nm), jax.Array)  # same dimension, another unit
     assert_type(r.value, jax.Array)
     assert_type(r < r, jax.Array)
     assert_type(float(r), float)
+    rs = arr([1.0, 2.0]) * u.angstrom
+    assert_type(rs.at[0].add(r), Length)
+    assert_type(rs.at[0].get(), Length)
     assert_type(r.sqrt(), OddExponentRoot)  # m^1/2 is not an integer exponent
     _ = r.sqrt() * 2.0  # pyrefly: ignore[unsupported-operation]
 

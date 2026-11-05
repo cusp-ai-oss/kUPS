@@ -15,6 +15,9 @@ import pytest
 
 from kups.core import units
 from kups.core.units import (
+    Energy,
+    Force,
+    Length,
     Unit,
 )
 from kups.core.units import catalog as u
@@ -25,8 +28,43 @@ from kups.core.units.catalog import angstrom, eV
 from ._helpers import (
     ASE_TIME,
     arr,
+    jit,
+    make_jaxpr,
     val,
 )
+
+
+def test_zero_overhead():
+    # quantities lower to the same HLO as plain-array arithmetic
+    def dot_q(a: Force, b: Length) -> Energy:
+        return (a * b).sum()
+
+    def dot_plain(a: jax.Array, b: jax.Array) -> jax.Array:
+        return jnp.sum(a * b)
+
+    def ops(text: str) -> list[str]:
+        return re.findall(r"stablehlo\.\w+", text)
+
+    f, x = arr([1.0, 2.0, 3.0]) * u.N, arr([4.0, 5.0, 6.0]) * u.m
+    with_units, plain = jit(dot_q).lower(f, x), jit(dot_plain).lower(f.value, x.value)
+    text_u, text_p = with_units.as_text(), plain.as_text()
+    # same operations, same count, same order
+    assert len(ops(text_u)) == len(ops(text_p)) == 4
+    assert ops(text_u) == ops(text_p)
+    # the only difference is the result name
+    assert 'jax.result_info = "result.v"' in text_u
+    assert 'jax.result_info = "result"' in text_p
+    cost_u, cost_p = (
+        with_units.compile().cost_analysis(),
+        plain.compile().cost_analysis(),
+    )
+    assert cost_u is not None and cost_p is not None
+    assert cost_u["flops"] == cost_p["flops"]
+    # the jaxprs match equation for equation
+    eqns_u = make_jaxpr(dot_q)(f, x).eqns
+    eqns_p = make_jaxpr(dot_plain)(f.value, x.value).eqns
+    assert len(eqns_u) == len(eqns_p) == 2
+    assert [e.primitive.name for e in eqns_u] == [e.primitive.name for e in eqns_p]
 
 
 def test_unit_catalogue():

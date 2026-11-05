@@ -13,7 +13,7 @@ from kups.core import units
 from kups.core.units import Length
 from kups.core.units import catalog as u
 
-from ._helpers import arr, ty, val
+from ._helpers import arange, arr, ones, ty, val
 
 MESH = jax.make_mesh((1,), ("x",))
 SHARDED = NamedSharding(MESH, P("x"))
@@ -77,6 +77,35 @@ def mesh4() -> tuple[Mesh, NamedSharding]:
     """A 4-device mesh and the sharding that splits axis 0 over it."""
     mesh = jax.make_mesh((4,), ("x",))
     return mesh, NamedSharding(mesh, P("x"))
+
+
+@needs_four
+def test_multi_device_placement_keeps_label():
+    _, sharded = mesh4()
+    r = jax.device_put(arange(16.0) * u.angstrom, sharded)
+    assert units.is_quantity(r)
+    assert spec(r) == P("x")
+    assert units.dim_of(r) == units.dim_of(u.m)
+    assert units.base_of(r) is units.ATOMISTIC
+    assert float(r.sum().to(u.angstrom)) == pytest.approx(120.0)  # 0+1+...+15
+    tree = jax.device_put({"r": r, "n": arange(16.0)}, sharded)
+    assert spec(tree["r"]) == P("x") and spec(tree["n"]) == P("x")
+    assert units.dim_of(tree["r"]) == units.dim_of(u.m)
+
+
+@needs_four
+def test_multi_device_shard_map_psum():
+    mesh, sharded = mesh4()
+
+    def per_shard(x: Length) -> Length:
+        # sum of this shard, psummed across all shards
+        total = jax.lax.psum(x.sum().value, "x")
+        return units.from_dim(total, units.dim_of(x), units.base_of(x))
+
+    r = jax.device_put(ones(16) * u.angstrom, sharded)
+    out = jax.shard_map(per_shard, mesh=mesh, in_specs=P("x"), out_specs=P())(r)
+    assert units.dim_of(out) == units.dim_of(u.m)
+    assert float(out.to(u.angstrom)) == pytest.approx(16.0)
 
 
 def test_placement_is_jaxs_own():

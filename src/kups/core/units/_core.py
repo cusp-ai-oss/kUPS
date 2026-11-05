@@ -39,7 +39,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.tree_util import PyTreeDef
 from jax.typing import ArrayLike, DTypeLike
-from typing_extensions import TypeIs
+from typing_extensions import TypedDict, TypeIs
 
 from kups.core.units._base import BaseSystem, _require_base, active_base
 from kups.core.units._precision import (
@@ -73,6 +73,7 @@ if TYPE_CHECKING:
 
 _Op = Callable[..., jax.Array]
 type _Nested = float | list[_Nested]
+_Axis = int | Sequence[int] | None
 _Index = (
     int
     | slice
@@ -186,12 +187,22 @@ class Quantity(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
         return _lower(self)
 
     @property
+    def T(self) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """The magnitudes with their axes reversed, keeping dimension and base."""
+        return self.transpose()
+
+    @property
     def unit(self) -> Unit[_E_M, _E_KG, _E_S, _E_A, _E_K]:
         """One unit of this quantity's dimension, sized by its base.
 
         ``q.to(q.unit)`` is ``q.value``; a catalog unit of that size is preferred.
         """
         return self.bs.unit(self.dim)
+
+    @property
+    def at(self) -> _At[Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]]:
+        """``q.at[idx]``: indexed reads and updates that keep dimension and base."""
+        return _At(self)
 
     def __add__(
         self,
@@ -606,6 +617,218 @@ class Quantity(Generic[_E_M, _E_KG, _E_S, _E_A, _E_K]):
             )
         return _lift(jnp.astype(lx, dtype), dx, bs)
 
+    # signatures follow jnp
+    def transpose(
+        self, axes: Sequence[int] | None = None
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Permute axes, keeping dimension and base."""
+        return apply(jnp.transpose, self, axes)
+
+    def reshape(
+        self, shape: int | Sequence[int]
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Reshape the magnitudes, keeping dimension and base."""
+        return apply(jnp.reshape, self, shape)
+
+    def ravel(self) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """The magnitudes flattened, keeping dimension and base."""
+        return self.reshape(-1)
+
+    def repeat(
+        self,
+        repeats: ArrayLike,
+        axis: int | None = None,
+        *,
+        total_repeat_length: int | None = None,
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.repeat`` of the magnitudes, keeping dimension and base."""
+        return apply(
+            jnp.repeat,
+            self,
+            repeats,
+            axis=axis,
+            total_repeat_length=total_repeat_length,
+        )
+
+    def copy(self) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """A copy of the magnitudes, keeping dimension and base."""
+        # not apply(jnp.copy, ...): apply refuses integer magnitudes with a dimension
+        return _lift(jnp.copy(_lower(self)), self.dim, self.bs)
+
+    def squeeze(self, axis: _Axis = None) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.squeeze`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.squeeze, self, axis)
+
+    def swapaxes(
+        self, axis1: int, axis2: int
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.swapaxes`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.swapaxes, self, axis1, axis2)
+
+    def take(
+        self,
+        indices: ArrayLike,
+        axis: int | None = None,
+        *,
+        mode: str | None = None,
+        fill_value: ArrayLike | None = None,
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.take`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.take, self, indices, axis, mode=mode, fill_value=fill_value)
+
+    def sort(
+        self, axis: int = -1, *, stable: bool = True, descending: bool = False
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.sort`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.sort, self, axis, stable=stable, descending=descending)
+
+    def diagonal(
+        self, offset: int = 0, axis1: int = 0, axis2: int = 1
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.diagonal`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.diagonal, self, offset, axis1, axis2)
+
+    def trace(
+        self,
+        offset: int = 0,
+        axis1: int = 0,
+        axis2: int = 1,
+        *,
+        dtype: DTypeLike | None = None,
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.trace`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.trace, self, offset, axis1, axis2, dtype=dtype)
+
+    def cumsum(
+        self, axis: int | None = None, *, dtype: DTypeLike | None = None
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.cumsum`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.cumsum, self, axis, dtype=dtype)
+
+    def std(
+        self, axis: _Axis = None, *, ddof: int = 0, keepdims: bool = False
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """``jnp.std`` of the magnitudes, keeping dimension and base."""
+        return apply(jnp.std, self, axis=axis, ddof=ddof, keepdims=keepdims)
+
+    def var(
+        self, axis: _Axis = None, ddof: int = 0, keepdims: bool = False
+    ) -> Quantity[2 * _E_M, 2 * _E_KG, 2 * _E_S, 2 * _E_A, 2 * _E_K]:
+        """Variance over an axis; the result carries the squared dimension."""
+        return apply(
+            jnp.var,
+            self,
+            axis=axis,
+            ddof=ddof,
+            keepdims=keepdims,
+            dim=dpow(self.dim, Frac(2)),
+        )
+
+    def prod(
+        self, axis: _Axis = None, dtype: DTypeLike | None = None, keepdims: bool = False
+    ) -> Any:
+        """Product over an axis; the dimension is raised to the number of factors."""
+        return apply(
+            jnp.prod,
+            self,
+            axis=axis,
+            dtype=dtype,
+            keepdims=keepdims,
+            dim=dpow(self.dim, Frac(_factors(self, axis))),
+        )
+
+    def argmin(self, axis: int | None = None, *, keepdims: bool = False) -> jax.Array:
+        """``jnp.argmin`` of the magnitudes; indices carry no units."""
+        return apply(jnp.argmin, self, axis=axis, keepdims=keepdims, dim=ONE)
+
+    def argmax(self, axis: int | None = None, *, keepdims: bool = False) -> jax.Array:
+        """``jnp.argmax`` of the magnitudes; indices carry no units."""
+        return apply(jnp.argmax, self, axis=axis, keepdims=keepdims, dim=ONE)
+
+    def argsort(
+        self, axis: int = -1, *, stable: bool = True, descending: bool = False
+    ) -> jax.Array:
+        """``jnp.argsort`` of the magnitudes; indices carry no units."""
+        return apply(
+            jnp.argsort, self, axis, stable=stable, descending=descending, dim=ONE
+        )
+
+    def nonzero(
+        self,
+        *,
+        size: int | None = None,
+        fill_value: ArrayLike | tuple[ArrayLike, ...] | None = None,
+    ) -> tuple[jax.Array, ...]:
+        """``jnp.nonzero`` of the magnitudes; indices carry no units."""
+        return apply(jnp.nonzero, self, size=size, fill_value=fill_value, dim=ONE)
+
+    def all(self, axis: _Axis = None, *, keepdims: bool = False) -> jax.Array:
+        """``jnp.all`` of the magnitudes; a mask carries no units."""
+        return apply(jnp.all, self, axis=axis, keepdims=keepdims, dim=ONE)
+
+    def any(self, axis: _Axis = None, *, keepdims: bool = False) -> jax.Array:
+        """``jnp.any`` of the magnitudes; a mask carries no units."""
+        return apply(jnp.any, self, axis=axis, keepdims=keepdims, dim=ONE)
+
+    @overload
+    def dot(
+        self, other: Quantity[_F_M, _F_KG, _F_S, _F_A, _F_K]
+    ) -> Quantity[
+        _E_M + _F_M,
+        _E_KG + _F_KG,
+        _E_S + _F_S,
+        _E_A + _F_A,
+        _E_K + _F_K,
+    ]: ...
+    @overload
+    def dot(self, other: ArrayLike) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]: ...
+    def dot(self, other: object) -> jax.Array | AnyQuantity:
+        """``jnp.dot``; the dimensions multiply."""
+        return apply(jnp.dot, self, other)
+
+    def sum(
+        self, axis: _Axis = None, keepdims: bool = False
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Sum over an axis, keeping the dimension."""
+        return apply(jnp.sum, self, axis=axis, keepdims=keepdims)
+
+    def mean(
+        self, axis: _Axis = None, keepdims: bool = False
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Mean over an axis, keeping the dimension."""
+        return apply(jnp.mean, self, axis=axis, keepdims=keepdims)
+
+    def min(
+        self, axis: _Axis = None, keepdims: bool = False
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Smallest magnitude over an axis, keeping the dimension."""
+        _reduce_axis("min", axis)
+        return apply(jnp.min, self, axis=axis, keepdims=keepdims)
+
+    def max(
+        self, axis: _Axis = None, keepdims: bool = False
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Largest magnitude over an axis, keeping the dimension."""
+        _reduce_axis("max", axis)
+        return apply(jnp.max, self, axis=axis, keepdims=keepdims)
+
+    def norm(
+        self,
+        ord: int | str | None = None,
+        axis: int | tuple[int, ...] | None = None,
+        keepdims: bool = False,
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Vector or matrix norm, keeping the operand's dimension."""
+        return _norm_impl(self, ord, axis, keepdims)
+
+    def clip(
+        self,
+        lo: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | None = None,
+        hi: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K] | None = None,
+    ) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+        """Clamp magnitudes between two bounds of the same dimension."""
+        return _clip_impl(self, lo, hi)
+
     # named overloads catch odd exponents, which ``//`` would floor
     @overload
     def sqrt(self: Acceleration) -> OddExponentRoot: ...
@@ -1006,12 +1229,46 @@ def _sym(d: Dim, bs: BaseSystem) -> str:
     return repr(s) if s else "a dimensionless value"
 
 
+def _measures(t: AnyQuantity) -> str:
+    """What ``t`` measures, with exponents, for error messages."""
+    return f"{t.bs.symbol(t.dim)!r} {exps(t.dim)}"
+
+
 def _mismatch(verb: str, dx: Dim, dy: Dim, bs: BaseSystem) -> DimensionError:
     return DimensionError(
         f"cannot {verb} {_sym(dx, bs)} and {_sym(dy, bs)}: dimensions differ\n"
         f"  {_sym(dx, bs)}: {exps(dx)}\n  {_sym(dy, bs)}: {exps(dy)}\n"
         "Attach a unit to the plain operand (x * u.m) or take a ratio first."
     )
+
+
+def _shape(x: AnyQuantity | ArrayLike) -> tuple[int, ...]:
+    """Shape of a quantity or a plain array, traced or not."""
+    return x.shape if isinstance(x, Quantity) else jnp.shape(x)
+
+
+def _reduce_axis(name: str, axis: object) -> None:
+    """Reject a quantity or Unit where a reduction expects an axis."""
+    if not isinstance(axis, (Quantity, Unit)):
+        return
+    raise DimensionError(
+        f"q.{name}(axis=...) reduces over an axis, and you passed a quantity "
+        f"as the axis. For an elementwise bound use units.minimum(x, y), "
+        f"units.maximum(x, y) or x.clip(lo, hi)."
+    )
+
+
+def _factors(x: AnyQuantity | ArrayLike, axis: _Axis) -> int:
+    """Number of elements a reduction over ``axis`` combines (None: all)."""
+    shape = _shape(x)
+    axes = (
+        range(len(shape))
+        if axis is None
+        else (axis,)
+        if isinstance(axis, int)
+        else axis
+    )
+    return math.prod(shape[a] for a in axes)
 
 
 def _not_complex[T](out: T, d: Dim, bs: BaseSystem) -> T:
@@ -1231,9 +1488,229 @@ def _sqrt_impl(x: AnyQuantity | ArrayLike) -> Any:
     return _lift(jnp.sqrt(lx), dpow(dim, Frac(1, 2)), bs)
 
 
+def _clip_impl(
+    x: ArrayLike | AnyQuantity,
+    lo: ArrayLike | AnyQuantity | None,
+    hi: ArrayLike | AnyQuantity | None,
+) -> Any:
+    """Clamp ``x`` between bounds of its dimension; a None bound is absent."""
+    bounds = [b for b in (lo, hi) if b is not None]
+    mags, dim, bs = _agree([x, *bounds], "clip")
+    rest = iter(mags[1:])
+    low = None if lo is None else next(rest)
+    high = None if hi is None else next(rest)
+    return _lift(jnp.clip(mags[0], low, high), dim, bs)
+
+
+def _norm_impl(
+    x: Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K],
+    ord: int | str | None,
+    axis: int | tuple[int, ...] | None,
+    keepdims: bool,
+) -> Quantity[_E_M, _E_KG, _E_S, _E_A, _E_K]:
+    """Vector or matrix norm; ``ord=0`` (a count) is refused for a quantity."""
+    if ord == 0 and isinstance(x, Quantity):
+        raise DimensionError(
+            f"units.norm: ord=0 counts the nonzero elements of {_measures(x)} "
+            f"rather than measuring them, so the count carries no dimension. Write "
+            f"jnp.count_nonzero(x.value)."
+        )
+    return apply(jnp.linalg.norm, x, ord=ord, axis=axis, keepdims=keepdims)
+
+
 # q.at[idx]
 
 _Q = TypeVar("_Q", bound="AnyQuantity")
+
+
+class _AtOpts(TypedDict, closed=True):
+    mode: str | None
+    indices_are_sorted: bool
+    unique_indices: bool
+    wrap_negative_indices: bool
+
+
+def _at_opts(
+    mode: str | None,
+    indices_are_sorted: bool,
+    unique_indices: bool,
+    wrap_negative_indices: bool,
+) -> _AtOpts:
+    """Index options of jax's ``at[...]`` methods, as keywords."""
+    return {
+        "mode": mode,
+        "indices_are_sorted": indices_are_sorted,
+        "unique_indices": unique_indices,
+        "wrap_negative_indices": wrap_negative_indices,
+    }
+
+
+@dataclasses.dataclass(frozen=True)
+class _AtRef(Generic[_Q]):
+    """The slice ``x.at[idx]`` of a quantity.
+
+    Each method lowers ``x`` and its operand to plain numbers, calls jax's
+    ``at[idx]`` method, and puts ``x``'s label back. An operand must share
+    ``x``'s dimension and is rebased with it.
+    """
+
+    x: _Q
+    idx: _Index
+
+    def _lowered(
+        self, v: AnyQuantity | AnyUnit | ArrayLike | None, verb: str
+    ) -> tuple[jax.Array, jax.Array | None, Callable[[jax.Array], _Q]]:
+        """Plain numbers for ``x`` and ``v`` (None if absent), and the relabeller."""
+        mags, dim, bs = _agree([self.x] if v is None else [self.x, v], verb)
+        return (
+            jnp.asarray(mags[0]),
+            None if v is None else jnp.asarray(mags[1]),
+            lambda out: _lift(out, dim, bs),
+        )
+
+    def get(
+        self,
+        mode: str | None = None,
+        fill_value: _Q | None = None,
+        indices_are_sorted: bool = False,
+        unique_indices: bool = False,
+        wrap_negative_indices: bool = True,
+    ) -> _Q:
+        """Read the slice.
+
+        Args:
+          mode: out-of-range index handling, as jax's gather takes it.
+          fill_value: what ``mode="fill"`` reads, of ``x``'s dimension.
+          indices_are_sorted: whether the indices are sorted.
+          unique_indices: whether every index appears at most once.
+          wrap_negative_indices: whether a negative index counts from the end.
+
+        Returns:
+          The slice, with ``x``'s label.
+
+        Raises:
+          DimensionError: if ``fill_value``'s dimension is not ``x``'s, or its
+            magnitude is traced.
+        """
+        # jax hashes the fill into the gather, so a labelled fill must lower to a
+        # static scalar; a plain one already is
+        lx, lv, lift = self._lowered(fill_value, "fill")
+        fill = None
+        if lv is not None:
+            if isinstance(lv, jax.core.Tracer):
+                raise DimensionError(
+                    "kups.core.units: at[...].get(mode='fill') needs a fill value jax "
+                    "can hash, "
+                    "and this one is traced. Hoist the number out of the traced region "
+                    "(FILL = float(fill.to(unit))), or scatter with mode='drop' and "
+                    "mask the result instead."
+                )
+            fill = float(lv)
+        opts = _at_opts(mode, indices_are_sorted, unique_indices, wrap_negative_indices)
+        return lift(lx.at[self.idx].get(fill_value=fill, **opts))
+
+    def set(
+        self,
+        v: _Q | AnyUnit,
+        mode: str | None = None,
+        indices_are_sorted: bool = False,
+        unique_indices: bool = False,
+        wrap_negative_indices: bool = True,
+    ) -> _Q:
+        """Replace the slice.
+
+        Args:
+          v: the replacement, measuring what ``x`` does.
+          mode: out-of-range index handling, as jax's scatter takes it.
+          indices_are_sorted: whether the indices are sorted.
+          unique_indices: whether every index appears at most once.
+          wrap_negative_indices: whether a negative index counts from the end.
+
+        Returns:
+          A new quantity with the slice replaced, with ``x``'s label.
+
+        Raises:
+          DimensionError: if ``v``'s dimension is not ``x``'s.
+        """
+        lx, lv, lift = self._lowered(v, "assign")
+        opts = _at_opts(mode, indices_are_sorted, unique_indices, wrap_negative_indices)
+        return lift(lx.at[self.idx].set(lv, **opts))
+
+    def add(
+        self,
+        v: _Q,
+        mode: str | None = None,
+        indices_are_sorted: bool = False,
+        unique_indices: bool = False,
+        wrap_negative_indices: bool = True,
+    ) -> _Q:
+        """Add into the slice, accumulating duplicate indices.
+
+        Args:
+          v: the addend, of ``x``'s dimension.
+          mode: out-of-range index handling, as jax's scatter takes it.
+          indices_are_sorted: whether the indices are sorted.
+          unique_indices: whether every index appears at most once.
+          wrap_negative_indices: whether a negative index counts from the end.
+
+        Returns:
+          A new quantity with ``v`` added into the slice, with ``x``'s label.
+
+        Raises:
+          DimensionError: if ``v``'s dimension is not ``x``'s.
+        """
+        lx, lv, lift = self._lowered(v, "add")
+        opts = _at_opts(mode, indices_are_sorted, unique_indices, wrap_negative_indices)
+        return lift(lx.at[self.idx].add(lv, **opts))
+
+    def multiply(
+        self,
+        v: ArrayLike,
+        mode: str | None = None,
+        indices_are_sorted: bool = False,
+        unique_indices: bool = False,
+        wrap_negative_indices: bool = True,
+    ) -> _Q:
+        """Scale the slice by a dimensionless factor.
+
+        Args:
+          v: a dimensionless factor.
+          mode: out-of-range index handling, as jax's scatter takes it.
+          indices_are_sorted: whether the indices are sorted.
+          unique_indices: whether every index appears at most once.
+          wrap_negative_indices: whether a negative index counts from the end.
+
+        Returns:
+          A new quantity with the slice scaled.
+
+        Raises:
+          DimensionError: if ``v`` carries a dimension (an array holds one).
+        """
+        bs = _joint(self.x, v)
+        dt = _operand_dtype((self.x, v))
+        lx, dx = _mag(self.x, bs, dt)
+        lx = jnp.asarray(lx)
+        lv, dv = _mag(v, bs, dt)
+        if dv != ONE:
+            raise DimensionError(
+                "kups.core.units: q.at[...].multiply needs a dimensionless factor, "
+                "got "
+                f"{bs.symbol(dv)!r} {exps(dv)}; scaling part of an array would "
+                f"leave it with two dimensions. Multiply the whole quantity."
+            )
+        opts = _at_opts(mode, indices_are_sorted, unique_indices, wrap_negative_indices)
+        return _lift(lx.at[self.idx].multiply(lv, **opts), dx, bs)
+
+
+@dataclasses.dataclass(frozen=True)
+class _At(Generic[_Q]):
+    """``x.at[idx]``: indexed reads and updates that keep a quantity's label."""
+
+    x: _Q
+
+    def __getitem__(self, idx: _Index) -> _AtRef[_Q]:
+        """The slice at ``idx``, ready to read or update."""
+        return _AtRef(self.x, idx)
 
 
 # dimension aliases

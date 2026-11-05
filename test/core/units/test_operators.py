@@ -27,6 +27,7 @@ from ._helpers import (
     np_array,
     np_asarray,
     ty,
+    val,
 )
 
 type _Op = Callable[..., object]
@@ -63,6 +64,22 @@ def _refused(f: _Op, p: object, x: object, msg: str) -> None:
 
 def _magnitudes(q: Quantity[E_M, E_KG, E_S, E_A, E_K]) -> ArrayLike:
     return q.v
+
+
+def test_jnp_interop():
+    # jnp never silently drops units; the escape hatch round-trips
+    q = arr([1.0, 2.0, 3.0]) * u.angstrom
+    with pytest.raises(TypeError, match="requires ndarray"):
+        # jax's own refusal: __array__ is what stops it
+        jnp.sum(q)  # pyrefly: ignore[bad-argument-type]
+    placed = jax.device_put(q)  # placement moves the magnitudes and keeps the label
+    assert units.dim_of(placed) == units.dim_of(u.angstrom) and val(placed[0]) == 1.0
+    assert val(q.sum()) == 6.0
+    assert list((jnp.cumsum(q.to(u.angstrom)) * u.angstrom).value) == [1.0, 3.0, 6.0]
+    # a quantity is one leaf, so a walk keeps its dimension
+    assert jax.tree.leaves({"q": q}, is_leaf=units.is_quantity) == [q]
+    (leaf,) = jax.tree.leaves({"q": q})
+    assert not units.is_quantity(leaf) and list(leaf) == [1.0, 2.0, 3.0]
 
 
 def test_asarray_refused():
