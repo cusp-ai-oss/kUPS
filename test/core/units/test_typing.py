@@ -7,7 +7,7 @@ import importlib.util
 import pathlib
 import subprocess
 import sys
-from typing import Never, assert_type
+from typing import Any, Never, assert_type
 
 import jax
 import jax.numpy as jnp
@@ -225,6 +225,32 @@ def test_new_dimension_names():
     assert_type(2.0 * u.angstrom**-3, NumberDensity)
 
 
+def test_array_surface_types():
+    # each line mirrors a kUPS call site; a wrong result dimension should be a
+    # checker error rather than a wrong number at runtime
+    r = arr([1.0, 2.0]) * u.angstrom
+    cell = arr([[1.0, 0.0], [0.0, 1.0]]) * u.angstrom
+    assert_type(cell @ r, Area)  # a matrix of lengths times a length
+    assert_type(r.var(ddof=1), Area)  # a variance squares the dimension
+    assert_type(units.qr(cell), tuple[jax.Array, Length])
+    assert_type(units.eigh(cell), tuple[Length, jax.Array])
+    assert_type(r % r, Length)  # a remainder keeps the shared dimension
+    assert_type(r // r, jax.Array)  # and a count cancels it
+    assert_type(units.full_like(r, 1.0 * u.angstrom), Length)
+    assert_type(units.linspace(0.0 * u.angstrom, 10.0 * u.angstrom, 5), Length)
+    assert_type(units.zeros_like(r, shape=(4,)), Length)
+    assert_type(r.at[0].get(mode="fill", fill_value=0.0 * u.angstrom), Length)
+    # apply keeps the dimension for one operand; dim= or a second operand gives Any
+    assert_type(units.apply(jnp.tril, cell), Length)
+    assert_type(units.apply(jnp.cumsum, r), Length)
+    assert_type(units.apply(jnp.isfinite, r, dim=units.ONE), Any)
+    assert_type(units.apply(jnp.matmul, cell, cell), Any)
+    # .unit carries the quantity's exponents
+    assert_type(r.unit, LengthUnit)
+    assert_type((5.0 * u.eV).unit, EnergyUnit)
+    assert_type(r.to(r.unit), jax.Array)
+
+
 def test_narrowing_and_methods():
     # consumers hold leaves as Quantity | jax.Array unions, so is_quantity must
     # narrow the negative branch too (TypeIs)
@@ -296,6 +322,27 @@ def test_quantity_arraylike():
     assert_type(q.to(u.angstrom), jax.Array)
     assert_type(n.value.shape, tuple[int, ...])
     assert isinstance(q.value, jax.Array) and isinstance(n.to(u.nm), jax.Array)
+
+
+def test_einsum_types():
+    # the result dimension is the product of the operands', whatever the subscripts do
+    A = arr([[1.0, 0.0], [0.0, 1.0]]) * u.angstrom
+    B = arr([[1.0, 0.0], [0.0, 1.0]]) * u.eV
+    p = arr([[1.0, 0.0], [0.0, 1.0]])
+    inv = p / (1.0 * u.angstrom)
+    assert_type(units.einsum("ii->i", A), Length)
+    assert_type(units.einsum("ij,jk->ik", A, A), Area)
+    assert_type(units.einsum("ij,jk->ik", A, B), _EnergyLength)
+    assert_type(units.einsum("ij,jk->ik", A, p), Length)
+    assert_type(units.einsum("ij,jk->ik", p, B), Energy)
+    assert_type(units.einsum("ij,jk->ik", p, p), jax.Array)
+    assert_type(units.einsum("ij,jk->ik", A, inv), jax.Array)  # the product cancels
+    assert_type(units.einsum("ij,jk,kl->il", A, B, inv), Energy)
+    assert_type(units.einsum("ij,jk,kl->il", p, A, p), Length)
+    # four operands, a runtime dim= and the interleaved form are beyond the overloads
+    assert_type(units.einsum("ij,jk->ik", A, B, dim=units.ONE), Any)
+    assert_type(units.einsum(A, [0, 1], B, [1, 2]), Any)
+    assert_type(units.einsum("ij,jk,kl,lm->im", A, A, A, A), Any)
 
 
 def test_checker_accepts_this_file():

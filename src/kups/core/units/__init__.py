@@ -29,8 +29,8 @@ Model:
   ``Quantity[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a second
   operand's.
 
-  The array functions here cover the cases ``jnp`` rejects; ``apply`` wraps
-  any other function. ``Log`` holds ``log(x / ref)`` with a static
+  The array and linear algebra functions here cover the cases ``jnp`` rejects;
+  ``apply`` wraps any other function. ``Log`` holds ``log(x / ref)`` with a static
   reference unit, for values spanning many decades.
 
 Caveats:
@@ -123,6 +123,14 @@ from kups.core.units._core import (
     tree_flatten,
     tree_leaves,
     tree_map,
+)
+from kups.core.units._linalg import (
+    cross,
+    det,
+    eigh,
+    einsum,
+    inv,
+    qr,
 )
 from kups.core.units._log import Log
 from kups.core.units._typed import _E_A as E_A
@@ -289,6 +297,13 @@ __all__ = [
     "min",
     "max",
     "prod",
+    # linear algebra
+    "det",
+    "inv",
+    "cross",
+    "einsum",
+    "qr",
+    "eigh",
     # joining
     "stack",
     "concatenate",
