@@ -1103,6 +1103,18 @@ class Cell(Sliceable, Generic[_P]):
         input_space: CoordinateSpace = CoordinateSpace.REAL,
         output_space: CoordinateSpace = CoordinateSpace.REAL,
     ) -> Array:
+        """Fold fractional coordinates into ``[-0.5, 0.5)`` along periodic axes.
+
+        Args:
+            r: Coordinates in ``input_space``: Cartesian in Å when that space is
+                real, fractional otherwise.
+            input_space: Space ``r`` is expressed in.
+            output_space: Space to return the folded coordinates in.
+
+        Returns:
+            The folded coordinates in ``output_space``. Non-periodic axes pass
+            through unchanged.
+        """
         return _wrap(self.frame, self.periodic, r, input_space, output_space)
 
     def fold(self, r_frac: Array) -> tuple[Array, Array]:

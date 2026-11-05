@@ -53,6 +53,16 @@ def num_cells(
     *,
     eps: float = 1e-6,
 ) -> Array:
+    """Per-axis spatial bin counts whose bins are at least one cutoff wide.
+
+    Args:
+        systems: Systems whose cells are binned, batched ``(n_sys,)``.
+        cutoff: Cutoff per system in Å, ``(n_sys,)``.
+        eps: Reciprocal face length in 1/Å below which an axis counts as degenerate.
+
+    Returns:
+        Bin counts of shape ``(n_sys, 3)``, at least one per axis.
+    """
     # Reciprocal vectors are the columns of inverse_vectors (row-vector lattices).
     inv_norms: jax.Array = jnp.linalg.norm(systems.cell.inverse_vectors, axis=-2)
     face_lengths = 1.0 / jnp.where(inv_norms < eps, jnp.ones_like(inv_norms), inv_norms)

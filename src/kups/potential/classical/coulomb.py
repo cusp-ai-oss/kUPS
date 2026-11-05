@@ -69,7 +69,16 @@ type _PairwiseCoulombInput = GraphPotentialInput[
 
 
 def coulomb_pair_energy(charges_i: Array, charges_j: Array, distance: Array) -> Array:
-    """Coulomb energy in eV for pairs separated by ``distance`` in Å."""
+    """Coulomb energy of charge pairs separated by ``distance``.
+
+    Args:
+        charges_i: Charges of the left endpoints in e.
+        charges_j: Charges of the right endpoints in e.
+        distance: Pair separations in Å.
+
+    Returns:
+        ``k_e * q_i * q_j / r`` per pair in eV.
+    """
     return charges_i * charges_j / distance * TO_STANDARD_UNITS
 
 
