@@ -384,7 +384,7 @@ def mcmc_state_from_config(
 
     Host atoms get one group each (sentinel motif). Initial adsorbates
     from ``host.init_adsorbates`` are placed randomly within the unit cell.
-    Log activity is computed internally via Peng-Robinson EOS.
+    Log fugacity is computed internally via Peng-Robinson EOS.
 
     Args:
         key: JAX PRNG key for random adsorbate placement.
@@ -410,7 +410,7 @@ def mcmc_state_from_config(
     motif_ids = [Table((MotifId(0),), jnp.zeros(1)) for _ in ads_particles]
     motifs, _ = Table.union(ads_particles, motif_ids)
 
-    # Compute log activity via Peng-Robinson EOS
+    # Compute log fugacity via Peng-Robinson EOS
     crit_temps = jnp.asarray([a.critical_temperature for a in adsorbates])
     crit_press = jnp.asarray([a.critical_pressure for a in adsorbates])
     acentric = jnp.asarray([a.acentric_factor for a in adsorbates])
