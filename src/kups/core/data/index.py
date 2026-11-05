@@ -432,7 +432,7 @@ class Index[Key: SupportsSorting]:
         # Prefix or suffix vocabularies, e.g. the sides of a bipartite query.
         if (off := _offset_of(self.keys, tokens)) is not None:
             return jnp.where(
-                self._indices == len(self.keys), len(tokens), self._indices + off
+                self._indices >= len(self.keys), len(tokens), self._indices + off
             )
         if allow_missing and (off := _offset_of(tokens, self.keys)) is not None:
             inside = (self._indices >= off) & (self._indices < off + len(tokens))

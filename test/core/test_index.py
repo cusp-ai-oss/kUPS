@@ -142,6 +142,9 @@ class TestIndicesIn:
         # OOB preserved
         sa = Index(("A", "B"), jnp.array([0, 2, 1]))
         npt.assert_array_equal(sa.indices_in(("B", "A")), [1, 2, 0])
+        # Every id past the keys stays OOB in a vocabulary the keys are a prefix of
+        prefix = Index(("A",), jnp.array([0, 1, 2]))
+        npt.assert_array_equal(prefix.indices_in(("A", "B", "C")), [0, 3, 3])
 
     def test_allow_missing_preserves_inactive_rows(self):
         idx = Index(("A", "B", "C"), jnp.array([0, 1, 2, 3]))
