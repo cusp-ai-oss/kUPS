@@ -34,6 +34,7 @@ from kups.core.units import (
     Quantity,
     Unit,
     Velocity,
+    constants,
 )
 from kups.core.units import catalog as u
 from kups.core.units._unit import Atom
@@ -626,6 +627,24 @@ def test_iteration_under_jit():
     assert val(unrolled(q)) == 3.0 and val(jit(unrolled)(q)) == 3.0
     with pytest.raises(TypeError, match="0-d quantity"):
         jit(unrolled)(1.0 * u.angstrom)
+
+
+def test_atomistic_charge():
+    at = units.ATOMISTIC
+    assert at.base_units()["s"] == ASE_TIME  # the solved time unit is still ASE's
+    assert at.base_units()["A"] == 1.5737692011770263e-05  # pinning e moves it
+    assert "charge=e" in at.describe()
+    assert at.symbol(units.dim_of(u.e)) == "e"
+    assert units.SI.symbol(units.dim_of(u.e)) == "C"
+    with units.base(at):
+        assert val(1 * u.e) == 1.0  # the charge unit is e
+        assert val(1.0 * u.bar) == 6.241509074460763e-07
+        assert float(constants.k_e.to(u.eV * u.angstrom / u.e**2)) == pytest.approx(
+            14.399645478469017, rel=1e-15
+        )
+    # "charge" is a known kind, so pinning a length under that label is caught
+    with pytest.raises(units.DimensionError, match="charge must be"):
+        units.base(length=u.angstrom, charge=u.m).__enter__()
 
 
 def test_pytree_leaf():
