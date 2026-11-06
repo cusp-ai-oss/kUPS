@@ -371,17 +371,18 @@ def _prefactor(
     kvecs: Array, alpha: Array, k_max: Array, volume: Array, leading_zero: Array
 ) -> Array:
     k_squared = jnp.sum(kvecs**2, axis=-1)
-    mask = k_squared > 0
-    mask &= k_squared <= k_max[:, None] ** 2
-    k_squared = jnp.where(mask, k_squared, 1)
-    result = (
-        (2 * jnp.pi)
-        / volume[:, None]
-        * jnp.exp(-k_squared / (4 * alpha[:, None] ** 2))
-        / k_squared
-    )
-    result = (2 - leading_zero) * result
-    return jnp.where(mask, result, 0.0)
+    inside = k_squared <= k_max[:, None] ** 2
+    influence = _influence(k_squared, alpha[:, None], volume[:, None])
+    return jnp.where(inside, (2 - leading_zero) * influence, 0.0)
+
+
+def _influence(k_squared: Array, alpha: Array, volume: Array) -> Array:
+    """``2π/V exp(-k²/4α²) / k²``, zero at ``k = 0``."""
+    nonzero = k_squared > 0
+    # k² = 1 at k = 0 keeps the masked gradient finite
+    k_squared = jnp.where(nonzero, k_squared, 1)
+    result = (2 * jnp.pi) / volume * jnp.exp(-k_squared / (4 * alpha**2)) / k_squared
+    return jnp.where(nonzero, result, 0.0)
 
 
 @jax.custom_jvp
