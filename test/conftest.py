@@ -4,7 +4,10 @@
 import gc
 
 import jax
+import jax.numpy as jnp
 import pytest
+
+from kups.config import set_index_dtype
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -20,3 +23,11 @@ def clear_cache():
     yield
     jax.clear_caches()
     gc.collect()
+
+
+@pytest.fixture
+def int32_indices():
+    """Create every ``Index`` of the test in int32, then restore the default."""
+    set_index_dtype(jnp.int32)
+    yield
+    set_index_dtype(None)
