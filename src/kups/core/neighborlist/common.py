@@ -181,9 +181,14 @@ def _get_candidate_images(
     candidate's window is a per-axis run of ``candidate_image_counts``
     consecutive shifts anchored at ``ceil(separation - cutoff/perp)``, which
     brackets every image of the pair within ``cutoff`` (the reciprocal-projection
-    bound ``|separation_i - n_i| <= cutoff / perpendicular_length_i``). When no
-    system needs replication the result collapses to one zero-shift copy per
-    candidate.
+    bound ``|separation_i - n_i| <= cutoff / perpendicular_length_i``).
+
+    If the image buffer is no larger than the candidate buffer, the result is one
+    zero-shift copy per candidate, which is exact only if no candidate has a
+    second image. The capacity check therefore asks for the total number of
+    images, and for at least one row more than the candidates if any candidate
+    has a second image. The capacity fix then grows the buffer past the candidate
+    buffer, and the candidates are copied once per image.
     """
     cells = systems.data.cell
     dtype = candidates.key_idx.raw_indices.dtype
@@ -200,8 +205,12 @@ def _get_candidate_images(
         .get()
     )
     per_candidate = jnp.prod(images, axis=-1, dtype=dtype)
-    out_size = out_size.generate_assertion(per_candidate.sum(dtype=dtype))
     num_cands = candidates.key_idx.size
+    total = per_candidate.sum(dtype=dtype)
+    required = jnp.where(
+        jnp.any(per_candidate > 1), jnp.maximum(total, num_cands + 1), total
+    )
+    out_size = out_size.generate_assertion(required)
     if num_cands == 0 or out_size.size <= num_cands:
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         return jnp.arange(num_cands, dtype=dtype), offset

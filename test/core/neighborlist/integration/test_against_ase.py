@@ -363,3 +363,50 @@ class TestNeighborListAgainstASE:
             f"kups produced {len(ki)} directed edges, "
             f"ase produced {len(ai)} — displacement multisets differ"
         )
+
+
+@pytest.mark.parametrize(
+    "nl_cls",
+    [DenseNearestNeighborList, CellListNeighborList],
+    ids=lambda cls: cls.__name__,
+)
+def test_small_cell_batched_with_a_large_one_matches_ase(nl_cls):
+    """The 8-atom cell is 5.8 A wide, so a 5.3 A cutoff reaches two images per axis.
+    While building, the candidate capacity grows to the image capacity; the image
+    capacity must then grow past it, or the small cell loses pairs."""
+    batch = [
+        ase.build.bulk("Ar", "fcc", a=5.0, cubic=True).repeat((3, 3, 3)),
+        ase.build.bulk("Ar", "fcc", a=5.0).repeat((2, 2, 2)),
+    ]
+    for seed, atoms in enumerate(batch):
+        atoms.rattle(0.3, seed=seed)
+    batch = [_ensure_lower_triangular(atoms) for atoms in batch]
+    sizes = [len(atoms) for atoms in batch]
+    cutoff = 5.3
+    particles = make_lh(
+        jnp.asarray(np.concatenate([atoms.positions for atoms in batch])),
+        jnp.asarray(np.repeat(np.arange(len(batch)), sizes)),
+    )
+    lattice = np.stack([atoms.cell.array for atoms in batch])
+    systems, cutoffs = make_systems(
+        PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(lattice))),
+        jnp.full(len(batch), cutoff),
+    )
+    params = UniversalNeighborlistParameters.estimate(
+        Table(systems.keys, jnp.asarray(sizes)), systems, cutoffs
+    )
+    state = EvalState(particles=particles, systems=systems, neighborlist_params=params)
+    while (
+        result := run_nl(nl_cls.from_state(state, cutoffs), particles, systems)
+    ).failed_assertions:
+        state = result.fix_or_raise(state)
+    edges = result.value
+    ids = valid_ids(edges.indices)
+    valid = np.asarray(edges.indices.valid_mask.all(axis=-1))
+    disp = np.asarray(edges.difference_vectors(particles, systems))[valid, 0]
+
+    expected = []
+    for atoms, offset in zip(batch, np.cumsum([0, *sizes[:-1]])):
+        i, j, d = _ase_edges(atoms, cutoff)
+        expected += _canonical(i + offset, j + offset, d)
+    assert _canonical(ids[:, 0], ids[:, 1], disp) == sorted(expected)
