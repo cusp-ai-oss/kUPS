@@ -458,6 +458,18 @@ class TestThermostatSteps:
         )
         assert_temperature(jnp.mean(temps), kT_target, 0.15)
 
+    def test_csvr_noise_per_system(self):
+        """Two identical systems get independent kicks. At tau = 50 dt the shared
+        Gaussian dominates the scale, so one draw for both correlated them."""
+        state, _, _ = create_harmonic_system(n_particles=10, tau=100.0, dt=2.0)
+        particles, systems = Table.union([state.particles] * 2, [state.systems] * 2)
+        step = CSVRStep(particles=SimpleState.particles, systems=get_params)
+        keys = jax.random.split(jax.random.key(0), 512)
+        state = SimpleState(particles, systems)
+        momenta = jax.vmap(lambda k: step(k, state).particles.data.momenta)(keys)
+        scale = momenta[..., 0] / particles.data.momenta[:, 0]
+        assert jnp.abs(jnp.corrcoef(scale[:, 0], scale[:, 10])[0, 1]) < 0.2
+
 
 class TestBarostatAndMICSteps:
     """Tests for StochasticCellRescalingStep and WrapFlow."""
@@ -478,6 +490,17 @@ class TestBarostatAndMICSteps:
         assert jnp.isclose(
             new_state.systems.data.cell.volume, expected_volume, rtol=1e-6
         )
+
+    def test_cell_noise_per_system(self):
+        """Two identical systems get independent volume kicks."""
+        state = create_npt_system(n_particles=3, box_size=5.0)
+        particles, systems = Table.union([state.particles] * 2, [state.systems] * 2)
+        step = StochasticCellRescalingStep(
+            particles=NPTState.particles, systems=NPTState.systems
+        )
+        new_state = step(jax.random.key(42), NPTState(particles, systems))
+        volume = new_state.systems.data.cell.volume
+        assert not jnp.isclose(volume[0], volume[1], rtol=1e-8)
 
     def test_positions_scale_with_box(self):
         state = create_npt_system(n_particles=3, box_size=5.0)
