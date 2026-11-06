@@ -690,10 +690,9 @@ def _wide_gather_args(args: ScatterArgs) -> dict[str, Any] | None:
 def _gathers_wide(arr: Array) -> bool:
     """Whether gathering `arr` is worth the wide adjoint.
 
-    Integer and boolean leaves have no cotangent to accumulate; a weakly typed
-    leaf would come back strongly typed and promote differently downstream; and
-    a single-row table gathers by broadcast, which the out-of-range mask would
-    only make more expensive than the adjoint saves.
+    Integer and boolean leaves have no cotangent to accumulate, and a weakly
+    typed leaf would come back strongly typed and promote differently
+    downstream.
 
     Args:
         arr: Leaf about to be gathered.
@@ -701,11 +700,39 @@ def _gathers_wide(arr: Array) -> bool:
     Returns:
         ``True`` when the wide adjoint both helps and changes nothing else.
     """
-    return (
-        arr.shape[0] > 1
-        and jnp.issubdtype(arr.dtype, jnp.inexact)
-        and not arr.weak_type
-    )
+    return jnp.issubdtype(arr.dtype, jnp.inexact) and not arr.weak_type
+
+
+@jax.custom_jvp
+def _broadcast_row(arr: Array, ids: Array) -> Array:
+    """Broadcast the one row of `arr` to every id, as plain indexing does.
+
+    Plain indexing clamps every id to the one row, so the value is a broadcast.
+    A broadcast lets XLA compute elementwise work on the row once instead of
+    once per id. The tangent is
+    [segment_take][kups.core.utils.segment.segment_take] of the row's tangent,
+    so reverse mode sums the cotangents of in-range ids in a wider float rather
+    than scattering every cotangent into the one row. Out-of-range ids read the
+    row but carry no derivative. Only ``jax.jvp`` and ``jax.vjp``, and the
+    transforms built on them, see this masked derivative;
+    ``jax.linear_transpose`` sees the broadcast.
+
+    Args:
+        arr: Table with one row, shape ``(1, *feature_dims)``.
+        ids: Row index per output, of any shape.
+
+    Returns:
+        Rows of shape ``(*ids.shape, *feature_dims)``.
+    """
+    return jnp.broadcast_to(arr[0], (*ids.shape, *arr.shape[1:]))
+
+
+@_broadcast_row.defjvp
+def _broadcast_row_jvp(  # pyright: ignore[reportUnusedFunction]
+    primals: tuple[Array, Array], tangents: tuple[Array, Array]
+) -> tuple[Array, Array]:
+    arr, ids = primals
+    return _broadcast_row(arr, ids), segment_take(tangents[0], ids)
 
 
 @dataclass
@@ -731,19 +758,23 @@ class IndexLens(BaseLens[S, R]):
     def get[S2](self: IndexLens[S2, R], state: S2) -> R:
         """Get values by applying array indexing to the focused data.
 
-        Multi-row float leaves selected by a plain integer index array are
-        gathered with [segment_take][kups.core.utils.segment.segment_take],
-        whose reverse pass sums the cotangents landing in each row in a wider
-        float. Such a leaf takes its fill value where the index is out of range,
-        zero by default, rather than the clamped last row a bare ``at[].get()``
-        would give; every other leaf, and every other form of index, keeps the
-        plain indexing semantics.
+        Float leaves selected by a plain integer index array are gathered with
+        [segment_take][kups.core.utils.segment.segment_take], whose reverse
+        pass sums the cotangents landing in each row in a wider float. Such a
+        leaf takes its fill value where the index is out of range, zero by
+        default, rather than the clamped last row a bare ``at[].get()`` would
+        give. A one-row table under default arguments still broadcasts its row
+        to every id, as plain indexing does, and differentiates as
+        ``segment_take``. Every other leaf, and every other form of index, keeps
+        the plain indexing semantics.
         """
         rows = _leading_axis_rows(self.idxs)
 
         def _array_getter(scatter_args: ScatterArgs, arr: Array) -> Array:
             take = _wide_gather_args(scatter_args)
             if rows is not None and take is not None and _gathers_wide(arr):
+                if arr.shape[0] == 1 and not scatter_args:
+                    return _broadcast_row(arr, rows)
                 return segment_take(arr, rows, **take)
             return arr.at[self.idxs].get(**scatter_args)
 
