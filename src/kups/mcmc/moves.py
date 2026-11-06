@@ -568,6 +568,7 @@ def exchange_changes_from_position_changes(
         groups: Current buffered group metadata.
     """
     n_sys = particles.data.system.num_labels
+    dtype = particles.data.system.raw_indices.dtype
     selected = particles[changes.particle_ids]
 
     p_data = ExchangeParticleData(
@@ -580,7 +581,7 @@ def exchange_changes_from_position_changes(
     p_changes = WithIndices(changes.particle_ids, p_buf)
 
     # One group per system (same shape as insert/delete) — just re-assert existing groups
-    group_idx = Index(groups.keys, jnp.zeros(n_sys, dtype=int))
+    group_idx = Index(groups.keys, jnp.zeros(n_sys, dtype=dtype))
     grps = groups[group_idx]
     g_data = ExchangeGroupData(motif=grps.motif, system=grps.system)
     g_buf = Buffered.arange(g_data, label=GroupId)
@@ -610,13 +611,14 @@ def insert_random_motif(
         Exchange changes describing the insertion.
     """
     n_sys = particles.data.system.num_labels
+    dtype = particles.data.system.raw_indices.dtype
     max_sys_count = particles.data.system.max_count
     n_motifs = motifs.data.motif.num_labels
     motif_max_seg = motifs.data.motif.max_count
     n_motif_particles = len(motifs)
     chain = key_chain(key)
     selected_motifs = jax.random.choice(
-        next(chain), jnp.arange(n_motifs), shape=(n_sys,)
+        next(chain), jnp.arange(n_motifs, dtype=dtype), shape=(n_sys,)
     )
     selected = Index(motifs.data.motif.keys, selected_motifs)
     ins_system_ids, particle_idx = subselect(
@@ -705,13 +707,16 @@ def delete_random_motif(
     """
     chain = key_chain(key)
     n_sys = particles.data.system.num_labels
+    dtype = particles.data.system.raw_indices.dtype
     max_sys_count = particles.data.system.max_count
     n_motifs = motifs.data.motif.num_labels
     motif_max_seg = motifs.data.motif.max_count
     n_motif_particles = len(motifs)
 
     # Randomly select a motif to delete for each system
-    motifs_to_delete = jax.random.choice(next(chain), n_motifs, shape=(n_sys,))
+    motifs_to_delete = jax.random.choice(
+        next(chain), jnp.arange(n_motifs, dtype=dtype), shape=(n_sys,)
+    )
     # Mark groups whose label matches selected motif and belong to correct system
     group_system = groups.data.system
     selected_motif = Table(
