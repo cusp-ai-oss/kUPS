@@ -1,0 +1,3 @@
+simulation_type: md
+hdf5_output: md_npt_lj_argon_float32.h5
+reference: md_npt_lj_argon

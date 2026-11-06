@@ -15,9 +15,10 @@ from jax import Array
 from kups.application.md.analysis import analyze_md, analyze_md_file
 from kups.core.constants import BOLTZMANN_CONSTANT, PASCAL
 from kups.core.data import Index, Table
-from kups.core.lens import view
+from kups.core.lens import bind, view
 from kups.core.storage import EveryNStep, HDF5StorageWriter, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
+from kups.core.utils.jax import astype_floating
 from kups.core.utils.jax import dataclass as jax_dataclass
 
 
@@ -244,6 +245,22 @@ def _stack_steps(steps: list[MockStepData]) -> MockStepData:
         volume=jnp.stack([s.volume for s in steps]),
         internal_kinetic_energy=jnp.stack([s.internal_kinetic_energy for s in steps]),
     )
+
+
+def test_float32_steps_are_averaged_in_float64():
+    """Float32 rows are averaged in float64: a constant volume has no spread."""
+    init, steps = _trajectory(1000, 1, 8)
+    volume = jnp.full(1, 9314.0208, jnp.float32)
+    steps = [
+        bind(astype_floating(s, jnp.float32), lambda d: d.volume).set(volume)
+        for s in steps
+    ]
+
+    result = analyze_md(init, _stack_steps(steps), n_blocks=5)[SystemId(0)]
+
+    assert result.volume.mean.dtype == jnp.float64
+    assert result.volume.mean == volume[0]
+    assert result.volume.sem == 0
 
 
 def test_analyze_md_file_matches_in_memory(tmp_path: Path):
