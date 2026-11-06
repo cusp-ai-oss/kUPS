@@ -10,6 +10,7 @@ from typing import Literal, Protocol, overload
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import DTypeLike
 
 from kups.core.assertion import runtime_assert
 from kups.core.capacity import Capacity, LensCapacity
@@ -47,16 +48,21 @@ def cell_hash(coordinate: Array, num_cells: Array) -> Array:
     Returns:
         Row-major bin ids of shape ``(...,)``.
     """
-    factor = jnp.cumprod(num_cells, axis=-1) // num_cells
-    bin_idx = jnp.clip(jnp.floor(coordinate * num_cells).astype(int), 0, num_cells - 1)
-    return (bin_idx * factor).sum(axis=-1)
+    dtype = num_cells.dtype
+    factor = jnp.cumprod(num_cells, axis=-1, dtype=dtype) // num_cells
+    bin_idx = jnp.floor(coordinate * num_cells).astype(dtype)
+    bin_idx = jnp.clip(bin_idx, 0, num_cells - 1)
+    return (bin_idx * factor).sum(axis=-1, dtype=dtype)
 
 
-def cell_stencil(dim: int) -> Array:
+def cell_stencil(dim: int, dtype: DTypeLike = int) -> Array:
     """All ``3**dim`` neighbor-cell offsets in ``{-1, 0, 1}**dim``, ``(3**dim, dim)``."""
     with jax.ensure_compile_time_eval():
         return jnp.stack(
-            jnp.meshgrid(*[jnp.arange(-1, 2) for _ in range(dim)], indexing="ij"),
+            jnp.meshgrid(
+                *[jnp.arange(-1, 2, dtype=dtype) for _ in range(dim)],
+                indexing="ij",
+            ),
             axis=-1,
         ).reshape(-1, dim)
 
@@ -106,15 +112,17 @@ def neighbor_cells(
         )
     system, local = cells // max_cells, cells % max_cells
     cell_bins = bins[jnp.minimum(system, bins.shape[0] - 1)]
-    factor = jnp.cumprod(cell_bins, axis=-1) // cell_bins
+    factor = jnp.cumprod(cell_bins, axis=-1, dtype=bins.dtype) // cell_bins
     coords = (local[:, None] // factor) % cell_bins
-    neighbor = coords[:, None, :] + cell_stencil(bins.shape[-1])[None]
+    neighbor = coords[:, None, :] + cell_stencil(bins.shape[-1], bins.dtype)[None]
     wrapped = jnp.where(
         jnp.asarray(cell.periodic), neighbor % cell_bins[:, None], neighbor
     )
     valid = ((wrapped >= 0) & (wrapped < cell_bins[:, None])).all(axis=-1)
-    valid &= ((cells < sentinel_cell) & (local < cell_bins.prod(axis=-1)))[:, None]
-    neighbor = (wrapped * factor[:, None]).sum(-1) + (system * max_cells)[:, None]
+    n_local = cell_bins.prod(axis=-1, dtype=bins.dtype)
+    valid &= ((cells < sentinel_cell) & (local < n_local))[:, None]
+    neighbor = (wrapped * factor[:, None]).sum(-1, dtype=bins.dtype)
+    neighbor = neighbor + (system * max_cells)[:, None]
     neighbor = jnp.where(valid, neighbor, sentinel_cell)
     if promise_unique:
         runtime_assert(
@@ -160,12 +168,13 @@ def _cell_list_subselect(
     max_num_candidates: Capacity[int],
     promise_unique_cells: bool = False,
 ) -> Candidates:
+    dtype = keys.data.system.raw_indices.dtype
     if keys.size == 0 or queries.size == 0:
         return Candidates(
-            Index(keys.keys, jnp.zeros(0, int), _cls=keys.cls),
-            Index(queries.keys, jnp.zeros(0, int), _cls=queries.cls),
+            Index(keys.keys, jnp.zeros(0, dtype), _cls=keys.cls),
+            Index(queries.keys, jnp.zeros(0, dtype), _cls=queries.cls),
         )
-    bins = num_cells(systems.data, cutoffs)
+    bins = num_cells(systems.data, cutoffs, dtype=dtype)
     max_num_cells = max_num_cells.generate_assertion(bins.prod(axis=-1).max())
 
     def assign(points: NeighborListPoints) -> Array:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -27,6 +28,21 @@ class SubselectResult:
         """Yield ``(scatter_idxs, gather_idxs)`` for unpacking."""
         yield self.scatter_idxs
         yield self.gather_idxs
+
+
+def argsort_indices(x: Array) -> Array:
+    """Stable argsort of a 1-D integer ``x`` with indices in ``x``'s dtype.
+
+    Before JAX 0.10, ``jnp.argsort`` always sorts a payload of the default integer.
+
+    Args:
+        x: 1-D integer array.
+
+    Returns:
+        The permutation that sorts ``x``, in ``x``'s dtype.
+    """
+    rows = jnp.arange(x.size, dtype=x.dtype)
+    return jax.lax.sort((x, rows), num_keys=1, is_stable=True)[1]
 
 
 def offsets_from_counts(counts: Array) -> Array:
@@ -72,12 +88,12 @@ def subselect(
         SubselectResult containing scatter_idxs and gather_idxs for indexing
         operations, in ``segment_ids``' dtype.
     """
+    dtype = segment_ids.dtype
     num_occurrences = bincount(segment_ids, length=num_segments)
     target_num_occ = num_occurrences.at[target_ids].get(mode="fill", fill_value=0)
-    total_occurrences = jnp.sum(target_num_occ)
+    total_occurrences = jnp.sum(target_num_occ, dtype=dtype)
     output_buffer_size = output_buffer_size.generate_assertion(total_occurrences)
     # Compute gather indices for extracting matching elements
-    dtype = segment_ids.dtype
     gather_idxs = jnp.arange(output_buffer_size.size, dtype=dtype) + jnp.repeat(
         offsets_from_counts(num_occurrences)[target_ids]
         - offsets_from_counts(target_num_occ),
@@ -89,14 +105,14 @@ def subselect(
         empty = jnp.array([], dtype=dtype)
         return SubselectResult(empty, empty)
     if not is_sorted:
-        gather_idxs = jnp.argsort(segment_ids).astype(dtype)[gather_idxs]
+        gather_idxs = argsort_indices(segment_ids)[gather_idxs]
     # Compute scatter indices for organizing results
     scatter_idxs = jnp.repeat(
         jnp.arange(len(target_ids), dtype=dtype),
         target_num_occ,
         total_repeat_length=output_buffer_size.size,
     )
-    mask = jnp.arange(output_buffer_size.size) < total_occurrences
+    mask = jnp.arange(output_buffer_size.size, dtype=dtype) < total_occurrences
     scatter_idxs = jnp.where(mask, scatter_idxs, len(target_ids))
     gather_idxs = jnp.where(mask, gather_idxs, len(segment_ids))
     return SubselectResult(scatter_idxs, gather_idxs)

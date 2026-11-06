@@ -46,7 +46,10 @@ def _all_subselect(
     queries: Table[ParticleId, NeighborListPoints],
     systems: Table[SystemId, NeighborListSystems],
 ) -> Candidates:
-    key_indices, queried_keys = jnp.indices((len(keys), len(queries))).reshape(2, -1)
+    shape = (len(keys), len(queries))
+    key_indices, queried_keys = jnp.indices(
+        shape, dtype=keys.data.system.raw_indices.dtype
+    ).reshape(2, -1)
     return Candidates(
         key_idx=Index(keys.keys, key_indices, _cls=keys.cls),
         query_idx=Index(queries.keys, queried_keys, _cls=queries.cls),

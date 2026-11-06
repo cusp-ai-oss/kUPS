@@ -31,6 +31,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import DTypeLike
 
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.cell import AnyPeriodicity, Cell, MaterializedFrame
@@ -52,11 +53,12 @@ def num_cells(
     cutoff: Array,
     *,
     eps: float = 1e-6,
+    dtype: DTypeLike = int,
 ) -> Array:
     # Reciprocal vectors are the columns of inverse_vectors (row-vector lattices).
     inv_norms: jax.Array = jnp.linalg.norm(systems.cell.inverse_vectors, axis=-2)
     face_lengths = 1.0 / jnp.where(inv_norms < eps, jnp.ones_like(inv_norms), inv_norms)
-    num_bins = jnp.maximum((face_lengths / cutoff[..., None]).astype(int), 1)
+    num_bins = jnp.maximum((face_lengths / cutoff[..., None]).astype(dtype), 1)
     return num_bins
 
 
@@ -116,12 +118,12 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
         ```
     """
     # Calculate total elements per row and cumulative sums for indexing
-    counts = jnp.prod(images, axis=1)
-    cumsum = jnp.cumsum(counts)
+    counts = jnp.prod(images, axis=1, dtype=images.dtype)
+    cumsum = jnp.cumsum(counts, dtype=images.dtype)
     out_size = out_size.generate_assertion(cumsum[-1])
 
     # Map each output index to its corresponding row in images
-    indices = jnp.arange(out_size.size)
+    indices = jnp.arange(out_size.size, dtype=images.dtype)
     row_indices = jnp.searchsorted(cumsum, indices, side="right")
     prev_cumsum = jnp.concatenate([jnp.zeros(1, dtype=counts.dtype), cumsum[:-1]])
     local_indices = indices - prev_cumsum[row_indices]
@@ -143,7 +145,9 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     return jnp.stack([i, j, k], axis=1)
 
 
-def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array:
+def candidate_image_counts(
+    cells: Cell[AnyPeriodicity], cutoffs: Array, dtype: DTypeLike = int
+) -> Array:
     """Return per-system, per-axis periodic-image window widths.
 
     Each periodic axis needs ``ceil(2 * cutoff / perpendicular_length)``
@@ -156,7 +160,7 @@ def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: Array) -> Array
     skew (it equals ``1 / |column of inverse_vectors|``).
     """
     ratio = cutoffs[..., None] / cells.perpendicular_lengths
-    images = jnp.maximum(jnp.ceil(2 * ratio), 1).astype(int)
+    images = jnp.maximum(jnp.ceil(2 * ratio), 1).astype(dtype)
     images = jnp.where(jnp.isfinite(ratio), images, 1)
     return jnp.where(jnp.array(cells.periodic), images, 1)
 
@@ -181,27 +185,28 @@ def _get_candidate_images(
     candidate.
     """
     cells = systems.data.cell
+    dtype = candidates.key_idx.raw_indices.dtype
     key_points = keys[candidates.key_idx]
     # Out-of-bounds candidates take no images.
     images, ratio = (
         systems.set_data(
             (
-                candidate_image_counts(cells, cutoffs),
+                candidate_image_counts(cells, cutoffs, dtype),
                 cutoffs[:, None] / cells.perpendicular_lengths,
             )
         )
         .at(key_points.system, args={"mode": "fill", "fill_value": 0})
         .get()
     )
-    per_candidate = jnp.prod(images, axis=-1)
-    out_size = out_size.generate_assertion(per_candidate.sum())
+    per_candidate = jnp.prod(images, axis=-1, dtype=dtype)
+    out_size = out_size.generate_assertion(per_candidate.sum(dtype=dtype))
     num_cands = candidates.key_idx.size
     if num_cands == 0 or out_size.size <= num_cands:
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
-        return jnp.arange(num_cands), offset
+        return jnp.arange(num_cands, dtype=dtype), offset
 
     window = _generate_image_offsets(images, out_size)
-    idx = jnp.arange(num_cands + 1).repeat(
+    idx = jnp.arange(num_cands + 1, dtype=dtype).repeat(
         jnp.pad(per_candidate, (0, 1)), total_repeat_length=out_size.size
     )
     separation = key_points.positions - queries[candidates.query_idx].positions
@@ -211,7 +216,7 @@ def _get_candidate_images(
     # non-periodic axes use no shift.
     mic = cells.minimum_image_shifts(separation)
     anchor = jnp.where(jnp.isfinite(ratio), jnp.ceil(separation - ratio), mic)
-    anchor = jnp.where(jnp.array(cells.periodic), anchor, 0).astype(int)
+    anchor = jnp.where(jnp.array(cells.periodic), anchor, 0).astype(dtype)
     offsets = (window + anchor.at[idx].get(mode="fill", fill_value=0)).astype(
         keys.data.positions.dtype
     )
@@ -257,7 +262,7 @@ def _minimum_image_mask(
     )
     num_segments = num_candidates + 1
     seg_min = jax.ops.segment_min(dist_sq, idx, num_segments=num_segments)
-    rows = jnp.arange(dist_sq.shape[0])
+    rows = jnp.arange(dist_sq.shape[0], dtype=idx.dtype)
     first = jax.ops.segment_min(
         jnp.where(dist_sq == seg_min[idx], rows, dist_sq.shape[0]),
         idx,

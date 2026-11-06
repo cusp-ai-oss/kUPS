@@ -4,12 +4,13 @@
 """Tests for data utility functions."""
 
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 
 from kups.core.capacity import LensCapacity
 from kups.core.data import subselect
 from kups.core.lens import lens
-from kups.core.utils.subselect import offsets_from_counts
+from kups.core.utils.subselect import argsort_indices, offsets_from_counts
 
 
 class TestOffsetsFromCounts:
@@ -91,3 +92,8 @@ class TestSubselect:
         expected_scatter = jnp.array([0, 0, 1, 1])
         npt.assert_array_equal(gather_idxs[:4], expected_gather)
         npt.assert_array_equal(scatter_idxs[:4], expected_scatter)
+
+
+def test_argsort_indices_matches_stable_argsort():
+    x = jnp.asarray(np.random.default_rng(0).integers(0, 4, 50))  # many ties
+    npt.assert_array_equal(argsort_indices(x), jnp.argsort(x, stable=True))
