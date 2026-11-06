@@ -10,6 +10,7 @@ agree with ``ase.neighborlist.neighbor_list`` across cutoffs that are smaller,
 larger, and much larger than the perpendicular cell length.
 """
 
+import dataclasses
 import functools
 
 import ase
@@ -26,6 +27,7 @@ from kups.core.data.table import Table
 from kups.core.lens import bind
 from kups.core.neighborlist import (
     CellListNeighborList,
+    CellScanNeighborList,
     DenseNearestNeighborList,
     UniversalNeighborlistParameters,
 )
@@ -144,8 +146,14 @@ def _kups_edges(nl_cls, atoms: ase.Atoms, cutoff: float):
     state, cutoff_table = _build_state(atoms, cutoff)
 
     result = None
-    for _ in range(2):
+    # capacities grow one assertion at a time; the larger supercells need several rounds
+    for _ in range(4):
         nl = _neighbor_list(nl_cls, state, cutoff_table)
+        if nl_cls is CellScanNeighborList:
+            # static window: cover cutoffs wider than the cell
+            widths = 1.0 / np.linalg.norm(np.linalg.inv(atoms.cell.array), axis=0)
+            radius = int(np.ceil(cutoff / widths.min()))
+            nl = dataclasses.replace(nl, stencil_radius=max(radius, 1))
         result = run_nl(nl, state.particles, state.systems)
         if not result.failed_assertions:
             break
@@ -245,6 +253,11 @@ _CASES = [
     ("triclinic", _make_triclinic, (3.0, 6.0, 12.0)),  # deep 3-shell guard (1 atom)
     ("Cu_3x3x3", _make_cu_supercell, (5.0,)),  # large interior-bulk, minimum-image
     ("fcc_primitive_222", _make_fcc_primitive_222, (3.0, 6.0)),  # non-lower-triangular
+    # single-image regime (>= 3 cutoff-wide bins per axis), as CellScanNeighborList needs
+    ("Cu_3x3x3", _make_cu_supercell, (3.0,)),
+    ("rattled_Al_4x4x4", lambda: _build_bulk_al().repeat((4, 4, 4)), (4.0,)),
+    ("triclinic_4x4x4", lambda: _make_triclinic().repeat((4, 4, 4)), (4.0,)),
+    ("fcc_primitive_555", lambda: _make_fcc_primitive_222().repeat((3, 3, 3)), (3.0,)),
 ]
 
 # Flatten (system, cutoff) into one item per cutoff so the xdist scheduler can
@@ -334,7 +347,7 @@ class TestEnsureLowerTriangular:
 )
 @pytest.mark.parametrize(
     "nl_cls",
-    [DenseNearestNeighborList, CellListNeighborList],
+    [DenseNearestNeighborList, CellListNeighborList, CellScanNeighborList],
     ids=lambda cls: cls.__name__,
 )
 class TestNeighborListAgainstASE:
