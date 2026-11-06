@@ -35,7 +35,6 @@ from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_AND_CELL
 from kups.application.relaxation.data import RelaxState, relax_state_from_ase
 from kups.core.cell import DeformedFrame, LogTriclinicFrame, TriclinicFrame
 from kups.core.lens import NestedLens, SimpleLens, identity_lens, lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.utils.math import triangular_3x3_from_tril
 from kups.observables.stress import stress_via_virial_theorem
 from kups.potential.classical.lennard_jones import LennardJonesParameters
@@ -76,10 +75,8 @@ def _kups_state(atoms: Atoms) -> tuple[RelaxState, LennardJonesParameters]:
     lj = LennardJonesParameters.from_dict(
         cutoff=RC, parameters={"Ar": (SIGMA, EPS)}, mixing_rule="lorentz_berthelot"
     )
-    nlp = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, lj.cutoff
-    )
-    return RelaxState(particles, systems, nlp, jnp.zeros(()), jnp.array([0])), lj
+    state = RelaxState.create(particles, systems, lj.cutoff, 1.0, jnp.zeros(()))
+    return state, lj
 
 
 def test_atomic_forces_match_ase_cell_filters() -> None:
