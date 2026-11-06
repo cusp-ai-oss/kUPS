@@ -13,7 +13,7 @@ from jax import Array
 
 from kups.core.assertion import runtime_assert
 from kups.core.data.table import Table
-from kups.core.lens import SimpleLens, bind, view
+from kups.core.lens import SimpleLens, bind, lens, view
 from kups.core.parameter_scheduler import (
     AcceptanceHistory,
     Correlation,
@@ -589,6 +589,26 @@ class TestMCMCPropagator:
         with pytest.raises(AssertionError, match="invalid density"):
             result.raise_assertion()
         npt.assert_array_equal(result.value.value, simple_state.value)
+
+
+def test_reset_on_error_keeps_the_kept_part():
+    @dataclass
+    class _Pair:
+        a: Array
+        b: Array
+
+    def failing(key: Array, state: _Pair) -> _Pair:
+        runtime_assert(state.a.sum() < 0, "fails")
+        return _Pair(state.a + 1, state.b + 1)
+
+    state = _Pair(jnp.zeros(2), jnp.zeros(2))
+    keep_b = ResetOnErrorPropagator(failing, keep=lens(lambda s: s.b, cls=_Pair))
+    out = jax.jit(as_result_function(keep_b))(jax.random.key(0), state).value
+    npt.assert_array_equal(out.a, 0)
+    npt.assert_array_equal(out.b, 1)
+    reset = jax.jit(as_result_function(ResetOnErrorPropagator(failing)))
+    out = reset(jax.random.key(0), state).value
+    npt.assert_array_equal(out.b, 0)
 
 
 class TestPropagatorIntegration:
