@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import ase
 import jax
@@ -239,6 +239,9 @@ class MdRunConfig(BaseModel):
     each block is saved, so the trajectory has num_steps // block_size frames."""
     seed: int | None
     """Random seed for reproducibility. None for time-based."""
+    index_dtype: Literal["int32", "int64"] = "int64"
+    """Integer dtype of all state indices, set with ``kups.config.set_index_dtype``.
+    ``int32`` is faster on GPU."""
 
 
 class MdParameters(BaseModel):

@@ -6,6 +6,7 @@
 import tempfile
 
 import ase.build
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -15,6 +16,8 @@ from kups.application.md.data import MdParameters, MdRunConfig
 from kups.application.simulations import md
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
+from kups.config import set_index_dtype
+from kups.core.data import Index
 
 
 def _ar_cif(rattle: float = 0.0) -> str:
@@ -111,3 +114,30 @@ def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> No
     run(_config(_tmp_h5(), inp).model_copy(update={"inp_files": (inp, inp)}))
     first, second = np.split(np.asarray(captured["s"].particles.data.momenta), 2)
     assert not np.allclose(first, second)
+
+
+def test_int32_indices_match_default() -> None:
+    # the same files for both runs: particles_from_ase caches by path and dtype
+    inp_files = (_ar_cif(rattle=0.1), _ar_cif(rattle=0.2))
+    states = []
+    try:
+        for index_dtype in ("int64", "int32"):
+            config = _config(_tmp_h5(), inp_files[0])
+            config = config.model_copy(
+                update={
+                    "run": config.run.model_copy(update={"index_dtype": index_dtype}),
+                    "inp_files": inp_files,
+                }
+            )
+            states.append(run(config))
+    finally:
+        set_index_dtype(None)
+    leaves = jax.tree.leaves(states[1], is_leaf=lambda x: isinstance(x, Index))
+    dtypes = {x.raw_indices.dtype for x in leaves if isinstance(x, Index)}
+    assert dtypes == {jnp.dtype(jnp.int32)}
+    np.testing.assert_allclose(
+        states[1].particles.data.positions,
+        states[0].particles.data.positions,
+        rtol=1e-10,
+        atol=1e-10,
+    )

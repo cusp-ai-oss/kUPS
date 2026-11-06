@@ -49,6 +49,7 @@ from kups.application.potential.classical.lennard_jones import (
 )
 from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.utils.propagate import make_cycle_function
+from kups.config import set_index_dtype
 from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
@@ -603,6 +604,7 @@ def make_guest_stress(
 
 
 def run(config: Config) -> MCMCState:
+    set_index_dtype(config.run.index_dtype)
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state = init_state(next(chain), config)

@@ -41,6 +41,7 @@ from kups.application.simulations.potentials import (
     TojaxPotentialConfig,
     UmaConfig,
 )
+from kups.config import set_index_dtype
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
@@ -67,8 +68,16 @@ class Config(BaseModel):
     inp_files: tuple[str | Path, ...]
 
 
-def run(config: Config) -> None:
-    """Run a molecular-dynamics simulation for the configured force field."""
+def run(config: Config) -> MdState:
+    """Run a molecular-dynamics simulation for the configured force field.
+
+    Args:
+        config: Run, MD, potential and input configuration.
+
+    Returns:
+        The final state.
+    """
+    set_index_dtype(config.run.index_dtype)
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
@@ -96,7 +105,7 @@ def run(config: Config) -> None:
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
     )
-    run_md(next(chain), propagator, state, config.run)
+    return run_md(next(chain), propagator, state, config.run)
 
 
 def main() -> None:

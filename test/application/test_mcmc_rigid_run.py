@@ -12,9 +12,11 @@ import pytest
 
 from kups.application.mcmc.logging import MCMCLoggedData, MCMCStepData
 from kups.application.simulations.mcmc_rigid import MCMCState, init_state, run
+from kups.config import set_index_dtype
+from kups.core.data import Index
 from kups.core.storage import HDF5StorageReader
 
-from ._rigid_configs import assert_readable, co2_config
+from ._rigid_configs import assert_readable, batched_co2_config, co2_config
 
 
 class TestRunNVT:
@@ -135,3 +137,28 @@ class TestRunGCMC:
             jax.tree.leaves(frames[0]), jax.tree.leaves(frames[1]), strict=True
         ):
             npt.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+
+
+def test_gcmc_with_int32_indices_matches_default() -> None:
+    states = []
+    try:
+        for index_dtype in ("int64", "int32"):
+            config = batched_co2_config(2, (2,))
+            run_config = config.run.model_copy(update={"index_dtype": index_dtype})
+            states.append(run(config.model_copy(update={"run": run_config})))
+    finally:
+        set_index_dtype(None)
+    leaves = jax.tree.leaves(states[1], is_leaf=lambda x: isinstance(x, Index))
+    dtypes = {x.raw_indices.dtype for x in leaves if isinstance(x, Index)}
+    assert dtypes == {jnp.dtype(jnp.int32)}
+    assert states[1].cell_tables.table.slot_of_row.dtype == jnp.int32
+    npt.assert_array_equal(
+        states[1].groups.data.system.counts.data,
+        states[0].groups.data.system.counts.data,
+    )
+    npt.assert_allclose(
+        states[1].systems.data.potential_energy.total,
+        states[0].systems.data.potential_energy.total,
+        rtol=1e-10,
+        atol=1e-10,
+    )
