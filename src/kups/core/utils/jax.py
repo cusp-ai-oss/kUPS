@@ -1255,6 +1255,13 @@ def sequential_vmap_with_vjp[*P, R](func: Callable[[*P], R]) -> Callable[[*P], R
     return vmap_call
 
 
+def triton_available() -> bool:
+    """Whether Pallas kernels run on Triton: a CUDA GPU of compute capability 8.0+."""
+    device = jax.devices()[0]
+    capability = float(getattr(device, "compute_capability", 0) or 0)
+    return device.platform == "gpu" and capability >= 8.0
+
+
 def skip_on_cpu[T, R](
     pred: Array, fn: Callable[[T], R], otherwise: Callable[[T], R], operand: T
 ) -> R:
