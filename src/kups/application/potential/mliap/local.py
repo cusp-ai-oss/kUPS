@@ -199,7 +199,7 @@ def make_local_mliap_from_state(
             model_lens = state.focus(_model)
 
         def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-            return neighborlist_factory(state(s), model_lens(s).cutoff)
+            return neighborlist_factory(s, state, model_lens(s).cutoff)
 
         return make_local_mliap_potential(
             state.focus(lambda x: x.particles),
@@ -229,7 +229,7 @@ def make_local_mliap_from_state(
         )
 
     def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
-        return neighborlist_factory(state(s), model_lens(s).cutoff)
+        return neighborlist_factory(s, state, model_lens(s).cutoff)
 
     return make_local_mliap_potential(
         state.focus(lambda x: x.particles),

@@ -19,7 +19,7 @@ from jax import Array
 
 from kups.core.cell import AnyPeriodicity, Periodic3D
 from kups.core.data import Index, Table
-from kups.core.lens import Lens, View, lens
+from kups.core.lens import Lens, View, identity_lens, lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     Edges,
@@ -204,7 +204,7 @@ def evaluate_radius_graph_potential[
         hessian_lens: Lens selecting the gradient for Hessian computation.
         hessian_idx_view: View used to index into the Hessian output.
         neighborlist_factory: Builds a ``NeighborList[Literal[2]]`` from the
-            internal eval state and per-system cutoffs.
+            internal eval state, an identity lens and per-system cutoffs.
 
     Returns:
         ``PotentialOut`` containing energy, gradients, and Hessians.
@@ -224,7 +224,9 @@ def evaluate_radius_graph_potential[
                 graph_constructor=GraphConstructor(
                     particles=constant(point_cloud.particles),
                     systems=constant(point_cloud.systems),
-                    neighborlist=lambda s: neighborlist_factory(s, cutoffs),
+                    neighborlist=lambda s: neighborlist_factory(
+                        s, identity_lens(_RadiusGraphEvalState), cutoffs
+                    ),
                     probe=None,
                 ),
                 parameter_view=constant(parameters),
