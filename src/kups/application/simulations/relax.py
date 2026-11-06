@@ -75,10 +75,6 @@ def run(config: Config) -> RelaxState:
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
-    potential, cutoff = config.potential.build(state_lens, gradient)
-    propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, gradient
-    )
 
     all_particles: list[Table[ParticleId, RelaxParticles]] = []
     all_systems: list[Table[SystemId, RelaxSystems]] = []
@@ -88,6 +84,10 @@ def run(config: Config) -> RelaxState:
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
+    potential, cutoff = config.potential.build(state_lens, gradient, particles, systems)
+    propagator, opt_init = make_relax_propagator(
+        state_lens, potential, optimizer, gradient
+    )
 
     # Torch MLFF models need extra neighbor-list capacity headroom.
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
