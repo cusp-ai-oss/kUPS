@@ -17,11 +17,14 @@ from kups.core.neighborlist import (
     AdaptiveNeighborList,
     AllDenseNearestNeighborList,
     CellListNeighborList,
+    CellScanNeighborList,
     DenseNearestNeighborList,
     NeighborListCandidate,
     SelectableNeighborList,
+    adaptive,
     all_dense_cost,
     cell_list_cost,
+    cell_scan_cost,
     dense_cost,
 )
 from kups.core.result import as_result_function
@@ -48,6 +51,16 @@ class TestDefaultCostFunctions:
     def test_all_dense_invalid_for_multiple_systems(self):
         assert all_dense_cost(100, 2) == math.inf
         assert math.isfinite(all_dense_cost(100, 1))
+
+    def test_cell_scan_only_with_triton(self, monkeypatch):
+        monkeypatch.setattr(adaptive, "triton_available", lambda: False)
+        assert cell_scan_cost(1_000, 1) == math.inf
+        monkeypatch.setattr(adaptive, "triton_available", lambda: True)
+        assert cell_scan_cost(1_000, 1) < dense_cost(1_000, 1)
+        assert cell_scan_cost(1_000, 1) < cell_list_cost(1_000, 1)
+        assert dense_cost(512, 1) < cell_scan_cost(512, 1)
+        # batches spread the fixed cost
+        assert cell_scan_cost(16 * 512, 16) < dense_cost(16 * 512, 16)
 
     def test_all_dense_ties_dense_for_single_system(self):
         # Tie -> the earlier (dense) entry wins in dispatch.
@@ -197,3 +210,45 @@ class TestAdaptiveNeighborList:
         result.raise_assertion()
         assert result.value.edges.indices.shape == (0, 2)
         assert result.value.is_minimum_image.shape == (0,)
+
+
+def test_appended_cell_scan_pair_candidates_match_cell_list():
+    """Cell scan appended to the adaptive set yields the cell list's pair candidates."""
+    state = make_adaptive_state(2, 1)
+    state = replace(
+        state,
+        neighborlist_params=replace(
+            state.neighborlist_params, avg_edges=32, avg_image_candidates=256
+        ),
+    )
+    particles = make_lh(
+        jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), jnp.zeros(2, dtype=int)
+    )
+    systems, cutoffs = make_systems(
+        PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
+    )
+    adaptive = AdaptiveNeighborList.from_state(state, cutoffs)
+    scan = replace(CellScanNeighborList.from_state(state, cutoffs), stencil_radius=2)
+
+    def pairs(implementations):
+        nl = AdaptiveNeighborList(implementations)
+        result = jax.jit(
+            as_result_function(
+                lambda p, s: nl.pair_candidates(p, s, inclusion=True, exclusion=True)
+            )
+        )(particles, systems)
+        result.raise_assertion()
+        batch = result.value
+        edges, shifts = batch.edges.indices, batch.edges.shifts[:, 0]
+        valid = edges.valid_mask.all(-1)
+        return {
+            (*map(int, e), *map(int, s), bool(m))
+            for e, s, m in zip(
+                edges.raw_indices[valid], shifts[valid], batch.is_minimum_image[valid]
+            )
+        }
+
+    cell_list = adaptive.implementations[1]
+    expected = pairs((cell_list,))
+    assert len(expected) == 24  # 6 self images per atom, 6 images per pair direction
+    assert pairs((cell_list, NeighborListCandidate(scan, _always_cheapest))) == expected
