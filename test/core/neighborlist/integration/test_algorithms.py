@@ -87,7 +87,6 @@ class TestNearestNeighborListImplementations:
                         avg_edges=FixedCapacity(edges),
                         cells=FixedCapacity(cells),
                         cutoffs=cutoffs,
-                        stencil_radius=2,  # small-cell cases: cutoff up to 2 cell widths
                     )
                 ),
                 "name": "cell_scan",
@@ -847,9 +846,7 @@ class TestNearestNeighborListImplementations:
     def test_no_replication_with_infinite_cutoff(self, neighbor_list_impl):
         """Verify no periodic images are generated when cutoff is infinite."""
         if neighbor_list_impl["name"] == "cell_scan":
-            pytest.skip(
-                "CellScanNeighborList needs a finite cutoff (cells of cutoff width)"
-            )
+            pytest.skip("CellScanNeighborList needs finite cutoffs on periodic axes")
         result = self._run_neighbor_search_test(
             neighbor_list_impl,
             positions=jnp.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]]),
