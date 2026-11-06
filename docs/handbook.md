@@ -76,10 +76,12 @@ state_lens = identity_lens(MdState)
 potential, cutoff = config.potential.build(
     state_lens, POSITIONS_AND_CELL, particles, systems
 )
-propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+evaluate_forces, propagator = make_md_propagator(
+    state_lens, config.md.integrator, potential
+)
 ```
 
-For the LJ backend, `build` delegates to [make_lennard_jones_row_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_row_from_state], wiring particles, systems, the skin list, and the LJ parameters through the state lens and returning the cutoff the skin list serves. The potential reads the skin list through [read_skin_list][kups.core.neighborlist.read_skin_list] and evaluates LJ over its neighbor rows. It checks the skin list at every force evaluation, rebuilds it when a pair may be missing, and returns a patch that stores the list it read. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator] that applies this patch with the forces, the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] that keeps the skin list when a step fails, inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
+For the LJ backend, `build` delegates to [make_lennard_jones_row_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_row_from_state], wiring particles, systems, the skin list, and the LJ parameters through the state lens and returning the cutoff the skin list serves. The potential reads the skin list through [read_skin_list][kups.core.neighborlist.read_skin_list] and evaluates LJ over its neighbor rows. It checks the skin list at every force evaluation, rebuilds it when a pair may be missing, and returns a patch that stores the list it read. [make_md_propagator][kups.application.md.simulation.make_md_propagator] returns the force evaluation, a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator] that applies this patch with the forces, and the MD step, which composes the integrator's momentum and position steps around that evaluation with a step counter inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator]. Each comes in a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] that keeps the skin list when it fails.
 
 **State construction.** Read a standard file, build the two tables, seed the rest from them.
 
@@ -93,10 +95,11 @@ state = MdState.create(particles, systems, cutoff, config.md.skin)
 **Running.** The loop lives on the host side.
 
 ```python
+state = propagate_and_fix(make_cycle_function(evaluate_forces), next(chain), state)
 state = run_md(next(chain), propagator, state, config.run)
 ```
 
-`run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
+The state starts without forces, so they are evaluated once before the first step. `run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
 
 ## Where to go next
 
