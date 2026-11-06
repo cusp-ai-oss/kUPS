@@ -42,6 +42,16 @@ class IsEwaldPointData(HasCharges, NeighborListPoints, Protocol):
     """Particle data required by Ewald: charges, positions, system/inclusion/exclusion indices."""
 
 
+class IsEwaldScreening(Protocol):
+    """Per-system split of the Coulomb sum into real and reciprocal space."""
+
+    @property
+    def alpha(self) -> Table[SystemId, Array]: ...
+
+    @property
+    def cutoff(self) -> Table[SystemId, Array]: ...
+
+
 @dataclass
 class EwaldParameters:
     """Per-system cutoffs and reciprocal shifts prepared before evaluation.

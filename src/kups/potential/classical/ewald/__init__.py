@@ -13,6 +13,7 @@ from .parameters import (
     EwaldParameterEstimates,
     EwaldParameters,
     IsEwaldPointData,
+    IsEwaldScreening,
     ReciprocalGridBound,
     estimate_ewald_parameters,
     kvecs_from_kmax,
@@ -20,7 +21,14 @@ from .parameters import (
     reciprocal_grid_index,
     reciprocal_grid_shifts,
 )
-from .pme import PMEInput, PMEParameters, estimate_pme_mesh, pme_long_range_energy
+from .pme import (
+    PMEInput,
+    PMEParameters,
+    estimate_pme_mesh,
+    make_pme_long_range_potential,
+    make_pme_potential,
+    pme_long_range_energy,
+)
 from .potential import (
     TO_STANDARD_UNITS,
     EwaldCache,
@@ -55,6 +63,7 @@ __all__ = [
     "EwaldParameterEstimates",
     "EwaldParameters",
     "IsEwaldPointData",
+    "IsEwaldScreening",
     "estimate_ewald_parameters",
     "kvecs_from_kmax",
     "reciprocal_grid_bound",
@@ -82,6 +91,8 @@ __all__ = [
     "PMEInput",
     "PMEParameters",
     "estimate_pme_mesh",
+    "make_pme_long_range_potential",
+    "make_pme_potential",
     "pme_long_range_energy",
     "make_ewald_exclusion_correction_potential",
     "make_ewald_short_range_potential",
