@@ -34,6 +34,13 @@ EXPECTED_DIR = SCRIPT_DIR / "expected"
 DEFAULT_TOLERANCE_SIGMAS = 5.0
 N_BLOCKS = 5
 
+# Expected values that a case and its variants are not validated against. The
+# NVE total energy is the energy MD conserves plus u(rc) for each pair within
+# the Lennard-Jones cutoff. Its mean follows the number of these pairs, which
+# changes too slowly for the block SEMs; validate_nve_physics.py checks the
+# conserved energy instead.
+NOT_VALIDATED: dict[str, tuple[str, ...]] = {"md_nve_lj_argon": ("total_energy",)}
+
 CLI_COMMANDS: dict[str, str] = {
     "md": "kups_md",
     "nvt": "kups_mcmc_rigid",
@@ -208,6 +215,10 @@ def main() -> int:
         if "reference" in spec:
             with open(EXPECTED_DIR / f"{spec['reference']}.yaml") as f:
                 spec["observables"] = yaml.safe_load(f)["observables"]
+        skipped = NOT_VALIDATED.get(spec.get("reference", expected_file.stem), ())
+        for key in skipped:
+            spec["observables"].pop(key, None)
+        spec["not_validated"] = skipped
         specs.append((expected_file.stem, spec))
 
     # Run all simulations in parallel
@@ -243,6 +254,8 @@ def main() -> int:
             hdf5_path, spec["simulation_type"], spec.get("observables", {})
         ):
             all_pass = False
+        for key in spec["not_validated"]:
+            print(f"  - {key}: not validated")
 
     return 0 if all_pass else 1
 
