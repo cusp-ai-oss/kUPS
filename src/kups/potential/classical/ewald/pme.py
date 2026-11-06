@@ -16,19 +16,38 @@ from typing import Any, Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
+import scipy.optimize
 from jax import Array
 
-from kups.core.cell import Periodic3D
+from kups.core.cell import Cell, Periodic3D
 from kups.core.data import Table
 from kups.core.patch import IdPatch, WithPatch
 from kups.core.potential import Energy
-from kups.core.typing import DTypeLike, HasCell, SystemId
-from kups.core.utils.jax import dataclass, field, jit
+from kups.core.typing import DTypeLike, HasCell, ParticleId, SystemId
+from kups.core.utils.jax import dataclass, field, jit, no_jax_tracing
 from kups.core.utils.segment import segment_sum
 from kups.potential.common.graph import GraphPotentialInput
 
-from .parameters import IsEwaldPointData
+from .parameters import IsEwaldPointData, estimate_ewald_parameters
 from .potential import TO_STANDARD_UNITS, _influence
+
+# a_m of the P3M force error estimate per spline order, Deserno and Holm, J. Chem.
+# Phys. 109, 7694 (1998), for ik differentiation and the optimal influence function
+_P3M_ERROR_COEFFICIENTS = {
+    4: (1 / 4320, 3 / 1936, 7601 / 2271360, 143 / 28800),
+    6: (
+        691 / 68140800,
+        13 / 57600,
+        47021 / 35512320,
+        9694607 / 2095994880,
+        733191589 / 59609088000,
+        326190917 / 11700633600,
+    ),
+}
+# PME's RMS force error per order: the P3M estimate with (h alpha)^(p-1) instead of
+# (h alpha)^p, times a pair factor, and each charge's self force times a self factor,
+# added in quadrature; the factors bound direct-Ewald errors of random systems
+_PME_ERROR_FACTORS = {4: (1.8, 1.3), 6: (1.6, 1.0)}
 
 
 @dataclass
@@ -55,6 +74,136 @@ class PMEParameters:
                 "PME needs an even spline order of at most the mesh size; got order "
                 f"{self.order} and mesh {self.mesh}."
             )
+
+    @classmethod
+    @no_jax_tracing
+    def make(
+        cls,
+        charges: Table[ParticleId, IsEwaldPointData],
+        cell: Table[SystemId, HasCell[Periodic3D]],
+        epsilon_total: float = 1e-8,
+        real_cutoff: float | None = None,
+        *,
+        reciprocal_dtype: DTypeLike = jnp.float64,
+    ) -> PMEParameters:
+        """Estimate screening, cutoffs, mesh and spline order for each system.
+
+        Screening and cutoffs follow ``estimate_ewald_parameters``. The mesh is about
+        as accurate as the direct sum at the estimated ``k_max``; the order is the
+        cheaper of 4 and 6, and the mesh is the per-axis maximum over systems.
+
+        Args:
+            charges: Particle table with charges and system assignments.
+            cell: System table with periodic cells.
+            epsilon_total: Target combined real-space and reciprocal-space error.
+            real_cutoff: Optional fixed real-space cutoff in Å.
+            reciprocal_dtype: Precision of the charge mesh and its FFT.
+
+        Returns:
+            Parameters whose mesh meets the target in every system.
+        """
+        system = np.asarray(charges.data.system.indices_in(cell.keys))
+        values = np.asarray(charges.data.charges)
+        cells = [cell.data.cell[i] for i in range(cell.size)]
+        estimates = [
+            estimate_ewald_parameters(
+                values[system == i],
+                c,
+                real_cutoff=real_cutoff,
+                epsilon_total=epsilon_total,
+            )
+            for i, c in enumerate(cells)
+        ]
+
+        def mesh(order: int) -> tuple[int, int, int]:
+            sizes = [
+                estimate_pme_mesh(values[system == i], c, e.alpha, e.k_max, order)
+                for i, (c, e) in enumerate(zip(cells, estimates, strict=True))
+            ]
+            mx, my, mz = np.max(sizes, axis=0).tolist()
+            return mx, my, mz
+
+        def cost(order: int) -> float:
+            points = np.prod(mesh(order))
+            n_particles = np.sum(system < cell.size)
+            return n_particles * order**3 + cell.size * points * np.log2(points)
+
+        order = min(_PME_ERROR_FACTORS, key=cost)
+        return cls(
+            alpha=cell.set_data(jnp.asarray([e.alpha for e in estimates])),
+            cutoff=cell.set_data(jnp.asarray([e.real_cutoff for e in estimates])),
+            mesh=mesh(order),
+            order=order,
+            reciprocal_dtype=reciprocal_dtype,
+        )
+
+
+@no_jax_tracing
+def estimate_pme_mesh(
+    charges: Array | np.ndarray,
+    cell: Cell[Periodic3D],
+    /,
+    alpha: float,
+    k_max: float,
+    order: int,
+) -> tuple[int, int, int]:
+    """Smallest 2-3-5 mesh about as accurate as the direct sum cut at ``k_max``.
+
+    Both are RMS force errors: the direct sum's from Kolafa and Perram (1992), the
+    mesh's from the P3M estimate of Deserno and Holm (1998), fitted to PME.
+
+    Args:
+        charges: Charges in e of one system, ``(n_particles,)``.
+        cell: Its periodic cell.
+        alpha: Screening parameter in 1/Å.
+        k_max: Reciprocal cutoff of the direct sum in 1/Å.
+        order: Spline order, 4 or 6.
+
+    Returns:
+        Mesh points along each cell vector, each at least ``order``.
+    """
+    q = np.asarray(charges, np.float64)
+    widths = np.asarray(cell.perpendicular_lengths).reshape(3)
+    if not np.any(q):
+        return order, order, order
+    volume = float(np.asarray(cell.volume).squeeze())
+    length = volume ** (1 / 3)
+    pair = q @ q / np.sqrt(q.size)
+    decay = np.exp(-(k_max**2) / (4 * alpha**2))
+    target = pair * alpha * np.sqrt(8 / (volume * k_max)) * decay
+    pair_factor, self_factor = _PME_ERROR_FACTORS[order]
+    scale = np.hypot(
+        pair_factor * pair * np.sqrt(alpha * length * np.sqrt(2 * np.pi)) / length**2,
+        self_factor * np.sqrt(np.mean(q**4)) * alpha**2,
+    )
+
+    def error(spacing: float) -> float:
+        x = spacing * alpha
+        series = sum(
+            a * x ** (2 * m) for m, a in enumerate(_P3M_ERROR_COEFFICIENTS[order])
+        )
+        return scale * x ** (order - 1) * np.sqrt(series)
+
+    # the error grows with the spacing; the coarsest mesh has ``order`` points
+    spacing = widths.min() / order
+    if error(spacing) > target:
+        spacing = scipy.optimize.brentq(
+            lambda h: np.log(error(h) / target), 1e-9 * spacing, spacing
+        )
+    mx, my, mz = (_next_2_3_5(max(order, int(np.ceil(w / spacing)))) for w in widths)
+    return mx, my, mz
+
+
+def _next_2_3_5(n: int) -> int:
+    """Smallest integer of at least ``n`` without prime factors above 5."""
+    while True:
+        rest = n
+        for prime in (2, 3, 5):
+            while rest % prime == 0:
+                rest //= prime
+        if rest == 1:
+            return n
+        n += 1
 
 
 type PMEInput = GraphPotentialInput[
