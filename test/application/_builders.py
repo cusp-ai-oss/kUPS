@@ -1,8 +1,9 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Builders shared by the application tests: CI argon settings, potentials over the
-skin list, MD states with their step, and a small exported model."""
+"""Builders shared by the application tests: CI argon settings, input files,
+potentials over the skin list, MD states with their step, and a small exported
+model."""
 
 import json
 import zipfile
@@ -10,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import ase
+import ase.build
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -61,6 +63,54 @@ def md_parameters(integrator: str, skin: float = 0.3) -> MdParameters:
         initialize_momenta=True,
         skin=skin,
     )
+
+
+def argon(n: int, seed: int) -> ase.Atoms:
+    """Rattled fcc argon of ``n`` cubic cells per axis."""
+    atoms = ase.build.bulk("Ar", "fcc", a=5.3, cubic=True) * (n, n, n)
+    atoms.rattle(0.1, seed=seed)
+    return atoms
+
+
+def write_cif(atoms: ase.Atoms, path: Path) -> Path:
+    """Write ``atoms`` as a P1 CIF labeled by element, as LJ parameters are keyed,
+    with ``atoms.info["_atom_site_charge"]`` as a charge column if set.
+
+    ``particles_from_ase`` caches by path and kups_md donates the cached arrays, so
+    every run needs new files.
+    """
+    a, b, c, alpha, beta, gamma = atoms.cell.cellpar()
+    rows = [
+        f"{symbol} {symbol} {x:.12f} {y:.12f} {z:.12f}"
+        for symbol, (x, y, z) in zip(
+            atoms.get_chemical_symbols(), atoms.get_scaled_positions(wrap=False)
+        )
+    ]
+    columns = "_atom_site_fract_z"
+    charges = atoms.info.get("_atom_site_charge")
+    if charges is not None:
+        rows = [f"{row} {q:.6f}" for row, q in zip(rows, charges, strict=True)]
+        columns += "\n_atom_site_charge"
+    lines = "\n".join(rows)
+    path.write_text(
+        f"""data_input
+_cell_length_a {a:.12f}
+_cell_length_b {b:.12f}
+_cell_length_c {c:.12f}
+_cell_angle_alpha {alpha:.12f}
+_cell_angle_beta {beta:.12f}
+_cell_angle_gamma {gamma:.12f}
+_symmetry_space_group_name_H-M 'P 1'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+{columns}
+{lines}
+"""
+    )
+    return path
 
 
 def graph_lj(factory) -> Build:

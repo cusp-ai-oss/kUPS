@@ -84,12 +84,19 @@ class LoggingFrequency(Protocol):
         ...
 
 
+@dataclass
 class Once(LoggingFrequency):
-    """Logs data only at step 0, creating scalar datasets without time dimension."""
+    """Logs data once, creating scalar datasets without time dimension.
+
+    Args:
+        step: The step to log at.
+    """
+
+    step: int = 0
 
     @override
     def should_log(self, step: int) -> bool:
-        return step == 0
+        return step == self.step
 
     @override
     def leading_shape(self, total_steps: int) -> tuple[int, ...]:
@@ -106,22 +113,24 @@ class EveryNStep(LoggingFrequency):
 
     Args:
         n: The interval between logging steps (e.g., n=10 logs at steps 0, 10, 20, ...).
+        start: The first step to log at (e.g., n=10, start=9 logs at steps 9, 19, ...).
     """
 
     n: int
+    start: int = 0
 
     @override
     def should_log(self, step: int) -> bool:
-        return step % self.n == 0
+        return step >= self.start and (step - self.start) % self.n == 0
 
     @override
     def leading_shape(self, total_steps: int) -> tuple[int, ...]:
-        num_logged = (total_steps + self.n - 1) // self.n
+        num_logged = max(total_steps - self.start + self.n - 1, 0) // self.n
         return (num_logged,)
 
     @override
     def dataset_index(self, step: int) -> Index:
-        return step // self.n
+        return (step - self.start) // self.n
 
 
 _DEFAULT_CHUNK_BYTES = 1 << 22  # ~4 MiB; chunk- and batch-sizing target
@@ -167,9 +176,11 @@ class Compression:
 
         Returns:
             Keyword arguments for ``create_dataset`` (chunks, compression,
-            shuffle); empty for scalar datasets, which are stored uncompressed.
+            shuffle); empty for scalar and empty datasets, which are stored
+            uncompressed.
         """
-        if not leading_dims + shape:  # scalar: cannot chunk or compress
+        dims = leading_dims + shape
+        if not dims or 0 in dims:  # scalar or empty: cannot chunk or compress
             return {}
         kwargs: dict[str, Any] = {
             "chunks": self._chunk_shape(leading_dims, shape, itemsize),
@@ -261,8 +272,9 @@ class HDF5StorageWriter[State, WriterConfig]:
                 writer.log(state, step)
         ```
 
-    The writer opens the file and starts a background I/O thread on ``__enter__``,
-    and flushes, records ``actual_steps``, and closes the file on ``__exit__``.
+    The writer opens the file, records ``total_steps`` and starts a background I/O
+    thread on ``__enter__``, and flushes, records ``actual_steps``, and closes the
+    file on ``__exit__``.
 
     The background thread buffers each group's steps and writes them in contiguous
     blocks to amortise per-write overhead (the dominant cost of single-step writes).
@@ -295,12 +307,14 @@ class HDF5StorageWriter[State, WriterConfig]:
     _actual_steps: int = field(init=False, default=0, repr=False)
 
     def __enter__(self) -> Self:
-        """Open the file, create datasets, and start the background writer thread.
+        """Open the file, record ``total_steps``, create datasets, and start the
+        background writer thread.
 
         Returns:
             The writer, for use within the ``with`` block.
         """
         self._file = h5py.File(self.out_path, "w", libver="latest")
+        self._file.attrs["total_steps"] = self.total_steps
         self._group_writers = _init_group_writers(
             self._file,
             self.config,

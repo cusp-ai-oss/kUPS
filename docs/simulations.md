@@ -45,6 +45,26 @@ potential:
     precision: 1.e-6
 ```
 
+**Output:** `run.out_file` is an HDF5 file with four groups. `step` holds the energies, stress and volume of each system every `run.thermo_every` steps; `frames` holds positions (wrapped into the cell), momenta and cells every `run.frames_every` steps; `init` and `final` hold the particle and system tables after the first and the last block. `run.num_steps` and both intervals are multiples of `run.block_size`, the steps fused per dispatch; the intervals default to it. Rows and frames are taken at the end of each interval and carry their MD step, warmup included. Particles keep the input order.
+
+```yaml
+run:
+  block_size: 10
+  thermo_every: 10   # energies every 10 steps
+  frames_every: 500  # positions and momenta every 500 steps
+```
+
+```python
+from kups.application.md.logging import MDLoggedData
+from kups.core.constants import FEMTO_SECOND
+from kups.core.storage import HDF5StorageReader
+
+with HDF5StorageReader[MDLoggedData]("md_nvt_lj_argon.h5") as reader:
+    frames = reader.focus_group(lambda s: s.frames)[:]
+    masses = reader.focus_group(lambda s: s.init).read(select=lambda d: d.atoms.data.masses)
+velocities = frames.momenta / masses[:, None] * FEMTO_SECOND  # Å/fs
+```
+
 ## Geometry Optimization
 
 Relax atomic positions (and optionally lattice vectors) to a local energy minimum with `kups_relax`. The force field is selected by the `potential.backend` field:

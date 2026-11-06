@@ -99,6 +99,13 @@ class TestLoggingFrequencies:
         assert freq.leading_shape(100) == ()
         assert freq.dataset_index(0) is ...
 
+    def test_once_at_step(self):
+        """Once(step) logs only at that step."""
+        freq = Once(3)
+        assert [i for i in range(10) if freq.should_log(i)] == [3]
+        assert freq.leading_shape(10) == ()
+        assert freq.dataset_index(3) is ...
+
     def test_every_n_step(self):
         """EveryNStep: should_log, leading_shape, dataset_index."""
         freq = EveryNStep(n=5)
@@ -116,6 +123,15 @@ class TestLoggingFrequencies:
         assert freq.dataset_index(0) == 0
         assert freq.dataset_index(5) == 1
         assert freq.dataset_index(10) == 2
+
+    @pytest.mark.parametrize("total", [3, 4, 9, 10, 11])
+    def test_every_n_step_from_start(self, total: int):
+        """EveryNStep(n, start) logs at start, start + n, ... into consecutive rows."""
+        freq = EveryNStep(n=5, start=4)
+        logged = [i for i in range(total) if freq.should_log(i)]
+        assert logged == list(range(4, total, 5))
+        assert freq.leading_shape(total) == (len(logged),)
+        assert [freq.dataset_index(i) for i in logged] == list(range(len(logged)))
 
 
 class TestHDF5StorageWriter:
@@ -204,6 +220,25 @@ class TestHDF5StorageWriter:
 
         with h5py.File(temp_file, "r") as f:
             assert f.attrs["actual_steps"] == 5
+            assert f.attrs["total_steps"] == 10
+
+    def test_group_due_at_no_step(self, simple_state, temp_file):
+        """A group whose first step lies beyond the run gets empty datasets."""
+        writer = HDF5StorageWriter(
+            temp_file,
+            WriterGroupConfig(
+                view=view(lambda s: {"pos": s.position}),
+                logging_frequency=EveryNStep(10, start=9),
+            ),
+            simple_state,
+            total_steps=5,
+        )
+        with writer:
+            for i in range(5):
+                writer.log(simple_state, i)
+
+        with HDF5StorageReader(temp_file) as reader:
+            assert reader.focus_group("group")[:]["pos"].shape == (0, 3)
 
 
 class TestHDF5StorageReader:

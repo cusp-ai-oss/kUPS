@@ -31,6 +31,7 @@ ARGON_MASS_AMU = 39.948  # Atomic mass of argon
 
 
 def validate_energy_conservation(
+    steps: np.ndarray,
     total_energy: np.ndarray,
     n_atoms: int,
     max_drift_per_atom_per_step: float = 1e-8,
@@ -45,9 +46,6 @@ def validate_energy_conservation(
 
     These thresholds are appropriate for typical MD timesteps (1-2 fs).
     """
-    n_steps = len(total_energy)
-    steps = np.arange(n_steps)
-
     # Linear fit to detect drift
     coeffs = np.polyfit(steps, total_energy, 1)
     slope = float(coeffs[0])
@@ -214,6 +212,7 @@ def main() -> int:
     positions = np.asarray(init_data.atoms.data.positions)
     dof = float(3 * positions.shape[0] - 3)
     lattice = np.asarray(init_data.systems.data.cell.vectors[0])
+    steps = np.asarray(step_data.step).flatten()
     potential_energy = np.asarray(step_data.potential_energy).flatten()
     kinetic_energy = np.asarray(step_data.kinetic_energy).flatten()
     stress_tensor = np.asarray(step_data.stress_tensor).reshape(-1, 3, 3)
@@ -236,7 +235,9 @@ def main() -> int:
     all_passed = True
 
     # 1. Energy conservation
-    passed, info = validate_energy_conservation(total_energy, n_atoms, args.max_drift)
+    passed, info = validate_energy_conservation(
+        steps, total_energy, n_atoms, args.max_drift
+    )
     status = "PASS" if passed else "FAIL"
     print(f"1. Energy Conservation: {status}")
     print(

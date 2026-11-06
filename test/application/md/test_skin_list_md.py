@@ -7,7 +7,6 @@ the graph path of the MLFF backends and through LJ's neighbor rows."""
 from functools import partial
 
 import ase
-import ase.build
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,18 +25,13 @@ from kups.potential.mliap.tojax import TojaxedMliap
 from .._builders import (
     ROWS,
     Build,
+    argon,
     graph_lj,
     md_parameters,
     md_tables,
     state_and_step,
     write_pair_model,
 )
-
-
-def _argon(n: int, seed: int) -> ase.Atoms:
-    atoms = ase.build.bulk("Ar", "fcc", a=5.3, cubic=True) * (n, n, n)
-    atoms.rattle(0.1, seed=seed)
-    return atoms
 
 
 def _rows(dtype: str = "float64") -> Build:
@@ -81,7 +75,7 @@ def test_trajectory_matches_per_step_builds(integrator):
     """Two systems; the 15.9 Å one is narrower than twice the cutoff, so pairs
     appear through several images. A small skin makes rebuilds frequent, and only
     the runs that read the list rebuild it."""
-    atoms = [_argon(4, 0), _argon(3, 1)]
+    atoms = [argon(4, 0), argon(3, 1)]
     per_step, *skin = (
         _run(md_parameters(integrator), build, atoms, reads_the_list=reads_the_list)
         for build, reads_the_list in _paths()
@@ -115,7 +109,7 @@ def test_margin_is_checked_where_forces_are_evaluated():
 def test_float32_rows_follow_float64(row_kernel):
     """Float32 pair terms, in the Pallas kernel or in XLA, stay within float32
     round-off of float64 over a block."""
-    md, atoms = md_parameters("baoab_langevin"), [_argon(3, 0), _argon(2, 1)]
+    md, atoms = md_parameters("baoab_langevin"), [argon(3, 0), argon(2, 1)]
     float64, float32 = (
         _run(md, _rows(dtype), atoms, reads_the_list=True, blocks=1)
         for dtype in ("float64", "float32")
@@ -130,7 +124,7 @@ def test_failed_step_keeps_the_skin_list():
     except for the list."""
     md = md_parameters("verlet").model_copy(update={"initialize_momenta": False})
     build = graph_lj(SkinNeighborList.from_state)
-    state, step = state_and_step(md, build, *md_tables(md, [_argon(3, 0)]))
+    state, step = state_and_step(md, build, *md_tables(md, [argon(3, 0)]))
     masses = state.particles.data.masses[:, None]
     time_step = state.systems.data.integrator_params.time_step[0]
     # Every atom moves by twice the skin, so the force evaluation rebuilds the list.
@@ -161,7 +155,7 @@ def test_tojax_config_reads_the_skin_list(tmp_path):
         neighborlist_factory=AdaptiveNeighborList.from_state,
     )
     config = TojaxPotentialConfig(model_path=path)
-    md, atoms = md_parameters("baoab_langevin"), [_argon(3, 0)]
+    md, atoms = md_parameters("baoab_langevin"), [argon(3, 0)]
     reference = _run(
         md, lambda *_: (per_step, model.cutoff), atoms, reads_the_list=False, blocks=4
     )
