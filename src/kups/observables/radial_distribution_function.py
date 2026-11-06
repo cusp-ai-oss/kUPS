@@ -115,6 +115,8 @@ def radial_distribution_function(
         rmax: Maximum distance to consider (cutoff radius).
         bins: Number of histogram bins for $g(r)$.
         neighborlist: Cutoff-bound neighbor list algorithm for finding pairs.
+            The patch it returns is discarded, so any cache it refreshes is not
+            stored.
 
     Returns:
         RDF array, shape `(n_systems, bins)`. The $r$-values for each bin are
@@ -126,7 +128,7 @@ def radial_distribution_function(
         - Assumes uniform density within each system
     """
     nnl_positions = _to_nnlist_points(positions)
-    edge_result = neighborlist(nnl_positions, systems)
+    edge_result = neighborlist(nnl_positions, systems).data
     diffs = edge_result.difference_vectors(positions, systems)
     dists = jnp.linalg.norm(diffs, axis=(-2, -1))
     dr = rmax / bins

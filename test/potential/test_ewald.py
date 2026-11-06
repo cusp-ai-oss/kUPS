@@ -139,7 +139,7 @@ def _build_neighborlist(particles, systems, n_particles):
     @jax.jit
     @as_result_function
     def nn_search(neighborlist: AllDenseNearestNeighborList):
-        return neighborlist(particles, systems)
+        return neighborlist(particles, systems).data
 
     # avg_edges is per-particle; total = avg_edges * n_particles.
     # Using n_particles gives total = n_particles^2, sufficient for dense lists.

@@ -6,6 +6,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.testing as npt
 import pytest
 
 from kups.core.capacity import FixedCapacity
@@ -17,11 +18,14 @@ from kups.core.neighborlist.dense import DenseNearestNeighborList
 from kups.core.typing import GroupId, MotifId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass
 from kups.potential.classical.blocking import (
+    BlockingSpheresNeighborListFactory,
     BlockingSpheresParameters,
     BlockingSpheresPotentialInput,
     BlockingSpheresSumComposer,
     blocking_spheres_energy,
 )
+
+from ._marking import MarkingNeighborList, applied_marks
 
 
 @dataclass
@@ -464,7 +468,8 @@ class TestBlockingSpheresParametersFromData:
 
 
 class TestBlockingSpheresSumComposer:
-    """The composer must block a sphere host that sits behind a sphere-free system."""
+    """The composer must block a sphere host that sits behind a sphere-free system,
+    and it forwards the patch of the list it reads."""
 
     @dataclass
     class _Sphere:
@@ -475,7 +480,9 @@ class TestBlockingSpheresSumComposer:
     class _System:
         cell: PeriodicCell
 
-    def _energies(self, sphere_system: int) -> jax.Array:
+    def _composer(
+        self, sphere_system: int, neighborlist: BlockingSpheresNeighborListFactory
+    ):
         n_sys = 2
         positions = jnp.array([[5.0, 5.0, 5.0]] * n_sys)
         particles = _make_particles(positions, list(range(n_sys)), list(range(n_sys)))
@@ -485,13 +492,7 @@ class TestBlockingSpheresSumComposer:
         data = [[[]] for _ in range(n_sys)]
         data[sphere_system] = [[self._Sphere((5.0, 5.0, 5.0), 2.0)]]
         parameters = BlockingSpheresParameters.from_data(data)
-
-        def neighborlist(cutoffs):
-            return DenseNearestNeighborList(
-                FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
-            )
-
-        composer = BlockingSpheresSumComposer(
+        return BlockingSpheresSumComposer(
             particles_view=lambda s: particles,
             groups_view=lambda s: groups,
             systems_view=lambda s: systems,
@@ -499,7 +500,14 @@ class TestBlockingSpheresSumComposer:
             neighborlist_view=lambda s: neighborlist,
             probe=None,
         )
-        (summand,) = composer(None, None)
+
+    def _energies(self, sphere_system: int) -> jax.Array:
+        def neighborlist(cutoffs):
+            return DenseNearestNeighborList(
+                FixedCapacity(8), FixedCapacity(8), FixedCapacity(8), cutoffs
+            )
+
+        (summand,) = self._composer(sphere_system, neighborlist)(None, None).data
         return blocking_spheres_energy(summand.inp).data.data
 
     @pytest.mark.parametrize("sphere_system", [0, 1])
@@ -507,3 +515,8 @@ class TestBlockingSpheresSumComposer:
         energies = self._energies(sphere_system)
         assert jnp.isinf(energies[sphere_system])
         assert jnp.isfinite(energies[1 - sphere_system])
+
+    def test_forwards_the_patch_of_its_list(self) -> None:
+        composer = self._composer(0, lambda cutoffs: MarkingNeighborList(1))
+        plan = composer(None, None)
+        npt.assert_array_equal(applied_marks(plan.patch, n_systems=2), [1, 1])

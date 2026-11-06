@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Protocol, overload
+from typing import Any, Literal, Protocol, overload
 
 import jax
 import jax.numpy as jnp
@@ -32,6 +32,7 @@ from kups.core.neighborlist.types import (
     NeighborListSystems,
     PipelineContext,
 )
+from kups.core.patch import IdPatch, WithPatch
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field, jit
 
@@ -307,7 +308,7 @@ class CellListNeighborList:
         # Or, if the state implements IsNeighborListState:
         nl = CellListNeighborList.from_state(state, identity_lens(State), cutoffs)
 
-        edges = nl(particles, systems)
+        edges = nl(particles, systems).data
         ```
     """
 
@@ -368,7 +369,7 @@ class CellListNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queries: Table[ParticleId, NeighborListPoints],
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
     @overload
     def __call__(
         self,
@@ -376,7 +377,7 @@ class CellListNeighborList:
         systems: Table[SystemId, NeighborListSystems],
         *,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]: ...
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]: ...
     @jit
     def __call__(
         self,
@@ -385,7 +386,8 @@ class CellListNeighborList:
         *,
         queries: Table[ParticleId, NeighborListPoints] | None = None,
         queried_keys: Index[ParticleId] | None = None,
-    ) -> Edges[Literal[2]]:
-        return build_radius_graph(
+    ) -> WithPatch[Edges[Literal[2]], IdPatch[Any]]:
+        edges = build_radius_graph(
             self, keys, systems, queries=queries, queried_keys=queried_keys
         )
+        return WithPatch(edges, IdPatch[Any]())

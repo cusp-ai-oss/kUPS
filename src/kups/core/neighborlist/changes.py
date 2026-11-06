@@ -51,7 +51,8 @@ def neighborlist_changes(
     edge indices into ``removed`` (before) and ``added`` (after) sets.
 
     Args:
-        neighborlist: Neighbor list implementation.
+        neighborlist: Neighbor list implementation. The patch it returns is
+            discarded, so any cache it refreshes is not stored.
         lh: Full original particle table.
         rh: Proposed changes — ``rh.indices`` maps entries to particle IDs
             in ``lh``, ``rh.data`` holds the new particle data.
@@ -73,7 +74,7 @@ def neighborlist_changes(
     queried_keys = Index.concatenate(rh.indices, rh.data.index, shift_keys=True)
 
     # single neighborlist call
-    all_edges = neighborlist(keys_combined, systems, queried_keys=queried_keys)
+    all_edges = neighborlist(keys_combined, systems, queried_keys=queried_keys).data
 
     # Each combined row stands for an ``lh`` particle: itself, or the one it replaces.
     targets = Index.concatenate(lh.index, rh.indices.update_labels(lh.keys))

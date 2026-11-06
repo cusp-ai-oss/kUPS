@@ -56,7 +56,7 @@ from kups.core.neighborlist import (
     NeighborList,
     NeighborListPoints,
 )
-from kups.core.patch import Accept, Patch, Probe, WithPatch
+from kups.core.patch import Accept, ComposedPatch, Patch, Probe, WithPatch
 from kups.core.potential import Energy, Potential, PotentialOut
 from kups.core.typing import (
     HasCell,
@@ -495,7 +495,7 @@ class LocalMLIAPComposer[
 
     def __call__(
         self, state: State, patch: Ptch | None
-    ) -> Sum[LocalMLIAPInput[State, P, S]]:
+    ) -> WithPatch[Sum[LocalMLIAPInput[State, P, S]], Patch[State]]:
         """Compose state and patch into LocalMLIAP input.
 
         Args:
@@ -503,7 +503,8 @@ class LocalMLIAPComposer[
             patch: Proposed changes (None for full computation)
 
         Returns:
-            Sum containing single LocalMLIAPInput summand
+            Sum containing single LocalMLIAPInput summand, and the patches of the
+            neighbor lists its graphs read, the old graph's first
         """
 
         radius_graph_constr = GraphConstructor(
@@ -516,21 +517,26 @@ class LocalMLIAPComposer[
         conf = self.model.get(state)
         cache_lens = self.model.focus(lambda x: x.cache)
         if patch is None:
-            graph = radius_graph_constr(state, None)
-            result = LocalMLIAPInput(pc, None, graph.edges, None, conf, cache_lens)
+            graph_result = radius_graph_constr(state, None)
+            inp = LocalMLIAPInput(
+                pc, None, graph_result.data.edges, None, conf, cache_lens
+            )
+            refreshed = graph_result.patch
         else:
             assert self.probe is not None
-            new_graph = radius_graph_constr(state, patch)
-            old_graph = radius_graph_constr(state, patch, old_graph=True)
-            result = LocalMLIAPInput(
+            new_result = radius_graph_constr(state, patch)
+            old_result = radius_graph_constr(state, patch, old_graph=True)
+            inp = LocalMLIAPInput(
                 pc,
                 self.probe(state, patch).particles,
-                new_graph.edges,
-                old_graph.edges,
+                new_result.data.edges,
+                old_result.data.edges,
                 conf,
                 cache_lens,
             )
-        return Sum(Summand(result))
+            # The new graph's patch goes last, so the cache it refreshed is stored.
+            refreshed = ComposedPatch((old_result.patch, new_result.patch))
+        return WithPatch(Sum(Summand(inp)), refreshed)
 
 
 def make_local_mliap_potential[

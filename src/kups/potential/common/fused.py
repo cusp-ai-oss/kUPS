@@ -763,7 +763,7 @@ class FusedInputConstructor[
         state: State,
         patch: Ptch | None,
         old_input: bool = False,
-    ) -> FusedPotentialInput[Params, P, Feat]:
+    ) -> WithPatch[FusedPotentialInput[Params, P, Feat], IdPatch[State]]:
         if patch is not None and self.probe is None:
             if not old_input:
                 systems = self.systems(state)
@@ -773,7 +773,7 @@ class FusedInputConstructor[
         particles = self.particles(state)
         cloud = PointCloud(particles, self.systems(state))
         if patch is None:
-            return FusedFullInput(params, cloud)
+            return WithPatch(FusedFullInput(params, cloud), IdPatch[State]())
         assert self.probe is not None
         update = self.probe(state, patch)
         old = particles.subset(update.indices)
@@ -782,13 +782,14 @@ class FusedInputConstructor[
             update.data, lambda index: index.apply_mask(update.indices.valid_mask)
         )
         new = Table(old.keys, data, _cls=old.cls)
-        return FusedLocalInput(
+        local = FusedLocalInput(
             params,
             cloud,
             (old if old_input else new,),
             update.indices,
             self.cell_table(state),
         )
+        return WithPatch(local, IdPatch[State]())
 
 
 def make_fused_potential[
