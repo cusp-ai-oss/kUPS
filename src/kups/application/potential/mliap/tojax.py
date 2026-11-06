@@ -21,6 +21,7 @@ from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     IsNeighborListState,
+    IsSkinListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
@@ -43,6 +44,10 @@ class IsTojaxedGraphState(
     Protocol,
 ):
     """Particles, systems, and neighbor list for a jaxified graph (no model)."""
+
+
+class IsTojaxedSkinListState(IsTojaxedGraphState, IsSkinListState, Protocol):
+    """:class:`IsTojaxedGraphState` whose pairs come from a skin list."""
 
 
 class IsTojaxedState(IsTojaxedGraphState, Protocol):
