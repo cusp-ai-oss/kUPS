@@ -125,7 +125,8 @@ def tojaxed_energy(
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     """Compute energy using a jaxified model.
 
-    Prepares graph data and calls the exported model.
+    Prepares graph data and calls the exported model, which runs in its own
+    precision; energies come back in the dtype of the positions.
 
     Args:
         inp: Graph potential input containing the jaxified model and graph data.
@@ -169,6 +170,7 @@ def tojaxed_energy(
         spin=jnp.zeros(n_sys),
     )
     energy = sequential_vmap_with_vjp(inp.parameters.call)(input_dict)
+    energy = energy.astype(graph.particles.data.positions.dtype)
     return WithPatch(
         graph.systems.set_data(energy[:-1]), IdPatch[Any]()
     )  # Remove padding

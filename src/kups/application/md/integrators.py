@@ -213,7 +213,8 @@ def make_md_step_from_state[State](
         integrator: String key selecting the integration algorithm.
         parameters: Constant integrator parameters. When given they are overlaid
             onto the systems view with a constant lens, so the state need not
-            carry ``integrator_params`` on each system.
+            carry ``integrator_params`` on each system. They are not cast; give
+            them in the float dtype of the state.
 
     Returns:
         [Propagator][kups.core.propagator.Propagator] that advances the
