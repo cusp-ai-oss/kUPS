@@ -71,7 +71,8 @@ def run(config: Config) -> RelaxState:
     Returns:
         The final state.
     """
-    key = jax.random.key(config.run.seed or time.time_ns())
+    seed = time.time_ns() if config.run.seed is None else config.run.seed
+    key = jax.random.key(seed)
     state_lens = identity_lens(RelaxState)
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
