@@ -7,6 +7,8 @@ For an NPT simulation with CSVR thermostat + stochastic cell rescaling barostat:
 3. Volume stability (no monotonic drift)
 4. Volume fluctuations (positive, bounded)
 5. Equipartition (KE per DOF = kT/2)
+6. Energy sanity (finite energies)
+7. Pressure (mean matches target)
 """
 
 from __future__ import annotations
@@ -14,11 +16,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import jax
 import numpy as np
 
+from kups.application.md.analysis import analyze_md_file
 from kups.application.md.logging import MDLoggedData
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.storage import HDF5StorageReader
+
+jax.config.update("jax_enable_x64", True)
 
 
 def validate_temperature_stability(
@@ -126,6 +132,27 @@ def validate_equipartition(
     }
 
 
+def validate_pressure(
+    mean: float,
+    target_pressure: float,
+    sem: float,
+    max_z: float = 4.0,
+) -> tuple[bool, dict]:
+    """Validate that mean pressure matches target within ``max_z`` standard errors.
+
+    ``sem`` comes from a reference run: one from the few blocks of a short run
+    would make ``z`` heavy-tailed and the check fail by chance.
+    """
+    z = (mean - target_pressure) / sem
+    return abs(z) < max_z, {
+        "mean_pressure": mean,
+        "sem": sem,
+        "target_pressure": target_pressure,
+        "z": z,
+        "max_z": max_z,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate NPT MD simulation against isobaric-isothermal ensemble properties"
@@ -137,6 +164,15 @@ def main() -> int:
         default=Path("md_npt_lj_argon.h5"),
     )
     parser.add_argument("--target-temperature", type=float, default=100.0)
+    parser.add_argument("--target-pressure", type=float, default=4.2e7, help="Pa")
+    parser.add_argument(
+        "--pressure-sem",
+        type=float,
+        default=5.8e6,
+        help="Pa; standard error of the mean pressure of this run, from a reference "
+        "run. The default is for the 5,000-step CSVR-NPT CI run: twice the 29 bar "
+        "SEM of its 20,000-step reference.",
+    )
     args = parser.parse_args()
 
     if not args.hdf5_path.exists():
@@ -156,11 +192,13 @@ def main() -> int:
 
     n_steps = len(potential_energy)
     temperature = 2 * kinetic_energy / (BOLTZMANN_CONSTANT * dof)
+    pressure = float(next(iter(analyze_md_file(args.hdf5_path).values())).pressure.mean)
 
     print(f"NPT Physics Validation: {args.hdf5_path.name}")
     print(f"  Atoms: {n_atoms}, Steps: {n_steps}, DOF: {dof}")
     print(f"  <V>: {np.mean(volume):.2f} A^3 (initial: {volume[0]:.2f} A^3)")
     print(f"  Target T: {args.target_temperature} K")
+    print(f"  Target P: {args.target_pressure / 1e5:.1f} bar")
     print()
 
     all_passed = True
@@ -227,6 +265,17 @@ def main() -> int:
         f"   <PE>: {np.mean(potential_energy):.4f} eV, <KE>: {np.mean(kinetic_energy):.4f} eV"
     )
     all_passed &= finite_ok
+
+    # 7. Pressure (kinetic plus virial, as the barostats use)
+    passed, info = validate_pressure(pressure, args.target_pressure, args.pressure_sem)
+    status = "PASS" if passed else "FAIL"
+    print(f"7. Pressure: {status}")
+    print(
+        f"   <P>: {info['mean_pressure'] / 1e5:.1f} +/- {info['sem'] / 1e5:.1f} bar "
+        f"(target: {info['target_pressure'] / 1e5:.1f} bar)"
+    )
+    print(f"   z: {info['z']:+.2f} (max: {info['max_z']:.0f})")
+    all_passed &= passed
 
     print()
     print(f"Overall: {'ALL TESTS PASSED' if all_passed else 'SOME TESTS FAILED'}")

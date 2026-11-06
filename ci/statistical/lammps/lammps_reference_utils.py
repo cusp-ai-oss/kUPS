@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from kups.core.constants import BAR
+from kups.core.constants import BAR, PASCAL
 from kups.core.utils.block_average import block_average
 
 jax.config.update("jax_enable_x64", True)
@@ -25,7 +25,7 @@ OUTPUT_DIR = ROOT / "outputs" / "reference"
 KUPS_EXPECTED_DIR = ROOT.parent / "expected"
 
 PRESSURE_COLUMN = "press_bar"
-CONFIG_PRESSURE_COLUMN = "pressure_config"
+PASCAL_PRESSURE_COLUMN = "press_pa"
 N_BLOCKS = 5
 
 CASES: dict[str, dict[str, Any]] = {
@@ -42,7 +42,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -50,7 +50,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
     },
@@ -67,7 +67,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -75,7 +75,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
     },
@@ -91,7 +91,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -99,7 +99,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
     },
@@ -115,7 +115,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -123,7 +123,7 @@ CASES: dict[str, dict[str, Any]] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press_pa": "pressure",
             "volume": "volume",
         },
     },
@@ -145,10 +145,8 @@ def analyze_output(path: Path) -> dict[str, dict[str, float]]:
     cols = arr.dtype.names or ()
     if PRESSURE_COLUMN not in cols:
         raise ValueError(f"{path} is missing required {PRESSURE_COLUMN!r} column")
-    kinetic_pressure = 2.0 * arr["ke"] / (3.0 * arr["volume"])
-    config_pressure = arr[PRESSURE_COLUMN] * BAR - kinetic_pressure
     series = {name: arr[name] for name in cols if name not in ("step", PRESSURE_COLUMN)}
-    series[CONFIG_PRESSURE_COLUMN] = config_pressure
+    series[PASCAL_PRESSURE_COLUMN] = arr[PRESSURE_COLUMN] * BAR / PASCAL
 
     return {name: block_stats(values, N_BLOCKS) for name, values in series.items()}
 

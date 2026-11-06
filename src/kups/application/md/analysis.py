@@ -9,12 +9,11 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
-import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
 from kups.application.md.logging import MDLoggedData
-from kups.core.constants import BOLTZMANN_CONSTANT
+from kups.core.constants import BOLTZMANN_CONSTANT, PASCAL
 from kups.core.data import Index, Table
 from kups.core.storage import HDF5StorageReader
 from kups.core.typing import HasPotentialEnergy, HasStressTensor, ParticleId, SystemId
@@ -23,6 +22,7 @@ from kups.core.utils.block_average import (
     block_average,
     optimal_block_average,
 )
+from kups.md.observables import instantaneous_pressure
 
 
 class _IsMDInitAtoms(Protocol):
@@ -61,7 +61,8 @@ class MDAnalysisResult:
         temperature: Average temperature with SEM (K).
         energy_drift: Linear drift rate of total energy (eV/step).
         energy_drift_per_atom: Energy drift normalized by number of atoms.
-        pressure: Average pressure with SEM (Pa).
+        pressure: Average pressure (kinetic plus virial, as the barostats use) with
+            SEM (Pa).
         volume: Average cell volume with SEM (A^3).
         n_atoms: Number of atoms in this system.
         n_steps: Number of simulation steps analyzed.
@@ -95,7 +96,7 @@ def _analyze_single_system(
         kinetic_energy: Total kinetic energy, shape ``(n_steps,)``.
         internal_kinetic_energy: Center-of-mass-projected kinetic energy used for
             the temperature, shape ``(n_steps,)``.
-        stress_tensor: Stress tensor, shape ``(n_steps, 3, 3)``.
+        stress_tensor: Virial stress (eV/Å³), shape ``(n_steps, 3, 3)``.
         volume: Cell volume, shape ``(n_steps,)``.
         n_atoms: Number of atoms in the system.
         n_blocks: Number of blocks, or ``None`` to auto-select from the pressure.
@@ -106,7 +107,7 @@ def _analyze_single_system(
     total_energy = potential_energy + kinetic_energy
     dof = 3 * n_atoms - 3
     temperature = 2 * internal_kinetic_energy / (BOLTZMANN_CONSTANT * dof)
-    pressure = jnp.trace(stress_tensor, axis1=-2, axis2=-1) / 3
+    pressure = instantaneous_pressure(kinetic_energy, stress_tensor, volume) / PASCAL
 
     if n_blocks is None:
         pressure_result = optimal_block_average(pressure)
@@ -147,7 +148,7 @@ def _analyze_md_systems(
         kinetic_energy: Total kinetic energy, shape ``(n_steps, n_systems)``.
         internal_kinetic_energy: Center-of-mass-projected kinetic energy, shape
             ``(n_steps, n_systems)``.
-        stress_tensor: Stress tensor, shape ``(n_steps, n_systems, 3, 3)``.
+        stress_tensor: Virial stress (eV/Å³), shape ``(n_steps, n_systems, 3, 3)``.
         volume: Cell volume, shape ``(n_steps, n_systems)``.
         n_blocks: Number of blocks, or ``None`` for automatic selection.
 
