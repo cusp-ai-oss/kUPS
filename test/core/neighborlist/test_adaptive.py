@@ -79,23 +79,30 @@ class TestAdaptiveNeighborList:
     def test_from_state_returns_adaptive(self):
         assert isinstance(self._nl(), AdaptiveNeighborList)
 
-    def test_seeds_three_implementations(self):
+    def test_seeds_four_implementations(self):
         nl = self._nl()
         types = {type(c.neighborlist) for c in nl.implementations}
         assert types == {
             DenseNearestNeighborList,
             CellListNeighborList,
             AllDenseNearestNeighborList,
+            CellScanNeighborList,
         }
 
     def test_chooses_dense_for_small(self):
         assert isinstance(self._nl()._choose(64, 1), DenseNearestNeighborList)
 
-    def test_chooses_cell_list_for_large(self):
+    def test_chooses_cell_list_for_large(self, monkeypatch):
+        monkeypatch.setattr(adaptive, "triton_available", lambda: False)
         assert isinstance(self._nl()._choose(20_000, 1), CellListNeighborList)
 
-    def test_per_call_dispatch_by_counts(self):
+    def test_chooses_cell_scan_for_large_with_triton(self, monkeypatch):
+        monkeypatch.setattr(adaptive, "triton_available", lambda: True)
+        assert isinstance(self._nl()._choose(20_000, 1), CellScanNeighborList)
+
+    def test_per_call_dispatch_by_counts(self, monkeypatch):
         # One object routes differently depending on each call's counts.
+        monkeypatch.setattr(adaptive, "triton_available", lambda: False)
         nl = self._nl()
         assert isinstance(nl._choose(64, 1), DenseNearestNeighborList)
         assert isinstance(nl._choose(20_000, 1), CellListNeighborList)
@@ -116,7 +123,8 @@ class TestAdaptiveNeighborList:
                 impl,
                 DenseNearestNeighborList
                 | CellListNeighborList
-                | AllDenseNearestNeighborList,
+                | AllDenseNearestNeighborList
+                | CellScanNeighborList,
             )
             npt.assert_array_equal(impl.cutoffs.data, jnp.array([2.0]))
 
@@ -124,7 +132,7 @@ class TestAdaptiveNeighborList:
         "implementation,inclusion,exclusion",
         # Mixed policies only combine masks the uniform ones already apply to
         # each implementation's candidates, so one implementation runs them.
-        [(i, flag, flag) for i in range(4) for flag in (False, True)]
+        [(i, flag, flag) for i in range(5) for flag in (False, True)]
         + [(0, True, False), (0, False, True)],
     )
     def test_pair_candidates_retain_group_pairs_and_self_images(
@@ -148,8 +156,8 @@ class TestAdaptiveNeighborList:
             PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
         )
         neighbors = AdaptiveNeighborList.from_state(state, cutoffs)
-        candidate = neighbors.implementations[implementation % 3]
-        if implementation == 3:
+        candidate = neighbors.implementations[implementation % 4]
+        if implementation == 4:
             base = candidate.neighborlist
             assert isinstance(base, SelectableNeighborList)
 
@@ -189,7 +197,7 @@ class TestAdaptiveNeighborList:
             npt.assert_array_equal(*Index.match(edges, normal.indices))
             npt.assert_array_equal(batch.edges.shifts, normal.shifts)
 
-    @pytest.mark.parametrize("implementation", [0, 1, 2])
+    @pytest.mark.parametrize("implementation", [0, 1, 2, 3])
     def test_pair_candidates_empty(self, implementation: int):
         particles = make_lh(jnp.zeros((1, 3)), jnp.zeros(1, dtype=int))
         particles = particles.subset(Index(particles.keys, jnp.empty(0, dtype=int)))
@@ -210,45 +218,3 @@ class TestAdaptiveNeighborList:
         result.raise_assertion()
         assert result.value.edges.indices.shape == (0, 2)
         assert result.value.is_minimum_image.shape == (0,)
-
-
-def test_appended_cell_scan_pair_candidates_match_cell_list():
-    """Cell scan appended to the adaptive set yields the cell list's pair candidates."""
-    state = make_adaptive_state(2, 1)
-    state = replace(
-        state,
-        neighborlist_params=replace(
-            state.neighborlist_params, avg_edges=32, avg_image_candidates=256
-        ),
-    )
-    particles = make_lh(
-        jnp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), jnp.zeros(2, dtype=int)
-    )
-    systems, cutoffs = make_systems(
-        PeriodicCell(OrthogonalFrame(jnp.full((1, 3), 4.0))), jnp.array([4.4])
-    )
-    adaptive = AdaptiveNeighborList.from_state(state, cutoffs)
-    scan = CellScanNeighborList.from_state(state, cutoffs)
-
-    def pairs(implementations):
-        nl = AdaptiveNeighborList(implementations)
-        result = jax.jit(
-            as_result_function(
-                lambda p, s: nl.pair_candidates(p, s, inclusion=True, exclusion=True)
-            )
-        )(particles, systems)
-        result.raise_assertion()
-        batch = result.value
-        edges, shifts = batch.edges.indices, batch.edges.shifts[:, 0]
-        valid = edges.valid_mask.all(-1)
-        return {
-            (*map(int, e), *map(int, s), bool(m))
-            for e, s, m in zip(
-                edges.raw_indices[valid], shifts[valid], batch.is_minimum_image[valid]
-            )
-        }
-
-    cell_list = adaptive.implementations[1]
-    expected = pairs((cell_list,))
-    assert len(expected) == 24  # 6 self images per atom, 6 images per pair direction
-    assert pairs((cell_list, NeighborListCandidate(scan, _always_cheapest))) == expected
