@@ -40,7 +40,7 @@ See the [examples/](https://github.com/cusp-ai-oss/kups/tree/main/examples) dire
 - **Monte Carlo** — NVT and GCMC ensembles with translation, rotation, reinsertion, and exchange moves
 - **Molecular dynamics** — NVE, NVT, NPT ensembles
 - **Geometry optimization** — FIRE and L-BFGS relaxation
-- **Force fields** — Lennard-Jones, Coulomb (Ewald summation), harmonic bonds/angles, Morse, MACE, UMA
+- **Force fields** — Lennard-Jones, Coulomb (Ewald and particle-mesh Ewald), harmonic bonds/angles, Morse, MACE, UMA
 - **Differentiable** — full automatic differentiation through simulations via JAX
 - **Batched** — run thousands of independent simulations as a single vectorized computation
 - **GPU-native** — JIT-compiled on CPU, GPU, and TPU with no code changes

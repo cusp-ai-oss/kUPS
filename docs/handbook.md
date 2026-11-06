@@ -53,7 +53,7 @@ MD, MC, relaxation, GCMC, and ML-potential dynamics are all assembled from these
 
 ## A worked example: `md`
 
-[kups.application.simulations.md][kups.application.simulations.md] (CLI: `kups_md`) is the shortest complete simulation in the repo: about a hundred lines, with a ten-line `run`. A discriminated `potential` config selects the force field, so one state and one driver serve Lennard-Jones and every MLFF backend.
+[kups.application.simulations.md][kups.application.simulations.md] (CLI: `kups_md`) is the shortest complete simulation in the repo: about a hundred lines, with a ten-line `run`. A discriminated `potential` config selects the force field, so one state and one driver serve Lennard-Jones, Lennard-Jones plus Coulomb, and every MLFF backend.
 
 **State definition.** The user picks the fields; nothing inherits from a framework base.
 
@@ -69,7 +69,7 @@ class MdState:
 
 The state structurally satisfies `IsMdState` and carries no force-field field; parameters are bound into the potential at construction. Both tables carry relational data via typed foreign-key indices. `skin_list` keeps the neighbor pairs across steps ([Neighbor Lists](notebooks/neighborlist.md)). `neighborlist_params` and the skin list's capacities are resized by the retry loop on overflow.
 
-**Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens, the gradient filter, and the particle and system tables, from which a config can size parameters that depend on the input; factories fan the lens out to the fields they need. `run` reads the input into the tables first (see State construction below).
+**Wiring potential and propagator.** The `potential` config builds the potential directly with its parameters, given a state lens, the gradient filter, and the particle and system tables, from which a config can size parameters that depend on the input (`lj_coulomb` estimates its Coulomb screening from the charges and cells); factories fan the lens out to the fields they need. `run` reads the input into the tables first (see State construction below).
 
 ```python
 state_lens = identity_lens(MdState)

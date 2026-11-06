@@ -23,6 +23,7 @@ from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     IsNeighborListState,
+    IsSkinListState,
     IsUniversalNeighborlistParams,
     NeighborList,
     NeighborListFactory,
@@ -57,6 +58,10 @@ class IsEwaldGraphState(
     Protocol,
 ):
     """Particles, systems, and neighbor list for an Ewald graph (no parameters)."""
+
+
+class IsEwaldSkinListState(IsEwaldGraphState, IsSkinListState, Protocol):
+    """:class:`IsEwaldGraphState` whose pairs come from a skin list."""
 
 
 class IsEwaldState[Params](IsEwaldGraphState, Protocol):
@@ -141,28 +146,28 @@ def make_ewald_from_state[State, P: Patch[Any]](
 
 
 @overload
-def make_ewald_from_state[State](
-    state: Lens[State, IsEwaldGraphState],
+def make_ewald_from_state[State, Focus: IsEwaldGraphState](
+    state: Lens[State, Focus],
     probe: None = None,
     *,
     parameters: EwaldParameters,
     gradient: None = None,
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> EwaldPotential[State, EmptyType, EmptyType, Patch[Any]]: ...
 
 
 @overload
-def make_ewald_from_state[State](
-    state: Lens[State, IsEwaldGraphState],
+def make_ewald_from_state[State, Focus: IsEwaldGraphState](
+    state: Lens[State, Focus],
     probe: None = None,
     *,
     parameters: EwaldParameters,
     gradient: Lens[Geometry, PositionsAndCell],
     include_exclusion_mask: bool = False,
     composition: RigidBodyComposition[State, IsChargedTemplate] | None = None,
-    neighborlist_factory: NeighborListFactory[IsEwaldGraphState] = ...,
+    neighborlist_factory: NeighborListFactory[Focus] = ...,
 ) -> EwaldPotential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
 
 
