@@ -1,0 +1,101 @@
+impl,label,atoms_per_system,systems,atoms,steps_per_dispatch,ms_per_step,atom_steps_per_s
+kups,kUPS main,256,1,256,1,0.46,556575
+kups-cell,kUPS cell list,256,1,256,1,0.5905,433518
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,1,256,1,0.8772,291843
+nvalchemi-stock,nvalchemi neighbor list (stock),256,1,256,1,0.8811,290543
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,1,256,1,0.83,308438
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,1,256,1,0.8177,313085
+kups,kUPS main,256,4,1024,1,0.9315,1099358
+kups-cell,kUPS cell list,256,4,1024,1,1.0087,1015189
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,4,1024,1,1.2467,821365
+nvalchemi-stock,nvalchemi neighbor list (stock),256,4,1024,1,1.2227,837474
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,4,1024,1,0.8664,1181931
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,4,1024,1,0.7938,1290012
+kups,kUPS main,256,16,4096,1,1.9245,2128393
+kups-cell,kUPS cell list,256,16,4096,1,2.116,1935723
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,16,4096,1,2.1876,1872413
+nvalchemi-stock,nvalchemi neighbor list (stock),256,16,4096,1,2.1459,1908798
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,16,4096,1,0.8996,4553102
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,16,4096,1,0.8741,4686039
+kups,kUPS main,256,64,16384,1,6.102,2685005
+kups-cell,kUPS cell list,256,64,16384,1,6.5693,2494038
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,64,16384,1,6.1709,2655034
+nvalchemi-stock,nvalchemi neighbor list (stock),256,64,16384,1,6.1637,2658136
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,64,16384,1,0.9407,17417204
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,64,16384,1,0.8962,18281153
+kups,kUPS main,256,256,65536,1,22.7965,2874824
+kups-cell,kUPS cell list,256,256,65536,1,24.281,2699069
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,256,65536,1,22.2764,2941953
+nvalchemi-stock,nvalchemi neighbor list (stock),256,256,65536,1,22.2237,2948929
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,256,65536,1,1.2076,54271294
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,256,65536,1,1.199,54656793
+kups,kUPS main,864,1,864,1,0.8538,1011999
+kups-cell,kUPS cell list,864,1,864,1,0.9798,881800
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,1,864,1,1.0617,813825
+nvalchemi-stock,nvalchemi neighbor list (stock),864,1,864,1,1.0314,837688
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,1,864,1,0.8617,1002708
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,1,864,1,0.8229,1050006
+kups,kUPS main,864,4,3456,1,2.5868,1336005
+kups-cell,kUPS cell list,864,4,3456,1,2.7782,1243979
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,4,3456,1,2.2722,1521012
+nvalchemi-stock,nvalchemi neighbor list (stock),864,4,3456,1,2.2579,1530625
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,4,3456,1,0.939,3680668
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,4,3456,1,0.9392,3679865
+kups,kUPS main,864,16,13824,1,8.5394,1618847
+kups-cell,kUPS cell list,864,16,13824,1,8.9257,1548781
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,16,13824,1,6.26,2208305
+nvalchemi-stock,nvalchemi neighbor list (stock),864,16,13824,1,6.212,2225366
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,16,13824,1,1.0036,13773756
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,16,13824,1,1.0016,13801406
+kups,kUPS main,864,64,55296,1,33.3294,1659077
+kups-cell,kUPS cell list,864,64,55296,1,34.213,1616227
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,64,55296,1,22.5032,2457246
+nvalchemi-stock,nvalchemi neighbor list (stock),864,64,55296,1,22.275,2482420
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,64,55296,1,1.2794,43219302
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,64,55296,1,1.3378,41335013
+kups,kUPS main,864,256,221184,1,129.3709,1709689
+kups-cell,kUPS cell list,864,256,221184,1,134.1656,1648590
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,256,221184,1,85.9384,2573751
+nvalchemi-stock,nvalchemi neighbor list (stock),864,256,221184,1,85.9,2574902
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,256,221184,1,3.181,69531812
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,256,221184,1,3.1974,69176729
+kups,kUPS main,256,1,256,20,0.1766,1449202
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,1,256,20,0.4618,554313
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,1,256,20,0.4275,598824
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,1,256,20,0.4299,595501
+kups,kUPS main,256,4,1024,20,0.5396,1897606
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,4,1024,20,0.8069,1268998
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,4,1024,20,0.4464,2294116
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,4,1024,20,0.4427,2313231
+kups,kUPS main,256,16,4096,20,1.5286,2679539
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,16,4096,20,1.74,2353989
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,16,4096,20,0.4674,8762467
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,16,4096,20,0.4667,8776716
+kups,kUPS main,256,64,16384,20,5.5986,2926436
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,64,16384,20,5.5693,2941823
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,64,16384,20,0.5167,31709218
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,64,16384,20,0.5105,32094575
+kups,kUPS main,256,256,65536,20,21.4582,3054123
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),256,256,65536,20,20.9003,3135650
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),256,256,65536,20,0.8398,78040345
+nvalchemi-lj-stock,nvalchemi LJ (stock),256,256,65536,20,0.8429,77747173
+kups,kUPS main,864,1,864,20,0.4936,1750351
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,1,864,20,0.6513,1326535
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,1,864,20,0.46,1878436
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,1,864,20,0.4646,1859674
+kups,kUPS main,864,4,3456,20,2.1632,1597599
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,4,3456,20,1.8279,1890691
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,4,3456,20,0.5616,6153764
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,4,3456,20,0.5561,6214335
+kups,kUPS main,864,16,13824,20,7.965,1735589
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,16,13824,20,5.6727,2436932
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,16,13824,20,0.6502,21260234
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,16,13824,20,0.6451,21427924
+kups,kUPS main,864,64,55296,20,31.9887,1728612
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,64,55296,20,21.1045,2620110
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,64,55296,20,0.931,59394709
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,64,55296,20,0.924,59840952
+kups,kUPS main,864,256,221184,20,126.7094,1745601
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),864,256,221184,20,82.8903,2668393
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),864,256,221184,20,2.7966,79089297
+nvalchemi-lj-stock,nvalchemi LJ (stock),864,256,221184,20,2.7953,79128066

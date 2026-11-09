@@ -1,0 +1,17 @@
+impl,label,dtype,systems,atoms_per_system,energy_max_rel,force_max_abs,force_scale,cell_grad_max_abs,cell_grad_scale
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,1,864,2.00e-16,6.94e-17,0.069,2.08e-16,0.147
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,1,864,0.00e+00,0.00e+00,0.0788,1.64e-07,0.159
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,8,256,7.76e-15,9.02e-17,0.0841,3.19e-16,0.129
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,8,256,0.00e+00,0.00e+00,0.0894,0.00e+00,0.126
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,1,864,0.00e+00,8.33e-17,0.069,5.83e-16,0.147
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,1,864,0.00e+00,0.00e+00,0.0788,2.09e-07,0.159
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,8,256,1.11e-14,9.02e-17,0.0841,3.82e-16,0.129
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,8,256,0.00e+00,0.00e+00,0.0894,0.00e+00,0.126
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,1,864,2.00e-16,2.05e-16,0.069,8.60e-16,0.147
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,1,864,5.36e-07,8.57e-08,0.0788,8.20e-07,0.159
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,8,256,7.24e-15,5.11e-16,0.0841,6.31e-16,0.129
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,8,256,3.62e-07,8.06e-08,0.0894,2.61e-07,0.126
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,1,864,3.99e-16,1.89e-16,0.069,3.33e-16,0.147
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,1,864,4.29e-07,6.71e-08,0.0788,6.11e-07,0.159
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,8,256,3.71e-15,3.30e-16,0.0841,6.11e-16,0.129
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,8,256,3.62e-07,8.15e-08,0.0894,2.61e-07,0.126

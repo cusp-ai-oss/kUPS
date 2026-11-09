@@ -1,0 +1,85 @@
+impl,label,dtype,atoms,ms_per_step
+kups,kUPS main,f64,256,0.4884
+kups-cell,kUPS cell list,f64,256,0.5606
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,256,0.8391
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,256,0.8524
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,256,0.8616
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,256,0.8363
+kups,kUPS main,f64,864,0.827
+kups-cell,kUPS cell list,f64,864,0.9603
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,864,1.0474
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,864,1.0617
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,864,0.8376
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,864,0.8807
+kups,kUPS main,f64,2048,1.3365
+kups-cell,kUPS cell list,f64,2048,1.496
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,2048,1.3641
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,2048,1.3749
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,2048,0.909
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,2048,0.9643
+kups,kUPS main,f64,6912,13.2773
+kups-cell,kUPS cell list,f64,6912,5.4695
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,6912,2.6445
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,6912,2.5866
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,6912,0.9259
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,6912,0.9153
+kups,kUPS main,f64,16384,11.6531
+kups-cell,kUPS cell list,f64,16384,11.6979
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,16384,5.1441
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,16384,5.1694
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,16384,1.1594
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,16384,1.1917
+kups,kUPS main,f64,55296,40.1358
+kups-cell,kUPS cell list,f64,55296,40.2374
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,55296,15.9414
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,55296,15.933
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,55296,2.0067
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,55296,2.0132
+kups,kUPS main,f64,131072,97.2264
+kups-cell,kUPS cell list,f64,131072,97.2489
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f64,131072,36.5474
+nvalchemi-stock,nvalchemi neighbor list (stock),f64,131072,36.5976
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f64,131072,3.9172
+nvalchemi-lj-stock,nvalchemi LJ (stock),f64,131072,3.8643
+kups,kUPS main,f32,256,0.4971
+kups-cell,kUPS cell list,f32,256,0.5469
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,256,0.7963
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,256,0.7861
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,256,0.8313
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,256,0.792
+kups,kUPS main,f32,864,0.7466
+kups-cell,kUPS cell list,f32,864,0.8451
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,864,0.9969
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,864,0.9576
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,864,0.8373
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,864,0.8143
+kups,kUPS main,f32,2048,1.0478
+kups-cell,kUPS cell list,f32,2048,1.2675
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,2048,1.1773
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,2048,1.1481
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,2048,0.9049
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,2048,0.8412
+kups,kUPS main,f32,6912,12.7721
+kups-cell,kUPS cell list,f32,6912,4.6009
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,6912,1.9382
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,6912,1.9046
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,6912,0.8983
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,6912,0.9121
+kups,kUPS main,f32,16384,9.5967
+kups-cell,kUPS cell list,f32,16384,9.6076
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,16384,3.6386
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,16384,3.646
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,16384,1.1186
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,16384,1.1626
+kups,kUPS main,f32,55296,33.6659
+kups-cell,kUPS cell list,f32,55296,33.6774
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,55296,10.7689
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,55296,10.7809
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,55296,2.0828
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,55296,2.0868
+kups,kUPS main,f32,131072,80.7874
+kups-cell,kUPS cell list,f32,131072,80.8284
+nvalchemi-ptx,nvalchemi neighbor list (jax-ptx),f32,131072,25.1491
+nvalchemi-stock,nvalchemi neighbor list (stock),f32,131072,25.1111
+nvalchemi-lj-ptx,nvalchemi LJ (jax-ptx),f32,131072,4.2477
+nvalchemi-lj-stock,nvalchemi LJ (stock),f32,131072,4.2257
