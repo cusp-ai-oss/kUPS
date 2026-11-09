@@ -1,7 +1,8 @@
 """Run a benchmark suite, one process per configuration; print ``RESULT {json}`` lines.
 
-    sweep.py ops|md-size|md-batch [--quick]
+    sweep.py SUITE[,SUITE...] [--quick]
 
+checks    energies, forces and cell gradients of each nvalchemi variant vs kUPS main.
 ops       nvalchemi's JAX cell list alone: stock warp.jax_kernel vs jax-ptx, with and
           without XLA command buffers (CUDA graphs), single systems of N atoms and B
           batched 256-atom systems.
@@ -42,6 +43,14 @@ def run(cmd: list[str], config: dict, timeout: float = 1500) -> None:
                                 "seconds": round(time.monotonic() - t)}), flush=True)
 
 
+def checks(quick: bool) -> None:
+    """Energies, forces and cell gradients of every nvalchemi variant against kUPS main."""
+    for impl, (r, b), f32 in itertools.product(IMPLS[2:], [(6, 1), (4, 8)], [False, True]):
+        run(["md_bench.py", "--nl", impl, "--reps", str(r), "--batch", str(b), "--check"] +
+            (["--f32"] if f32 else []), {"suite": "checks", "reps": r, "batch": b,
+                                         "dtype": "f32" if f32 else "f64"})
+
+
 def ops(quick: bool) -> None:
     for mode, graphs in itertools.product(["stock", "ptx"], [True, False]):
         cmd = ["op_bench.py", mode] + ([] if graphs else ["--nograph"]) + \
@@ -71,4 +80,6 @@ def md_batch(quick: bool) -> None:
 
 if __name__ == "__main__":
     suite, quick = sys.argv[1], "--quick" in sys.argv
-    {"ops": ops, "md-size": md_size, "md-batch": md_batch}[suite](quick)
+    suites = {"checks": checks, "ops": ops, "md-size": md_size, "md-batch": md_batch}
+    for name in suite.split(","):
+        suites[name](quick)
