@@ -40,7 +40,7 @@ def checks(rows: list[dict]) -> None:
     rs = [r for r in rows if r["suite"] == "checks"]
     if not rs:
         return
-    print("\n### Correctness vs kUPS main (after 3 Verlet steps)\n")
+    print("\n### Correctness vs kups (after 3 Verlet steps)\n")
     print(table(["impl", "systems×reps", "dtype", "energy rel", "force abs / scale",
                  "cell grad abs / scale"],
                 [[r.get("check", r.get("error", "?")[:40]), f"{r['batch']}×{r['reps']}",
@@ -77,7 +77,7 @@ def md(rows: list[dict], suite: str, key: str, block: int, dtype: str = "f64") -
         grid[(r["atoms_per_system"], r["batch"])][r["nl"]] = r["ms_per_step"]
     impls = [i for i in IMPLS if any(i in g for g in grid.values())]
     print(f"\n### MD step, ms ({suite}, {dtype}, {block} step(s) per dispatch); "
-          "× = speedup over kUPS main\n")
+          "× = speedup over kups (the stack's own path)\n")
     body = []
     for (n, b) in sorted(grid, key=lambda k: (k[0], k[1])):
         g = grid[(n, b)]
@@ -120,7 +120,8 @@ if __name__ == "__main__":
     ops(rows)
     for dtype in ("f64", "f32"):
         md(rows, "md-size", "atoms", 1, dtype)
-    for block in (1, 20):
-        md(rows, "md-batch", "batch", block)
+    for dtype, block in [("f64", 1), ("f64", 20), ("f32", 1), ("f32", 20)]:
+        md(rows, "md-batch", "batch", block, dtype)
+
     profile(rows)
     errors(rows)

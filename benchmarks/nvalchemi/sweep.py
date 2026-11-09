@@ -78,6 +78,14 @@ def md_batch(quick: bool) -> None:
              "--steps", "200", "--block", "20"], {"suite": "md-batch"})
 
 
+def md_batch_f32(quick: bool) -> None:
+    """Batched systems in the app's fast setting (float32, Pallas row kernel)."""
+    impls = ["kups", "nvalchemi-lj-ptx", "nvalchemi-rows-ptx"]
+    for r, b, block, impl in itertools.product([4, 6], [1, 16, 64, 256], [1, 20], impls):
+        run(["md_bench.py", "--nl", impl, "--reps", str(r), "--batch", str(b), "--f32",
+             "--steps", str(100 * block), "--block", str(block)], {"suite": "md-batch"})
+
+
 def profile(quick: bool) -> None:
     """Device time per step and its largest kernels, single systems."""
     for dtype, r, impl in itertools.product(["f64", "f32"], [8, 20, 32],
@@ -90,6 +98,6 @@ def profile(quick: bool) -> None:
 if __name__ == "__main__":
     suite, quick = sys.argv[1], "--quick" in sys.argv
     suites = {"checks": checks, "ops": ops, "md-size": md_size, "md-batch": md_batch,
-              "profile": profile}
+              "md-batch-f32": md_batch_f32, "profile": profile}
     for name in suite.split(","):
         suites[name](quick)
