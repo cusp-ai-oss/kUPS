@@ -1,0 +1,5 @@
+jax[cuda12]==0.12.0.1
+warp-lang==1.19.0
+# without the [jax] extra: it pins jax<0.10.2, but the bindings run on 0.12
+nvalchemi-toolkit-ops==0.5.0
+ase
