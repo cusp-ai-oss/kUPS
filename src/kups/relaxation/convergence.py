@@ -7,6 +7,12 @@ ASE's ``fmax`` criterion per system: a system converges when its largest
 DOF-gradient norm is below the tolerance. The helpers take ``PositionsAndCell``
 gradients and a ``PositionsAndCellIndex`` that assigns each particle row and
 cell to its system, so each system in a batch is judged as if it ran alone.
+
+ASE's cell filters append the ``3x3`` cell DOFs to the forces as three extra
+atoms, one per row, and compare each row's length with ``fmax``. kUPS deforms
+the cell from the right (``vectors = base @ D``) where ASE deforms from the left
+(``cell = orig_cell @ F.T``), so a kUPS ``3x3`` cell-gradient leaf is ASE's
+transpose: ASE's rows are its columns, and those column lengths are what count.
 """
 
 from __future__ import annotations
@@ -22,11 +28,24 @@ from kups.core.utils.segmented_tree import tree_segment_max
 from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
 
 
+def _cell_leaf_norms(leaf: Array) -> Array:
+    """ASE-style magnitudes of one cell-gradient leaf.
+
+    A ``(..., 3, 3)`` leaf (the matrix-log deformation the relaxation builders
+    use) yields the length of each column, which is ASE's row. Packed
+    parameterisations such as ``tril`` or ``lengths`` have no ASE row layout and
+    count per entry.
+    """
+    if leaf.shape[-2:] == (3, 3):
+        return jnp.linalg.norm(leaf, axis=-2)
+    return jnp.abs(leaf)
+
+
 def _gradient_norm_per_row(gradients: PositionsAndCell) -> PositionsAndCell:
-    """Per-row gradient magnitudes: ``|∂E/∂r_i|`` per particle, ``|∂E/∂h|`` per cell entry."""
+    """Per-row gradient magnitudes: ``|∂E/∂r_i|`` per particle, ASE rows per cell."""
     return PositionsAndCell(
         gradients.positions.map_data(lambda g: jnp.linalg.norm(g, axis=-1)),
-        gradients.cell.map_data(lambda c: jax.tree.map(jnp.abs, c)),
+        gradients.cell.map_data(lambda c: jax.tree.map(_cell_leaf_norms, c)),
     )
 
 

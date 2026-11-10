@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
-from kups.core.cell import PeriodicCell, TriclinicFrame
+from kups.core.cell import MatrixLogFrame, PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
@@ -47,6 +47,22 @@ class TestFmaxPerSystem:
         without = fmax_per_system(grads, prefix, include_cell=False).data
         npt.assert_allclose(with_cell, [7.0, 0.2])
         npt.assert_allclose(without, [0.1, 0.2])
+
+    def test_matrix_cell_gradients_count_ase_rows(self):
+        # ASE's rows are the columns of a kUPS 3x3 cell gradient. Column 0 has
+        # length sqrt(0.04^2 + 0.04^2) ~= 0.0566; the largest entry and the
+        # largest kUPS row (0.04 each) would both pass an fmax of 0.05. The
+        # stop-gradient cell_factor carries a zero gradient.
+        log_matrix = jnp.array([[[0.04, 0.0, 0.0], [0.04, 0.0, 0.0], [0.0, 0.0, 0.0]]])
+        cell = PeriodicCell(MatrixLogFrame(log_matrix, jnp.zeros((1, 1, 1))))
+        system_index = Index.integer(jnp.array([0]), n=1, label=SystemId)
+        cells = Table.arange(cell, label=SystemId)
+        grads = PositionsAndCell(
+            Table.arange(jnp.zeros((1, 3)), label=ParticleId), cells
+        )
+        prefix = PositionsAndCellIndex(system_index, cells.index)
+        npt.assert_allclose(fmax_per_system(grads, prefix).data, [0.04 * jnp.sqrt(2.0)])
+        assert not bool(converged_per_system(grads, prefix, 0.05).data[0])
 
     def test_padded_rows_and_empty_systems(self):
         # Row 2 is padding (OOB system); system 1 has no particles.

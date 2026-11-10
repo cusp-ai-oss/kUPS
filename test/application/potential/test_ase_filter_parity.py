@@ -42,8 +42,10 @@ from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.potential.common.geometry import (
     Geometry,
     PositionsAndCell,
+    PositionsAndCellIndex,
     PositionsAndSystemIndex,
 )
+from kups.relaxation.convergence import fmax_per_system
 from kups.relaxation.optimizer import chain
 from kups.relaxation.propagator import RelaxationPropagator
 from kups.relaxation.transforms import MaxStepSize, ScaleByAseLbfgs
@@ -266,12 +268,8 @@ def _kups_relaxer(max_step: float | None):
     @jax.jit
     def max_dof_gradient(s: RelaxState):  # ASE-fmax in the filter's DOFs
         grad = potential(s).data.gradients
-        force = jnp.max(jnp.linalg.norm(grad.positions.data, axis=-1))
-        # Frame-agnostic max|∂E/∂u_cell|: the only non-zero cell-gradient leaves are
-        # the deformation parameters (LogTriclinic tril / MatrixLog log_matrix).
-        cell_leaves = jax.tree.leaves(grad.cell)
-        cell_dof = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in cell_leaves]))
-        return jnp.maximum(force, cell_dof)
+        prefix = PositionsAndCellIndex(s.particles.data.system, s.systems.index)
+        return fmax_per_system(grad, prefix).data[0]
 
     return optimizer, property_lens, step, max_dof_gradient
 
@@ -286,7 +284,7 @@ def _relax_kups(
     """Relax ``atoms`` with CELL_FILTER + ScaleByAseLbfgs; returns (n_steps, cell, pos).
 
     With ``steps`` it runs a fixed count; otherwise it converges on
-    ``max(|dE/dq|, |dE/dA|) < fmax`` -- the ASE-fmax criterion in the filter's
+    ``fmax_per_system < fmax`` -- the ASE-fmax criterion in the filter's
     reference-cartesian / log-deformation DOFs. ``max_step`` adds the matching
     ``MaxStepSize`` clamp (as ASE's ``maxstep``) for stability on stiff systems.
     """
@@ -369,15 +367,15 @@ def test_frechet_matches_ase_per_step_under_shear(n_steps: int) -> None:
 def test_frechet_matches_ase_at_convergence_under_shear() -> None:
     """Relaxing to convergence under shear, kUPS and ASE ``FrechetCellFilter`` reach
     the *same minimum directly* (the full-matrix basis coincides with ASE's, so no
-    rotation gauge remains). Step counts agree closely; they differ by only a few
-    steps because the ~1e-10/step round-off accumulated over the long flat tail
-    shifts the exact ``fmax`` crossing."""
+    rotation gauge remains) and stop on the same step: ``fmax_per_system`` measures
+    the cell by ASE's row lengths, which a per-entry maximum undercounts under
+    shear. The one step of slack covers a crossing within 0.2% of ``fmax``."""
     atoms = _ase_system()
     # Same clamp as the per-step shear tests, which share its compiled relaxer.
     n_ase, ase_cell, ase_pos = _relax_ase(
         _FrechetCellFilterFixed, atoms, fmax=1e-5, max_step=0.5
     )
     n_kups, cell, pos = _relax_kups(atoms, fmax=1e-5, max_step=0.5)
-    assert abs(n_kups - n_ase) <= 10
+    assert abs(n_kups - n_ase) <= 1
     assert np.allclose(ase_cell, cell, rtol=0, atol=1e-4)
     assert np.allclose(ase_pos, pos, rtol=0, atol=1e-4)

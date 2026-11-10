@@ -206,8 +206,10 @@ class TestCellRelaxation:
             .apply(jnp.zeros_like)
         )
         prefix = relax_index_prefix(stepped.particles, stepped.systems)
-        leaves = jax.tree.leaves(stepped.systems.data.cell_gradients)
-        cell_max = jnp.max(jnp.stack([jnp.max(jnp.abs(x)) for x in leaves]))
+        # The only non-zero cell-gradient leaf is the matrix-log deformation; ASE's
+        # rows are its columns.
+        deformation = stepped.systems.data.cell_gradients.frame.deformation
+        cell_max = jnp.max(jnp.linalg.norm(deformation.log_matrix, axis=-2))
         assert cell_max > 0
         gradients = relax_gradients(stepped)
         npt.assert_allclose(fmax_per_system(gradients, prefix).data, [cell_max])
