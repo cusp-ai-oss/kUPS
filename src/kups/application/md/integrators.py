@@ -34,8 +34,8 @@ from kups.md.integrators import (
     IsMDSystemNPT,
     IsMDSystemNPTBase,
     IsVerletParams,
+    MDParticleData,
     WrapFlow,
-    _MDParticleData,
     euclidean_flow,
     make_baoab_langevin_step,
     make_baoab_npt_langevin_step,
@@ -83,7 +83,7 @@ def require_baoab_npt_langevin_state(
 
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsVerletParams]]],
+    state: Lens[State, IsState[MDParticleData, IsMDSystem[IsVerletParams]]],
     derivative_computation: Propagator[State],
     integrator: Literal["verlet"],
     *,
@@ -91,7 +91,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsBAOABLangevinParams]]],
+    state: Lens[State, IsState[MDParticleData, IsMDSystem[IsBAOABLangevinParams]]],
     derivative_computation: Propagator[State],
     integrator: Literal["baoab_langevin"],
     *,
@@ -99,7 +99,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystem[IsCSVRParams]]],
+    state: Lens[State, IsState[MDParticleData, IsMDSystem[IsCSVRParams]]],
     derivative_computation: Propagator[State],
     integrator: Literal["csvr"],
     *,
@@ -107,7 +107,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystemNPT]],
+    state: Lens[State, IsState[MDParticleData, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     integrator: Literal["csvr_npt"],
     *,
@@ -115,7 +115,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsBAOABNPTLangevinSystem]],
+    state: Lens[State, IsState[MDParticleData, IsBAOABNPTLangevinSystem]],
     derivative_computation: Propagator[State],
     integrator: Literal["baoab_npt_langevin"],
     *,
@@ -123,7 +123,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, HasCell[Periodic3D]]],
+    state: Lens[State, IsState[MDParticleData, HasCell[Periodic3D]]],
     derivative_computation: Propagator[State],
     integrator: Literal["verlet"],
     *,
@@ -131,7 +131,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, HasCell[Periodic3D]]],
+    state: Lens[State, IsState[MDParticleData, HasCell[Periodic3D]]],
     derivative_computation: Propagator[State],
     integrator: Literal["baoab_langevin"],
     *,
@@ -139,7 +139,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, HasCell[Periodic3D]]],
+    state: Lens[State, IsState[MDParticleData, HasCell[Periodic3D]]],
     derivative_computation: Propagator[State],
     integrator: Literal["csvr"],
     *,
@@ -147,7 +147,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsMDSystemNPTBase]],
+    state: Lens[State, IsState[MDParticleData, IsMDSystemNPTBase]],
     derivative_computation: Propagator[State],
     integrator: Literal["csvr_npt"],
     *,
@@ -155,7 +155,7 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]: ...
 @overload
 def make_md_step_from_state[State](
-    state: Lens[State, IsState[_MDParticleData, IsBAOABNPTLangevinSystemBase]],
+    state: Lens[State, IsState[MDParticleData, IsBAOABNPTLangevinSystemBase]],
     derivative_computation: Propagator[State],
     integrator: Literal["baoab_npt_langevin"],
     *,

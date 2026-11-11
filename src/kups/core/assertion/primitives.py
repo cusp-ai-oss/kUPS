@@ -16,11 +16,11 @@ from jax.extend.core import JaxprEqn, Primitive
 from jax.interpreters import ad, batching, mlir
 
 from kups.core.assertion.runtime_assertion import (
-    _NO_ARGS,
     ELEMENTWISE_MAX,
     NO_ARGS,
     Fix,
     LoopMerge,
+    NoArgs,
 )
 from kups.core.utils._jax_compat import (
     manual_axes_kwarg,
@@ -141,7 +141,7 @@ def runtime_assert[State, FixArgs](
     exception_type: type[Exception] = AssertionError,
     static_info: dict[str, Any] | None = None,
     fix_fn: Fix[State, FixArgs] | None = None,
-    fix_args: FixArgs | _NO_ARGS = NO_ARGS,
+    fix_args: FixArgs | NoArgs = NO_ARGS,
     loop_merge: LoopMerge = ELEMENTWISE_MAX,
 ) -> None:
     """Create a runtime assertion that integrates with JAX transformations.
@@ -188,7 +188,7 @@ def runtime_assert[State, FixArgs](
     # Prepare inputs: predicate, fmt_args values, fix_args flattened (if present)
     inputs = [predicate, *fmt_args.values()]
     fix_args_tree = None
-    if not isinstance(fix_args, _NO_ARGS):
+    if not isinstance(fix_args, NoArgs):
         # Flatten fix_args PyTree and add to inputs
         fix_args_flat, fix_args_tree = jax.tree.flatten(fix_args)
         inputs.extend(fix_args_flat)

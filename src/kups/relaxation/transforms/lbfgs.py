@@ -34,7 +34,7 @@ from kups.core.utils.jax import (
 )
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.transforms._segmented_tree import (
-    _layout_and_leaves,
+    layout_and_leaves,
     tree_scale_per_row,
     tree_vdot,
 )
@@ -114,7 +114,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
             index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
         # Flatten params to raw leaves with an Index aligned to each (DFS order),
         # matching ``jax.tree.leaves`` so ``update`` can flatten the same way.
-        index_leaves, (param_leaves,) = _layout_and_leaves(index_prefix, parameters)
+        index_leaves, (param_leaves,) = layout_and_leaves(index_prefix, parameters)
         keys = index_leaves[0].keys
         n_systems = len(keys)
 
@@ -152,7 +152,7 @@ class ScaleByAseLbfgs[Params](Optimizer[Params, ScaleByAseLbfgsState[Params]]):
 
         # Flatten on entry; raw leaves carry no ``Table`` validation. Expanding the
         # stored prefix yields one Index per leaf, aligned with the flattened params.
-        idx, (param_leaves, update_leaves) = _layout_and_leaves(
+        idx, (param_leaves, update_leaves) = layout_and_leaves(
             state.index_prefix, params, updates
         )
 

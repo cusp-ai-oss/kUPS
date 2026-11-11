@@ -68,3 +68,24 @@ def test_long_comment_block():
 )
 def test_history(text: str):
     assert codes(text + "\n") == ["KUP005"]
+
+
+def test_private_import():
+    assert codes("from kups.core.lens import _helper\n") == ["KUP006"]
+    assert codes("from kups.core.mod import _helper\n") == []
+    assert codes("from jax._src import core\n") == []
+    assert codes("from kups.core.lens import __version__\n") == []
+
+
+def test_private_submodule_of_own_package(tmp_path: Path):
+    pkg = tmp_path / "src" / "kups" / "core" / "units"
+    pkg.mkdir(parents=True)
+    (pkg / "_unit.py").write_text("")
+    catalog = pkg / "catalog.py"
+    imports = "from kups.core.units import _unit\n"
+    assert codes(imports, str(catalog)) == []
+    assert codes("from kups.core.units import _helper\n", str(catalog)) == ["KUP006"]
+    assert codes(imports, str(tmp_path / "src" / "kups" / "md" / "x.py")) == ["KUP006"]
+    assert codes("from kups.core.units._unit import _private\n", str(catalog)) == [
+        "KUP006"
+    ]
