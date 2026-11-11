@@ -50,6 +50,14 @@ repos:
         files: ^(src/|ci/kups_lint)
         pass_filenames: false
 
+      - id: import-linter
+        name: layer contracts
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        files: ^src/
+        pass_filenames: false
+
       - id: python-only-package
         name: only Python sources in src/
         entry: Data files, notebooks and READMEs belong outside src/
