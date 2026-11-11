@@ -1184,7 +1184,7 @@ def make_gcmc_mcmc_propagator[State, Move: Patch[Any]](
         def wrapper(key: Array, s: State, /) -> tuple[C, LogProbabilityRatio]:
             return fn(key, s), _zero_ratio(s)
 
-        return wrapper  # type: ignore[return-value]
+        return wrapper
 
     def _sched(
         params_lens: Lens[State, Table[SystemId, ParameterSchedulerState]],

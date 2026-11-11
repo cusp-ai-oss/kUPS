@@ -717,12 +717,12 @@ class Index[Key: SupportsSorting]:
     ) -> Index[K]: ...
     @overload
     @staticmethod
-    def concatenate[K: int](  # type: ignore[overload-overlap]
+    def concatenate[K: int](
         *indices: Index[K],
         shift_keys: Literal[True],
     ) -> Index[K]: ...
     @staticmethod
-    def concatenate(  # type: ignore[misc]
+    def concatenate(
         *indices: Index[Any],
         shift_keys: bool = False,
     ) -> Index[Any]:
@@ -748,7 +748,7 @@ class Index[Key: SupportsSorting]:
             mc = _summed_max_count(*indices)
             return Index(new_keys, new_indices, mc, _cls=indices[0].cls)
 
-        return _concatenate_shifted(*indices)  # type: ignore[arg-type]
+        return _concatenate_shifted(*indices)
 
     @staticmethod
     def stack[K: SupportsSorting](*indices: Index[K], axis: int = 0) -> Index[K]:
@@ -786,7 +786,7 @@ class Index[Key: SupportsSorting]:
         *indices: Index[K],
     ) -> tuple[Array, ...]: ...
     @staticmethod
-    def match[K: SupportsSorting](*indices: Index[K]) -> tuple[Array, ...]:  # type: ignore[misc]
+    def match[K: SupportsSorting](*indices: Index[K]) -> tuple[Array, ...]:
         """Remap multiple Index objects into a shared key space.
 
         Merges the key vocabularies of all inputs and returns the integer

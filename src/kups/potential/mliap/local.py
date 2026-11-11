@@ -200,11 +200,14 @@ class LocalMLIAPData:
             with zf.open("metadata.json") as f:
                 metadata = json.loads(f.read().decode())
             with zf.open("node_init.jax") as f:
-                exported_init = jax.export.deserialize(f.read())  # type: ignore
+                # pyrefly: ignore[bad-argument-type]
+                exported_init = jax.export.deserialize(f.read())
             with zf.open("edge.jax") as f:
-                exported_edge = jax.export.deserialize(f.read())  # type: ignore
+                # pyrefly: ignore[bad-argument-type]
+                exported_edge = jax.export.deserialize(f.read())
             with zf.open("readout.jax") as f:
-                exported_readout = jax.export.deserialize(f.read())  # type: ignore
+                # pyrefly: ignore[bad-argument-type]
+                exported_readout = jax.export.deserialize(f.read())
 
         convert = _make_dtype_converter(metadata["precision"])
 

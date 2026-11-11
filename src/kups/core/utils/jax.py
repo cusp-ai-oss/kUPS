@@ -185,7 +185,8 @@ def jit[C: Callable[..., Any]](
             with no_post_init():
                 return f_jitted(*args, **kwargs)
 
-        return f_result  # type: ignore
+        # pyrefly: ignore[bad-return]
+        return f_result
 
     if fn is None:
         return inner_jit
@@ -234,13 +235,14 @@ def shard_map[C: Callable[..., Any]](
     if not check_vma:
         shard_kwargs["check_vma"] = check_vma
 
-    sharded_f = jax.shard_map(f, **shard_kwargs)  # type: ignore
+    sharded_f = jax.shard_map(f, **shard_kwargs)
 
     @functools.wraps(f)
     def wrapper(*args: Any, **kwargs: Any):
         return sharded_f(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    # pyrefly: ignore[bad-return]
+    return wrapper
 
 
 @overload
@@ -312,7 +314,8 @@ def vectorize[C: Callable[..., Any]](
         def wrapper(*args: Any, **kwargs: Any):
             return vectorized(*args, **kwargs)
 
-        return wrapper  # type: ignore
+        # pyrefly: ignore[bad-return]
+        return wrapper
 
     if pyfunc is None:
         return inner_vectorize
@@ -671,7 +674,7 @@ def dataclass[T](
             kw_only=kw_only,
             slots=slots,
             weakref_slot=weakref_slot,
-        )  # type: ignore
+        )
         setattr(dcls, "_jax_dataclass", True)
         # All static fields land in aux_data so sibling subclasses pinning
         # the same field to different `init=False` defaults (e.g.
@@ -839,7 +842,8 @@ def tree_scatter_set[T](item: T, value: T, idxs: Array, args: ScatterArgs) -> T:
             return _array_setter(merged_args, arr, val)
         struc = tree_structure(arr, lambda x: x is not arr and _is_leaf(x))
         leaf1 = struc.flatten_up_to(arr)
-        leaf2 = struc.flatten_up_to(val)  # type: ignore
+        # pyrefly: ignore[bad-argument-type]
+        leaf2 = struc.flatten_up_to(val)
         result = tree_scatter_set(leaf1, leaf2, idxs, merged_args)
         return jax.tree.unflatten(struc, result)
 
@@ -1022,7 +1026,8 @@ def no_jax_tracing[C: Callable[..., Any]](fn: C) -> C:
                 )
         return fn(*args, **kwargs)
 
-    return wrapper  # type: ignore
+    # pyrefly: ignore[bad-return]
+    return wrapper
 
 
 @runtime_checkable
@@ -1042,7 +1047,7 @@ class SupportsTreeMatch(Protocol):
 def tree_map[T, *S](
     fn: Callable[..., Any],
     tree: T,
-    *trees: *S,  # type: ignore[reportInvalidTypeVarUse]
+    *trees: *S,
     is_leaf: Callable[[Any], bool] | None = None,
 ) -> T:
     """Apply ``fn`` to every leaf of one or more pytrees, with label alignment.

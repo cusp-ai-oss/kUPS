@@ -403,7 +403,8 @@ class Table(Batched, Generic[TKey, TData]):
         """
         if not others:
             raise ValueError("merge_tables requires at least two arguments")
-        base, *others = Table.broadcast(base, *others)  # type: ignore
+        # pyrefly: ignore[bad-assignment]
+        base, *others = Table.broadcast(base, *others)
 
         def _align(other: Table[Any, Any], i: int) -> Any:  # noqa: ANN401
             if other.keys == base.keys:

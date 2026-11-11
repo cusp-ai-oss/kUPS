@@ -93,3 +93,17 @@ def test_private_submodule_of_own_package(tmp_path: Path):
 
 def test_type_alias_docstring():
     assert codes('type X = int\n"""An int."""\n') == ["KUP007"]
+
+
+@pytest.mark.parametrize(
+    ("comment", "expected"),
+    [
+        ("x = f()  # type: ignore", ["KUP008"]),
+        ("x = f()  # type: ignore[arg-type]", ["KUP008"]),
+        ("x = f()  # pyrefly: ignore", ["KUP008"]),
+        ("x = f()  # pyrefly: ignore[bad-return]", []),
+        ("x = f()  # pyrefly: ignore [bad-return]  # reason", []),
+    ],
+)
+def test_suppression_names_pyrefly_kind(comment: str, expected: list[str]):
+    assert codes(comment + "\n") == expected

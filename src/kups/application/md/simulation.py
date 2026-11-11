@@ -116,7 +116,8 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
                 )
             ),
             lambda x: PotentialOut(
-                x.systems.index,  # type: ignore
+                # pyrefly: ignore[bad-argument-type]
+                x.systems.index,
                 (x.particles.data.system, x.systems.index),
                 EMPTY,
             ),

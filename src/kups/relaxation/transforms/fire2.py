@@ -226,7 +226,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             safe_abc = jnp.maximum(abc, 1e-30)
             scale1 = jnp.where(positive, (1.0 - alpha_for_mixing) / safe_abc, 1.0)
             scale2_raw = jnp.where(
-                f_sq <= 1e-20,  # type: ignore[operator]
+                f_sq <= 1e-20,
                 0.0,
                 (alpha_for_mixing * jnp.sqrt(v_old_sq / jnp.maximum(f_sq, 1e-20)))
                 / safe_abc,
@@ -235,7 +235,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         else:
             scale1 = 1.0 - alpha_data
             scale2 = jnp.where(
-                f_sq <= 1e-20,  # type: ignore[operator]
+                f_sq <= 1e-20,
                 0.0,
                 alpha_data * jnp.sqrt(v_old_sq / jnp.maximum(f_sq, 1e-20)),
             )

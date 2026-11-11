@@ -526,7 +526,7 @@ class MergedLens(BaseLens[S, tuple[R, R2]]):
     # pyright throws: "object*" is not assignable to "tuple[R3@set, R4@set]"
     # It sounds like an inference issue as I cannot follow where object* is inferred.
     @override
-    def set[S2, R3, R4](  # type: ignore[reportIncompatibleMethodOverride]
+    def set[S2, R3, R4](
         self: MergedLens[S2, R3, R4], state: S2, /, value: tuple[R3, R4]
     ) -> S2:
         state = self.left.set(state, value[0])
@@ -936,7 +936,7 @@ def bind[S, R](obj: S, where: Callable[[S], R] | None = None) -> BoundLens[S, R]
         A BoundLens that operates on the given object
     """
     if where is None:
-        return SimpleBoundLens(lens(lambda x: x), obj)  # type: ignore[return-value]
+        return SimpleBoundLens(lens(lambda x: x), obj)
     return SimpleBoundLens(lens(where), obj)
 
 
@@ -1262,13 +1262,15 @@ class _ItemLens:
                 return obj.__class__(**new_mapping)
             except TypeError:
                 # Some mappings like MappingProxyType take a single positional arg
-                return obj.__class__(new_mapping)  # type: ignore[call-arg]
+                # pyrefly: ignore[bad-argument-count]
+                return obj.__class__(new_mapping)
         elif isinstance(obj, Sequence):
             # Build list first, then pass to constructor
             items = list(obj)
             items[self.key] = value
             try:
-                return obj.__class__(items)  # type: ignore[call-arg]
+                # pyrefly: ignore[bad-argument-count]
+                return obj.__class__(items)
             except TypeError:
                 # Fallback: try unpacking as separate arguments
                 return obj.__class__(*items)
@@ -1522,7 +1524,8 @@ class lens_property[S, B]:
     def __init__(self, fget: Callable[[S], B]) -> None:
         self._fget = fget
         self._name: str | None = None
-        ft.update_wrapper(self, fget)  # type: ignore[arg-type]
+        # pyrefly: ignore[bad-argument-type]
+        ft.update_wrapper(self, fget)
 
     def __set_name__(self, owner: type[S], name: str) -> None:
         self._name = name

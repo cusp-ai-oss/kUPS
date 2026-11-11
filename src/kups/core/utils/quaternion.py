@@ -252,7 +252,7 @@ def _pow_quaternion(q: Array, exponent: Array | float) -> Array:
     w = quat[0]
 
     angle = 2 * jnp.arccos(jnp.clip(w, -1.0, 1.0))
-    sin_half_angle: Array = jnp.linalg.norm(v)  # type: ignore[assignment]
+    sin_half_angle: Array = jnp.linalg.norm(v)
 
     # Safe division: use [1,0,0] axis when sin_half_angle ~ 0 (identity)
     safe_sin = jnp.where(sin_half_angle > 1e-10, sin_half_angle, 1.0)
