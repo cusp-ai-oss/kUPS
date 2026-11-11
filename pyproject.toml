@@ -141,6 +141,7 @@ venv = ".venv"
 
 [tool.ruff.lint]
 ignore = ["E741"]
+external = ["KUP"]  # ci/kups_lint.py
 
 [tool.pyrefly]
 infer-with-first-use = false
