@@ -29,3 +29,22 @@ def test_dataclass_init(header: str):
 
 def test_init_on_plain_class_is_fine():
     assert codes("class A:\n    def __init__(self): ...\n") == []
+
+
+@pytest.mark.parametrize(
+    ("annotation", "expected"),
+    [
+        ("x: Array | None", ["KUP002"]),
+        ("x: Optional[Table[K, Array]] = None", ["KUP002"]),
+        ("x: Array | None = field(static=True, default=None)", []),
+        ("x: float | None = None", []),
+        ("x: Array", []),
+    ],
+)
+def test_optional_array_field(annotation: str, expected: list[str]):
+    src = JAX_DC + f"@dataclass\nclass A:\n    {annotation}\n"
+    assert codes(src) == expected
+
+
+def test_optional_array_field_on_plain_dataclass_is_fine():
+    assert codes(PLAIN_DC + "@dataclass\nclass A:\n    x: Array | None\n") == []

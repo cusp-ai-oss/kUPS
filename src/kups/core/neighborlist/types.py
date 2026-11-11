@@ -162,9 +162,9 @@ class PipelineContext:
     """
 
     keys: Table[ParticleId, NeighborListPoints]
-    queries: Table[ParticleId, NeighborListPoints] | None
+    queries: Table[ParticleId, NeighborListPoints] | None  # noqa: KUP002
     systems: Table[SystemId, NeighborListSystems]
-    queried_keys: Index[ParticleId] | None
+    queried_keys: Index[ParticleId] | None  # noqa: KUP002
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
