@@ -50,10 +50,10 @@ if TYPE_CHECKING:
 type UMATaskName = Literal["omat", "omol", "oc20", "odac", "omc"]
 type UMAInferenceSettings = Literal["default", "turbo", "turbo_f64"]
 
+# ``(potential, cutoff)``; the cutoff sizes the neighbor list.
 type BuiltPotential[State] = tuple[
     Potential[State, PositionsAndCell, EmptyType, Patch[Any]], Table[SystemId, Array]
 ]
-"""``(potential, cutoff)`` where ``cutoff`` sizes the neighbor list."""
 
 
 class LjPotentialConfig(BaseModel):
