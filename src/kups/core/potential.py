@@ -536,7 +536,7 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
             state: Simulation state containing cached values
 
         Returns:
-            Previously computed and cached potential output. The compensation is
+            The cached potential output. The compensation is
             the one accumulated up to that point, or zero when no
             ``compensate_cache`` is configured.
         """

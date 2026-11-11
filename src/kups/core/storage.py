@@ -575,7 +575,7 @@ class HDF5StorageReader[Config]:
             if "config_pytree" in self.file:
                 raw = bytes(self.file["config_pytree"][()])  # type: ignore - h5py typing
             else:
-                raw = bytes(self.file.attrs["config_pytree"])  # type: ignore - legacy
+                raw = bytes(self.file.attrs["config_pytree"])
             conf_treedef = pickle.loads(raw)
         except Exception as e:
             raise ValueError("Failed to read config pytree") from e
@@ -617,7 +617,7 @@ class GroupReader[Storage]:
         if "tree_def" in self.group:
             raw = bytes(self.group["tree_def"][()])  # type: ignore - h5py typing
         else:
-            raw = bytes(self.group.attrs["tree_def"])  # type: ignore - legacy
+            raw = bytes(self.group.attrs["tree_def"])
         tree_def = pickle.loads(raw)
         return tree_def
 

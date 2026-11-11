@@ -61,3 +61,10 @@ def test_long_comment_block():
     assert codes(block) == ["KUP004"]
     assert codes("# c\n" * kups_lint.MAX_COMMENT_LINES) == []
     assert codes("# c\n" * 3 + "x = 1\n" + "# c\n" * 4) == []
+
+
+@pytest.mark.parametrize(
+    "text", ["# previously this was a loop", '"""Legacy entry point."""']
+)
+def test_history(text: str):
+    assert codes(text + "\n") == ["KUP005"]
