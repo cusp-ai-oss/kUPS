@@ -5,16 +5,14 @@ from __future__ import annotations
 
 import itertools
 from collections import defaultdict
+from collections.abc import Callable, Generator, Sequence
 from functools import cached_property, lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Generator,
     Literal,
     Protocol,
     Self,
-    Sequence,
     overload,
     override,
 )
@@ -123,7 +121,7 @@ class Index[Key: SupportsSorting]:
         return self._indices.ndim
 
     @property
-    def T(self) -> "Index[Key]":
+    def T(self) -> Index[Key]:
         return self.transpose()
 
     @property

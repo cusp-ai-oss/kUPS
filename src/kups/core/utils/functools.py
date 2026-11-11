@@ -3,7 +3,8 @@
 
 """Functional programming utilities for composing and transforming functions."""
 
-from typing import Any, Callable, Literal, overload
+from collections.abc import Callable
+from typing import Any, Literal, overload
 
 
 def compose[**P, B, C](fst: Callable[[B], C], snd: Callable[P, B]) -> Callable[P, C]:

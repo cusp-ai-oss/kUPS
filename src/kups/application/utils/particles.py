@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import ase
 import ase.io
