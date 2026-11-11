@@ -392,14 +392,9 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
     def __call__(self, key: Array, state: State) -> State:
         chain = key_chain(key)
 
-        # We disable JIT here because it allows us to preserve
-        # identities of through otherwise jax.jit compiled code.
-        # Without disable_jit_
-        # x is jax.jit(lambda x: x))(x) # False
-        # With disable_jit:
-        # with jax.disable_jit():
-        #     x is jax.jit(lambda x: x))(x) # True
-        # This allows us to skip many select_n calls.
+        # Disabling JIT keeps array identities through nested jitted calls
+        # (`x is jax.jit(lambda x: x)(x)` holds), which lets us skip many
+        # select_n calls.
         with jax.disable_jit():
             # Select and propose
             changes, move_log_ratio, which = propose_mixed(

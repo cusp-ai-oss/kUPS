@@ -54,3 +54,10 @@ def test_long_docstring():
     body = "\n    ".join(["line"] * (kups_lint.MAX_DOCSTRING_LINES + 1))
     assert codes(f'def f():\n    """{body}"""\n') == ["KUP003"]
     assert codes(f'"""{body}"""\n') == []
+
+
+def test_long_comment_block():
+    block = "# c\n" * (kups_lint.MAX_COMMENT_LINES + 1)
+    assert codes(block) == ["KUP004"]
+    assert codes("# c\n" * kups_lint.MAX_COMMENT_LINES) == []
+    assert codes("# c\n" * 3 + "x = 1\n" + "# c\n" * 4) == []
