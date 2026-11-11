@@ -289,10 +289,8 @@ def candidates_to_batch(
 ) -> CandidateBatch[Literal[2]]:
     """Pack ``(candidates, flat shifts, is_min)`` into a ``CandidateBatch[2]``."""
     # Bipartite candidates index the union of the disjoint key and query ids.
-    indices = Index.concatenate(candidates.key_idx, candidates.query_idx)
-    edges: Edges[Literal[2]] = Edges(
-        indices.reshape(2, -1).T, jnp.expand_dims(shifts, axis=-2)
-    )
+    indices = Index.stack(candidates.key_idx, candidates.query_idx, axis=-1)
+    edges: Edges[Literal[2]] = Edges(indices, jnp.expand_dims(shifts, axis=-2))
     return CandidateBatch(edges=edges, is_minimum_image=is_minimum_image)
 
 

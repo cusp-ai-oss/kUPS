@@ -227,10 +227,7 @@ def valid_pairs(
     key_idx: Index[ParticleId], query_idx: Index[ParticleId]
 ) -> list[tuple[int, int]]:
     """Integer id pairs of the candidates whose two sides are in bounds."""
-    return [
-        tuple(p)
-        for p in valid_ids(Index.concatenate(key_idx, query_idx).reshape(2, -1).T)
-    ]
+    return [tuple(p) for p in valid_ids(Index.stack(key_idx, query_idx, axis=-1))]
 
 
 def valid_edge_set(edges: Edges) -> set[tuple[int, ...]]:

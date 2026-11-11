@@ -142,6 +142,9 @@ class TestIndicesIn:
         # OOB preserved
         sa = Index(("A", "B"), jnp.array([0, 2, 1]))
         npt.assert_array_equal(sa.indices_in(("B", "A")), [1, 2, 0])
+        # Every id past the keys stays OOB in a vocabulary the keys are a prefix of
+        prefix = Index(("A",), jnp.array([0, 1, 2]))
+        npt.assert_array_equal(prefix.indices_in(("A", "B", "C")), [0, 3, 3])
 
     def test_allow_missing_preserves_inactive_rows(self):
         idx = Index(("A", "B", "C"), jnp.array([0, 1, 2, 3]))
@@ -343,6 +346,23 @@ class TestConcatenate:
         # Non-increasing input raises
         with pytest.raises(ValueError, match="Keys must be unique and sorted"):
             Index((ParticleId(1), ParticleId(0)), jnp.array([0, 1]))
+
+
+class TestStack:
+    def test_merges_keys_along_new_axis(self):
+        a = Index(("H", "O"), jnp.array([0, 1, 2]))
+        b = Index(("C", "O"), jnp.array([1, 0, 2]))
+        result = Index.stack(a, b, axis=-1)
+        assert result.keys == ("C", "H", "O")
+        assert result[:2].value.tolist() == [["H", "O"], ["O", "C"]]
+        npt.assert_array_equal(result.valid_mask[2], [False, False])
+        npt.assert_array_equal(Index.stack(a, b).raw_indices, result.raw_indices.T)
+
+    def test_sums_max_count(self):
+        a = Index(("X",), jnp.array([0]), max_count=3)
+        b = Index(("X",), jnp.array([0]), max_count=7)
+        assert Index.stack(a, b).max_count == 10
+        assert Index.stack(a, Index(("X",), jnp.array([0]))).max_count is None
 
 
 class TestSelectPerLabel:
