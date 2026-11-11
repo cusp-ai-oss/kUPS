@@ -197,7 +197,10 @@ class Table(Batched, Generic[TKey, TData]):
         return bind(self.data).at(index.indices_in(self.keys), args=args)
 
     def update[D](
-        self: Table[TKey, D], index: Index[TKey], data: D, **kwargs: Any
+        self: Table[TKey, D],
+        index: Index[TKey],
+        data: D,
+        **kwargs: Any,  # noqa: ANN401
     ) -> Table[TKey, D]:
         """Write ``data`` into rows selected by ``index``."""
         return (
@@ -389,7 +392,7 @@ class Table(Batched, Generic[TKey, TData]):
             raise ValueError("merge_tables requires at least two arguments")
         base, *others = Table.broadcast(base, *others)  # type: ignore
 
-        def _align(other: Table[Any, Any], i: int) -> Any:
+        def _align(other: Table[Any, Any], i: int) -> Any:  # noqa: ANN401
             if other.keys == base.keys:
                 return other.data
             if set(other.keys) != set(base.keys):
@@ -722,7 +725,7 @@ class Table(Batched, Generic[TKey, TData]):
                 offsets[lt].append(acc)
                 acc += len(item)
 
-        def _shift_key(key: SupportsSorting, off: int) -> Any:
+        def _shift_key(key: SupportsSorting, off: int) -> SupportsSorting:
             return type(key)(int(key) + off) if isinstance(key, int) else key
 
         def _concat_leaves[K: int](*leaves: Index[K] | Array) -> Index[K] | Array:
@@ -828,7 +831,7 @@ class Table(Batched, Generic[TKey, TData]):
         """
         indices = {g.cls: g.keys for g in groups}
 
-        def traversal(x: Any) -> Any:
+        def traversal(x: Any) -> Any:  # noqa: ANN401
             if not isinstance(x, Index):
                 return x
             if x.cls in indices:
@@ -928,7 +931,7 @@ def _broadcast_rows[D](data: D, n: int) -> D:
         ValueError: If a leaf's leading axis is neither ``n`` nor 1.
     """
 
-    def _leaf(leaf: Any) -> Any:
+    def _leaf(leaf: Any) -> Any:  # noqa: ANN401
         if isinstance(leaf, (Index, Table)):
             return leaf
         dim = leaf.shape[0]

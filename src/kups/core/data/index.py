@@ -45,11 +45,11 @@ if TYPE_CHECKING:
 
 
 class SupportsDunderLT(Protocol):
-    def __lt__(self, other: Any, /) -> bool: ...
+    def __lt__(self, other: Any, /) -> bool: ...  # noqa: ANN401
 
 
 class SupportsDunderGT(Protocol):
-    def __gt__(self, other: Any, /) -> bool: ...
+    def __gt__(self, other: Any, /) -> bool: ...  # noqa: ANN401
 
 
 type SupportsSorting = SupportsDunderLT | SupportsDunderGT
@@ -262,7 +262,7 @@ class Index[Key: SupportsSorting]:
         """Number of elements along the first axis."""
         return len(self._indices)
 
-    def __getitem__(self, item: Any) -> Index[Key]:
+    def __getitem__(self, item: Any) -> Index[Key]:  # noqa: ANN401
         """Index into the underlying integer array, preserving keys."""
         return self._forward_to_data("__getitem__", item)
 
@@ -279,11 +279,11 @@ class Index[Key: SupportsSorting]:
         """Flatten to 1-D, preserving keys."""
         return self._forward_to_data("ravel")
 
-    def reshape(self, *args: Any, **kwargs: Any) -> Index[Key]:
+    def reshape(self, *args: Any, **kwargs: Any) -> Index[Key]:  # noqa: ANN401
         """Reshape the index array, preserving keys."""
         return self._forward_to_data("reshape", *args, **kwargs)
 
-    def _forward_to_data(self, name: str, *args: Any, **kwargs: Any) -> Index[Key]:
+    def _forward_to_data(self, name: str, *args: Any, **kwargs: Any) -> Index[Key]:  # noqa: ANN401
         return Index(
             self.keys,
             getattr(self._indices, name)(*args, **kwargs),

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, runtime_checkable
+from typing import Literal, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -95,8 +95,8 @@ class Flow[State, PyTree](Protocol):
 
 
 @vectorize(signature=("(),(n),(n)->(n)"), excluded=frozenset({0}))
-def euclidean_flow(
-    state: Any,
+def euclidean_flow[State](
+    state: State,
     dt: Time,
     primal: Array,
     tangent: Array,

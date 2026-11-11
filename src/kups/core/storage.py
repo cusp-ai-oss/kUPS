@@ -635,7 +635,7 @@ class GroupReader[Storage]:
 
     def _read_leaves(
         self, leaves: list[str], treedef: PyTreeDef[Any], index: Index
-    ) -> Any:
+    ) -> Any:  # noqa: ANN401
         def read_dataset(
             name: str,
         ) -> np.ndarray[tuple[int, ...], np.dtype[np.generic]]:

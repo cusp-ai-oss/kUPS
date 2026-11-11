@@ -248,7 +248,7 @@ def make_lennard_jones_from_state(
             cache_view = state.focus(lambda x: x.lj_cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
 
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_lennard_jones_potential(

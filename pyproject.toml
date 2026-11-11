@@ -140,8 +140,19 @@ venvPath = "."
 venv = ".venv"
 
 [tool.ruff.lint]
+extend-select = [
+    "ANN401",  # explicit Any
+]
 ignore = ["E741"]
 external = ["KUP"]  # ci/kups_lint.py
+
+[tool.ruff.lint.per-file-ignores]
+# Generic and interop layers where `Any` is the honest type.
+"src/kups/core/lens.py" = ["ANN401"]
+"src/kups/core/assertion/*" = ["ANN401"]
+"src/kups/core/effects/*" = ["ANN401"]
+"src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
+"!src/**" = ["ANN401"]
 
 [tool.pyrefly]
 infer-with-first-use = false
