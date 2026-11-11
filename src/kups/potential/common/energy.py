@@ -209,20 +209,17 @@ class PotentialFromEnergy[
 ]:
     """Converts energy functions to full potentials with gradients and Hessians.
 
-    The core building block for all potential implementations. Takes a simple
-    energy function and automatically adds:
+    Wraps an energy function with incremental updates via
+    [SumComposer][kups.potential.common.energy.SumComposer], gradients of the
+    total energy by autodiff, Hessian rows by forward-on-backward
+    differentiation, and optional caching with state patches.
 
-    1. Incremental updates via [SumComposer][kups.potential.common.energy.SumComposer]
-    2. Gradients via automatic differentiation
-    3. Hessians via forward-on-backward differentiation
-    4. Caching and state patches
-
-    Type Parameters:
-        State: Simulation state type
-        Input: Energy function input type
-        Gradients: Gradient structure type
-        Hessians: Hessian structure type
-        StatePatch: Patch type for state updates
+    Hessian indices have shape `(num_calls, 2, num_entries_per_call)`, holding
+    row and column indices per vectorized call. One call may cover rows of
+    different systems, but each call must contain a single row per system;
+    mixing rows of one system in a call differentiates their summed gradient.
+    For two systems of 3 particles (0-2 and 6-8), the first call is
+    ``[[0, 0, 0, 6, 6, 6], [0, 1, 2, 6, 7, 8]]``.
 
     Attributes:
         energy_fn: Energy function to wrap
@@ -232,46 +229,6 @@ class PotentialFromEnergy[
         hessian_idx_view: Extracts Hessian row/column indices from state
         cache_lens: Lens to cached potential output (optional)
         patch_idx_view: Index structure for cache updates (optional)
-
-    Gradients are computed of total energy with respect to tensors specified by
-    `gradient_lens`. Hessians are computed row-by-row via forward-on-backward mode,
-    with indices specified by `hessian_idx_view`.
-
-    Hessian indices have shape `(num_calls, 2, num_entries_per_call)`:
-    - First dimension: vectorized over (parallel rows)
-    - Second dimension: [row_indices, column_indices]
-
-    Example - Computing 3×3 Hessian for first 3 particles:
-    ```python
-    hessian_indices = [
-        [[0, 0, 0], [0, 1, 2]],  # ∂²E/∂x₀∂(x₀,x₁,x₂)
-        [[1, 1, 1], [0, 1, 2]],  # ∂²E/∂x₁∂(x₀,x₁,x₂)
-        [[2, 2, 2], [0, 1, 2]],  # ∂²E/∂x₂∂(x₀,x₁,x₂)
-    ]
-    ```
-
-    For batched systems, parallelize over both batches and rows:
-    ```python
-    # Two systems with 3 particles each (particles 0-2 and 6-8)
-    hessian_indices = [
-        [[0, 0, 0, 6, 6, 6], [0, 1, 2, 6, 7, 8]],  # Rows 0 and 0
-        [[1, 1, 1, 7, 7, 7], [0, 1, 2, 6, 7, 8]],  # Rows 1 and 1
-        [[2, 2, 2, 8, 8, 8], [0, 1, 2, 6, 7, 8]],  # Rows 2 and 2
-    ]
-    ```
-
-    Warning - Potentially incorrect parallelization example:
-    ```python
-    # WRONG: This computes d(df/dx₀ + df/dx₁)/dx instead of separate Hessian rows
-    hessian_indices = [
-        [[0, 0, 0, 1, 1, 1], [0, 1, 2, 0, 1, 2]],
-    ]
-    # Gives: d(df/dx₀ + df/dx₁)/dx₀, d(df/dx₀ + df/dx₁)/dx₁, d(df/dx₀ + df/dx₁)/dx₂
-    # Expected: d²f/dx₀², d²f/dx₀dx₁, d²f/dx₀dx₂, d²f/dx₁², d²f/dx₁dx₂, d²f/dx₂²
-    ```
-
-    Each vectorized call must compute independent Hessian rows. Mixing rows
-    from different particles in the same call causes gradient interference.
     """
 
     energy_fn: EnergyFunction[State, Input] = field(static=True)

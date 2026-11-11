@@ -467,83 +467,37 @@ def with_runtime_assertions[**P, R](
     policy: InterpreterPolicy = InterpreterPolicy.RAISE,
     context_sharding: jax.sharding.PartitionSpec | None = None,
 ) -> Callable[P, tuple[R, tuple[RuntimeAssertion[Any, Any], ...]]]:
-    """
-    Decorator that enables runtime assertion tracing for JAX functions.
+    """Decorator that collects the runtime assertions a JAX function evaluates.
 
-    This decorator wraps a function to intercept and collect all runtime assertions
-    created with `runtime_assert` during execution. The wrapped function returns
-    both the original result and a tuple of all assertions that were evaluated,
-    allowing for post-execution analysis, debugging, and optional error recovery.
+    The wrapped function returns its result together with every assertion
+    created with `runtime_assert` during the call, threaded through ``jit``,
+    ``vmap``, ``grad`` and control flow.
 
     Args:
         fn: The function to wrap with assertion tracing capabilities
         policy: What to do with assertions the interpreter cannot reach, e.g.
             inside ``jax.custom_jvp``: RAISE (default), WARN or IGNORE (see
             [InterpreterPolicy][kups.core.effects.interpreter.InterpreterPolicy]).
-        context_sharding: Optional sharding specification for distributed contexts.
-            When provided, assertion contexts are sharded according to this spec
-            for multi-device computations.
+        context_sharding: Sharding of the assertion contexts in multi-device
+            computations.
 
     Returns:
-        A wrapped function that returns a tuple of (original_result, assertions_tuple).
-        The assertions tuple contains all RuntimeAssertion instances encountered
-        during execution, preserving order and enabling post-hoc analysis.
+        A wrapped function returning ``(result, assertions)``, with the
+        RuntimeAssertion instances in the order they were encountered.
 
     Type Parameters:
         P: Parameter specification of the wrapped function (ParamSpec)
         R: Return type of the wrapped function
 
     Example:
-        Basic usage:
         ```python
         @with_runtime_assertions
-        def validate_computation(x):
+        def square(x):
             runtime_assert(x > 0, "x must be positive")
-            return x ** 2
+            return x**2
 
-        result, assertions = validate_computation(jnp.array(5.0))
-        # result = 25.0, assertions contains one RuntimeAssertion
+        result, assertions = square(jnp.array(5.0))
         ```
-
-        With custom policy:
-        ```python
-        traced_fn = with_runtime_assertions(
-            my_function,
-            policy=InterpreterPolicy.WARN
-        )
-        result, assertions = traced_fn(inputs)
-        ```
-
-        Distributed computation:
-        ```python
-        sharded_fn = with_runtime_assertions(
-            distributed_computation,
-            context_sharding=jax.sharding.PartitionSpec('data', None)
-        )
-        ```
-
-        Error analysis and recovery:
-        ```python
-        result, assertions = traced_fn(initial_state)
-
-        # Check for failures
-        failed_assertions = [a for a in assertions if a.failed()]
-        if failed_assertions:
-            # Attempt automatic fixing
-            fixed_state = initial_state
-            for assertion in failed_assertions:
-                if assertion.fix_fn is not None:
-                    fixed_state = assertion.fix(fixed_state)
-
-            # Re-run with fixed state
-            result, _ = traced_fn(fixed_state)
-        ```
-
-    Note:
-        The decorator integrates seamlessly with JAX transformations including
-        jit, vmap, grad, and scan. Assertions are properly threaded through
-        control flow operations and maintain correct semantics under
-        transformations.
     """
     interpreter = Interpreter(
         {

@@ -84,38 +84,16 @@ class ScaleByFireState:
 class ScaleByFire[Params](Optimizer[Params, ScaleByFireState]):
     """FIRE (Fast Inertial Relaxation Engine) optimizer with per-system state.
 
-    Implements Bitzek et al. *Phys. Rev. Lett.* **97**, 170201 (2006), but
-    every global tree reduction is replaced by a per-system reduction over
-    the ``index_prefix``. Each system independently adapts its own
-    ``dt`` / ``alpha`` / ``n_pos`` and sees its own per-system power and
-    norms.
+    Implements Bitzek et al. *Phys. Rev. Lett.* **97**, 170201 (2006) with
+    every reduction taken per system over ``index_prefix``, so each system
+    adapts its own ``dt``, ``alpha`` and ``n_pos``. Following optax,
+    ``updates`` is the force ``F = -∇L``; sign conversion and clipping belong
+    in :func:`kups.relaxation.optimizer.chain`, e.g.
+    :class:`~kups.relaxation.transforms.ClipByGlobalNorm` before FIRE or
+    :class:`~kups.relaxation.transforms.MaxStepSize` after it.
 
-    The transform follows the optax convention: ``updates`` passed to
-    :meth:`update` is interpreted as the force ``F = -∇L`` (the descent
-    direction). Sign conversion from a raw gradient and any clipping live
-    in the surrounding :func:`kups.relaxation.optimizer.chain` — see the
-    module docstring for a worked example.
-
-    .. note::
-
-        This is the original FIRE 1.0. For most production relaxations
-        prefer :class:`kups.relaxation.transforms.ScaleByFire2`, which
-        Guénolé et al. 2020 (Fig. 4–6) report converges in ~1.5–3×
-        fewer force calls on Lennard-Jones, EAM and Tersoff
-        benchmarks. ABC-FIRE (``ScaleByFire2(use_abc=True)``, Echeverri
-        Restrepo & Andric 2023, Fig. 2–3) is typically a further
-        ~10–40% faster, but takes more aggressive steps and is
-        correspondingly more prone to diverging on poorly conditioned
-        or noisy landscapes — enable it only after a plain FIRE 2.0
-        run is known to be stable. FIRE 1.0 remains useful as a
-        well-tested baseline and for comparison with legacy results.
-
-    Composable clipping:
-
-    * :class:`kups.relaxation.transforms.ClipByGlobalNorm` — per-system
-      L2 cap on the input force (prepend before FIRE).
-    * :class:`kups.relaxation.transforms.MaxStepSize` — per-particle
-      ∞/L2 cap on the output displacement (append after FIRE).
+    :class:`~kups.relaxation.transforms.ScaleByFire2` usually needs 1.5–3×
+    fewer force calls (Guénolé et al. 2020); this class serves as a baseline.
 
     Attributes:
         dt_start: Initial timestep.

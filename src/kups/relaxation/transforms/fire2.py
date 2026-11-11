@@ -92,50 +92,33 @@ class ScaleByFire2State:
 class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
     """FIRE 2.0 (with optional ABC-FIRE) with per-system block-diagonal state.
 
-    Per-system port of the LAMMPS-style FIRE 2.0 integrator described in
-    Guénolé et al. 2020, with the ABC-FIRE bias correction
-    (``use_abc=True``) of Echeverri Restrepo & Andric 2023. With a single
-    system this reduces to the algorithm from
-    ``kups.relaxation.optax.scale_by_fire2``; with multiple systems each
-    system independently adapts its own ``dt`` / ``alpha`` / ``n_pos``
-    and sees its own per-system power, norms and ``dmax``.
-
-    The transform follows the optax convention: ``updates`` passed to
-    :meth:`update` is interpreted as the force ``F = -∇L`` (the descent
-    direction). Sign conversion from a raw gradient and any external
-    clipping live in the surrounding
-    :func:`kups.relaxation.optimizer.chain` — see the module docstring
-    for a worked example. The LAMMPS-style ``dmax`` clip configured via
-    :attr:`max_step` is internal to FIRE 2.0 and applies on top of any
-    composed clipping.
+    LAMMPS-style FIRE 2.0 (Guénolé et al. 2020) with optional ABC-FIRE bias
+    correction (Echeverri Restrepo & Andric 2023). Each system adapts its own
+    ``dt``, ``alpha`` and ``n_pos`` from its own power, norms and ``dmax``.
+    Following optax, ``updates`` is the force ``F = -∇L``; sign conversion and
+    external clipping belong in :func:`kups.relaxation.optimizer.chain`.
 
     Attributes:
         dt_start: Initial timestep.
         dt_max: Maximum timestep (LAMMPS ``dtmax``).
         dt_min: Minimum timestep (LAMMPS ``dtmin``).
-        max_step: Per-step displacement bound ``dmax``. ``use_abc=False``
-            applies it as a one-shot ∞-norm timestep rescale
-            (``max_i |Δx_i| ≤ max_step``); ``use_abc=True`` applies it as
-            a per-component velocity clip that persists into the next
-            step. ``None`` disables it. The clip is per-system: each
-            system's ∞-norm or component limit is computed independently.
+        max_step: Per-system displacement bound ``dmax``, or ``None`` to disable.
+            Without ABC it rescales the timestep so ``max_i |Δx_i| ≤ max_step``;
+            with ABC it clips each velocity component and persists.
         f_inc: Factor to grow ``dt`` (LAMMPS ``dtgrow``).
         f_dec: Factor to shrink ``dt`` (LAMMPS ``dtshrink``).
         alpha_start: Initial velocity-mixing parameter (LAMMPS ``alpha0``).
         f_alpha: Factor to decay ``alpha`` (LAMMPS ``alphashrink``).
-        n_min: Minimum positive-power steps before ``dt`` is allowed to
-            grow (LAMMPS ``delaystep``).
+        n_min: Positive-power steps before ``dt`` may grow (LAMMPS ``delaystep``).
         use_abc: If True, apply ABC-FIRE bias correction to the mixing.
-        halfstepback: If True, apply ``x -= 0.5·new_dt·v_old`` on the
-            non-positive-power branch.
-        delaystep_start: If True, suppress ``dt`` shrink and ``alpha``
-            reset while ``n_total < n_min``.
+        halfstepback: If True, apply ``x -= 0.5·new_dt·v_old`` on non-positive power.
+        delaystep_start: If True, suppress ``dt`` shrink and ``alpha`` reset
+            while ``n_total < n_min``.
 
     References:
         * Guénolé et al., *Comput. Mater. Sci.* **175**, 109584 (2020).
-        * Echeverri Restrepo & Andric, *Comput. Mater. Sci.* **218**,
-          111978 (2023).
-        * LAMMPS ``src/min_fire.cpp`` (develop branch).
+        * Echeverri Restrepo & Andric, *Comput. Mater. Sci.* **218**, 111978 (2023).
+        * LAMMPS ``src/min_fire.cpp``.
     """
 
     dt_start: float = field(static=True, default=0.1)

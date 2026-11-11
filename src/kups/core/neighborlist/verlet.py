@@ -123,36 +123,15 @@ def skin_margin(
 ) -> Table[SystemId, SkinMargin]:
     """How much of the skin list's safety margin the geometry has used up.
 
-    A skin list built at radius ``r_build`` stays complete for the true
-    ``cutoff`` as long as no pair that was *outside* ``r_build`` at build time
-    has come *inside* ``cutoff`` since. Two things move pairs inward:
-
-    1. **Cell deformation.** Between the build and now the cell changed by the
-       linear map ``F = h_ref⁻¹ h_now`` (row-vector convention), which maps
-       every build-time pair vector ``d`` — including those to periodic images —
-       to ``d @ F``. A linear map cannot shrink any vector by more than its
-       smallest singular value: ``|d @ F| >= σ_min(F) |d|`` for all ``d``. So
-       the affine part of the motion leaves every non-listed pair at distance
-       at least ``σ_min(F) r_build``, an inward move of at most
-       ``r_build (1 - σ_min(F))`` — and none at all if the cell only expanded
-       (``σ_min >= 1``). Because ``σ_min`` sees the whole map, pure shear
-       counts like any other strain, unlike per-axis length ratios.
-    2. **Atom motion on top of the deformation.** Each atom's *non-affine*
-       displacement is ``u_i = x_i - x_i_ref @ F`` — what remains after riding
-       the cell — minimum-image wrapped in the current cell so that a boundary
-       crossing (even along a sheared lattice vector) is undone exactly (a
-       genuine non-affine drift beyond half a cell would be under-measured, but
-       rebuilds fire at skin scale long before that). A pair distance changes
-       by at most the two endpoint displacements, ``2 max|u|``.
-
-    The stored list is therefore complete while, per system,
+    A list built at radius ``r_build`` stays complete while no pair outside
+    ``r_build`` at build time has moved inside ``cutoff``. The cell deformation
+    ``F = h_ref⁻¹ h_now`` shrinks pair vectors by at most ``σ_min(F)``, moving
+    them inward by at most ``r_build (1 - σ_min(F))``; shear counts like any
+    other strain. Each atom's non-affine displacement ``u_i = x_i - x_i_ref @ F``,
+    minimum-image wrapped, moves a pair by at most ``2 max|u|``. The list is
+    complete per system while
 
         consumed := 2 max|u| + r_build max(0, 1 - σ_min(F))  <=  r_build - cutoff =: budget
-
-    i.e. while the worst-case inward motion of a non-listed pair (*consumed*)
-    has not eaten the extra radius the build added on top of the cutoff
-    (*budget*). Pairs never span systems, so the accounting is fully per
-    system: one hot system neither charges nor rebuilds the others.
 
     Args:
         particles: Current particle table (positions and system index).

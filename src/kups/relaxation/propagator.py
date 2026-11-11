@@ -24,24 +24,14 @@ from kups.relaxation.optimizer import Optimizer, apply_updates
 
 @dataclass
 class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
-    """Unified propagator for gradient-based optimization.
+    """Propagator for one step of gradient-based optimization.
 
-    Uses a Potential to compute energy and gradients. Supports standard optax
-    optimizers (Adam, SGD) and the per-system line searches in
-    :mod:`kups.relaxation.transforms` (backtracking, More-Thuente).
-
-    Each step it passes the optimizer the gradient, the current per-system
-    energies, and a ``value_and_grad_fn`` for evaluating trial points; the line
-    searches use these to evaluate the objective along the search direction,
-    standard transforms ignore them.
-
-    After computing energy and gradients, the potential's patch is applied to the
-    state. This allows potentials to update internal state (e.g., neighbor lists)
-    at each relaxation step.
-
-    Type Parameters:
-        State: The simulation state type
-        PyTree: The type of the property being optimized (must match Potential's gradient type)
+    Works with optax optimizers and with the per-system line searches in
+    :mod:`kups.relaxation.transforms`. Each step passes the optimizer the
+    gradient, the per-system energies and a ``value_and_grad_fn`` for trial
+    points, which line searches use and other transforms ignore. The
+    potential's patch is applied each step so it can update state such as
+    neighbor lists.
 
     Attributes:
         potential: Potential that computes energy and gradients of type PyTree
@@ -51,20 +41,6 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
 
     Example:
         ```python
-        import optax
-        from kups.relaxation.optimizer import chain
-        from kups.relaxation.propagator import RelaxationPropagator
-        from kups.relaxation.transforms import ScaleByAseLbfgs, ScaleByMoreThuenteLinesearch
-
-        # Standard optimizer (Adam)
-        propagator = RelaxationPropagator(
-            potential=my_potential,
-            property=positions_lens,
-            opt_state=lens(lambda s: s.opt_state),
-            optimizer=optax.adam(0.01),
-        )
-
-        # L-BFGS with a per-system strong-Wolfe line search
         propagator = RelaxationPropagator(
             potential=my_potential,
             property=positions_lens,
@@ -75,8 +51,7 @@ class RelaxationPropagator[State, PyTree, OptState](Propagator[State]):
                 ScaleByMoreThuenteLinesearch(),
             ),
         )
-
-        state = propagator(key, state)  # One optimization step
+        state = propagator(key, state)
         ```
     """
 

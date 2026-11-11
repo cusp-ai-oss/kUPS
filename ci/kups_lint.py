@@ -4,9 +4,12 @@ Run as ``python ci/kups_lint.py [paths...]``; exits non-zero on findings.
 Silence a finding with ``# noqa: KUPxxx`` on the reported line; ruff treats
 ``KUP`` as an external code, so the directive is not flagged as unknown.
 
+Docstring findings are reported on the ``def``/``class`` line.
+
 Codes:
     KUP001  ``__init__`` defined on a dataclass.
     KUP002  Optional array-valued field on a JAX dataclass (``Array | None``).
+    KUP003  Function or class docstring longer than ``MAX_DOCSTRING_LINES``.
 """
 
 import ast
@@ -16,12 +19,15 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+MAX_DOCSTRING_LINES = 40
+
 ARRAY_TYPES = re.compile(r"\b(Array|ArrayLike|Table|Index)\b")
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
 
 MESSAGES = {
     "KUP001": "dataclass defines `__init__`; use fields, `__post_init__` or a classmethod constructor",
     "KUP002": "optional array field; None -> Array retraces, initialise a real (possibly empty) array",
+    "KUP003": "docstring has {n} lines (max {max}); cut it down",
 }
 
 
@@ -106,7 +112,21 @@ class _Visitor(ast.NodeVisitor):
                 self.report(stmt, "KUP001")
             if origin != "dataclasses" and _is_optional_array(stmt):
                 self.report(stmt, "KUP002")
+        self._check_docstring(node)
         self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._check_docstring(node)
+        self.generic_visit(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _check_docstring(
+        self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        doc = ast.get_docstring(node)
+        if doc is not None and (n := len(doc.splitlines())) > MAX_DOCSTRING_LINES:
+            self.report(node, "KUP003", n=n, max=MAX_DOCSTRING_LINES)
 
 
 def _suppressed(lines: list[str], finding: Finding) -> bool:
