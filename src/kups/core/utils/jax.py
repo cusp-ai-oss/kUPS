@@ -16,21 +16,16 @@ import importlib
 import math
 import threading
 import warnings
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from copy import copy
 from itertools import count
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Generator,
-    Iterable,
     Literal,
-    Mapping,
     NotRequired,
     Protocol,
-    Sequence,
-    Union,
     cast,
     dataclass_transform,
     no_type_check,
@@ -48,14 +43,7 @@ from typing_extensions import TypedDict
 
 from kups.core.utils.ops import where_broadcast_last
 
-StaticScalar = Union[
-    np.bool_,
-    np.number,  # NumPy scalar types
-    bool,
-    int,
-    float,
-    complex,  # Python scalar types
-]
+StaticScalar = np.bool_ | np.number | bool | int | float | complex
 
 if TYPE_CHECKING:
     from kups.core.lens import LensField

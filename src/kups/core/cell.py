@@ -100,11 +100,11 @@ from __future__ import annotations
 
 import abc
 import math
+from collections.abc import Callable
 from enum import Enum
 from functools import partial
 from typing import (
     Any,
-    Callable,
     Generic,
     Literal,
     Protocol,

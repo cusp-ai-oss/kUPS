@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, override
+from typing import Any, NamedTuple, override
 
 import ase
 import ase.data

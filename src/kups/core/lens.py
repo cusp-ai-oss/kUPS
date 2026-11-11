@@ -29,14 +29,19 @@ import copy
 import enum
 import functools as ft
 import inspect
-from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import (
+    Callable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    Sequence,
+)
 from dataclasses import is_dataclass, replace
 from functools import partial
 from typing import (
     Any,
-    Callable,
     Generic,
-    Iterator,
     Protocol,
     Self,
     TypeVar,
@@ -968,8 +973,7 @@ class _PathTraversal:
     def __iter__(self) -> Iterator[Any]:
         current = self.current
         if isinstance(current, Mapping):
-            for key in current:
-                yield key
+            yield from current
         elif isinstance(current, Sequence):
             for idx in range(len(current)):
                 yield self[idx]
@@ -1426,9 +1430,9 @@ class HasLensFields(metaclass=FieldMetaAccess):
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         if cls is HasLensFields:
             raise TypeError(
-                "Can't instantiate abstract class {}".format(HasLensFields.__name__)
+                f"Can't instantiate abstract class {HasLensFields.__name__}"
             )
-        return super(HasLensFields, cls).__new__(cls)
+        return super().__new__(cls)
 
 
 class LensField[B](abc.ABC):
@@ -1455,10 +1459,8 @@ class LensField[B](abc.ABC):
 
     def __new__(cls) -> Self:
         if cls is LensField:
-            raise TypeError(
-                "Can't instantiate abstract class {}".format(LensField.__name__)
-            )
-        return super(LensField, cls).__new__(cls)
+            raise TypeError(f"Can't instantiate abstract class {LensField.__name__}")
+        return super().__new__(cls)
 
     @overload
     def __get__[A: HasLensFields](

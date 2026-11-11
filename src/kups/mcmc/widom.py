@@ -34,8 +34,9 @@ References:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from math import comb
-from typing import Any, Callable
+from typing import Any
 
 import jax.numpy as jnp
 from jax import Array

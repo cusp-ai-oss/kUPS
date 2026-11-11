@@ -77,12 +77,12 @@ __all__ = [
 
 
 def lattice_gradient_from_virial(
-    forces: "torch.Tensor",
-    positions: "torch.Tensor",
-    batch: "torch.Tensor",
-    cell: "torch.Tensor",
-    virial: "torch.Tensor",
-) -> "torch.Tensor":
+    forces: torch.Tensor,
+    positions: torch.Tensor,
+    batch: torch.Tensor,
+    cell: torch.Tensor,
+    virial: torch.Tensor,
+) -> torch.Tensor:
     """Recover ``∂E/∂h`` from a symmetric-strain virial.
 
     Many torch MLFF backends (MACE, UMA, …) return a virial or stress quantity
@@ -209,7 +209,7 @@ class TorchMliap:
         module: torch.nn.Module,
         cutoff: float,
         compute_cell_gradients: bool = False,
-    ) -> "TorchMliap":
+    ) -> TorchMliap:
         """Wrap a torch.nn.Module that returns energy and gradients.
 
         Args:

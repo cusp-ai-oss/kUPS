@@ -58,7 +58,8 @@ at a trial point. A system whose direction is not a descent direction
 
 from __future__ import annotations
 
-from typing import Any, Callable, override
+from collections.abc import Callable
+from typing import Any, override
 
 import jax
 import jax.numpy as jnp

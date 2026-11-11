@@ -10,7 +10,8 @@ accessing fields as class attributes.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol, get_origin, get_type_hints, override
+from collections.abc import Callable
+from typing import Any, Protocol, get_origin, get_type_hints, override
 
 
 class FieldHandler(Protocol):
