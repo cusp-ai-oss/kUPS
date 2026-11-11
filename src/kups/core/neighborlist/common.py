@@ -57,8 +57,7 @@ def num_cells(
     # Reciprocal vectors are the columns of inverse_vectors (row-vector lattices).
     inv_norms: jax.Array = jnp.linalg.norm(systems.cell.inverse_vectors, axis=-2)
     face_lengths = 1.0 / jnp.where(inv_norms < eps, jnp.ones_like(inv_norms), inv_norms)
-    num_bins = jnp.maximum((face_lengths / cutoff[..., None]).astype(int), 1)
-    return num_bins
+    return jnp.maximum((face_lengths / cutoff[..., None]).astype(int), 1)
 
 
 @dataclass

@@ -157,7 +157,7 @@ def make_coulomb_vacuum_potential[
             parameter_view=lambda _: None,
         )
     )
-    potential = PotentialFromEnergy(
+    return PotentialFromEnergy(
         composer=composer,
         energy_fn=coulomb_vacuum_energy,
         gradient_lens=gradient_lens,
@@ -166,4 +166,3 @@ def make_coulomb_vacuum_potential[
         cache_lens=out_cache_lens,
         patch_idx_view=patch_idx_view,
     )
-    return potential
