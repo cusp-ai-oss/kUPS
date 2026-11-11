@@ -78,3 +78,89 @@ class TestAdaptiveNeighborListEndToEnd:
         edge_sets = [_run(c.neighborlist, lh, systems) for c in nl.implementations]
         assert all(edges == edge_sets[0] for edges in edge_sets)
         assert edge_sets[0]  # non-empty
+
+
+# Cutoff 6: the 15 Å box is minimum image (1 image), the 5 Å box replicates
+# 3 x 3 x 3 = 27 images and the slab (30 Å along z) 3 x 3 x 1 = 9.
+_CUTOFF = 6.0
+_BULK = (216, (15.0, 15.0, 15.0))
+_SMALL = (27, (5.0, 5.0, 5.0))
+_SLAB = (14, (5.0, 5.0, 30.0))
+
+
+def _batch(boxes):
+    """One orthorhombic system per ``(n, lengths)``, positions seeded by ``n``."""
+    positions = [
+        np.random.default_rng(n).uniform(0.0, 1.0, (n, 3)) * lengths
+        for n, lengths in boxes
+    ]
+    system = np.concatenate([np.full(len(p), i) for i, p in enumerate(positions)])
+    lh = make_lh(jnp.asarray(np.concatenate(positions)), jnp.asarray(system))
+    cell = PeriodicCell(OrthogonalFrame(jnp.asarray([lengths for _, lengths in boxes])))
+    systems, cutoffs = make_systems(cell, jnp.full(len(boxes), _CUTOFF))
+    return lh, systems, cutoffs
+
+
+def _estimated_edges(boxes, multiplier: float) -> tuple[set[tuple[int, int]], int]:
+    """Edges of the adaptive list sized by ``estimate``, and the fixes it needed."""
+    lh, systems, cutoffs = _batch(boxes)
+    counts = Table(systems.keys, lh.data.system.counts.data)
+    params = UniversalNeighborlistParameters.estimate(
+        counts, systems, cutoffs, multiplier=multiplier
+    )
+    state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
+
+    @jax.jit
+    @as_result_function
+    def edges(state: EvalState):
+        nl = AdaptiveNeighborList.from_state(state, cutoffs)
+        return nl(state.particles, state.systems)
+
+    fixes = 0
+    while (result := edges(state)).failed_assertions:
+        state = result.fix_or_raise(state)
+        fixes += 1
+    return valid_edge_set(result.value), fixes
+
+
+def _reference_edges(boxes) -> set[tuple[int, int]]:
+    lh, systems, cutoffs = _batch(boxes)
+    ref = DenseNearestNeighborList(
+        avg_candidates=FixedCapacity(256),
+        avg_edges=FixedCapacity(1024),
+        avg_image_candidates=FixedCapacity(4096),
+        cutoffs=cutoffs,
+    )
+    return _run(ref, lh, systems)
+
+
+class TestEstimatedImageCapacity:
+    """``estimate`` sizes the image candidates from the real candidates: padding
+    candidates take no image rows, whatever the image count of the batch's last
+    system, and no image is dropped once the candidate buffer has grown."""
+
+    def test_replicated_slab_fits_estimate(self):
+        # 14 candidates per particle in a 16-row buffer, 9 images: the real demand
+        # 14 * 9 = 126 fits the estimate of 128, the padded 16 * 9 = 144 does not.
+        edges, fixes = _estimated_edges([_SLAB], 1.0)
+        assert fixes == 0
+        assert edges == _reference_edges([_SLAB])
+
+    def test_batch_order_does_not_change_capacity(self):
+        # Last system replicated (27 images) or minimum image: neither grows.
+        bulk_first, bulk_first_fixes = _estimated_edges([_BULK, _SMALL], 2.0)
+        small_first, small_first_fixes = _estimated_edges([_SMALL, _BULK], 2.0)
+        assert bulk_first_fixes == small_first_fixes == 0
+        assert bulk_first == _reference_edges([_BULK, _SMALL])
+        n_bulk, n_small = _BULK[0], _SMALL[0]
+
+        def reorder(i: int) -> int:
+            return i + n_small if i < n_bulk else i - n_bulk
+
+        assert {(reorder(i), reorder(j)) for i, j in bulk_first} == small_first
+
+    def test_grown_candidates_keep_slab_images(self):
+        # The candidate buffer grows from 128 to 256 rows per particle, as many as
+        # the image buffer; the slab's 9 images still need more rows than that.
+        edges, _ = _estimated_edges([_BULK, _SLAB], 1.0)
+        assert edges == _reference_edges([_BULK, _SLAB])
