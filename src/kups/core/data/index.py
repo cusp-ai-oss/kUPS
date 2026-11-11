@@ -921,7 +921,7 @@ def _merge_keys[Key: SupportsSorting](
     *tokens: tuple[Key, ...],
 ) -> tuple[Key, ...]:
     """Return the sorted union of multiple key tuples."""
-    return tuple(sorted(set(t for ts in tokens for t in ts)))
+    return tuple(sorted({t for ts in tokens for t in ts}))
 
 
 def _summed_max_count(*indices: Index[Any]) -> int | None:

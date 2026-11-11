@@ -108,9 +108,7 @@ def assertion_handler(
         raise ValueError(
             f"Expected {len(fmt_arg_names)} format arguments, but got {len(fmt_arg_values)}."
         )
-    fmt_args = {
-        name: value for name, value in zip(fmt_arg_names, fmt_arg_values, strict=True)
-    }
+    fmt_args = dict(zip(fmt_arg_names, fmt_arg_values, strict=True))
 
     ctx = ctx.add_assertion(
         RuntimeAssertion(

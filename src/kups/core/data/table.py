@@ -138,7 +138,7 @@ class Table(Batched, Generic[TKey, TData]):
         updated_data = _broadcast_rows(self.data, len(self.keys))
         assert all(type(x) is self.cls for x in self.keys), (
             f"Key type mismatch: expected {self.cls.__name__}, "
-            f"got {set(type(x).__name__ for x in self.keys)}."
+            f"got {sorted({type(x).__name__ for x in self.keys})}."
         )
         object.__setattr__(self, "_cls", self.cls)
         object.__setattr__(self, "data", updated_data)
@@ -717,7 +717,7 @@ class Table(Batched, Generic[TKey, TData]):
         n = len(groups[0])
         assert all(len(g) == n for g in groups), "All groups must have the same length"
         groups = tuple(
-            zip(*map(lambda x: Table.match(*x), zip(*groups, strict=True)), strict=True)
+            zip(*(Table.match(*x) for x in zip(*groups, strict=True)), strict=True)
         )
 
         def _key_type(group: Sequence[Table[Any, Any]]) -> type | None:
