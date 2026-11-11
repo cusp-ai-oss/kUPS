@@ -1006,20 +1006,16 @@ def no_jax_tracing[C: Callable[..., Any]](fn: C) -> C:
         ```
     """
 
-    def _contains_tracer(x: object) -> bool:
-        leaves = jax.tree_util.tree_leaves(x)
-        return any(isinstance(leaf, jax.core.Tracer) for leaf in leaves)
-
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any):
         for arg in args:
-            if _contains_tracer(arg):
+            if is_traced(arg):
                 raise NotJaxCompatibleError(
                     f"Function '{fn.__name__}' cannot be called within a JAX "
                     f"transformation (jit, vmap, grad, etc.)."
                 )
         for value in kwargs.values():
-            if _contains_tracer(value):
+            if is_traced(value):
                 raise NotJaxCompatibleError(
                     f"Function '{fn.__name__}' cannot be called within a JAX "
                     f"transformation (jit, vmap, grad, etc.)."
@@ -1196,6 +1192,6 @@ def skip_on_cpu[T, R](
     return fn(operand)
 
 
-def is_traced(x: Array) -> bool:
-    """Return ``True`` if ``x`` is a JAX tracer (inside a transformation)."""
-    return isinstance(x, jax.core.Tracer)
+def is_traced(x: object) -> bool:
+    """Return ``True`` if any leaf of the pytree ``x`` is a JAX tracer."""
+    return any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(x))
