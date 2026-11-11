@@ -270,7 +270,7 @@ def load_uma(
         raise FileNotFoundError(f"UMA model not found: {model_path}")
 
     try:
-        from dataclasses import replace
+        from dataclasses import replace  # noqa: TID251
 
         from fairchem.core.units.mlip_unit import (  # pyright: ignore[reportMissingImports]
             load_predict_unit,

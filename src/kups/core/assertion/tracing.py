@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import weakref
 from collections.abc import Callable
 from functools import partial
@@ -314,11 +313,11 @@ def _merge_loop_assertion(
         (old.fmt_args, old.fix_args),
         (new.fmt_args, new.fix_args),
     )
-    return dataclasses.replace(
-        old,
-        predicate=jnp.where(new.predicate, old.predicate, new.predicate),
-        fmt_args=fmt_args,
-        fix_args=fix_args,
+    predicate = jnp.where(new.predicate, old.predicate, new.predicate)
+    return (
+        bind(old)
+        .focus(lambda a: (a.predicate, a.fmt_args, a.fix_args))
+        .set((predicate, fmt_args, fix_args))
     )
 
 
