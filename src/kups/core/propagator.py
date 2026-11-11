@@ -767,13 +767,13 @@ class BakeConstantsPropagator[State](Propagator[State]):
             nonlocal leaf_mask
             with jax.disable_jit():
                 out = propagator(key, state)
-            in_struc = tree_structure(state)
-            out_struc = tree_structure(out)
-            assert in_struc == out_struc, (
+            in_treedef = tree_structure(state)
+            out_treedef = tree_structure(out)
+            assert in_treedef == out_treedef, (
                 "BakePropagator requires the same tree structure"
             )
-            in_leaves = in_struc.flatten_up_to(state)
-            out_leaves = out_struc.flatten_up_to(out)
+            in_leaves = in_treedef.flatten_up_to(state)
+            out_leaves = out_treedef.flatten_up_to(out)
             identical_leafes = tuple(
                 in_leaf is out_leaf and isinstance(in_leaf, Array)
                 for in_leaf, out_leaf in zip(in_leaves, out_leaves, strict=True)
@@ -794,16 +794,16 @@ class BakeConstantsPropagator[State](Propagator[State]):
         return cls(propagator=propagator, const_indices=consts_indices, consts=consts)
 
     def __call__(self, key: Array, state: State) -> State:
-        struc = tree_structure(state)
-        leaves = struc.flatten_up_to(state)
+        treedef = tree_structure(state)
+        leaves = treedef.flatten_up_to(state)
         in_leaves = leaves
         leaves = list(leaves)
         # Use constants from the original state for the propagator
         for idx, const in zip(self.const_indices, self.consts, strict=True):
             leaves[idx] = jnp.asarray(const)
-        out = self.propagator(key, struc.unflatten(leaves))
-        out_leaves = struc.flatten_up_to(out)
+        out = self.propagator(key, treedef.unflatten(leaves))
+        out_leaves = treedef.flatten_up_to(out)
         # For the output we want to preserve the original leaf identities to avoid copies
         for idx in self.const_indices:
             out_leaves[idx] = in_leaves[idx]
-        return struc.unflatten(out_leaves)
+        return treedef.unflatten(out_leaves)

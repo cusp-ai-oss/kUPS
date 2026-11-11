@@ -840,12 +840,12 @@ def tree_scatter_set[T](item: T, value: T, idxs: Array, args: ScatterArgs) -> T:
         if isinstance(arr, Array):
             assert isinstance(val, Array)
             return _array_setter(merged_args, arr, val)
-        struc = tree_structure(arr, lambda x: x is not arr and _is_leaf(x))
-        leaf1 = struc.flatten_up_to(arr)
+        treedef = tree_structure(arr, lambda x: x is not arr and _is_leaf(x))
+        leaf1 = treedef.flatten_up_to(arr)
         # pyrefly: ignore[bad-argument-type]
-        leaf2 = struc.flatten_up_to(val)
+        leaf2 = treedef.flatten_up_to(val)
         result = tree_scatter_set(leaf1, leaf2, idxs, merged_args)
-        return jax.tree.unflatten(struc, result)
+        return jax.tree.unflatten(treedef, result)
 
     return tree_map(_setter, item, value, is_leaf=_is_leaf)
 
@@ -1081,11 +1081,11 @@ def tree_map[T, *S](
             other = matched[1:]
         if (is_leaf and is_leaf(x)) or jax.tree.structure(x) == _leaf_tree_def:
             return fn(x, *other)
-        struc = tree_structure(x, is_leaf=lambda y: y is not x and _is_leaf(y))
-        x_l = struc.flatten_up_to(x)
-        other_l = list(map(struc.flatten_up_to, other))
+        treedef = tree_structure(x, is_leaf=lambda y: y is not x and _is_leaf(y))
+        x_l = treedef.flatten_up_to(x)
+        other_l = list(map(treedef.flatten_up_to, other))
         new_l = tree_map(fn, x_l, *other_l, is_leaf=is_leaf)
-        return struc.unflatten(new_l)
+        return treedef.unflatten(new_l)
 
     return jax.tree_util.tree_map(_fn, tree, *trees, is_leaf=_is_leaf)
 

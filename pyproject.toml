@@ -166,6 +166,15 @@ convention = "google"
 "src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
 "!src/**" = ["ANN401", "B905", "D101", "D103", "D417", "T20", "TID251"]
 
+[tool.typos.default.extend-words]
+# Domain abbreviations, not misspellings.
+arange = "arange"       # numpy
+Comput = "Comput"       # Comput. Mater. Sci.
+coul = "coul"           # Coulomb energy subscript
+equil = "equil"         # equilibration steps
+sems = "sems"           # standard errors of the mean
+writeable = "writeable" # numpy array flag
+
 [tool.pyrefly]
 infer-with-first-use = false
 preset = "strict"

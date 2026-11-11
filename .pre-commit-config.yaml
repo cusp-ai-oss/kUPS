@@ -18,6 +18,13 @@ repos:
         args: [--select, I, --fix]
       - id: ruff-format # Run the formatter.
 
+  - repo: https://github.com/crate-ci/typos
+    rev: 276087d9a4f06398b3e04825487805e2d7375888  # v1.52.2
+    hooks:
+      - id: typos
+        types_or: [python, markdown]
+        args: [--force-exclude]
+
   - repo: local # Run pyright type checker
     hooks:
       - id: uv-lock-check
