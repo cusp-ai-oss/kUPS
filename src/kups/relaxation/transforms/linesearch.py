@@ -71,8 +71,8 @@ from kups.core.utils.jax import dataclass, field, tree_copy
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.transforms._segmented_tree import tree_scale_per_row, tree_vdot
 
+# Maps trial params to ``(per-system energies, gradient pytree)``.
 type ValueAndGradFn = Callable[[PyTree], tuple[Table[SupportsSorting, Array], PyTree]]
-"""Maps trial params to ``(per-system energies, gradient pytree)``."""
 
 
 @dataclass
