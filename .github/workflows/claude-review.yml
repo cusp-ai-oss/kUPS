@@ -1,0 +1,227 @@
+name: Claude Review
+
+# Reviews a ready (non-draft) PR once CI and GPU validation have passed on its
+# head commit. Runs automatically once per commit, or on demand with a
+# `/review` comment or a manual run.
+on:
+  workflow_run:
+    workflows: [CI, GPU Validation]
+    types: [completed]
+  pull_request_target:
+    types: [ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: claude-review-${{ inputs.pr || github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  # Decides whether to review and splits large PRs between several finders.
+  plan:
+    if: >-
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.conclusion == 'success')
+      || github.event_name == 'pull_request_target'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && startsWith(github.event.comment.body, '/review')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # CI status
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT: ${{ github.event_name }}
+      RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+      PR_INPUT: ${{ inputs.pr || github.event.pull_request.number || github.event.issue.number }}
+    outputs:
+      ready: ${{ steps.split.outputs.ready || steps.gate.outputs.ready }}
+      pr: ${{ steps.gate.outputs.pr }}
+      sha: ${{ steps.gate.outputs.sha }}
+      base: ${{ steps.gate.outputs.base }}
+      repo: ${{ steps.gate.outputs.repo }}
+      model: ${{ steps.split.outputs.model }}
+      scopes: ${{ steps.split.outputs.scopes }}
+    steps:
+      - name: Check that the PR is ready, CI passed and the commit is unreviewed
+        id: gate
+        run: |
+          skip() { echo "$1, skipping"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          pr=$PR_INPUT
+          if [ -z "$pr" ]; then
+            pr=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "$RUN_SHA" \
+              --json number --jq '.[0].number // empty')
+          fi
+          [ -n "$pr" ] || skip "no open PR for $RUN_SHA"
+          read -r state draft sha base repo < <(gh pr view "$pr" -R "$GITHUB_REPOSITORY" \
+            --json state,isDraft,headRefOid,baseRefOid,headRepository,headRepositoryOwner \
+            --jq '[.state, .isDraft, .headRefOid, .baseRefOid, "\(.headRepositoryOwner.login)/\(.headRepository.name)"] | @tsv')
+          [ "$state" = OPEN ] || skip "PR #$pr is $state"
+          [ "$draft" = false ] || skip "PR #$pr is a draft"
+          [ -z "$RUN_SHA" ] || [ "$RUN_SHA" = "$sha" ] || skip "$RUN_SHA is no longer the head of #$pr"
+          for wf in ci.yaml gpu.yaml; do
+            conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$sha" \
+              --jq '.workflow_runs[0].conclusion // "pending"')
+            [ "$conclusion" = success ] || skip "$wf is $conclusion on $sha"
+          done
+          # Automatic triggers review each commit once; manual ones always run.
+          if [ "$EVENT" = workflow_run ] || [ "$EVENT" = pull_request_target ]; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" --jq '.[].body' \
+              | grep -q "kups-review:$sha" && skip "$sha already reviewed"
+          fi
+          { echo "ready=true"; echo "pr=$pr"; echo "sha=$sha"; echo "base=$base"; echo "repo=$repo"; } >> "$GITHUB_OUTPUT"
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The PR is data here: its files are parsed, never run.
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.gate.outputs.repo }}
+          ref: ${{ steps.gate.outputs.sha }}
+          path: pr-head
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Measure facts and split between finders
+        if: steps.gate.outputs.ready == 'true'
+        id: split
+        env:
+          PR: ${{ steps.gate.outputs.pr }}
+          SHA: ${{ steps.gate.outputs.sha }}
+          BASE: ${{ steps.gate.outputs.base }}
+        run: |
+          echo "model=$(jq -r .code_review.model .github/config/models.json)" >> "$GITHUB_OUTPUT"
+          gh pr diff "$PR" -R "$GITHUB_REPOSITORY" > pr.diff
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?head_sha=$SHA" \
+            --jq '.workflow_runs[0].id // empty')
+          [ -z "$run" ] || gh run download "$run" -R "$GITHUB_REPOSITORY" -n coverage -D cov || true
+          # A re-review covers only what changed since the last reviewed commit.
+          read -r old oldbase < <(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" --jq '.[].body' \
+            | grep -o "kups-review:[0-9a-f]\{40\} base:[0-9a-f]\{40\}" | grep -v "kups-review:$SHA" | tail -1 \
+            | sed 's/kups-review:\(.*\) base:\(.*\)/\1 \2/') || true
+          since=()
+          if [ -n "$old" ] && git -C pr-head fetch -q origin "$old" "$oldbase" "$BASE"; then
+            git -C pr-head diff "$old" "$SHA" > since.diff
+            git -C pr-head diff "$oldbase" "$BASE" > moved.diff
+            since=(--since since.diff --moved moved.diff)
+          fi
+          python3 .github/scripts/review_facts.py pr-head pr.diff --coverage cov/coverage.json "${since[@]}" > facts.md
+          cat facts.md
+          if [ ${#since[@]} -gt 0 ]; then
+            files=$(python3 .github/scripts/review_facts.py pr-head pr.diff "${since[@]}" --files)
+            [ -n "$files" ] || { echo "nothing changed since the last review"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
+            scopes=$(jq -cn --arg f "$files" '[{lens: "correctness", files: $f}]')
+          else
+            scopes=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+              --jq '.[] | "\(.additions) \(.deletions) \(.filename)"' | python3 .github/scripts/review_plan.py)
+          fi
+          echo "scopes=$scopes" >> "$GITHUB_OUTPUT"
+      - if: steps.split.outputs.scopes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: facts
+          path: facts.md
+
+  find:
+    needs: plan
+    if: needs.plan.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: ${{ fromJSON(needs.plan.outputs.scopes) }}
+    steps:
+      # Trusted rules and scripts from main at the root; the PR as data only.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.repo }}
+          ref: ${{ needs.plan.outputs.sha }}
+          path: pr-head
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: facts
+      - uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          classify_inline_comments: false
+          prompt: |
+            REPO=${{ github.repository }} PR=${{ needs.plan.outputs.pr }} SHA=${{ needs.plan.outputs.sha }}
+            LENS=${{ matrix.scope.lens }} FILES=${{ matrix.scope.files }}
+            Follow .github/prompts/code-review.md.
+          claude_args: >-
+            --model ${{ needs.plan.outputs.model }}
+            --max-turns 80
+            --add-dir pr-head
+            --allowedTools "Read,Grep,Glob,Write(findings.json),Bash(gh pr view:*),Bash(gh pr diff:*)"
+      - if: hashFiles('findings.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: findings-${{ strategy.job-index }}
+          path: findings.json
+
+  # A fresh session checks every finding before anything is posted.
+  verify:
+    needs: [plan, find]
+    if: needs.plan.outputs.ready == 'true' && needs.find.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.plan.outputs.repo }}
+          ref: ${{ needs.plan.outputs.sha }}
+          path: pr-head
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: facts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: findings-*
+          path: found
+      - name: Merge findings
+        id: merge
+        run: |
+          shopt -s nullglob
+          files=(found/*/findings.json)
+          [ ${#files[@]} -gt 0 ] || { echo "no findings"; exit 0; }
+          jq -s '{escalate: ([.[].escalate | select(.)] | join(" ") | if . == "" then null else . end),
+            body: [.[].body[]], comments: [.[].comments[]]}' "${files[@]}" > findings.json
+      - if: hashFiles('findings.json') != ''
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          classify_inline_comments: false
+          prompt: |
+            REPO=${{ github.repository }} PR=${{ needs.plan.outputs.pr }} SHA=${{ needs.plan.outputs.sha }} BASE=${{ needs.plan.outputs.base }}
+            Follow .github/prompts/code-review-verify.md.
+          claude_args: >-
+            --model ${{ needs.plan.outputs.model }}
+            --max-turns 60
+            --add-dir pr-head
+            --allowedTools "Read,Grep,Glob,Write(review.json),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api:*)"
