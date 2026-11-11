@@ -183,6 +183,7 @@ def make_local_mliap_from_state(
         parameters: Constant MLIAP model. When given it is bound with a constant
             lens and the state need not carry ``local_mliap_model``; with a
             ``probe``, the cache is read from ``state.local_mliap_cache``.
+        neighborlist_factory: Builds the neighbor list from the sub-state and cutoff.
 
     Returns:
         Configured local MLIAP [Potential][kups.core.potential.Potential].

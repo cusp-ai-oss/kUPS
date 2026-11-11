@@ -315,7 +315,9 @@ def replicate_for_images(
 
     Args:
         candidates: Raw candidate pair indices.
-        keys, queries, systems: Pipeline tables (fractional coords).
+        keys: Key points of the pipeline (fractional coords).
+        queries: Query points of the pipeline (fractional coords).
+        systems: Per-system pipeline data.
         cutoffs: Per-system cutoff.
         max_image_candidates: Capacity for replicated-candidates buffer.
             When ``None``, falls back to ``FixedCapacity(candidates.key_idx.size)``
