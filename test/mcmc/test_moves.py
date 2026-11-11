@@ -544,10 +544,10 @@ class TestTranslateGroups:
         )
 
         # Very large translations
-        t_vlarge = self._assert_per_system(
+        t_very_large = self._assert_per_system(
             jnp.array([[5.7, -3.2, 2.8], [-4.1, 6.3, -1.9], [2.4, -5.8, 4.6]])
         )
-        assert jnp.all(t_vlarge >= -0.5) and jnp.all(t_vlarge < 0.5)
+        assert jnp.all(t_very_large >= -0.5) and jnp.all(t_very_large < 0.5)
 
         # Negative translations
         self._assert_per_system(
