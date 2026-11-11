@@ -100,6 +100,7 @@ def view[S, R](where: Callable[[S], R], /, cls: type[S] | None = None) -> View[S
 
     Args:
         where: A function that extracts a value from the data structure
+        cls: Source type, only used to pin ``S`` for the type checker
 
     Returns:
         A View instance that wraps the provided function
