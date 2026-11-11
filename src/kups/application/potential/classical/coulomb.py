@@ -193,7 +193,7 @@ def make_coulomb_vacuum_from_state(
     else:
         cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
 
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), cutoff_view(s))
 
     return make_coulomb_vacuum_potential(

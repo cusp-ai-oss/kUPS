@@ -107,7 +107,7 @@ class IndexLensPatch[State, T](Patch[State]):
     lens: Lens[State, T] = field(static=True)
 
     def __call__(self, state: State, accept: Accept) -> State:
-        def inner(idx: Any, new_val: Any, old_val: Any) -> Any:
+        def inner(idx: Any, new_val: Any, old_val: Any) -> Any:  # noqa: ANN401
             assert isinstance(idx, Index), "mask_idx must be an Index"
             return tree_map(
                 lambda a, b: where_broadcast_last(accept[idx], a, b), new_val, old_val
