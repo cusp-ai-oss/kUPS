@@ -7,8 +7,7 @@
 
 const fs = require('fs');
 
-/** @type {{model: string, max_tokens: number}} */
-const MODEL_CONFIG = JSON.parse(fs.readFileSync('.github/config/models.json', 'utf8')).weekly_summary;
+const { callClaude } = require('./claude');
 
 /**
  * Gathers GitHub activity data from the past week
@@ -73,32 +72,6 @@ async function gatherActivity(github, context) {
 }
 
 /**
- * Calls Claude API with a prompt
- */
-async function callClaude(prompt, apiKey) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: MODEL_CONFIG.model,
-      max_tokens: MODEL_CONFIG.max_tokens,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-
-  const result = await response.json();
-  if (result.error) {
-    throw new Error(`API error: ${result.error.message}`);
-  }
-
-  return result.content[0].text;
-}
-
-/**
  * Generates a short Slack teaser from activity
  */
 async function generateSlackTeaser(activity, apiKey) {
@@ -110,7 +83,7 @@ Contributors: ${activity.contributors.join(', ')}`;
   let prompt = fs.readFileSync('.github/prompts/slack-teaser.md', 'utf8');
   prompt = prompt.replace('{{ACTIVITY_SUMMARY}}', activitySummary);
 
-  return callClaude(prompt, apiKey);
+  return callClaude('weekly_summary', prompt, apiKey);
 }
 
 /**
@@ -128,7 +101,7 @@ async function generateSummary(activity, apiKey) {
     prompt = prompt.replace('{{ROADMAP}}', '(No roadmap available)');
   }
 
-  return callClaude(prompt, apiKey);
+  return callClaude('weekly_summary', prompt, apiKey);
 }
 
 /**

@@ -8,8 +8,7 @@
 
 const fs = require('fs');
 
-/** @type {{model: string, max_tokens: number}} */
-const MODEL_CONFIG = JSON.parse(fs.readFileSync('.github/config/models.json', 'utf8')).issue_labeling;
+const { callClaude } = require('./claude');
 
 /**
  * Calls Claude API to classify an issue
@@ -19,26 +18,7 @@ const MODEL_CONFIG = JSON.parse(fs.readFileSync('.github/config/models.json', 'u
  * @throws {Error} If API returns an error response
  */
 async function classifyIssue(prompt, apiKey) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: MODEL_CONFIG.model,
-      max_tokens: MODEL_CONFIG.max_tokens,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-
-  const result = await response.json();
-  if (result.error) {
-    throw new Error(`API error: ${result.error.message}`);
-  }
-
-  const text = result.content[0].text.trim();
+  const text = await callClaude('issue_labeling', prompt, apiKey);
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   return JSON.parse(jsonMatch ? jsonMatch[0] : text);
 }
