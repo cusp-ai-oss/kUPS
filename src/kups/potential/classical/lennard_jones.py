@@ -80,13 +80,15 @@ MAX_SELECTED_SPECIES = 16
 
 
 @runtime_checkable
-class IsLennardJonesParticles(HasPositions, HasLabels, HasSystemIndex, Protocol): ...
+class IsLennardJonesParticles(HasPositions, HasLabels, HasSystemIndex, Protocol):
+    """Particle data the Lennard-Jones potential reads: positions, labels and system index."""
 
 
 @runtime_checkable
 class IsLJGraphParticles(
     IsLennardJonesParticles, HasInclusionIndex, HasExclusionIndex, Protocol
-): ...
+):
+    """Lennard-Jones particle data with the inclusion and exclusion indices a neighbor list needs."""
 
 
 @dataclass

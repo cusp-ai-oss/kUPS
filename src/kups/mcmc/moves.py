@@ -882,6 +882,8 @@ class IsMCMCMoveState(Protocol):
 
 
 class IsExchangeParticles(HasPositionsGroupSystem, Protocol):
+    """Particle data an exchange move reads: positions, group, system and motif indices."""
+
     @property
     def motif(self) -> Index[MotifParticleId]: ...
 

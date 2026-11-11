@@ -45,10 +45,14 @@ if TYPE_CHECKING:
 
 
 class SupportsDunderLT(Protocol):
+    """Type that supports ``<`` comparison."""
+
     def __lt__(self, other: Any, /) -> bool: ...  # noqa: ANN401
 
 
 class SupportsDunderGT(Protocol):
+    """Type that supports ``>`` comparison."""
+
     def __gt__(self, other: Any, /) -> bool: ...  # noqa: ANN401
 
 

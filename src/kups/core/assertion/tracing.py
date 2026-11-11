@@ -44,6 +44,8 @@ from kups.core.utils.jax import PyTreeDef, dataclass
 
 @dataclass
 class AssertionContext:
+    """Runtime assertions collected while reinterpreting a traced function."""
+
     assertions: tuple[RuntimeAssertion[Any, Any], ...] = ()
 
     def add_assertion(self: Self, assertion: RuntimeAssertion[Any, Any]) -> Self:
@@ -67,6 +69,7 @@ def check_assertion_handler(
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
+    """Replace a ``check_assertion`` equation with the conjunction of the assertions collected so far."""
     return HandlerResult(ctx, [ctx.check_assertions()])
 
 
@@ -76,6 +79,7 @@ def assertion_handler(
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[AssertionContext]:
+    """Record an ``assertion`` equation in the context, then bind it unchanged."""
     # meta-data for assertion
     _, bind_params = get_bind_params(eqn)
     message = bind_params["message"]
@@ -423,6 +427,8 @@ def shard_map_handler(
     *,
     context_sharding: jax.sharding.PartitionSpec | None = None,
 ) -> HandlerResult[AssertionContext]:
+    """Reinterpret a ``shard_map`` equation with every context leaf sharded as ``context_sharding``."""
+
     def declare_ctx_in_specs(ctx: AssertionContext) -> AssertionContext:
         return jax.tree.map(lambda _: context_sharding, ctx)
 

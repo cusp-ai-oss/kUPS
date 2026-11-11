@@ -58,7 +58,8 @@ class EnergyFn(Protocol):
     def call(self, params: list[Array], data: AtomGraphInput) -> Array: ...
 
 
-class IsTojaxedParticles(NeighborListPoints, HasAtomicNumbers, Protocol): ...
+class IsTojaxedParticles(NeighborListPoints, HasAtomicNumbers, Protocol):
+    """Particle data a tojaxed MLIAP reads: neighbor-list points and atomic numbers."""
 
 
 @dataclass

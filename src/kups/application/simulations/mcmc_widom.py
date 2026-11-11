@@ -364,6 +364,7 @@ def run(config: Config) -> WidomState:
 
 
 def main() -> None:
+    """Run the Widom simulation configured on the command line and print its analysis."""
     cli = NanoArgs(Config)
     config = cli.parse()
     rich.print(config)
