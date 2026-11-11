@@ -260,56 +260,23 @@ def _assemble_flat(
 class TorchModuleWrapper:
     """Wraps a PyTorch nn.Module for use in JAX.
 
-    Enables calling PyTorch nn.Module instances from JAX code.
-    Handles device placement via per-device caching and DLPack-based
-    zero-copy tensor conversion.
-
-    Gradient Support:
-        For JAX autodiff through PyTorch models, use enable_vjp=True:
-
-            wrapper = TorchModuleWrapper(model, enable_vjp=True)
-            forces = -jax.grad(lambda x: wrapper(x).sum())(positions)
-
-        Limitations:
-        - Nested differentiation (Hessians) is NOT supported
-        - Module outputs must preserve grad_fn (not call .detach())
-
-        For modules computing gradients internally (e.g., MACE with compute_force=True),
-        use requires_grad=True instead of enable_vjp=True.
+    Moves tensors via DLPack without copies and caches one module copy per
+    device. The wrapper works under ``jax.jit`` and ``jax.vmap``.
 
     Attributes:
         module: PyTorch module to wrap.
-        input_spec: Optional flat list of InputSpecLeaf (one per flattened argument).
-            Use TorchDtypeSpec for explicit dtype casting, ScalarSpec to declare
-            Python scalar inputs, or None for tensors with inferred dtype.
-            If None (default), spec is inferred automatically.
-        vmap_method: How to handle vmap. Default "broadcast_all" assumes the
-            module handles batching natively. Use "sequential" for modules
-            that don't support batching.
-        requires_grad: Whether to enable gradients during forward pass. Default
-            False (uses torch.no_grad for better performance). Set to True for
-            modules that use autograd internally (e.g., MACE with compute_force=True).
-        _compile: Whether to use torch.compile for optimization. Default True.
-
-    Example:
-        ```python
-        model = torch.nn.Sequential(
-            torch.nn.Linear(10, 20),
-            torch.nn.ReLU(),
-            torch.nn.Linear(20, 5),
-        )
-        wrapper = TorchModuleWrapper(model)
-
-        output = wrapper(jax_input)
-
-        # With jit
-        jitted = jax.jit(wrapper)
-        output = jitted(jax_input)
-
-        # With vmap (module must handle batching)
-        vmapped = jax.vmap(wrapper)
-        output = vmapped(batched_input)
-        ```
+        input_spec: Flat list of InputSpecLeaf, one per flattened argument:
+            TorchDtypeSpec casts, ScalarSpec declares a Python scalar, None
+            infers the tensor dtype. Inferred entirely if None.
+        vmap_method: ``"broadcast_all"`` if the module batches natively,
+            ``"sequential"`` otherwise.
+        requires_grad: Run the forward pass with gradients enabled, for modules
+            that use autograd internally (e.g. MACE with ``compute_force=True``);
+            otherwise it runs under ``torch.no_grad``.
+        enable_vjp: Make the wrapper differentiable by JAX through a PyTorch
+            backward pass. Only first derivatives are supported, and module
+            outputs must keep their ``grad_fn``.
+        _compile: Whether to use torch.compile.
     """
 
     module: torch.nn.Module = field(static=True)

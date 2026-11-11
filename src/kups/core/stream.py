@@ -201,8 +201,7 @@ class RefillGate[State](Propagator[State]):
       and track jobs by their own identity, since slot keys are reused.
 
     Attributes:
-        requested: View returning one boolean per slot; ``True`` requests a
-            refill of that slot.
+        requested: One boolean per slot; ``True`` requests a refill.
         refill: Host callback ``(state, requested) -> state`` that refills the
             flagged slots.
     """

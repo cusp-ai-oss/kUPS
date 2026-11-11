@@ -48,3 +48,9 @@ def test_optional_array_field(annotation: str, expected: list[str]):
 
 def test_optional_array_field_on_plain_dataclass_is_fine():
     assert codes(PLAIN_DC + "@dataclass\nclass A:\n    x: Array | None\n") == []
+
+
+def test_long_docstring():
+    body = "\n    ".join(["line"] * (kups_lint.MAX_DOCSTRING_LINES + 1))
+    assert codes(f'def f():\n    """{body}"""\n') == ["KUP003"]
+    assert codes(f'"""{body}"""\n') == []

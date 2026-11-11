@@ -144,13 +144,10 @@ def runtime_assert[State, FixArgs](
     fix_args: FixArgs | _NO_ARGS = NO_ARGS,
     loop_merge: LoopMerge = ELEMENTWISE_MAX,
 ) -> None:
-    """
-    Create a runtime assertion that integrates with JAX transformations.
+    """Create a runtime assertion that integrates with JAX transformations.
 
-    This function creates assertions that can be traced through JAX transformations
-    including JIT compilation, automatic differentiation, and vectorization. The
-    assertion acts as an identity function during execution but records assertion
-    metadata for later inspection.
+    The assertion traces through ``jit``, autodiff and ``vmap``. It acts as an
+    identity during execution and records its metadata for later inspection.
 
     Args:
         predicate: A boolean array indicating whether the assertion passes
@@ -159,54 +156,25 @@ def runtime_assert[State, FixArgs](
         exception_type: Type of exception to raise if assertion fails during checking
         static_info: Additional metadata for debugging (not traced by JAX)
         fix_fn: Optional function to repair state when assertion fails
-        fix_args: Arguments for the fix function (can be complex PyTree structures)
+        fix_args: Arguments for the fix function, any PyTree
         loop_merge: How ``scan`` and ``while_loop`` fold ``fmt_args`` and
             ``fix_args`` across iterations. Defaults to
             [ELEMENTWISE_MAX][kups.core.assertion.ELEMENTWISE_MAX].
 
     Type Parameters:
         State: Type of state that can be modified by the fix function
-        FixArgs: Type of arguments passed to the fix function (supports PyTree structures)
+        FixArgs: Type of arguments passed to the fix function
 
     Example:
-        Basic assertion:
-        ```python
-        x = jnp.array(5.0)
-        runtime_assert(
-            predicate=x > 0,
-            message="Value must be positive, got {val}",
-            fmt_args={"val": x}
-        )
-        ```
-
-        Assertion with fixing:
         ```python
         runtime_assert(
             predicate=x > threshold,
             message="Value {val} below threshold {thresh}",
             fmt_args={"val": x, "thresh": threshold},
             fix_fn=lambda state, args: jnp.maximum(state, args["min_val"]),
-            fix_args={"min_val": jnp.array(1.0)}
+            fix_args={"min_val": jnp.array(1.0)},
         )
         ```
-
-        Complex PyTree fix_args:
-        ```python
-        complex_args = {
-            "thresholds": {"min": jnp.array(0.1), "max": jnp.array(10.0)},
-            "multipliers": (jnp.array(2.0), jnp.array(3.0))
-        }
-        runtime_assert(
-            predicate=x > 0,
-            message="Invalid value",
-            fix_args=complex_args
-        )
-        ```
-
-    Note:
-        The fix_args parameter supports arbitrarily nested PyTree structures including
-        dictionaries, tuples, and arrays. These are automatically flattened and
-        unflattened during JAX transformations.
     """
     if fmt_args is None:
         fmt_args = {}

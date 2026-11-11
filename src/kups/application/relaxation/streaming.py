@@ -432,9 +432,8 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
             [replace_slots][kups.application.relaxation.streaming.replace_slots].
         potential: Potential reporting the DOF gradient, built with the same
             ``gradient`` filter.
-        optimizer: [Resettable][kups.relaxation.optimizer.Resettable] optimizer;
-            the returned ``reset`` applies its ``reset_layout`` to refilled
-            slots.
+        optimizer: [Resettable][kups.relaxation.optimizer.Resettable] optimizer
+            whose ``reset_layout`` the returned ``reset`` applies.
         gradient: Relaxation filter selecting the optimizer DOFs.
         slots: Disjoint particle rows reserved for each slot, e.g. by
             [reserve_slots][kups.core.stream.reserve_slots]; pass the same table
@@ -443,19 +442,17 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
             and
             [make_streaming_relax_state][kups.application.relaxation.streaming.make_streaming_relax_state].
         force_tolerance: A job converges once its largest DOF gradient norm is
-            below this. A non-finite gradient instead fails a runtime assertion
-            that has no fix (see
+            below this; a non-finite gradient fails an unfixable assertion (see
             [converged_per_system][kups.relaxation.convergence.converged_per_system]).
         max_steps: Optimizer updates a job may take before it finishes
             unconverged.
         include_cell: Whether cell gradients count towards convergence.
 
     Returns:
-        ``(propagator, init, reset)``: ``propagator`` takes one optimizer step
-        in every running slot, flags finished slots and rolls back on a failed
-        runtime assertion; ``init`` builds optimizer state for
-        ``make_streaming_relax_state``; ``reset`` restores refilled slots'
-        optimizer state for ``replace_slots``.
+        ``(propagator, init, reset)``: one optimizer step per running slot that
+        flags finished slots and rolls back on a failed assertion, optimizer
+        state for ``make_streaming_relax_state``, and the reset of refilled
+        slots' optimizer state for ``replace_slots``.
 
     Raises:
         ValueError: If ``max_steps`` or ``force_tolerance`` is negative, or if

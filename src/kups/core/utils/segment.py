@@ -469,52 +469,33 @@ def segment_sum(
 ) -> Array:
     """Sum into bins, using a native reduction for one bin and wider scatters otherwise.
 
-    Drop-in replacement for ``jax.ops.segment_sum``: the same value in exact
-    arithmetic and the same `mode` for segment ids outside ``[0, num_segments)``,
-    dropped by default, negatives included.
-    A single segment uses a masked ``jnp.sum`` with native accumulation precision
-    and retains `data`'s dtype; float32 is not promoted to float64. Otherwise,
-    the scatter accumulates one float wider than `data` and converts back once,
-    f32 in f64 and f16 or bf16 in f32, so a bin taking ``k`` contributions rounds
-    once rather than ``k`` times. With multiple segments, integer data and empty
-    inputs use the plain scatter. `segment_ids` may additionally
-    cover several leading axes of `data` rather than only the first, which
-    ``jax.ops.segment_sum`` rejects.
-
-    Linear in `data` and non-differentiable in the integral `segment_ids`, so it
-    transforms under ``jit``, ``vmap`` over either argument, forward mode,
-    reverse mode, and repeated differentiation. The reverse pass is
-    [segment_take][kups.core.utils.segment.segment_take] under the same `mode`,
-    its exact adjoint.
+    Drop-in replacement for ``jax.ops.segment_sum`` with the same value in exact
+    arithmetic. A single segment uses a masked ``jnp.sum`` in `data`'s dtype.
+    Otherwise floating data accumulates one float wider (f32 in f64, f16 and
+    bf16 in f32) and converts back once, so each bin rounds once rather than
+    once per contribution; integer and empty data use the plain scatter.
+    `segment_ids` may cover several leading axes of `data`. Differentiable in
+    `data` to any order, with
+    [segment_take][kups.core.utils.segment.segment_take] as its exact adjoint.
 
     Args:
         data: Contributions of shape ``(*segment_ids.shape, *feature_dims)``.
-        segment_ids: Bin index per contribution, of any shape that is a prefix of
-            `data`'s.
+        segment_ids: Integral bin index per contribution, of any shape that is a
+            prefix of `data`'s.
         num_segments: Number of output bins.
-        mode: How to treat ids outside ``[0, num_segments)``, as a
-            ``jax.lax.GatherScatterMode`` or as one of the strings ``"drop"``,
-            ``"fill"`` or ``"clip"``. The default ``None`` drops them so they
-            contribute nothing, negatives included; ``"clip"`` instead clamps each
-            id into range, piling negatives into bin ``0`` and ids at or above
-            `num_segments` into the last bin, which is far slower than dropping
-            when many ids are out of range because those two bins then take every
-            such update. ``"promise_in_bounds"`` and ``"one_hot"`` are rejected.
+        mode: How to treat ids outside ``[0, num_segments)``: a
+            ``jax.lax.GatherScatterMode`` or ``"drop"``, ``"fill"`` or ``"clip"``.
+            ``None`` drops them; ``"clip"`` clamps them into the first or last
+            bin, which is slow when many ids are out of range.
+            ``"promise_in_bounds"`` and ``"one_hot"`` are rejected.
 
     Returns:
-        Bin sums of shape ``(num_segments, *feature_dims)`` with `data`'s dtype,
-        `feature_dims` being the axes of `data` that `segment_ids` does not cover.
+        Bin sums of shape ``(num_segments, *feature_dims)`` with `data`'s dtype.
 
     Raises:
         ValueError: If `data` is scalar, `segment_ids` is scalar, not integral, or
             its shape is not a prefix of `data`'s, or `mode` is unknown or
             unsupported.
-
-    Example:
-        ```python
-        # Per-atom sums of float32 edge messages, accumulated in float64.
-        per_atom = segment_sum(messages, edges.indices.raw_indices[:, 0], n_atoms)
-        ```
     """
     if data.ndim == 0:
         raise ValueError(f"data must be at least 1-D, got shape {data.shape}.")
@@ -564,37 +545,24 @@ def segment_take(
 ) -> Array:
     """Gather rows of `data` by segment id, summing the cotangents stably.
 
-    The forward pass moves rows and is exact; the accuracy is in the reverse
-    pass, which sums the cotangents landing in each row through
-    [segment_sum][kups.core.utils.segment.segment_sum] rather than the serial
-    ``jnp.zeros(...).at[segment_ids].add(...)`` that differentiating
-    ``data[segment_ids]`` gives. The two are exact adjoints under the same `mode`
-    and a zero `fill_value`, so ``(segment_take(data, ids) * cotangent).sum()``
-    equals
-    ``(data * segment_sum(cotangent, ids, len(data))).sum()``, and each is the
-    other's transpose, so differentiating either repeatedly keeps using the wide
-    accumulator instead of falling back to the plain scatter.
+    The forward pass is an exact gather. The reverse pass sums the cotangents
+    of each row through [segment_sum][kups.core.utils.segment.segment_sum]
+    instead of a serial scatter-add. With the same `mode` and a zero
+    `fill_value` the two are exact adjoints of each other, so repeated
+    differentiation keeps using the wide accumulator.
 
     Args:
         data: Rows to gather from, shape ``(num_segments, *feature_dims)``.
         segment_ids: Row index per output, of any shape.
         mode: How to treat ids outside ``[0, num_segments)``, spelled as for
-            [segment_sum][kups.core.utils.segment.segment_sum]. A negative id is
-            out of range here rather than an index from the end as in
-            ``jnp.take``. The default ``None`` gives every out-of-range output
-            `fill_value`, so it fills exactly the ids the sum drops; ``"clip"``
-            clamps them to the first or last row instead. An empty `data` has no
-            row to clamp to, so ``"clip"`` gives every output zero there.
-        fill_value: Value the out-of-range outputs take under the default `mode`,
-            zero so the gather stays the sum's exact adjoint. Unlike ``jnp.take``
-            a `fill_value` of ``None`` means zero rather than NaN. A nonzero fill
-            is an additive constant, so the gather becomes affine rather than
-            linear: forward and reverse mode stay correct and ignore it, but
-            ``jax.linear_transpose`` then transposes only the linear part, as
-            ``jnp.take`` does. Clamping leaves nothing out of range, so
-            ``mode="clip"`` ignores the fill as ``jnp.take`` does, except that one
-            already known to be nonzero at trace time is rejected rather than
-            silently dropped.
+            [segment_sum][kups.core.utils.segment.segment_sum]; negative ids are
+            out of range. ``None`` gives those outputs `fill_value`; ``"clip"``
+            clamps them to the first or last row, or gives zero if `data` is
+            empty.
+        fill_value: Value of out-of-range outputs under the default `mode`;
+            ``None`` means zero, which keeps the gather linear. A nonzero fill
+            makes it affine, so ``jax.linear_transpose`` sees only the linear
+            part. Rejected under ``"clip"`` if known to be nonzero at trace time.
 
     Returns:
         Gathered rows of shape ``(*segment_ids.shape, *feature_dims)`` with
@@ -604,12 +572,6 @@ def segment_take(
         ValueError: If `data` or `segment_ids` is scalar, `mode` is unknown or
             unsupported, or `fill_value` is known at trace time to be nonzero
             under ``mode="clip"``.
-
-    Example:
-        ```python
-        # Per-edge copies of atom features, whose gradient scatters back stably.
-        edge_emb = segment_take(node_emb, edges.indices.raw_indices[:, 0])
-        ```
     """
     if data.ndim == 0:
         raise ValueError(f"data must be at least 1-D, got shape {data.shape}.")

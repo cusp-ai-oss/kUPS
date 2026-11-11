@@ -1432,61 +1432,23 @@ class HasLensFields(metaclass=FieldMetaAccess):
 class LensField[B](abc.ABC):
     """Type annotation for lens-enabled fields in dataclasses.
 
-    LensField provides a type-safe way to enable lens access on dataclass fields.
-    When a dataclass inherits from HasLensFields, fields annotated with LensField[T]
-    can be accessed both as regular attributes and as lenses.
+    On a dataclass deriving from HasLensFields, a field annotated with
+    ``LensField[B]`` returns a ``Lens[MyClass, B]`` on class access
+    (``MyClass.field``) and the plain value of type ``B`` on instance access
+    (``obj.field``). The FieldMetaAccess metaclass intercepts the class access.
+    Use ``lens_field()`` instead of ``field()`` to give such a field a default
+    value or field options.
 
     Type Parameters:
         B: The type of the field value
 
-    Behavior:
-        - **Class access** (e.g., `MyClass.field`): Returns a `Lens[MyClass, B]`
-          that can be used for functional operations like `get()`, `set()`, `focus()`
-        - **Instance access** (e.g., `obj.field`): Returns the actual field value
-          of type `B`, behaving like a normal attribute
-
-    Usage:
-        For dataclasses deriving from HasLensFields, annotate fields with LensField[T]
-        to enable lens access. Regular dataclasses without HasLensFields inheritance
-        do not support lens access through field annotations.
-
-    Examples:
-        >>> from kups.core.utils.jax import dataclass
-        >>> from kups.core.lens import LensField, HasLensFields
-        >>> import jax.numpy as jnp
-        >>> from jax import Array
-        >>>
+    Example:
         >>> @dataclass
-        >>> class Point(HasLensFields):
+        ... class Point(HasLensFields):
         ...     x: LensField[float]
-        ...     y: LensField[Array]
-        >>>
-        >>> # Instance access - normal field behavior
-        >>> point = Point(x=1.0, y=jnp.array([1.0, 2.0, 3.0]))
-        >>> point.x  # Returns 1.0
-        >>> point.y  # Returns Array([1., 2., 3.])
-        >>>
-        >>> # Class access - returns a lens
-        >>> x_lens = Point.x  # Returns Lens[Point, float]
-        >>> x_lens.get(point)  # Returns 1.0
-        >>> new_point = x_lens.set(point, 5.0)  # Returns Point(x=5.0, y=...)
-        >>>
-        >>> # Compose with other lenses
-        >>> doubled_x_lens = Point.x.focus(lambda x: x * 2)
-        >>> doubled_x_lens.get(point)  # Returns 2.0
-        >>>
-        >>> # Works in JAX transformations
-        >>> @jax.jit
-        >>> def increment_y(p: Point) -> Point:
-        ...     return Point.y.set(p, p.y + 1.0)
-
-    Notes:
-        - Only works with dataclasses that inherit from HasLensFields
-        - The metaclass FieldMetaAccess intercepts class attribute access to return lenses
-        - Compatible with JAX transformations when used with jax-compatible
-          dataclasses (e.g., from `kups.core.utils.jax`)
-        - Use `lens_field()` instead of `field()` for type-safe field definitions
-          with default values or field options
+        >>> point = Point(x=1.0)
+        >>> point.x  # 1.0
+        >>> Point.x.set(point, 5.0)  # Point(x=5.0)
     """
 
     def __new__(cls) -> Self:
@@ -1535,52 +1497,26 @@ def _lens_field_handler(cls: type, name: str) -> Lens[Any, Any]:
 class lens_property[S, B]:
     """Decorator to create a lens-enabled property.
 
-    This decorator allows properties to behave like LensField, returning a lens when
-    accessed on the class and the property value when accessed on an instance.
+    Like LensField, the property returns a ``Lens[MyClass, B]`` on class access
+    (``MyClass.prop``) and its value on instance access (``obj.prop``). The
+    decorated function must be a plain getter taking only ``self``; setting
+    through the lens returns a new instance with the updated value.
 
     Type Parameters:
+        S: The type of the owning class
         B: The type of the property value
 
-    Behavior:
-        - **Class access** (e.g., `MyClass.prop`): Returns a `Lens[MyClass, B]`
-          that can be used for functional operations like `get()`, `set()`, `focus()`
-        - **Instance access** (e.g., `obj.prop`): Returns the property value of type `B`,
-          behaving like a normal property
-
-    Examples:
-        >>> from kups.core.utils.jax import dataclass
-        >>> from kups.core.lens import lens_property, HasLensFields
-        >>>
+    Example:
         >>> @dataclass
-        >>> class Temperature(HasLensFields):
+        ... class Temperature(HasLensFields):
         ...     _kelvin: float
         ...
         ...     @lens_property
         ...     def kelvin(self) -> float:
         ...         return self._kelvin
-        ...
-        ...     @lens_property
-        ...     def celsius(self) -> float:
-        ...         return self._kelvin - 273.15
-        >>>
         >>> temp = Temperature(_kelvin=300.0)
-        >>>
-        >>> # Instance access returns values
-        >>> temp.kelvin    # 300.0
-        >>> temp.celsius   # 26.85
-        >>>
-        >>> # Class access returns lenses
-        >>> kelvin_lens = Temperature.kelvin  # Lens[Temperature, float]
-        >>> celsius_lens = Temperature.celsius  # Lens[Temperature, float]
-        >>>
-        >>> # Use lenses for functional updates
-        >>> kelvin_lens.get(temp)  # 300.0
-        >>> celsius_lens.get(temp)  # 26.85
-
-    Notes:
-        - Only works with classes that inherit from HasLensFields
-        - The decorated function should be a simple getter (no parameters other than self)
-        - Setting through the lens creates a new instance with the updated value
+        >>> temp.kelvin  # 300.0
+        >>> Temperature.kelvin.get(temp)  # 300.0
     """
 
     def __init__(self, fget: Callable[[S], B]) -> None:
