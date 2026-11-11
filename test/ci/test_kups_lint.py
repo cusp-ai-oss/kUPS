@@ -107,3 +107,16 @@ def test_type_alias_docstring():
 )
 def test_suppression_names_pyrefly_kind(comment: str, expected: list[str]):
     assert codes(comment + "\n") == expected
+
+
+@pytest.mark.parametrize(
+    ("comment", "expected"),
+    [
+        ("# ----- setup -----", ["KUP009"]),
+        ("# ==========", ["KUP009"]),
+        ("#### Section ####", ["KUP009"]),
+        ("# x -> y, a - b", []),
+    ],
+)
+def test_banner_comment(comment: str, expected: list[str]):
+    assert codes(comment + "\n") == expected
