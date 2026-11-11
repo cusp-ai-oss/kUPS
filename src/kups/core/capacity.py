@@ -122,7 +122,7 @@ class FixedCapacity[Value]:
         runtime_assert(
             (required_capacity <= size).all(),
             f"Insufficient capacity: {{affected}} > {self.size}.{f'\n{self.error_msg}' if self.error_msg else ''}",
-            fmt_args=dict(affected=max_fn(required_capacity)),
+            fmt_args={"affected": max_fn(required_capacity)},
             exception_type=CapacityError,
         )
         return self
@@ -221,7 +221,7 @@ class LensCapacity[State, Value]:
         runtime_assert(
             (required_capacity <= size).all(),
             f"Insufficient capacity: {{affected}} > {self.size}.",
-            fmt_args=dict(affected=max_fn(required_capacity)),
+            fmt_args={"affected": max_fn(required_capacity)},
             exception_type=CapacityError,
             fix_fn=LensCapacityFix(self.size_lens),
             fix_args=new_capacity,
