@@ -249,7 +249,8 @@ def motif_counts(groups: Table[GroupId, HasMotifAndSystemIndex]) -> Array:
     return counts.reshape(system.num_labels, motif.num_labels)
 
 
-class IsBoltzmannSystems(HasCompensatedPotentialEnergy, HasTemperature, Protocol): ...
+class IsBoltzmannSystems(HasCompensatedPotentialEnergy, HasTemperature, Protocol):
+    """System data the Boltzmann acceptance reads: compensated potential energy and temperature."""
 
 
 class IsBoltzmannState(Protocol):
@@ -259,7 +260,8 @@ class IsBoltzmannState(Protocol):
     def systems(self) -> Table[SystemId, IsBoltzmannSystems]: ...
 
 
-class IsFugacitySystems(HasLogActivity, HasCell[AnyPeriodicity], Protocol): ...
+class IsFugacitySystems(HasLogActivity, HasCell[AnyPeriodicity], Protocol):
+    """System data the fugacity acceptance reads: log activity and unit cell."""
 
 
 class IsFugacityState(Protocol):
@@ -277,7 +279,8 @@ class MuVTSystems(
     HasTemperature,
     HasCompensatedPotentialEnergy,
     Protocol,
-): ...
+):
+    """System data the μVT acceptance reads: log activity, cell, temperature and potential energy."""
 
 
 class IsMuVTState(Protocol):

@@ -53,7 +53,8 @@ TO_STANDARD_UNITS = HARTREE * BOHR
 
 class IsCoulombGraphParticles(
     HasPositionsAndSystemIndex, HasCharges, NeighborListPoints, Protocol
-): ...
+):
+    """Particle data the Coulomb potential reads: neighbor-list points with charges."""
 
 
 type CoulombVacuumInput = GraphPotentialInput[
@@ -76,6 +77,7 @@ def coulomb_pair_energy(charges_i: Array, charges_j: Array, distance: Array) -> 
 def pairwise_coulomb_energy(
     inp: _PairwiseCoulombInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+    """Per-system Coulomb energy summed over the graph edges, halved since each pair appears twice."""
     edg = inp.graph.particles[inp.graph.edges.indices]
     dists = jnp.linalg.norm(inp.graph.edge_shifts[:, 0], axis=-1)
     energies = (

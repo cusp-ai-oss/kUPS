@@ -48,10 +48,12 @@ class NeighborListPoints(
     HasInclusionIndex,
     HasExclusionIndex,
     Protocol,
-): ...
+):
+    """Particle data a neighbor list reads: positions, system, inclusion and exclusion indices."""
 
 
-class NeighborListSystems(HasCell[AnyPeriodicity], Protocol): ...
+class NeighborListSystems(HasCell[AnyPeriodicity], Protocol):
+    """System data a neighbor list reads: the unit cell."""
 
 
 class NeighborList[D: int](Protocol):

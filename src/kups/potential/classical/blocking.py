@@ -126,7 +126,8 @@ class BlockingSpheresParameters:
         return BlockingSpheresParameters(radii, positions, system, motif)
 
 
-class BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): ...
+class BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol):
+    """Particle data the blocking-sphere potential reads: positions, group and system indices."""
 
 
 @dataclass

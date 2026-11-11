@@ -454,6 +454,8 @@ def triangular_3x3_matmul(
 
 @runtime_checkable
 class SquareMatrix(Protocol):
+    """Possibly batched 3x3 matrix supporting products, determinant, inverse and scaling."""
+
     @property
     def array(self) -> Array:
         """Underlying array of shape `(..., 3, 3)` representing the matrix."""
@@ -511,6 +513,8 @@ class SquareMatrix(Protocol):
 
 @dataclass
 class GeneralSquareMatrix:
+    """Dense :class:`SquareMatrix` without assumed structure."""
+
     array: Array
 
     @overload
@@ -550,6 +554,8 @@ class GeneralSquareMatrix:
 
 @dataclass
 class LowerTriangularSquareMatrix(GeneralSquareMatrix):
+    """Lower-triangular :class:`SquareMatrix` with structure-aware products, determinant and inverse."""
+
     array: Array
 
     @overload
@@ -586,6 +592,8 @@ class LowerTriangularSquareMatrix(GeneralSquareMatrix):
 
 @dataclass
 class DiagonalSquareMatrix(LowerTriangularSquareMatrix):
+    """Diagonal :class:`SquareMatrix`, stored in full, with structure-aware products and inverse."""
+
     array: Array
 
     @overload

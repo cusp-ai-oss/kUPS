@@ -603,6 +603,7 @@ def make_guest_stress(
 
 
 def run(config: Config) -> MCMCState:
+    """Run a rigid-body GCMC simulation from ``config`` and return the final state."""
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state = init_state(next(chain), config)
@@ -615,6 +616,7 @@ def run(config: Config) -> MCMCState:
 
 
 def main() -> None:
+    """Run the simulation configured on the command line and print its analysis."""
     cli = NanoArgs(Config)
     config = cli.parse()
     rich.print(config)

@@ -19,7 +19,8 @@ type Fix[State, FixArgs] = Callable[[State, FixArgs], State]
 
 
 @dataclass
-class NoArgs: ...  # We cannot use `None` as a default value because it may be an actual argument.
+class NoArgs:
+    """Sentinel type for absent arguments, since ``None`` may be a real argument."""
 
 
 NO_ARGS: Final[NoArgs] = NoArgs()

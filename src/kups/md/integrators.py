@@ -250,7 +250,8 @@ class PositionStep[State](Propagator[State]):
 
 
 @runtime_checkable
-class IsMomentumStepData(HasMomenta, HasForces, HasSystemIndex, Protocol): ...
+class IsMomentumStepData(HasMomenta, HasForces, HasSystemIndex, Protocol):
+    """Particle data a momentum step reads and writes: momenta, forces and system index."""
 
 
 @dataclass
@@ -305,6 +306,8 @@ class MomentumStep[State](Propagator[State]):
 class MDParticleData(
     HasMomenta, HasPositions, HasForces, HasMasses, HasSystemIndex, Protocol
 ):
+    """Particle data MD integrators read and write: positions, momenta, masses, forces, gradients."""
+
     @property
     def position_gradients(self) -> Array: ...
 
@@ -363,7 +366,8 @@ def make_velocity_verlet_step[State](
 
 
 @runtime_checkable
-class IsStochasticParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
+class IsStochasticParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol):
+    """Particle data the Langevin stochastic step reads and writes: momenta, masses and system index."""
 
 
 @runtime_checkable
@@ -521,7 +525,8 @@ class IsCSVRParams(
 
 
 @runtime_checkable
-class IsCSVRParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol): ...
+class IsCSVRParticleData(HasMomenta, HasMasses, HasSystemIndex, Protocol):
+    """Particle data the CSVR thermostat reads and writes: momenta, masses and system index."""
 
 
 @dataclass

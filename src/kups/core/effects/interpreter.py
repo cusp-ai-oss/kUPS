@@ -39,6 +39,8 @@ class InterpreterPolicy(Enum):
 
 
 class HandlerResult[Context](NamedTuple):
+    """Context and output values a handler returns for one equation."""
+
     ctx: Context
     outvals: list[TracerValue]
 
@@ -158,6 +160,8 @@ class Interpreter[Context]:
 def reinterpret[Context, **P, R](
     fn: Callable[P, R], interpreter: Interpreter[Context]
 ) -> Callable[Concatenate[Context, P], tuple[R, Context]]:
+    """Wrap ``fn`` to run under ``interpreter``, taking a context and returning it with the result."""
+
     def inner(ctx: Context, *args: P.args, **kwargs: P.kwargs) -> tuple[R, Context]:
         def fn_closed():
             return fn(*args, **kwargs)
