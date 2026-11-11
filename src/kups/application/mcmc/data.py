@@ -70,7 +70,8 @@ class AdsorbateConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _fill_defaults_from_ase(cls, data: dict) -> dict:  # type: ignore[override]
+    # pyrefly: ignore[implicit-any-type-argument]
+    def _fill_defaults_from_ase(cls, data: dict) -> dict:
         """Derive charges, atomic numbers, and masses from symbols when absent.
 
         Masses derive from ``atomic_numbers``; an explicit atomic number of 0
@@ -260,7 +261,8 @@ class MCMCParticles(Particles):
 
     group: Index[GroupId]
     motif: Index[MotifParticleId]
-    position_gradients: Array = field(default=None)  # type: ignore[assignment]
+    # pyrefly: ignore[bad-assignment]
+    position_gradients: Array = field(default=None)
 
     def __post_init__(self) -> None:
         if self.position_gradients is None:
@@ -321,7 +323,8 @@ class MCMCSystems:
     temperature: Array
     potential_energy: KahanSummand[Array]
     log_fugacity: Array
-    cell_gradients: Cell[Any] = field(default=None)  # type: ignore[assignment]
+    # pyrefly: ignore[bad-assignment]
+    cell_gradients: Cell[Any] = field(default=None)
 
     def __post_init__(self) -> None:
         if self.cell_gradients is None:

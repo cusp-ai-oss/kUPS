@@ -77,7 +77,8 @@ def empty_patch_idx_view(
 ) -> PotentialOut[EmptyType, EmptyType]:
     """Default patch index view covering all systems with no gradient/Hessian outputs."""
     system_keys = state.particles.data.system.keys
-    return PotentialOut(Index.new(system_keys), EMPTY, EMPTY)  # type: ignore
+    # pyrefly: ignore[bad-argument-type]
+    return PotentialOut(Index.new(system_keys), EMPTY, EMPTY)
 
 
 @dataclass

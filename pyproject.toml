@@ -181,3 +181,9 @@ ignore-missing-imports = [
 [tool.pyrefly.errors]
 bad-function-definition = false
 implicit-any-lambda = false
+
+# torch is optional and absent in CI's lint job, so suppressions in these
+# modules are only used in one of the two environments.
+[[tool.pyrefly.sub-config]]
+matches = "src/kups/potential/mliap/torch/*"
+errors = { unused-ignore = false }

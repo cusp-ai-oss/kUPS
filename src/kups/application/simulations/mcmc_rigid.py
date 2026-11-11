@@ -570,8 +570,10 @@ def make_guest_stress(
             )
         ),
         lambda x: PotentialOut(
-            x.systems.index,  # type: ignore
-            PositionsAndCell(x.particles.data.system, x.systems.index),  # type: ignore[arg-type]
+            # pyrefly: ignore[bad-argument-type]
+            x.systems.index,
+            # pyrefly: ignore[bad-argument-type]
+            PositionsAndCell(x.particles.data.system, x.systems.index),
             EMPTY,
         ),
     )

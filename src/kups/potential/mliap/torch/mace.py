@@ -82,7 +82,8 @@ class MACEModule(torch.nn.Module):
         self.compute_cell_gradients = compute_cell_gradients
 
     @override
-    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:  # type: ignore
+    # pyrefly: ignore[bad-override]  # nn.Module is untyped without the optional torch
+    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Run MACE on a universal ``AtomGraphInput`` and return gradients.
 
         Args:

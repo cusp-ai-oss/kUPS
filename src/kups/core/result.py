@@ -43,7 +43,8 @@ class Result[State, Return]:
 
     value: Return
     assertions: tuple[RuntimeAssertion[State, Any], ...] = ()
-    _all_pass: Array = field(default=None, kw_only=True)  # type: ignore
+    # pyrefly: ignore[bad-assignment]
+    _all_pass: Array = field(default=None, kw_only=True)
 
     def __iter__(self):
         yield self.value
