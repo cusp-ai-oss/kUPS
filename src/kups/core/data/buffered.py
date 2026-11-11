@@ -378,8 +378,7 @@ def add_buffers(
         empty = tree_map(
             lambda x: jnp.zeros_like(x, shape=(pad, *x.shape[1:])), idx.data
         )
-        padding = Table.arange(empty, label=idx.cls)
-        return padding
+        return Table.arange(empty, label=idx.cls)
 
     def to_buffered(
         item: tuple[

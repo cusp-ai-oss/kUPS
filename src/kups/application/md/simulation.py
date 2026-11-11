@@ -127,10 +127,9 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         state_lens, derivative_computation, integrator
     )
     step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
-    propagator = ResetOnErrorPropagator(
+    return ResetOnErrorPropagator(
         SequentialPropagator((md_propagator, step_count_propagator))
     )
-    return propagator
 
 
 def run_md[State: IsMdState](
@@ -162,5 +161,4 @@ def run_md[State: IsMdState](
         TqdmLogger(num_cycles),
         HDF5StorageWriter(config.out_file, MDLoggedData(), state, num_cycles),
     )
-    state = run_simulation_cycles(next(chain), cycle_fn, state, num_cycles, logger)
-    return state
+    return run_simulation_cycles(next(chain), cycle_fn, state, num_cycles, logger)

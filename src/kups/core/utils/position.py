@@ -78,8 +78,7 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     center_of_masses = group.sum_over(rel_positions * weight).data
     center_of_masses /= group.sum_over(weight).data
     center_of_masses += offsets
-    center_of_masses = cells.wrap(center_of_masses)
-    return center_of_masses
+    return cells.wrap(center_of_masses)
 
 
 @jit

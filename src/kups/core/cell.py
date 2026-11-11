@@ -602,8 +602,7 @@ def _broadcast_cell_factor(cell_factor: float | Array, like: Array) -> Array:
     """
     cf = jnp.asarray(cell_factor, like.dtype)
     cf = cf.reshape(cf.shape + (1,) * (like.ndim - cf.ndim))
-    cf = jnp.broadcast_to(cf, (like.shape[0], *cf.shape[1:]))
-    return cf
+    return jnp.broadcast_to(cf, (like.shape[0], *cf.shape[1:]))
 
 
 @dataclass
