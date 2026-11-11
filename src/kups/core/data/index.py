@@ -97,7 +97,13 @@ class Index[Key: SupportsSorting]:
 
     @property
     def raw_indices(self) -> Array:
-        """Raw integer positions into ``keys``, for numeric kernels only."""
+        """Raw integer positions into ``keys``, for numeric kernels only.
+
+        Elsewhere, go through the ``Index`` API instead: ``valid_mask``,
+        ``apply_mask``, ``indices_in``, ``isin``, ``sum_over``/``max_over``,
+        ``counts`` and ``Table[index]`` gathers. Out-of-range positions equal
+        ``len(keys)``, never a negative number.
+        """
         return self._indices
 
     def with_raw_indices(self, indices: Array) -> Index[Key]:
