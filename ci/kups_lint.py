@@ -10,16 +10,20 @@ Codes:
     KUP001  ``__init__`` defined on a dataclass.
     KUP002  Optional array-valued field on a JAX dataclass (``Array | None``).
     KUP003  Function or class docstring longer than ``MAX_DOCSTRING_LINES``.
+    KUP004  Comment block longer than ``MAX_COMMENT_LINES``.
 """
 
 import ast
+import io
 import re
 import sys
+import tokenize
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 MAX_DOCSTRING_LINES = 40
+MAX_COMMENT_LINES = 6
 
 ARRAY_TYPES = re.compile(r"\b(Array|ArrayLike|Table|Index)\b")
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
@@ -28,6 +32,7 @@ MESSAGES = {
     "KUP001": "dataclass defines `__init__`; use fields, `__post_init__` or a classmethod constructor",
     "KUP002": "optional array field; None -> Array retraces, initialise a real (possibly empty) array",
     "KUP003": "docstring has {n} lines (max {max}); cut it down",
+    "KUP004": "{n}-line comment block (max {max}); shorten it or move it to the docstring",
 }
 
 
@@ -129,6 +134,25 @@ class _Visitor(ast.NodeVisitor):
             self.report(node, "KUP003", n=n, max=MAX_DOCSTRING_LINES)
 
 
+def _comment_findings(path: Path, source: str) -> Iterator[Finding]:
+    blocks: list[list[int]] = []
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type != tokenize.COMMENT:
+            continue
+        line = tok.start[0]
+        if not tok.line.lstrip().startswith("#"):
+            continue
+        if blocks and blocks[-1][-1] == line - 1:
+            blocks[-1].append(line)
+        else:
+            blocks.append([line])
+    for block in blocks:
+        if len(block) > MAX_COMMENT_LINES:
+            yield _finding(
+                path, block[0], "KUP004", n=len(block), max=MAX_COMMENT_LINES
+            )
+
+
 def _suppressed(lines: list[str], finding: Finding) -> bool:
     match = NOQA.search(lines[finding.line - 1])
     return match is not None and finding.code in {
@@ -142,7 +166,7 @@ def check_source(path: Path, source: str) -> list[Finding]:
     visitor = _Visitor(path, tree)
     visitor.visit(tree)
     lines = source.splitlines()
-    findings = visitor.findings
+    findings = [*visitor.findings, *_comment_findings(path, source)]
     return sorted(
         (f for f in findings if not _suppressed(lines, f)),
         key=lambda f: (f.line, f.code),

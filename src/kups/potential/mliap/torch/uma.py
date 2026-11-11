@@ -109,21 +109,10 @@ class UMAModule(torch.nn.Module):
             AtomicData,
         )
 
-        # Keep AtomicData inputs at the device JAX/DLPack handed us. We must
-        # NOT pre-move them to ``predict_unit.device``: the first call into
-        # ``predict_unit.predict`` triggers ``_lazy_init`` which calls
-        # ``prepare_for_inference(data, ...)`` while the underlying model is
-        # still on cpu (``move_to_device`` runs after ``prepare_for_inference``
-        # inside ``_lazy_init``). Pre-moving data to cuda makes UMA's MOLE
-        # merge embed cuda indices into cpu weights and crash. The
-        # predict-unit itself does ``data.to(self.device).clone()`` internally,
-        # so any device-transition cost is paid there.
-        #
-        # We DO cast every float input to the predict-unit's inference dtype
-        # (typically float32) before constructing AtomicData. Otherwise turbo
-        # mode's MOLE merge — which runs inside ``_lazy_init.prepare_for_inference``,
-        # *before* predict_unit's own dtype cast — pairs float64 data with
-        # float32 model weights inside an einsum.
+        # Leave inputs on the device JAX handed us; the first-call branch below
+        # covers the lazy-init device issue. Cast floats to the inference dtype
+        # now, because turbo's MOLE merge runs before UMA's own dtype cast and
+        # fails on float64 data with float32 weights.
         inf_dtype = self.predict_unit.inference_settings.base_precision_dtype
         pos = input["pos"].to(dtype=inf_dtype)
         species = input["atomic_numbers"].to(dtype=torch.int64)
@@ -138,16 +127,10 @@ class UMAModule(torch.nn.Module):
         n_atoms = pos.shape[0]
         n_sys = cell.shape[0]
 
-        # ``TorchModuleWrapper._get_output_info`` calls us once with all-zero
-        # mock tensors to infer output shapes. UMA's turbo path merges its
-        # MOLE experts on the *first* real ``predict()`` call (in
-        # ``_lazy_init``) and then asserts every subsequent call has the same
-        # composition. If we let the mock call through, the merge bakes in a
-        # "100% H" composition that conflicts with the real structure. Detect
-        # the mock by ``atomic_numbers.sum() == 0`` and return dummies of the
-        # right shape/dtype without invoking ``predict_unit`` — that way the
-        # first real call is what triggers ``_lazy_init`` with the real
-        # composition.
+        # ``TorchModuleWrapper._get_output_info`` probes with all-zero species.
+        # Turbo mode merges MOLE experts for the composition of the first real
+        # ``predict()`` call, so answer the probe with zeros of the right shape
+        # instead of letting it fix an all-hydrogen composition.
         if int(species.abs().sum().item()) == 0:
             out_dtype = self.predict_unit.inference_settings.base_precision_dtype
             dev = pos.device
@@ -177,14 +160,9 @@ class UMAModule(torch.nn.Module):
         # a no-op (the last atom is already in the last system).
         batch[-1] = n_sys - 1
 
-        # First-real-call path: ``predict_unit._lazy_init`` runs
-        # ``prepare_for_inference`` *before* moving the model to its target
-        # device (``self.predict_unit.device``). If we pass cuda tensors at
-        # that point, MOLE merge tries to gather cuda indices through cpu
-        # weights and crashes. Move data to cpu only for this one call —
-        # ``predict_unit.predict`` re-moves to its own device inside, so the
-        # actual model forward still runs on cuda. From the second call
-        # onward, data can stay on whatever device JAX handed us.
+        # ``_lazy_init`` prepares the model on cpu before moving it to its
+        # device, so the first call needs cpu data or the MOLE merge mixes cuda
+        # indices with cpu weights. ``predict`` moves data back for the forward.
         if not getattr(self.predict_unit, "lazy_model_intialized", True):
             pos = pos.cpu()
             species = species.cpu()
@@ -307,13 +285,9 @@ def load_uma(
             "Install with `uv sync --extra uma`."
         ) from exc
 
-    # Resolve the named settings to a concrete ``InferenceSettings`` and
-    # force external graph generation: kUPS already maintains the radius
-    # graph (with the exact same cutoff we pass to UMA), so there's no
-    # reason to recompute it inside the model. UMA's internal
-    # ``radius_graph_pbc_v2`` also has compile/SymInt issues that go away
-    # entirely when ``otf_graph=False``.
-    # Custom presets beyond fairchem's named "default"/"turbo"; extend to add more.
+    # kUPS supplies the radius graph with the same cutoff, so force external
+    # graph generation; this also avoids compile issues in UMA's own graph code.
+    # ``turbo_f64`` is a custom preset beyond fairchem's named ones.
     custom_settings = {
         "turbo_f64": InferenceSettings(
             base_precision_dtype=torch.float64,
