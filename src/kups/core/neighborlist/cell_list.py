@@ -252,23 +252,18 @@ class CellListSelector:
 class CellListNeighborList:
     """Neighbor list using spatial hashing with cell lists.
 
-    This is the recommended implementation when the cutoff is much smaller than
-    the box size. It divides space into a grid of cells and only checks pairs in
-    neighboring cells.
+    Recommended when the cutoff is much smaller than the box (cutoff/box below
+    about 0.3). Particles are hashed into grid cells of size ~cutoff, only pairs
+    in the 27 neighboring cells become candidates, and candidates are filtered
+    by distance. Candidate storage is O(N) at fixed density and cutoff.
 
-    Honors the cell's per-axis ``periodic`` mask: stencil offsets that cross a
-    non-periodic face are routed to an out-of-bounds bin (no key matches), and
-    minimum-image shifts are zero on non-periodic axes.
+    Stencil offsets that cross a non-periodic face map to an out-of-bounds bin,
+    and minimum-image shifts are zero on non-periodic axes. Outliers on
+    non-periodic axes stay searchable in boundary bins but add candidates.
 
-    ``cache`` optionally supplies an initialized ``CellListCache`` for the
-    current particles and cutoff. It retains occupant slots and neighboring
-    cells between calls; accepted moves must update it along with the particles.
-    Rebuild it when the cell, cutoff, or particle row layout changes.
-    Without a cache, the same grid algorithm joins particle and query cell hashes.
-
-    Candidate storage is O(N) for well-distributed particles at fixed density
-    and cutoff. Uncached lookup sorts cell hashes; cached lookup gathers slots.
-    Efficiency improves as cutoff/box ratio decreases.
+    ``cache`` optionally supplies a ``CellListCache`` that keeps occupant slots
+    and neighboring cells between calls. Accepted moves must update it with the
+    particles; rebuild it when the cell, cutoff or particle row layout changes.
 
     Attributes:
         avg_candidates: Capacity for candidate pair storage (from cell list).
@@ -277,29 +272,6 @@ class CellListNeighborList:
         avg_image_candidates: Capacity for image candidate pairs.
         cutoffs: Per-system cutoff distances used by this neighbor list.
         cache: Current cell occupants, or ``None`` to rebuild the hash lookup.
-
-    Algorithm:
-        1. Partition space into grid cells of size ~cutoff
-        2. Hash each particle to its cell
-        3. For each particle, check only neighboring 27 cells (3D)
-        4. Filter candidates by actual distance
-
-    When to use:
-        - When cutoff/box_size << 1 (cutoff much smaller than box)
-        - Typically cutoff/box < 0.3 for good efficiency
-        - Nonperiodic outliers remain searchable in boundary bins; many outliers
-          can increase the candidate count.
-
-    Example:
-        ```python
-        # Example: 10 Å cutoff in 50 Å box → cutoff/box = 0.2 -- Good for CellList
-        nl = CellListNeighborList.new(state, lens(lambda s: s.nl_params), cutoffs)
-
-        # Or, if the state implements IsNeighborListState:
-        nl = CellListNeighborList.from_state(state, cutoffs)
-
-        edges = nl(particles, systems)
-        ```
     """
 
     avg_candidates: Capacity[int]

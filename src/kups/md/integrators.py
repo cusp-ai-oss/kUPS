@@ -729,45 +729,24 @@ class _BarostatParticleData(_MDParticleData, Protocol): ...
 class StochasticCellRescalingStep[State](Propagator[State]):
     """Stochastic cell rescaling barostat for NPT ensemble sampling.
 
-    Implements the isotropic stochastic cell rescaling algorithm (Bernetti & Bussi, 2020)
-    that correctly samples the NPT ensemble. This first-order barostat includes a
-    stochastic term to ensure proper volume fluctuations, unlike the Berendsen
-    barostat which artificially suppresses fluctuations.
-
-    The algorithm scales both the simulation box and particle positions by a
-    factor $\\mu$ determined by:
+    Isotropic stochastic cell rescaling (Bernetti & Bussi 2020). Unlike
+    Berendsen, the stochastic term gives correct NPT volume fluctuations. Box
+    and positions are scaled by
 
     $$\\mu \\approx 1 + \\frac{\\Delta t}{\\tau_P} \\beta (P - P_0) + \\sqrt{\\frac{2k_B T \\beta \\Delta t}{\\tau_P V}} \\, R$$
 
-    where:
-
-    - $\\tau_P$ = pressure coupling time constant
-    - $P$ = instantaneous pressure
-    - $P_0$ = target pressure
-    - $\\beta$ = isothermal compressibility
-    - $k_B T$ = thermal energy
-    - $V$ = box volume
-    - $R \\sim \\mathcal{N}(0,1)$ = Gaussian random noise
-
-    The scaling is applied to both box and positions:
-
-    $$\\mathbf{L}_{\\text{new}} = \\mu \\mathbf{L}, \\quad \\mathbf{r}_{\\text{new}} = \\mu \\mathbf{r}$$
-
-    **Important:** The [Cell][kups.core.cell.Cell] must be reconstructed after
-    scaling to ensure the cached volume is recomputed correctly.
-
-    Type Parameters:
-        State: Simulation state type
+    with coupling time $\\tau_P$, target pressure $P_0$, compressibility
+    $\\beta$, volume $V$ and $R \\sim \\mathcal{N}(0,1)$. The
+    [Cell][kups.core.cell.Cell] is rebuilt afterwards so its cached volume is
+    recomputed.
 
     Attributes:
-        particles: Lens to get/set indexed particle data (positions $\\mathbf{r}$, momenta $\\mathbf{p}$, masses $m$)
-        systems: Lens to get/set system data (lattice vectors $\\mathbf{L}$, stress tensor $\\mathbf{W}$,
-            time step $\\Delta t$, temperature $T$, target pressure $P_0$,
-            barostat time constant $\\tau_P$, compressibility $\\beta$, minimum scale factor $\\mu_{\\text{min}}$)
+        particles: Lens to particle positions, momenta and masses.
+        systems: Lens to system cell, stress and NPT integrator parameters
+            ($\\Delta t$, $T$, $P_0$, $\\tau_P$, $\\beta$, $\\mu_{\\text{min}}$).
 
     References:
-        Bernetti, M., & Bussi, G. (2020). Pressure control using stochastic
-        cell rescaling. J. Chem. Phys., 153(11), 114107.
+        Bernetti & Bussi, *J. Chem. Phys.* **153**, 114107 (2020).
         DOI: 10.1063/5.0020514
     """
 
@@ -1228,37 +1207,17 @@ def make_baoab_npt_langevin_step[State](
 ) -> SequentialPropagator[State]:
     r"""Create the fully-flexible-cell BAOAB NPT Langevin integrator.
 
-    Implements the Trotter-split scheme of Gao, Fang & Wang
-    (*Sampling the isothermal-isobaric ensemble by Langevin dynamics*,
-    arxiv 1601.01044, JCP 2016). Each step is a palindrome of 12
-    sub-operators around a single OU pair, with one force/stress
-    evaluation per step:
+    Trotter splitting of Gao, Fang & Wang (2016), a palindrome around one OU
+    pair with one force/stress evaluation per step:
 
     ``B^h ▸ B ▸ A^h ▸ A ▸ O^h ▸ O ▸ A ▸ A^h ▸ wrap ▸ F ▸ B ▸ B^h``
 
-    Algorithm (paper §III lines 2–13):
-
-    1. **B^h** ($\Delta t/2$): kick cell-momentum by the pressure deviation.
-    2. **B** ($\Delta t/2$): coupled atom-momentum kick, $\dot p = F - h^{-T}\dot h^{T} p$.
-    3. **A^h** ($\Delta t/2$): drift the cell matrix only.
-    4. **A** ($\Delta t/2$): coupled atom-position drift, $\dot r = p/m + \dot h h^{-1} r$.
-    5. **O^h** ($\Delta t$): exact OU thermostat on cell-momentum.
-    6. **O** ($\Delta t$): exact OU thermostat on atom-momentum (reuses
-       :class:`StochasticStep`).
-    7. **A** ($\Delta t/2$): repeat.
-    8. **A^h** ($\Delta t/2$): repeat.
-    9. **wrap**: single periodic wrap of all positions.
-    10. **F**: recompute forces and cell-gradients at the wrapped coordinates
-        retained in the state.
-    11. **B** ($\Delta t/2$): repeat.
-    12. **B^h** ($\Delta t/2$): repeat.
-
-    The atom-side OU step is the existing :class:`StochasticStep`
-    (unchanged); only the cell-side machinery is new.
-
-    The ``flow`` argument is unused (kept for signature compatibility with
-    the other ``make_*_step`` factories); periodic wrapping is handled
-    in-step by a single :class:`WrapStep` just before the force evaluation.
+    ``B^h`` kicks the cell momentum by the pressure deviation, ``B`` kicks atom
+    momenta with $\dot p = F - h^{-T}\dot h^{T} p$, ``A^h`` drifts the cell,
+    ``A`` drifts positions with $\dot r = p/m + \dot h h^{-1} r$, and ``O^h`` /
+    ``O`` are exact OU thermostats on cell and atom momenta. ``B``/``A`` steps
+    take $\Delta t/2$, ``O`` steps $\Delta t$. Positions are wrapped once
+    before the force evaluation.
 
     Args:
         particles: Lens onto the per-particle table (momenta, positions,
@@ -1268,15 +1227,13 @@ def make_baoab_npt_langevin_step[State](
             integrator-params bundle (:class:`BAOABNPTLangevinParams`).
         derivative_computation: Propagator that updates ``position_gradients``
             and ``cell_gradients`` from the current state.
-        flow: Unused — present only for API parity with sibling factories.
+        flow: Unused; accepted for parity with the other ``make_*_step`` factories.
 
     Returns:
         :class:`SequentialPropagator` implementing the Gao–Fang–Wang scheme.
 
     References:
-        Gao, X., Fang, J., & Wang, H. (2016). Sampling the
-        isothermal-isobaric ensemble by Langevin dynamics.
-        J. Chem. Phys., 144, 124113. arxiv 1601.01044.
+        Gao, Fang & Wang, *J. Chem. Phys.* **144**, 124113 (2016). arXiv:1601.01044.
     """
     del flow  # Wrapping is handled by an explicit WrapStep.
 

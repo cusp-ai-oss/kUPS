@@ -255,10 +255,7 @@ class StepFunctionSchedule[Value](Schedule[Array, Value]):
     """Step function schedule with discrete value changes.
 
     Returns the value corresponding to the largest step threshold not exceeding
-    the current input.
-
-    Supports PyTree values - the `values` attribute should be a list/tuple of
-    PyTrees with matching structure.
+    the current input. Values may be PyTrees with matching structure.
 
     Type Parameters:
         Value: Type of value being scheduled (Array or PyTree of Arrays)
@@ -269,28 +266,10 @@ class StepFunctionSchedule[Value](Schedule[Array, Value]):
 
     Example:
         ```python
-        # Change temperature at specific steps
-        schedule = StepFunctionSchedule(
-            steps=jnp.array([0, 1000, 5000, 10000]),
-            values=(
-                jnp.array(300.0),
-                jnp.array(350.0),
-                jnp.array(400.0),
-                jnp.array(300.0),
-            )
-        )
-        # step 0-999: 300.0
-        # step 1000-4999: 350.0
-        # step 5000-9999: 400.0
-        # step 10000+: 300.0
-
-        # Can also use PyTree values
+        # 300 for steps 0-999, 350 from step 1000 on.
         schedule = StepFunctionSchedule(
             steps=jnp.array([0, 1000]),
-            values=(
-                {"temp": jnp.array(300.0), "pressure": jnp.array(1.0)},
-                {"temp": jnp.array(400.0), "pressure": jnp.array(2.0)},
-            )
+            values=(jnp.array(300.0), jnp.array(350.0)),
         )
         ```
     """

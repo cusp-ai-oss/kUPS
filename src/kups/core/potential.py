@@ -164,48 +164,23 @@ class Potential[
     """Protocol for potential energy functions.
 
     A potential computes energy, gradients, and optionally Hessians for a given
-    simulation state. Potentials can optionally accept a state patch describing
-    recent changes, enabling efficient incremental updates.
+    simulation state. An optional patch describing recent changes lets it update
+    incrementally, e.g. recompute only moved particles in Monte Carlo or reuse
+    neighbor lists in molecular dynamics.
+
+    Small incremental changes accumulated onto a large cached total lose
+    low-order bits in single precision. Potentials therefore keep a
+    [KahanSummand][kups.core.utils.kahan.KahanSummand] and expose its
+    compensation via ``include_compensate=True``; differencing two compensated
+    totals with
+    [KahanSummand.difference][kups.core.utils.kahan.KahanSummand.difference]
+    recovers the energy change exactly, as Monte Carlo acceptance needs.
 
     Type Parameters:
         State: Simulation state type
         Gradients: Structure of first derivatives
         Hessians: Structure of second derivatives (subset of gradients)
         StatePatch: Type of state modification patches
-
-    The `patch` argument enables incremental computation:
-        - Monte Carlo: Only recompute for moved particles
-        - Molecular dynamics: Reuse neighbor lists
-        - General: Avoid redundant calculations
-
-    Incremental updates accumulate small energy changes onto a large cached total,
-    which loses low-order bits in single precision. Potentials therefore keep a
-    [KahanSummand][kups.core.utils.kahan.KahanSummand] internally and expose its
-    compensation via ``include_compensate=True``. Differencing two compensated
-    totals (see
-    [KahanSummand.difference][kups.core.utils.kahan.KahanSummand.difference])
-    recovers the energy change exactly, which matters for Monte Carlo acceptance
-    where the change is far smaller than the total.
-
-    Example:
-        ```python
-        class LennardJonesPotential:
-            def __call__(self, state, patch=None, *, include_compensate=False):
-                # Compute LJ energy and forces
-                energy = compute_lj_energy(state.positions)
-                forces = compute_lj_forces(state.positions)
-
-                out = PotentialOut(energy, {"positions": forces}, EMPTY)
-                if include_compensate:
-                    out = KahanSummand.init(out)  # Nothing accumulated, so zero
-                return WithPatch(out, IdPatch())  # No state caching needed
-
-        # Use in simulation
-        potential = LennardJonesPotential()
-        result = potential(state)
-        energy = result.data.total_energies
-        forces = result.data.gradients.positions
-        ```
     """
 
     @overload

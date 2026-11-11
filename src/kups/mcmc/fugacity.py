@@ -148,20 +148,14 @@ def peng_robinson_log_fugacity(
     composition: Array = jnp.ones((1,)),
     interaction: Array = jnp.zeros((1, 1)),
 ) -> LogFugacityResult:
-    """Compute log fugacity coefficients using Peng-Robinson equation of state.
-
-    Public API for Peng-Robinson fugacity calculations with automatic vectorization
-    over batched inputs. This function wraps the internal implementation with
-    convenient defaults for single-component systems.
-
-    The Peng-Robinson equation of state is:
+    """Compute log fugacity coefficients using the Peng-Robinson equation of state.
 
     $$
     P = \\frac{RT}{V-b} - \\frac{a\\alpha(T)}{V^2 + 2bV - b^2}
     $$
 
-    where $a$ and $b$ are component-specific parameters, and $\\alpha(T)$ is a temperature-
-    dependent correction factor based on the acentric factor.
+    where $a$ and $b$ are component parameters and $\\alpha(T)$ depends on the
+    acentric factor. Batched inputs are vectorized over.
 
     Args:
         pressure: System pressure [Pa]
@@ -177,19 +171,10 @@ def peng_robinson_log_fugacity(
 
     Example:
         ```python
-        import jax.numpy as jnp
-        from kups.mcmc.fugacity import peng_robinson_log_fugacity
-
-        # CO2 properties
-        P = 1e6  # 10 bar in Pa
-        T = 300.0  # K
-        Pc = jnp.array([7.38e6])  # Critical pressure
-        Tc = jnp.array([304.2])   # Critical temperature
-        omega = jnp.array([0.228])  # Acentric factor
-
-        result = peng_robinson_log_fugacity(P, T, Pc, Tc, omega)
-        fugacity = jnp.exp(result.log_fugacity)  # Convert from log
-        Z = result.compressibility
+        # CO2 at 10 bar and 300 K
+        result = peng_robinson_log_fugacity(
+            1e6, 300.0, jnp.array([7.38e6]), jnp.array([304.2]), jnp.array([0.228])
+        )
         ```
     """
     return LogFugacityResult(
