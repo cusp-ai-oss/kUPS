@@ -14,6 +14,7 @@ Codes:
     KUP005  Comment or docstring narrating code history.
     KUP006  Private name imported from another kUPS module (a private submodule
             of the importer's own package is fine).
+    KUP007  Docstring attached to a type alias.
 """
 
 import ast
@@ -44,6 +45,7 @@ MESSAGES = {
     "KUP004": "{n}-line comment block (max {max}); shorten it or move it to the docstring",
     "KUP005": "narrates history ({word!r}); describe the current code only",
     "KUP006": "private `{name}` imported from `{module}`; make it public or keep it local",
+    "KUP007": "type alias docstring; the alias name should say enough",
 }
 
 
@@ -139,6 +141,9 @@ class _Visitor(ast.NodeVisitor):
 
     def visit_Module(self, node: ast.Module) -> None:
         self._check_history(node)
+        for prev, stmt in zip(node.body, node.body[1:]):
+            if isinstance(prev, ast.TypeAlias) and _is_string(stmt):
+                self.report(stmt, "KUP007")
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -187,6 +192,14 @@ class _Visitor(ast.NodeVisitor):
             self.findings.append(
                 _finding(self.path, line, "KUP005", word=match.group(0))
             )
+
+
+def _is_string(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
 
 
 def _comment_findings(path: Path, source: str) -> Iterator[Finding]:

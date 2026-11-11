@@ -52,14 +52,13 @@ from kups.core.propagator import (
 from kups.core.typing import SystemId
 from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
 
+# Log Metropolis acceptance ratio ln(alpha), dimensionless.
 type LogAcceptanceRatio = Array
-r"""Log Metropolis acceptance ratio $\ln\alpha$ [dimensionless]."""
 
 type Energy = Array
-r"""Potential energy [energy]."""
 
+# Integer macrostate particle count N.
 type ParticleCount = Array
-r"""Macrostate particle count $N$ [dimensionless, integer]."""
 
 
 def widom_test[State, Changes, Move: Patch[Any]](

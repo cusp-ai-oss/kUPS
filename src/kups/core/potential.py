@@ -43,8 +43,8 @@ from kups.core.typing import (
 from kups.core.utils.jax import dataclass, field, tree_map
 from kups.core.utils.kahan import KahanSummand
 
+# Shape (n_systems,).
 type Energy = Array
-"""Type alias for energy arrays, typically shape (n_systems,)."""
 
 
 @dataclass
@@ -147,12 +147,10 @@ class PotentialOut[Gradients, Hessians]:
 type PotentialResult[State, Gradients, Hessians] = WithPatch[
     PotentialOut[Gradients, Hessians], Patch[State]
 ]
-"""Potential output paired with the patch that commits it to the state."""
 
 type CompensatedPotentialResult[State, Gradients, Hessians] = WithPatch[
     KahanSummand[PotentialOut[Gradients, Hessians]], Patch[State]
 ]
-"""Potential output as an accumulator carrying the compensation of its total."""
 
 
 class Potential[

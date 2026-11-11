@@ -89,3 +89,7 @@ def test_private_submodule_of_own_package(tmp_path: Path):
     assert codes("from kups.core.units._unit import _private\n", str(catalog)) == [
         "KUP006"
     ]
+
+
+def test_type_alias_docstring():
+    assert codes('type X = int\n"""An int."""\n') == ["KUP007"]

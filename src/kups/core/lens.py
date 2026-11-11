@@ -119,7 +119,6 @@ class Update[S, R](Protocol):
 
 
 type Modifier[R] = Callable[[R], R]
-"""Type alias for a function that transforms a value."""
 
 
 class _NOT_SET_TYPE(enum.Enum):
