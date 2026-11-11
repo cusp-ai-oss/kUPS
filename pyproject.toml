@@ -142,6 +142,8 @@ venv = ".venv"
 [tool.ruff.lint]
 extend-select = [
     "ANN401",  # explicit Any
+    "D101",    # public classes have docstrings
+    "D103",    # public functions have docstrings
     "D417",    # every argument documented
     "TID251",  # banned APIs, see below
 ]
@@ -160,7 +162,7 @@ convention = "google"
 "src/kups/core/assertion/*" = ["ANN401"]
 "src/kups/core/effects/*" = ["ANN401"]
 "src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
-"!src/**" = ["ANN401", "D417", "TID251"]
+"!src/**" = ["ANN401", "D101", "D103", "D417", "TID251"]
 
 [tool.pyrefly]
 infer-with-first-use = false

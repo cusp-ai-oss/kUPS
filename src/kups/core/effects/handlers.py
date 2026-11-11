@@ -34,6 +34,7 @@ def default_primitive_handler[Context](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[Context]:
+    """Bind the equation's primitive unchanged and pass the context through."""
     return HandlerResult(ctx, bind_primitive(eqn, invals))
 
 
@@ -43,6 +44,7 @@ def default_jit_handler[Context](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[Context]:
+    """Reinterpret a ``jit`` equation's body, re-jitted with the same options."""
     _, bind_params = get_bind_params(eqn)
 
     jaxpr: ClosedJaxpr = bind_params["jaxpr"]
@@ -70,6 +72,8 @@ def default_jit_handler[Context](
 
 
 class Uninitialized(ShapeDtypeStruct):
+    """Abstract value for a context leaf that a loop body adds and the initializer has yet to fill."""
+
     def __init__(self, aval: AbstractValue):
         assert hasattr(aval, "shape") and hasattr(aval, "dtype"), (
             f"{aval} does not have a shape or dtype"
@@ -129,6 +133,12 @@ def default_scan_handler[Context](
     initializer: Callable[[Context, Context], Context],
     updater: Callable[[Context, Context], Context],
 ) -> HandlerResult[Context]:
+    """Reinterpret a ``scan`` equation, carrying the context through the loop.
+
+    ``initializer(ctx, sentinel)`` fills the context leaves the body adds, which
+    ``sentinel`` marks as :class:`Uninitialized`. ``updater(old, new)`` merges each
+    iteration's context into the carry.
+    """
     _, bind_params = get_bind_params(eqn)
     jaxpr: ClosedJaxpr = bind_params["jaxpr"]
     consts, carry, xs = split_scan_operands(bind_params, invals)
@@ -177,6 +187,12 @@ def default_while_handler[Context](
     initializer: Callable[[Context, Context], Context],
     updater: Callable[[Context, Context], Context],
 ) -> HandlerResult[Context]:
+    """Reinterpret a ``while_loop`` equation, carrying the context through the loop.
+
+    ``initializer(ctx, sentinel)`` fills the context leaves the body adds, which
+    ``sentinel`` marks as :class:`Uninitialized`. ``updater(old, new)`` merges each
+    iteration's context into the carry. The condition may not change the context.
+    """
     _, bind_params = get_bind_params(eqn)
     cond_jaxpr: ClosedJaxpr = bind_params["cond_jaxpr"]
     body_jaxpr: ClosedJaxpr = bind_params["body_jaxpr"]
@@ -234,6 +250,7 @@ def default_cond_handler[Context](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[Context]:
+    """Reinterpret each branch of a ``cond`` equation; all must return the same context structure."""
     _, bind_params = get_bind_params(eqn)
     branches = bind_params["branches"]
 
@@ -263,6 +280,7 @@ def default_checkpoint_handler[Context](
     eqn: JaxprEqn,
     invals: list[TracerValue],
 ) -> HandlerResult[Context]:
+    """Reinterpret the body of a ``checkpoint`` equation inline, without rematerialization."""
     jaxpr = ClosedJaxpr(eqn.params["jaxpr"], ())
     outvals, ctx_out = interpreter(jaxpr, ctx, *invals)
     return HandlerResult(ctx_out, outvals)

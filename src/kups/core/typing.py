@@ -57,6 +57,8 @@ class Label(str):
 
 @runtime_checkable
 class SupportsDType(Protocol):
+    """Object with a ``dtype``, such as ``jnp.float32``."""
+
     @property
     def dtype(self, /) -> DType: ...
 
@@ -537,12 +539,16 @@ class HasCutoff(Protocol):
 
 @runtime_checkable
 class HasParticles[Particles](Protocol):
+    """State with a particle table keyed by ``ParticleId``."""
+
     @property
     def particles(self) -> Table[ParticleId, Particles]: ...
 
 
 @runtime_checkable
 class HasSystems[Systems](Protocol):
+    """State with a system table keyed by ``SystemId``."""
+
     @property
     def systems(self) -> Table[SystemId, Systems]: ...
 
@@ -550,4 +556,5 @@ class HasSystems[Systems](Protocol):
 @runtime_checkable
 class IsState[Particles, Systems](
     HasParticles[Particles], HasSystems[Systems], Protocol
-): ...
+):
+    """State with both a particle table and a system table."""

@@ -20,6 +20,8 @@ class _HasDTypeAndShape(Protocol):
 
 
 class InterpreterEnvironment:
+    """Values of a jaxpr's variables during interpretation, each dropped after its last read."""
+
     env: dict[Var, Any]
     reference_counter: dict[Var, int]
 
