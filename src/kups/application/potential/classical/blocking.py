@@ -35,16 +35,16 @@ from kups.core.potential import (
 )
 from kups.core.typing import GroupId, HasCell, HasMotifIndex, IsState
 from kups.potential.classical.blocking import (
+    BlockingParticles,
     BlockingSpheresNeighborListFactory,
     BlockingSpheresParameters,
     IsBlockingSpheresProbe,
-    _BlockingParticles,
     make_blocking_spheres_potential,
 )
 
 
 class IsBlockingSpheresGraphState(
-    IsState[_BlockingParticles, HasCell[AnyPeriodicity]],
+    IsState[BlockingParticles, HasCell[AnyPeriodicity]],
     IsNeighborListState[IsUniversalNeighborlistParams],
     Protocol,
 ):

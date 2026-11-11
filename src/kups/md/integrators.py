@@ -302,7 +302,7 @@ class MomentumStep[State](Propagator[State]):
 
 
 @runtime_checkable
-class _MDParticleData(
+class MDParticleData(
     HasMomenta, HasPositions, HasForces, HasMasses, HasSystemIndex, Protocol
 ):
     @property
@@ -315,7 +315,7 @@ class IsVerletParams(HasTimeStep, Protocol):
 
 
 def make_velocity_verlet_step[State](
-    particles: Lens[State, Table[ParticleId, _MDParticleData]],
+    particles: Lens[State, Table[ParticleId, MDParticleData]],
     systems: View[State, Table[SystemId, HasIntegratorParams[IsVerletParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -459,7 +459,7 @@ class StochasticStep[State](Propagator[State]):
 
 
 def make_baoab_langevin_step[State](
-    particles: Lens[State, Table[ParticleId, _MDParticleData]],
+    particles: Lens[State, Table[ParticleId, MDParticleData]],
     systems: View[State, Table[SystemId, HasIntegratorParams[IsBAOABLangevinParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -640,7 +640,7 @@ class CSVRStep[State](Propagator[State]):
 
 
 def make_csvr_step[State](
-    particles: Lens[State, Table[ParticleId, _MDParticleData]],
+    particles: Lens[State, Table[ParticleId, MDParticleData]],
     systems: View[State, Table[SystemId, HasIntegratorParams[IsCSVRParams]]],
     derivative_computation: Propagator[State],
     flow: Flow[State, Array],
@@ -722,7 +722,7 @@ class IsMDSystemNPT(IsMDSystemNPTBase, HasIntegratorParams[IsCSVRNPTParams], Pro
 
 
 @runtime_checkable
-class _BarostatParticleData(_MDParticleData, Protocol): ...
+class _BarostatParticleData(MDParticleData, Protocol): ...
 
 
 @dataclass

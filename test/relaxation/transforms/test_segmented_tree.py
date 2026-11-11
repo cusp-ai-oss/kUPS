@@ -197,7 +197,7 @@ class TestTreeWherePerRow:
 class TestLayoutValidation:
     def test_mismatched_sub_structures_raises(self):
         # Both trees fall under one Index leaf, but `a` has 2 array leaves and
-        # `b` has 1 — _layout_and_leaves must reject this with a clear message.
+        # `b` has 1 — layout_and_leaves must reject this with a clear message.
         idx = _system_index([0, 0, 1], 2)
         a = {"x": jnp.zeros((3, 2)), "y": jnp.zeros((3, 2))}
         b = jnp.zeros((3, 2))

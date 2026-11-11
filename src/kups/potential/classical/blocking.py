@@ -126,7 +126,7 @@ class BlockingSpheresParameters:
         return BlockingSpheresParameters(radii, positions, system, motif)
 
 
-class _BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): ...
+class BlockingParticles(HasPositionsAndSystemIndex, HasGroupIndex, Protocol): ...
 
 
 @dataclass
@@ -152,7 +152,7 @@ class IsBlockingSpheresProbe(Protocol):
     """
 
     @property
-    def particles(self) -> WithIndices[ParticleId, _BlockingParticles]: ...
+    def particles(self) -> WithIndices[ParticleId, BlockingParticles]: ...
 
 
 @dataclass
@@ -169,7 +169,7 @@ class BlockingSpheresPotentialInput:
     """
 
     parameters: BlockingSpheresParameters
-    particles: Table[ParticleId, _BlockingParticles]
+    particles: Table[ParticleId, BlockingParticles]
     groups: Table[GroupId, HasMotifIndex]
     cell: Table[SystemId, Cell[AnyPeriodicity]]
     edges: Edges[Literal[2]]
@@ -239,7 +239,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
             state is evaluated over every particle
     """
 
-    particles_view: View[State, Table[ParticleId, _BlockingParticles]] = field(
+    particles_view: View[State, Table[ParticleId, BlockingParticles]] = field(
         static=True
     )
     groups_view: View[State, Table[GroupId, HasMotifIndex]] = field(static=True)
@@ -316,7 +316,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
 
 
 def make_blocking_spheres_potential[State, Gradients, Hessians, Ptch: Patch[Any]](
-    particles_view: View[State, Table[ParticleId, _BlockingParticles]],
+    particles_view: View[State, Table[ParticleId, BlockingParticles]],
     groups_view: View[State, Table[GroupId, HasMotifIndex]],
     systems_view: View[State, Table[SystemId, HasCell[AnyPeriodicity]]],
     parameters_view: View[State, BlockingSpheresParameters],

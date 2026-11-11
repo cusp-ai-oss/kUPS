@@ -56,7 +56,7 @@ def _is_index(x: Any) -> bool:
     return isinstance(x, Index)
 
 
-def _layout_and_leaves(
+def layout_and_leaves(
     index_prefix: PyTree, *trees: PyTree
 ) -> tuple[list[Index[SupportsSorting]], tuple[list[Array], ...]]:
     structure = tree_structure(index_prefix, is_leaf=_is_index)
@@ -118,7 +118,7 @@ def tree_vdot(
         """Per-row dot product: contract every axis but the leading one."""
         return jax.vmap(jnp.vdot, in_axes=(0, 0), out_axes=0)(a, b)
 
-    layout, (a_leaves, b_leaves) = _layout_and_leaves(reduce_index, a, b)
+    layout, (a_leaves, b_leaves) = layout_and_leaves(reduce_index, a, b)
     return functools.reduce(
         lambda x, y: x + y,
         (
@@ -157,7 +157,7 @@ def tree_segment_max(
             leaf = jnp.max(leaf, axis=tuple(range(1, leaf.ndim)))
         return leaf
 
-    layout, (leaves,) = _layout_and_leaves(reduce_index, tree)
+    layout, (leaves,) = layout_and_leaves(reduce_index, tree)
     return functools.reduce(
         lambda x, y: bind(x, lambda x: x.data).set(jnp.maximum(x.data, y.data)),
         (
@@ -203,7 +203,7 @@ def tree_scale_per_row[P](
     Returns:
         Pytree with the same structure as ``tree``.
     """
-    layout, (leaves,) = _layout_and_leaves(reduce_index, tree)
+    layout, (leaves,) = layout_and_leaves(reduce_index, tree)
     scaled = [
         leaf
         * scale[idx].reshape(scale[idx].shape + (1,) * (leaf.ndim - scale[idx].ndim))
@@ -231,7 +231,7 @@ def tree_clip_per_row[P](
     Returns:
         Pytree with the same structure as ``tree``.
     """
-    layout, (leaves,) = _layout_and_leaves(reduce_index, tree)
+    layout, (leaves,) = layout_and_leaves(reduce_index, tree)
     clipped: list[Array] = []
     for leaf, idx in zip(leaves, layout, strict=True):
         per_row = limit[idx]
@@ -262,7 +262,7 @@ def tree_where_per_row[P](
     Returns:
         Pytree with the same structure as ``a``.
     """
-    layout, (a_leaves, b_leaves) = _layout_and_leaves(reduce_index, a, b)
+    layout, (a_leaves, b_leaves) = layout_and_leaves(reduce_index, a, b)
     out: list[Array] = []
     for la, lb, idx in zip(a_leaves, b_leaves, layout, strict=True):
         per_row = mask[idx]

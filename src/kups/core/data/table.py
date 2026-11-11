@@ -25,7 +25,7 @@ from kups.core.data.batched import Batched
 from kups.core.data.index import (
     Index,
     SupportsSorting,
-    _format_keys,
+    format_keys,
 )
 from kups.core.lens import BoundLens, View, bind
 from kups.core.utils.functools import identity
@@ -132,7 +132,7 @@ class Table(Batched, Generic[TKey, TData]):
 
     @override
     def __str__(self) -> str:
-        keys_str = _format_keys(self.keys)
+        keys_str = format_keys(self.keys)
         return f"Table({self.cls.__name__}, keys={keys_str}, data={self.data})"
 
     @classmethod

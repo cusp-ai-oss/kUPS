@@ -526,12 +526,12 @@ class Index[Key: SupportsSorting]:
 
     @override
     def __str__(self) -> str:
-        keys_str = _format_keys(self.keys)
+        keys_str = format_keys(self.keys)
         return f"Index({self.cls.__name__}, keys={keys_str}, shape={self.shape})"
 
     @override
     def __repr__(self) -> str:
-        keys_str = _format_keys(self.keys)
+        keys_str = format_keys(self.keys)
         try:
             strings = np.asarray(self.keys + ("OOB",))[np.asarray(self._indices)]
             arr_str = str(strings)
@@ -836,7 +836,7 @@ class IndexSubselectResult[Key: SupportsSorting]:
         yield self.gather
 
 
-def _format_keys(keys: tuple[Any, ...]) -> str:
+def format_keys(keys: tuple[Any, ...]) -> str:
     """Format keys as ranges when contiguous (e.g. '0-99') or as a tuple."""
     if len(keys) <= 1:
         return str(keys)
