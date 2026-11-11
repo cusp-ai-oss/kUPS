@@ -58,8 +58,8 @@ from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.math import erfc_over, triangular_3x3_matmul
 from kups.core.utils.ops import where_broadcast_last
 from kups.potential.classical.coulomb import (
-    _pairwise_coulomb_energy,
     coulomb_pair_energy,
+    pairwise_coulomb_energy,
 )
 from kups.potential.common.energy import (
     EnergyFunction,
@@ -1244,7 +1244,7 @@ def make_ewald_exclusion_correction_potential[
         probe=excl_probe,
     )
     exclusion_correction = PotentialFromEnergy(
-        energy_fn=_pairwise_coulomb_energy,
+        energy_fn=pairwise_coulomb_energy,
         composer=LocalSumComposer(GraphInputConstructor(excl_rg, lambda x: None)),
         gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
         hessian_lens=hessian_lens,

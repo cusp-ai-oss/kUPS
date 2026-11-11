@@ -12,6 +12,8 @@ Codes:
     KUP003  Function or class docstring longer than ``MAX_DOCSTRING_LINES``.
     KUP004  Comment block longer than ``MAX_COMMENT_LINES``.
     KUP005  Comment or docstring narrating code history.
+    KUP006  Private name imported from another kUPS module (a private submodule
+            of the importer's own package is fine).
 """
 
 import ast
@@ -41,6 +43,7 @@ MESSAGES = {
     "KUP003": "docstring has {n} lines (max {max}); cut it down",
     "KUP004": "{n}-line comment block (max {max}); shorten it or move it to the docstring",
     "KUP005": "narrates history ({word!r}); describe the current code only",
+    "KUP006": "private `{name}` imported from `{module}`; make it public or keep it local",
 }
 
 
@@ -109,9 +112,25 @@ def _is_optional_array(stmt: ast.stmt) -> bool:
     )
 
 
+def _module_name(path: Path) -> str | None:
+    parts = path.with_suffix("").parts
+    if "kups" not in parts:
+        return None
+    parts = parts[parts.index("kups") :]
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _is_submodule(path: Path, package: str, name: str) -> bool:
+    """Whether ``package.name`` is a module next to the file at ``path``."""
+    root = Path(*path.parts[: path.parts.index("kups")])
+    target = root.joinpath(*package.split("."), name)
+    return target.with_suffix(".py").exists() or (target / "__init__.py").exists()
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(self, path: Path, tree: ast.Module) -> None:
         self.path = path
+        self.module = _module_name(path)
         self.origins = _dataclass_origins(tree)
         self.findings: list[Finding] = []
 
@@ -137,6 +156,19 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = node.module or ""
+        if node.level or module.split(".")[0] != "kups" or module == self.module:
+            return
+        own_package = self.module is not None and self.module.startswith(f"{module}.")
+        for alias in node.names:
+            name = alias.name
+            if not name.startswith("_") or name.startswith("__"):
+                continue
+            if own_package and _is_submodule(self.path, module, name):
+                continue
+            self.report(node, "KUP006", name=name, module=module)
 
     def _check_docstring(
         self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef

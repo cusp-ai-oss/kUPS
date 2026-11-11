@@ -19,10 +19,10 @@ type Fix[State, FixArgs] = Callable[[State, FixArgs], State]
 
 
 @dataclass
-class _NO_ARGS: ...  # We cannot use `None` as a default value because it may be an actual argument.
+class NoArgs: ...  # We cannot use `None` as a default value because it may be an actual argument.
 
 
-NO_ARGS: Final[_NO_ARGS] = _NO_ARGS()
+NO_ARGS: Final[NoArgs] = NoArgs()
 """Sentinel instance to distinguish between no arguments and None as an argument."""
 
 
@@ -134,7 +134,7 @@ class RuntimeAssertion[State, FixArgs]:
     exception_type: type[Exception] = field(static=True, default=AssertionError)
     static_info: dict[str, Any] = field(static=True, default_factory=dict)
     fix_fn: Fix[State, FixArgs] | None = field(static=True, default=None)
-    fix_args: FixArgs | _NO_ARGS = field(default=NO_ARGS)
+    fix_args: FixArgs | NoArgs = field(default=NO_ARGS)
     loop_merge: LoopMerge = field(static=True, default=ELEMENTWISE_MAX)
 
     def valid(self) -> bool:
@@ -188,7 +188,5 @@ class RuntimeAssertion[State, FixArgs]:
         """
         if self.fix_fn is None:
             raise self.exception
-        assert not isinstance(self.fix_args, _NO_ARGS), (
-            "Fix arguments were not provided."
-        )
+        assert not isinstance(self.fix_args, NoArgs), "Fix arguments were not provided."
         return self.fix_fn(state, self.fix_args)

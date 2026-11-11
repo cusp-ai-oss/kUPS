@@ -34,7 +34,7 @@ from kups.core.utils.jax import (
     tree_structure,
 )
 from kups.core.utils.segmented_tree import (
-    _layout_and_leaves,
+    layout_and_leaves,
     tree_scale_per_row,
     tree_vdot,
     tree_where_per_row,
@@ -136,7 +136,7 @@ def lbfgs_reset_layout[Params]() -> ResetLayout[
     )
 
     def indices(s: ScaleByAseLbfgsState[Params]) -> LbfgsResetIndices:
-        idx, _ = _layout_and_leaves(s.index_prefix, s.treedef.unflatten(s.params))
+        idx, _ = layout_and_leaves(s.index_prefix, s.treedef.unflatten(s.params))
         history_idx = [i[None] for i in idx]  # Broadcast over the history axis.
         return LbfgsReset(
             steps=s.steps.index,
@@ -188,7 +188,7 @@ class ScaleByAseLbfgs[Params](Resettable[Params, ScaleByAseLbfgsState[Params]]):
             index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
         # Flatten params to raw leaves with an Index aligned to each (DFS order),
         # matching ``jax.tree.leaves`` so ``update`` can flatten the same way.
-        index_leaves, (param_leaves,) = _layout_and_leaves(index_prefix, parameters)
+        index_leaves, (param_leaves,) = layout_and_leaves(index_prefix, parameters)
         keys = index_leaves[0].keys
         n_systems = len(keys)
 
@@ -227,7 +227,7 @@ class ScaleByAseLbfgs[Params](Resettable[Params, ScaleByAseLbfgsState[Params]]):
 
         # Flatten on entry; raw leaves carry no ``Table`` validation. Expanding the
         # stored prefix yields one Index per leaf, aligned with the flattened params.
-        idx, (param_leaves, update_leaves) = _layout_and_leaves(
+        idx, (param_leaves, update_leaves) = layout_and_leaves(
             state.index_prefix, params, updates
         )
 
