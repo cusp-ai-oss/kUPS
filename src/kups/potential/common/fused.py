@@ -10,9 +10,10 @@ cached cell lists.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from itertools import accumulate
 from operator import itemgetter
-from typing import Any, Callable, Literal, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast
 
 import jax
 import jax.numpy as jnp

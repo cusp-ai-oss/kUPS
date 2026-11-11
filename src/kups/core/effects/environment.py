@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import defaultdict
-from typing import Any, Protocol, Sequence, override, runtime_checkable
+from collections.abc import Sequence
+from typing import Any, Protocol, override, runtime_checkable
 
 import numpy as np
 from jax import Array

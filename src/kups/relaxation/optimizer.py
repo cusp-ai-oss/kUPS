@@ -19,7 +19,8 @@ factory out of here avoids a circular import with
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Callable, Protocol, no_type_check, override
+from collections.abc import Callable
+from typing import Any, Protocol, no_type_check, override
 
 import jax
 import optax

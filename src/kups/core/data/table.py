@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable, Sequence
 from typing import (
     Any,
-    Callable,
     Generic,
     Protocol,
     Self,
-    Sequence,
     TypeVar,
     cast,
     no_type_check,
