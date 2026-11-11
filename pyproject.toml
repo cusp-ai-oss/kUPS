@@ -116,6 +116,7 @@ dev = [
     "pytest-testmon>=2.1.3",
     "pyright>=1.1.409",
     "pyrefly>=1.4",
+    "import-linter>=2.16",
 ]
 
 [tool.uv]
@@ -175,6 +176,21 @@ equil = "equil"         # equilibration steps
 Nd = "Nd"               # TypedNdArray
 sems = "sems"           # standard errors of the mean
 writeable = "writeable" # numpy array flag
+
+[tool.importlinter]
+root_package = "kups"
+
+[[tool.importlinter.contracts]]
+name = "Layers: application on top, core at the bottom"
+type = "layers"
+layers = [
+    "kups.application",
+    "kups.mcmc | kups.md | kups.potential | kups.relaxation",
+    "kups.observables",
+    "kups.core",
+]
+# Convergence reads the relaxation geometry type.
+ignore_imports = ["kups.relaxation.convergence -> kups.potential.common.geometry"]
 
 [tool.pyrefly]
 infer-with-first-use = false
