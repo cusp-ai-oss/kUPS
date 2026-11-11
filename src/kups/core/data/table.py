@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 from typing import (
     Any,
     Callable,
@@ -715,7 +716,9 @@ class Table(Batched, Generic[TKey, TData]):
         """
         n = len(groups[0])
         assert all(len(g) == n for g in groups), "All groups must have the same length"
-        groups = tuple(zip(*map(lambda x: Table.match(*x), zip(*groups))))
+        groups = tuple(
+            zip(*map(lambda x: Table.match(*x), zip(*groups, strict=True)), strict=True)
+        )
 
         def _key_type(group: Sequence[Table[Any, Any]]) -> type | None:
             for item in group:
@@ -916,7 +919,7 @@ def _check_keys(keys: tuple[Any, ...]) -> None:
     Raises:
         ValueError: If ``keys`` is unsorted or contains duplicates.
     """
-    for a, b in zip(keys, keys[1:]):
+    for a, b in itertools.pairwise(keys):
         if b < a:
             raise ValueError(
                 f"Primary keys must be sorted, got {a!r} before {b!r}. "

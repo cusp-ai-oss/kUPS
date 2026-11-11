@@ -409,7 +409,7 @@ def add_buffers(
     )
     unbuffered_result = Table.union(*zip(tables, padded, strict=True))
     # pyrefly: ignore [bad-argument-type]
-    buffered = tuple(map(to_buffered, zip(normalized, unbuffered_result)))
+    buffered = tuple(map(to_buffered, zip(normalized, unbuffered_result, strict=True)))
     if len(buffered) == 1:
         return buffered
     return buffered

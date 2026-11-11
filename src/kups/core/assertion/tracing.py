@@ -179,7 +179,7 @@ class _AssertionPacker:
             Assertions with the templates' structure.
         """
         out: list[RuntimeAssertion[Any, Any]] = []
-        for treedef, spec in zip(self.treedefs, self.specs):
+        for treedef, spec in zip(self.treedefs, self.specs, strict=True):
             leaves = [
                 packed[g][o : o + int(np.prod(shape, dtype=int))].reshape(shape)
                 for g, o, shape in spec

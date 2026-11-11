@@ -228,7 +228,7 @@ def typed[R](f: Callable[..., R], *types: type[Any]) -> Callable[..., R]:
     def wrapper(*args: Any) -> R:
         if len(args) != len(types):
             raise TypeError("Argument count does not match type count")
-        for arg, typ in zip(args, types):
+        for arg, typ in zip(args, types, strict=True):
             if not isinstance(arg, typ):
                 raise TypeError(f"Expected type {typ}, got {type(arg)}")
         return f(*args)

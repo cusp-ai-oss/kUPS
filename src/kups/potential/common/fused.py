@@ -9,6 +9,7 @@ cached cell lists.
 
 from __future__ import annotations
 
+import itertools
 from itertools import accumulate
 from operator import itemgetter
 from typing import Any, Callable, Literal, NamedTuple, cast
@@ -412,7 +413,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         valid = rows.inclusion.valid_mask
         removed = excluded[: table.sentinel_slot].reshape(n_blocks, size)
         ends = list(accumulate(phases, initial=0))
-        spans = [slice(a, b) for a, b in zip(ends[:-1], ends[1:])]
+        spans = [slice(a, b) for a, b in itertools.pairwise(ends)]
 
         def near(span: slice) -> Array:
             n_rows = span.stop - span.start
@@ -480,7 +481,7 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                         lambda span=span, mask=mask: traverse(span, mask),
                         lambda span=span: jnp.zeros(span.stop - span.start, dtype),
                     )
-                    for span, mask, active in zip(spans, masks, actives)
+                    for span, mask, active in zip(spans, masks, actives, strict=True)
                 ]
             )
 
