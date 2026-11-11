@@ -13,13 +13,12 @@ rejecting Monte Carlo moves that violate spatial constraints.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Literal,
     Protocol,
-    Sequence,
 )
 
 import jax.numpy as jnp

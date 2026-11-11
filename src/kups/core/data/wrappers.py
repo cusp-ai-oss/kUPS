@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import Callable, Generic, TypeVar
+from collections.abc import Callable
+from typing import Generic, TypeVar
 
 from kups.core.data.batched import Batched
 from kups.core.data.index import Index, SupportsSorting

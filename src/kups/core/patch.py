@@ -19,7 +19,8 @@ integrate with JAX transformations while maintaining runtime validation.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Generic, Protocol, Self, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, Protocol, Self, TypeVar
 
 import jax
 from jax import Array

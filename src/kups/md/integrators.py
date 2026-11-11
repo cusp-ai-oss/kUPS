@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-from typing import Literal, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 from jax import Array
-from typing_extensions import Protocol
 
 from kups.core.cell import (
     AnyPeriodicity,
