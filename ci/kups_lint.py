@@ -35,7 +35,7 @@ MAX_COMMENT_LINES = 6
 ARRAY_TYPES = re.compile(r"\b(Array|ArrayLike|Table|Index)\b")
 HISTORY = re.compile(
     r"\b(previously|no longer|used to be|backwards?[- ]compat\w*|legacy|"
-    r"was (changed|renamed|moved|removed)|old (implementation|version|behaviou?r)|"
+    r"was (changed|renamed|moved|removed)|old (implementation|version|behavior|behaviour)|"
     r"originally|we now|now uses?)\b",
     re.IGNORECASE,
 )

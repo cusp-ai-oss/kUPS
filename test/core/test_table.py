@@ -145,7 +145,7 @@ class TestKeyOrdering:
         # duplicates are still rejected, not silently merged
         with pytest.raises(ValueError, match="must be unique"):
             Table.new(("b", "a", "b"), jnp.arange(3.0))
-        # size-1 leaves still broadcast, and are not mis-permuted
+        # size-1 leaves still broadcast, and are not permuted wrongly
         bc = Table.new(("c", "a"), Pair(jnp.array([3.0, 1.0]), jnp.ones(1)))
         npt.assert_array_equal(bc.data.x, [1.0, 3.0])
         npt.assert_array_equal(bc.data.y, [1.0, 1.0])
