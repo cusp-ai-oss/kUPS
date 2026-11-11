@@ -189,12 +189,11 @@ def random_rotate_groups(
     rel_positions = rel_positions @ rotations[system]
     new_data = _RotPositions(positions=rel_positions, group=group_index)
     new_rot_particles = Table.arange(new_data, label=ParticleId)
-    new_abs_positions = to_absolute_positions(
+    return to_absolute_positions(
         new_rot_particles,
         cell,
         center_of_masses,
     )
-    return new_abs_positions
 
 
 def translate_groups(
@@ -215,8 +214,7 @@ def translate_groups(
     system_ids = particles.data.system
     new_positions = particles.data.positions + translations[system_ids]
     batched_cells = Table(systems.keys, systems.data.cell.materialize())[system_ids]
-    new_positions = batched_cells.wrap(new_positions)
-    return new_positions
+    return batched_cells.wrap(new_positions)
 
 
 def propose_group_translation(

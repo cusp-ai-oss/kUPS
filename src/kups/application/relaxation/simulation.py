@@ -230,7 +230,7 @@ def run_relax[State: IsRelaxState[object]](
         TqdmLogger(config.max_steps, postfix=_postfix),
         HDF5StorageWriter(config.out_file, RelaxLoggedData(), state, config.max_steps),
     )
-    state = run_simulation_cycles(
+    return run_simulation_cycles(
         key,
         make_cycle_function(propagator),
         state,
@@ -238,4 +238,3 @@ def run_relax[State: IsRelaxState[object]](
         logger,
         convergence_fn=converged,
     )
-    return state
