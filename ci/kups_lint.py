@@ -15,6 +15,7 @@ Codes:
     KUP006  Private name imported from another kUPS module (a private submodule
             of the importer's own package is fine).
     KUP007  Docstring attached to a type alias.
+    KUP008  Type-check suppression without a pyrefly error kind.
 """
 
 import ast
@@ -36,6 +37,7 @@ HISTORY = re.compile(
     r"originally|we now|now uses?)\b",
     re.IGNORECASE,
 )
+SUPPRESSION = re.compile(r"#\s*(type:\s*ignore|pyrefly:\s*ignore(?!\s*\[))")
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
 
 MESSAGES = {
@@ -46,6 +48,7 @@ MESSAGES = {
     "KUP005": "narrates history ({word!r}); describe the current code only",
     "KUP006": "private `{name}` imported from `{module}`; make it public or keep it local",
     "KUP007": "type alias docstring; the alias name should say enough",
+    "KUP008": "suppress with `# pyrefly: ignore[kind]`; pyrefly treats other forms as blanket ignores",
 }
 
 
@@ -208,6 +211,8 @@ def _comment_findings(path: Path, source: str) -> Iterator[Finding]:
         if tok.type != tokenize.COMMENT:
             continue
         line = tok.start[0]
+        if SUPPRESSION.search(tok.string):
+            yield _finding(path, line, "KUP008")
         if match := HISTORY.search(tok.string):
             yield _finding(path, line, "KUP005", word=match.group(0))
         if not tok.line.lstrip().startswith("#"):

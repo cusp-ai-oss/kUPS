@@ -255,7 +255,7 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
 
     def __call__(
         self, state: State, patch: Ptch | None
-    ) -> Sum[BlockingSpheresPotentialInput]:  # type: ignore[reportReturnType]
+    ) -> Sum[BlockingSpheresPotentialInput]:
         changed: Index[ParticleId] | None = None
         if patch is not None:
             # The patch is always applied; a probe only narrows the sphere query

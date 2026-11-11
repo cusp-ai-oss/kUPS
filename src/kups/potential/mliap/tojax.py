@@ -91,7 +91,8 @@ class TojaxedMliap:
         """
         with zipfile.ZipFile(zip_file, "r") as zf:
             with zf.open("model.jax") as f:
-                model = export.deserialize(f.read())  # type: ignore
+                # pyrefly: ignore[bad-argument-type]
+                model = export.deserialize(f.read())
             with zf.open("metadata.json") as f:
                 cutoff = json.loads(f.read().decode())["cutoff"]
             with zf.open("params.msgpack") as f:

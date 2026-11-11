@@ -326,7 +326,8 @@ def make_boltzmann_probability_ratio[State, Move: Patch[Any]](
                 x.systems.map_data(lambda s: s.potential_energy.value), EMPTY, EMPTY
             )
         ),
-        state.focus(lambda x: PotentialOut(x.systems.index, EMPTY, EMPTY)),  # type: ignore
+        # pyrefly: ignore[bad-argument-type]
+        state.focus(lambda x: PotentialOut(x.systems.index, EMPTY, EMPTY)),
         # Persisting the compensation is what keeps `U_old - U_new` exact across
         # a chain of accepted moves.
         state.focus(
