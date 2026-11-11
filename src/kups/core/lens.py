@@ -1336,7 +1336,7 @@ def _check_paths_disjoint(leaves: Sequence[_PathTraversal]) -> None:
     """Raise if two focus paths are equal or one is a prefix of the other.
 
     Setting through overlapping paths is order dependent: the later write wins
-    silently and ``get`` after ``set`` no longer returns what was set. Paths with
+    silently and ``get`` after ``set`` does not return what was set. Paths with
     unhashable item keys (e.g. array indices) cannot be compared and are skipped.
     """
 
