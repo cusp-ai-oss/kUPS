@@ -188,7 +188,9 @@ def make_local_mliap_from_state(
         Configured local MLIAP [Potential][kups.core.potential.Potential].
     """
 
-    def _model(x: Any) -> LocalMLIAPData:
+    def _model(
+        x: IsLocalMLIAPState[MaybeCached[LocalMLIAPData, Any]],
+    ) -> LocalMLIAPData:
         m = x.local_mliap_model
         return m.data if isinstance(m, HasCache) else m
 
@@ -198,7 +200,7 @@ def make_local_mliap_from_state(
         else:
             model_lens = state.focus(_model)
 
-        def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
+        def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
             return neighborlist_factory(state(s), model_lens(s).cutoff)
 
         return make_local_mliap_potential(
@@ -228,7 +230,7 @@ def make_local_mliap_from_state(
             )
         )
 
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_lens(s).cutoff)
 
     return make_local_mliap_potential(

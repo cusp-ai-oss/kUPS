@@ -62,7 +62,7 @@ def _sanitize[D](data: D, view: Callable[[D], Index[Any]]) -> D:
     )
     mask = viewed_leaf.valid_mask
 
-    def _leaf(leaf: Any) -> Any:
+    def _leaf(leaf: Any) -> Any:  # noqa: ANN401
         if isinstance(leaf, Index):
             if leaf is viewed_leaf:
                 return leaf  # source of truth — do not sanitize

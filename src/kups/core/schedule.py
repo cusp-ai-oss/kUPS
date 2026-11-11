@@ -154,7 +154,7 @@ class IncrementSchedule[Value](Schedule[Any, Value]):
 
     increment: Value
 
-    def __call__(self, input: Any, current: Value) -> Value:
+    def __call__(self, input: object, current: Value) -> Value:
         del input  # Unused
         return jax.tree.map(lambda c, i: c + i, current, self.increment)
 

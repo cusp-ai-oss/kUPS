@@ -39,7 +39,6 @@ how each leaf's leading axis partitions into segments.
 from __future__ import annotations
 
 import functools
-from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -52,7 +51,7 @@ from kups.core.typing import PyTree
 from kups.core.utils.jax import tree_structure
 
 
-def _is_index(x: Any) -> bool:
+def _is_index(x: object) -> bool:
     return isinstance(x, Index)
 
 

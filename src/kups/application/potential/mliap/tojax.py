@@ -122,7 +122,7 @@ def make_tojaxed_from_state(
     else:
         model_view = state.focus(lambda x: x.jaxified_model)
 
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_view(s).cutoff)
 
     return make_tojaxed_potential(

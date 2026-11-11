@@ -26,7 +26,7 @@ class Optimizer[Params, OptState](Protocol):
         updates: Params,
         state: OptState,
         params: Params | None = None,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> tuple[Params, OptState]: ...
 
 

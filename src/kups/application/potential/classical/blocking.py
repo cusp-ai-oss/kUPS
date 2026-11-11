@@ -135,7 +135,7 @@ def make_blocking_spheres_from_state(
     else:
         param_view = state.focus(lambda x: x.blocking_spheres_parameters)
 
-    def neighborlist_view(s: Any) -> BlockingSpheresNeighborListFactory:
+    def neighborlist_view(s: object) -> BlockingSpheresNeighborListFactory:
         return lambda cutoffs: neighborlist_factory(state(s), cutoffs)
 
     return make_blocking_spheres_potential(

@@ -75,7 +75,7 @@ class UMAModule(torch.nn.Module):
 
     def __init__(
         self,
-        predict_unit: Any,
+        predict_unit: Any,  # noqa: ANN401
         task_name: UMATaskName | str = "omat",
         compute_cell_gradients: bool = False,
     ) -> None:

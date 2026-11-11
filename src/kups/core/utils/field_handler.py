@@ -23,7 +23,7 @@ class FieldHandler(Protocol):
     (e.g., a Lens object).
     """
 
-    def __call__(self, cls: type, name: str) -> Any: ...
+    def __call__(self, cls: type, name: str) -> Any: ...  # noqa: ANN401
 
 
 _FIELD_HANDLERS: dict[type, FieldHandler] = {}
