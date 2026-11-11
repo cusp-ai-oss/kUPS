@@ -177,6 +177,7 @@ def make_coulomb_vacuum_from_state(
         gradient: Relaxation filter ``Lens[Geometry, PositionsAndCell]`` selecting the
             optimizer DOFs. ``None`` computes no gradients (the default). Composed with
             ``GRAPH_GEOMETRY`` into the potential's gradient lens.
+        neighborlist_factory: Builds the neighbor list from the sub-state and cutoff.
 
     Returns:
         Configured Coulomb vacuum [Potential][kups.core.potential.Potential].

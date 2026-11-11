@@ -232,6 +232,7 @@ def make_ewald_from_state(
             correction term in the returned potential.
         composition: Optional rigid-body templates and counts for
             energy-only self and exclusion terms.
+        neighborlist_factory: Builds the neighbor list from the sub-state and cutoff.
 
     Returns:
         An ``EwaldPotential`` combining short-range, long-range,
