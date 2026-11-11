@@ -40,7 +40,10 @@ def sample_like[PyTree](sampler: Sampler, key: Key, tree: PyTree) -> PyTree:
     leaves, treedef = jax.tree.flatten(tree)
     keys = jax.random.split(key, len(leaves))
     return treedef.unflatten(
-        [sampler(key, ref.shape, ref.dtype) for key, ref in zip(keys, leaves)]
+        [
+            sampler(key, ref.shape, ref.dtype)
+            for key, ref in zip(keys, leaves, strict=True)
+        ]
     )
 
 

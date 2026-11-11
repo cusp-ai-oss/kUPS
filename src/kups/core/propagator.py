@@ -316,7 +316,7 @@ def _apply_selected[S, I](
 
     def with_changed(values: list[Array]) -> S:
         out = list(leaves)
-        for i, value in zip(changed, values):
+        for i, value in zip(changed, values, strict=True):
             out[i] = value
         return treedef.unflatten(out)
 
@@ -777,7 +777,7 @@ class BakeConstantsPropagator[State](Propagator[State]):
             out_leaves = out_struc.flatten_up_to(out)
             identical_leafes = tuple(
                 in_leaf is out_leaf and isinstance(in_leaf, Array)
-                for in_leaf, out_leaf in zip(in_leaves, out_leaves)
+                for in_leaf, out_leaf in zip(in_leaves, out_leaves, strict=True)
             )
             leaf_mask = identical_leafes
             return None
@@ -800,7 +800,7 @@ class BakeConstantsPropagator[State](Propagator[State]):
         in_leaves = leaves
         leaves = list(leaves)
         # Use constants from the original state for the propagator
-        for idx, const in zip(self.const_indices, self.consts):
+        for idx, const in zip(self.const_indices, self.consts, strict=True):
             leaves[idx] = jnp.asarray(const)
         out = self.propagator(key, struc.unflatten(leaves))
         out_leaves = struc.flatten_up_to(out)

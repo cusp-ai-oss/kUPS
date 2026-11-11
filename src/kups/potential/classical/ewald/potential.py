@@ -523,7 +523,7 @@ def _full_structure_factor_jvp(
 
     def active_full(*args: Array) -> Array:
         inputs = list(primals)
-        for i, value in zip(active, args):
+        for i, value in zip(active, args, strict=True):
             inputs[i] = value
         return full(*inputs)
 
