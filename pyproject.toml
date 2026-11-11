@@ -143,6 +143,7 @@ venv = ".venv"
 extend-select = [
     "ANN401",  # explicit Any
     "D417",    # every argument documented
+    "TID251",  # banned APIs, see below
 ]
 ignore = ["E741"]
 external = ["KUP"]  # ci/kups_lint.py
@@ -150,13 +151,16 @@ external = ["KUP"]  # ci/kups_lint.py
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"dataclasses.replace".msg = "Use lenses (`bind(x).focus(...).set(...)`) instead."
+
 [tool.ruff.lint.per-file-ignores]
 # Generic and interop layers where `Any` is the honest type.
-"src/kups/core/lens.py" = ["ANN401"]
+"src/kups/core/lens.py" = ["ANN401", "TID251"]
 "src/kups/core/assertion/*" = ["ANN401"]
 "src/kups/core/effects/*" = ["ANN401"]
 "src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
-"!src/**" = ["ANN401", "D417"]
+"!src/**" = ["ANN401", "D417", "TID251"]
 
 [tool.pyrefly]
 infer-with-first-use = false
