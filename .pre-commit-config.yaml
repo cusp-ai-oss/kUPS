@@ -50,6 +50,13 @@ repos:
         files: ^(src/|ci/kups_lint)
         pass_filenames: false
 
+      - id: python-only-package
+        name: only Python sources in src/
+        entry: Data files, notebooks and READMEs belong outside src/
+        language: fail
+        files: ^src/
+        exclude: (\.pyi?|py\.typed)$
+
       - id: clear-notebook-output
         name: clear notebook output
         entry: uv run jupyter nbconvert --clear-output --inplace
