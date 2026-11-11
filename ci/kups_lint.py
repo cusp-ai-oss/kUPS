@@ -17,6 +17,7 @@ Codes:
     KUP007  Docstring attached to a type alias.
     KUP008  Type-check suppression without a pyrefly error kind.
     KUP009  Banner or separator comment (``# -----``, ``# =====``).
+    KUP010  ``isinstance(x, jax.core.Tracer)`` outside ``kups.core.utils.jax``.
 """
 
 import ast
@@ -52,6 +53,7 @@ MESSAGES = {
     "KUP007": "type alias docstring; the alias name should say enough",
     "KUP008": "suppress with `# pyrefly: ignore[kind]`; pyrefly treats other forms as blanket ignores",
     "KUP009": "banner comment; structure code with functions and modules, not separators",
+    "KUP010": "use `kups.core.utils.jax.is_traced` instead of checking for `Tracer` directly",
 }
 
 
@@ -167,6 +169,17 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+            and ast.unparse(node.args[1]).endswith("Tracer")
+            and self.module != "kups.core.utils.jax"
+        ):
+            self.report(node, "KUP010")
+        self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
