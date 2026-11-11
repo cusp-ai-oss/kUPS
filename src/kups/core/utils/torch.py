@@ -388,10 +388,14 @@ class TorchModuleWrapper:
         _validate_input_spec(args_flat, flat_spec)
 
         array_leaves = [
-            a for a, s in zip(args_flat, flat_spec) if not isinstance(s, ScalarSpec)
+            a
+            for a, s in zip(args_flat, flat_spec, strict=True)
+            if not isinstance(s, ScalarSpec)
         ]
         scalar_vals: list[Any] = [
-            a for a, s in zip(args_flat, flat_spec) if isinstance(s, ScalarSpec)
+            a
+            for a, s in zip(args_flat, flat_spec, strict=True)
+            if isinstance(s, ScalarSpec)
         ]
 
         output_shapes, out_tree = self._get_output_info(

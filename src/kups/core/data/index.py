@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections import defaultdict
 from functools import cached_property, lru_cache
 from typing import (
@@ -872,7 +873,7 @@ def _concatenate_shifted[Key: int](*indices: Index[Key]) -> Index[Key]:
         off += len(idx.keys)
     mc = max((i.max_count for i in indices if i.max_count is not None), default=None)
     result_keys = tuple(all_keys)
-    assert all(int(a) < int(b) for a, b in zip(result_keys, result_keys[1:])), (
+    assert all(int(a) < int(b) for a, b in itertools.pairwise(result_keys)), (
         f"Keys must be strictly increasing after offset shift, got {result_keys}"
     )
     return Index(result_keys, jnp.concatenate(parts), mc, _cls=indices[0].cls)
@@ -900,7 +901,7 @@ def unify_keys_by_cls[T](tree: T) -> T:
         indices = [v for _, v in items]
         all_keys = _merge_keys(*[v.keys for v in indices])
         matched = [v.update_labels(all_keys) for v in indices]
-        for (i, _), idx in zip(items, matched):
+        for (i, _), idx in zip(items, matched, strict=True):
             vals[i] = idx
     return jax.tree.unflatten(tree_def, vals)
 
