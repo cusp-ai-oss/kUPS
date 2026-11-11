@@ -925,12 +925,6 @@ def make_csvr_npt_step[State](
     )
 
 
-# =============================================================================
-# Gao-Fang-Wang BAOAB NPT Langevin (JCP 2016, arxiv 1601.01044)
-# Fully-flexible-cell extended-variable NPT Langevin dynamics.
-# =============================================================================
-
-
 @runtime_checkable
 class IsBAOABNPTLangevinParams(
     HasTimeStep,

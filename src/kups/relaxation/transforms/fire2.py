@@ -176,11 +176,11 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         power = tree_vdot(updates, state.velocity, idx).data
         positive = power > 0.0
 
-        # ----- n_pos (LAMMPS: ntimestep - last_negative) ------------------
+        # n_pos (LAMMPS: ntimestep - last_negative)
         new_n_pos = jnp.where(positive, state.n_pos.data + 1, 0)
         should_increase = positive & (new_n_pos > self.n_min)
 
-        # ----- dt adaptation per system -----------------------------------
+        # dt adaptation per system
         dt_increased = jnp.minimum(dt_data * self.f_inc, self.dt_max)
         dt_decreased = jnp.where(
             dt_data * self.f_dec >= self.dt_min,
@@ -193,7 +193,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             dt_decreased,
         )
 
-        # ----- alpha adaptation per system --------------------------------
+        # alpha adaptation per system
         alpha_for_mixing = (
             jnp.maximum(alpha_data, 1e-10) if self.use_abc else alpha_data
         )
@@ -207,13 +207,13 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
             jnp.full_like(alpha_data, self.alpha_start),
         )
 
-        # ----- delaystep_start: suppress shrink during startup ------------
+        # delaystep_start: suppress shrink during startup
         if self.delaystep_start:
             in_startup = (~positive) & (n_total < self.n_min)
             new_dt = jnp.where(in_startup, dt_data, new_dt)
             new_alpha = jnp.where(in_startup, alpha_data, new_alpha)
 
-        # ----- Mixing scales (use OLD velocity, per system) --------------
+        # Mixing scales (use OLD velocity, per system)
         v_old_sq = tree_vdot(state.velocity, state.velocity, idx).data
         f_sq = tree_vdot(updates, updates, idx).data
 
@@ -240,7 +240,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
                 alpha_data * jnp.sqrt(v_old_sq / jnp.maximum(f_sq, 1e-20)),
             )
 
-        # ----- dmax: compute dtv (non-ABC only) per system ----------------
+        # dmax: compute dtv (non-ABC only) per system
         if self.max_step is not None and not self.use_abc:
             abs_v = jax.tree.map(jnp.abs, state.velocity)
             abs_f = jax.tree.map(jnp.abs, updates)
@@ -255,7 +255,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         else:
             dtv = new_dt
 
-        # ----- Half-step backtrack: -0.5·new_dt·v_old per particle --------
+        # Half-step backtrack: -0.5·new_dt·v_old per particle
         if self.halfstepback:
             backtrack = tree_scale_per_row(
                 state.velocity, Table(keys, -0.5 * new_dt), idx
@@ -263,15 +263,15 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         else:
             backtrack = jax.tree.map(jnp.zeros_like, state.velocity)
 
-        # ----- v_pre: zero on P<=0, keep on P>0 ---------------------------
+        # v_pre: zero on P<=0, keep on P>0
         gate = Table(keys, positive.astype(float_dtype))
         v_pre = tree_scale_per_row(state.velocity, gate, idx)
 
-        # ----- Euler-implicit kick: v += dtv · F --------------------------
+        # Euler-implicit kick: v += dtv · F
         scaled_f = tree_scale_per_row(updates, Table(keys, dtv), idx)
         v_int = jax.tree.map(jnp.add, v_pre, scaled_f)
 
-        # ----- Mixing (applied only when P > 0): v = s1·v + s2·F ----------
+        # Mixing (applied only when P > 0): v = s1·v + s2·F
         v_mixed = jax.tree.map(
             jnp.add,
             tree_scale_per_row(v_int, Table(keys, scale1), idx),
@@ -279,7 +279,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
         )
         new_velocity = tree_where_per_row(Table(keys, positive), v_mixed, v_int, idx)
 
-        # ----- ABC per-component dmax clip (P>0 only) ---------------------
+        # ABC per-component dmax clip (P>0 only)
         if self.max_step is not None and self.use_abc:
             effective_limit = jnp.where(
                 positive,
@@ -290,7 +290,7 @@ class ScaleByFire2[Params](Optimizer[Params, ScaleByFire2State]):
                 new_velocity, Table(keys, effective_limit), idx
             )
 
-        # ----- Position update: dtv · v + (~positive) · backtrack ---------
+        # Position update: dtv · v + (~positive) · backtrack
         main = tree_scale_per_row(new_velocity, Table(keys, dtv), idx)
         not_positive = Table(keys, (1.0 - positive.astype(float_dtype)))
         gated_backtrack = tree_scale_per_row(backtrack, not_positive, idx)
