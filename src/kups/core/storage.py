@@ -595,8 +595,7 @@ class HDF5StorageReader[Config]:
             Group names, in config-pytree leaf order.
         """
         try:
-            group_names = json.loads(self.file.attrs["group_names"])
-            return group_names
+            return json.loads(self.file.attrs["group_names"])
         except Exception as e:
             raise ValueError("Failed to read group names") from e
 
@@ -619,8 +618,7 @@ class GroupReader[Storage]:
             raw = bytes(self.group["tree_def"][()])
         else:
             raw = bytes(self.group.attrs["tree_def"])
-        tree_def = pickle.loads(raw)
-        return tree_def
+        return pickle.loads(raw)
 
     @cached_property
     def _names_tree(self) -> Storage:

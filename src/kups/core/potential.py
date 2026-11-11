@@ -689,7 +689,4 @@ class PotentialAsPropagator[State, Gradients, Hessians, StatePatch: Patch[Any]](
         del key
         out = self.potential(state)
         energies = out.data.total_energies
-        patch_result = out.patch(
-            state, energies.set_data(jnp.ones(len(energies), dtype=bool))
-        )
-        return patch_result
+        return out.patch(state, energies.set_data(jnp.ones(len(energies), dtype=bool)))

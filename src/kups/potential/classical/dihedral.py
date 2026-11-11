@@ -317,7 +317,7 @@ def make_dihedral_potential[
             parameter_view=parameter_view,
         )
     )
-    potential = PotentialFromEnergy(
+    return PotentialFromEnergy(
         composer=composer,
         energy_fn=dihedral_energy,
         gradient_lens=gradient_lens,
@@ -326,7 +326,6 @@ def make_dihedral_potential[
         cache_lens=out_cache_lens,
         patch_idx_view=patch_idx_view,
     )
-    return potential
 
 
 if TYPE_CHECKING:

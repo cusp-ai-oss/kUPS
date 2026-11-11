@@ -169,8 +169,7 @@ class LogFugacityRatio[State, Move: Patch[Any]](LogProbabilityRatioFn[State, Mov
             ln_fact_ratio = log_factorial_ratio(c, pc)
             ln_ratio = (pc - c) * ln_fV + ln_fact_ratio
             ln_ratio = jnp.where(pc == c, 0.0, ln_ratio)
-            ln_ratio = ln_ratio.sum(axis=-1)
-            return ln_ratio
+            return ln_ratio.sum(axis=-1)
 
         return WithPatch(inner(log_activity, volume, counts, patched_counts), IdPatch())
 

@@ -207,8 +207,7 @@ class CachePropagator[State, ResultType, **P](Propagator[State]):
 
     def __call__(self, key: Array, state: State) -> State:
         result = self.function(key, state)
-        state = self.update(state, result)
-        return state
+        return self.update(state, result)
 
 
 @dataclass
@@ -641,8 +640,7 @@ class ResetOnErrorPropagator[State](Propagator[State]):
     def __call__(self, key: Array, state: State) -> State:
         new_state = self.propagator(key, state)
         mask = check_assertions(jax.tree.leaves(new_state)[0])
-        result_state = tree_where_broadcast_last(mask, new_state, state)
-        return result_state
+        return tree_where_broadcast_last(mask, new_state, state)
 
 
 @dataclass

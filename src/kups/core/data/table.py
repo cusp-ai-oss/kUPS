@@ -234,8 +234,7 @@ class Table(Batched, Generic[TKey, TData]):
         new_data = self[index]
         new_idx = tuple(map(self.cls, range(len(index))))
         with no_post_init():
-            result = bind(self, lambda x: (x.keys, x.data)).set((new_idx, new_data))
-        return result
+            return bind(self, lambda x: (x.keys, x.data)).set((new_idx, new_data))
 
     def update_if[D, F, L: SupportsSorting](
         self: Table[TKey, D],
@@ -854,8 +853,7 @@ class Table(Batched, Generic[TKey, TData]):
                 return x.update_labels(indices[x.cls])
             return x
 
-        result = tree_map(traversal, groups, is_leaf=lambda x: isinstance(x, Index))
-        return result
+        return tree_map(traversal, groups, is_leaf=lambda x: isinstance(x, Index))
 
     @staticmethod
     @overload
