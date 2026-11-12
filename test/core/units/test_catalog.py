@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the unit catalogue and assertions."""
+"""Tests for the unit catalogue, assertions, and documented limits."""
 
 import math
 import pathlib
@@ -14,9 +14,15 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
+from jax.core import ShapedArray
+from jax.extend.core import Primitive
+from jax.interpreters import mlir
 
 from kups.core import units
 from kups.core.units import (
+    Energy,
+    Force,
+    Length,
     Unit,
 )
 from kups.core.units import catalog as u
@@ -27,8 +33,44 @@ from kups.core.units.catalog import angstrom, eV
 from ._helpers import (
     ASE_TIME,
     arr,
+    jit,
+    make_jaxpr,
+    ty,
     val,
 )
+
+
+def test_zero_overhead():
+    # quantities lower to the same HLO as plain-array arithmetic
+    def dot_q(a: Force, b: Length) -> Energy:
+        return (a * b).sum()
+
+    def dot_plain(a: jax.Array, b: jax.Array) -> jax.Array:
+        return jnp.sum(a * b)
+
+    def ops(text: str) -> list[str]:
+        return re.findall(r"stablehlo\.\w+", text)
+
+    f, x = arr([1.0, 2.0, 3.0]) * u.N, arr([4.0, 5.0, 6.0]) * u.m
+    with_units, plain = jit(dot_q).lower(f, x), jit(dot_plain).lower(f.value, x.value)
+    text_u, text_p = with_units.as_text(), plain.as_text()
+    # same operations, same count, same order
+    assert len(ops(text_u)) == len(ops(text_p)) == 4
+    assert ops(text_u) == ops(text_p)
+    # the only difference is the result name
+    assert 'jax.result_info = "result.v"' in text_u
+    assert 'jax.result_info = "result"' in text_p
+    cost_u, cost_p = (
+        with_units.compile().cost_analysis(),
+        plain.compile().cost_analysis(),
+    )
+    assert cost_u is not None and cost_p is not None
+    assert cost_u["flops"] == cost_p["flops"]
+    # the jaxprs match equation for equation
+    eqns_u = make_jaxpr(dot_q)(f, x).eqns
+    eqns_p = make_jaxpr(dot_plain)(f.value, x.value).eqns
+    assert len(eqns_u) == len(eqns_p) == 2
+    assert [e.primitive.name for e in eqns_u] == [e.primitive.name for e in eqns_p]
 
 
 def test_unit_catalogue():
@@ -346,6 +388,39 @@ def test_charge_and_dipole_units():
     assert float((1.0 * u.debye).to(u.e * u.angstrom)) == pytest.approx(
         0.20819433270935594
     )
+
+
+def test_documented_limits():
+    # the hard limits, each with the failure it names
+    r = arr([1.0, 2.0]) * u.angstrom
+    # the jaxpr carries no unit and matches the plain-array one exactly
+    text = str(make_jaxpr(lambda x: (x * x).sum())(r))
+    assert text == str(make_jaxpr(lambda x: jnp.sum(x * x))(r.value))
+    assert "Quantity" not in text and "Å" not in text
+    assert ty(r) == "float64[2]{Å|atomistic}"
+    # a quantity never converts to an array implicitly, by either route
+    with pytest.raises(units.DimensionError, match="does not convert to a plain array"):
+        np.asarray(r)
+    with pytest.raises((TypeError, units.DimensionError)):
+        jnp.asarray(r)
+
+    doubled = Primitive("units_test_double")
+    doubled.def_abstract_eval(lambda x: ShapedArray(x.shape, x.dtype))
+    doubled.def_impl(lambda x: 2.0 * x)
+    mlir.register_lowering(
+        doubled, mlir.lower_fun(lambda x: 2.0 * x, multiple_results=False)
+    )
+
+    def public_double(x: jax.Array) -> jax.Array:
+        return doubled.bind(x)
+
+    # a foreign primitive binds arrays; apply hands it the magnitudes
+    with pytest.raises(TypeError, match=r"units\._core\.Quantity"):
+        jax.jit(public_double)(r)
+    npt.assert_allclose(units.apply(public_double, r).to(u.angstrom), [2.0, 4.0])
+    traced = jax.jit(lambda q: units.apply(public_double, q))(r)
+    npt.assert_allclose(traced.to(u.angstrom), [2.0, 4.0])
+    assert units.dim_of(traced) == units.dim_of(u.angstrom)
 
 
 def test_catalogue_names_parse_back():
