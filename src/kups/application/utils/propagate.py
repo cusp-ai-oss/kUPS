@@ -32,8 +32,8 @@ from kups.core.utils.jax import (
     jit,
     key_chain,
     no_post_init,
-    tree_where_broadcast_last,
 )
+from kups.core.utils.ops import where_broadcast_last
 
 __all__ = [
     "propagate_and_fix",
@@ -85,7 +85,7 @@ def make_sampled_cycle_function[State, Sample](
         updated, samples = jax.lax.scan(step, state, keys)
         # A capacity repair must retry the entire block with the same keys.
         valid = check_assertions(jax.tree.leaves(updated)[0])
-        updated = tree_where_broadcast_last(valid, updated, state)
+        updated = where_broadcast_last(valid, updated, state)
         return updated, samples
 
     return jit(as_result_function(block), donate_argnums=(1,))

@@ -46,8 +46,6 @@ from jax import Array
 from jax.typing import DTypeLike
 from typing_extensions import TypedDict
 
-from kups.core.utils.ops import where_broadcast_last
-
 StaticScalar = Union[
     np.bool_,
     np.number,  # NumPy scalar types
@@ -1207,20 +1205,6 @@ def tree_zeros_like[T](tree: T) -> T:
 def tree_copy[T](tree: T) -> T:
     """Return a copy of the pytree with the same structure and values as ``tree``."""
     return tree_map(jnp.copy, tree)
-
-
-def tree_where_broadcast_last[T](accept: Array, tree1: T, tree2: T) -> T:
-    """Element-wise ``jnp.where`` over two pytrees, broadcasting ``accept`` on trailing dims.
-
-    Args:
-        accept: Boolean condition array, broadcast to match each leaf's shape.
-        tree1: Pytree selected where ``accept`` is ``True``.
-        tree2: Pytree selected where ``accept`` is ``False``.
-
-    Returns:
-        Pytree with the same structure, each leaf chosen per ``accept``.
-    """
-    return tree_map(lambda a, b: where_broadcast_last(accept, a, b), tree1, tree2)
 
 
 @no_type_check
