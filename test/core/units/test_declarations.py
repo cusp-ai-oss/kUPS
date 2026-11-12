@@ -179,3 +179,29 @@ def test_dimension_aliases_exported():
     }
     extra = exported - named - {f"{n}Unit" for n in named} - {"Measured"}
     assert not extra, f"kups.core.units exports {sorted(extra)} as well"
+
+
+def test_constant_annotations_match_dimensions():
+    # constants annotate their own members under TYPE_CHECKING, so the checker
+    # cannot catch a wrong alias; compare against the dimension read from the value
+    table = aliases()
+    seen = 0
+    for node in ast.parse((PKG / "constants.py").read_text()).body:
+        if not isinstance(node, ast.If):
+            continue
+        for decl in node.body:
+            if not (
+                isinstance(decl, ast.AnnAssign) and isinstance(decl.target, ast.Name)
+            ):
+                continue
+            value = getattr(units.constants, decl.target.id)
+            if not hasattr(value, "dim"):  # N_A and alpha are plain floats
+                continue
+            dim = tuple(value.dim)
+            want = "Dimensionless" if not any(dim) else table[dim]
+            got = ast.unparse(decl.annotation)
+            assert got == want, (
+                f"constants.{decl.target.id} is {got} but measures {want}"
+            )
+            seen += 1
+    assert seen > 10, f"only {seen} annotations in constants"

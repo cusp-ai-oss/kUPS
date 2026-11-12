@@ -52,6 +52,7 @@ Caveats:
 """
 
 from kups.core.units import catalog as catalog
+from kups.core.units import constants as constants
 from kups.core.units._array import (
     absolute,
     clip,
@@ -184,6 +185,7 @@ from kups.core.units._unit import (
 __all__ = [
     # submodules
     "catalog",
+    "constants",
     # core types
     "Quantity",
     "Measured",

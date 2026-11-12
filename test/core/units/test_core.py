@@ -34,6 +34,7 @@ from kups.core.units import (
     Quantity,
     Unit,
     Velocity,
+    constants,
 )
 from kups.core.units import catalog as u
 from kups.core.units._unit import Atom
@@ -716,6 +717,9 @@ def test_atomistic_charge():
     with units.base(at):
         assert val(1 * u.e) == 1.0  # the charge unit is e
         assert val(1.0 * u.bar) == 6.241509074460763e-07
+        assert float(constants.k_e.to(u.eV * u.angstrom / u.e**2)) == pytest.approx(
+            14.399645478469017, rel=1e-15
+        )
     # "charge" is a known kind, so pinning a length under that label is caught
     with pytest.raises(units.DimensionError, match="charge must be"):
         units.base(length=u.angstrom, charge=u.m).__enter__()
