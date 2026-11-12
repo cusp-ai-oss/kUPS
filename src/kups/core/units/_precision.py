@@ -1,16 +1,21 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dtype checks and scale factors for unit conversion and rebasing."""
+"""Dtype and scale-factor checks for unit conversion and rebasing.
+
+Every check here reads only dtypes and scale factors, so it runs while tracing and
+behaves the same eagerly and under jit.
+"""
 
 from __future__ import annotations
 
 import math
 
+import jax
 import jax.numpy as jnp
-from jax.typing import DTypeLike
+from jax.typing import ArrayLike, DTypeLike
 
-from kups.core.units._base import BaseSystem
+from kups.core.units._base import ATOMISTIC, SI, BaseSystem
 from kups.core.units._unit import ONE, Dim, DimensionError, exps
 
 
@@ -59,4 +64,68 @@ def rebase_factor(
             f"base {src.name} in base {dst.name}: scaling by {f!r} requires floating "
             f"magnitudes; {cast_advice(dtype)}."
         )
+    require_normal(
+        f,
+        dtype,
+        f"re-expressing {src.symbol(dim) or '1'!r} from base {src.name} in base "
+        f"{dst.name} needs a factor of {f!r}",
+        f"so the magnitudes would be destroyed. Instead {widen(dtype)}build the "
+        f"quantity in base {dst.name}.",
+    )
     return f
+
+
+def require_normal(f: float, dtype: DTypeLike, what: str, advice: str) -> None:
+    """Raise unless ``f`` is a normal number of ``dtype``.
+
+    Args:
+      f: the scale factor to check.
+      dtype: the floating dtype ``f`` will be applied in.
+      what: the operation and factor, e.g. ``"attaching m ... needs a factor of 2.0"``.
+      advice: the consequence and remedy appended after the range.
+
+    Raises:
+      DimensionError: if ``|f|`` is below the smallest normal or above the max.
+    """
+    fi = jnp.finfo(dtype)
+    lo, hi = float(fi.smallest_normal), float(fi.max)
+    if not lo <= abs(f) <= hi:
+        raise DimensionError(
+            f"kups.core.units: {what}, which is not a normal {jnp.dtype(dtype).name} "
+            f"(range {lo:g} to {hi:g}), {advice}"
+        )
+
+
+X64_HINT = "jax.config.update('jax_enable_x64', True)"
+
+
+def widen(dtype: DTypeLike) -> str:
+    """Suggest a wider dtype as a clause ending in ``", or "``; empty for float64."""
+    if jnp.dtype(dtype) == jnp.dtype(jnp.float64):
+        return ""
+    if jnp.dtype(dtype) == jnp.dtype(jnp.result_type(float)):
+        return f"enable {X64_HINT}, or "
+    return f"hold the magnitudes in a dtype wider than {jnp.dtype(dtype).name}, or "
+
+
+def other_base(bs: BaseSystem) -> str:
+    """Suggest the other preset base, or "" if ``bs`` is not a preset."""
+    if bs is ATOMISTIC:
+        return ", e.g. with units.base(units.SI)"
+    if bs is SI:
+        return ", e.g. with units.base(units.ATOMISTIC)"
+    return ""
+
+
+def checked_cast(v: ArrayLike, dtype: DTypeLike) -> jax.Array:
+    """Cast magnitudes, refusing a dtype that x64 being off makes unavailable."""
+    out = jnp.astype(v, dtype)
+    default = isinstance(dtype, type) and dtype in (float, int, complex, bool)
+    want = None if default else jnp.dtype(dtype)
+    if want is not None and want != jnp.result_type(out):
+        raise DimensionError(
+            f"q.astype: {want.name} magnitudes are unavailable with x64 off; "
+            f"jax returns {jnp.result_type(out).name}. Set {X64_HINT} before the "
+            f"first jax call."
+        )
+    return out
