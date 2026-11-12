@@ -133,7 +133,6 @@ from kups.core.utils.math import (
     triangular_3x3_expm,
     triangular_3x3_from_tril,
     triangular_3x3_logm,
-    triangular_3x3_matmul,
 )
 
 _P = TypeVar("_P", bound=tuple[bool, bool, bool], covariant=True)
@@ -1236,7 +1235,7 @@ def make_supercell[T, T2, C: Cell[Any]](
     shifts = jnp.stack(
         jnp.meshgrid(*[jnp.arange(m) for m in clamped]), axis=-1
     ).reshape(-1, 3)
-    real_shifts = triangular_3x3_matmul(cell.vectors, shifts)
+    real_shifts = cell.frame.to_real(shifts)
 
     new_cell: C = bind(cell, lambda c: c.frame).set(cell.frame.tile(clamped))
 

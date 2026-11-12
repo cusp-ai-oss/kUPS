@@ -423,6 +423,17 @@ class TestMaterializedFrame:
 
 
 class TestMakeSupercell:
+    def test_general_frame_shifts_by_lattice_vectors(self):
+        vecs = jnp.array([[4.0, 1.0, 0.5], [0.3, 5.0, 1.2], [0.2, 0.7, 6.0]])
+        cell = PeriodicCell(MaterializedFrame.from_matrix(vecs[None]))
+        new_cell, new_positions = make_supercell(
+            cell, (2, 1, 1), jnp.zeros((1, 3)), lens(lambda x: x)
+        )
+        frac = new_cell.frame.to_fractional(new_positions)
+        npt.assert_allclose(
+            jnp.abs(frac), [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], atol=1e-12
+        )
+
     def test_periodic_orthogonal_replicates_frame_and_data(self):
         cell = PeriodicCell(OrthogonalFrame(jnp.array([10.0, 10.0, 10.0])))
         positions = jnp.array([[0.0, 0.0, 0.0]])

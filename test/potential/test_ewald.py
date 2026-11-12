@@ -16,6 +16,7 @@ from scipy.special import erfc
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import (
     Cell,
+    MatrixLogFrame,
     Periodic3D,
     PeriodicCell,
     TriclinicFrame,
@@ -440,6 +441,21 @@ class TestEwald:
         assert zero.any() and not zero.all()
         npt.assert_array_equal(pref[0, zero], 0.0)
         assert bool(jnp.all(pref[0, ~zero] > 0))
+
+    def test_kvecs_are_reciprocal_to_a_general_frame(self):
+        """Each k-vector satisfies k . a_i = 2 pi n_i for every lattice vector a_i."""
+        vecs = jnp.array([[8.0, 1.0, 0.5], [0.3, 9.0, 1.2], [0.2, 0.7, 10.0]])
+        cell = PeriodicCell(MatrixLogFrame.from_matrix(vecs))
+        params = _parameters(cell, 0.4, 4.0, 1.0)
+        pdata = _make_particle_data(jnp.zeros((1, 3)), jnp.array([1.0]), n_systems=1)
+        particles = Table.arange(pdata, label=ParticleId)
+        systems = _make_systems(cell[None], jnp.array([4.0]))
+        inp = EwaldLongRangeInput(PointCloud(particles, systems), params, None)
+
+        shifts = params.reciprocal_lattice_shifts.data[0]
+        npt.assert_allclose(
+            inp.kvecs[0] @ cell.vectors.T, 2 * jnp.pi * shifts, rtol=0, atol=1e-10
+        )
 
     def test_net_charge_total_energy_alpha_stable(self):
         """For Q != 0 the total energy is finite and ~independent of alpha.
