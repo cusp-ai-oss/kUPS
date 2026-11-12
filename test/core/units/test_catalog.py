@@ -25,6 +25,7 @@ from kups.core.units._unit import Atom
 from kups.core.units.catalog import angstrom, eV
 
 from ._helpers import (
+    ASE_TIME,
     arr,
     val,
 )
@@ -47,7 +48,8 @@ def test_unit_catalogue():
     # names canonicalize factor order, so how a unit was built does not show
     assert u.eV * u.eV == u.eV**2 and str(u.eV * u.eV) == "eV^2"
     assert str(u.angstrom * u.amu) == str(u.amu * u.angstrom) == "amu.Å"
-    assert str((u.eV / u.angstrom) ** 2) == "eV^2/Å^2"
+    assert str((u.eV / u.angstrom) ** 2) == "eV^2/Å^2"  # and it reads back
+    assert float(u.parse("1 eV^2/Å^2").to((u.eV / u.angstrom) ** 2)) == 1.0
     assert str(1 / (u.eV * u.angstrom)) == "1/(eV.Å)"  # one slash, one group
     assert str(u.eV / u.eV) == "1" and (u.eV / u.eV).dim == (0, 0, 0, 0, 0)
     assert type(u.m / u.m) is Unit and type(u.mol) is Unit
@@ -108,10 +110,107 @@ def test_reciprocal_unit():
         inverse.to(2 / u.eV)  # pyrefly: ignore[bad-argument-type]
 
 
+def test_power_units():
+    # thermal conductivity, W/(m K), reads and converts back unchanged
+    k = u.parse("0.6 W/m/K")
+    assert units.dim_of(k) == (1, 1, -3, 0, -1)
+    assert units.dim_of(u.W) == units.dim_of(u.J / u.s)
+    assert float(k.to(u.W / u.m / u.K)) == pytest.approx(0.6)
+    assert float(u.parse("3 mW").to(u.W)) == pytest.approx(3e-3)
+    assert float(u.parse("2 kW").to(u.J / u.s)) == pytest.approx(2e3)
+
+
+def test_parse():
+    # unit() resolves a spelling, parse() a value
+    for name in ("angstrom", "Angstrom", "Ang", "Å", "\u212b"):
+        assert u.unit(name) is u.angstrom
+    assert u.unit("A") is u.A and u.unit("ampere") is u.A  # A is the ampere
+    assert u.unit("e") is u.e and u.unit("Da") is u.amu
+    assert u.unit("Ry") is u.rydberg and u.unit("D") is u.debye
+    reads: list[tuple[str, object, float]] = [
+        ("300 K", u.K, 300.0),
+        ("2 fs", u.fs, 2.0),
+        ("10 bar", u.bar, 10.0),
+        ("4.57e-10 1/Pa", u.Pa**-1, 4.57e-10),
+        ("0.001 eV/angstrom", u.eV / u.angstrom, 0.001),
+        ("3.405 Å", u.angstrom, 3.405),
+        ("1e6 Pa", u.Pa, 1e6),
+        ("-2 angstrom**-3", u.angstrom**-3, -2.0),
+        ("1 eV.angstrom", u.eV * u.angstrom, 1.0),
+        ("1 eV*angstrom", u.eV * u.angstrom, 1.0),
+        ("+2 eV", u.eV, 2.0),
+        (".5 eV", u.eV, 0.5),
+        ("5. eV", u.eV, 5.0),
+        ("0.6 W/(m.K)", u.W / (u.m * u.K), 0.6),
+        ("1 kcal/mol/angstrom", u.kcal / u.mol / u.angstrom, 1.0),
+        # a bracket groups a product, so a symbol's single divisor reads back
+        ("1 m^2.kg/(s^2.K)", u.J / u.K, 1.0),
+        ("4 (eV/angstrom)^2", (u.eV / u.angstrom) ** 2, 4.0),
+        ("2 m^(1/2)", u.m ** Fraction(1, 2), 2.0),
+        ("2 m**(-3/2)", u.m ** Fraction(-3, 2), 2.0),
+    ]
+    for text, unit, want in reads:
+        assert float(u.parse(text).to(unit)) == pytest.approx(want), text
+    assert float(u.parse("300")) == 300.0  # a bare number is dimensionless
+    assert not units.is_quantity(u.parse("300"))
+    # a rational power reads back what a base's own symbol writes
+    symbol = units.ATOMISTIC.symbol(units.dim_of(u.s))
+    assert float(u.parse(f"1 {symbol}").to(u.s)) == pytest.approx(ASE_TIME, rel=1e-15)
+    with pytest.raises(units.DimensionError, match="'furlong' is not a unit"):
+        u.parse("1 furlong")
+    with pytest.raises(units.DimensionError, match=re.escape("as in 'm^(1/2)'")):
+        u.parse("1 m^1/2")  # read without brackets, this could mean (m^1)/2
+    with pytest.raises(units.DimensionError, match=re.escape("as in '(m/s)^(1/2)'")):
+        u.parse("1 (m/s)^1/2")  # the hint keeps a bracketed base bracketed
+    for text in (
+        "K",
+        "3 eV/",
+        "2 eV%m",
+        "5 eV^x",
+        "2 3 eV",
+        "1 (eV",
+        "1 eV)",
+        "1 (eV/)",
+        "0.6 W/m.K",  # a product after '/' needs brackets
+        "1 m^2.1",  # a decimal exponent; 1 is only a numerator before '/'
+        "1 m.1",
+    ):
+        with pytest.raises(
+            units.DimensionError, match=re.escape(f"cannot read {text!r}")
+        ):
+            u.parse(text)
+
+
 def test_si_prefixes():
     assert u.unit("km") is u.km and u.unit("kg") is u.kg and u.unit("fs") is u.fs
     assert u.unit("um") is u.unit("µm") is u.unit("\u03bcm") is u.unit("microm")
     assert u.unit("um").scale == 1e-6 and u.unit("mg").scale == 1e-6  # exactly 1e-6
+    reads: list[tuple[str, object, float]] = [
+        ("1 Mm", u.m, 1e6),
+        ("2 meV", u.eV, 2e-3),
+        ("1 pm", u.angstrom, 1e-2),
+        ("1 kbar", u.bar, 1e3),
+        ("3 mÅ", u.angstrom, 3e-3),
+        ("1 mA", u.A, 1e-3),
+        ("1 kilom", u.m, 1e3),
+        ("1 GHz", u.Hz, 1e9),
+        ("1 nN.pm", u.eV, 6.241509074e-3),
+    ]
+    for text, unit, want in reads:
+        assert float(u.parse(text).to(unit)) == pytest.approx(want), text
+    for text, message in (
+        ("1 mkm", "carries a prefix already"),
+        ("1 kfurlong", "'kfurlong' is not a unit"),
+        ("1 hbar", "reads as it rather than as a hectobar"),
+        ("1 hectobar", "reads as it rather than as a hectobar"),
+    ):
+        with pytest.raises(units.DimensionError, match=re.escape(message)):
+            u.parse(text)
+    with units.base(length=u.unit("pm"), energy=u.unit("meV")):
+        assert str(1.0 * u.angstrom) == "100.0 pm"
+        assert float(u.parse(str(1.0 * u.angstrom)).to(u.angstrom)) == pytest.approx(
+            1.0
+        )
 
 
 def test_unit_lookup_errors(monkeypatch: pytest.MonkeyPatch):
@@ -247,3 +346,13 @@ def test_charge_and_dipole_units():
     assert float((1.0 * u.debye).to(u.e * u.angstrom)) == pytest.approx(
         0.20819433270935594
     )
+
+
+def test_catalogue_names_parse_back():
+    # every printed unit name, and its reciprocal's, reads back as the same unit
+    for x in u.CATALOG:
+        if x.dim == units.ONE:
+            assert float(u.parse(f"1 {x}")) == pytest.approx(x.scale, rel=1e-15)
+            continue
+        for unit in (x, 1 / x):
+            assert float(u.parse(f"1 {unit}").to(unit)) == pytest.approx(1.0), unit
