@@ -184,3 +184,17 @@ def test_scalar_repr():
     with units.base(units.SI):
         assert repr(3.0 * u.angstrom) == "3e-10 m"
         assert f"{3.0 * u.angstrom:.2e}" == "3.00e-10 m"
+
+
+def test_grad_across_bases_in_float32():
+    # the cotangent rescale from the output's base to the primal's runs in float32
+    k = 2.0 * u.eV / u.angstrom**2
+
+    def energy(x: units.Length) -> units.Energy:
+        return (0.5 * k * x**2).sum()
+
+    with units.base(units.SI):
+        r = arr([1.0, 2.0]) * u.angstrom
+    g = units.grad(energy)(r)
+    assert units.base_of(g) == units.SI and g.dtype == jnp.float32
+    ut.assert_allclose(g, arr([2.0, 4.0]) * (u.eV / u.angstrom), u.eV / u.angstrom)

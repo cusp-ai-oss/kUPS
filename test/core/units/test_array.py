@@ -230,6 +230,26 @@ def test_like_under_vmap():
     assert jax.vmap(constant, out_axes=None)(rs).shape == ()
 
 
+def test_where_needs_sanitized_operand():
+    # where evaluates both branches, so mask the operand before the divide
+    z = arr([1.0, 3.0, 0.0]) * u.angstrom  # a padded neighbour entry
+    strength = 1.0 * u.eV * u.angstrom
+
+    def naive(r: Length) -> Energy:
+        # masks the result: finite energy, NaN force
+        return units.where(r > (0.0 * u.angstrom), strength / r, 0.0 * u.eV).sum()
+
+    def cured(r: Length) -> Energy:
+        # masks the operand first, so the gradient is finite too
+        good = r > (0.0 * u.angstrom)
+        rr = units.where(good, r, 1.0 * u.angstrom)
+        return units.where(good, strength / rr, 0.0 * u.eV).sum()
+
+    assert float(naive(z).to(u.eV)) == pytest.approx(float(cured(z).to(u.eV)))
+    assert not bool(jnp.all(jnp.isfinite(units.grad(naive)(z).value)))
+    assert bool(jnp.all(jnp.isfinite(units.grad(cured)(z).value)))
+
+
 def test_det_inv_cross():
     # det/inv/cross carry the right dimension
     cell = eye(3) * 5.43 * u.angstrom
@@ -858,6 +878,8 @@ def test_masking_and_scatter():
         # masked 1/r energy: the standard cutoff idiom
         return units.where(z < cut, (1.0 * u.eV * u.angstrom) / z, 0.0 * u.eV).sum()
 
+    g = units.grad(energy)(r)
+    assert bool(jnp.all(jnp.isfinite(g.value)))  # forces must not be NaN
     assert float(energy(r).to(u.eV)) == pytest.approx(1 + 1 / 3)
     assert val(jit(energy)(r)) == val(energy(r))
     ids = arr([0, 0, 1])
@@ -868,6 +890,11 @@ def test_masking_and_scatter():
     assert float(acc.at[0].get().to(u.eV)) == 3.0
     assert [float(x) for x in acc.at[0].set(0.0 * u.eV).to(u.eV)] == [0.0, 0.0]
     assert [float(x) for x in acc.at[0].multiply(2.0).to(u.eV)] == [6.0, 0.0]
+
+    def scatter(v: units.Energy) -> units.Energy:
+        return units.apply(segment_sum, v, ids, 2).sum()
+
+    assert list(units.grad(scatter)(arr([1.0, 2.0, 3.0]) * u.eV)) == [1.0] * 3
     assert jax.vmap(units.norm)(arange(6.0).reshape(3, 2) * u.eV).shape == (3,)
 
 
@@ -912,9 +939,10 @@ def test_mirror_surface():
         "ATOMISTIC", "BaseSystem", "DimensionError", "Dimensionless", "ONE",
         "OddExponentRoot", "Quantity", "SI", "Unit", "active_base", "apply", "base",
         "base_of", "catalog", "concatenate", "cross", "det", "dim_of", "dim_str",
-        "eigh", "einsum", "from_dim", "full_like", "inv", "is_leaf", "is_quantity",
-        "linspace", "maximum", "minimum", "norm", "ones_like", "qr", "require_dim", "sqrt",
-        "stack", "tree_map", "where", "zeros_like",
+        "eigh", "einsum", "from_dim", "full_like", "grad", "hessian", "inv", "is_leaf",
+        "is_quantity", "linspace", "maximum", "minimum", "norm", "ones_like", "qr",
+        "relabel", "require_dim", "sqrt", "stack", "tree_map", "value_and_grad",
+        "vectorize", "vjp", "where", "zeros_like",
         "Dim", "dmul", "E_M", "E_KG", "E_S", "E_A", "E_K", "F_M", "F_KG", "F_S", "F_A",
         "F_K", "absolute", "clip", "full", "max", "mean", "min", "ones", "prod",
         "select_n", "sum", "tree_flatten", "tree_leaves", "zeros", "Measured",
