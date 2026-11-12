@@ -29,8 +29,8 @@ Model:
   ``Quantity[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a second
   operand's.
 
-  The array functions here cover the cases ``jnp`` rejects; ``apply`` wraps
-  any other function.
+  The array and linear algebra functions here cover the cases ``jnp`` rejects;
+  ``apply`` wraps any other function.
 
 Caveats:
   * ``jax.tree.map`` over a single tree treats a quantity as a node, so a nonlinear
@@ -122,6 +122,14 @@ from kups.core.units._core import (
     tree_flatten,
     tree_leaves,
     tree_map,
+)
+from kups.core.units._linalg import (
+    cross,
+    det,
+    eigh,
+    einsum,
+    inv,
+    qr,
 )
 from kups.core.units._typed import E_A, E_K, E_KG, E_M, E_S, F_A, F_K, F_KG, F_M, F_S
 from kups.core.units._unit import (
@@ -277,6 +285,13 @@ __all__ = [
     "min",
     "max",
     "prod",
+    # linear algebra
+    "det",
+    "inv",
+    "cross",
+    "einsum",
+    "qr",
+    "eigh",
     # joining
     "stack",
     "concatenate",
