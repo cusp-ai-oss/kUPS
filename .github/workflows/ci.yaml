@@ -56,6 +56,18 @@ jobs:
         run: rm .testmondata & uv run --no-default-groups --group dev -p ${{ matrix.python-version }} --resolution ${{ matrix.resolution }} -U pytest --testmon
         env:
           JAX_PLATFORMS: cpu
+      # The automated review reads which changed lines no test ran.
+      - name: Coverage report for the review
+        id: coverage
+        if: always() && github.event_name == 'pull_request' && matrix.python-version == '3.12' && matrix.resolution == 'highest'
+        run: uv run --no-default-groups --group dev -p 3.12 coverage json -o coverage.json
+        continue-on-error: true
+      - if: steps.coverage.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage.json
+          retention-days: 14
       - id: testmon-cache-save
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
