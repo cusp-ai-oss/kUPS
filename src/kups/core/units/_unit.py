@@ -4,7 +4,7 @@
 """Dimension vectors and the ``Unit`` class.
 
 A dimension is a 5-tuple of rational exponents over the SI base axes
-``(m, kg, s, A, K)``.
+``(m, kg, s, A, K)``. Higher layers are imported inside functions to avoid cycles.
 """
 
 from __future__ import annotations
@@ -14,7 +14,11 @@ import functools
 import math
 from collections.abc import Iterable
 from fractions import Fraction as Frac
-from typing import TYPE_CHECKING, Generic, Literal, NamedTuple, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, NamedTuple, overload
+
+import jax
+import jax.numpy as jnp
+from jax.typing import ArrayLike
 
 from kups.core.units._typed import E_A, E_K, E_KG, E_M, E_S
 
@@ -48,7 +52,7 @@ POWER: Dim = (2, 1, -3, 0, 0)
 
 
 class DimensionError(TypeError):
-    """Raised for a dimension mismatch or a bad base request."""
+    """Raised for a dimension mismatch, a base mismatch, or a bad base request."""
 
 
 def _mk(vals: Iterable[Frac]) -> Dim:
@@ -67,6 +71,19 @@ def dmul(a: Dim, b: Dim) -> Dim:
       The exponentwise sum.
     """
     return _mk(Frac(x) + Frac(y) for x, y in zip(a, b, strict=True))
+
+
+def ddiv(a: Dim, b: Dim) -> Dim:
+    """Dimension of a quotient.
+
+    Args:
+      a: numerator dimension.
+      b: denominator dimension.
+
+    Returns:
+      The exponentwise difference.
+    """
+    return _mk(Frac(x) - Frac(y) for x, y in zip(a, b, strict=True))
 
 
 def dpow(a: Dim, e: Frac) -> Dim:
@@ -177,6 +194,7 @@ def exponent(e: float | Frac) -> Frac:
 if TYPE_CHECKING:
     from shape_extensions import Int
 
+    from kups.core.units._core import Quantity
     from kups.core.units._typed import F_A, F_K, F_KG, F_M, F_S, K
 
 
@@ -192,6 +210,8 @@ class Unit(Generic[E_M, E_KG, E_S, E_A, E_K]):
     """
 
     factors: Factors
+
+    __array_ufunc__: ClassVar[None] = None  # numpy defers to __rmul__
 
     def __post_init__(self) -> None:
         acc: dict[Atom, Frac] = {}
@@ -218,6 +238,8 @@ class Unit(Generic[E_M, E_KG, E_S, E_A, E_K]):
     def __repr__(self) -> str:
         return self.name
 
+    # Overloaded on self: a subclass narrowing the return would break substitutability.
+    @overload
     def __mul__(
         self, other: Unit[F_M, F_KG, F_S, F_A, F_K]
     ) -> Unit[
@@ -226,10 +248,16 @@ class Unit(Generic[E_M, E_KG, E_S, E_A, E_K]):
         E_S + F_S,
         E_A + F_A,
         E_K + F_K,
-    ]:
-        """Multiply by a unit."""
+    ]: ...
+    @overload
+    def __mul__(self: Dimensionless, other: ArrayLike) -> jax.Array: ...
+    @overload
+    def __mul__(self, other: ArrayLike) -> Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+    def __mul__(self, other: Any) -> Any:
+        """Multiply by a unit, or attach this unit to magnitudes."""
         return _product(self, other)
 
+    @overload
     def __truediv__(
         self, other: Unit[F_M, F_KG, F_S, F_A, F_K]
     ) -> Unit[
@@ -238,8 +266,13 @@ class Unit(Generic[E_M, E_KG, E_S, E_A, E_K]):
         E_S - F_S,
         E_A - F_A,
         E_K - F_K,
-    ]:
-        """Divide by a unit."""
+    ]: ...
+    @overload
+    def __truediv__(self: Dimensionless, other: ArrayLike) -> jax.Array: ...
+    @overload
+    def __truediv__(self, other: ArrayLike) -> Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+    def __truediv__(self, other: Any) -> Any:
+        """Divide by a unit, or attach the reciprocal to magnitudes."""
         return _quotient(self, other)
 
     @overload
@@ -253,15 +286,36 @@ class Unit(Generic[E_M, E_KG, E_S, E_A, E_K]):
         ef = exponent(e)
         return Unit(tuple((a, x * ef) for a, x in self.factors))
 
-    def __rtruediv__(self, x: Literal[1]) -> Unit[-E_M, -E_KG, -E_S, -E_A, -E_K]:
-        """``1 / unit`` is the reciprocal unit."""
-        return self**-1 if type(x) is int and x == 1 else NotImplemented
+    @overload
+    def __rmul__(self: Dimensionless, x: ArrayLike) -> jax.Array: ...
+    @overload
+    def __rmul__(self, x: ArrayLike) -> Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+    def __rmul__(self, x: ArrayLike) -> jax.Array | Quantity[int, int, int, int, int]:
+        """Attach this unit to plain magnitudes."""
+        return _forward(x, self)
+
+    @overload
+    def __rtruediv__(self: Dimensionless, x: ArrayLike) -> jax.Array: ...
+    @overload
+    def __rtruediv__(self, x: Literal[1]) -> Unit[-E_M, -E_KG, -E_S, -E_A, -E_K]: ...
+    @overload
+    def __rtruediv__(self, x: ArrayLike) -> Quantity[-E_M, -E_KG, -E_S, -E_A, -E_K]: ...
+    def __rtruediv__(
+        self, x: ArrayLike
+    ) -> jax.Array | AnyUnit | Quantity[int, int, int, int, int]:
+        """``1 / unit`` is the reciprocal unit; other ``x`` give ``x * self**-1``."""
+        inv = self**-1
+        # ``1 / u.mol`` is just the number 1/N_A, unlike ``1 / u.fs`` which is a unit.
+        if type(x) is int and x == 1 and self.dim != ONE:
+            return inv
+        return _forward(x, inv)
 
 
 type AnyUnit = Unit[int, int, int, int, int]
 
 if TYPE_CHECKING:
-    # An alias, since a subclass would be assignable to every Unit[...].
+    # An alias, since a subclass would be assignable to every Unit[...]. The
+    # self-typed overloads above type its decay.
     type Dimensionless = Unit[0, 0, 0, 0, 0]
 else:
     Dimensionless = Unit
@@ -412,15 +466,28 @@ def _dim(factors: Factors) -> Dim:
     return dim
 
 
-def _product(a: AnyUnit, b: object) -> AnyUnit:
-    """Multiply a unit by a unit."""
-    if not isinstance(b, Unit):
+def _forward(
+    x: ArrayLike | Quantity[int, int, int, int, int],
+    unit: AnyUnit,
+    invert: bool = False,
+) -> jax.Array | Quantity[int, int, int, int, int]:
+    """Attach ``unit`` to plain magnitudes; return NotImplemented for other operands."""
+    from kups.core.units._core import from_unit, is_quantity, operand  # avoids a cycle
+
+    if is_quantity(x) or not operand(x):
         return NotImplemented
+    return from_unit(1 / jnp.asarray(x) if invert else x, unit)
+
+
+def _product(a: AnyUnit, b: Any) -> Any:
+    """Multiply a unit by a unit, or attach it to magnitudes."""
+    if not isinstance(b, Unit):
+        return _forward(b, a)
     return Unit(a.factors + b.factors)
 
 
-def _quotient(a: AnyUnit, b: object) -> AnyUnit:
-    """Divide a unit by a unit."""
+def _quotient(a: AnyUnit, b: Any) -> Any:
+    """Divide a unit by a unit, or attach it to the reciprocal of magnitudes."""
     if not isinstance(b, Unit):
-        return NotImplemented
+        return _forward(b, a, invert=True)
     return Unit(a.factors + tuple((x, -e) for x, e in b.factors))

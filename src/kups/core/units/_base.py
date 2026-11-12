@@ -82,7 +82,7 @@ class BaseSystem:
     """An immutable coherent basis with one scale factor per dimension.
 
     Attributes:
-      name: display name.
+      name: display name, shown in a quantity's type.
       pins: the pinned units, a full basis of the five dimensions.
       labels: the pins' labels, in the same order.
     """
@@ -250,7 +250,7 @@ def _build(name: str, pinned: list[tuple[str, AnyUnit]]) -> BaseSystem:
 
 
 SI = _build("SI", [])
-# charge pinned to e, so charges display in e
+# charge pinned to e: `1 * u.e` is 1
 ATOMISTIC = _build(
     "atomistic", [("length", angstrom), ("mass", amu), ("energy", eV), ("charge", e)]
 )
@@ -261,7 +261,10 @@ _ACTIVE = jax.make_user_context(ATOMISTIC)
 
 
 def active_base() -> BaseSystem:
-    """Return the innermost ``units.base`` scope's system, else ``ATOMISTIC``."""
+    """Return the base system new quantities are stored in.
+
+    That is the innermost ``units.base`` scope's system, else ``ATOMISTIC``.
+    """
     return _ACTIVE.value
 
 
