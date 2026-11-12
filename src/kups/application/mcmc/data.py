@@ -175,27 +175,6 @@ class HostConfig(BaseModel):
     species and may have variable length."""
 
 
-class LJConfig(BaseModel):
-    """Lennard-Jones force-field parameters."""
-
-    parameters: dict[str, tuple[float, float]]
-    """Mapping symbol -> (epsilon/kB [K], sigma [Ang]) for each element type."""
-    cutoff: float = 12.0
-    """Real-space cutoff (Ang)."""
-    tail_correction: bool = True
-    """Apply long-range tail correction."""
-
-
-class EwaldCfg(BaseModel):
-    """Ewald summation settings for electrostatic interactions."""
-
-    enabled: bool = True
-    cutoff: float = 12.0
-    """Real-space cutoff (Ang)."""
-    precision: float = 1e-6
-    """Target error tolerance."""
-
-
 class RunConfig(BaseModel):
     """Run configuration for MCMC simulation."""
 
