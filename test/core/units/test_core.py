@@ -114,6 +114,30 @@ def test_dimension_errors():
     assert "cannot compare" in str(e.value) and "a dimensionless value" in str(e.value)
 
 
+def test_fractional_exponents():
+    assert val(units.sqrt(4.0 * u.angstrom**2)) == 2.0
+    assert units.dim_of(units.sqrt(4.0 * u.m**2)) == (1, 0, 0, 0, 0)
+    assert units.dim_of(units.sqrt(2.0 * u.m)) == (Fraction(1, 2), 0, 0, 0, 0)
+    assert ty(units.sqrt(2.0 * u.angstrom)) == "float64[]{Å^(1/2)|atomistic}"
+    assert units.dim_of(units.sqrt(2.0 * u.m) ** 2) == (1, 0, 0, 0, 0)
+    assert units.dim_of((3.0 * u.m) ** Fraction(3, 2)) == (
+        Fraction(3, 2),
+        0,
+        0,
+        0,
+        0,
+    )
+    assert units.dim_of(u.m) == (1, 0, 0, 0, 0)  # a Unit reports its own dimension
+    assert units.dim_of(u.eV / u.angstrom) == (1, 1, -2, 0, 0)
+    assert units.dim_of(3.0) == (0, 0, 0, 0, 0)
+
+    def power(q: Length, p: float) -> object:
+        return q**p
+
+    with pytest.raises(units.DimensionError, match="must be a static int or Fraction"):
+        jit(power)(2.0 * u.m, 2.0)  # traced exponent
+
+
 def test_default_base_is_atomistic():
     assert units.active_base() is units.ATOMISTIC
     assert ty(1 * u.nm) == "float64[]{Å|atomistic}"

@@ -9,8 +9,8 @@ at construction, and a dimensionless result decays to a plain ``jax.Array``. A
 quantity is a pytree with the magnitudes as its single leaf and the dimension and
 base as metadata.
 
-Methods share the helpers here; dtype and scale-factor checks live in
-``units._precision``.
+Methods and array functions share the helpers here; dtype and scale-factor checks
+live in ``units._precision``.
 """
 
 from __future__ import annotations
@@ -583,7 +583,7 @@ class Quantity(Generic[E_M, E_KG, E_S, E_A, E_K]):
                 "q.to(unit).astype(dtype) or q.value.astype(dtype) for unlabelled "
                 "magnitudes."
             )
-        return lift(checked_cast(lower(self), dtype), self.dim, self.bs)
+        return lift(checked_cast(lower(self), dtype, "q.astype"), self.dim, self.bs)
 
     def _rearranged(
         self, fn: Callable[..., jax.Array], *args: object, **kwargs: object
@@ -776,24 +776,24 @@ class Quantity(Generic[E_M, E_KG, E_S, E_A, E_K]):
         self, axis: _Axis = None, *, keepdims: bool = False
     ) -> Quantity[E_M, E_KG, E_S, E_A, E_K]:
         """Smallest magnitude over an axis, keeping the dimension."""
-        reduce_axis("min", axis)
+        reduce_axis("q.min", axis)
         return apply(jnp.min, self, axis=axis, keepdims=keepdims)
 
     def max(
         self, axis: _Axis = None, *, keepdims: bool = False
     ) -> Quantity[E_M, E_KG, E_S, E_A, E_K]:
         """Largest magnitude over an axis, keeping the dimension."""
-        reduce_axis("max", axis)
+        reduce_axis("q.max", axis)
         return apply(jnp.max, self, axis=axis, keepdims=keepdims)
 
     def norm(
         self,
-        ord: int | str | None = None,
+        ord: float | str | None = None,
         axis: int | tuple[int, ...] | None = None,
         keepdims: bool = False,
     ) -> Quantity[E_M, E_KG, E_S, E_A, E_K]:
         """Vector or matrix norm, keeping the operand's dimension."""
-        return norm_impl(self, ord, axis, keepdims)
+        return norm_impl(self, ord, axis, keepdims, "q.norm")
 
     def clip(
         self,
@@ -1122,8 +1122,15 @@ def _promote_arg(x: object) -> object:
     return x
 
 
-def operand_dtype(xs: Sequence[object]) -> np.dtype[np.generic] | None:
-    """The dtype a Unit operand's size is held in; None if there is no Unit."""
+def operand_dtype(
+    xs: Sequence[object], dtype: DTypeLike | None = None
+) -> np.dtype[np.generic] | None:
+    """The dtype a Unit operand's size is held in; None if there is no Unit.
+
+    ``dtype`` is the result's, when the caller fixes one.
+    """
+    if dtype is not None:
+        return jnp.result_type(dtype)
     if not any(isinstance(x, Unit) for x in xs):
         return None
     args = [a for a in map(_promote_arg, xs) if a is not None]
@@ -1264,13 +1271,24 @@ def shape_of(x: AnyQuantity | ArrayLike) -> tuple[int, ...]:
     return x.shape if isinstance(x, Quantity) else jnp.shape(x)
 
 
+def no_index(name: str, what: str, x: object) -> None:
+    """Reject a quantity passed where an index or a mask belongs."""
+    if not isinstance(x, Quantity):
+        return
+    raise DimensionError(
+        f"units.{name}: {what} must be a plain integer or boolean array, not "
+        f"{_measures(x)}; it selects rather than measures"
+    )
+
+
 def reduce_axis(name: str, axis: object) -> None:
     """Reject a quantity or Unit where a reduction expects an axis."""
     if not isinstance(axis, (Quantity, Unit)):
         return
     raise DimensionError(
-        f"q.{name}(axis=...) reduces over an axis, and you passed a quantity "
-        f"as the axis. For an elementwise bound use x.clip(lo, hi)."
+        f"{name}(axis=...) reduces over an axis, and you passed a quantity "
+        f"as the axis. For an elementwise bound use units.minimum(x, y), "
+        f"units.maximum(x, y) or x.clip(lo, hi)."
     )
 
 
@@ -1454,14 +1472,16 @@ def apply(
 
 
 def agree(
-    xs: Sequence[AnyQuantity | AnyUnit | ArrayLike], verb: str
+    xs: Sequence[AnyQuantity | AnyUnit | ArrayLike],
+    verb: str,
+    dtype: DTypeLike | None = None,
 ) -> tuple[list[ArrayLike], Dim, BaseSystem]:
     """Lower same-dimension operands into one base: (magnitudes, dimension, base).
 
-    ``verb`` names the operation in errors.
+    ``verb`` names the operation in errors; ``dtype`` is the result's, if given.
     """
     bs = joint(*xs)
-    dt = operand_dtype(xs)
+    dt = operand_dtype(xs, dtype)
     mags: list[ArrayLike] = []
     dim: Dim | None = None
     for x in xs:
@@ -1529,16 +1549,36 @@ def clip_impl(
     return lift(jnp.clip(mags[0], low, high), dim, bs)
 
 
+@overload
 def norm_impl(
     x: Quantity[E_M, E_KG, E_S, E_A, E_K],
-    ord: int | str | None,
+    ord: float | str | None,
     axis: int | tuple[int, ...] | None,
     keepdims: bool,
-) -> Quantity[E_M, E_KG, E_S, E_A, E_K]:
-    """Vector or matrix norm; ``ord=0`` (a count) is refused for a quantity."""
+    name: str,
+) -> Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+@overload
+def norm_impl(
+    x: ArrayLike,
+    ord: float | str | None,
+    axis: int | tuple[int, ...] | None,
+    keepdims: bool,
+    name: str,
+) -> jax.Array: ...
+def norm_impl(
+    x: AnyQuantity | ArrayLike,
+    ord: float | str | None,
+    axis: int | tuple[int, ...] | None,
+    keepdims: bool,
+    name: str,
+) -> AnyQuantity | jax.Array:
+    """Vector or matrix norm; ``ord=0`` (a count) is refused for a quantity.
+
+    ``name`` is the caller's spelling, for the error.
+    """
     if ord == 0 and isinstance(x, Quantity):
         raise DimensionError(
-            f"q.norm: ord=0 counts the nonzero elements of {_measures(x)} "
+            f"{name}: ord=0 counts the nonzero elements of {_measures(x)} "
             f"rather than measuring them, so the count carries no dimension. Write "
             f"jnp.count_nonzero(x.value)."
         )
