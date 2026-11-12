@@ -24,6 +24,7 @@ from fractions import Fraction as Frac
 from types import EllipsisType
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
     Generic,
@@ -41,6 +42,7 @@ from jax.tree_util import PyTreeDef
 from jax.typing import ArrayLike, DTypeLike
 from typing_extensions import TypedDict, TypeIs
 
+from kups.core.units import catalog as u
 from kups.core.units._base import BaseSystem, active_base, require_base
 from kups.core.units._precision import (
     base_scale,
@@ -70,6 +72,9 @@ from kups.core.units._unit import (
 from kups.core.utils.jax import tree_map as _tree_map
 
 if TYPE_CHECKING:
+    from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
+    from pydantic.json_schema import JsonSchemaValue
+    from pydantic_core import CoreSchema, SchemaSerializer
     from shape_extensions import Int
 
     from kups.core.units._typed import F_A, F_K, F_KG, F_M, F_S, K
@@ -128,6 +133,8 @@ class Quantity(Generic[E_M, E_KG, E_S, E_A, E_K]):
 
     # no ``__jax_array__``: it would break ``plain_array * quantity``
     __array_ufunc__: ClassVar[None] = None  # ``np.array(...) * q`` reaches __rmul__
+    # pydantic dumps a quantity it finds untyped, e.g. a JSON schema default, with it
+    __pydantic_serializer__: ClassVar[_PydanticSerializer]
 
     def __array__(
         self, dtype: DTypeLike | None = None, copy: bool | None = None
@@ -135,6 +142,30 @@ class Quantity(Generic[E_M, E_KG, E_S, E_A, E_K]):
         """Refuse conversion to a numpy or jax array."""
         del dtype, copy
         raise DimensionError(_NO_ARRAY)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: object, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        """Validate and dump a pydantic field of any dimension.
+
+        Dimension aliases such as ``units.Length`` carry their own hook, which also
+        checks the dimension; pydantic encodes quantity defaults through this one.
+        """
+        del source, handler
+        from kups.core.units.pydantic import unit_core_schema
+
+        return unit_core_schema(None)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Build the JSON schema for the accepted input forms."""
+        del schema, handler
+        from kups.core.units.pydantic import unit_json_schema
+
+        return unit_json_schema(None)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -1804,31 +1835,89 @@ class _At(Generic[_Q]):
         return _AtRef(self.x, idx)
 
 
-# dimension aliases
-type Area = Quantity[2, 0, 0, 0, 0]
-type Volume = Quantity[3, 0, 0, 0, 0]
-type Velocity = Quantity[1, 0, -1, 0, 0]
-type Acceleration = Quantity[1, 0, -2, 0, 0]
-type Momentum = Quantity[1, 1, -1, 0, 0]
-type Density = Quantity[-3, 1, 0, 0, 0]
-type Wavenumber = Quantity[-1, 0, 0, 0, 0]
-type Stiffness = Quantity[0, 1, -2, 0, 0]
-type Action = Quantity[2, 1, -1, 0, 0]
-type Entropy = Quantity[2, 1, -2, 0, -1]
-type Permittivity = Quantity[-3, -1, 4, 2, 0]
-type CoulombConstant = Quantity[3, 1, -4, -2, 0]
-type DipoleMoment = Quantity[1, 0, 1, 1, 0]
-type NumberDensity = Quantity[-3, 0, 0, 0, 0]
-type Compressibility = Quantity[1, -1, 2, 0, 0]
-type Charge = Quantity[0, 0, 1, 1, 0]
-type Current = Quantity[0, 0, 0, 1, 0]
-type Energy = Quantity[2, 1, -2, 0, 0]
-type Force = Quantity[1, 1, -2, 0, 0]
-type Length = Quantity[1, 0, 0, 0, 0]
-type Mass = Quantity[0, 1, 0, 0, 0]
-type Power = Quantity[2, 1, -3, 0, 0]
-type Pressure = Quantity[-1, 1, -2, 0, 0]
-type Temperature = Quantity[0, 0, 0, 0, 1]
-type Time = Quantity[0, 0, 1, 0, 0]
-type Frequency = Quantity[0, 0, -1, 0, 0]
-type Voltage = Quantity[2, 1, -3, -1, 0]
+class _PydanticSerializer:
+    """Build the serializer pydantic looks up on a quantity only when it does."""
+
+    def __get__(self, obj: object, owner: type | None = None) -> SchemaSerializer:
+        return _pydantic_serializer()
+
+
+@functools.cache
+def _pydantic_serializer() -> SchemaSerializer:
+    from pydantic_core import SchemaSerializer
+
+    from kups.core.units.pydantic import unit_core_schema
+
+    return SchemaSerializer(unit_core_schema(None))
+
+
+Quantity.__pydantic_serializer__ = _PydanticSerializer()
+
+
+class Dimension:
+    """Pydantic schema hook carried by a dimension alias at runtime.
+
+    The alias names the unit its values are dumped and hinted in, and the
+    dimension is that unit's. It imports ``kups.core.units.pydantic`` only when
+    pydantic builds a schema, so importing the core never loads pydantic.
+    """
+
+    __slots__ = ("unit",)
+
+    def __init__(self, unit: AnyUnit):
+        """Store the alias's display unit."""
+        self.unit = unit
+
+    def __get_pydantic_core_schema__(
+        self, source: object, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        """Build the validator and serializer schema for this dimension."""
+        del source, handler
+        from kups.core.units.pydantic import unit_core_schema
+
+        return unit_core_schema(self.unit)
+
+    def __get_pydantic_json_schema__(
+        self, schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Build the JSON schema for the accepted input forms."""
+        del schema, handler
+        from kups.core.units.pydantic import unit_json_schema
+
+        return unit_json_schema(self.unit)
+
+
+# dimension aliases: the exponents for the type checker, the display unit for pydantic
+type Acceleration = Annotated[Quantity[1, 0, -2, 0, 0], Dimension(u.angstrom / u.fs**2)]
+type Action = Annotated[Quantity[2, 1, -1, 0, 0], Dimension(u.eV * u.fs)]
+type Area = Annotated[Quantity[2, 0, 0, 0, 0], Dimension(u.angstrom**2)]
+type Charge = Annotated[Quantity[0, 0, 1, 1, 0], Dimension(u.e)]
+type Compressibility = Annotated[Quantity[1, -1, 2, 0, 0], Dimension(1 / u.Pa)]
+type CoulombConstant = Annotated[
+    Quantity[3, 1, -4, -2, 0], Dimension(u.eV * u.angstrom / u.e**2)
+]
+type Current = Annotated[Quantity[0, 0, 0, 1, 0], Dimension(u.A)]
+type Density = Annotated[Quantity[-3, 1, 0, 0, 0], Dimension(u.g / u.cm**3)]
+type DipoleMoment = Annotated[Quantity[1, 0, 1, 1, 0], Dimension(u.debye)]
+type Energy = Annotated[Quantity[2, 1, -2, 0, 0], Dimension(u.eV)]
+type Entropy = Annotated[Quantity[2, 1, -2, 0, -1], Dimension(u.eV / u.K)]
+type Force = Annotated[Quantity[1, 1, -2, 0, 0], Dimension(u.eV / u.angstrom)]
+type Frequency = Annotated[Quantity[0, 0, -1, 0, 0], Dimension(1 / u.fs)]
+type Length = Annotated[Quantity[1, 0, 0, 0, 0], Dimension(u.angstrom)]
+type Mass = Annotated[Quantity[0, 1, 0, 0, 0], Dimension(u.amu)]
+type Momentum = Annotated[
+    Quantity[1, 1, -1, 0, 0], Dimension(u.amu * u.angstrom / u.fs)
+]
+type NumberDensity = Annotated[Quantity[-3, 0, 0, 0, 0], Dimension(1 / u.angstrom**3)]
+type Permittivity = Annotated[
+    Quantity[-3, -1, 4, 2, 0], Dimension(u.e**2 / (u.eV * u.angstrom))
+]
+type Power = Annotated[Quantity[2, 1, -3, 0, 0], Dimension(u.eV / u.fs)]
+type Pressure = Annotated[Quantity[-1, 1, -2, 0, 0], Dimension(u.Pa)]
+type Stiffness = Annotated[Quantity[0, 1, -2, 0, 0], Dimension(u.eV / u.angstrom**2)]
+type Temperature = Annotated[Quantity[0, 0, 0, 0, 1], Dimension(u.K)]
+type Time = Annotated[Quantity[0, 0, 1, 0, 0], Dimension(u.fs)]
+type Velocity = Annotated[Quantity[1, 0, -1, 0, 0], Dimension(u.angstrom / u.fs)]
+type Voltage = Annotated[Quantity[2, 1, -3, -1, 0], Dimension(u.V)]
+type Volume = Annotated[Quantity[3, 0, 0, 0, 0], Dimension(u.angstrom**3)]
+type Wavenumber = Annotated[Quantity[-1, 0, 0, 0, 0], Dimension(1 / u.angstrom)]
