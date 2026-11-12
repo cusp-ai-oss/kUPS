@@ -1,12 +1,13 @@
-critical_temperature: 303.75
-critical_pressure: 7_840_000
+critical_temperature: "303.75 K"
+critical_pressure: "7840000 Pa"
 acentric_factor: 0.22394
 positions:
-  - [0, 0, 0]
-  - [-1.16, 0, 0]
-  - [1.16, 0, 0]
+  angstrom:
+    - [0, 0, 0]
+    - [-1.16, 0, 0]
+    - [1.16, 0, 0]
 symbols:
   - "C_co2"
   - "O_co2"
   - "O_co2"
-charges: [0.7, -0.35, -0.35]
+charges: {e: [0.7, -0.35, -0.35]}

@@ -11,7 +11,6 @@ import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.ops import (
     compact_indices,
     expand_last_dims,
@@ -21,6 +20,7 @@ from kups.core.utils.ops import (
     select_n,
     where_broadcast_last,
 )
+from test.units import EV, A
 
 
 class TestExpandLastDims:
@@ -76,29 +76,29 @@ _SELECTS = [
 @pytest.mark.parametrize("fn", _SELECTS)
 def test_selects_keep_dimension(fn: _Select):
     """A length selects on its magnitudes and comes back a length."""
-    out = fn(_X * u.angstrom, _Y * u.angstrom)
-    assert units.dim_of(out) == units.dim_of(u.angstrom)
-    npt.assert_array_equal(out.to(u.angstrom), fn(_X, _Y))
+    out = fn(_X * A, _Y * A)
+    assert units.dim_of(out) == units.dim_of(A)
+    npt.assert_array_equal(out.to(A), fn(_X, _Y))
 
 
-@pytest.mark.parametrize("other", [_Y, _Y * u.eV], ids=["plain", "energy"])
+@pytest.mark.parametrize("other", [_Y, _Y * EV], ids=["plain", "energy"])
 @pytest.mark.parametrize("fn", _SELECTS)
 def test_selects_reject_other_dimension(fn: _Select, other: units.Measured):
     """A length selects only against a length, never a plain operand."""
     with pytest.raises(units.DimensionError):
-        fn(_X * u.angstrom, other)
+        fn(_X * A, other)
 
 
 def test_selects_map_over_pytrees():
     """Each leaf is selected on its own, and a leaf both sides share is kept."""
-    shared = _X * u.angstrom
+    shared = _X * A
     x = {"r": shared, "n": _X}
     y = {"r": shared, "n": _Y}
     out = where_broadcast_last(jnp.array([True, False]), x, y)
     assert out["r"] is shared
     npt.assert_array_equal(out["n"], [[1.0, 2.0], [7.0, 8.0]])
     picked = select_n(jnp.array([[0, 1], [1, 0]]), x, y)
-    assert units.dim_of(picked["r"]) == units.dim_of(u.angstrom)
+    assert units.dim_of(picked["r"]) == units.dim_of(A)
     npt.assert_array_equal(picked["n"], [[1.0, 6.0], [7.0, 4.0]])
 
 

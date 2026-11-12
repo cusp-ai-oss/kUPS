@@ -32,7 +32,7 @@ def _compare_to_kups(current: dict[str, ExpectedSpec]) -> bool:
         if not config["compare_to_kups"]:
             continue
         kups_expected = load_kups_expected(config["kups_expected"])
-        max_z = float(config["max_z"])
+        max_z = config["max_z"]
         abs_tolerances = config.get("abs_tolerances", {})
         print(f"\n{case} vs kUPS {config['kups_expected']} ({max_z:g} sigma)")
         for lammps_obs, kups_obs in config["compare_observables"].items():
@@ -41,6 +41,11 @@ def _compare_to_kups(current: dict[str, ExpectedSpec]) -> bool:
                 continue
             lmp_stats = current[case]["observables"][kups_obs]
             kups_stats = kups_expected[kups_obs]
+            unit = lmp_stats.get("unit")
+            if kups_stats.get("unit") != unit:
+                print(f"  FAIL {lammps_obs}: {kups_stats.get('unit')} vs {unit}")
+                ok = False
+                continue
             lmp_mean = scalar(lmp_stats["expected_mean"])
             lmp_sem = scalar(lmp_stats["expected_sem"])
             kups_mean = scalar(kups_stats["expected_mean"])
@@ -57,7 +62,8 @@ def _compare_to_kups(current: dict[str, ExpectedSpec]) -> bool:
                 reason = f"abs={delta:.3g}<={abs_tol:.3g}"
             print(
                 f"  {lammps_obs:7s}: LAMMPS {lmp_mean:.8g} +/- {lmp_sem:.3g}; "
-                f"kUPS {kups_mean:.8g} +/- {kups_sem:.3g}; {reason} {mark}"
+                f"kUPS {kups_mean:.8g} +/- {kups_sem:.3g} {unit or ''}; "
+                f"{reason} {mark}"
             )
     return ok
 

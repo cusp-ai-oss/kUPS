@@ -29,8 +29,8 @@ import math
 from typing import Literal, Protocol, overload
 
 import jax.numpy as jnp
-from jax import Array
 
+from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, lens
 from kups.core.neighborlist.all_dense import AllDenseNearestNeighborList
@@ -134,7 +134,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
         cls,
         state: S,
         lens: Lens[S, IsUniversalNeighborlistParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> AdaptiveNeighborList:
         """Seed the library implementations with their default cost guesses.
 
@@ -165,7 +165,7 @@ class AdaptiveNeighborList(NeighborList[Literal[2]]):
     def from_state(
         cls,
         state: IsNeighborListState[IsUniversalNeighborlistParams],
-        cutoffs: Table[SystemId, Array],
+        cutoffs: Table[SystemId, units.Length],
     ) -> AdaptiveNeighborList:
         """Seed from a state exposing ``neighborlist_params``."""
         return cls.new(state, lens(lambda s: s.neighborlist_params), cutoffs)

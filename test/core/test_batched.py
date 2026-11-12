@@ -10,6 +10,7 @@ import pytest
 from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data import Batched
 from kups.core.utils.jax import dataclass
+from test.units import A
 
 
 @dataclass
@@ -35,7 +36,7 @@ class TestBatched:
         "obj",
         [
             _Pair(jnp.zeros((4, 3)), jnp.ones((4,))),
-            PeriodicCell(frame=TriclinicFrame.from_matrix(jnp.eye(3)[None])),
+            PeriodicCell(frame=TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
         ],
         ids=["pair", "cell"],
     )

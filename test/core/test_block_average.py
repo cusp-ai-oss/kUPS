@@ -10,7 +10,6 @@ import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.block_average import (
     BlockAverageResult,
     BlockTransformResult,
@@ -20,6 +19,7 @@ from kups.core.utils.block_average import (
     compute_block_means,
     optimal_block_average,
 )
+from test.units import EV
 
 
 class TestBlockAverage:
@@ -373,9 +373,9 @@ class _Statistics(Protocol):
 def test_quantity_keeps_dimension(fn: _Statistics):
     """Energies go through as their magnitudes and every statistic is an energy."""
     data = jnp.sin(0.3 * jnp.arange(64.0))[:, None] * jnp.array([1.0, 2.0])
-    for got, want in zip(fn(data * u.eV), fn(data), strict=True):
-        assert units.dim_of(got) == units.dim_of(u.eV)
-        npt.assert_allclose(got.to(u.eV), want, rtol=1e-6)
+    for got, want in zip(fn(data * EV), fn(data), strict=True):
+        assert units.dim_of(got) == units.dim_of(EV)
+        npt.assert_allclose(got.to(EV), want, rtol=1e-6)
 
 
 def test_optimal_block_size_does_not_depend_on_the_base():
@@ -386,13 +386,13 @@ def test_optimal_block_size_does_not_depend_on_the_base():
     series = np.zeros_like(noise)
     for i in range(1, len(noise)):
         series[i] = 0.95 * series[i - 1] + noise[i]
-    energy = jnp.asarray(1e-3 * series) * u.eV
+    energy = jnp.asarray(1e-3 * series) * EV
     with units.base(units.SI):
         in_si = energy.rebase()
     atomistic = optimal_block_average(energy)
     si = optimal_block_average(in_si)
     assert atomistic.n_blocks == si.n_blocks
-    npt.assert_allclose(si.sem.to(u.eV), atomistic.sem.to(u.eV), rtol=1e-12)
+    npt.assert_allclose(si.sem.to(EV), atomistic.sem.to(EV), rtol=1e-12)
 
 
 def test_plain_arrays_keep_the_absolute_sem_floor():
@@ -406,4 +406,4 @@ def test_plain_arrays_keep_the_absolute_sem_floor():
     # the floor shrinks the relative changes of SEMs near 1e-10, so the plateau
     # comes at the first block size; a quantity reads only its own changes
     assert optimal_block_average(tiny).n_blocks == 1024
-    assert optimal_block_average(tiny * u.eV).n_blocks == 4
+    assert optimal_block_average(tiny * EV).n_blocks == 4

@@ -25,13 +25,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -42,6 +42,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -70,24 +71,24 @@ class DihedralParameters:
 
     Attributes:
         labels: Species labels, shape `(n_species,)`.
-        V: Barrier heights [energy], shape `(n_species, n_species, n_species, n_species)`.
+        V: Barrier heights, shape `(n_species, n_species, n_species, n_species)`.
         n: Periodicities, shape `(n_species, n_species, n_species, n_species)`.
         phi0: Equilibrium dihedral angles [radians],
             shape `(n_species, n_species, n_species, n_species)`.
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    V: Array  # (n_species, n_species, n_species, n_species)
+    V: units.Energy  # (n_species, n_species, n_species, n_species)
     n: Array  # (n_species, n_species, n_species, n_species)
-    phi0: Array  # (n_species, n_species, n_species, n_species)
+    phi0: Array  # (n_species, n_species, n_species, n_species) radians
 
     @classmethod
     def from_uff(
         cls,
         labels: tuple[str, ...],
         bond_angle: Array,
-        torsion_sp3: Array,
-        torsion_sp2: Array,
+        torsion_sp3: units.Energy,
+        torsion_sp2: units.Energy,
         group: Array,
         bond_order: Array | None = None,
         hybridization_tol: float = 5.0 * 3.141592653589793 / 180.0,
@@ -101,8 +102,8 @@ class DihedralParameters:
         Args:
             labels: Species labels, shape `(n_species,)`.
             bond_angle: Natural valence angle [radians], shape `(n_species,)`.
-            torsion_sp3: sp3 torsional barrier V [kcal/mol], shape `(n_species,)`.
-            torsion_sp2: sp2 torsional parameter U [kcal/mol], shape `(n_species,)`.
+            torsion_sp3: sp3 torsional barrier V, shape `(n_species,)`.
+            torsion_sp2: sp2 torsional parameter U, shape `(n_species,)`.
             group: Periodic table group (1-18), shape `(n_species,)`.
             bond_order: Bond order for j-k bond, shape `(n_species, n_species)`.
             hybridization_tol: Tolerance for hybridization detection [radians].
@@ -133,6 +134,10 @@ class DihedralParameters:
         is_main_j = is_main_group[None, :, None, None]
         is_main_k = is_main_group[None, None, :, None]
 
+        # The UFF torsion cases fix some barriers to a literal value the paper
+        # states in kcal/mol.
+        kcal_per_mol = u.kcal / u.mol
+
         # Torsional parameters broadcast to 4D
         V_j = torsion_sp3[None, :, None, None]
         V_k = torsion_sp3[None, None, :, None]
@@ -148,18 +153,18 @@ class DihedralParameters:
         # V from Eq.17: V = 5 * sqrt(U_j * U_k) * (1 + 4.18 * ln(BO))
         V_eq17 = (
             5.0
-            * jnp.sqrt(jnp.abs(U_j * U_k))
+            * units.sqrt(units.absolute(U_j * U_k))
             * (1.0 + 4.18 * jnp.log(jnp.maximum(BO_jk, 1e-10)))
         )
 
         # Initialize arrays
-        V_arr = jnp.zeros((nt, nt, nt, nt))
+        V_arr = units.zeros((nt, nt, nt, nt), kcal_per_mol)
         n_arr = jnp.ones((nt, nt, nt, nt), dtype=jnp.int32)
         phi0_arr = jnp.zeros((nt, nt, nt, nt))
 
         # === Case 1: sp3-sp3 general ===
         sp3_sp3 = is_sp3_j & is_sp3_k
-        V_arr = jnp.where(sp3_sp3, jnp.sqrt(jnp.abs(V_j * V_k)), V_arr)
+        V_arr = units.where(sp3_sp3, units.sqrt(units.absolute(V_j * V_k)), V_arr)
         n_arr = jnp.where(sp3_sp3, 3, n_arr)
         phi0_arr = jnp.where(sp3_sp3, jnp.pi, phi0_arr)
 
@@ -170,19 +175,19 @@ class DihedralParameters:
 
         # === Case 3: sp2-sp2 ===
         sp2_sp2 = is_sp2_j & is_sp2_k
-        V_arr = jnp.where(sp2_sp2, V_eq17, V_arr)
+        V_arr = units.where(sp2_sp2, V_eq17, V_arr)
         n_arr = jnp.where(sp2_sp2, 2, n_arr)
         phi0_arr = jnp.where(sp2_sp2, jnp.pi, phi0_arr)
 
         # === Case 4: sp3-sp2 general ===
         sp3_sp2 = (is_sp3_j & is_sp2_k) | (is_sp2_j & is_sp3_k)
-        V_arr = jnp.where(sp3_sp2, 1.0, V_arr)
+        V_arr = units.where(sp3_sp2, 1.0 * kcal_per_mol, V_arr)
         n_arr = jnp.where(sp3_sp2, 6, n_arr)
         phi0_arr = jnp.where(sp3_sp2, 0.0, phi0_arr)
 
         # === Case 5: sp3-sp2 propene-like (sp2 bonded to another sp2) ===
         propene = (is_sp2_j & is_sp3_k & is_sp2_i) | (is_sp3_j & is_sp2_k & is_sp2_l)
-        V_arr = jnp.where(propene, 2.0, V_arr)
+        V_arr = units.where(propene, 2.0 * kcal_per_mol, V_arr)
         n_arr = jnp.where(propene, 3, n_arr)
         phi0_arr = jnp.where(propene, jnp.pi, phi0_arr)
 
@@ -190,13 +195,13 @@ class DihedralParameters:
         group6_sp3_sp2 = (is_sp3_j & is_group6_j & is_sp2_k) | (
             is_sp2_j & is_sp3_k & is_group6_k
         )
-        V_arr = jnp.where(group6_sp3_sp2, V_eq17, V_arr)
+        V_arr = units.where(group6_sp3_sp2, V_eq17, V_arr)
         n_arr = jnp.where(group6_sp3_sp2, 2, n_arr)
         phi0_arr = jnp.where(group6_sp3_sp2, jnp.pi / 2, phi0_arr)
 
         # === Case 7: Non-main-group (V=0) ===
         non_main = ~is_main_j | ~is_main_k
-        V_arr = jnp.where(non_main, 0.0, V_arr)
+        V_arr = units.where(non_main, 0.0 * kcal_per_mol, V_arr)
 
         return cls(labels=tuple(map(Label, labels)), V=V_arr, n=n_arr, phi0=phi0_arr)
 
@@ -208,7 +213,7 @@ type DihedralInput = GraphPotentialInput[
 
 def dihedral_energy(
     inp: DihedralInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     r"""Compute UFF dihedral/torsion energy for all dihedrals.
 
     Args:
@@ -240,23 +245,25 @@ def dihedral_energy(
     r_kl = graph.edge_shifts[:, 2] - graph.edge_shifts[:, 1]  # l - k
 
     # Compute normal vectors to planes
-    n1 = jnp.cross(r_ij, r_jk)  # Normal to plane i-j-k
-    n2 = jnp.cross(r_jk, r_kl)  # Normal to plane j-k-l
+    n1 = units.cross(r_ij, r_jk)  # Normal to plane i-j-k
+    n2 = units.cross(r_jk, r_kl)  # Normal to plane j-k-l
 
     # Normalize the normal vectors
-    n1_norm = jnp.linalg.norm(n1, axis=-1, keepdims=True)
-    n2_norm = jnp.linalg.norm(n2, axis=-1, keepdims=True)
+    n1_norm = units.norm(n1, axis=-1, keepdims=True)
+    n2_norm = units.norm(n2, axis=-1, keepdims=True)
 
-    eps = 1e-10
-    n1_normalized = n1 / (n1_norm + eps)
-    n2_normalized = n2 / (n2_norm + eps)
+    eps_area = jnp.asarray(1e-10, n1_norm.dtype) * u.angstrom**2
+    n1_normalized = n1 / (n1_norm + eps_area)
+    n2_normalized = n2 / (n2_norm + eps_area)
 
     # Compute dihedral angle using atan2 for proper sign
     cos_phi = jnp.sum(n1_normalized * n2_normalized, axis=-1)
-    r_jk_norm = jnp.linalg.norm(r_jk, axis=-1, keepdims=True)
-    r_jk_normalized = r_jk / (r_jk_norm + eps)
+    r_jk_norm = units.norm(r_jk, axis=-1, keepdims=True)
+    r_jk_normalized = r_jk / (
+        r_jk_norm + jnp.asarray(1e-10, r_jk_norm.dtype) * u.angstrom
+    )
     sin_phi = jnp.sum(
-        jnp.cross(n1_normalized, n2_normalized) * r_jk_normalized, axis=-1
+        units.cross(n1_normalized, n2_normalized) * r_jk_normalized, axis=-1
     )
 
     phi = jnp.arctan2(sin_phi, cos_phi)

@@ -59,7 +59,7 @@ class ExampleState:
     switch_probabilities: Array = field(
         default_factory=lambda: jnp.array([0.5, 0.3, 0.2])
     )
-    scheduler_params: Table[SystemId, ParameterSchedulerState] = field(
+    scheduler_params: Table[SystemId, ParameterSchedulerState[Array]] = field(
         default_factory=lambda: Table.arange(
             ParameterSchedulerState(
                 value=jnp.array([1.0, 2.0]),
@@ -138,7 +138,7 @@ class ExtendedTestPatch:
 # Helper functions for lens creation
 def get_schedule_params(
     state: ExampleState,
-) -> Table[SystemId, ParameterSchedulerState]:
+) -> Table[SystemId, ParameterSchedulerState[Array]]:
     """Get parameter scheduler parameters from test state."""
     return state.scheduler_params
 
@@ -174,7 +174,9 @@ def get_value(state: ExampleState) -> float:
     return state.value
 
 
-def get_extended_scheduler_params(state: ExampleState) -> ParameterSchedulerState:
+def get_extended_scheduler_params(
+    state: ExampleState,
+) -> ParameterSchedulerState[Array]:
     return state.scheduler_params
 
 

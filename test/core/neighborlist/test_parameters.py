@@ -10,6 +10,7 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.table import Table
 from kups.core.neighborlist.parameters import UniversalNeighborlistParameters
 from kups.core.typing import SystemId
+from test.units import A
 
 from ._builders import cutoff_table, make_systems
 
@@ -22,10 +23,10 @@ class TestUniversalNeighborlistParametersEstimate:
     def _single_system(
         self, n_particles: int = 100, cutoff: float = 2.0, box: float = 10.0
     ):
-        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * box))
-        systems, _ = make_systems(cell, jnp.array([cutoff]))
+        cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3)[None] * box) * A))
+        systems, _ = make_systems(cell, jnp.array([cutoff]) * A)
         particles_per_system = Table((SystemId(0),), jnp.array([n_particles]))
-        cutoffs = cutoff_table(jnp.array([cutoff]))
+        cutoffs = cutoff_table(jnp.array([cutoff]) * A)
         return particles_per_system, systems, cutoffs
 
     def _avg_edges(self, n_particles: int, box: float, cutoff: float) -> int:
@@ -71,11 +72,11 @@ class TestUniversalNeighborlistParametersEstimate:
         # Image candidates sum each system's own replication factor rather than
         # assuming every system replicates at the maximum rate.
         cell = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, axis=0) * 10.0)
+            TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(2, axis=0) * 10.0) * A)
         )
         # System 0: cutoff 2 (1 image), 1000 particles -> 216 candidates -> 256.
         # System 1: cutoff 6 (8 images), 10 particles -> 10 candidates -> 16.
-        systems, cutoffs = make_systems(cell, jnp.array([2.0, 6.0]))
+        systems, cutoffs = make_systems(cell, jnp.array([2.0, 6.0]) * A)
         ppc = Table((SystemId(0), SystemId(1)), jnp.array([1000, 10]))
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
         # mean candidates = (216 + 10) / 2 = 113 -> 128.
@@ -88,7 +89,7 @@ class TestUniversalNeighborlistParametersEstimate:
     @pytest.mark.parametrize("multiplier", [0.5, 1.0, 1.5, 2.0])
     def test_minimum_image_capacity_matches_candidates(self, multiplier: float):
         cell = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, axis=0) * 10.0)
+            TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, axis=0) * 10.0 * A)
         )
         systems, cutoffs = make_systems(cell, jnp.array([2.0, 2.0]))
         ppc = Table((SystemId(0), SystemId(1)), jnp.array([100, 300]))
@@ -114,11 +115,11 @@ class TestUniversalNeighborlistParametersEstimate:
 
     def test_estimate_multi_system(self):
         cell = PeriodicCell(
-            TriclinicFrame.from_matrix(jnp.eye(3)[None].repeat(2, axis=0) * 10.0)
+            TriclinicFrame.from_matrix((jnp.eye(3)[None].repeat(2, axis=0) * 10.0) * A)
         )
-        systems, _ = make_systems(cell, jnp.array([2.0, 2.0]))
+        systems, _ = make_systems(cell, jnp.array([2.0, 2.0]) * A)
         ppc = Table((SystemId(0), SystemId(1)), jnp.array([100, 200]))
-        cutoffs = cutoff_table(jnp.array([2.0, 2.0]))
+        cutoffs = cutoff_table(jnp.array([2.0, 2.0]) * A)
         params = UniversalNeighborlistParameters.estimate(ppc, systems, cutoffs)
         assert params.cells == 125
         assert params.avg_edges > 0
@@ -127,7 +128,7 @@ class TestUniversalNeighborlistParametersEstimate:
     def test_heterogeneous_systems_round_edges_per_system(self):
         cell = PeriodicCell(
             TriclinicFrame.from_matrix(
-                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 30.0])
+                jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 30.0]) * A
             )
         )
         systems, cutoffs = make_systems(cell, jnp.array([2.0, 4.0]))

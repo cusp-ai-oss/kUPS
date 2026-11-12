@@ -23,6 +23,7 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.neighborlist.common import Candidates, candidate_image_counts
 from kups.core.neighborlist.dense import DenseNearestNeighborList
+from test.units import A
 
 from ._builders import (
     cutoff_table,
@@ -85,15 +86,17 @@ _MAX_IMAGES = 64
 
 def _dense_nl_edges(real: jax.Array, matrix: Matrix, cutoff: float, n: int) -> EdgeSet:
     """Run the dense neighbor list and return its ``(i, j, shift)`` edge set."""
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(matrix)[None]))
-    lh = make_lh(jnp.asarray(real), jnp.zeros(n, dtype=int))
-    systems, _ = make_systems(cell, jnp.array([cutoff]))
-    assert 1 < candidate_image_counts(cell, jnp.array([cutoff])).prod() <= _MAX_IMAGES
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(matrix)[None] * A))
+    lh = make_lh(jnp.asarray(real) * A, jnp.zeros(n, dtype=int))
+    systems, _ = make_systems(cell, jnp.array([cutoff]) * A)
+    assert (
+        1 < candidate_image_counts(cell, jnp.array([cutoff]) * A).prod() <= _MAX_IMAGES
+    )
     nl = DenseNearestNeighborList(
         avg_candidates=FixedCapacity(n),
         avg_edges=FixedCapacity(n * _MAX_IMAGES),
         avg_image_candidates=FixedCapacity(n * _MAX_IMAGES),
-        cutoffs=cutoff_table(jnp.array([cutoff])),
+        cutoffs=cutoff_table(jnp.array([cutoff]) * A),
     )
     result = run_nl(nl, lh, systems)
     result.raise_assertion()
@@ -121,29 +124,31 @@ def test_minimum_image_flag_is_true_closest(name: str, matrix: Matrix, cutoff: f
     # (the pipeline folds real -> fractional upstream), so positions are in [0, 1).
     n = 5
     frac = jax.random.uniform(jax.random.key(1), (n, 3))
-    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(matrix)[None]))
+    cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.asarray(matrix)[None] * A))
     lh = make_lh(frac, jnp.zeros(n, dtype=int))
-    systems, _ = make_systems(cell, jnp.array([cutoff]))
+    systems, _ = make_systems(cell, jnp.array([cutoff]) * A)
 
     grid_i, grid_j = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
     candidates = Candidates(
         key_idx=Index(lh.keys, jnp.asarray(grid_i.ravel())),
         query_idx=Index(lh.keys, jnp.asarray(grid_j.ravel())),
     )
-    assert 1 < candidate_image_counts(cell, jnp.array([cutoff])).prod() <= _MAX_IMAGES
+    assert (
+        1 < candidate_image_counts(cell, jnp.array([cutoff]) * A).prod() <= _MAX_IMAGES
+    )
     batch = replicate(
         candidates,
         lh,
         lh,
         systems,
-        cutoff_table(jnp.array([cutoff])),
+        cutoff_table(jnp.array([cutoff]) * A),
         FixedCapacity(n * n * _MAX_IMAGES),
     )
 
     keep = np.asarray(batch.edges.indices.valid_mask.all(axis=-1))
     shifts = np.asarray(batch.edges.shifts[:, 0, :])[keep]
     is_min = np.asarray(batch.is_minimum_image)[keep]
-    f, A = np.asarray(frac), np.asarray(matrix)
+    f, lattice = np.asarray(frac), np.asarray(matrix)
 
     flagged: dict[tuple[int, int], list[np.ndarray]] = {}
     for (i, j), sh, m in zip(valid_ids(batch.edges.indices), shifts, is_min):
@@ -154,9 +159,9 @@ def test_minimum_image_flag_is_true_closest(name: str, matrix: Matrix, cutoff: f
         for j in range(n):
             copies = flagged.get((i, j), [])
             assert len(copies) == 1, f"pair ({i},{j}) flagged {len(copies)} times"
-            d_flag = float(np.linalg.norm((f[i] - f[j] - copies[0]) @ A))
+            d_flag = float(np.linalg.norm((f[i] - f[j] - copies[0]) @ lattice))
             d_min = min(
-                float(np.linalg.norm((f[i] - f[j] - np.array(off)) @ A))
+                float(np.linalg.norm((f[i] - f[j] - np.array(off)) @ lattice))
                 for off in itertools.product(range(-3, 4), repeat=3)
             )
             # The window provably brackets the global closest only for in-range

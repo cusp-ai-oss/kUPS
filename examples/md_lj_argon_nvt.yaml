@@ -8,22 +8,22 @@ run:
   seed: 42
 
 md:
-  temperature: 100.0           # Target temperature (K)
-  time_step: 2.0               # Timestep (fs)
-  friction_coefficient: 1.0    # Friction coefficient (1/fs) for Langevin dynamics
-  thermostat_time_constant: 100.0
-  target_pressure: 1.0
-  pressure_coupling_time: 1.0e10   # Disabled (NVT, not NPT)
-  compressibility: 4.5e-5
+  temperature: "100.0 K"
+  time_step: "2.0 fs"
+  friction_coefficient: "1.0 1/fs"
+  thermostat_time_constant: "100.0 fs"
+  target_pressure: "1.0 Pa"
+  pressure_coupling_time: "1.0e10 fs"   # Disabled (NVT, not NPT)
+  compressibility: "4.5e-5 1/Pa"
   minimum_scale_factor: 1.0
   integrator: "baoab_langevin"
   initialize_momenta: true
 
 potential:
   backend: lj
-  cutoff: 10.0
+  cutoff: "10.0 angstrom"
   parameters:
-    Ar: [3.405, 0.010326]  # (sigma [A], epsilon [eV]) -- 119.8 K = 0.010326 eV
+    Ar: ["3.405 angstrom", "0.010326 eV"]   # epsilon/k_B = 119.8 K
   mixing_rule: "lorentz_berthelot"
 
 inp_files:

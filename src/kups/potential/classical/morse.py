@@ -22,13 +22,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import FixedEdgesNeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
 from kups.core.potential import (
-    Energy,
     Potential,
     PotentialOut,
 )
@@ -68,48 +68,52 @@ class MorseBondParameters:
 
     Attributes:
         labels: Species labels, shape `(n_species,)`.
-        r0: Equilibrium bond lengths [Å], shape `(n_species, n_species)`.
+        r0: Equilibrium bond lengths, shape `(n_species, n_species)`.
         D: Bond dissociation energy (well depth), shape `(n_species, n_species)`.
-        alpha: Width parameter [Å⁻¹], shape `(n_species, n_species)`.
+        alpha: Width parameter, shape `(n_species, n_species)`.
     """
 
     labels: tuple[Label, ...] = field(static=True)  # (n_species,)
-    r0: Array  # (n_species, n_species)
-    D: Array  # (n_species, n_species)
-    alpha: Array  # (n_species, n_species)
+    r0: units.Length  # (n_species, n_species)
+    D: units.Energy  # (n_species, n_species)
+    alpha: units.Wavenumber  # (n_species, n_species)
 
     @classmethod
     def from_harmonic(
-        cls, labels: tuple[str, ...], r0: Array, k: Array, D: Array
+        cls,
+        labels: tuple[str, ...],
+        r0: units.Length,
+        k: units.Stiffness,
+        D: units.Energy,
     ) -> "MorseBondParameters":
         r"""Create Morse parameters from harmonic force constant.
 
         Args:
             labels: Species labels, shape `(n_species,)`
-            r0: Equilibrium bond lengths [Å], shape `(n_species, n_species)`
-            k: Harmonic force constants [energy/Å²], shape `(n_species, n_species)`
+            r0: Equilibrium bond lengths, shape `(n_species, n_species)`
+            k: Harmonic force constants, shape `(n_species, n_species)`
             D: Bond dissociation energies, shape `(n_species, n_species)`
 
         Returns:
             MorseBondParameters with computed alpha values
         """
-        alpha = jnp.sqrt(k / D)
+        alpha = units.sqrt(k / D)
         return cls(labels=tuple(map(Label, labels)), r0=r0, D=D, alpha=alpha)
 
     @classmethod
     def from_uff(
         cls,
         labels: tuple[str, ...],
-        bond_radius: Array,
+        bond_radius: units.Length,
         electronegativity: Array,
-        effective_charge: Array,
-        dissociation_energy: Array,
+        effective_charge: units.Charge,
+        dissociation_energy: units.Energy,
     ) -> "MorseBondParameters":
         r"""Create Morse parameters using UFF bond length/force constant formulas.
 
         Args:
             labels: Species labels, shape `(n_species,)`
-            bond_radius: Valence bond radii [Å], shape `(n_species,)`
+            bond_radius: Valence bond radii, shape `(n_species,)`
             electronegativity: GMP electronegativity, shape `(n_species,)`
             effective_charge: Effective atomic charge Z*, shape `(n_species,)`
             dissociation_energy: Bond dissociation energy D, shape `(n_species, n_species)`
@@ -120,9 +124,10 @@ class MorseBondParameters:
         r0 = compute_uff_bond_length(bond_radius, electronegativity)
         Z_i, Z_j = effective_charge[:, None], effective_charge[None, :]
 
-        # Force constant (Eq. 6): k = 664.12 * Z_i * Z_j / r_ij^3
-        k = 664.12 * Z_i * Z_j / (r0**3)
-        alpha = jnp.sqrt(k / (2.0 * dissociation_energy))
+        # Force constant (Eq. 6): k = beta Z_i Z_j / r_ij^3, where UFF's beta is
+        # 2 k_e, the paper's 664.12 kcal A / mol for charges in elementary charges.
+        k = 2 * units.constants.k_e * Z_i * Z_j / r0**3
+        alpha = units.sqrt(k / (2.0 * dissociation_energy))
 
         return cls(
             labels=tuple(map(Label, labels)), r0=r0, D=dissociation_energy, alpha=alpha
@@ -136,7 +141,7 @@ type MorseBondInput = GraphPotentialInput[
 
 def morse_bond_energy(
     inp: MorseBondInput,
-) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
+) -> WithPatch[Table[SystemId, units.Energy], IdPatch[Any]]:
     r"""Compute Morse bond energy for all bonds.
 
     Calculates energy as $D [1 - e^{-\alpha(r - r_0)}]^2$ for each bond.
@@ -157,7 +162,7 @@ def morse_bond_energy(
     r0 = inp.parameters.r0[edg_species[:, 0], edg_species[:, 1]]
     D = inp.parameters.D[edg_species[:, 0], edg_species[:, 1]]
     alpha = inp.parameters.alpha[edg_species[:, 0], edg_species[:, 1]]
-    r = jnp.linalg.norm(graph.edge_shifts[:, 0], axis=-1)
+    r = units.norm(graph.edge_shifts[:, 0], axis=-1)
     edge_energy = D * (1 - jnp.exp(-alpha * (r - r0))) ** 2
     total_energies = graph.edge_batch_mask.sum_over(edge_energy)
     return WithPatch(total_energies, IdPatch[Any]())

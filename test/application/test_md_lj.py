@@ -15,6 +15,8 @@ from kups.application.md.data import MdParameters, MdRunConfig
 from kups.application.simulations import md
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
+from kups.core.units import catalog as u
+from test.units import EV
 
 
 def _ar_cif(rattle: float = 0.0) -> str:
@@ -63,20 +65,20 @@ def _config(out_file: str, inp_file: str) -> Config:
     return Config(
         run=MdRunConfig(out_file=out_file, num_steps=5, num_warmup_steps=0, seed=42),
         md=MdParameters(
-            temperature=100.0,
-            time_step=2.0,
-            friction_coefficient=1.0,
-            thermostat_time_constant=100.0,
-            target_pressure=1.0,
-            pressure_coupling_time=1.0e10,
-            compressibility=4.5e-5,
+            temperature="100 K",
+            time_step="2 fs",
+            friction_coefficient="1 1/fs",
+            thermostat_time_constant="100 fs",
+            target_pressure="1 Pa",
+            pressure_coupling_time="1.0e10 fs",
+            compressibility="4.5e-5 1/Pa",
             minimum_scale_factor=1.0,
             integrator="baoab_langevin",
             initialize_momenta=True,
         ),
         potential=LjPotentialConfig(
-            cutoff=5.0,
-            parameters={"Ar": (3.405, 0.010326)},  # (sigma [Å], epsilon [eV])
+            cutoff="5 angstrom",
+            parameters={"Ar": ("3.405 angstrom", "0.010326 eV")},
             mixing_rule="lorentz_berthelot",
         ),
         inp_files=(inp_file,),
@@ -96,9 +98,10 @@ class TestRun:
         results = analyze_md_file(out_file, n_blocks=2)
         assert len(results) == 1
         result = next(iter(results.values()))
-        assert jnp.isfinite(result.total_energy.mean).all().item()
-        assert jnp.isfinite(result.temperature.mean).all().item()
-        assert (result.temperature.mean >= 0.0).all().item()
+        assert jnp.isfinite(result.total_energy.mean.to(EV)).all().item()
+        kelvin = result.temperature.mean.to(u.K)
+        assert jnp.isfinite(kelvin).all().item()
+        assert (kelvin >= 0.0).all().item()
 
 
 def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,5 +112,5 @@ def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> No
     )
     inp = _ar_cif()
     run(_config(_tmp_h5(), inp).model_copy(update={"inp_files": (inp, inp)}))
-    first, second = np.split(np.asarray(captured["s"].particles.data.momenta), 2)
+    first, second = np.split(np.asarray(captured["s"].particles.data.momenta.value), 2)
     assert not np.allclose(first, second)
