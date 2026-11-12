@@ -22,17 +22,28 @@ from kups.application.md.logging import MDLoggedData
 from kups.core.constants import BOLTZMANN_CONSTANT
 from kups.core.storage import HDF5StorageReader
 
+type Metrics = dict[str, float | str]
+"""Named diagnostics a check reports alongside its verdict."""
+
 
 def validate_temperature_stability(
     temperature: np.ndarray,
     target_temperature: float,
     rtol: float = 0.02,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate that mean temperature matches target.
 
     For a well-equilibrated NVT simulation with a properly tuned thermostat,
     the time-averaged temperature should equal the target temperature within
     ~2%. BAOAB Langevin specifically should achieve excellent temperature control.
+
+    Args:
+        temperature: Temperature per step in K.
+        target_temperature: Thermostat target in K.
+        rtol: Largest allowed relative error of the mean.
+
+    Returns:
+        Whether the mean is within tolerance, and the temperature metrics.
     """
     mean_temp = float(np.mean(temperature))
     std_temp = float(np.std(temperature))
@@ -56,13 +67,24 @@ def validate_temperature_fluctuations(
     degrees_of_freedom: int,
     min_ratio: float = 0.7,
     max_ratio: float = 1.3,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate temperature fluctuations match canonical ensemble.
 
     For the canonical ensemble: <(dT)^2> / <T>^2 = 2 / DOF
     BAOAB Langevin should reproduce canonical fluctuations accurately.
     We allow 0.7-1.3 range to account for finite-size effects and
     correlation time effects in finite trajectories.
+
+    Args:
+        temperature: Temperature per step in K.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        min_ratio: Smallest allowed ratio of measured to canonical relative
+            variance.
+        max_ratio: Largest allowed ratio of measured to canonical relative
+            variance.
+
+    Returns:
+        Whether the ratio lies within bounds, and the variance metrics.
     """
     mean_temp = float(np.mean(temperature))
     temp_var = float(np.var(temperature))
@@ -89,11 +111,20 @@ def validate_equipartition(
     degrees_of_freedom: int,
     target_temperature: float,
     rtol: float = 0.02,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate equipartition theorem: <KE> = (DOF/2) * k_B * T.
 
     For NVT with a proper thermostat, the kinetic energy should give
     the correct target temperature within 2%.
+
+    Args:
+        kinetic_energy: Kinetic energy per step in eV.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        target_temperature: Thermostat target in K.
+        rtol: Largest allowed relative error of <KE>.
+
+    Returns:
+        Whether <KE> matches equipartition, and the compared energies.
     """
     mean_ke = float(np.mean(kinetic_energy))
     expected_ke = 0.5 * degrees_of_freedom * BOLTZMANN_CONSTANT * target_temperature
@@ -116,7 +147,7 @@ def validate_energy_distribution(
     kinetic_energy: np.ndarray,
     degrees_of_freedom: int,
     ke_var_rtol: float = 0.3,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Validate energy fluctuations match canonical ensemble.
 
     In the canonical ensemble:
@@ -125,6 +156,16 @@ def validate_energy_distribution(
 
     We validate that KE variance is within 30% of the expected value,
     which is appropriate for finite simulation lengths.
+
+    Args:
+        potential_energy: Potential energy per step in eV.
+        kinetic_energy: Kinetic energy per step in eV.
+        degrees_of_freedom: Number of kinetic degrees of freedom.
+        ke_var_rtol: Largest allowed relative error of the KE relative variance.
+
+    Returns:
+        Whether the energies are finite and the KE variance is canonical, and
+        the energy metrics.
     """
     mean_pe = float(np.mean(potential_energy))
     std_pe = float(np.std(potential_energy))
@@ -167,12 +208,22 @@ def validate_ergodicity(
     potential_energy: np.ndarray,
     block_size: int = 1000,
     max_relative_block_std: float = 0.05,
-) -> tuple[bool, dict]:
+) -> tuple[bool, Metrics]:
     """Check for ergodicity by comparing block averages.
 
     If the system is ergodic, block averages should converge and have
     similar values across different time windows. We require block means
     to have relative std < 5% of the overall mean.
+
+    Args:
+        potential_energy: Potential energy per step in eV.
+        block_size: Number of steps per block.
+        max_relative_block_std: Largest allowed std of the block means relative
+            to the overall mean.
+
+    Returns:
+        Whether the block means agree, and the block metrics. Fewer than four
+        blocks pass with status `insufficient_data`.
     """
     n_blocks = len(potential_energy) // block_size
     if n_blocks < 4:
@@ -201,6 +252,11 @@ def validate_ergodicity(
 
 
 def main() -> int:
+    """Report every NVT physics check for the simulation output.
+
+    Returns:
+        Zero when every check passes.
+    """
     parser = argparse.ArgumentParser(
         description="Validate NVT MD simulation against canonical ensemble properties"
     )

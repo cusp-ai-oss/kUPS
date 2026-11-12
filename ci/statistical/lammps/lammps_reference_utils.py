@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from typing import Any
+from typing import NotRequired, TypedDict
 
 import jax
 import jax.numpy as jnp
@@ -20,6 +21,11 @@ from kups.core.utils.block_average import block_average
 jax.config.update("jax_enable_x64", True)
 
 ROOT = Path(__file__).resolve().parent
+sys.path.append(str(ROOT.parent))
+
+from expected_values import ExpectedSpec, ObservableSpec  # noqa: E402
+from expected_values import scalar as scalar  # noqa: E402  re-exported for validate.py
+
 EXPECTED_DIR = ROOT / "expected"
 OUTPUT_DIR = ROOT / "outputs" / "reference"
 KUPS_EXPECTED_DIR = ROOT.parent / "expected"
@@ -28,7 +34,20 @@ PRESSURE_COLUMN = "press_bar"
 CONFIG_PRESSURE_COLUMN = "pressure_config"
 N_BLOCKS = 5
 
-CASES: dict[str, dict[str, Any]] = {
+
+class CaseConfig(TypedDict):
+    input: str
+    output: str
+    reference_yaml: str
+    kups_expected: str
+    compare_to_kups: bool
+    max_z: float
+    observables: dict[str, str]
+    compare_observables: dict[str, str]
+    abs_tolerances: NotRequired[dict[str, float]]
+
+
+CASES: dict[str, CaseConfig] = {
     "md_nve_lj_argon_lammps": {
         "input": "inputs/reference/in.md_nve_lj_argon",
         "output": "outputs/reference/md_nve_lj_argon_lammps.dat",
@@ -131,7 +150,15 @@ CASES: dict[str, dict[str, Any]] = {
 
 
 def block_stats(x: np.ndarray, n_blocks: int) -> dict[str, float]:
-    """Return mean and SEM using the shared kUPS block-average utility."""
+    """Return mean and SEM using the shared kUPS block-average utility.
+
+    Args:
+        x: One column of a LAMMPS table.
+        n_blocks: Number of blocks to average over.
+
+    Returns:
+        The column's ``mean`` and ``sem``.
+    """
     result = block_average(jnp.asarray(x, dtype=float), n_blocks=n_blocks)
     return {
         "mean": float(result.mean),
@@ -140,7 +167,18 @@ def block_stats(x: np.ndarray, n_blocks: int) -> dict[str, float]:
 
 
 def analyze_output(path: Path) -> dict[str, dict[str, float]]:
-    """Analyze a LAMMPS fix-print table using the kUPS MD SEM convention."""
+    """Analyze a LAMMPS fix-print table using the kUPS MD SEM convention.
+
+    Args:
+        path: Fix-print table with a header row of column names.
+
+    Returns:
+        Mean and SEM per column, with the total pressure column replaced by the
+        configurational pressure.
+
+    Raises:
+        ValueError: If the table has no pressure column.
+    """
     arr = np.genfromtxt(path, names=True)
     cols = arr.dtype.names or ()
     if PRESSURE_COLUMN not in cols:
@@ -154,16 +192,31 @@ def analyze_output(path: Path) -> dict[str, dict[str, float]]:
 
 
 def reference_yaml_path(case_name: str) -> Path:
-    """Return the committed kUPS-format YAML path for a LAMMPS case."""
-    return ROOT / str(CASES[case_name]["reference_yaml"])
+    """Return the committed kUPS-format YAML path for a LAMMPS case.
+
+    Args:
+        case_name: Key into `CASES`.
+
+    Returns:
+        Path of the case's reference statistics.
+    """
+    return ROOT / CASES[case_name]["reference_yaml"]
 
 
 def output_stats_to_expected(
     case_name: str, stats: dict[str, dict[str, float]]
-) -> dict[str, Any]:
-    """Convert LAMMPS column statistics to the kUPS expected-YAML shape."""
+) -> ExpectedSpec:
+    """Convert LAMMPS column statistics to the kUPS expected-YAML shape.
+
+    Args:
+        case_name: The case the statistics come from.
+        stats: Mean and SEM per LAMMPS column.
+
+    Returns:
+        The case's expected values.
+    """
     config = CASES[case_name]
-    observables = {}
+    observables: dict[str, ObservableSpec] = {}
     for lammps_obs, kups_obs in config["observables"].items():
         obs_stats = stats[lammps_obs]
         observables[kups_obs] = {
@@ -177,9 +230,16 @@ def output_stats_to_expected(
     }
 
 
-def analyze_all_outputs() -> dict[str, Any]:
-    """Analyze all configured reference outputs into kUPS expected-YAML shape."""
-    references = {}
+def analyze_all_outputs() -> dict[str, ExpectedSpec]:
+    """Analyze all configured reference outputs into kUPS expected-YAML shape.
+
+    Returns:
+        The expected values of every case, keyed by case name.
+
+    Raises:
+        FileNotFoundError: If a case's generated table is missing.
+    """
+    references: dict[str, ExpectedSpec] = {}
     for case_name, config in CASES.items():
         output = ROOT / config["output"]
         if not output.exists():
@@ -190,21 +250,39 @@ def analyze_all_outputs() -> dict[str, Any]:
     return references
 
 
-def load_reference_stats() -> dict[str, Any]:
-    references = {}
+def load_reference_stats() -> dict[str, ExpectedSpec]:
+    """Read the committed LAMMPS statistics of every case.
+
+    Returns:
+        The expected values of every case, keyed by case name.
+    """
+    references: dict[str, ExpectedSpec] = {}
     for case_name in CASES:
         with reference_yaml_path(case_name).open() as f:
             references[case_name] = yaml.safe_load(f)
     return references
 
 
-def write_reference_stats(stats: dict[str, Any]) -> None:
+def write_reference_stats(stats: dict[str, ExpectedSpec]) -> None:
+    """Write the LAMMPS statistics of every case.
+
+    Args:
+        stats: Expected values keyed by case name.
+    """
     EXPECTED_DIR.mkdir(parents=True, exist_ok=True)
     for case_name, expected in stats.items():
         with reference_yaml_path(case_name).open("w") as f:
             yaml.dump(expected, f, sort_keys=False, default_flow_style=False)
 
 
-def load_kups_expected(name: str) -> dict[str, Any]:
+def load_kups_expected(name: str) -> dict[str, ObservableSpec]:
+    """Read the observables of a kUPS expected-value file.
+
+    Args:
+        name: Stem of the file under the kUPS ``expected`` directory.
+
+    Returns:
+        Expected values keyed by analysis field name.
+    """
     with (KUPS_EXPECTED_DIR / f"{name}.yaml").open() as f:
         return yaml.safe_load(f)["observables"]
