@@ -55,7 +55,7 @@ from kups.core.utils.jax import (
     tree_zeros_like,
 )
 from kups.core.utils.kahan import KahanSummand
-from kups.core.utils.math import erfc_over, triangular_3x3_matmul
+from kups.core.utils.math import erfc_over
 from kups.core.utils.ops import where_broadcast_last
 from kups.potential.classical.coulomb import (
     _pairwise_coulomb_energy,
@@ -233,10 +233,10 @@ class EwaldLongRangeInput[State]:
         The result is in 1/Å, shaped ``(n_systems, n_kvecs, 3)``.
         """
         sys_idx = self.point_cloud.systems.index
-        return triangular_3x3_matmul(
-            self.point_cloud.systems.data.cell.inverse_vectors.mT[:, None] * 2 * jnp.pi,
+        return jnp.einsum(
+            "...ij,...j->...i",
+            self.point_cloud.systems.data.cell.inverse_vectors[:, None] * 2 * jnp.pi,
             self.parameters.reciprocal_lattice_shifts[sys_idx],
-            lower=False,
         )
 
 
