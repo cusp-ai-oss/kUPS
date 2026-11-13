@@ -54,6 +54,94 @@ kups_relax relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 
 Relaxation converges when the maximum force on any atom drops below a configurable tolerance.
 
+### Streaming batches as a library
+
+Streaming relaxation keeps a fixed number of *slots* on the device, one
+structure per slot, and refills a slot from the host once its structure has
+converged or used its step budget.
+[`kups.core.stream`][kups.core.stream] holds the parts that do not depend on
+relaxation: [`reserve_slots`][kups.core.stream.reserve_slots] reserves a fixed
+number of particle rows per slot,
+[`slot_rows_lens`][kups.core.stream.slot_rows_lens] reads and writes those
+rows, and [`RefillGate`][kups.core.stream.RefillGate] asks the host for new
+structures through a failing runtime assertion.
+
+[`make_streaming_relax_propagator`][kups.application.relaxation.streaming.make_streaming_relax_propagator]
+returns the numerical step, the optimizer initializer and the per-slot
+optimizer reset;
+[`make_streaming_relax_state`][kups.application.relaxation.streaming.make_streaming_relax_state]
+creates idle slots that request their first refill. The application supplies
+the refill callback: it reads finished slots through
+[`slot_payload_lens`][kups.application.relaxation.streaming.slot_payload_lens],
+packs new structures with
+[`payload_from_structures`][kups.application.relaxation.streaming.payload_from_structures]
+(or takes [`idle_payload`][kups.application.relaxation.streaming.idle_payload]
+rows, ordinal `-1`, once the input is exhausted) and passes one payload row per
+slot to [`replace_slots`][kups.application.relaxation.streaming.replace_slots].
+That installs the requested rows, resets their optimizer state and clears their
+requests, leaving the other slots as they are. Jobs share periodicity, dtypes
+and the species vocabulary; packing promotes lower-triangular cells to a common
+triclinic frame.
+
+The optimizer must be [`Resettable`][kups.relaxation.optimizer.Resettable], so
+that a refill reinitializes only the refilled slots. Every native transform is;
+chain them with
+[`resettable_chain`][kups.relaxation.optimizer.resettable_chain] and wrap
+stateless Optax transforms in
+[`Stateless`][kups.relaxation.optimizer.Stateless], as in
+`resettable_chain(ScaleByAseLbfgs(), MaxStepSize(0.2), Stateless(optax.scale(-1.0)))`.
+A custom optimizer subclasses `Resettable` and declares all of its per-system
+state in `reset_layout`; state shared between systems cannot be reset per slot.
+
+One host cycle services pending refills, then runs a bounded block of steps:
+
+```python
+import jax
+import jax.numpy as jnp
+from jax import Array
+
+from kups.application.relaxation.streaming import StreamingRelaxState
+from kups.application.utils.propagate import make_cycle_function
+from kups.core.propagator import LoopPropagator, SequentialPropagator, propagate_and_fix
+from kups.core.stream import RefillGate
+
+# numerical_step comes from make_streaming_relax_propagator, state from
+# make_streaming_relax_state; refill(state, requested) is the application's
+# input/output adapter.
+def repetitions[OptState](state: StreamingRelaxState[OptState]) -> Array:
+    # No steps while a refill is pending or once every slot is idle.
+    run = ~state.finished.data.any() & (state.ordinal >= 0).any()
+    return jnp.where(run, 8, 0)
+
+cycle = make_cycle_function(SequentialPropagator((
+    RefillGate(lambda state: state.finished, refill),
+    LoopPropagator(numerical_step, repetitions),
+)))
+
+# The stream ends once a refill has left every slot idle.
+while state.finished.data.any() or (state.ordinal >= 0).any():
+    key, subkey = jax.random.split(key)
+    state = propagate_and_fix(cycle, subkey, state)
+```
+
+The block size (8 here) trades refill latency against dispatch overhead, since
+finished slots wait for the block to end; measure it and the slot count on the
+intended workload. Collect per-job results in the refill callback, keyed by
+their `ordinal`. JIT a closure around `replace_slots` with
+`kups.core.utils.jax.jit`, which validates tables and indices when tracing
+instead of on every call.
+
+The cycle donates its state, so copy results out (for example with
+`jax.device_get`) instead of keeping references to state arrays. A non-finite
+gradient in an occupied slot fails a runtime assertion that has no fix:
+`propagate_and_fix` raises, and the jobs still in flight are lost with the
+donated state. Screen structures before packing them (coincident atoms give
+non-finite gradients), and bound the step of strongly distorted ones, for
+example with `MaxStepSize`.
+
+The [streaming integration test](https://github.com/cusp-ai-oss/kUPS/blob/main/test/application/test_relax_streaming.py)
+shows a complete source, collector and refill callback.
+
 ## Grand-Canonical Monte Carlo (GCMC)
 
 Simulate adsorption of rigid molecules in a host framework at constant chemical potential, volume, and temperature (μVT ensemble).
