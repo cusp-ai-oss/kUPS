@@ -156,7 +156,12 @@ potential:
   device: cuda
   task_name: omat          # one of: omat | omol | oc20 | odac | omc
   inference_settings: default   # or "turbo" (compiled MOLE merge — same composition every call)
+  # omol only: total charge and spin multiplicity 2S + 1 (fairchem defaults: 0 and 1)
+  charge: 0
+  spin: 1
 ```
+
+The `omol` head conditions on total charge and spin multiplicity, so set them for charged or open-shell molecules (the other heads ignore both). In Python, pass `charge`/`spin` to [`load_uma`][kups.potential.mliap.torch.uma.load_uma], or give the systems table `total_charge` / `spin_multiplicity` fields to set them per system.
 
 **Optional extras** install the model's own PyTorch package alongside kUPS:
 
