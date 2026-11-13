@@ -35,6 +35,14 @@ repos:
         files: ^(src/|test/relaxation/transforms/test_reset\.py$)
         pass_filenames: false
 
+      - id: kups-lint
+        name: kUPS-specific checks
+        entry: uv run python ci/kups_lint.py src
+        language: system
+        types: [python]
+        files: ^(src/|ci/kups_lint)
+        pass_filenames: false
+
       - id: clear-notebook-output
         name: clear notebook output
         entry: uv run jupyter nbconvert --clear-output --inplace
