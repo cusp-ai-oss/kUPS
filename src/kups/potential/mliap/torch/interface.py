@@ -30,7 +30,7 @@ Requires the ``torch_dev`` dependency group: ``uv sync --group torch_dev``.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, TypedDict, overload
+from typing import Any, Callable, Literal, Protocol, TypedDict, overload
 
 import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
@@ -198,17 +198,23 @@ class TorchMliap:
         cutoff: Per-system cutoff radius [Å].
         wrapper: ``TorchModuleWrapper`` over the MLFF module.
         compute_cell_gradients: Whether the module returns ``"cell_gradients"``.
+        input_builder: Optional preparation hook for a graph sorted by system.
     """
 
     cutoff: Table[SystemId, Array]
     wrapper: TorchModuleWrapper = field(static=True)
     compute_cell_gradients: bool = field(static=True, default=False)
+    input_builder: Callable[[Any], AtomGraphInput] | None = field(
+        static=True, default=None, kw_only=True
+    )
 
     @staticmethod
     def from_module(
         module: torch.nn.Module,
         cutoff: float,
         compute_cell_gradients: bool = False,
+        *,
+        input_builder: Callable[[Any], AtomGraphInput] | None = None,
     ) -> "TorchMliap":
         """Wrap a torch.nn.Module that returns energy and gradients.
 
@@ -217,6 +223,8 @@ class TorchMliap:
             cutoff: Interaction cutoff radius [Å].
             compute_cell_gradients: Whether the module returns
                 ``"cell_gradients"`` for stress computation.
+            input_builder: Graph preparation hook. None keeps generic inputs,
+                including floating-point zero charge and spin.
 
         Returns:
             Configured ``TorchMliap`` ready for use with the kUPS interface.
@@ -226,6 +234,7 @@ class TorchMliap:
             cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
             wrapper=wrapper,
             compute_cell_gradients=compute_cell_gradients,
+            input_builder=input_builder,
         )
 
     def call(self, input: AtomGraphInput) -> dict[str, Array]:
@@ -322,7 +331,10 @@ def torch_mliap_model_fn[
         .set(jnp.arange(n, dtype=sort_order.dtype))
     )
 
-    input_dict = _prepare_torch_inputs(graph)
+    input_builder = (
+        getattr(inp.parameters, "input_builder", None) or _prepare_torch_inputs
+    )
+    input_dict = input_builder(graph)
     result = inp.parameters.call(input_dict)
 
     # Torch backends may run at a different (typically lower) precision than
@@ -339,7 +351,7 @@ def torch_mliap_model_fn[
     # silently clamps to a real system, contaminating its virial.
     valid = inp.graph.particles.data.system.valid_mask
     pos_grad = jnp.where(valid[:, None], pos_grad, 0.0)
-    energy_table = Table.arange(energy, label=SystemId)
+    energy_table = graph.systems.set_data(energy)
 
     cell_grad = result["cell_gradients"].astype(out_dtype)
     # Project the raw ∂E/∂h onto the input frame's parameter space,

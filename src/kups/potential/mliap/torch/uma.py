@@ -34,10 +34,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal, override
 
+import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
 
 from kups.potential.mliap.torch.interface import (
+    AtomGraphInput,
     TorchMliap,
+    _prepare_torch_inputs,
     lattice_gradient_from_virial,
 )
 
@@ -54,6 +57,12 @@ class UMAModule(torch.nn.Module):
     Wraps a fairchem ``MLIPPredictUnit`` and translates the universal graph
     input into the ``AtomicData`` object UMA expects. Returns gradients of
     energy w.r.t. positions (and optionally w.r.t. cell vectors).
+
+    For ``"omol"``, the task-aware input builder reads each system's
+    ``total_charge`` and ``spin_multiplicity``. Missing metadata defaults to
+    0 and 1. Set these values through the MD or relaxation builder keywords,
+    or through ``atoms.info["charge"]`` and ``atoms.info["spin"]`` for ASE input.
+    Other tasks retain zero charge and spin inputs.
 
     The wrapped predict-unit holds its own torch module and manages its own
     device placement; this adapter intentionally does not register it as a
@@ -94,6 +103,35 @@ class UMAModule(torch.nn.Module):
         self.task_name = str(task_name)
         self.compute_cell_gradients = compute_cell_gradients
 
+    def _prepare_inputs(self, graph: Any) -> AtomGraphInput:
+        """Select molecular metadata without changing generic model inputs."""
+        inputs = _prepare_torch_inputs(graph)
+        if self.task_name != "omol":
+            return inputs
+        n_sys = inputs["cell"].shape[0]
+        for field_name, input_name, default in (
+            ("total_charge", "charge", 0),
+            ("spin_multiplicity", "spin", 1),
+        ):
+            value = getattr(graph.systems.data, field_name, None)
+            if value is None:
+                value = jnp.full((n_sys,), default, dtype=int)
+            if not jnp.issubdtype(value.dtype, jnp.integer):
+                raise TypeError(f"{field_name} must have an integer dtype.")
+            if value.shape != (n_sys,):
+                raise ValueError(
+                    f"{field_name} must have shape ({n_sys},); got {value.shape}."
+                )
+            if jnp.issubdtype(value.dtype, jnp.unsignedinteger):
+                # The bridge supports signed integers and uint8. Keep valid
+                # values exact; map larger unsigned values to an invalid signed
+                # sentinel so forward rejects them without overflow or host reads.
+                value = jnp.minimum(value, jnp.asarray(101, dtype=value.dtype)).astype(
+                    int
+                )
+            inputs[input_name] = value
+        return inputs
+
     @override
     def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:  # type: ignore
         """Run UMA on a universal ``AtomGraphInput`` and return gradients.
@@ -132,8 +170,6 @@ class UMAModule(torch.nn.Module):
         edge_index = input["edge_index"].to(dtype=torch.int64)
         cell_offsets = -input["cell_offsets"].to(dtype=inf_dtype)
         pbc = input["pbc"]
-        charge = input["charge"].to(dtype=inf_dtype)
-        spin = input["spin"].to(dtype=inf_dtype)
 
         n_atoms = pos.shape[0]
         n_sys = cell.shape[0]
@@ -162,6 +198,27 @@ class UMAModule(torch.nn.Module):
                     n_sys, 3, 3, dtype=out_dtype, device=dev
                 )
             return result
+
+        if self.task_name == "omol":
+            # Molecular spin is a multiplicity; zero is a non-molecular token.
+            for name, lower, upper in (("charge", -100, 100), ("spin", 1, 100)):
+                value = input[name]
+                if (
+                    value.dtype == torch.bool
+                    or value.is_floating_point()
+                    or value.is_complex()
+                ):
+                    raise TypeError(f"{name} must have an integer dtype for omol.")
+                if value.shape != (n_sys,):
+                    raise ValueError(
+                        f"{name} must have shape ({n_sys},); got {value.shape}."
+                    )
+                # Signed bounds must not wrap in an unsigned tensor's dtype.
+                checked = value.to(dtype=torch.float64)
+                if bool(((checked < lower) | (checked > upper)).any().item()):
+                    raise ValueError(f"{name} must be in [{lower}, {upper}] for omol.")
+        charge = input["charge"].to(dtype=inf_dtype)
+        spin = input["spin"].to(dtype=inf_dtype)
 
         # kUPS's neighbor list is a fixed-size buffer; ``indices_in`` maps
         # unused slots to the OOB sentinel ``len(keys) == n_atoms``. Drop
@@ -268,12 +325,19 @@ def load_uma(
         task_name: UMA inference head — ``"omat"`` (materials),
             ``"omol"`` (molecules), ``"oc20"`` (catalysis),
             ``"odac"`` (MOFs / DAC), ``"omc"`` (molecular crystals).
+            For ``"omol"``, the bound input builder reads per-system
+            ``total_charge`` and ``spin_multiplicity``, defaulting to 0 and 1.
+            Set them through MD or relaxation builder keywords, or ASE
+            ``atoms.info["charge"]`` and ``atoms.info["spin"]``. Other tasks
+            retain zero charge and spin inputs.
         compute_cell_gradients: Whether to also return cell gradients
             (stress). See ``UMAModule`` for convention caveats.
         cutoff: Cutoff radius [Å]. UMA-s-1.2 defaults to 6.0.
         inference_settings: ``"default"`` or ``"turbo"`` (resolved by
             fairchem's ``guess_inference_settings``), or ``"turbo_f64"`` for
-            a compiled, MOLE-merged float64 preset.
+            a compiled, MOLE-merged float64 preset. ``"turbo"`` and
+            ``"turbo_f64"`` merge the experts for one composition, charge and
+            spin, so FAIRChem rejects omol batches whose systems differ in these.
 
     Returns:
         ``TorchMliap`` ready to be wired into the kUPS interface.
@@ -342,5 +406,8 @@ def load_uma(
         compute_cell_gradients=compute_cell_gradients,
     )
     return TorchMliap.from_module(
-        module, cutoff=cutoff, compute_cell_gradients=compute_cell_gradients
+        module,
+        cutoff=cutoff,
+        compute_cell_gradients=compute_cell_gradients,
+        input_builder=module._prepare_inputs,
     )

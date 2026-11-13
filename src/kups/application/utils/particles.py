@@ -178,19 +178,67 @@ def particles_from_ase(
         Tuple of (particles, cell, uc_transform) where uc_transform
         rotates Cartesian positions into the lower-triangular frame.
     """
+    return _prepare_ase(atoms)[0]
+
+
+def _prepare_ase(
+    atoms: ase.Atoms | str | Path,
+) -> tuple[
+    tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]],
+    dict[str, Any],
+]:
+    """Read geometry and metadata from the same ASE object."""
     if isinstance(atoms, (str, Path)):
         return _particles_from_path(atoms)
-    return _particles_from_atoms(atoms)
+    return _particles_from_atoms(atoms), atoms.info
 
 
 @cache
 def _particles_from_path(
     path: str | Path,
 ) -> tuple[
-    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+    tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]],
+    dict[str, Any],
 ]:
-    """Read an ASE-readable file and build cached particle data and cell."""
-    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+    """Cache geometry and metadata from one read of the last file frame."""
+    atoms = next(ase.io.iread(path, index=-1, store_tags=True))
+    return _particles_from_atoms(atoms), atoms.info
+
+
+def _electronic_metadata(
+    total_charge: ArrayLike | None,
+    spin_multiplicity: ArrayLike | None,
+    info: dict[str, Any],
+) -> tuple[Array, Array]:
+    """Resolve and validate only the selected per-system metadata sources."""
+    charge = info.get("charge", 0) if total_charge is None else total_charge
+    spin = info.get("spin", 1) if spin_multiplicity is None else spin_multiplicity
+    return (
+        _electronic_scalar("total_charge", charge),
+        _electronic_scalar("spin_multiplicity", spin),
+    )
+
+
+def _electronic_scalar(name: str, value: Any) -> Array:
+    """Validate integer scalars before conversion to the active JAX dtype."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        integer = value
+    else:
+        array = np.asarray(value)
+        if array.shape != ():
+            raise ValueError(
+                f"{name} must be an integer scalar; got shape {array.shape}."
+            )
+        if not np.issubdtype(array.dtype, np.integer):
+            raise TypeError(f"{name} must have an integer dtype; got {array.dtype}.")
+        integer = int(array)
+    bounds = np.iinfo(jnp.asarray(0).dtype)
+    if integer < bounds.min or integer > bounds.max:
+        raise ValueError(f"{name} is outside the active JAX integer range.")
+    # Keep zero for non-molecular tasks; UMA omol requires a positive multiplicity.
+    if name == "spin_multiplicity" and integer < 0:
+        raise ValueError("spin_multiplicity must be nonnegative.")
+    return jnp.asarray(integer, dtype=int)
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:
