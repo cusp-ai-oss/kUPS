@@ -115,56 +115,30 @@ def jit[C: Callable[..., Any]](
     abstracted_axes: Any = None,
     compiler_options: dict[str, Any] | None = None,
 ) -> C | Callable[[C], C]:
-    """Type-preserving JIT compilation decorator for JAX functions.
+    """Type-preserving `jax.jit` that runs dataclass post-init checks in the trace.
 
-    Sets up a function for just-in-time compilation with XLA. Wraps `jax.jit`
-    while preserving function names and type signatures.
+    Usable bare (``@jit``) or with arguments (``@jit(static_argnames=...)``).
+    The remaining arguments are passed through to `jax.jit`; see its
+    documentation for details.
 
     Args:
-        fn: Function to be jitted. Should be a pure function. The arguments and
-            return value should be arrays, scalars, or (nested) standard Python
-            containers (tuple/list/dict) thereof.
-        in_shardings: Optional sharding specification for inputs. If provided,
-            the positional arguments must have compatible shardings.
-        out_shardings: Optional sharding specification for outputs. Has the same
-            effect as applying `jax.lax.with_sharding_constraint` to the output.
-        static_argnums: Int or collection of ints specifying which positional
-            arguments to treat as static (trace- and compile-time constant).
-            Static arguments should be hashable and immutable.
-        static_argnames: String or collection of strings specifying which named
-            arguments to treat as static (compile-time constant).
-        donate_argnums: Collection of integers specifying which positional argument
-            buffers can be overwritten by the computation and marked deleted in
-            the caller. Useful for memory optimization.
-        donate_argnames: String or collection of strings specifying which named
-            arguments are donated to the computation.
-        keep_unused: If False (default), arguments that JAX determines to be
-            unused may be dropped from compiled executables. If True, unused
-            arguments will not be pruned.
-        device: Optional device to run the jitted function on.
-        backend: Optional string representing the XLA backend: 'cpu', 'gpu', or 'tpu'.
-        inline: If True, inline this function into enclosing jaxprs. Default False.
-        abstracted_axes: Optional axis abstraction specification.
-        compiler_options: Optional dictionary of compiler options.
+        fn: Pure function to compile, or None when used with arguments.
+        in_shardings: Sharding specification for inputs.
+        out_shardings: Sharding specification for outputs.
+        static_argnums: Positional arguments treated as compile-time constants.
+        static_argnames: Named arguments treated as compile-time constants.
+        donate_argnums: Positional arguments whose buffers may be reused.
+        donate_argnames: Named arguments whose buffers may be reused.
+        keep_unused: Keep arguments that JAX finds unused.
+        device: Device to run the compiled function on.
+        backend: XLA backend: 'cpu', 'gpu' or 'tpu'.
+        inline: Inline this function into enclosing jaxprs.
+        abstracted_axes: Axis abstraction specification.
+        compiler_options: Compiler options.
 
     Returns:
-        A wrapped version of the function, set up for just-in-time compilation
-        with preserved type signature.
-
-    Example:
-        ```python
-        @jit
-        def add(x, y):
-            return x + y
-
-        @jit(static_argnames=("axis",))
-        def sum_along_axis(x, axis):
-            return jnp.sum(x, axis=axis)
-
-        @jit(donate_argnums=(0,))
-        def update_in_place(x, y):
-            return x + y  # x's buffer can be reused
-        ```
+        The compiled function with the signature of ``fn``, or a decorator if
+        ``fn`` is None.
     """
     # Collect non-None kwargs to pass to jax.jit
     jit_kwargs: dict[str, Any] = {}
@@ -228,65 +202,26 @@ def shard_map[C: Callable[..., Any]](
     axis_names: frozenset[str] = frozenset(),
     check_vma: bool = True,
 ) -> C:
-    """Map a function over shards of data for multi-device parallel computation.
+    """Type-preserving `jax.shard_map` for SPMD execution across devices.
 
-    Wraps `jax.shard_map` for SPMD (Single Program Multiple Data) parallel
-    execution across multiple devices. Each application of the function takes
-    as input a shard of the mapped-over arguments and produces a shard of the
-    output.
+    Each application of ``f`` maps a shard of the inputs to a shard of the
+    output. See https://docs.jax.dev/en/latest/notebooks/shard_map.html.
 
     Args:
-        f: Callable to be mapped. Each instance of `f` takes as input a shard
-            of the mapped-over arguments and produces a shard of the output.
-        out_specs: A pytree with `PartitionSpec` instances as leaves, with a tree
-            structure that is a tree prefix of the output of `f`. Each `PartitionSpec`
-            represents how the corresponding output shards should be concatenated.
-            Mentioning a mesh axis name at a position expresses concatenation; not
-            mentioning a mesh axis name expresses a promise that outputs are equal
-            along that mesh axis.
-        in_specs: A pytree with `PartitionSpec` instances as leaves, with a tree
-            structure that is a tree prefix of the args tuple to be mapped over.
-            Each `PartitionSpec` represents how the corresponding argument should
-            be sharded along the named axes of `mesh`. Mentioning a mesh axis name
-            at a position expresses sharding; not mentioning an axis name expresses
-            replication. If None, inputs will be treated as static. If `jax.sharding.Infer`,
-            the in_specs are inferred from the argument types.
-        mesh: A `jax.sharding.Mesh` representing the array of devices over which
-            to shard the data and on which to execute instances of `f`. The names
-            of the Mesh can be used in collective communication operations in `f`.
-            If None, it will be inferred from context set via `jax.set_mesh`.
-        axis_names: Set of axis names from `mesh` over which the function `f` is
-            manual. If empty (default), `f` is manual over all mesh axes.
-        check_vma: If True (default), enable additional validity checks and automatic
-            differentiation optimizations. The validity checks concern whether any
-            mesh axis names not mentioned in `out_specs` are consistent with how
-            the outputs of `f` are replicated.
+        f: Callable applied to each shard.
+        out_specs: Pytree prefix of the output with `PartitionSpec` leaves;
+            a named mesh axis concatenates along it, an unnamed one promises
+            the outputs are equal along it.
+        in_specs: Pytree prefix of the arguments with `PartitionSpec` leaves;
+            a named mesh axis shards along it, an unnamed one replicates. With
+            `jax.sharding.Infer` the specs come from the argument types.
+        mesh: Devices to shard over; inferred from `jax.set_mesh` if None.
+        axis_names: Mesh axes over which ``f`` is manual; all if empty.
+        check_vma: Check that outputs are replicated over the mesh axes not
+            named in ``out_specs``, and enable related autodiff optimizations.
 
     Returns:
-        A callable that applies the input function `f` across data sharded
-        according to the `mesh` and `in_specs`.
-
-    Example:
-        ```python
-        from jax.sharding import Mesh, PartitionSpec as P
-        from jax.experimental import mesh_utils
-
-        # Create a mesh of devices
-        devices = mesh_utils.create_device_mesh((2, 2))
-        mesh = Mesh(devices, axis_names=('x', 'y'))
-
-        @partial(shard_map, mesh=mesh, in_specs=P('x', None), out_specs=P('x', None))
-        def parallel_fn(x):
-            return x * 2
-
-        # x will be sharded along the first axis across 'x' devices
-        result = parallel_fn(x)
-        ```
-
-    Note:
-        Requires understanding of JAX's sharding model and mesh configuration.
-        For an introduction to sharded data, refer to JAX's sharded computation
-        documentation at https://docs.jax.dev/en/latest/notebooks/shard_map.html.
+        ``f`` applied across data sharded according to ``mesh`` and ``in_specs``.
     """
     # Build kwargs, handling defaults
     shard_kwargs: dict[str, Any] = {"out_specs": out_specs}
@@ -698,55 +633,25 @@ def dataclass[T](
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Create a dataclass that works as a JAX PyTree.
 
-    Combines Python's `@dataclass` with JAX's PyTree registration, enabling
-    dataclasses to be used with JAX transformations like `jit`, `grad`, and `vmap`.
-    Dataclasses are frozen by default for immutability (unlike standard dataclasses).
+    Combines `dataclasses.dataclass` with PyTree registration so instances pass
+    through `jit`, `grad` and `vmap`. Unlike the standard decorator, classes are
+    frozen by default. The keyword arguments match `dataclasses.dataclass`.
 
     Args:
-        cls: Class to convert into a JAX-compatible dataclass, or None when used
-            as a decorator with arguments.
-        init: If True (default), generate an `__init__` method.
-        repr: If True (default), generate a `__repr__` method.
-        eq: If True (default), generate `__eq__` and `__ne__` methods.
-        order: If True, generate `__lt__`, `__le__`, `__gt__`, and `__ge__` methods.
-            Default is False.
-        unsafe_hash: If True, generate a `__hash__` method even if `__eq__` is
-            defined. Use with caution. Default is False.
-        frozen: If True (default, unlike standard dataclasses), fields cannot be
-            assigned after instance creation. This is the default because JAX
-            transformations work best with immutable data structures.
-        match_args: If True (default), generate `__match_args__` for use in
-            `match` statements (Python 3.10+).
-        kw_only: If True, all fields become keyword-only in `__init__`. Default
-            is False.
-        slots: If True, generate `__slots__` for memory efficiency. Default is
-            False.
-        weakref_slot: If True and `slots` is True, add a `__weakref__` slot.
-            Default is False.
+        cls: Class to convert, or None when used as a decorator with arguments.
+        init: Generate `__init__`.
+        repr: Generate `__repr__`.
+        eq: Generate `__eq__` and `__ne__`.
+        order: Generate `__lt__`, `__le__`, `__gt__` and `__ge__`.
+        unsafe_hash: Generate `__hash__` even if `__eq__` is defined.
+        frozen: Forbid field assignment after creation.
+        match_args: Generate `__match_args__`.
+        kw_only: Make all fields keyword-only in `__init__`.
+        slots: Generate `__slots__`.
+        weakref_slot: Add a `__weakref__` slot when `slots` is True.
 
     Returns:
         A dataclass registered as a JAX PyTree, or a decorator if `cls` is None.
-
-    Example:
-        ```python
-        @dataclass
-        class Point:
-            x: jax.Array
-            y: jax.Array
-
-        p = Point(jnp.array(1.0), jnp.array(2.0))
-        jax.tree.map(lambda x: x * 2, p)  # Works with JAX transformations
-
-        # With arguments
-        @dataclass(frozen=False)
-        class MutablePoint:
-            x: jax.Array
-            y: jax.Array
-        ```
-
-    Note:
-        Unlike standard `dataclasses.dataclass`, this decorator defaults to
-        `frozen=True`.
     """
 
     @no_type_check

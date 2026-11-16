@@ -208,14 +208,10 @@ def offline_radial_distribution_function(
 ) -> Array:
     """Compute RDF from trajectory data with automatic capacity management.
 
-    Processes large trajectory datasets efficiently by:
-    1. Automatically determining neighbor list capacity via trial runs
-    2. Processing frames in batches using `jax.lax.map`
-    3. Handling assertion failures and retrying with increased capacity
-
-    This function is **not JIT-compilable** and intended for **offline analysis**
-    of stored trajectories (e.g., from HDF5 files). For on-the-fly computation,
-    use [RadialDistributionFunction][kups.observables.radial_distribution_function.RadialDistributionFunction].
+    Frames are processed in batches with ``jax.lax.map``; the neighbor list
+    capacity is estimated and enlarged on retry when it overflows. Not
+    JIT-compilable; for on-the-fly computation use
+    [RadialDistributionFunction][kups.observables.radial_distribution_function.RadialDistributionFunction].
 
     Args:
         positions: Particle positions, shape `(..., n_frames, n_particles, 3)`.
@@ -232,34 +228,10 @@ def offline_radial_distribution_function(
 
     Example:
         ```python
-        import h5py
-        from kups.observables.radial_distribution_function import offline_radial_distribution_function
-
-        # Load trajectory from file
-        with h5py.File("trajectory.h5", "r") as f:
-            positions = f["positions"][:]  # Shape: (n_frames, n_particles, 3)
-            cell = PeriodicCell(TriclinicFrame.from_matrix(f["cell"][()]))
-
-        # Compute time-averaged RDF
         g_r = offline_radial_distribution_function(
             positions, cell, rmax=10.0, bins=200, batch_size=100
-        )  # Shape: (n_frames, 200)
-
-        # Average over trajectory
-        g_r_avg = g_r.mean(axis=0)  # Shape: (200,)
-
-        # Plot
-        import matplotlib.pyplot as plt
-        r = jnp.linspace(0.025, 9.975, 200)
-        plt.plot(r, g_r_avg)
-        plt.xlabel("r (Å)")
-        plt.ylabel("g(r)")
+        ).mean(axis=0)
         ```
-
-    Note:
-        - Automatically retries with increased capacity if neighbor list is too small
-        - Memory usage scales with `n_frames * batch_size * n_particles²`
-        - For very large trajectories, use smaller batch_size to avoid OOM errors
     """
 
     _SystemData = namedtuple("_SystemData", ["cell", "cutoff"])

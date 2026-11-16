@@ -180,31 +180,12 @@ def make_md_step_from_state[State](
 ) -> Propagator[State]:
     """Build a single MD integration step from a typed state.
 
-    Constructs the appropriate integrator propagator by extracting views for
-    particles and systems from ``state`` and wrapping them with a
-    [WrapFlow][kups.md.integrators.WrapFlow]
-    for periodic-boundary-condition-aware distance computations.
-
-    Supported integrators:
-
-    - ``"verlet"`` — [Velocity Verlet][kups.md.integrators.make_velocity_verlet_step]
-      (NVE ensemble, no thermostat). Requires ``integrator_params: IsVerletParams``.
-    - ``"baoab_langevin"`` — [BAOAB Langevin][kups.md.integrators.make_baoab_langevin_step]
-      (NVT via Langevin friction/noise). Requires
-      ``integrator_params: IsBAOABLangevinParams``.
-    - ``"csvr"`` — [CSVR][kups.md.integrators.make_csvr_step]
-      (NVT via canonical-sampling velocity rescaling, constant volume). Requires
-      ``integrator_params: IsCSVRParams``.
-    - ``"csvr_npt"`` — [CSVR-NPT][kups.md.integrators.make_csvr_npt_step]
-      (NPT via CSVR thermostat with barostat). Requires
-      ``integrator_params: IsCSVRNPTParams`` and a ``cell_gradients`` leaf on each system.
-    - ``"baoab_npt_langevin"`` — [BAOAB NPT Langevin][kups.md.integrators.make_baoab_npt_langevin_step]
-      (Gao–Fang–Wang JCP 2016 fully-flexible-cell NPT). Requires
-      ``integrator_params: IsBAOABNPTLangevinParams`` plus ``cell_momentum``
-      and ``cell_gradients`` leaves on each system, and a
-      :class:`~kups.core.cell.TriclinicFrame` cell.
-
-    The overloads narrow the required state protocol per ``integrator`` literal.
+    Positions are advanced through a periodic
+    [WrapFlow][kups.md.integrators.WrapFlow]. ``integrator`` selects
+    ``"verlet"`` (NVE), ``"baoab_langevin"`` or ``"csvr"`` (NVT),
+    ``"csvr_npt"`` or ``"baoab_npt_langevin"`` (NPT; the latter needs a
+    :class:`~kups.core.cell.TriclinicFrame` cell). The overloads give the state
+    protocol each choice requires.
 
     Args:
         state: Lens into the sub-state with ``particles`` and ``systems``.
