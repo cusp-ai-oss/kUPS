@@ -215,6 +215,15 @@ class CellListSelector:
     along every periodic axis,
     so each query's stencil cells are already distinct; this skips the
     per-query cell deduplication in the uncached lookup.
+
+    Attributes:
+        cutoffs: Cutoff distance per system.
+        max_cells: Hash cells per system, sized for the system with the most.
+        max_candidates: Buffer size for candidate pairs from the cell join.
+        max_image_candidates: Buffer size for candidate pairs after replication
+            over periodic images.
+        promise_unique_cells: Static flag skipping per-query cell deduplication.
+        cache: Initialized occupant lookup, or ``None`` to hash on every call.
     """
 
     cutoffs: Table[SystemId, units.Length]

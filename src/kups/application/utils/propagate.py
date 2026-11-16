@@ -49,7 +49,12 @@ class CycleFunction[State](Protocol):
 
 @dataclass
 class CycleSamples[Sample]:
-    """Stack sample leaves without adding a time axis to indexed table metadata."""
+    """Stack sample leaves without adding a time axis to indexed table metadata.
+
+    Attributes:
+        arrays: Flattened sample leaves, each with a leading cycle axis.
+        structure: Tree structure of one sample.
+    """
 
     arrays: tuple[Array, ...]
     structure: jax.tree_util.PyTreeDef = field(static=True)

@@ -76,7 +76,12 @@ class RelaxStepData:
 
 @dataclass
 class RelaxLoggedData:
-    """HDF5 writer configuration for relaxation simulations."""
+    """HDF5 writer configuration for relaxation simulations.
+
+    Attributes:
+        init: Writer for the initial structure, logged once.
+        step: Writer for the per-step snapshot, logged every step.
+    """
 
     init: WriterGroupConfig[HasRelaxData, RelaxInitData] = WriterGroupConfig(
         RelaxInitData.from_state, Once()

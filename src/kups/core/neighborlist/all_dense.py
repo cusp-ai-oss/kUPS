@@ -56,7 +56,13 @@ def _all_subselect(
 
 @dataclass
 class AllDenseSelector:
-    """Selector that emits every ``(i, j)`` pair across all systems."""
+    """Selector that emits every ``(i, j)`` pair across all systems.
+
+    Attributes:
+        cutoffs: Cutoff distance per system.
+        max_image_candidates: Buffer size for candidate pairs after replication
+            over periodic images.
+    """
 
     cutoffs: Table[SystemId, units.Length]
     max_image_candidates: Capacity[int]

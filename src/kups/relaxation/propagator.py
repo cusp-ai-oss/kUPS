@@ -36,7 +36,11 @@ class UpdateMask[State, Indices]:
     """Per-system acceptance and the matching parameter-index view.
 
     Both views read the state after the potential's patch has been applied.
-    ``system_index`` returns an index prefix of the optimized parameters.
+
+    Attributes:
+        accept: Per-system mask; only ``True`` systems receive the update.
+        system_index: Index prefix of the optimized parameters mapping each
+            parameter row to its system.
     """
 
     accept: View[State, Table[SystemId, Array]] = field(static=True)

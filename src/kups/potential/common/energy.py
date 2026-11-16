@@ -123,8 +123,12 @@ class InputConstructor[State, Input, StatePatch: Patch[Any]](Protocol):
 class LocalSumComposer[State, Input, StatePatch: Patch[Any]]:
     """Shared full/old/new plan for local energies, regardless of representation.
 
-    ``difference`` can combine previous and proposed inputs into one input
-    whose energy is proposed minus previous, sharing a single evaluator call.
+    Attributes:
+        constructor: Builds the full input, or the previous or proposed input
+            affected by a patch.
+        difference: Combines previous and proposed inputs into one input whose
+            energy is proposed minus previous, sharing a single evaluator call;
+            ``None`` evaluates both separately.
     """
 
     constructor: InputConstructor[State, Input, StatePatch] = field(static=True)
@@ -150,7 +154,11 @@ class LocalSumComposer[State, Input, StatePatch: Patch[Any]]:
 
 @dataclass
 class FullSumComposer[State, Input, StatePatch: Patch[Any]]:
-    """Construct one full input for the proposed state."""
+    """Construct one full input for the proposed state.
+
+    Attributes:
+        constructor: Builds the full input from the state and optional patch.
+    """
 
     constructor: InputConstructor[State, Input, StatePatch] = field(static=True)
 

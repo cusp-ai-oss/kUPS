@@ -86,8 +86,14 @@ class FireReset[Velocity, PerSystem]:
     """Resettable FIRE fields, carrying either values or their index prefix.
 
     ``Velocity`` follows the parameter tree; ``PerSystem`` is a table of values
-    or an index mapping those values to systems. Field meanings match
-    :class:`ScaleByFireState`.
+    or an index mapping those values to systems.
+
+    Attributes:
+        velocity: Velocity estimate, or its index prefix.
+        dt: Per-system adaptive timestep, or its system index.
+        alpha: Per-system velocity-mixing parameter, or its system index.
+        n_pos: Per-system count of consecutive positive-power steps, or its
+            system index.
     """
 
     velocity: Velocity

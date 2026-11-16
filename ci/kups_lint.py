@@ -18,6 +18,8 @@ Codes:
     KUP008  Type-check suppression without a pyrefly error kind.
     KUP009  Banner or separator comment (``# -----``, ``# =====``).
     KUP010  ``isinstance(x, jax.core.Tracer)`` outside ``kups.core.utils.jax``.
+    KUP011  Public dataclass field missing from the class docstring's
+            ``Attributes:`` section.
 """
 
 import ast
@@ -54,6 +56,7 @@ MESSAGES = {
     "KUP008": "suppress with `# pyrefly: ignore[kind]`; pyrefly treats other forms as blanket ignores",
     "KUP009": "banner comment; structure code with functions and modules, not separators",
     "KUP010": "use `kups.core.utils.jax.is_traced` instead of checking for `Tracer` directly",
+    "KUP011": "document {names} under `Attributes:` in the class docstring",
 }
 
 
@@ -122,6 +125,29 @@ def _is_optional_array(stmt: ast.stmt) -> bool:
     )
 
 
+def _public_fields(cls: ast.ClassDef) -> list[str]:
+    return [
+        stmt.target.id
+        for stmt in cls.body
+        if isinstance(stmt, ast.AnnAssign)
+        and isinstance(stmt.target, ast.Name)
+        and not stmt.target.id.startswith("_")
+        and "ClassVar" not in ast.unparse(stmt.annotation)
+    ]
+
+
+def _undocumented_fields(cls: ast.ClassDef) -> list[str]:
+    doc = ast.get_docstring(cls)
+    if doc is None:  # D101 reports the missing docstring.
+        return []
+    _, _, attributes = doc.partition("Attributes:")
+    return [
+        name
+        for name in _public_fields(cls)
+        if not re.search(rf"^\s+{name}( \(.*\))?:", attributes, re.MULTILINE)
+    ]
+
+
 def _module_name(path: Path) -> str | None:
     parts = path.with_suffix("").parts
     if "kups" not in parts:
@@ -161,6 +187,9 @@ class _Visitor(ast.NodeVisitor):
                 self.report(stmt, "KUP001")
             if origin != "dataclasses" and _is_optional_array(stmt):
                 self.report(stmt, "KUP002")
+        if origin is not None and not node.name.startswith("_"):
+            if missing := _undocumented_fields(node):
+                self.report(node, "KUP011", names=", ".join(f"`{n}`" for n in missing))
         self._check_docstring(node)
         self.generic_visit(node)
 

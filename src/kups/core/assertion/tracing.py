@@ -44,7 +44,11 @@ from kups.core.utils.jax import PyTreeDef, dataclass
 
 @dataclass
 class AssertionContext:
-    """Runtime assertions collected while reinterpreting a traced function."""
+    """Runtime assertions collected while reinterpreting a traced function.
+
+    Attributes:
+        assertions: Assertions recorded so far, in trace order.
+    """
 
     assertions: tuple[RuntimeAssertion[Any, Any], ...] = ()
 

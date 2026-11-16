@@ -35,6 +35,9 @@ class ReduceCompactor[D: int](Compactor[D]):
 
     Compacts whole candidate rows, so pair neighbor lists and fixed higher-degree
     topology share the same implementation.
+
+    Attributes:
+        avg_edges: Buffer size for the compacted edges.
     """
 
     avg_edges: Capacity[int]

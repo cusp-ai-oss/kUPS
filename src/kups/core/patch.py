@@ -126,7 +126,12 @@ class IndexLensPatch[State, T](Patch[State]):
 
 @dataclass
 class ComposedPatch[State](Patch[State]):
-    """A patch that composes multiple patches together by applying them in sequence."""
+    """A patch that composes multiple patches together by applying them in sequence.
+
+    Attributes:
+        patches: Patches applied in order with the same acceptance mask; at
+            least one.
+    """
 
     patches: tuple[Patch[State], ...]
 
