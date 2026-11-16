@@ -239,6 +239,40 @@ class TestTransitionStatistics:
         npt.assert_allclose(stats.acceptance_insertion, jnp.array([5.0, 5.0]))
         npt.assert_array_equal(stats.n_trials_insertion, jnp.array([5, 5], dtype=int))
 
+    def test_probabilities_normalise_by_total_trials(self):
+        """Witman eq 7: each row divides by insertion + deletion trials."""
+        acc_ins = jnp.array([1.0, 2.0, 0.5])
+        acc_del = jnp.array([0.0, 1.0, 0.3])
+        n_ins = jnp.array([4, 4, 4], dtype=int)
+        n_del = jnp.array([4, 4, 4], dtype=int)
+        p_ins, p_del = TransitionStatistics(
+            acc_ins, acc_del, n_ins, n_del
+        ).probabilities()
+        npt.assert_allclose(p_ins, acc_ins / 8.0)
+        npt.assert_allclose(p_del, acc_del / 8.0)
+
+    def test_probabilities_safe_at_zero_trials(self):
+        """No divide-by-zero when a macrostate was never visited."""
+        acc = jnp.zeros(3)
+        n = jnp.zeros(3, dtype=int)
+        p_ins, p_del = TransitionStatistics(acc, acc, n, n).probabilities()
+        npt.assert_array_equal(p_ins, jnp.zeros(3))
+        npt.assert_array_equal(p_del, jnp.zeros(3))
+
+    def test_probabilities_are_rank_polymorphic(self):
+        """A trailing macrostate axis normalises exactly like the flat layout."""
+        acc_ins = jnp.array([[1.0, 2.0, 0.5], [0.25, 0.75, 1.5]])
+        acc_del = jnp.array([[0.0, 1.0, 0.3], [0.5, 0.5, 0.5]])
+        n = jnp.full((2, 3), 4, dtype=int)
+        batched = TransitionStatistics(acc_ins, acc_del, n, n).probabilities()
+        assert batched.insertion.shape == (2, 3)
+        for row in range(2):
+            flat = TransitionStatistics(
+                acc_ins[row], acc_del[row], n[row], n[row]
+            ).probabilities()
+            npt.assert_array_equal(batched.insertion[row], flat.insertion)
+            npt.assert_array_equal(batched.deletion[row], flat.deletion)
+
 
 # -- EnergyMoments (Welford / Pébay) ------------------------------------
 
