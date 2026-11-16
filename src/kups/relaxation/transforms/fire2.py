@@ -98,10 +98,7 @@ class Fire2Reset[Velocity, PerSystem](FireReset[Velocity, PerSystem]):
 
 
 type Fire2ResetData = Fire2Reset[PyTree, Table[SupportsSorting, Array]]
-"""Resettable FIRE2 values: the FIRE fields plus the ``n_total`` table."""
-
 type Fire2ResetIndices = Fire2Reset[PyTree, Index[SupportsSorting]]
-"""Index prefix matching :data:`Fire2ResetData`."""
 
 
 def fire2_reset_layout() -> ResetLayout[

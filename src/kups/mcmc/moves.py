@@ -86,7 +86,6 @@ class HasPositionsGroupSystem(HasPositions, HasGroupIndex, HasSystemIndex, Proto
 
 
 type BatchedPositions = Table[ParticleId, HasPositionsGroupSystem]
-"""Type alias for particle positions with group and system indexing."""
 
 
 class MonteCarloMove[State, Changes](ChangesFn[State, Changes], abc.ABC):

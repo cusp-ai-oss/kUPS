@@ -102,12 +102,9 @@ class LbfgsReset[PerSystem, PerLeaf]:
 
 
 type LbfgsResetData = LbfgsReset[Table[SupportsSorting, Array], list[Array]]
-"""Resettable L-BFGS values: per-system tables and per-leaf arrays."""
-
 type LbfgsResetIndices = LbfgsReset[
     Index[SupportsSorting], list[Index[SupportsSorting]]
 ]
-"""Index prefix matching :data:`LbfgsResetData`."""
 
 
 def lbfgs_reset_layout[Params]() -> ResetLayout[

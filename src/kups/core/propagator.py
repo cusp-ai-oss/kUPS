@@ -225,7 +225,6 @@ class IdentityPropagator[State](Propagator[State]):
 
 
 type LogProbabilityRatio = Table[SystemId, Array]
-"""Type alias for log probability ratio arrays."""
 
 
 class ChangesFn[State, Changes](Protocol):

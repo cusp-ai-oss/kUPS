@@ -97,10 +97,9 @@ class FireReset[Velocity, PerSystem]:
 
 
 type FireResetData = FireReset[PyTree, Table[SupportsSorting, Array]]
-"""Resettable FIRE values: the velocity pytree and per-system tables."""
 
+# Velocity rows map to systems.
 type FireResetIndices = FireReset[PyTree, Index[SupportsSorting]]
-"""Index prefix matching :data:`FireResetData`: velocity rows map to systems."""
 
 
 def fire_reset_layout() -> ResetLayout[
