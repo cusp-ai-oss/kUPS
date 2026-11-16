@@ -67,6 +67,8 @@ from kups.potential.mliap.direct import (
 
 __all__ = [
     "AtomGraphInput",
+    "HasSpinMultiplicity",
+    "HasTotalCharge",
     "IsTorchMliapParticles",
     "TorchMliap",
     "TorchMliapForward",
@@ -163,8 +165,8 @@ class AtomGraphInput(TypedDict):
     edge_index: Array  # (2, E)
     cell_offsets: Array  # (E, 3) integer multiples of cell vectors
     batch: Array  # (N,)
-    charge: Array  # (B,)
-    spin: Array  # (B,)
+    charge: Array  # (B,) total charge per system [e]
+    spin: Array  # (B,) spin multiplicity 2S + 1 per system
 
 
 class TorchMliapForward(Protocol):
@@ -190,6 +192,30 @@ class IsTorchMliapParticles(NeighborListPoints, HasAtomicNumbers, Protocol):
     ...
 
 
+class HasTotalCharge(Protocol):
+    """Optional system protocol: total charge of each system [e].
+
+    Systems that provide ``total_charge`` override
+    [TorchMliap.charge][kups.potential.mliap.torch.interface.TorchMliap] per
+    system.
+    """
+
+    @property
+    def total_charge(self) -> Array: ...
+
+
+class HasSpinMultiplicity(Protocol):
+    """Optional system protocol: spin multiplicity ``2S + 1`` of each system.
+
+    Systems that provide ``spin_multiplicity`` override
+    [TorchMliap.spin][kups.potential.mliap.torch.interface.TorchMliap] per
+    system.
+    """
+
+    @property
+    def spin_multiplicity(self) -> Array: ...
+
+
 @dataclass
 class TorchMliap:
     """Container for a torch MLFF wired into JAX.
@@ -198,17 +224,27 @@ class TorchMliap:
         cutoff: Per-system cutoff radius [Å].
         wrapper: ``TorchModuleWrapper`` over the MLFF module.
         compute_cell_gradients: Whether the module returns ``"cell_gradients"``.
+        charge: Total charge [e] fed to the module for every system that does
+            not carry its own ``total_charge`` (see ``HasTotalCharge``).
+        spin: Spin multiplicity ``2S + 1`` fed to the module for every system
+            that does not carry its own ``spin_multiplicity`` (see
+            ``HasSpinMultiplicity``). Models that ignore spin (MACE, the
+            periodic UMA heads) accept the default ``0``.
     """
 
     cutoff: Table[SystemId, Array]
     wrapper: TorchModuleWrapper = field(static=True)
     compute_cell_gradients: bool = field(static=True, default=False)
+    charge: float = field(static=True, default=0.0)
+    spin: float = field(static=True, default=0.0)
 
     @staticmethod
     def from_module(
         module: torch.nn.Module,
         cutoff: float,
         compute_cell_gradients: bool = False,
+        charge: float = 0.0,
+        spin: float = 0.0,
     ) -> "TorchMliap":
         """Wrap a torch.nn.Module that returns energy and gradients.
 
@@ -217,6 +253,8 @@ class TorchMliap:
             cutoff: Interaction cutoff radius [Å].
             compute_cell_gradients: Whether the module returns
                 ``"cell_gradients"`` for stress computation.
+            charge: Default total charge per system [e].
+            spin: Default spin multiplicity ``2S + 1`` per system.
 
         Returns:
             Configured ``TorchMliap`` ready for use with the kUPS interface.
@@ -226,6 +264,8 @@ class TorchMliap:
             cutoff=Table((SystemId(0),), jnp.array([cutoff], float)),
             wrapper=wrapper,
             compute_cell_gradients=compute_cell_gradients,
+            charge=float(charge),
+            spin=float(spin),
         )
 
     def call(self, input: AtomGraphInput) -> dict[str, Array]:
@@ -239,7 +279,16 @@ type TorchMliapInput[
 ] = GraphPotentialInput[TorchMliap, P, S, Literal[2]]
 
 
-def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
+def _per_system(value: Array | None, default: float, n_sys: int, dtype: Any) -> Array:
+    """Broadcast an optional per-system field, falling back to ``default``."""
+    if value is None:
+        return jnp.full((n_sys,), default, dtype=dtype)
+    return jnp.broadcast_to(jnp.asarray(value, dtype=dtype), (n_sys,))
+
+
+def _prepare_torch_inputs(
+    graph: Any, charge: float = 0.0, spin: float = 0.0
+) -> AtomGraphInput:
     """Convert a sorted kUPS graph to ``AtomGraphInput``.
 
     Unlike the JAX-exported [tojax][kups.potential.mliap.tojax] path — which
@@ -249,8 +298,16 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
     (notably UMA's ``merge_mole`` mode) reject any padding-introduced phantom
     system because it changes the per-batch composition.
 
+    Per-system ``charge`` and ``spin`` come from the systems' own
+    ``total_charge`` / ``spin_multiplicity`` fields when present (see
+    ``HasTotalCharge`` / ``HasSpinMultiplicity``), and from the given defaults
+    otherwise.
+
     Args:
         graph: ``HyperGraph`` already sorted by system.
+        charge: Default total charge [e] for systems without ``total_charge``.
+        spin: Default spin multiplicity for systems without
+            ``spin_multiplicity``.
 
     Returns:
         Prepared inputs in the universal schema (no padding).
@@ -264,6 +321,8 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
         jnp.asarray(graph.systems.data.cell.periodic, dtype=bool), (n_sys, 3)
     )
     edge_indices = graph.edges.indices.indices_in(graph.particles.keys)
+    systems = graph.systems.data
+    float_dtype = positions.dtype
 
     return AtomGraphInput(
         pos=positions,
@@ -273,8 +332,12 @@ def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
         edge_index=edge_indices.T,
         cell_offsets=graph.edges.shifts.squeeze(1),
         batch=batch,
-        charge=jnp.zeros(n_sys),
-        spin=jnp.zeros(n_sys),
+        charge=_per_system(
+            getattr(systems, "total_charge", None), charge, n_sys, float_dtype
+        ),
+        spin=_per_system(
+            getattr(systems, "spin_multiplicity", None), spin, n_sys, float_dtype
+        ),
     )
 
 
@@ -322,7 +385,9 @@ def torch_mliap_model_fn[
         .set(jnp.arange(n, dtype=sort_order.dtype))
     )
 
-    input_dict = _prepare_torch_inputs(graph)
+    input_dict = _prepare_torch_inputs(
+        graph, charge=inp.parameters.charge, spin=inp.parameters.spin
+    )
     result = inp.parameters.call(input_dict)
 
     # Torch backends may run at a different (typically lower) precision than

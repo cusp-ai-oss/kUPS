@@ -24,6 +24,8 @@ Requires the ``torch_dev`` dependency group: ``uv sync --group torch_dev``.
 
 from kups.potential.mliap.torch.interface import (
     AtomGraphInput,
+    HasSpinMultiplicity,
+    HasTotalCharge,
     IsTorchMliapParticles,
     TorchMliap,
     TorchMliapForward,
@@ -36,11 +38,14 @@ from kups.potential.mliap.torch.uma import (
     UMAInferenceSettings,
     UMAModule,
     UMATaskName,
+    default_uma_spin,
     load_uma,
 )
 
 __all__ = [
     "AtomGraphInput",
+    "HasSpinMultiplicity",
+    "HasTotalCharge",
     "IsTorchMliapParticles",
     "MACEModule",
     "TorchMliap",
@@ -48,6 +53,7 @@ __all__ = [
     "UMAInferenceSettings",
     "UMAModule",
     "UMATaskName",
+    "default_uma_spin",
     "lattice_gradient_from_virial",
     "load_mace",
     "load_uma",

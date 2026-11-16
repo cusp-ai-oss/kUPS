@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -207,6 +208,136 @@ class TestUMAModule:
         result = module(_atom_graph_input())
         assert not result["energy"].requires_grad
         assert not result["position_gradients"].requires_grad
+
+
+class TestUMAChargeSpin:
+    """Charge / spin conditioning for UMA's omol head (#236)."""
+
+    def test_default_spin_is_singlet_for_omol_only(self):
+        from kups.potential.mliap.torch import default_uma_spin
+
+        assert default_uma_spin("omol") == 1
+        for task in ("omat", "oc20", "odac", "omc"):
+            assert default_uma_spin(task) == 0
+
+    def test_forward_passes_charge_and_spin_to_atomic_data(self, stub_fairchem):
+        from kups.potential.mliap.torch import UMAModule
+
+        pu = _FakePredictUnit()
+        module = UMAModule(pu, task_name="omol")
+        inp = _atom_graph_input()
+        inp["charge"] = torch.tensor([-1.0, 0.0])
+        inp["spin"] = torch.tensor([2.0, 1.0])
+        module(inp)
+
+        data = pu.last_data
+        assert data is not None
+        assert data["charge"].tolist() == [-1.0, 0.0]
+        assert data["spin"].tolist() == [2.0, 1.0]
+
+    @pytest.fixture
+    def stub_load_predict_unit(self, monkeypatch, stub_fairchem):
+        """Stub fairchem's loader so ``load_uma`` runs end to end on CPU."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class _Settings:
+            external_graph_gen: bool = False
+            base_precision_dtype: Any = torch.float32
+            tf32: bool = False
+            activation_checkpointing: bool = False
+            merge_mole: bool = False
+            compile: bool = False
+            internal_graph_gen_version: int = 2
+            execution_mode: str = "general"
+
+        mlip_unit = ModuleType("fairchem.core.units.mlip_unit")
+        mlip_unit.load_predict_unit = (  # pyright: ignore[reportAttributeAccessIssue]
+            lambda path, device, inference_settings: _FakePredictUnit()
+        )
+        api = ModuleType("fairchem.core.units.mlip_unit.api")
+        inference = ModuleType("fairchem.core.units.mlip_unit.api.inference")
+        inference.InferenceSettings = _Settings  # pyright: ignore[reportAttributeAccessIssue]
+        inference.guess_inference_settings = (  # pyright: ignore[reportAttributeAccessIssue]
+            lambda name: _Settings()
+        )
+        monkeypatch.setitem(
+            sys.modules, "fairchem.core.units", ModuleType("fairchem.core.units")
+        )
+        monkeypatch.setitem(sys.modules, "fairchem.core.units.mlip_unit", mlip_unit)
+        monkeypatch.setitem(sys.modules, "fairchem.core.units.mlip_unit.api", api)
+        monkeypatch.setitem(
+            sys.modules, "fairchem.core.units.mlip_unit.api.inference", inference
+        )
+
+    @pytest.mark.parametrize(
+        ("task", "expected_spin"),
+        [("omol", 1.0), ("omat", 0.0), ("odac", 0.0)],
+    )
+    def test_load_uma_uses_fairchem_default_spin(
+        self, tmp_path, stub_load_predict_unit, task, expected_spin
+    ):
+        from kups.potential.mliap.torch import load_uma
+
+        path = tmp_path / "uma.pt"
+        path.touch()
+        model = load_uma(path, device="cpu", task_name=task)
+        assert model.charge == 0.0
+        assert model.spin == expected_spin
+
+    def test_load_uma_explicit_charge_and_spin(self, tmp_path, stub_load_predict_unit):
+        from kups.potential.mliap.torch import load_uma
+
+        path = tmp_path / "uma.pt"
+        path.touch()
+        model = load_uma(path, device="cpu", task_name="omol", charge=1, spin=2)
+        assert model.charge == 1.0
+        assert model.spin == 2.0
+
+    @pytest.mark.parametrize(
+        ("charge", "spin"), [(101, None), (-101, None), (0, -1), (0, 101)]
+    )
+    def test_load_uma_rejects_out_of_range_values(self, charge, spin):
+        from kups.potential.mliap.torch import load_uma
+
+        with pytest.raises(ValueError, match="within"):
+            load_uma(
+                "/nonexistent/uma.pt",
+                device="cpu",
+                task_name="omol",
+                charge=charge,
+                spin=spin,
+            )
+
+    def test_uma_config_forwards_charge_and_spin(self, monkeypatch):
+        import kups.application.potential.mliap.torch as app_torch
+        import kups.potential.mliap.torch as mliap_torch
+        from kups.application.simulations.potentials import UmaConfig
+
+        seen: dict[str, Any] = {}
+
+        def fake_load_uma(path, **kwargs):
+            seen.update(kwargs)
+            return type("_M", (), {"cutoff": 6.0})()
+
+        monkeypatch.setattr(mliap_torch, "load_uma", fake_load_uma)
+        monkeypatch.setattr(
+            app_torch, "make_torch_mliap_from_state", lambda *a, **k: "potential"
+        )
+        monkeypatch.setattr(
+            "kups.application.simulations.potentials.get_model_path", lambda p: p
+        )
+
+        cfg = UmaConfig.model_validate(
+            {"model_path": "uma.pt", "task_name": "omol", "charge": -1, "spin": 2}
+        )
+        cfg.build(state_lens=Any, gradient=Any)  # pyright: ignore[reportArgumentType]
+        assert seen["charge"] == -1
+        assert seen["spin"] == 2
+
+        default = UmaConfig.model_validate({"model_path": "uma.pt"})
+        assert default.charge == 0
+        assert default.spin is None
 
 
 class TestLoadUMA:

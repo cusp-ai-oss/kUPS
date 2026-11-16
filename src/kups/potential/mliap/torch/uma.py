@@ -41,7 +41,13 @@ from kups.potential.mliap.torch.interface import (
     lattice_gradient_from_virial,
 )
 
-__all__ = ["UMAInferenceSettings", "UMAModule", "UMATaskName", "load_uma"]
+__all__ = [
+    "UMAInferenceSettings",
+    "UMAModule",
+    "UMATaskName",
+    "default_uma_spin",
+    "load_uma",
+]
 
 
 type UMATaskName = Literal["omat", "omol", "oc20", "odac", "omc"]
@@ -252,6 +258,20 @@ class UMAModule(torch.nn.Module):
         return result
 
 
+def default_uma_spin(task_name: UMATaskName | str) -> int:
+    """Spin multiplicity fairchem assumes when a structure does not set one.
+
+    The ``"omol"`` head conditions on charge and spin multiplicity ``2S + 1``,
+    so a neutral closed-shell molecule must be evaluated with ``spin=1``;
+    ``spin=0`` is UMA's null spin token, which is out of domain for omol and
+    gives wrong energies and forces. The other heads ignore both inputs and
+    keep ``0``. Mirrors the defaults that
+    fairchem's ``FAIRChemCalculator`` applies
+    (``fairchem.core.units.mlip_unit.api.inference.validate_uma_atoms_data``).
+    """
+    return 1 if str(task_name) == "omol" else 0
+
+
 def load_uma(
     model_path: str | Path,
     device: Literal["cpu", "cuda"] = "cuda",
@@ -259,6 +279,8 @@ def load_uma(
     compute_cell_gradients: bool = False,
     cutoff: float = 6.0,
     inference_settings: UMAInferenceSettings = "default",
+    charge: int = 0,
+    spin: int | None = None,
 ) -> TorchMliap:
     """Load a Meta FAIR Chemistry UMA checkpoint into a ``TorchMliap``.
 
@@ -274,13 +296,28 @@ def load_uma(
         inference_settings: ``"default"`` or ``"turbo"`` (resolved by
             fairchem's ``guess_inference_settings``), or ``"turbo_f64"`` for
             a compiled, MOLE-merged float64 preset.
+        charge: Total charge [e] of every system. Only the ``"omol"`` head
+            uses it; per-system values on the systems table
+            (``total_charge``) take precedence.
+        spin: Spin multiplicity ``2S + 1`` of every system. Only the
+            ``"omol"`` head uses it; per-system values on the systems table
+            (``spin_multiplicity``) take precedence. ``None`` picks
+            fairchem's defaults: ``1`` (singlet) for ``"omol"`` and ``0``
+            for the other heads.
 
     Returns:
         ``TorchMliap`` ready to be wired into the kUPS interface.
 
     Raises:
         ImportError: If ``fairchem-core>=2.0`` is not installed.
+        ValueError: If ``charge`` is outside ``[-100, 100]`` or ``spin``
+            outside ``[0, 100]`` (fairchem's accepted ranges).
     """
+    spin = default_uma_spin(task_name) if spin is None else spin
+    if not -100 <= charge <= 100:
+        raise ValueError(f"UMA charge must be within [-100, 100], got {charge}.")
+    if not 0 <= spin <= 100:
+        raise ValueError(f"UMA spin must be within [0, 100], got {spin}.")
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(
             "Device 'cuda' requested but CUDA is not available. "
@@ -342,5 +379,9 @@ def load_uma(
         compute_cell_gradients=compute_cell_gradients,
     )
     return TorchMliap.from_module(
-        module, cutoff=cutoff, compute_cell_gradients=compute_cell_gradients
+        module,
+        cutoff=cutoff,
+        compute_cell_gradients=compute_cell_gradients,
+        charge=charge,
+        spin=spin,
     )
