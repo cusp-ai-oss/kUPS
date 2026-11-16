@@ -1,34 +1,40 @@
 {
-  "_comment": "Anthropic model configuration for GitHub Actions. Update when new models are released.",
+  "_comment": "Claude models for .github/scripts (via claude.js) and the review workflow. Current models think by default, so max_tokens leaves room for thinking.",
   "_docs": "https://docs.anthropic.com/en/docs/about-claude/models",
-  "_updated": "2025-12",
+  "_updated": "2026-11",
 
   "issue_labeling": {
-    "model": "claude-haiku-4-5",
-    "max_tokens": 256,
-    "reason": "Fast classification task, Haiku 4.5 matches Sonnet 4 on structured output"
+    "model": "claude-haiku-5-5",
+    "effort": "low",
+    "max_tokens": 2048,
+    "reason": "Classification into a fixed label set"
   },
 
-  "milestone_sync": {
-    "model": "claude-haiku-4-5",
+  "pr_labeling": {
+    "model": "claude-haiku-5-5",
+    "effort": "low",
     "max_tokens": 2048,
-    "reason": "Semantic matching task, Haiku 4.5 sufficient for JSON transformation"
+    "reason": "Classification into a fixed label set"
+  },
+
+  "pr_description": {
+    "model": "claude-sonnet-5-5",
+    "effort": "low",
+    "max_tokens": 4096,
+    "fallbacks": "default",
+    "reason": "One or two sentences that follow the writing rules"
   },
 
   "weekly_summary": {
-    "model": "claude-sonnet-4-5",
-    "max_tokens": 1500,
-    "reason": "Needs synthesis and writing quality, Sonnet 4.5 best balance"
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "max_tokens": 8192,
+    "fallbacks": "default",
+    "reason": "Synthesis across a week of PRs and issues"
   },
 
   "code_review": {
     "model": "claude-opus-5-5",
     "reason": "Full PR review with repo access; needs the strongest reasoning"
-  },
-
-  "pr_review": {
-    "model": "claude-haiku-4-5",
-    "max_tokens": 512,
-    "reason": "Structured analysis task, Haiku 4.5 sufficient for suggestions"
   }
 }
