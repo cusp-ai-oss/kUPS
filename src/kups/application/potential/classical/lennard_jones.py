@@ -23,6 +23,11 @@ from jax import Array
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
 from kups.core.lens import Lens, const_lens, identity_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
@@ -55,11 +60,6 @@ from kups.potential.classical.lennard_jones import (
     make_global_lennard_jones_tail_correction_potential,
     make_global_lennard_jones_tail_correction_pressure,
     make_lennard_jones_potential,
-)
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import GRAPH_GEOMETRY, IsParticleProbe
 from kups.potential.common.rigid_body_composition import RigidBodyComposition

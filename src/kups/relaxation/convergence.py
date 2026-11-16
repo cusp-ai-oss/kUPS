@@ -26,14 +26,14 @@ from jax import Array
 from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.data.table import Table
-from kups.core.typing import SystemId
-from kups.core.units import catalog as u
-from kups.core.utils.segmented_tree import tree_segment_max
-from kups.potential.common.geometry import (
+from kups.core.geometry import (
     PositionsAndCell,
     PositionsAndCellIndex,
     PositionsAndCellTree,
 )
+from kups.core.typing import SystemId
+from kups.core.units import catalog as u
+from kups.core.utils.segmented_tree import tree_segment_max
 
 
 def _cell_leaf_norms(leaf: Array) -> Array:

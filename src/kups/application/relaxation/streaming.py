@@ -34,6 +34,11 @@ from kups.application.utils.particles import Particles, default_exclusion
 from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.data import Buffered, Index, Table
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    PositionsAndCellIndex,
+)
 from kups.core.lens import LambdaLens, Lens, bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.patch import IndexLensPatch, Patch
@@ -47,11 +52,6 @@ from kups.core.stream import slot_owners, slot_rows_lens, slot_system_index
 from kups.core.typing import Label, ParticleId, SystemId
 from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, tree_concat, tree_map
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    PositionsAndCellIndex,
-)
 from kups.relaxation.convergence import converged_per_system
 from kups.relaxation.optimizer import Resettable
 

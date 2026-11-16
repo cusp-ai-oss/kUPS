@@ -41,6 +41,11 @@ from jax import Array
 from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    PositionsAndCellTree,
+)
 from kups.core.lens import Lens, View, bind
 from kups.core.neighborlist import (
     NeighborList,
@@ -59,11 +64,6 @@ from kups.core.utils.functools import constant
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.torch import TorchModuleWrapper
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    PositionsAndCellTree,
-)
 from kups.potential.common.graph import (
     GRAPH_GEOMETRY,
     GraphPotentialInput,

@@ -19,6 +19,11 @@ from typing import Any, Literal, Protocol, overload
 from kups.core import units
 from kups.core.cell import Vacuum
 from kups.core.data import Table
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
@@ -38,11 +43,6 @@ from kups.core.typing import HasCell, IsState, SystemId
 from kups.potential.classical.coulomb import (
     IsCoulombGraphParticles,
     make_coulomb_vacuum_potential,
-)
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 

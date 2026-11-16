@@ -37,6 +37,7 @@ from jax import Array
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Table, WithIndices
+from kups.core.geometry import Geometry, PositionsAndSystemIndex
 from kups.core.lens import Lens, View, bind, lens
 from kups.core.neighborlist import Edges, NeighborList, NeighborListPoints
 from kups.core.patch import IdPatch, Patch, Probe, WithPatch
@@ -48,7 +49,6 @@ from kups.core.typing import (
 )
 from kups.core.utils.jax import dataclass, field, jit, tree_map
 from kups.potential.common.energy import InputConstructor
-from kups.potential.common.geometry import Geometry, PositionsAndSystemIndex
 from kups.potential.common.pair import PairBatch, PairEnergy, PairTerm
 
 Params = TypeVar("Params", covariant=True)

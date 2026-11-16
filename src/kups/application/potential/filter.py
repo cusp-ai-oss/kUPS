@@ -8,20 +8,20 @@ Each is a ``Lens[Geometry, PositionsAndCell]`` selecting the optimizer DOFs from
 the shared geometric view; compose a carrier adapter (e.g. ``GRAPH_GEOMETRY``)
 with a filter via ``NestedLens`` to obtain a potential ``gradient_lens``.
 
-The geometric-view types live in [kups.potential.common.geometry][].
+The geometric-view types live in [kups.core.geometry][].
 """
 
 import jax
 import jax.numpy as jnp
 
 from kups.core import units
-from kups.core.lens import LambdaLens, Lens, lens
-from kups.potential.common.geometry import (
+from kups.core.geometry import (
     Geometry,
     PositionsAndCell,
     PositionsAndCellTree,
     PositionsAndSystemIndex,
 )
+from kups.core.lens import LambdaLens, Lens, lens
 
 POSITIONS_AND_CELL: Lens[Geometry, PositionsAndCell[units.Length]] = lens(
     lambda g: PositionsAndCellTree(

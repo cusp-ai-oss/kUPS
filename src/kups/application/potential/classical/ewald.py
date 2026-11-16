@@ -20,6 +20,11 @@ from typing import Any, Literal, Protocol, overload
 
 from kups.core import units
 from kups.core.cell import Periodic3D
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
@@ -42,11 +47,6 @@ from kups.potential.classical.ewald import (
     IsChargedTemplate,
     IsEwaldPointData,
     make_ewald_potential,
-)
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import POINTCLOUD_GEOMETRY, IsParticleProbe
 from kups.potential.common.rigid_body_composition import RigidBodyComposition

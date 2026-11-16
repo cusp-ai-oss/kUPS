@@ -22,6 +22,11 @@ from typing import Any, Literal, Protocol, overload
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    position_and_cell_idx_view,
+)
 from kups.core.lens import Lens, const_lens
 from kups.core.patch import Patch, Probe
 from kups.core.potential import (
@@ -37,11 +42,6 @@ from kups.potential.classical.cosine_angle import (
     CosineAngleParameters,
     IsBondedParticles,
     make_cosine_angle_potential,
-)
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    position_and_cell_idx_view,
 )
 from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 

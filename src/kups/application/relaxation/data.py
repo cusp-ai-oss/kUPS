@@ -29,16 +29,16 @@ from kups.core.cell import (
 )
 from kups.core.data import Table
 from kups.core.data.index import Index
+from kups.core.geometry import (
+    PositionsAndCell,
+    PositionsAndCellIndex,
+    PositionsAndCellTree,
+)
 from kups.core.lens import bind
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, IsState, ParticleId, SystemId
 from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
-from kups.potential.common.geometry import (
-    PositionsAndCell,
-    PositionsAndCellIndex,
-    PositionsAndCellTree,
-)
 from kups.relaxation.config import TransformationConfig
 
 

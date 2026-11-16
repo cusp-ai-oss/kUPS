@@ -32,13 +32,13 @@ from kups.application.utils.data import Scalar
 from kups.application.utils.path import get_model_path
 from kups.core import units
 from kups.core.data import Table
+from kups.core.geometry import Geometry, PositionsAndCell
 from kups.core.lens import Lens
 from kups.core.neighborlist import AdaptiveNeighborList, NeighborListFactory
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import SystemId
 from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
-from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.tojax import TojaxedMliap
 
 if TYPE_CHECKING:

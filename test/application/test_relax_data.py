@@ -19,10 +19,10 @@ from kups.application.relaxation.simulation import IndexPrefixFn
 from kups.application.utils.particles import particles_from_ase
 from kups.core.cell import DeformedFrame, MatrixLogFrame
 from kups.core.data import Index, Table
+from kups.core.geometry import PositionsAndCellIndex
 from kups.core.lens import bind
 from kups.core.typing import ParticleId, SystemId
 from kups.core.units import catalog as u
-from kups.potential.common.geometry import PositionsAndCellIndex
 
 
 @pytest.mark.parametrize("batched", [False, True])

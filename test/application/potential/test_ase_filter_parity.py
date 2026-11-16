@@ -35,6 +35,12 @@ from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_AND_CELL
 from kups.application.relaxation.data import RelaxState, relax_state_from_ase
 from kups.core import units
 from kups.core.cell import DeformedFrame, LogTriclinicFrame, TriclinicFrame
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCellIndex,
+    PositionsAndCellTree,
+    PositionsAndSystemIndex,
+)
 from kups.core.lens import NestedLens, SimpleLens, identity_lens, lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.units import catalog as u
@@ -42,12 +48,6 @@ from kups.core.units import magnitudes_of, testing
 from kups.core.utils.math import triangular_3x3_from_tril
 from kups.observables.stress import stress_via_virial_theorem
 from kups.potential.classical.lennard_jones import LennardJonesParameters
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCellIndex,
-    PositionsAndCellTree,
-    PositionsAndSystemIndex,
-)
 from kups.relaxation.convergence import fmax_per_system
 from kups.relaxation.optimizer import chain
 from kups.relaxation.propagator import RelaxationPropagator
