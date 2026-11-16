@@ -21,6 +21,11 @@
     "reason": "Needs synthesis and writing quality, Sonnet 4.5 best balance"
   },
 
+  "code_review": {
+    "model": "claude-opus-5-5",
+    "reason": "Full PR review with repo access; needs the strongest reasoning"
+  },
+
   "pr_review": {
     "model": "claude-haiku-4-5",
     "max_tokens": 512,
