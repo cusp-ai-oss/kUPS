@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal, cast
 
-import jax
-import jax.core
 import jax.numpy as jnp
 from jax import Array
 
@@ -32,7 +30,7 @@ from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
 from kups.core.result import Result, as_result_function
 from kups.core.typing import ExclusionId, HasCell, InclusionId, SystemId
 from kups.core.utils.functools import constant
-from kups.core.utils.jax import dataclass, field, no_jax_tracing
+from kups.core.utils.jax import dataclass, field, is_traced, no_jax_tracing
 from kups.potential.classical.ewald import (
     EwaldLongRangeInput,
     EwaldParameters,
@@ -103,8 +101,7 @@ def evaluate_potential_and_fix[State, Gradients, Hessians, P: Patch[Any]](
         ValueError: If called inside a JAX-traced context.
         RuntimeError: If the potential still fails after ``max_tries`` attempts.
     """
-    is_traced = any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(state))
-    if is_traced:
+    if is_traced(state):
         raise ValueError("potential_and_fix cannot be jax transformed.")
 
     for _ in range(max_tries):

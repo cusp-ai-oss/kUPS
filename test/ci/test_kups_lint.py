@@ -120,3 +120,9 @@ def test_suppression_names_pyrefly_kind(comment: str, expected: list[str]):
 )
 def test_banner_comment(comment: str, expected: list[str]):
     assert codes(comment + "\n") == expected
+
+
+def test_tracer_isinstance():
+    assert codes("isinstance(x, jax.core.Tracer)\n") == ["KUP010"]
+    assert codes("isinstance(x, jax.core.Tracer)\n", "src/kups/core/utils/jax.py") == []
+    assert codes("isinstance(x, Array)\n") == []

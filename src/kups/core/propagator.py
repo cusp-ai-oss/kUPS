@@ -160,8 +160,7 @@ def propagate_and_fix[State](
         ValueError: If called inside a JAX transform.
         RuntimeError: If assertions still fail after ``max_tries`` attempts.
     """
-    is_traced = any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(state))
-    if is_traced:
+    if is_traced(state):
         raise ValueError("propagate_and_fix cannot be jax transformed.")
 
     for _ in range(max_tries):

@@ -32,7 +32,7 @@ from jax import Array
 
 from kups.core.assertion import Fix, runtime_assert
 from kups.core.lens import Lens, bind
-from kups.core.utils.jax import dataclass, field, tree_map
+from kups.core.utils.jax import dataclass, field, is_traced, tree_map
 from kups.core.utils.math import next_higher_power
 
 
@@ -226,7 +226,7 @@ class LensCapacity[State, Value]:
             fix_fn=LensCapacityFix(self.size_lens),
             fix_args=new_capacity,
         )
-        if isinstance(new_capacity, jax.core.Tracer):
+        if is_traced(new_capacity):
             return self
         new_size = jax.tree.unflatten(
             tree_def, max_fn(new_capacity).astype(int).tolist()
