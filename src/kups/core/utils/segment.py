@@ -225,23 +225,106 @@ segment_take_p = Primitive("kups_segment_take")
 
 @segment_sum_p.def_abstract_eval
 def _segment_sum_abstract_eval(
-    data: ShapedArray, segment_ids: ShapedArray, *, num_segments: int
+    data: ShapedArray,
+    segment_ids: ShapedArray,
+    *,
+    num_segments: int,
+    copies: int | None,
 ) -> ShapedArray:
     """Bins of `data`'s dtype; the wide accumulator never reaches an aval."""
-    del segment_ids
+    del segment_ids, copies
     return ShapedArray((num_segments, *data.shape[1:]), data.dtype)
 
 
 @segment_take_p.def_abstract_eval
 def _segment_take_abstract_eval(
-    data: ShapedArray, segment_ids: ShapedArray
+    data: ShapedArray, segment_ids: ShapedArray, *, copies: int | None
 ) -> ShapedArray:
-    """One gathered row per id."""
+    """One gathered row per id; `copies` only reaches the reverse pass."""
+    del copies
     return ShapedArray((*segment_ids.shape, *data.shape[1:]), data.dtype)
 
 
 segment_sum_p.def_impl(partial(xla.apply_primitive, segment_sum_p))
 segment_take_p.def_impl(partial(xla.apply_primitive, segment_take_p))
+
+
+_MIN_COPIES = 8
+
+
+def _copies(num_updates: int, num_segments: int) -> int:
+    """Copies of the bins that a scatter of `num_updates` rows adds into.
+
+    Works around XLA's GPU scatter-add, which issues one atomic add per update
+    and so serialises when many updates share a few addresses: on an L4, 2^22
+    sorted float32 updates into one bin take 7.1 ms through the plain scatter,
+    unchanged from jax 0.10 to 0.12, and 0.17 ms over copies. XLA's
+    deterministic scatter costs about the same whatever the bins: it beats the
+    plain scatter into a few sorted bins but is still over ten times slower
+    than copies there, and slower than the plain scatter for most shapes. Once
+    XLA spreads or pre-reduces those atomics itself, return one here and delete
+    the copies; see https://github.com/openxla/xla/issues/52464.
+
+    Update ``i`` adds into copy ``i % copies``, so neighboring updates, which a
+    GPU issues together, hit different addresses rather than queueing their
+    atomic adds on a few bins. Each bin of each copy still takes on average at
+    least 64 updates, so summing the copies stays cheap next to the scatter,
+    and the copies hold at most 4096 bins in all, enough to spread the atomics:
+    on an L4, 512 bins were 10% slower and 32768 no faster. Fewer than
+    `_MIN_COPIES` copies fall back to one: on an L4, two to four copies of 1024
+    or 2048 float64 bins were up to 20% slower than the plain scatter.
+
+    Args:
+        num_updates: Rows of contributions.
+        num_segments: Number of output bins.
+
+    Returns:
+        Number of copies, one when the bins are already many or the updates few.
+    """
+    bins = max(num_segments, 1)
+    copies = min(num_updates // (64 * bins), 4096 // bins)
+    return copies if copies >= _MIN_COPIES else 1
+
+
+def _check_copies(copies: int | None) -> None:
+    """Reject a `copies` that is neither ``None`` nor a positive int.
+
+    Raises:
+        ValueError: If `copies` is not ``None`` and not an int of at least one.
+    """
+    if copies is None:
+        return
+    if isinstance(copies, bool) or not isinstance(copies, int) or copies < 1:
+        raise ValueError(f"copies must be None or a positive int, got {copies!r}.")
+
+
+def _spread(segment_ids: Array, *, num_segments: int, copies: int) -> Array:
+    """Bin of each update among the copies, out-of-range ids past all of them.
+
+    Args:
+        segment_ids: Bin index per update, shape ``(num_updates,)``.
+        num_segments: Number of output bins.
+        copies: Copies of the bins.
+
+    Returns:
+        Index into ``copies * num_segments`` bins.
+    """
+    ids = _widen(segment_ids, copies * num_segments)
+    copy = (jnp.arange(len(ids), dtype=jnp.int32) % copies).astype(ids.dtype)
+    valid = (ids >= 0) & (ids < num_segments)
+    return jnp.where(valid, ids + copy * num_segments, copies * num_segments)
+
+
+def _add_body(region: Any, scalar: Any) -> None:
+    """Give a scatter's or a reduction's `region` the scalar addition.
+
+    Args:
+        region: MLIR region combining two scalars.
+        scalar: MLIR type of the scalars.
+    """
+    block = region.blocks.append(scalar, scalar)
+    with mlir.ir.InsertionPoint(block):
+        stablehlo.return_([stablehlo.add(block.arguments[0], block.arguments[1])])
 
 
 def _segment_sum_lowering(
@@ -250,19 +333,23 @@ def _segment_sum_lowering(
     segment_ids: Any,
     *,
     num_segments: int,
+    copies: int | None,
 ) -> list[Any]:
     """Scatter-add into a wider accumulator, converted back on exit.
+
+    Few bins taking many updates are spread over copies (see `_copies`), which
+    are summed in the wider accumulator before the conversion.
 
     Args:
         ctx: Lowering context carrying the input and output avals.
         data: MLIR value of the contributions.
         segment_ids: MLIR value of the non-negative ids.
         num_segments: Number of output bins, fixed by the output aval.
+        copies: Copies of the bins, or ``None`` to choose them with `_copies`.
 
     Returns:
         Single-element list holding the binned MLIR value in the input's dtype.
     """
-    del num_segments
     data_aval = cast(ShapedArray, ctx.avals_in[0])
     ids_aval = cast(ShapedArray, ctx.avals_in[1])
     out_aval = cast(ShapedArray, ctx.avals_out[0])
@@ -270,14 +357,22 @@ def _segment_sum_lowering(
     wide_dtype = _accumulator_dtype(narrow_dtype)
     widen = wide_dtype != narrow_dtype
     wide = mlir.dtype_to_ir_type(wide_dtype)
+    if copies is None:
+        copies = _copies(data_aval.shape[0], num_segments)
+    if copies > 1:
+        spread = partial(_spread, num_segments=num_segments, copies=copies)
+        (segment_ids,) = mlir.lower_fun(spread, multiple_results=False)(
+            ctx.replace(avals_in=[ids_aval]), segment_ids
+        )
+    bins = (copies * num_segments, *out_aval.shape[1:])
     operand = stablehlo.broadcast_in_dim(
-        _tensor(out_aval.shape, wide),
+        _tensor(bins, wide),
         mlir.ir_constant(np.zeros((), wide_dtype)),
         mlir.dense_int_array([]),
     )
     updates = stablehlo.convert(_tensor(data_aval.shape, wide), data) if widen else data
     op = stablehlo.ScatterOp(
-        [_tensor(out_aval.shape, wide)],
+        [_tensor(bins, wide)],
         [operand],
         segment_ids,
         [updates],
@@ -293,21 +388,40 @@ def _segment_sum_lowering(
         unique_indices=mlir.ir.BoolAttr.get(False),
     )
     scalar = _tensor((), wide)
-    block = op.update_computation.blocks.append(scalar, scalar)
-    with mlir.ir.InsertionPoint(block):
-        stablehlo.return_([stablehlo.add(block.arguments[0], block.arguments[1])])
+    _add_body(op.update_computation, scalar)
+    result = op.results[0]
+    if copies > 1:
+        reduce = stablehlo.ReduceOp(
+            [_tensor(out_aval.shape, wide)],
+            [stablehlo.reshape(_tensor((copies, *out_aval.shape), wide), result)],
+            [mlir.ir_constant(np.zeros((), wide_dtype))],
+            mlir.dense_int_array([0]),
+        )
+        _add_body(reduce.body, scalar)
+        result = reduce.results[0]
     if not widen:
-        return [op.results[0]]
+        return [result]
     narrow = mlir.dtype_to_ir_type(narrow_dtype)
-    return [stablehlo.convert(_tensor(out_aval.shape, narrow), op.results[0])]
+    return [stablehlo.convert(_tensor(out_aval.shape, narrow), result)]
 
 
 mlir.register_lowering(segment_sum_p, _segment_sum_lowering)
-mlir.register_lowering(segment_take_p, mlir.lower_fun(_gather, multiple_results=False))
+mlir.register_lowering(
+    segment_take_p,
+    mlir.lower_fun(
+        lambda data, segment_ids, copies: _gather(data, segment_ids),
+        multiple_results=False,
+    ),
+)
 
 
 def _segment_sum_jvp(
-    tangent: Array, data: Array, segment_ids: Array, *, num_segments: int
+    tangent: Array,
+    data: Array,
+    segment_ids: Array,
+    *,
+    num_segments: int,
+    copies: int | None,
 ) -> Array:
     """Rebind on the contribution tangent, the ids carrying none.
 
@@ -316,12 +430,15 @@ def _segment_sum_jvp(
         data: Contributions, needed only to place the ids.
         segment_ids: Bin index per contribution.
         num_segments: Number of output bins.
+        copies: Copies of the bins, ``None`` to choose them by size.
 
     Returns:
         Tangent of the bin sums.
     """
     del data
-    return segment_sum_p.bind(tangent, segment_ids, num_segments=num_segments)
+    return segment_sum_p.bind(
+        tangent, segment_ids, num_segments=num_segments, copies=copies
+    )
 
 
 def _segment_sum_transpose(
@@ -330,6 +447,7 @@ def _segment_sum_transpose(
     segment_ids: Array,
     *,
     num_segments: int,
+    copies: int | None,
 ) -> list[Array | Zero | None]:
     """Gather the cotangent back to each contribution.
 
@@ -338,6 +456,7 @@ def _segment_sum_transpose(
         data: Contributions, undefined when they are the linear operand.
         segment_ids: Bin index per contribution.
         num_segments: Number of output bins, carried by `cotangent`'s shape.
+        copies: Copies of the bins, kept for the sum that transposes back.
 
     Returns:
         Cotangent per operand, ``None`` for the non-linear ids.
@@ -347,26 +466,33 @@ def _segment_sum_transpose(
         return [None, None]
     if isinstance(cotangent, ad.Zero):
         return [ad.Zero(data.aval), None]
-    return [segment_take_p.bind(cotangent, segment_ids), None]
+    return [segment_take_p.bind(cotangent, segment_ids, copies=copies), None]
 
 
-def _segment_take_jvp(tangent: Array, data: Array, segment_ids: Array) -> Array:
+def _segment_take_jvp(
+    tangent: Array, data: Array, segment_ids: Array, *, copies: int | None
+) -> Array:
     """Rebind on the row tangent, the ids carrying none.
 
     Args:
         tangent: Tangent of the table.
         data: Table, needed only to place the ids.
         segment_ids: Row index per output.
+        copies: Copies of the rows the reverse pass sums into.
 
     Returns:
         Tangent of the gathered rows.
     """
     del data
-    return segment_take_p.bind(tangent, segment_ids)
+    return segment_take_p.bind(tangent, segment_ids, copies=copies)
 
 
 def _segment_take_transpose(
-    cotangent: Array | Zero, data: Array | Undefined, segment_ids: Array
+    cotangent: Array | Zero,
+    data: Array | Undefined,
+    segment_ids: Array,
+    *,
+    copies: int | None,
 ) -> list[Array | Zero | None]:
     """Sum the cotangents landing in each row, in the wide accumulator.
 
@@ -374,6 +500,7 @@ def _segment_take_transpose(
         cotangent: Cotangent of the gathered rows.
         data: Table, undefined when it is the linear operand.
         segment_ids: Row index per output.
+        copies: Copies of the rows the sum adds into, ``None`` to choose them.
 
     Returns:
         Cotangent per operand, ``None`` for the non-linear ids.
@@ -382,8 +509,9 @@ def _segment_take_transpose(
         return [None, None]
     if isinstance(cotangent, ad.Zero):
         return [ad.Zero(data.aval), None]
+    rows = data.aval.shape[0]
     return [
-        segment_sum_p.bind(cotangent, segment_ids, num_segments=data.aval.shape[0]),
+        segment_sum_p.bind(cotangent, segment_ids, num_segments=rows, copies=copies),
         None,
     ]
 
@@ -393,6 +521,7 @@ def _segment_sum_batcher(
     dims: tuple[int | None, int | None],
     *,
     num_segments: int,
+    copies: int | None,
 ) -> tuple[Array, int]:
     """Map the sum, an unmapped segmentation becoming a further feature axis.
 
@@ -400,6 +529,7 @@ def _segment_sum_batcher(
         args: Batched contributions and ids.
         dims: Mapped axis of each argument, ``None`` where it is unmapped.
         num_segments: Number of output bins per batch row.
+        copies: Copies of the bins, ``None`` to choose them for the mapped sum.
 
     Returns:
         Tuple of the batched bin sums and their mapped axis.
@@ -409,23 +539,31 @@ def _segment_sum_batcher(
     if ids_dim is None:
         assert data_dim is not None
         data = jnp.moveaxis(data, data_dim, data.ndim - 1)
-        out = segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
+        out = segment_sum_p.bind(
+            data, segment_ids, num_segments=num_segments, copies=copies
+        )
         return out, out.ndim - 1
     flat_data, flat_ids, size, features = _flatten_batch(
         data, segment_ids, data_dim, ids_dim, num_segments
     )
-    out = segment_sum_p.bind(flat_data, flat_ids, num_segments=size * num_segments)
+    out = segment_sum_p.bind(
+        flat_data, flat_ids, num_segments=size * num_segments, copies=copies
+    )
     return out.reshape(size, num_segments, *features), 0
 
 
 def _segment_take_batcher(
-    args: tuple[Array, Array], dims: tuple[int | None, int | None]
+    args: tuple[Array, Array],
+    dims: tuple[int | None, int | None],
+    *,
+    copies: int | None,
 ) -> tuple[Array, int]:
     """Map the gather, an unmapped table needing only a flattened id axis.
 
     Args:
         args: Batched table and ids.
         dims: Mapped axis of each argument, ``None`` where it is unmapped.
+        copies: Copies of the rows the reverse pass sums into.
 
     Returns:
         Tuple of the batched gathered rows and their mapped axis.
@@ -435,18 +573,18 @@ def _segment_take_batcher(
     if ids_dim is None:
         assert data_dim is not None
         data = jnp.moveaxis(data, data_dim, data.ndim - 1)
-        out = segment_take_p.bind(data, segment_ids)
+        out = segment_take_p.bind(data, segment_ids, copies=copies)
         return out, out.ndim - 1
     if data_dim is None:
         size = segment_ids.shape[ids_dim]
         ids = batching.bdim_at_front(segment_ids, ids_dim, size)
-        out = segment_take_p.bind(data, ids.reshape(-1))
+        out = segment_take_p.bind(data, ids.reshape(-1), copies=copies)
         return out.reshape(size, ids.shape[1], *data.shape[1:]), 0
     rows = data.shape[1] if data_dim == 0 else data.shape[0]
     flat_data, flat_ids, size, features = _flatten_batch(
         data, segment_ids, data_dim, ids_dim, rows
     )
-    out = segment_take_p.bind(flat_data, flat_ids)
+    out = segment_take_p.bind(flat_data, flat_ids, copies=copies)
     return out.reshape(size, flat_ids.shape[0] // size, *features), 0
 
 
@@ -466,6 +604,7 @@ def segment_sum(
     num_segments: int,
     *,
     mode: Mode | str | None = None,
+    copies: int | None = None,
 ) -> Array:
     """Sum into bins, using a native reduction for one bin and wider scatters otherwise.
 
@@ -476,10 +615,12 @@ def segment_sum(
     and retains `data`'s dtype; float32 is not promoted to float64. Otherwise,
     the scatter accumulates one float wider than `data` and converts back once,
     f32 in f64 and f16 or bf16 in f32, so a bin taking ``k`` contributions rounds
-    once rather than ``k`` times. With multiple segments, integer data and empty
-    inputs use the plain scatter. `segment_ids` may additionally
-    cover several leading axes of `data` rather than only the first, which
-    ``jax.ops.segment_sum`` rejects.
+    once rather than ``k`` times. Few bins taking many contributions add into
+    several copies of the bins, summed before the conversion, so a GPU's atomic
+    adds do not queue on the same addresses (see `copies`). With multiple
+    segments, integer data and empty inputs use the plain scatter. `segment_ids`
+    may additionally cover several leading axes of `data` rather than only the
+    first, which ``jax.ops.segment_sum`` rejects.
 
     Linear in `data` and non-differentiable in the integral `segment_ids`, so it
     transforms under ``jit``, ``vmap`` over either argument, forward mode,
@@ -500,6 +641,18 @@ def segment_sum(
             `num_segments` into the last bin, which is far slower than dropping
             when many ids are out of range because those two bins then take every
             such update. ``"promise_in_bounds"`` and ``"one_hot"`` are rejected.
+        copies: Copies of the bins the scatter adds into, contribution ``i``
+            going to copy ``i % copies``; the copies are summed in the wide
+            accumulator, so the result still rounds once. This works around XLA's
+            GPU scatter-add, whose atomic adds serialise on shared addresses: on
+            an L4, 2^22 contributions into one bin take 7.1 ms through one copy
+            and 0.17 ms through 4096. The default ``None`` picks the most copies
+            that keep at least 64 contributions per bin of each copy and at most
+            4096 bins in all, and falls back to one copy, the plain scatter, when
+            that is fewer than eight: with more than 512 bins or fewer than 512
+            contributions per bin. Pass
+            ``1`` to always use the plain scatter. Ignored for one bin, integer
+            data and empty inputs, which do not scatter through it.
 
     Returns:
         Bin sums of shape ``(num_segments, *feature_dims)`` with `data`'s dtype,
@@ -507,8 +660,8 @@ def segment_sum(
 
     Raises:
         ValueError: If `data` is scalar, `segment_ids` is scalar, not integral, or
-            its shape is not a prefix of `data`'s, or `mode` is unknown or
-            unsupported.
+            its shape is not a prefix of `data`'s, `mode` is unknown or
+            unsupported, or `copies` is not ``None`` or a positive int.
 
     Example:
         ```python
@@ -529,6 +682,7 @@ def segment_sum(
         raise ValueError(
             f"segment_ids must be integral, got dtype {segment_ids.dtype}."
         )
+    _check_copies(copies)
     if _resolve_mode(mode) is _CLIP:
         segment_ids = _clip_ids(segment_ids, num_segments)
     if segment_ids.ndim > 1:
@@ -541,7 +695,9 @@ def segment_sum(
         )
     if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
         return jax.ops.segment_sum(data, segment_ids, num_segments, mode="drop")
-    return segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
+    return segment_sum_p.bind(
+        data, segment_ids, num_segments=num_segments, copies=copies
+    )
 
 
 @partial(jax.jit, static_argnames=("length",))
@@ -561,6 +717,7 @@ def segment_take(
     *,
     mode: Mode | str | None = None,
     fill_value: ArrayLike | None = None,
+    copies: int | None = None,
 ) -> Array:
     """Gather rows of `data` by segment id, summing the cotangents stably.
 
@@ -595,6 +752,10 @@ def segment_take(
             ``mode="clip"`` ignores the fill as ``jnp.take`` does, except that one
             already known to be nonzero at trace time is rejected rather than
             silently dropped.
+        copies: Copies of the rows the reverse pass sums the cotangents into,
+            as for [segment_sum][kups.core.utils.segment.segment_sum]; ``None``
+            picks them by the number of ids per row and ``1`` keeps the plain
+            scatter. The forward gather does not use it.
 
     Returns:
         Gathered rows of shape ``(*segment_ids.shape, *feature_dims)`` with
@@ -602,8 +763,8 @@ def segment_take(
 
     Raises:
         ValueError: If `data` or `segment_ids` is scalar, `mode` is unknown or
-            unsupported, or `fill_value` is known at trace time to be nonzero
-            under ``mode="clip"``.
+            unsupported, `fill_value` is known at trace time to be nonzero
+            under ``mode="clip"``, or `copies` is not ``None`` or a positive int.
 
     Example:
         ```python
@@ -615,6 +776,7 @@ def segment_take(
         raise ValueError(f"data must be at least 1-D, got shape {data.shape}.")
     if segment_ids.ndim == 0:
         raise ValueError("segment_ids must be at least 1-D, got shape ().")
+    _check_copies(copies)
     fill_value = 0 if fill_value is None else fill_value
     known_fill = _static_fill(fill_value)
     clipped = _resolve_mode(mode) is _CLIP
@@ -629,7 +791,7 @@ def segment_take(
     if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
         rows = _gather(data, segment_ids)
     else:
-        flat = segment_take_p.bind(data, segment_ids.reshape(-1))
+        flat = segment_take_p.bind(data, segment_ids.reshape(-1), copies=copies)
         rows = flat.reshape(*segment_ids.shape, *data.shape[1:])
     # Clamped ids leave nothing out of range, so only the default mode fills.
     if clipped or (known_fill is not None and not known_fill.any()):
