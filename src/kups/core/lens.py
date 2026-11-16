@@ -1296,7 +1296,7 @@ class _TreeLens:
     children: tuple[_UntypedLens, ...]
 
     def get(self, obj: Any) -> Any:
-        leaves = map(lambda child: child.get(obj), self.children)
+        leaves = (child.get(obj) for child in self.children)
         return jax.tree.unflatten(self.treedef, leaves)
 
     def set(self, obj: Any, value: Any) -> Any:
