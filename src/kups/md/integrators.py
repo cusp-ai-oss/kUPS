@@ -1,6 +1,12 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Molecular dynamics integrators built from composable steps.
+
+Velocity Verlet (NVE), BAOAB Langevin and CSVR (NVT), and stochastic cell
+rescaling and BAOAB Langevin barostats (NPT).
+"""
+
 from __future__ import annotations
 
 from typing import Literal, Protocol, runtime_checkable

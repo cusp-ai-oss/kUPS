@@ -145,6 +145,7 @@ extend-select = [
     "ANN401",  # explicit Any
     "B905",    # zip states strict=
     "C4",      # no needless comprehensions or dict()/map() calls
+    "D100",    # public modules have docstrings
     "D101",    # public classes have docstrings
     "D103",    # public functions have docstrings
     "D417",    # every argument documented
@@ -171,7 +172,7 @@ convention = "google"
 "src/kups/core/assertion/*" = ["ANN401"]
 "src/kups/core/effects/*" = ["ANN401"]
 "src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
-"!src/**" = ["ANN401", "B905", "C4", "D101", "D103", "D417", "RET504", "T20", "TID251", "UP"]
+"!src/**" = ["ANN401", "B905", "C4", "D100", "D101", "D103", "D417", "RET504", "T20", "TID251", "UP"]
 
 [tool.typos.default.extend-words]
 # Domain abbreviations, not misspellings.

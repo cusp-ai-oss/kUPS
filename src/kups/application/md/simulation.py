@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Molecular dynamics runs: the recovering step and the warmup and production loop."""
+
 import logging
 from typing import Any, Protocol
 

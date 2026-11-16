@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""``Table``, a primary-key column paired with a pytree of per-row data."""
+
 from __future__ import annotations
 
 import itertools

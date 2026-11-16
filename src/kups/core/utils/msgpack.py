@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Msgpack serialization of pytrees of JAX and NumPy arrays."""
+
 from typing import Any, cast
 
 import jax
