@@ -145,6 +145,7 @@ extend-select = [
     "D101",    # public classes have docstrings
     "D103",    # public functions have docstrings
     "D417",    # every argument documented
+    "T20",     # no print in library code
     "TID251",  # banned APIs, see below
 ]
 ignore = ["E741"]
@@ -162,7 +163,7 @@ convention = "google"
 "src/kups/core/assertion/*" = ["ANN401"]
 "src/kups/core/effects/*" = ["ANN401"]
 "src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
-"!src/**" = ["ANN401", "D101", "D103", "D417", "TID251"]
+"!src/**" = ["ANN401", "D101", "D103", "D417", "T20", "TID251"]
 
 [tool.pyrefly]
 infer-with-first-use = false
