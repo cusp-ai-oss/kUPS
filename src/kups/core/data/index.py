@@ -154,6 +154,7 @@ class Index[Key: SupportsSorting]:
             data: Input keys (any shape supported by ``np.asarray``).
             max_count: Optional upper bound on occurrences per key.
                 If provided, validated against the actual data.
+            label: Wraps each raw key in a typed key (e.g. ``ParticleId``).
 
         Returns:
             A new ``Index`` with deduplicated sorted keys and

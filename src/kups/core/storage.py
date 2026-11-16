@@ -387,6 +387,7 @@ def _init_group_writers[S, WC](
         config: Pytree of ``WriterGroupConfig`` leaves describing each group.
         state: Initial state, used to size each group's datasets.
         total_steps: Total steps in the run, used for the leading dimensions.
+        compile_views: Whether to jit-compile each group's view of the state.
 
     Returns:
         One ``GroupWriters`` per config leaf, in leaf order.
