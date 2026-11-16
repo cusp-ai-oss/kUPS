@@ -239,7 +239,7 @@ type TorchMliapInput[
 ] = GraphPotentialInput[TorchMliap, P, S, Literal[2]]
 
 
-def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:
+def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:  # noqa: ANN401
     """Convert a sorted kUPS graph to ``AtomGraphInput``.
 
     Unlike the JAX-exported [tojax][kups.potential.mliap.tojax] path — which

@@ -101,7 +101,7 @@ class Optimizer[Params, OptState](Protocol):
             [Params], tuple[Table[SupportsSorting, Array], Params]
         ]
         | None = None,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> tuple[Params, OptState]:
         """One optimization step.
 

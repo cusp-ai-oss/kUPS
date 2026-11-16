@@ -71,10 +71,10 @@ class Sliceable(Batched):
     via ``self[index]``.
     """
 
-    def at[S](self: S, index: Any, **kwargs: Any) -> BoundLens[S, S]:
+    def at[S](self: S, index: Any, **kwargs: Any) -> BoundLens[S, S]:  # noqa: ANN401
         """Return a bound lens focused on ``index``."""
         return bind(self).at(index, **kwargs)
 
-    def __getitem__(self, index: Any) -> Self:
+    def __getitem__(self, index: Any) -> Self:  # noqa: ANN401
         """Gather entries at ``index``."""
         return self.at(index).get()

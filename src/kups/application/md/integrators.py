@@ -167,7 +167,7 @@ def make_md_step_from_state[State](
     derivative_computation: Propagator[State],
     integrator: Integrator,
     *,
-    parameters: Any = None,
+    parameters: Any = None,  # noqa: ANN401
 ) -> Propagator[State]: ...
 
 

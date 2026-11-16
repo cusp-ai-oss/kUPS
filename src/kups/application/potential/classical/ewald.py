@@ -260,7 +260,7 @@ def make_ewald_from_state(
         else:
             cache_view = state.focus(lambda x: x.ewald_cache)
 
-    def neighborlist_view(s: Any) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_ewald_potential(
