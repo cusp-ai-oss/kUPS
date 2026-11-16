@@ -11,6 +11,7 @@ Codes:
     KUP002  Optional array-valued field on a JAX dataclass (``Array | None``).
     KUP003  Function or class docstring longer than ``MAX_DOCSTRING_LINES``.
     KUP004  Comment block longer than ``MAX_COMMENT_LINES``.
+    KUP005  Comment or docstring narrating code history.
 """
 
 import ast
@@ -26,6 +27,12 @@ MAX_DOCSTRING_LINES = 40
 MAX_COMMENT_LINES = 6
 
 ARRAY_TYPES = re.compile(r"\b(Array|ArrayLike|Table|Index)\b")
+HISTORY = re.compile(
+    r"\b(previously|no longer|used to be|backwards?[- ]compat\w*|legacy|"
+    r"was (changed|renamed|moved|removed)|old (implementation|version|behaviou?r)|"
+    r"originally|we now|now uses?)\b",
+    re.IGNORECASE,
+)
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
 
 MESSAGES = {
@@ -33,6 +40,7 @@ MESSAGES = {
     "KUP002": "optional array field; None -> Array retraces, initialise a real (possibly empty) array",
     "KUP003": "docstring has {n} lines (max {max}); cut it down",
     "KUP004": "{n}-line comment block (max {max}); shorten it or move it to the docstring",
+    "KUP005": "narrates history ({word!r}); describe the current code only",
 }
 
 
@@ -110,6 +118,10 @@ class _Visitor(ast.NodeVisitor):
     def report(self, node: ast.stmt | ast.expr, code: str, **fmt: object) -> None:
         self.findings.append(_finding(self.path, node.lineno, code, **fmt))
 
+    def visit_Module(self, node: ast.Module) -> None:
+        self._check_history(node)
+        self.generic_visit(node)
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         origin = _dataclass_origin(node, self.origins)
         for stmt in node.body if origin is not None else ():
@@ -132,6 +144,17 @@ class _Visitor(ast.NodeVisitor):
         doc = ast.get_docstring(node)
         if doc is not None and (n := len(doc.splitlines())) > MAX_DOCSTRING_LINES:
             self.report(node, "KUP003", n=n, max=MAX_DOCSTRING_LINES)
+        self._check_history(node)
+
+    def _check_history(
+        self, node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        doc = ast.get_docstring(node)
+        if doc is not None and (match := HISTORY.search(doc)):
+            line = 1 if isinstance(node, ast.Module) else node.lineno
+            self.findings.append(
+                _finding(self.path, line, "KUP005", word=match.group(0))
+            )
 
 
 def _comment_findings(path: Path, source: str) -> Iterator[Finding]:
@@ -140,6 +163,8 @@ def _comment_findings(path: Path, source: str) -> Iterator[Finding]:
         if tok.type != tokenize.COMMENT:
             continue
         line = tok.start[0]
+        if match := HISTORY.search(tok.string):
+            yield _finding(path, line, "KUP005", word=match.group(0))
         if not tok.line.lstrip().startswith("#"):
             continue
         if blocks and blocks[-1][-1] == line - 1:
