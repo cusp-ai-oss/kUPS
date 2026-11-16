@@ -601,8 +601,8 @@ class TestTypeCompatibility:
         def get_data(cs: ComplexStruct) -> NestedData:
             return cs.data
 
-        def get_values(nd: NestedData) -> jax.Array:
-            return nd.values
+        def get_values(data: NestedData) -> jax.Array:
+            return data.values
 
         data_lens = lens(get_data)
         values_lens = data_lens.focus(get_values)
