@@ -73,7 +73,7 @@ def coulomb_pair_energy(charges_i: Array, charges_j: Array, distance: Array) -> 
     return charges_i * charges_j / distance * TO_STANDARD_UNITS
 
 
-def _pairwise_coulomb_energy(
+def pairwise_coulomb_energy(
     inp: _PairwiseCoulombInput,
 ) -> WithPatch[Table[SystemId, Energy], IdPatch[Any]]:
     edg = inp.graph.particles[inp.graph.edges.indices]
@@ -102,7 +102,7 @@ def coulomb_vacuum_energy(
     Returns:
         Total electrostatic energy per system.
     """
-    return _pairwise_coulomb_energy(inp)
+    return pairwise_coulomb_energy(inp)
 
 
 def make_coulomb_vacuum_potential[
