@@ -24,7 +24,8 @@ Propagators are composable and JIT-compilable, enabling efficient simulation loo
 """
 
 import logging
-from typing import Any, Callable, Protocol, Self
+from collections.abc import Callable
+from typing import Any, Protocol, Self
 
 import jax
 import jax.core

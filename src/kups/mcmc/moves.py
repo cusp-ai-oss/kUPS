@@ -22,7 +22,8 @@ Moves generate proposals compatible with [MCMCPropagator][kups.core.propagator.M
 from __future__ import annotations
 
 import abc
-from typing import Any, Callable, Protocol, override, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, override, runtime_checkable
 
 import jax
 import jax.numpy as jnp

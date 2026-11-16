@@ -8,7 +8,7 @@ sub-types used as type-safe index labels, plus ``Has*`` protocols for structural
 duck-typing of simulation data (positions, momenta, forces, etc.).
 """
 
-from typing import Any, Generic, Protocol, TypeVar, Union, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import numpy as np
 from jax import Array
@@ -63,12 +63,12 @@ class SupportsDType(Protocol):
     def dtype(self, /) -> DType: ...
 
 
-DTypeLike = Union[
-    str,  # like 'float32', 'int32'
-    type[Any],  # like np.float32, np.int32, float, int
-    np.dtype,  # like np.dtype('float32'), np.dtype('int32')
-    SupportsDType,  # like jnp.float32, jnp.int32
-]
+DTypeLike = (
+    str  # like 'float32', 'int32'
+    | type[Any]  # like np.float32, np.int32, float, int
+    | np.dtype  # like np.dtype('float32'), np.dtype('int32')
+    | SupportsDType  # like jnp.float32, jnp.int32
+)
 
 
 @runtime_checkable
