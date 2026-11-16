@@ -16,6 +16,7 @@ Codes:
             of the importer's own package is fine).
     KUP007  Docstring attached to a type alias.
     KUP008  Type-check suppression without a pyrefly error kind.
+    KUP009  Banner or separator comment (``# -----``, ``# =====``).
 """
 
 import ast
@@ -38,6 +39,7 @@ HISTORY = re.compile(
     re.IGNORECASE,
 )
 SUPPRESSION = re.compile(r"#\s*(type:\s*ignore|pyrefly:\s*ignore(?!\s*\[))")
+BANNER = re.compile(r"([-=*#~_])\1{3,}")
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
 
 MESSAGES = {
@@ -49,6 +51,7 @@ MESSAGES = {
     "KUP006": "private `{name}` imported from `{module}`; make it public or keep it local",
     "KUP007": "type alias docstring; the alias name should say enough",
     "KUP008": "suppress with `# pyrefly: ignore[kind]`; pyrefly treats other forms as blanket ignores",
+    "KUP009": "banner comment; structure code with functions and modules, not separators",
 }
 
 
@@ -213,6 +216,8 @@ def _comment_findings(path: Path, source: str) -> Iterator[Finding]:
         line = tok.start[0]
         if SUPPRESSION.search(tok.string):
             yield _finding(path, line, "KUP008")
+        if BANNER.search(tok.string):
+            yield _finding(path, line, "KUP009")
         if match := HISTORY.search(tok.string):
             yield _finding(path, line, "KUP005", word=match.group(0))
         if not tok.line.lstrip().startswith("#"):
