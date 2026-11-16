@@ -137,7 +137,8 @@ class Resettable[Params, OptState](Optimizer[Params, OptState]):
 
 def apply_updates[Params](parameters: Params, updates: Params) -> Params:
     """Add ``updates`` to ``parameters`` leaf by leaf."""
-    return optax.apply_updates(parameters, updates)  # type: ignore
+    # pyrefly: ignore[bad-argument-type, bad-return]
+    return optax.apply_updates(parameters, updates)
 
 
 type ChainOptState = tuple[PyTree, ...]
@@ -158,7 +159,8 @@ class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
         states: list[PyTree] = []
         for optimizer in self.optimizers:
             if isinstance(optimizer, optax.GradientTransformation):
-                state = optimizer.init(parameters)  # type: ignore
+                # pyrefly: ignore[bad-argument-type]
+                state = optimizer.init(parameters)
             else:
                 state = optimizer.init(parameters, index_prefix)
             states.append(state)

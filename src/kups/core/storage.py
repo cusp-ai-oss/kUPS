@@ -374,7 +374,7 @@ class HDF5StorageWriter[State, WriterConfig]:
 
 def _init_group_writers[S, WC](
     hdf5_file: h5py.File,
-    config: WC,  # type: ignore
+    config: WC,
     state: S,
     total_steps: int,
     *,
@@ -569,12 +569,12 @@ class HDF5StorageReader[Config]:
             A reader for the focused group.
         """
         if isinstance(view_or_name, str):
-            return GroupReader[Storage](self.file[view_or_name])  # type: ignore - h5py is not very good with types
+            return GroupReader[Storage](self.file[view_or_name])
         view = view_or_name
         group_names = self.list_groups()
         try:
             if "config_pytree" in self.file:
-                raw = bytes(self.file["config_pytree"][()])  # type: ignore - h5py typing
+                raw = bytes(self.file["config_pytree"][()])
             else:
                 raw = bytes(self.file.attrs["config_pytree"])
             conf_treedef = pickle.loads(raw)
@@ -595,7 +595,7 @@ class HDF5StorageReader[Config]:
             Group names, in config-pytree leaf order.
         """
         try:
-            group_names = json.loads(self.file.attrs["group_names"])  # type: ignore - h5py is not very good with types
+            group_names = json.loads(self.file.attrs["group_names"])
             return group_names
         except Exception as e:
             raise ValueError("Failed to read group names") from e
@@ -610,13 +610,13 @@ class GroupReader[Storage]:
     @cached_property
     def paths(self) -> list[str]:
         """Dataset names for this group's array leaves, in pytree-leaf order."""
-        return json.loads(self.group.attrs["paths"])  # type: ignore - h5py is not very good with types
+        return json.loads(self.group.attrs["paths"])
 
     @cached_property
     def tree_def(self) -> PyTreeDef[Storage]:
         """Pytree structure of the stored value, for reassembling reads into Storage."""
         if "tree_def" in self.group:
-            raw = bytes(self.group["tree_def"][()])  # type: ignore - h5py typing
+            raw = bytes(self.group["tree_def"][()])
         else:
             raw = bytes(self.group.attrs["tree_def"])
         tree_def = pickle.loads(raw)
@@ -632,7 +632,8 @@ class GroupReader[Storage]:
         field read touches only those datasets.
         """
         with no_post_init():
-            return self.tree_def.unflatten(self.paths)  # type: ignore - string leaves stand in for arrays
+            # pyrefly: ignore[bad-argument-type]  # string leaves stand in for arrays
+            return self.tree_def.unflatten(self.paths)
 
     def _read_leaves(
         self, leaves: list[str], treedef: PyTreeDef[Any], index: Index
@@ -640,7 +641,7 @@ class GroupReader[Storage]:
         def read_dataset(
             name: str,
         ) -> np.ndarray[tuple[int, ...], np.dtype[np.generic]]:
-            return self.group["".join(map(str, name))][index]  # type: ignore - pylance doesn't understand h5py correctly.
+            return self.group["".join(map(str, name))][index]
 
         with no_post_init():
             return treedef.unflatten(jax.tree.map(read_dataset, leaves))
@@ -699,7 +700,7 @@ class GroupReader[Storage]:
             value or the focused field); the final chunk may be shorter.
         """
         assert chunk_size > 0, "chunk_size must be positive"
-        length = self.group["".join(map(str, self.paths[0]))].shape[0]  # type: ignore - h5py typing
+        length = self.group["".join(map(str, self.paths[0]))].shape[0]
         for start in range(0, length, chunk_size):
             yield self.read(slice(start, start + chunk_size), select=select)
 

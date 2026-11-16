@@ -367,7 +367,7 @@ def add_buffers(
     ) -> tuple[Table[Any, Any], int, Callable[[Any], Index[Any]]]:
         if len(g) == 2:
             return (g[0], g[1], system_view)
-        return g  # type: ignore[return-value]
+        return g
 
     normalized = [_normalize(g) for g in groups]
 

@@ -160,7 +160,8 @@ class MDParticles(Particles):
 
     position_gradients: Array
     momenta: Array
-    exclusion: Index[ExclusionId] = field(default=None, kw_only=True)  # type: ignore
+    # pyrefly: ignore[bad-assignment]
+    exclusion: Index[ExclusionId] = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.exclusion is None:

@@ -238,7 +238,8 @@ def block_transform(
     return BlockTransformResult(
         block_sizes=jnp.array(block_sizes),
         sems=jnp.stack(sems),
-        mean=mean,  # type: ignore[arg-type]
+        # pyrefly: ignore[bad-argument-type]
+        mean=mean,
     )
 
 
