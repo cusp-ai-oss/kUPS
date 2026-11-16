@@ -142,8 +142,7 @@ def radial_distribution_function(
     segment_sizes = system_index.counts.data
     phi = segment_sizes / systems.data.cell.volume
     norm = 4.0 * jnp.pi * dr * phi * segment_sizes
-    rdf = rdf[:, 1:] / (norm[:, None] * (rr * rr + (dr * dr / 12)))
-    return rdf
+    return rdf[:, 1:] / (norm[:, None] * (rr * rr + (dr * dr / 12)))
 
 
 @dataclass
@@ -276,8 +275,7 @@ def offline_radial_distribution_function(
     while (out := rdf_with_capacity(capacity)).failed_assertions:
         capacity = out.fix_or_raise(capacity)
     result = out.value
-    result = result.reshape(*positions.shape[:-2], *result.shape[-2:])
-    return result
+    return result.reshape(*positions.shape[:-2], *result.shape[-2:])
 
 
 if TYPE_CHECKING:

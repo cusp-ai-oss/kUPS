@@ -585,7 +585,7 @@ def make_local_mliap_potential[
         model=model_lens,
         probe=probe,
     )
-    potential = PotentialFromEnergy(
+    return PotentialFromEnergy(
         composer=composer,
         energy_fn=local_mliap_energy,
         gradient_lens=gradient_lens,
@@ -594,4 +594,3 @@ def make_local_mliap_potential[
         cache_lens=out_cache_lens,
         patch_idx_view=patch_idx_view,
     )
-    return potential
