@@ -717,8 +717,10 @@ def dataclass[T](
                 dcls, "_unflatten_post_init", None
             ),
         ) -> T:
-            kwargs = dict(zip(_data, data))
-            kwargs.update((n, v) for n, v in zip(_meta, meta) if n in _init_meta)
+            kwargs = dict(zip(_data, data, strict=True))
+            kwargs.update(
+                (n, v) for n, v in zip(_meta, meta, strict=True) if n in _init_meta
+            )
             if _post_init is None:
                 return _cls(**kwargs)
             with no_post_init():

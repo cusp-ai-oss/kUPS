@@ -483,7 +483,7 @@ class Hdf5ObjWriter[Storage]:
             state: Value whose leaves are written.
             index: Dataset index to write each leaf to.
         """
-        for dataset, value in zip(self.datasets, jax.tree.leaves(state)):
+        for dataset, value in zip(self.datasets, jax.tree.leaves(state), strict=True):
             dataset[index] = np.asarray(value)
 
     def write_block(self, states: list[Storage], start: int) -> None:
