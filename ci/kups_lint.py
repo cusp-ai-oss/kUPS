@@ -6,6 +6,7 @@ Silence a finding with ``# noqa: KUPxxx`` on the reported line; ruff treats
 
 Codes:
     KUP001  ``__init__`` defined on a dataclass.
+    KUP002  Optional array-valued field on a JAX dataclass (``Array | None``).
 """
 
 import ast
@@ -15,10 +16,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+ARRAY_TYPES = re.compile(r"\b(Array|ArrayLike|Table|Index)\b")
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
 
 MESSAGES = {
     "KUP001": "dataclass defines `__init__`; use fields, `__post_init__` or a classmethod constructor",
+    "KUP002": "optional array field; None -> Array retraces, initialise a real (possibly empty) array",
 }
 
 
@@ -56,6 +59,37 @@ def _dataclass_origin(cls: ast.ClassDef, origins: dict[str, str]) -> str | None:
     return None
 
 
+def _is_optional(annotation: ast.expr) -> bool:
+    match annotation:
+        case ast.BinOp(op=ast.BitOr(), left=left, right=right):
+            return _is_optional(left) or _is_optional(right)
+        case ast.Constant(value=None):
+            return True
+        case ast.Subscript(
+            value=ast.Name(id="Optional") | ast.Attribute(attr="Optional")
+        ):
+            return True
+    return False
+
+
+def _is_static(stmt: ast.AnnAssign) -> bool:
+    return isinstance(stmt.value, ast.Call) and any(
+        kw.arg == "static"
+        and isinstance(kw.value, ast.Constant)
+        and kw.value.value is True
+        for kw in stmt.value.keywords
+    )
+
+
+def _is_optional_array(stmt: ast.stmt) -> bool:
+    return (
+        isinstance(stmt, ast.AnnAssign)
+        and _is_optional(stmt.annotation)
+        and not _is_static(stmt)
+        and ARRAY_TYPES.search(ast.unparse(stmt.annotation)) is not None
+    )
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(self, path: Path, tree: ast.Module) -> None:
         self.path = path
@@ -70,6 +104,8 @@ class _Visitor(ast.NodeVisitor):
         for stmt in node.body if origin is not None else ():
             if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__":
                 self.report(stmt, "KUP001")
+            if origin != "dataclasses" and _is_optional_array(stmt):
+                self.report(stmt, "KUP002")
         self.generic_visit(node)
 
 
