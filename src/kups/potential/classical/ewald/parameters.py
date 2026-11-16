@@ -46,13 +46,23 @@ class IsEwaldPointData(HasCharges, NeighborListPoints, Protocol):
 class EwaldParameters:
     """Per-system cutoffs and reciprocal shifts prepared before evaluation.
 
-    ``reciprocal_lattice_shifts`` stores sphere-filtered shifts padded for
-    batching. ``reciprocal_shift_bound`` always stores three axis bounds.
-    ``(0, 0, 0)`` selects explicit sums over the shifts; other bounds select
-    factored phase grids over that box, from which the shifts are gathered.
     Rebuild parameters and the structure-factor cache when changing the cell
-    or cutoff. ``reciprocal_dtype`` is the precision of structure-factor
-    evaluations; ``float32`` is much faster on GPUs with slow double precision.
+    or cutoff.
+
+    Attributes:
+        alpha: Screening parameter in 1/Å per system.
+        cutoff: Real-space cutoff in Å per system.
+        reciprocal_lattice_shifts: Sphere-filtered integer reciprocal shifts per
+            system, zero-padded to a common count, shape ``(n_kvecs, 3)``.
+        k_max: Reciprocal cutoff in 1/Å per system.
+        reciprocal_shift_bound: Three axis bounds; ``(0, 0, 0)`` selects explicit
+            sums over the shifts, other bounds select factored phase grids over
+            that box, from which the shifts are gathered.
+        reciprocal_particle_chunk_size: Maximum particles per response tile.
+        reciprocal_k_chunk_size: Maximum explicit k-vectors per tile; also sets
+            the grid workspace budget.
+        reciprocal_dtype: Precision of structure-factor evaluations; ``float32``
+            is much faster on GPUs with slow double precision.
     """
 
     alpha: Table[SystemId, Array]  # (n_graphs,)
@@ -168,7 +178,15 @@ class EwaldParameters:
 
 @dataclass
 class EwaldParameterEstimates:
-    """Estimated optimal Ewald parameters for given accuracy."""
+    """Estimated optimal Ewald parameters for given accuracy.
+
+    Attributes:
+        alpha: Screening parameter in 1/Å.
+        real_cutoff: Real-space cutoff in Å.
+        k_max: Reciprocal cutoff in 1/Å.
+        error_real: Estimated real-space error.
+        error_recip: Estimated reciprocal-space error.
+    """
 
     alpha: float
     real_cutoff: float

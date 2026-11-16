@@ -28,10 +28,16 @@ class RigidBodyComposition[State, Template]:
     Templates fix internal geometry and particle properties; flexible internal
     motion is unsupported. Translation, rotation and reinsertion preserve the
     coefficients. Rebuild after changing templates, background, parameters or cells.
+    Each potential prepares its own coefficients.
 
-    ``counts`` supplies one row per system, starting with a constant 1 for the
-    background, followed by template counts. ``fixed_system`` masks out mobile
-    particles in the initial state. Each potential prepares its own coefficients.
+    Attributes:
+        initial_state: State from which the background coefficients are built.
+        fixed_system: System of each particle in the initial state, with mobile
+            particles masked out.
+        templates: Per-particle data of the rigid templates.
+        template_motif: Motif of each template particle.
+        counts: Supplies one row per system, starting with a constant 1 for the
+            background, followed by template counts.
     """
 
     initial_state: State

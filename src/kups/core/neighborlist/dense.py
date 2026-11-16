@@ -64,7 +64,14 @@ def _dense_subselect(
 
 @dataclass
 class DenseSelector:
-    """Selector for the per-system dense ``O(N²/K²)`` algorithm."""
+    """Selector for the per-system dense ``O(N²/K²)`` algorithm.
+
+    Attributes:
+        cutoffs: Cutoff distance per system.
+        max_candidates: Buffer size for same-system candidate pairs.
+        max_image_candidates: Buffer size for candidate pairs after replication
+            over periodic images.
+    """
 
     cutoffs: Table[SystemId, Array]
     max_candidates: Capacity[int]

@@ -103,7 +103,11 @@ class TouchesQueriedKeysMask[D: int]:
 
 @dataclass
 class DistanceCutoffMask:
-    """Drops candidates whose squared real-space distance exceeds ``cutoff²``."""
+    """Drops candidates whose squared real-space distance exceeds ``cutoff²``.
+
+    Attributes:
+        cutoffs: Cutoff distance per system.
+    """
 
     cutoffs: Table[SystemId, Array]
 

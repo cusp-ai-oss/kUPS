@@ -495,7 +495,11 @@ class SimpleLens(BaseLens[S, R]):
 
 @dataclass
 class ConstLens(BaseLens[S, R]):
-    """Lens that always returns a constant value; set is a no-op."""
+    """Lens that always returns a constant value; set is a no-op.
+
+    Attributes:
+        value: Value returned by every ``get``.
+    """
 
     value: R
 
@@ -519,6 +523,10 @@ class MergedLens(BaseLens[S, tuple[R, R2]]):
 
     This lens combines two lenses into a single lens that accesses both focused values
     as a tuple. It allows you to work with multiple parts of a data structure simultaneously.
+
+    Attributes:
+        left: Lens for the first element of the tuple.
+        right: Lens for the second element of the tuple.
     """
 
     left: Lens[S, R] = field(static=True)
@@ -545,6 +553,10 @@ class NestedLens(BaseLens[S, R2], Generic[S, R, R2]):
     This lens combines an outer lens (S -> A) with an inner lens (A -> B)
     to create a composite lens (S -> B). Operations are performed by first
     applying the outer lens, then the inner lens.
+
+    Attributes:
+        outer: Lens from the state to the intermediate value.
+        inner: Lens from the intermediate value to the focus.
     """
 
     outer: Lens[S, R] = field(static=True)
@@ -568,6 +580,10 @@ class SimpleBoundLens(BoundLens[S, R]):
 
     This provides a convenient interface for repeatedly operating on the same
     data structure without having to pass it as a parameter each time.
+
+    Attributes:
+        lens: Lens applied to ``target``.
+        target: Data structure the lens reads from and writes into.
     """
 
     lens: Lens[S, R] = field(static=True)
@@ -719,6 +735,12 @@ class IndexLens(BaseLens[S, R]):
 
     This lens wraps another lens and applies JAX array indexing operations
     to slice, index, or select specific elements from arrays in the focused data.
+
+    Attributes:
+        lens: Lens to the data whose array leaves are indexed.
+        idxs: Index applied to the leading axis of every array leaf.
+        args: Scatter and gather keyword arguments, merged over a leaf's own
+            ``scatter_args``.
     """
 
     lens: Lens[S, R] = field(static=True)
@@ -786,7 +808,11 @@ TreePath = tuple[TreeKey, ...]
 
 @dataclass
 class TreePathView:
-    """A view that follows a path of keys/attributes through a pytree."""
+    """A view that follows a path of keys/attributes through a pytree.
+
+    Attributes:
+        path: Keys applied in order, from the root to the viewed node.
+    """
 
     path: TreePath
 

@@ -284,6 +284,9 @@ class GraphPairEnergy[
     contribute half their energy to each system's total. ``fuse_pair_potentials``
     can collect the same term to share geometry and neighbor traversal with
     other pair terms.
+
+    Attributes:
+        pair: Pair term evaluated on each directed edge.
     """
 
     pair: PairEnergy[Params, Part, Feat] = field(static=True)
@@ -353,6 +356,10 @@ class GraphInputConstructor[
     parameters from the current state. Without a probe, apply the patch to
     the full state before reading parameters and constructing the graph.
     ``old_input`` selects the current state in either case.
+
+    Attributes:
+        graph_constructor: Builds the full or affected graph from state and patch.
+        parameter_view: View of the potential parameters.
     """
 
     graph_constructor: GraphConstructor[State, Ptch, P, S, Degree] = field(static=True)

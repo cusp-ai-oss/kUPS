@@ -67,6 +67,17 @@ class MCMCAnalysisResult:
         loading: Average particle count per species with SEM (dimensionless).
         heat_of_adsorption: Per-species heat of adsorption with SEM (eV).
         total_heat_of_adsorption: Composition-weighted total heat of adsorption (eV).
+        stress: Total guest stress tensor with SEM, ``None`` when no stress was
+            logged.
+        stress_potential: Configurational component of ``stress``.
+        stress_tail_correction: Lennard-Jones tail-correction component of
+            ``stress``.
+        stress_ideal_gas: Ideal-gas component of ``stress``.
+        pressure: One third of the trace of ``stress``, with SEM.
+        pressure_potential: One third of the trace of ``stress_potential``.
+        pressure_tail_correction: One third of the trace of
+            ``stress_tail_correction``.
+        pressure_ideal_gas: One third of the trace of ``stress_ideal_gas``.
     """
 
     energy: BlockAverageResult

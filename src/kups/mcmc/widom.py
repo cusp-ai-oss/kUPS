@@ -431,10 +431,12 @@ class GhostProbe[State, Changes, Move: Patch[Any], Stat](Propagator[State]):
     r"""Propagator running one ghost move and updating a lens-accessed statistic.
 
     Attributes:
-        propose_fn / patch_fn / log_probability_ratio_fn: standard MCMC trio
-            (:class:`~kups.core.propagator.MCMCPropagator` interface); the
-            resulting patch is discarded.
-        stat_lens: where in ``state`` the accumulator lives.
+        propose_fn: Proposes the ghost move's changes, as in
+            :class:`~kups.core.propagator.MCMCPropagator`.
+        patch_fn: Builds the patch from the proposed changes; the patch is
+            discarded.
+        log_probability_ratio_fn: Computes the move's log acceptance ratio.
+        stat_lens: Location of the accumulator in ``state``.
         update_fn: ``(state, stat, ln_alpha) -> stat``.
     """
 

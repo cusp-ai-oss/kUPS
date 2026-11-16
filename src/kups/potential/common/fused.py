@@ -154,7 +154,12 @@ quadratically with this count."""
 
 @dataclass
 class FusedPotentialInput[Params, Part: NeighborListPoints, Feat]:
-    """Shared parameters and geometry of initialized full/local pair inputs."""
+    """Shared parameters and geometry of initialized full/local pair inputs.
+
+    Attributes:
+        parameters: Pair-term parameters.
+        cloud: Particles and cells of the current state.
+    """
 
     parameters: Params
     cloud: PointCloud[Part, HasCell[AnyPeriodicity]]
@@ -176,6 +181,11 @@ class FusedLocalInput[Params, Part: NeighborListPoints, Feat](
     One query table evaluates its incident energy. Two tables evaluate new
     minus old, including intra-query pairs once and no old-new cross pairs.
     Query vocabularies may differ from the cloud's; they are matched by key.
+
+    Attributes:
+        queries: Query particles, either one table or an old/new pair.
+        removed: Particles whose cell-table rows are excluded from the sums.
+        cell_table: Initialized cell table of the current state.
     """
 
     queries: tuple[Table[ParticleId, Part], ...]
@@ -206,19 +216,20 @@ FUSED_GEOMETRY = lens(lambda inp: inp.cloud, cls=FusedPotentialInput).nest(
 class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     """Evaluate shared pair terms over a full cell table or local spatial chunks.
 
-    ``pair`` defines the interaction and ``layout`` configures cell storage
-    and traversal. A persistent ``cell_table_lens``
-    enables acceptance-conditional updates for local proposals. Full calls
-    build a cell table and sum its rows in chunks.
+    Full calls build a cell table and sum its rows in chunks.
 
-    ``dtype`` is the precision of pair geometry, kernels and the cell table
-    they read; energies are summed in the wider of it and the inputs'
-    precision. ``float32`` is much faster on GPUs with slow double precision.
-
-    ``max_queries_per_system`` bounds active rows in each old/new local query
-    (asserted). It keeps query-pair storage proportional to the batch size.
-    Without a bound, the total query count is used conservatively. Rigid MCMC
-    supplies the largest motif size automatically.
+    Attributes:
+        pair: Pair interaction to evaluate.
+        layout: Cell storage and traversal configuration.
+        cell_table_lens: Persistent cell table; enables acceptance-conditional
+            updates for local proposals.
+        max_queries_per_system: Bound on active rows in each old/new local query
+            (asserted), keeping query-pair storage proportional to the batch
+            size. Without a bound, the total query count is used conservatively.
+            Rigid MCMC supplies the largest motif size automatically.
+        dtype: Precision of pair geometry, kernels and the cell table they read;
+            energies are summed in the wider of it and the inputs' precision.
+            ``float32`` is much faster on GPUs with slow double precision.
     """
 
     pair: PairTerm[Params, Part, Feat] = field(static=True)
@@ -750,6 +761,15 @@ class FusedInputConstructor[
     With a probe, restrict to its incident pairs against an initialized cell
     table and let ``LocalSumComposer`` handle old/new weights and the cached
     total. ``old_input`` selects the current state in either case.
+
+    Attributes:
+        particles: View of the particle table.
+        systems: View of the system table with cells.
+        parameter_view: View of the pair-term parameters.
+        pair: Pair interaction to evaluate.
+        probe: Returns the particles a patch changes; ``None`` evaluates the
+            patched state in full.
+        cell_table: View of the initialized cell table for local inputs.
     """
 
     particles: View[State, Table[ParticleId, P]] = field(static=True)
@@ -897,7 +917,14 @@ def _gpu_query_chunk_size(layout: CellListCacheParameters, particle_count: int) 
 
 @dataclass
 class FusedPotentialCache[Feat]:
-    """Persistent neighbor table, combined energy, layout and kernel precision."""
+    """Persistent neighbor table, combined energy, layout and kernel precision.
+
+    Attributes:
+        table: Cell table of the current state.
+        energy: Compensated cached energy output.
+        layout: Cell storage and traversal configuration.
+        dtype: Kernel precision of the fused evaluator.
+    """
 
     table: CellListCache[Feat]
     energy: KahanSummand[PotentialOut[EmptyType, EmptyType]]

@@ -218,6 +218,12 @@ class MdState:
 
     The potential is built with its parameters at construction time (via the
     adapters' ``parameters=``), so no force-field field lives on the state.
+
+    Attributes:
+        particles: Per-particle positions, momenta, and gradients.
+        systems: Per-system cell, integrator parameters, and energy.
+        neighborlist_params: Capacity hints for the neighbor list.
+        step: Integration step counter, shape ``(1,)``.
     """
 
     particles: Table[ParticleId, MDParticles]

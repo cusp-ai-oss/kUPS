@@ -574,8 +574,8 @@ class LinearMappedPotential[
 
     Attributes:
         potential: Base potential to wrap
-        gradient_map: Function to transform gradients from InGrad to OutGrad
-        hessian_map: Function to transform hessians from InHess to OutHess
+        mapping: Linear map from the state and the wrapped output to the new
+            output; applied to the sum and the compensation separately.
 
     Example:
         ```python

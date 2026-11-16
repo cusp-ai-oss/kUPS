@@ -993,6 +993,12 @@ class CellMomentumKick[State](Propagator[State]):
     [instantaneous_pressure_tensor][kups.md.observables.instantaneous_pressure_tensor]
     and includes the lattice-gradient contribution. $\chi = 1$ for the
     3D lower-triangular cell parameterisation (Appendix A, $\nu/d-1$).
+
+    Attributes:
+        particles: Lens to particle positions, momenta, masses, system index and
+            position gradients, read for the pressure tensor.
+        systems: Lens to the cell, cell momentum and NPT integrator parameters;
+            the cell momentum is updated.
     """
 
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
@@ -1046,6 +1052,10 @@ class CellPositionStep[State](Propagator[State]):
 
     The new cell is reconstructed as a :class:`TriclinicFrame` from the
     drifted lower-triangular vectors, which forces a fresh ``volume`` cache.
+
+    Attributes:
+        systems: Lens to the cell, cell momentum and NPT integrator parameters;
+            the cell is updated.
     """
 
     systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
@@ -1077,6 +1087,10 @@ class CellStochasticStep[State](Propagator[State]):
 
     with $R_{\alpha\beta} \sim \mathcal{N}(0, 1)$. Noise is masked to the
     lower triangle so strict-upper components of $p^h$ remain zero.
+
+    Attributes:
+        systems: Lens to the cell momentum and NPT integrator parameters
+            ($\Delta t$, $T$, $M$, $\gamma$); the cell momentum is updated.
     """
 
     systems: Lens[State, Table[SystemId, IsBAOABNPTLangevinSystem]] = field(static=True)
@@ -1109,6 +1123,10 @@ class CoupledMomentumStep[State](Propagator[State]):
 
     Half time-step: the BAOAB palindrome calls this kick four times per
     full step, each at $\Delta t / 2$.
+
+    Attributes:
+        particles: Lens to particle forces and momenta; the momenta are updated.
+        systems: Lens to the cell, cell momentum and NPT integrator parameters.
     """
 
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
@@ -1146,6 +1164,11 @@ class CoupledPositionStep[State](Propagator[State]):
 
     Half time-step: the BAOAB palindrome calls this drift four times per
     full step, each at $\Delta t / 2$.
+
+    Attributes:
+        particles: Lens to particle positions, momenta and masses; the positions
+            are updated.
+        systems: Lens to the cell, cell momentum and NPT integrator parameters.
     """
 
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(
@@ -1179,6 +1202,11 @@ class WrapStep[State](Propagator[State]):
     Standalone version of :class:`WrapFlow` for use at the end of a coupled
     integration step where the per-A-step wrap would break the analytic
     affine-ODE solution.
+
+    Attributes:
+        particles: Lens to particle positions and system assignment; the positions
+            are updated.
+        systems: View to the per-system periodic cell.
     """
 
     particles: Lens[State, Table[ParticleId, _BarostatParticleData]] = field(

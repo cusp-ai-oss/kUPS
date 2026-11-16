@@ -104,7 +104,7 @@ class Once(LoggingFrequency):
 class EveryNStep(LoggingFrequency):
     """Logs data every N steps, creating datasets with a time dimension.
 
-    Args:
+    Attributes:
         n: The interval between logging steps (e.g., n=10 logs at steps 0, 10, 20, ...).
     """
 
@@ -138,7 +138,7 @@ class Compression:
     get many-frame chunks (capturing cross-step redundancy without per-chunk
     bloat). Scalar datasets are stored uncompressed.
 
-    Args:
+    Attributes:
         codec: HDF5 compression filter: ``"zstd"`` (via hdf5plugin), ``"gzip"``,
             or ``"lzf"``. zstd is several times faster than gzip at a comparable
             (often better) ratio on trajectory data, but its files require the
@@ -209,7 +209,7 @@ class Compression:
 class WriterGroupConfig[State, Storage]:
     """Configuration for a single logging group.
 
-    Args:
+    Attributes:
         view: A lens that extracts Storage data from the full State.
         logging_frequency: Controls when this data should be logged.
         compression: Compression/chunking policy, or ``None`` to store
@@ -223,7 +223,11 @@ class WriterGroupConfig[State, Storage]:
 
 @dataclass(frozen=True)
 class GroupWriters[State, Storage](WriterGroupConfig[State, Storage]):
-    """Internal class combining a WriterGroupConfig with its initialized HDF5 writer."""
+    """Internal class combining a WriterGroupConfig with its initialized HDF5 writer.
+
+    Attributes:
+        writer: Writer for this group's datasets.
+    """
 
     writer: Hdf5ObjWriter[Storage]
 
@@ -269,6 +273,15 @@ class HDF5StorageWriter[State, WriterConfig]:
     The block size is chosen per group so the largest leaf writes about one chunk
     per flush, bounding the buffer to roughly one chunk regardless of system size;
     buffers are flushed on ``__exit__``.
+
+    Attributes:
+        out_path: Path of the HDF5 file to create; overwritten if it exists.
+        config: Pytree whose leaves are ``WriterGroupConfig``, one per group.
+        initial_state: Sample state that sets each dataset's shape and dtype.
+        total_steps: Number of simulation steps, sizing the time axes.
+        compile_views: Compile views that compute observables from device state.
+            Disable for samples already on the host to avoid converting them
+            back to device arrays at each log.
     """
 
     out_path: str | Path
@@ -276,9 +289,6 @@ class HDF5StorageWriter[State, WriterConfig]:
     initial_state: State
     total_steps: int
     compile_views: bool = field(default=True, kw_only=True)
-    """Compile views that compute observables from device state. Disable for samples
-    already on the host to avoid converting them back to device arrays at each log.
-    """
 
     # Private runtime state (set in __enter__)
     _file: h5py.File | None = field(init=False, default=None, repr=False)
@@ -428,7 +438,11 @@ def _init_group_writers[S, WC](
 
 @dataclass
 class Hdf5ObjWriter[Storage]:
-    """Low-level writer for a single HDF5 group that stores a pytree of JAX arrays."""
+    """Low-level writer for a single HDF5 group that stores a pytree of JAX arrays.
+
+    Attributes:
+        datasets: One dataset per array leaf, in pytree-leaf order.
+    """
 
     datasets: list[h5py.Dataset]
 
@@ -519,6 +533,9 @@ def _stack_leaves(states: list[Any]) -> list[jax.Array]:
 class HDF5StorageReader[Config]:
     """Reader for HDF5 files created by HDF5StorageWriter.
 
+    Attributes:
+        path: Path of the HDF5 file to read.
+
     Usage:
         ```python
         with HDF5StorageReader[MyConfig]("output.h5") as reader:
@@ -602,7 +619,11 @@ class HDF5StorageReader[Config]:
 
 @dataclass
 class GroupReader[Storage]:
-    """Reader for a single HDF5 logging group, providing array-like access."""
+    """Reader for a single HDF5 logging group, providing array-like access.
+
+    Attributes:
+        group: Open HDF5 group holding the datasets.
+    """
 
     group: h5py.Group
 
@@ -721,6 +742,12 @@ class BackgroundWriter[State, WriterConfig]:
     When a group's batch size is >1 its per-step data is buffered and written in
     contiguous blocks, amortising per-write overhead. Buffers are flushed when full
     and once more when the thread stops.
+
+    Attributes:
+        storage_writer: Writer that owns the file and the group writers.
+        data_queue: Pending ``(group_index, dataset_index, data)`` batches, one
+            list per logged step.
+        running: Event that keeps the loop running while set.
     """
 
     storage_writer: HDF5StorageWriter[State, WriterConfig]

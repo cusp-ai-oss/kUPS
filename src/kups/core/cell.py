@@ -962,6 +962,8 @@ class MaterializedFrame(Sliceable):
     explicit ``[None]`` axis before being passed in.
 
     Attributes:
+        matrix: Basis matrix with its structure, array shape ``(B, 3, 3)``.
+        inverse_matrix: Inverse of ``matrix``, array shape ``(B, 3, 3)``.
         vectors: Basis matrix, shape ``(B, 3, 3)``.
         inverse_vectors: Matrix inverse of ``vectors``, shape ``(B, 3, 3)``.
         volume: Absolute determinant of ``vectors``, shape ``(B,)``.
@@ -1074,6 +1076,10 @@ class Cell(Sliceable, Generic[_P]):
     [`minimum_image_shifts`][kups.core.cell.Cell.minimum_image_shifts])
     live on the cell so callers don't need to access ``cell.periodic``
     directly.
+
+    Attributes:
+        frame: Geometry of the cell.
+        periodic: Static per-axis flags; ``True`` marks a periodic axis.
     """
 
     frame: Frame
@@ -1177,6 +1183,9 @@ class PeriodicCell(Cell[Periodic3D]):
     crystal or fluid. ``wrap`` folds coordinates into the primary unit
     cell; the neighbor list applies the minimum-image convention; the
     Ewald summation requires this cell type.
+
+    Attributes:
+        periodic: Always ``(True, True, True)``.
     """
 
     periodic: Periodic3D = field(default=(True, True, True), init=False, static=True)
@@ -1191,6 +1200,9 @@ class VacuumCell(Cell[Vacuum]):
     sample. ``wrap`` is a no-op; long-range electrostatics use direct
     pairwise sums (no Ewald). The frame is still required because the
     neighbor-list machinery needs a spatial-partitioning hint.
+
+    Attributes:
+        periodic: Always ``(False, False, False)``.
     """
 
     periodic: Vacuum = field(default=(False, False, False), init=False, static=True)

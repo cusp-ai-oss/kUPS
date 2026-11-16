@@ -67,6 +67,10 @@ class Candidates:
     Not the pipeline carrier — selectors convert ``Candidates`` into a
     ``CandidateBatch`` (via ``replicate_for_images`` or
     ``make_batch_with_mic``) before returning.
+
+    Attributes:
+        key_idx: Key particle of each candidate pair.
+        query_idx: Query particle of each candidate pair.
     """
 
     key_idx: Index[ParticleId]

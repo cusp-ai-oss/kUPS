@@ -228,10 +228,18 @@ class PairEnergy[Params, Part, Feat]:
     Terms use a shared particle type; ``with_particles(view)`` adapts each
     feature selector to that type before adding them.
 
-    Set ``inclusion=False`` to interact across inclusion groups within a
-    system, and ``exclusion=False`` to include same-group pairs. Exclusions
-    apply to the closest image; other periodic copies remain eligible.
-    Zero-shift self pairs and inactive particles are always excluded.
+    Exclusions apply to the closest image; other periodic copies remain
+    eligible. Zero-shift self pairs and inactive particles are always excluded.
+
+    Attributes:
+        kernel: ``(parameters, left, right, rij, r2, system) -> energy`` for each
+            pair that passes the masks.
+        features: Selects the per-particle features passed to the kernel.
+        cutoffs: Selects the per-system cutoff from the parameters.
+        inclusion: Restrict pairs to the same inclusion group; ``False``
+            interacts across inclusion groups within a system.
+        exclusion: Drop pairs in the same exclusion group; ``False`` includes
+            them.
     """
 
     kernel: PairKernel[Params, Feat] = field(static=True)
@@ -317,6 +325,9 @@ class PairEnergySum[Params, Part, Feat]:
     feature tuple comes from, and is passed back to, the term at the same
     position. ``Feat`` retains the union of the terms' concrete feature types.
     ``from_term`` starts a sum from any implementation of ``PairTerm``.
+
+    Attributes:
+        terms: Pair terms in summation order.
     """
 
     terms: tuple[PairTerm[Params, Part, Feat], ...] = field(static=True)

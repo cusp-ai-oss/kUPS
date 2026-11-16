@@ -475,7 +475,11 @@ class IsMotifData(Protocol):
 
 @dataclass
 class SystemIndex:
-    """Index metadata for systems."""
+    """Index metadata for systems.
+
+    Attributes:
+        system: System assignment for each entry.
+    """
 
     system: Index[SystemId]
 

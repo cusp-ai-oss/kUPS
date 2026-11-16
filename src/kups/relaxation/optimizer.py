@@ -147,7 +147,11 @@ type ChainOptState = tuple[PyTree, ...]
 
 @dataclass
 class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
-    """Optimizer that applies its optimizers in sequence, each transforming the previous one's updates."""
+    """Optimizer that applies its optimizers in sequence, each transforming the previous one's updates.
+
+    Attributes:
+        optimizers: kUPS optimizers or optax transforms, applied in order.
+    """
 
     optimizers: tuple[
         Optimizer[Params, PyTree] | optax.GradientTransformationExtraArgs, ...
@@ -253,6 +257,9 @@ class ResettableChain[Params](
 
     Built by [resettable_chain][kups.relaxation.optimizer.resettable_chain].
     Member ``i``'s layout applies to entry ``i`` of the chain state.
+
+    Attributes:
+        optimizers: Resettable optimizers, applied in order.
     """
 
     optimizers: tuple[Resettable[Params, Any], ...]

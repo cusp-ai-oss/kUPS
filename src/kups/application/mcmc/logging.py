@@ -74,6 +74,11 @@ class MCMCFixedData:
 
     Contains the host framework particles (which never change) and
     system-level thermodynamic state.
+
+    Attributes:
+        systems: Per-system thermodynamic state and cell.
+        motifs: Adsorbate template atoms.
+        host_particles: Host framework particles.
     """
 
     systems: Table[SystemId, MCMCSystems]
@@ -83,7 +88,32 @@ class MCMCFixedData:
 
 @dataclass
 class MCMCSystemStepData:
-    """Per-system, per-cycle data: energies, move statistics, and stress."""
+    """Per-system, per-cycle data: energies, move statistics, and stress.
+
+    Every array holds one entry per system.
+
+    Attributes:
+        potential_energy: Total potential energy (eV).
+        lj_energy: Lennard-Jones energy (eV).
+        ewald_short_range_energy: Ewald real-space energy (eV).
+        ewald_long_range_energy: Ewald reciprocal-space energy plus the
+            net-charge correction (eV).
+        ewald_self_energy: Ewald self-interaction energy (eV).
+        ewald_exclusion_energy: Ewald intramolecular exclusion correction (eV).
+        translation_step_width: Current translation step width (Ang).
+        rotation_step_width: Current rotation magnitude, from 0 (none) to 1
+            (fully random).
+        translation_acceptance: Translation acceptance rate over the scheduler
+            history window.
+        rotation_acceptance: Rotation acceptance rate over the scheduler history
+            window.
+        reinsertion_acceptance: Reinsertion acceptance rate over the scheduler
+            history window.
+        exchange_acceptance: Insertion/deletion acceptance rate over the
+            scheduler history window.
+        guest_stress: Guest stress tensor components, each shape
+            ``(n_systems, 3, 3)``; zeros when stress is not computed.
+    """
 
     potential_energy: Array
     lj_energy: Array
@@ -102,7 +132,14 @@ class MCMCSystemStepData:
 
 @dataclass
 class MCMCStepData:
-    """Per-cycle MCMC data: adsorbate positions, energies, and move statistics."""
+    """Per-cycle MCMC data: adsorbate positions, energies, and move statistics.
+
+    Attributes:
+        particles: Adsorbate particle buffer, padding rows included.
+        groups: Molecular group buffer.
+        particle_count: Number of adsorbate molecules per ``(system, motif)``.
+        systems: Per-system energies, move statistics, and stress.
+    """
 
     particles: Table[ParticleId, MCMCParticles]
     groups: Table[GroupId, MCMCGroup]
@@ -112,7 +149,12 @@ class MCMCStepData:
 
 @dataclass
 class MCMCLoggedData[S]:
-    """HDF5 writer group layout: one-shot host data + per-cycle adsorbate data."""
+    """HDF5 writer group layout: one-shot host data + per-cycle adsorbate data.
+
+    Attributes:
+        fixed: Writer for the data logged once at the start.
+        per_step: Writer for the data logged every cycle.
+    """
 
     fixed: WriterGroupConfig[S, MCMCFixedData]
     per_step: WriterGroupConfig[S, MCMCStepData]
@@ -215,7 +257,11 @@ class IsWidomState(IsMCMCState, Protocol):
 
 @dataclass
 class WidomFixedData:
-    """One-shot Widom-run metadata: per-system thermodynamic state."""
+    """One-shot Widom-run metadata: per-system thermodynamic state.
+
+    Attributes:
+        systems: Per-system thermodynamic state and cell.
+    """
 
     systems: Table[SystemId, MCMCSystems]
 
@@ -223,7 +269,13 @@ class WidomFixedData:
 @dataclass
 class WidomLoggedData[S]:
     """HDF5 writer layout for ``kups_mcmc_widom``: thermo state once, cumulative
-    ``WidomStatistics`` snapshot per cycle."""
+    ``WidomStatistics`` snapshot per cycle.
+
+    Attributes:
+        fixed: Writer for the thermodynamic state, logged once.
+        per_step: Writer for the cumulative per-system Widom statistics, logged
+            every cycle.
+    """
 
     fixed: WriterGroupConfig[S, WidomFixedData]
     per_step: WriterGroupConfig[S, Table[SystemId, WidomStatistics]]

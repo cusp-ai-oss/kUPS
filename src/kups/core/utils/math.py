@@ -513,7 +513,11 @@ class SquareMatrix(Protocol):
 
 @dataclass
 class GeneralSquareMatrix:
-    """Dense :class:`SquareMatrix` without assumed structure."""
+    """Dense :class:`SquareMatrix` without assumed structure.
+
+    Attributes:
+        array: Matrix entries, shape ``(..., n, n)``.
+    """
 
     array: Array
 
@@ -554,7 +558,11 @@ class GeneralSquareMatrix:
 
 @dataclass
 class LowerTriangularSquareMatrix(GeneralSquareMatrix):
-    """Lower-triangular :class:`SquareMatrix` with structure-aware products, determinant and inverse."""
+    """Lower-triangular :class:`SquareMatrix` with structure-aware products, determinant and inverse.
+
+    Attributes:
+        array: Matrix entries, shape ``(..., n, n)``; zero above the diagonal.
+    """
 
     array: Array
 
@@ -592,7 +600,11 @@ class LowerTriangularSquareMatrix(GeneralSquareMatrix):
 
 @dataclass
 class DiagonalSquareMatrix(LowerTriangularSquareMatrix):
-    """Diagonal :class:`SquareMatrix`, stored in full, with structure-aware products and inverse."""
+    """Diagonal :class:`SquareMatrix`, stored in full, with structure-aware products and inverse.
+
+    Attributes:
+        array: Full matrix entries, shape ``(..., n, n)``; zero off the diagonal.
+    """
 
     array: Array
 

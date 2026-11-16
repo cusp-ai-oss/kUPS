@@ -45,6 +45,9 @@ class InclusionGroupSelector:
     Ignores the cutoff entirely. Shifts are int-typed minimum-image
     fractional rounds — matches today's ``all_connected_neighborlist``
     (which is Ewald-only and assumed fully periodic).
+
+    Attributes:
+        capacity: Buffer size for candidate pairs across all inclusion segments.
     """
 
     capacity: Capacity[int]
