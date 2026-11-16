@@ -50,7 +50,8 @@ from kups.potential.common.graph import GRAPH_GEOMETRY, IsGraphProbe
 
 class HasBondedParticlesAndSystems(
     IsState[IsBondedParticles, HasCell[AnyPeriodicity]], Protocol
-): ...
+):
+    """State whose particles carry bonded-particle data and whose systems carry a unit cell."""
 
 
 class IsHarmonicBondGraphState(HasBondedParticlesAndSystems, Protocol):

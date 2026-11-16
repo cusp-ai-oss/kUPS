@@ -66,7 +66,8 @@ from kups.potential.common.rigid_body_composition import RigidBodyComposition
 
 class HasLJParticlesAndSystems(
     IsState[IsLJGraphParticles, HasCell[AnyPeriodicity]], Protocol
-): ...
+):
+    """State whose particles carry Lennard-Jones graph data and whose systems carry a unit cell."""
 
 
 class IsLJGraphState(

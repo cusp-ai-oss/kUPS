@@ -43,26 +43,38 @@ TData = TypeVar("TData", covariant=True)
 
 
 class SupportsAdd[T](Protocol):
+    """Type whose ``+`` with a ``T`` returns its own type."""
+
     def __add__(self, other: T) -> Self: ...
 
 
 class SupportsSub[T](Protocol):
+    """Type whose ``-`` with a ``T`` returns its own type."""
+
     def __sub__(self, other: T) -> Self: ...
 
 
 class SupportsMul[T](Protocol):
+    """Type whose ``*`` with a ``T`` returns its own type."""
+
     def __mul__(self, other: T) -> Self: ...
 
 
 class SupportsTrueDiv[T](Protocol):
+    """Type whose ``/`` with a ``T`` returns its own type."""
+
     def __truediv__(self, other: T) -> Self: ...
 
 
 class SupportsGt[T](Protocol):
+    """Type whose ``>`` with a ``T`` returns its own type, as for arrays."""
+
     def __gt__(self, other: T) -> Self: ...
 
 
 class SupportsFloorDiv[T](Protocol):
+    """Type whose ``//`` with a ``T`` returns its own type."""
+
     def __floordiv__(self, other: T) -> Self: ...
 
 

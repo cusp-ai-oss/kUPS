@@ -750,10 +750,12 @@ def _set_post_init(active: bool):
 
 
 def no_post_init() -> AbstractContextManager[None]:
+    """Context manager that disables ``__post_init__`` validation of decorated dataclasses."""
     return _set_post_init(True)
 
 
 def enable_post_init() -> AbstractContextManager[None]:
+    """Context manager that re-enables ``__post_init__`` validation inside :func:`no_post_init`."""
     return _set_post_init(False)
 
 
@@ -780,6 +782,8 @@ ScatterModes = Literal["promise_in_bounds", "fill", "drop", "clip"]
 
 
 class ScatterArgs(TypedDict, closed=True):
+    """Keyword arguments forwarded to JAX scatter updates such as ``.at[idxs].set``."""
+
     mode: NotRequired[ScatterModes]
     wrap_negative_indices: NotRequired[bool]
     fill_value: NotRequired[StaticScalar | None]
@@ -789,6 +793,8 @@ class ScatterArgs(TypedDict, closed=True):
 
 @runtime_checkable
 class HasScatterArgs(Protocol):
+    """Pytree node that sets the scatter arguments used when updating its leaves."""
+
     @property
     def scatter_args(self) -> ScatterArgs: ...
 
@@ -955,6 +961,7 @@ def non_differentiable[T](x: T) -> T:
 
 @non_differentiable.defjvp
 def non_differentiable_jvp(primals: tuple[Any, ...], tangents: tuple[Any, ...]):
+    """Raise ``NotImplementedError``, since :func:`non_differentiable` has no derivative."""
     raise NotImplementedError("Function is not differentiable.")
 
 

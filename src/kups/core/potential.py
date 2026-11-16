@@ -545,6 +545,8 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
 
 
 class LinearMappedPotentialInput[State, InGrad, InHess](NamedTuple):
+    """Input of a :class:`LinearMappedPotential` mapping: the state and the wrapped output."""
+
     state: State
     potential_out: PotentialOut[InGrad, InHess]
 

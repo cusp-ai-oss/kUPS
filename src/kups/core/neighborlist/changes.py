@@ -32,6 +32,8 @@ from kups.core.utils.ops import where_broadcast_last
 
 
 class NeighborListChangesResult(NamedTuple):
+    """Edges added and removed by a particle change."""
+
     added: Edges[Literal[2]]
     removed: Edges[Literal[2]]
 

@@ -86,6 +86,8 @@ class ResetLayout[OptState, Data, Indices]:
 
 
 class Optimizer[Params, OptState](Protocol):
+    """Optax-style optimizer whose ``init`` may take an ``index_prefix`` mapping parameters to systems."""
+
     def init(
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> OptState: ...
@@ -134,6 +136,7 @@ class Resettable[Params, OptState](Optimizer[Params, OptState]):
 
 
 def apply_updates[Params](parameters: Params, updates: Params) -> Params:
+    """Add ``updates`` to ``parameters`` leaf by leaf."""
     return optax.apply_updates(parameters, updates)  # type: ignore
 
 
@@ -142,6 +145,8 @@ type ChainOptState = tuple[PyTree, ...]
 
 @dataclass
 class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
+    """Optimizer that applies its optimizers in sequence, each transforming the previous one's updates."""
+
     optimizers: tuple[
         Optimizer[Params, PyTree] | optax.GradientTransformationExtraArgs, ...
     ]
@@ -180,6 +185,7 @@ class ChainOptimizer[Params](Optimizer[Params, ChainOptState]):
 def chain[Params](
     *optimizers: Optimizer[Params, PyTree] | optax.GradientTransformation,
 ) -> ChainOptimizer[Params]:
+    """Chain optimizers, wrapping plain optax transformations to accept extra arguments."""
     return ChainOptimizer(
         tuple(
             (
