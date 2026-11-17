@@ -104,7 +104,11 @@ jobs:
           BASE: ${{ steps.gate.outputs.base }}
         run: |
           echo "model=$(jq -r .code_review.model .github/config/models.json)" >> "$GITHUB_OUTPUT"
-          gh pr diff "$PR" -R "$GITHUB_REPOSITORY" > pr.diff
+          # The API refuses diffs over 20000 lines; the checkout has the history for both ends.
+          if ! gh pr diff "$PR" -R "$GITHUB_REPOSITORY" > pr.diff; then
+            git -C pr-head fetch -q origin "$BASE" || true
+            git -C pr-head diff "$BASE...$SHA" > pr.diff
+          fi
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?head_sha=$SHA" \
             --jq '.workflow_runs[0].id // empty')
           [ -z "$run" ] || gh run download "$run" -R "$GITHUB_REPOSITORY" -n coverage -D cov || true
@@ -172,7 +176,7 @@ jobs:
             --model ${{ needs.plan.outputs.model }}
             --max-turns 80
             --add-dir pr-head
-            --allowedTools "Read,Grep,Glob,Write(findings.json),Bash(gh pr view:*),Bash(gh pr diff:*)"
+            --allowedTools "Read,Grep,Glob,Edit(findings.json),Bash(gh pr view:*),Bash(gh pr diff:*)"
       - if: hashFiles('findings.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -224,4 +228,4 @@ jobs:
             --model ${{ needs.plan.outputs.model }}
             --max-turns 60
             --add-dir pr-head
-            --allowedTools "Read,Grep,Glob,Write(review.json),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api:*)"
+            --allowedTools "Read,Grep,Glob,Edit(review.json),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api:*)"
