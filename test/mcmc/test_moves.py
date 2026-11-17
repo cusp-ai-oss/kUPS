@@ -12,7 +12,7 @@ import pytest
 from jax import Array
 
 from kups.core.capacity import Capacity, CapacityError, LensCapacity
-from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
+from kups.core.cell import Cell, MaterializedFrame, PeriodicCell, TriclinicFrame
 from kups.core.data import WithIndices
 from kups.core.data.buffered import Buffered, system_view
 from kups.core.data.index import Index
@@ -28,6 +28,7 @@ from kups.mcmc.moves import (
     ExchangeMove,
     delete_random_motif,
     insert_random_motif,
+    propose_reinsertion,
     random_rotate_groups,
     random_select_groups,
     translate_groups,
@@ -1326,6 +1327,28 @@ class TestInsertRandomMotif:
         assert not jax.jit(ExchangeChanges.is_noop)(result, groups)
 
 
+@pytest.mark.parametrize("reinsert", [False, True], ids=["insert", "reinsert"])
+def test_random_placement_rotates_with_general_frame(reinsert: bool):
+    """Random placements follow a frame whose vectors are not lower triangular."""
+    particles, groups, motifs, cells = _exchange_state()
+    rotation = jnp.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
+    cap = LensCapacity(1, lens(lambda x: x, cls=int))
+
+    @jax.jit
+    def place(vectors: Array) -> Array:
+        cell = cells.set_data(PeriodicCell(MaterializedFrame.from_matrix(vectors)))
+        key = jax.random.key(0)
+        if reinsert:
+            systems = cell.set_data(CellData(cell.data))
+            moved = propose_reinsertion(key, particles, groups, systems, cap)
+            return moved.new_positions
+        inserted = insert_random_motif(key, motifs, particles, groups, cell, cap)
+        return inserted.particles.data.data.new_positions
+
+    vectors = cells.data.vectors
+    npt.assert_allclose(place(vectors @ rotation), place(vectors) @ rotation, atol=1e-5)
+
+
 class TestDeleteRandomMotif:
     """Tests for delete_random_motif exchange change structure."""
 
@@ -1393,3 +1416,46 @@ def test_empty_exchange_changes_preserve_group_only_updates():
         ),
     )
     assert is_noop(untargeted, groups)
+
+
+class TestOffsetsCoverAGeneralCell:
+    """Insertion and reinsertion offsets are uniform over a cell that is not
+    lower-triangular, read in its own fractional coordinates."""
+
+    # tril of these vectors spans a different cell, which skews fractional x
+    VECTORS = jnp.array([[4.0, 2.0, 0.0], [2.0, 4.0, 0.0], [0.0, 0.0, 4.0]])
+    N = 4000
+
+    def _cell(self):
+        return PeriodicCell(MaterializedFrame.from_matrix(self.VECTORS[None]))
+
+    def _assert_uniform(self, positions):
+        frac = (positions @ jnp.linalg.inv(self.VECTORS)) % 1.0
+        for axis in range(3):
+            counts, _ = np.histogram(np.asarray(frac[:, axis]), bins=4, range=(0, 1))
+            npt.assert_allclose(counts / self.N, 0.25, atol=0.03)
+
+    def test_insertion(self):
+        particles, groups, motifs, _ = _exchange_state()
+        cell = Table.arange(self._cell(), label=SystemId)
+        cap = LensCapacity(1, lens(lambda x: x, cls=int))
+
+        def inserted(key):
+            changes = insert_random_motif(key, motifs, particles, groups, cell, cap)
+            return changes.particles.data.data.new_positions[0]
+
+        keys = jax.random.split(jax.random.key(0), self.N)
+        self._assert_uniform(jax.jit(jax.vmap(inserted))(keys))
+
+    def test_reinsertion(self):
+        particles = _make_particles(jnp.zeros((1, 3)), jnp.array([0]), 1, [0], 1, 1)
+        groups = _make_groups_with_motif([0], [0], n_sys=1, n_motifs=1)
+        systems = Table.arange(CellData(cell=self._cell()), label=SystemId)
+        cap = LensCapacity(1, lens(lambda x: x, cls=int))
+
+        def reinserted(key):
+            changes = propose_reinsertion(key, particles, groups, systems, cap)
+            return changes.new_positions[0]
+
+        keys = jax.random.split(jax.random.key(0), self.N)
+        self._assert_uniform(jax.jit(jax.vmap(reinserted))(keys))
