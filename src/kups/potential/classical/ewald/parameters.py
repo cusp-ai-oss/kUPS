@@ -375,6 +375,14 @@ def prepare_reciprocal_shifts(
 
     With ``grid``, the bound is the tightest common enclosing grid of all
     systems, including batches with different cells; otherwise ``(0, 0, 0)``.
+
+    Args:
+        cells: Batched cells, one per system.
+        k_max: Reciprocal cutoffs in 1/Å, shaped ``(n_systems,)``.
+        grid: Whether to return the enclosing phase-grid bound.
+
+    Returns:
+        Padded integer shifts ``(n_systems, n_kvecs, 3)`` and the grid bound.
     """
     cutoffs = np.asarray(k_max)
     if np.any(~np.isfinite(cutoffs)) or np.any(cutoffs < 0):

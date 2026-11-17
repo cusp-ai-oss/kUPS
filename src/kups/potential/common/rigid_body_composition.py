@@ -44,7 +44,16 @@ class RigidBodyComposition[State, Template]:
 
     @jit
     def sum_particles(self, fixed_values: Array, template_values: Array) -> Array:
-        """Sum particle properties into background and template coefficients."""
+        """Sum particle properties into background and template coefficients.
+
+        Args:
+            fixed_values: Per-particle values of the initial state, ``(n, ...)``.
+            template_values: Per-template-particle values, ``(m, ...)``.
+
+        Returns:
+            Background sums followed by template sums for each system,
+            ``(n_systems, 1 + n_templates, ...)``.
+        """
         fixed = self.fixed_system.sum_over(fixed_values).data
         templates = self.template_motif.sum_over(template_values).data
         return jnp.concatenate(
