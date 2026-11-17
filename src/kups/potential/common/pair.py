@@ -17,7 +17,6 @@ from kups.core.lens import View
 from kups.core.neighborlist.masks import ExclusionMask, InBoundsMask, InclusionMatchMask
 from kups.core.neighborlist.types import CandidateBatch, PipelineContext
 from kups.core.typing import SystemId
-from kups.core.units import catalog as u
 from kups.core.utils.functools import pipe
 from kups.core.utils.jax import dataclass, field
 
@@ -275,22 +274,12 @@ class PairEnergy[Params, Part, Feat]:
             keep &= pairs.inclusion
         if self.exclusion:
             keep &= pairs.exclusion
-        rij = units.where(
-            keep[..., None], pairs.rij, units.full_like(pairs.rij, u.angstrom)
-        )
-        r2 = units.where(keep, pairs.r2, units.full_like(pairs.r2, 3 * u.angstrom**2))
-        return units.where(
-            keep,
-            self.kernel(
-                parameters,
-                left,
-                right,
-                rij,
-                r2,
-                pairs.system,
-            ),
-            0.0 * u.eV,
-        )
+        # Dropped pairs get a finite stand-in geometry, r = (1, 1, 1) in the base.
+        stand_in = units.ones_like(pairs.rij)
+        rij = units.where(keep[..., None], pairs.rij, stand_in)
+        r2 = units.where(keep, pairs.r2, units.sum(stand_in**2, axis=-1))
+        energy = self.kernel(parameters, left, right, rij, r2, pairs.system)
+        return units.where(keep, energy, units.zeros_like(energy))
 
     def with_particles[Outer](
         self, view: View[Outer, Part]

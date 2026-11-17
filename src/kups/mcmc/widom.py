@@ -52,7 +52,6 @@ from kups.core.propagator import (
     Propagator,
 )
 from kups.core.typing import SystemId
-from kups.core.units import catalog as u
 from kups.core.units import magnitudes
 from kups.core.utils.jax import dataclass, field, key_chain, tree_zeros_like
 
@@ -129,7 +128,7 @@ class WidomStatistics:
         """
         return WidomStatistics(
             sum_boltzmann=jnp.zeros(n_systems),
-            sum_delta_u_boltzmann=units.zeros(n_systems, u.eV),
+            sum_delta_u_boltzmann=units.from_dim(jnp.zeros(n_systems), units.ENERGY),
             n_samples=jnp.zeros(n_systems, dtype=int),
         )
 
@@ -349,7 +348,7 @@ class EnergyMoments:
         assert max_order >= 2, "at least mean and variance must be tracked"
         return EnergyMoments(
             count=jnp.zeros(n_systems, dtype=int),
-            mean=units.zeros(n_systems, u.eV),
+            mean=units.from_dim(jnp.zeros(n_systems), units.ENERGY),
             central_sums=jnp.zeros((n_systems, max_order - 1)),
         )
 

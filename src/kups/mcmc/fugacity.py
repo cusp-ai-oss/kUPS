@@ -22,7 +22,6 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core import units
-from kups.core.units import catalog as u
 from kups.core.utils.jax import jit, vectorize
 from kups.core.utils.math import cubic_roots
 
@@ -185,8 +184,9 @@ def peng_robinson_log_fugacity(
         interaction,
     )
     # f_i = phi_i * y_i * P; only P carries a unit, so it sets the log reference.
-    log_pressure = units.Log.of(pressure, u.Pa).log[..., None]
+    ref = pressure.unit
+    log_pressure = units.Log.of(pressure, ref).log[..., None]
     return LogFugacityResult(
-        units.Log(log_pressure + (log_coefficient + jnp.log(composition)), u.Pa),
+        units.Log(log_pressure + (log_coefficient + jnp.log(composition)), ref),
         compressibility,
     )

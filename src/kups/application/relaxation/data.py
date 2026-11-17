@@ -166,9 +166,10 @@ class RelaxRunConfig(BaseModel):
 def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
     """System rows with zeroed caches and cells in the log-deformation frame.
 
-    ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
-    cell-virial gradient against the per-atom forces in the joint optimiser.
-    Empty systems get factor 1, since a zero factor makes the cell NaN.
+    ``cell_factor = n_atoms × 1 Å`` is ASE's ``exp_cell_factor``: it balances the
+    extensive cell virial against the per-atom forces in the joint optimiser,
+    and the length makes the cell gradient a force, as ASE treats it. Empty
+    systems get factor 1 Å, since a zero factor makes the cell NaN.
 
     Args:
         cell: Cells with a plain frame, one per system; an unbatched cell gains
@@ -177,7 +178,7 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
     """
     if cell.vectors.ndim == 2:
         cell = cell[None]
-    cell_factor = jnp.maximum(n_atoms, 1)
+    cell_factor = jnp.maximum(n_atoms, 1) * u.angstrom
     cell = bind(cell, lambda x: x.frame).apply(
         lambda f: DeformedFrame.from_frame(
             f, cell_factor=cell_factor, deformation=MatrixLogFrame

@@ -21,7 +21,6 @@ from jax import Array
 from kups.core import units
 from kups.core.data import Index, Table
 from kups.core.typing import SystemId
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.segment import segment_sum
@@ -237,11 +236,13 @@ def _structure_factor_full(
     Returns:
         Real and imaginary structure factors, ``(n_systems, n_kvecs, 2)``.
     """
+    # k·r is dimensionless, so any one base works for the kernel.
+    bs = units.base_of(charges)
     sf = _structure_factor_magnitudes(
-        positions.to(u.angstrom),
-        charges.to(u.e),
-        kvecs.to(1 / u.angstrom),
-        None if inverse_vectors is None else inverse_vectors.to(1 / u.angstrom),
+        positions.rebase(bs).value,
+        charges.rebase(bs).value,
+        kvecs.rebase(bs).value,
+        None if inverse_vectors is None else inverse_vectors.rebase(bs).value,
         batch_mask=batch_mask,
         bound=bound,
         particle_chunk_size=particle_chunk_size,
@@ -249,7 +250,7 @@ def _structure_factor_full(
         tiled=tiled,
         grid_index=grid_index,
     )
-    return sf * u.e
+    return units.from_dim(sf, units.CHARGE, bs)
 
 
 def _structure_factor_magnitudes(

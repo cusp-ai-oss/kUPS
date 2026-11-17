@@ -182,7 +182,7 @@ def init_state(key: Array, config: Config) -> WidomState:
     ewald_params = EwaldParameters.make(
         particles,
         system,
-        epsilon_total=config.ewald.precision,
+        epsilon_total=config.ewald.epsilon_total,
         real_cutoff=config.ewald.real_cutoff,
     )
     n_kvecs = ewald_params.reciprocal_lattice_shifts.data.shape[1]

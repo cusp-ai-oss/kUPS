@@ -126,7 +126,6 @@ from jax.flatten_util import ravel_pytree
 from kups.core import units
 from kups.core.data import Sliceable
 from kups.core.lens import Lens, bind
-from kups.core.units import catalog as u
 from kups.core.units import magnitudes
 from kups.core.utils.jax import (
     dataclass,
@@ -468,7 +467,7 @@ class BaseFrame(Frame, abc.ABC):
             # expressed in the active base and the result is read in it: dE/dh is
             # a force.
             return units.from_dim(
-                fn(_active_base(self), _active_base(parameter_grad)), _FORCE_DIM
+                fn(_active_base(self), _active_base(parameter_grad)), units.FORCE
             )
 
 
@@ -518,12 +517,10 @@ def _require_length(name: str, value: units.Length) -> None:
             f"{name} must be a length quantity; multiply plain magnitudes by "
             "their unit, e.g. u.angstrom."
         )
-    if units.dim_of(value) == _FORCE_DIM:
-        return
-    try:
-        units.require_dim(value, u.angstrom)
-    except units.DimensionError as err:
-        raise units.DimensionError(f"{name}: {err}") from None
+    if (dim := units.dim_of(value)) not in (units.LENGTH, units.FORCE):
+        raise units.DimensionError(
+            f"{name}: expected a length, got one in {units.base_of(value).symbol(dim)}"
+        )
 
 
 def _unchecked(frame: object) -> None:
@@ -533,11 +530,6 @@ def _unchecked(frame: object) -> None:
     keeps, so only direct construction requires quantities.
     """
     del frame
-
-
-_LENGTH_DIM = units.dim_of(u.angstrom)
-_FORCE_DIM = units.dim_of(u.eV / u.angstrom)
-"""The dimension of a cartesian cell gradient ``dE/dh``."""
 
 
 @functools.cache
@@ -550,7 +542,7 @@ def _base_length_unit(base: units.BaseSystem) -> units.LengthUnit:
     Returns:
         One unit of length sized by ``base``.
     """
-    return units.from_dim(1.0, _LENGTH_DIM, base).unit
+    return units.from_dim(1.0, units.LENGTH, base).unit
 
 
 def _active_length_unit() -> units.LengthUnit:
@@ -736,7 +728,9 @@ class TriclinicFrame(LinearFrame, Sliceable):
         return type(self)(self.tril * jnp.asarray(other)[..., None])
 
 
-def _broadcast_cell_factor(cell_factor: float | Array, like: Array) -> Array:
+def _broadcast_cell_factor(
+    cell_factor: float | units.Measured, like: Array
+) -> units.Measured:
     """Align a scalar / per-system ``cell_factor`` with ``like``'s axes.
 
     Appends trailing singleton axes so a per-system ``(B,)`` value lines up with
@@ -745,9 +739,13 @@ def _broadcast_cell_factor(cell_factor: float | Array, like: Array) -> Array:
     to ``like.shape``, so ``cell_factor`` stays a small leaf instead of inflating
     into ``like``'s trailing dimensions.
     """
-    cf = jnp.asarray(cell_factor, like.dtype)
-    cf = cf.reshape(cf.shape + (1,) * (like.ndim - cf.ndim))
-    return jnp.broadcast_to(cf, (like.shape[0], *cf.shape[1:]))
+
+    def align(cf: Array) -> Array:
+        cf = jnp.asarray(cf, like.dtype)
+        cf = cf.reshape(cf.shape + (1,) * (like.ndim - cf.ndim))
+        return jnp.broadcast_to(cf, (like.shape[0], *cf.shape[1:]))
+
+    return units.apply(align, cell_factor)
 
 
 @dataclass
@@ -772,15 +770,16 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
             ``A``, shape ``(..., 6)``.
         cell_factor: Stiffening factor (ASE's ``exp_cell_factor``) so that
             ``vectors = expm(A / cell_factor)`` and the gradient w.r.t. ``A``
-            carries a ``1 / cell_factor`` factor. A stop-gradient leaf that shares
-            ``tril``'s leading axis and broadcasts against it, ``(B, 1)`` for ``B``
-            systems.
+            carries a ``1 / cell_factor`` factor. ``A`` takes its dimension: a
+            length makes ``A`` a length and its gradient a force. A stop-gradient
+            leaf that shares ``tril``'s leading axis and broadcasts against it,
+            ``(B, 1)`` for ``B`` systems.
         length_unit: Unit the logarithm was taken in, which is what ``vectors``
             multiplies back in. Defaults to the length the active base pins.
     """
 
-    tril: Array
-    cell_factor: Array
+    tril: units.Measured
+    cell_factor: units.Measured
     length_unit: units.LengthUnit = field(
         static=True, default_factory=_active_length_unit
     )
@@ -792,13 +791,15 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
         return self.length_unit
 
     @classmethod
-    def from_frame(cls, frame: Frame, *, cell_factor: float | Array = 1.0) -> Self:
+    def from_frame(
+        cls, frame: Frame, *, cell_factor: float | units.Measured = 1.0
+    ) -> Self:
         return cls.from_matrix(frame.vectors, cell_factor=cell_factor)
 
     @classmethod
     @override
     def from_matrix(
-        cls, vecs: units.Length, *, cell_factor: float | Array = 1.0
+        cls, vecs: units.Length, *, cell_factor: float | units.Measured = 1.0
     ) -> Self:
         """Construct from a lower-triangular basis matrix ``L`` (positive
         diagonal), shape ``(..., 3, 3)``, storing ``A = cell_factor * logm(L)`` so
@@ -809,12 +810,15 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
         return cls(tril * cf, cf, _length_unit(vecs))
 
     @property
+    def generator(self) -> Array:
+        """``A / cell_factor``, dimensionless; ``cell_factor`` is held fixed."""
+        return units.magnitudes(self.tril / jax.lax.stop_gradient(self.cell_factor))
+
+    @property
     @override
     def matrix(self) -> SquareMatrix:
-        # fixed preconditioner, never optimised; expm of a lower-triangular A is
-        # lower-triangular.
-        cf = jax.lax.stop_gradient(self.cell_factor)
-        A = triangular_3x3_from_tril(self.tril / cf)
+        # expm of a lower-triangular A is lower-triangular.
+        A = triangular_3x3_from_tril(self.generator)
         return LowerTriangularSquareMatrix(triangular_3x3_expm(A=A))
 
     @property
@@ -825,14 +829,9 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
     @property
     @override
     def volume(self) -> units.Volume:
-        # det(expm(A / cf)) = exp(tr(A / cf)); A's diagonal is tril[0], tril[2], tril[5].
-        return (
-            jnp.exp(
-                (self.tril[..., 0] + self.tril[..., 2] + self.tril[..., 5])
-                / self.cell_factor[..., 0]
-            )
-            * self.unit**3
-        )
+        # det(expm(B)) = exp(tr B); B's diagonal is at tril indices 0, 2, 5.
+        B = self.generator
+        return jnp.exp(B[..., 0] + B[..., 2] + B[..., 5]) * self.unit**3
 
     @override
     def tile(self, multiplicities: tuple[int, int, int]) -> Self:
@@ -846,11 +845,13 @@ class LogTriclinicFrame(BaseFrame, Sliceable):
     @override
     def __mul__(self, other: Array | float | int) -> Self:
         # Uniform scaling commutes: expm(B + log(s) I) = s * expm(B) for B = A / cf,
-        # so add cf * log(s) to A's diagonal elements (tril indices 0, 2, 5).
-        log_scale = self.cell_factor * jnp.log(jnp.asarray(other))[..., None]
+        # so add log(s) to B's diagonal elements (tril indices 0, 2, 5).
+        log_scale = jnp.log(jnp.asarray(other))[..., None]
         diagonal = jnp.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0])
         return type(self)(
-            self.tril + log_scale * diagonal, self.cell_factor, self.length_unit
+            self.cell_factor * (self.generator + log_scale * diagonal),
+            self.cell_factor,
+            self.length_unit,
         )
 
 
@@ -874,15 +875,16 @@ class MatrixLogFrame(BaseFrame, Sliceable):
     Attributes:
         log_matrix: Generator ``A``, shape ``(..., 3, 3)``.
         cell_factor: Stiffening factor (ASE's ``exp_cell_factor``) so that
-            ``vectors = expm(A / cell_factor)``. A stop-gradient leaf that shares
-            ``log_matrix``'s leading axis and broadcasts against it, ``(B, 1, 1)``
-            for ``B`` systems.
+            ``vectors = expm(A / cell_factor)``. ``A`` takes its dimension: a
+            length makes ``A`` a length and its gradient a force. A stop-gradient
+            leaf that shares ``log_matrix``'s leading axis and broadcasts against
+            it, ``(B, 1, 1)`` for ``B`` systems.
         length_unit: Unit the logarithm was taken in, which is what ``vectors``
             multiplies back in. Defaults to the length the active base pins.
     """
 
-    log_matrix: Array
-    cell_factor: Array
+    log_matrix: units.Measured
+    cell_factor: units.Measured
     length_unit: units.LengthUnit = field(
         static=True, default_factory=_active_length_unit
     )
@@ -896,7 +898,7 @@ class MatrixLogFrame(BaseFrame, Sliceable):
     @classmethod
     @override
     def from_matrix(
-        cls, vecs: units.Length, *, cell_factor: float | Array = 1.0
+        cls, vecs: units.Length, *, cell_factor: float | units.Measured = 1.0
     ) -> Self:
         """Construct from an arbitrary basis matrix via the general (eig-based)
         [logm][kups.core.utils.math.logm], shape ``(..., 3, 3)``.
@@ -911,7 +913,7 @@ class MatrixLogFrame(BaseFrame, Sliceable):
 
     @classmethod
     def from_lower_triangular(
-        cls, vecs: units.Length, *, cell_factor: float | Array = 1.0
+        cls, vecs: units.Length, *, cell_factor: float | units.Measured = 1.0
     ) -> Self:
         """Construct from a lower-triangular basis matrix (positive diagonal) via the
         exact [triangular_3x3_logm][kups.core.utils.math.triangular_3x3_logm].
@@ -925,14 +927,19 @@ class MatrixLogFrame(BaseFrame, Sliceable):
         return cls(log_matrix * cf, cf, _length_unit(vecs))
 
     @property
+    def generator(self) -> Array:
+        """``A / cell_factor``, dimensionless; ``cell_factor`` is held fixed."""
+        return units.magnitudes(
+            self.log_matrix / jax.lax.stop_gradient(self.cell_factor)
+        )
+
+    @property
     @override
     def matrix(self) -> SquareMatrix:
-        # fixed preconditioner, never optimised
-        cf = jax.lax.stop_gradient(self.cell_factor)
         fn = jax.scipy.linalg.expm
         for _ in range(self.log_matrix.ndim - 2):
             fn = jax.vmap(fn)
-        return GeneralSquareMatrix(fn(self.log_matrix / cf))
+        return GeneralSquareMatrix(fn(self.generator))
 
     @property
     @override
@@ -993,7 +1000,7 @@ class DeformedFrame(BaseFrame, Sliceable):
         cls,
         frame: Frame,
         *,
-        cell_factor: float | Array = 1.0,
+        cell_factor: float | units.Measured = 1.0,
         deformation: type[LogTriclinicFrame | MatrixLogFrame] = LogTriclinicFrame,
     ) -> Self:
         """ASE ``FrechetCellFilter``-style: an exponential-map deformation anchored
@@ -1009,7 +1016,7 @@ class DeformedFrame(BaseFrame, Sliceable):
             jnp.eye(3, dtype=frame.vectors.dtype), frame.vectors.shape
         )
         deform = deformation.from_matrix(
-            units.from_dim(eye, _LENGTH_DIM), cell_factor=cell_factor
+            units.from_dim(eye, units.LENGTH), cell_factor=cell_factor
         )
         return cls(frame, deform)
 
@@ -1483,7 +1490,7 @@ def zero_gradient_frame[F: Frame](frame: F) -> F:
     Returns:
         A frame of the same type holding a zero parameter gradient.
     """
-    zero = units.relabel(units.zeros_like(frame.vectors), _FORCE_DIM)
+    zero = units.relabel(units.zeros_like(frame.vectors), units.FORCE)
     return frame.parameter_gradient(zero)
 
 

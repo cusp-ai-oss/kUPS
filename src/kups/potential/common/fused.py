@@ -57,7 +57,6 @@ from kups.core.potential import (
     sum_potentials,
 )
 from kups.core.typing import DTypeLike, HasCell, ParticleId, SystemId
-from kups.core.units import catalog as u
 from kups.core.utils.jax import (
     astype_floating,
     dataclass,
@@ -498,8 +497,8 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                     jax.lax.cond(
                         active,
                         lambda span=span, mask=mask: traverse(span, mask),
-                        lambda span=span: units.zeros(
-                            span.stop - span.start, u.eV, dtype
+                        lambda span=span: units.from_dim(
+                            jnp.zeros(span.stop - span.start, dtype), units.ENERGY
                         ),
                     )
                     for span, mask, active in zip(spans, masks, actives, strict=True)
@@ -531,9 +530,11 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         systems = inp.cloud.systems
         cell = systems.data.cell
         cutoff = Table.broadcast_to(self.pair.cutoffs(inp.parameters), systems).data
-        # Absorb roundoff between the bounds and the evaluated distances.
+        # Absorb roundoff between the bounds and the evaluated distances, which
+        # scales with the cutoff and with the cell the fractions live in.
         margin = max(1e-9, 4 * jnp.finfo(self.dtype).eps)
-        limit = cutoff * (1 + margin) + margin * u.angstrom
+        widest = units.max(cell.perpendicular_lengths, axis=-1)
+        limit = cutoff * (1 + margin) + margin * widest
         n = rows.frac.shape[0]
         # A single system broadcasts instead of gathering and segment-summing.
         if systems.size == 1:
@@ -972,7 +973,9 @@ class FusedPotentialCache[Feat]:
         )
         energy = KahanSummand.init(
             PotentialOut(
-                cloud.systems.set_data(units.zeros(cloud.systems.size, u.eV)),
+                cloud.systems.set_data(
+                    units.from_dim(jnp.zeros(cloud.systems.size), units.ENERGY)
+                ),
                 EMPTY,
                 EMPTY,
             )

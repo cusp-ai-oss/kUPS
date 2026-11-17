@@ -55,7 +55,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field, jit
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -121,18 +120,20 @@ class LennardJonesParameters:
         Args:
             cutoff: Cutoff radius.
             parameters: Map from species label to ``(sigma, epsilon)`` pair.
-                ``None`` values default to ``sigma=1 Å``, ``epsilon=0 eV``.
+                ``None`` values default to zero, so the species does not interact.
             mixing_rule: Combining rule for cross-species interactions.
 
         Returns:
             Mixed parameters for a single system.
         """
         labels = tuple(parameters.keys())
+        zero_sigma = units.from_dim(0.0, units.LENGTH)
+        zero_epsilon = units.from_dim(0.0, units.ENERGY)
         sigma = units.stack(
-            [1.0 * u.angstrom if s is None else s for s, _ in parameters.values()]
+            [zero_sigma if s is None else s for s, _ in parameters.values()]
         )
         epsilon = units.stack(
-            [0.0 * u.eV if e is None else e for _, e in parameters.values()]
+            [zero_epsilon if e is None else e for _, e in parameters.values()]
         )
         cutoff_indexed = Table((SystemId(0),), units.stack([cutoff]))
         match mixing_rule:
@@ -326,7 +327,7 @@ class GlobalTailCorrectedLennardJonesParameters(LennardJonesParameters):
         Args:
             cutoff: Cutoff radius.
             parameters: Map from species label to ``(sigma, epsilon)`` pair.
-                ``None`` values default to ``sigma=1 Å``, ``epsilon=0 eV``.
+                ``None`` values default to zero, so the species does not interact.
             mixing_rule: Combining rule for cross-species interactions.
             tail_correction: Whether to enable tail corrections for all
                 non-zero epsilon pairs.

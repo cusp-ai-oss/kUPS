@@ -946,7 +946,8 @@ def test_mirror_surface():
         "Dim", "dmul", "E_M", "E_KG", "E_S", "E_A", "E_K", "F_M", "F_KG", "F_S", "F_A",
         "F_K", "Log", "absolute", "clip", "full", "max", "mean", "min", "ones", "prod",
         "select_n", "sum", "tree_flatten", "tree_leaves", "zeros", "Measured",
-        "magnitudes", "magnitudes_of",
+        "magnitudes", "magnitudes_of", "CHARGE", "ENERGY", "FORCE", "LENGTH",
+        "PRESSURE", "WAVENUMBER",
     }  # fmt: skip
     assert set(units.__all__) == surface | dimensions | {
         f"{name}Unit" for name in dimensions
