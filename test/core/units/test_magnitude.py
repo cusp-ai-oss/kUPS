@@ -9,6 +9,7 @@ from fractions import Fraction
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.testing as npt
 import pytest
 
 from kups.core import units
@@ -202,3 +203,27 @@ def test_attached_magnitudes_are_not_weak():
     b16 = arr([1.0, 2.0], dtype=jnp.bfloat16)
     assert promote(3.0 * u.m, b16).dtype == jnp.float64
     assert eval_shape(promote, 3.0 * u.m, b16).dtype == jnp.float64
+
+
+def test_arraylike_magnitudes():
+    # a scalar-returning apply holds a jax literal rather than an array, and is read
+    # through the same conversion as any ArrayLike
+    dim = units.dim_of(u.angstrom)
+    at = units.ATOMISTIC
+    for q in (
+        units.Quantity(3.0, dim, at),
+        units.Quantity(np.float64(3.0), dim, at),
+        units.Quantity(np.array([3.0]), dim, at),
+        units.apply(lambda a: 3.0, 3.0 * u.angstrom, dim=dim),
+    ):
+        assert isinstance(q.value, jax.Array)
+        assert isinstance(q.to(u.angstrom), jax.Array)
+        assert isinstance(q / q, jax.Array)  # the dimensions cancel
+        assert q.item() == 3.0
+        first = q.at[()] if q.value.ndim == 0 else q.at[0]
+        npt.assert_allclose(first.get().to(u.angstrom), 3.0)
+    n = units.Quantity(np.zeros(3), dim, at)
+    assert n.value.shape == (3,)
+    npt.assert_allclose(n.at[0].set(1.0 * u.angstrom).to(u.angstrom), [1.0, 0.0, 0.0])
+    plus_one = jax.jit(lambda x: (x + 1.0 * u.angstrom).sum())
+    npt.assert_allclose(plus_one(n).to(u.angstrom), 3.0)
