@@ -106,6 +106,23 @@ def test_unit_property():
     assert units.dim_of(r.unit * r.unit) == units.dim_of(u.m**2)
 
 
+def test_unit_under_trace():
+    # the aval carries the dimension and base, so q.unit resolves under a trace
+    seen: list[object] = []
+    with units.base(units.SI):
+        q = arr(1e5) * u.Pa
+        assert q.unit is u.Pa
+        jax.jit(lambda x: (seen.append(x.unit), x.value)[1])(q)
+        assert seen[0] is u.Pa
+        npt.assert_allclose(jax.jit(lambda x: x.to(x.unit))(q), q.value)
+    r = arr([1.0, 2.0]) * u.angstrom
+    assert r.unit is u.angstrom
+    jax.jit(lambda x: (seen.append(x.unit), x.value)[1])(r)
+    assert seen[-1] is u.angstrom
+    guarded = jax.jit(lambda x: units.maximum(x, 1e-10 * x.unit))(r)
+    npt.assert_allclose(guarded.to(u.angstrom), [1.0, 2.0])
+
+
 def test_ulps_saturates():
     # nan compares all-False, so a helper that only walked the gap would call a
     # nan bit-identical; ulps reports its cap instead
@@ -249,3 +266,4 @@ def test_unit_operand_dtype():
     # float64 magnitudes can hold the factor
     v64 = (arr(1.0) * u.angstrom**6) * u.m**6
     assert float(v64.to(u.angstrom**6 * u.m**6)) == pytest.approx(1.0)
+    assert units.full_like(arr([1.0, 1.0]) * u.angstrom**6, u.m**6).value.shape == (2,)
