@@ -174,6 +174,71 @@ class TestPengRobinsonFugacityMixtures:
             mix.compressibility[0], pure.compressibility[0], rtol=1e-10, atol=1e-10
         )
 
+    def test_distinct_species_against_numpy(self):
+        """CO2 and CH4 each meet their own critical point, as a numpy mixture does."""
+        T, p = 300.0, 10.0 * BAR
+        Pc = np.array([73.77, 45.99]) * float(BAR)
+        Tc = np.array([304.13, 190.56])
+        omega = np.array([0.225, 0.011])
+        y = np.array([0.3, 0.7])
+        out = peng_robinson_log_fugacity(
+            pressure=jnp.array(p),
+            temperature=jnp.array(T),
+            critical_pressure=jnp.asarray(Pc),
+            critical_temperature=jnp.asarray(Tc),
+            acentric_factor=jnp.asarray(omega),
+            composition=jnp.asarray(y),
+            interaction=jnp.zeros((2, 2)),
+        )
+        Ai, Bi = TestPengRobinsonFugacity._pr_coefficients(float(p), Pc, T, Tc, omega)
+        Aij = np.sqrt(np.outer(Ai, Ai))
+        A, B = y @ Aij @ y, y @ Bi
+        Z = TestPengRobinsonFugacity._pr_cubic_roots(A, B).max()
+        sq2 = np.sqrt(2.0)
+        ln_phi = (
+            Bi / B * (Z - 1.0)
+            - np.log(Z - B)
+            - A
+            / (2.0 * sq2 * B)
+            * (2.0 * (Aij @ y) / A - Bi / B)
+            * np.log((Z + (1.0 + sq2) * B) / (Z + (1.0 - sq2) * B))
+        )
+        npt.assert_allclose(out.log_fugacity, ln_phi + np.log(y * float(p)), rtol=1e-10)
+        npt.assert_allclose(out.compressibility, Z, rtol=1e-10)
+
+    def test_batched_states_match_single_calls(self):
+        """Batched pressure and temperature give the per-state results."""
+        p = jnp.array([1.0, 50.0]) * BAR
+        T = jnp.array([280.0, 320.0])
+        kw = dict(
+            critical_pressure=jnp.array([self.Pc, self.Pc]),
+            critical_temperature=jnp.array([self.Tc, self.Tc]),
+            acentric_factor=jnp.array([self.omega, self.omega]),
+            composition=jnp.array([0.25, 0.75]),
+            interaction=jnp.zeros((2, 2)),
+        )
+        batched = peng_robinson_log_fugacity(p, T, **kw)
+        for i in range(2):
+            single = peng_robinson_log_fugacity(p[i], T[i], **kw)
+            npt.assert_allclose(
+                batched.log_fugacity[i], single.log_fugacity, rtol=1e-12
+            )
+            npt.assert_allclose(
+                batched.compressibility[i], single.compressibility, rtol=1e-12
+            )
+        # a composition per state broadcasts against the per-state pressure
+        compositions = jnp.array([[0.25, 0.75], [0.6, 0.4]])
+        per_state = peng_robinson_log_fugacity(
+            p, T, **(kw | {"composition": compositions})
+        )
+        for i in range(2):
+            single = peng_robinson_log_fugacity(
+                p[i], T[i], **(kw | {"composition": compositions[i]})
+            )
+            npt.assert_allclose(
+                per_state.log_fugacity[i], single.log_fugacity, rtol=1e-12
+            )
+
 
 class TestPengRobinsonAutodiff:
     """Gradients of log_fugacity must be finite and match central differences.
@@ -182,7 +247,7 @@ class TestPengRobinsonAutodiff:
     return NaN. The custom JVP on
     [`cubic_roots`][kups.core.utils.math.cubic_roots] plus the double-where
     sanitisation in
-    [`_peng_robinson_log_fugacity`][kups.mcmc.fugacity._peng_robinson_log_fugacity]
+    [`_peng_robinson_log_coefficient`][kups.mcmc.fugacity._peng_robinson_log_coefficient]
     together keep autodiff clean.
     """
 
