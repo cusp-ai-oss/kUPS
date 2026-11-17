@@ -127,10 +127,13 @@ def test_jit_shardings_take_quantities():
     # placement does not weaken the dimension check
     with pytest.raises(units.DimensionError):
         out.to(u.m)
+    # the gradient is still labelled dim(out)/dim(arg)
+    force = jax.jit(units.grad(lambda x: energy(x).sum()))(r)
+    assert units.dim_of(force) == units.dim_of(u.eV / u.angstrom)
 
 
 @needs_four
-def test_multi_device_jit():
+def test_multi_device_jit_and_grad():
     _, sharded = mesh4()
     r = jax.device_put(arange(1.0, 17.0) * u.angstrom, sharded)
     k = 2.0 * u.eV / u.angstrom**2
@@ -142,3 +145,6 @@ def test_multi_device_jit():
     assert spec(out) == P("x")
     assert units.dim_of(out) == units.dim_of(u.J)
     assert float(out.max().to(u.eV)) == pytest.approx(256.0)  # 0.5*2*16^2
+    force = jax.jit(units.grad(lambda x: energy(x).sum()), in_shardings=sharded)(r)
+    assert units.dim_of(force) == units.dim_of(u.eV / u.angstrom)
+    assert float(force.min().to(u.eV / u.angstrom)) == pytest.approx(2.0)  # 2*1

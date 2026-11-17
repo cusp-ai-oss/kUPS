@@ -3,27 +3,51 @@
 
 """Tests for jax transforms over quantities."""
 
+import functools
+import re
+from collections.abc import Callable
 from fractions import Fraction
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import jax
+import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
 from kups.core import units
-from kups.core.units import Energy, Length, Mass, Momentum, Velocity, VelocityUnit
+from kups.core.units import (
+    Area,
+    Energy,
+    Force,
+    Length,
+    Mass,
+    Momentum,
+    Stiffness,
+    Time,
+    Velocity,
+    VelocityUnit,
+    Volume,
+    Wavenumber,
+)
 from kups.core.units import catalog as u
 
 from ._helpers import (
     arange,
     arr,
     checkpoint,
+    eye,
+    jax_grad,
     jit,
+    jnp_vectorize,
     lax_cond,
     lax_switch,
+    np_array,
+    ones,
     ty,
     val,
 )
+
+type EnergySquared = units.Quantity[4, 2, -4, 0, 0]
 
 
 class _State(TypedDict):
@@ -32,7 +56,44 @@ class _State(TypedDict):
     n: jax.Array
 
 
+class _Mixed(TypedDict):
+    r: Length
+    e: Energy
+
+
 SPEED: VelocityUnit = (u.eV / u.amu) ** Fraction(1, 2)  # the atomistic velocity unit
+
+
+def test_grad_units():
+    # grad relabels cotangents to dim(out)/dim(arg); jax.grad cannot
+    def spring(k: Stiffness, x: Length) -> Energy:
+        return 0.5 * k * x**2
+
+    k, x = 250.0 * u.N / u.m, 3.0 * u.cm
+    g = units.grad(spring, 1)(k, x)
+    assert float(g.to(u.N)) == pytest.approx(7.5)  # a force, not a length
+    assert units.dim_of(g) == (1, 1, -2, 0, 0)
+    v, g2 = units.value_and_grad(spring, 1)(k, x)
+    assert float(v.to(u.J)) == pytest.approx(0.1125) and val(g2) == val(g)
+    assert units.dim_of(units.grad(spring, 0)(k, x)) == (2, 0, 0, 0, 0)  # m^2
+    assert float(jit(units.grad(spring, 1))(k, x).to(u.N)) == pytest.approx(7.5)
+    # second order, and grad through a broadcasting reduction
+    assert units.dim_of(units.grad(units.grad(spring, 1), 1)(k, x)) == (
+        0,
+        1,
+        -2,
+        0,
+        0,
+    )
+    xs = arr([1.0, 2.0, 3.0]) * u.m
+
+    def stretch(kk: Stiffness) -> Energy:
+        return (0.5 * kk * xs**2).sum()
+
+    gk = units.grad(stretch, 0)(1.0 * u.N / u.m)
+    assert float(gk.to(u.m**2)) == pytest.approx(7.0)
+    with pytest.raises(TypeError, match="Gradient only defined for scalar"):
+        jax_grad(spring, 1)(k, x)  # jax.grad itself rejects the quantity output
 
 
 def test_vmap():
@@ -51,6 +112,18 @@ def test_vmap():
     xs = arange(6.0).reshape(2, 3) * u.angstrom
     assert list(jax.vmap(lambda x: x.sum(), in_axes=1)(xs).value) == [3.0, 5.0, 7.0]
     assert jax.vmap(momentum, out_axes=0)(vs).shape == (3,)
+
+
+def test_grad_has_aux():
+    def loss(p: Energy) -> tuple[EnergySquared, dict[str, int]]:
+        return (p * p).sum(), {"n": p.shape[0]}
+
+    p = arr([1.0, 2.0]) * u.eV
+    (v, aux), g = units.value_and_grad(loss, has_aux=True)(p)
+    assert float(v.to(u.eV**2)) == 5.0 and aux == {"n": 2}
+    assert units.dim_of(g) == (2, 1, -2, 0, 0)  # d(eV^2)/d(eV) is an energy
+    g2, aux2 = units.grad(loss, has_aux=True)(p)
+    assert list(g2.value) == list(g.value) and aux2 == aux
 
 
 def test_aot_recheck():
@@ -100,6 +173,57 @@ def test_aot_trace_path():
             comp(foreign, args[1])  # the same dimension in another base
 
 
+def test_grad_labels_leaves():
+    def energy(p: dict[str, Energy], n: float) -> Energy:
+        return p["e0"] * n
+
+    for bs in (units.SI, units.ATOMISTIC):
+        with units.base(bs):
+            g = units.grad(energy)({"e0": 1.0 * u.eV}, 3.0)
+            assert not units.is_quantity(g["e0"])  # d(eV)/d(eV) is a number
+            assert float(g["e0"]) == 3.0
+
+    def strained(r: Length, eps: float) -> Energy:
+        return ((r + r * eps) ** 2).sum() * (1.0 * u.eV / u.angstrom**2)
+
+    r0 = arr([1.0, 2.0]) * u.angstrom
+    for bs in (units.SI, units.ATOMISTIC):
+        with units.base(bs):
+            g = units.grad(strained, 1)(r0.rebase(), 0.0)
+            assert float(g.to(u.eV)) == pytest.approx(10.0)  # an energy, labelled
+
+    def kwloss(a: Any, scale: float = 1.0) -> Any:
+        return (a * a).sum() * scale
+
+    gk = units.grad(kwloss)(arr([1.0, 2.0]) * u.angstrom, scale=2.0)
+    assert [float(x) for x in gk.to(u.angstrom)] == [4.0, 8.0]
+
+
+def test_hessian():
+    # units.hessian labels dim(out)/dim(arg)^2; jax's labels each level
+    def pair_energy(x: Length) -> Energy:
+        return (x * x).sum() * (1.0 * u.eV / u.angstrom**2)
+
+    x = arr([0.5, 1.1]) * u.angstrom
+    h = units.hessian(pair_energy)(x)
+    assert units.dim_of(h) == units.dim_of(u.eV / u.angstrom**2)
+    assert float(h[1, 1].to(u.eV / u.angstrom**2)) == pytest.approx(2.0)
+    # jax's hessian labels every level of the tree; kups.core.units' result is one leaf
+    theirs = jax.hessian(pair_energy)(x)
+    assert units.dim_of(theirs) == units.dim_of(u.eV)  # the output's
+    assert units.dim_of(theirs.v.v) == units.dim_of(u.angstrom)  # the argument's
+    npt.assert_allclose(theirs.v.v.value, h.value)
+
+    def spread(p: Length) -> jax.Array:
+        # the same energy over 1 eV, so the output is dimensionless
+        return pair_energy(p) / (1.0 * u.eV)
+
+    theirs, ours = jax.grad(spread)(x), units.grad(spread)(x)
+    assert units.dim_of(theirs) == units.dim_of(u.angstrom)  # the primal's own
+    assert units.dim_of(ours) == units.dim_of(1.0 / u.angstrom)  # the derivative's
+    npt.assert_allclose(theirs.value, ours.value)
+
+
 def test_jit_methods_and_constants():
     class Model:
         # the energy method is jitted with self static
@@ -130,6 +254,279 @@ def test_jit_methods_and_constants():
         jit(as_float)(3.0 * u.angstrom)
 
 
+def test_vjp_and_linearize():
+    # cotangents are relabelled dim(out)/dim(primal) per leaf, matching grad;
+    # jax's own typing would give them the primal's dimension
+    k = 2.0 * u.eV / u.angstrom**2
+    r = arr([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.5, 0.0, 3.0]]) * u.angstrom
+
+    def energies(pos: Length) -> Energy:
+        return 0.5 * k * (pos * pos).sum(axis=1)
+
+    out, vjp_fn = units.vjp(energies, r)
+    assert list(out.to(u.eV)) == [1.0, 4.0, 9.25]
+    (force,) = vjp_fn(ones(3))
+    assert units.dim_of(force) == units.dim_of(u.eV / u.angstrom)
+    assert force.to(u.eV / u.angstrom)[2].tolist() == [1.0, 0.0, 6.0]
+    # a labelled seed multiplies its dimension in
+    (twice,) = vjp_fn(2.0 * units.ones_like(out))
+    assert twice.to(u.eV**2 / u.angstrom)[2].tolist() == [2.0, 0.0, 12.0]
+
+    # one cotangent per primal leaf: d(eV)/d(eV) is a number, d(eV)/d(Å) a force
+    def mixed(d: _Mixed) -> Energy:
+        return (d["r"] * (1.0 * u.eV / u.angstrom)).sum() + 2.0 * d["e"]
+
+    (ct,) = units.vjp(mixed, {"r": r, "e": 3.0 * u.eV})[1](1.0)
+    assert float(ct["e"]) == 2.0
+    assert ct["r"].to(u.eV / u.angstrom)[0].tolist() == [1.0, 1.0, 1.0]
+    value, _, aux = units.vjp(lambda p: (energies(p), "aux"), r, has_aux=True)
+    assert aux == "aux" and list(value.to(u.eV)) == [1.0, 4.0, 9.25]
+    # the output tangent carries the output's dimension
+    _, tangent_out = jax.jvp(energies, (r,), (r,))
+    assert list(tangent_out.to(u.eV)) == [2.0, 8.0, 18.5]
+    # jax requires tangents with the primal's structure
+    step = units.ones_like(r)
+    assert list(jax.jvp(energies, (r,), (step,))[1].to(u.eV)) == [2.0, 4.0, 7.0]
+    with pytest.raises(TypeError, match="same tree structure"):
+        jax.jvp(energies, (r,), (ones((3, 3)),))
+
+    def energy_and_force(pos: Length) -> tuple[Force, Energy]:
+        e, pull = units.vjp(energies, pos)
+        return pull(ones(3))[0], e
+
+    gradient, row_fn, energy = jax.linearize(energy_and_force, r, has_aux=True)
+    assert gradient.to(u.eV / u.angstrom)[1].tolist() == [0.0, 4.0, 0.0]
+    assert list(energy.to(u.eV)) == [1.0, 4.0, 9.25]
+    # one Hessian row times a step of one angstrom: eV/angstrom
+    flat = units.zeros_like(r).reshape((-1,)).at[4].set(1.0 * u.angstrom)
+    basis = flat.reshape(r.shape)
+    row = row_fn(basis)
+    assert units.dim_of(row) == units.dim_of(u.eV / u.angstrom)
+    assert row.to(u.eV / u.angstrom)[1].tolist() == [0.0, 2.0, 0.0]
+    full = units.hessian(lambda p: energies(p).sum())(r)
+    assert full.to(u.eV / u.angstrom**2)[1, 1][1].tolist() == pytest.approx(
+        [0.0, 2.0, 0.0]
+    )
+
+    # a custom_vjp backward rule returns the primal's dimension unless it relabels
+    @jax.custom_vjp
+    def energy(pos: Length) -> Energy:
+        return energies(pos).sum()
+
+    def fwd(pos: Length) -> tuple[Energy, Length]:
+        return energy(pos), pos
+
+    energy.defvjp(fwd, lambda res, g: (k * res * g.to(u.eV),))
+    structure = re.escape("same container (pytree) structure")
+    with pytest.raises(TypeError, match=structure):
+        units.grad(energy)(r)
+
+    @jax.custom_vjp
+    def relabelled(pos: Length) -> Any:
+        return energies(pos).sum()
+
+    relabelled.defvjp(
+        lambda pos: (relabelled(pos), pos),
+        lambda res, g: (
+            units.relabel(k * res * g.to(u.eV), units.dim_of(1.0 * u.angstrom)),
+        ),
+    )
+    assert units.grad(relabelled)(r).to(u.eV / u.angstrom)[2].tolist() == [
+        1.0,
+        0.0,
+        6.0,
+    ]
+    assert list(units.relabel(ones(2), units.dim_of(u.eV)).to(u.eV)) == [1.0, 1.0]
+    assert list(units.relabel(r, units.ONE)[1]) == [0.0, 2.0, 0.0]
+    # an output of plain leaves measures nothing, so its cotangent is 1/dim(primal)
+    counts = units.vjp(lambda p: (p.sum() / (1.0 * u.angstrom),), r)
+    assert units.dim_of(counts[1]((1.0,))[0]) == (-1, 0, 0, 0, 0)
+    # mixed-dimension cotangents and outputs are refused
+    refused: list[tuple[Callable[[], object], str]] = [
+        (
+            lambda: units.vjp(lambda p: (energies(p), 2.0 * energies(p)), r)[1](
+                (ones(3), ones(3) * u.eV)
+            ),
+            "units.vjp: the cotangent measures both a plain array and 'eV'",
+        ),
+        (
+            lambda: units.vjp(lambda p: (energies(p), p), r),
+            "units.vjp: the output measures both 'eV' and 'Å'",
+        ),
+        (
+            lambda: units.vjp(lambda p: (energies(p), p.sum() / r), r),
+            "units.vjp: the output measures both 'eV' and a plain array",
+        ),
+    ]
+    for fn, message in refused:
+        with pytest.raises(units.DimensionError, match=re.escape(message)):
+            fn()
+
+
+def test_vectorize():
+    # jnp.vectorize calls jnp.asarray on every operand, which a quantity refuses;
+    # units.vectorize hands it magnitudes and relabels them around each call
+    @functools.partial(
+        units.vectorize, signature="(),(n),(n)->(n)", excluded=frozenset({0})
+    )
+    def flow(state: None, dt: Time, primal: Length, tangent: Velocity) -> Length:
+        del state  # the excluded argument, passed through untouched
+        return primal + tangent * dt
+
+    pos = arr([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]) * u.angstrom
+    vel = ones((2, 3)) * u.angstrom / u.fs
+    moved = flow(None, 0.5 * u.fs, pos, vel)
+    assert units.dim_of(moved) == units.dim_of(u.angstrom)
+    assert moved.to(u.angstrom)[1].tolist() == [4.5, 5.5, 6.5]
+    # a scalar broadcasts, a per-system value maps, and one system needs no batch axis
+    per_system = flow(None, arr([0.5, 1.0]) * u.fs, pos, vel)
+    assert per_system.to(u.angstrom)[1].tolist() == [5.0, 6.0, 7.0]
+    assert flow(None, 0.5 * u.fs, pos[0], vel[0]).to(u.angstrom).tolist() == [
+        1.5,
+        2.5,
+        3.5,
+    ]
+    # dimension checks still run inside the call
+    with pytest.raises(units.DimensionError, match="cannot add"):
+        flow(None, 0.5 * u.fs, pos, pos)
+
+    # determinant and inverse of a 3x3 cell, by the adjugate
+    @functools.partial(units.vectorize, signature="(3,3)->(),(3,3)")
+    def det_and_inverse(a: Length) -> tuple[Volume, Wavenumber]:
+        cof = [
+            [
+                a[(i + 1) % 3, (j + 1) % 3] * a[(i + 2) % 3, (j + 2) % 3]
+                - a[(i + 1) % 3, (j + 2) % 3] * a[(i + 2) % 3, (j + 1) % 3]
+                for i in range(3)
+            ]
+            for j in range(3)
+        ]
+        det = a[0, 0] * cof[0][0] + a[0, 1] * cof[1][0] + a[0, 2] * cof[2][0]
+        return det, units.stack([units.stack(row) for row in cof]) / det
+
+    cells = jnp.stack([jnp.diag(arr([2.0, 3.0, 4.0])), eye(3)]) * u.angstrom
+    volume, inverse = det_and_inverse(cells)
+    assert list(volume.to(u.angstrom**3)) == [24.0, 1.0]
+    assert inverse.to(u.angstrom**-1)[0, 0].tolist() == [0.5, 0.0, 0.0]
+
+    # a plain call stays plain, and relabel asserts what the function computed
+    @functools.partial(units.vectorize, signature="(3,3),(3)->(3)")
+    def matvec(m: Any, v: Any) -> Any:
+        return units.einsum("ij,j->i", m, v)
+
+    assert matvec(cells, ones((2, 3))).to(u.angstrom)[0].tolist() == [2.0, 3.0, 4.0]
+    assert matvec(ones((2, 3, 3)), ones((2, 3)))[0].tolist() == [3.0, 3.0, 3.0]
+    counted = units.vectorize(lambda a, b: a * b, signature="(),()->()")(
+        ones(3), arange(3.0)
+    )
+    counted = units.relabel(counted, units.dim_of(u.eV))
+    assert list(counted.to(u.eV)) == [0.0, 1.0, 2.0]
+    # size-1 batch axes broadcast against each other and against longer ones
+    grid = flow(None, arr([[0.5], [1.0]]) * u.fs, pos[None, :1], vel[None, :1])
+    assert grid.shape == (2, 1, 3)
+    assert grid.to(u.angstrom)[:, 0, 0].tolist() == [1.5, 2.0]
+    lone = flow(None, arr([[0.5]]) * u.fs, pos[:1], vel[:1])
+    assert lone.shape == (1, 1, 3)
+    assert lone.to(u.angstrom)[0, 0].tolist() == [1.5, 2.5, 3.5]
+
+    # the decorator-factory form, with an excluded scale and a keyword argument
+    @units.vectorize(signature="(n)->()", excluded=frozenset({1}))
+    def total(x: Length, scale: float, *, offset: Length) -> Length:
+        return x.sum() * scale + offset
+
+    summed = total(pos, 2.0, offset=1.0 * u.angstrom)
+    assert summed.to(u.angstrom).tolist() == [13.0, 31.0]
+    # jnp.vectorize checks the signature, the exclusions and the core sizes
+    with pytest.raises(ValueError, match="not a valid gufunc signature"):
+        units.vectorize(lambda a: a, signature="(n)")(pos)
+    with pytest.raises(TypeError, match="can only exclude integer or string"):
+        bad = frozenset({1.5})
+        # pyrefly: ignore[no-matching-overload]
+        units.vectorize(lambda a: a, excluded=bad)(pos)
+    with pytest.raises(ValueError, match="inconsistent size for core dimension '3'"):
+        matvec(cells, ones((2, 4)))
+    with pytest.raises(TypeError, match="wrong number of output arguments"):
+        units.vectorize(lambda a: (a, a), signature="(n)->(n)")(pos)
+    # jnp.vectorize itself rejects quantities when it converts the operands
+    with pytest.raises(TypeError, match=r"does not convert|Unexpected input type"):
+        jnp_vectorize(lambda a, b: a + b, signature="(n),(n)->(n)")(pos, pos)
+    assert jnp_vectorize(lambda a, b: a + b, signature="(n),(n)->(n)")(
+        ones((2, 3)), ones((2, 3))
+    )[0].tolist() == [2.0, 2.0, 2.0]
+
+
+def test_label_validation():
+    # wrong labels are caught early: branch mismatches, vjp outputs mixing bases,
+    # and dim= arguments that are not dimension vectors (a Unit is the likely slip)
+    r = arr([1.0, 2.0]) * u.angstrom
+    with pytest.raises(TypeError, match="same pytree structure"):
+        jax.lax.cond(True, lambda x: (x, x * 2.0), lambda x: [x, x * 2.0], r)
+    with pytest.raises(TypeError, match="same pytree structure"):
+        jax.lax.cond(True, lambda x: {"a": x}, lambda x: {"b": x}, r)
+    with pytest.raises(TypeError, match="same pytree structure"):
+        jax.lax.switch(1, [lambda x: (x, x), lambda x: (x, (x,))], r)
+    # matching structures work
+    got = jax.lax.cond(False, lambda x: {"a": x}, lambda x: {"a": x * 3.0}, r)
+    npt.assert_allclose(got["a"].to(u.angstrom), [3.0, 6.0])
+
+    def two_bases(x: Length) -> tuple[Energy, Energy]:
+        out = x * (1.0 * u.eV / u.angstrom)
+        with units.base(units.SI):
+            return out, out.rebase()
+
+    with pytest.raises(units.DimensionError, match="in base atomistic and in base SI"):
+        units.vjp(two_bases, r)
+    out, pull = units.vjp(lambda x: (x * (1.0 * u.eV / u.angstrom),) * 2, r)
+    (grad,) = pull((ones(2), ones(2)))
+    npt.assert_allclose(grad.to(u.eV / u.angstrom), [2.0, 2.0])
+
+    for name, call in (
+        ("apply", lambda d: units.apply(jnp.mod, r, r, dim=d)),
+        ("apply", lambda d: units.einsum("i,i->", r, r, dim=d)),
+        ("relabel", lambda d: units.relabel(r, d)),
+    ):
+        for bad in (u.angstrom, (0.5, 0, 0, 0, 0), "m=1", 1.0 * u.angstrom):
+            with pytest.raises(
+                units.DimensionError, match=rf"units\.{name}: .* is not a dimension"
+            ):
+                call(bad)
+    # dim= is optional everywhere except relabel
+    with pytest.raises(units.DimensionError, match=r"units\.relabel: None is not"):
+        units.relabel(r, None)  # pyrefly: ignore[bad-argument-type]
+    assert units.dim_of(
+        units.apply(jnp.mod, r, r, dim=units.dim_of(u.angstrom))
+    ) == units.dim_of(u.angstrom)
+
+    # magnitudes have to be floating: an integer dtype rounds the rescale factor away
+    counts = np_array([1, 2])
+    for what, call in (
+        ("from_dim", lambda d: units.from_dim(counts, d)),
+        ("relabel", lambda d: units.relabel(arr([1, 2]), d)),
+    ):
+        with pytest.raises(
+            units.DimensionError, match=rf"units\.{what}: int64 magnitudes cannot carry"
+        ):
+            call(units.dim_of(u.angstrom))
+        assert units.dim_of(call(units.ONE)) == units.ONE  # a count reads back as one
+    floats = units.from_dim(counts.astype(float), units.dim_of(u.angstrom))
+    npt.assert_allclose(floats.to(u.nm), [0.1, 0.2])  # the same numbers, converted
+
+
+def test_argnums_validation():
+    # a repeated argnum would overwrite itself and hand back a zero gradient
+    def area(a: Length, b: Length) -> Area:
+        return a * b
+
+    args = (2.0 * u.angstrom, 3.0 * u.angstrom)
+    for build in (units.grad, units.value_and_grad, units.hessian):
+        for argnums in ((0, 0), (0, -2)):  # the second names argument 0 again
+            with pytest.raises(ValueError, match="names the same argument twice"):
+                build(area, argnums=argnums)(*args)
+        with pytest.raises(TypeError, match="requires at least 4 positional"):
+            build(area, argnums=(0, 3))(*args)
+    assert val(units.grad(area, argnums=-1)(*args)) == 2.0
+
+
 def test_scan_carry():
     def step(c: Length, x: Length) -> tuple[Length, Length]:
         return c + x, c
@@ -137,11 +534,16 @@ def test_scan_carry():
     def run(c: Length, x: Length) -> tuple[Length, Length]:
         return jax.lax.scan(step, c, x, length=3)
 
+    def total(x: Length) -> Length:
+        return run(0.0 * u.angstrom, x)[0]
+
     xs = arr([1.0, 2.0, 3.0]) * u.angstrom
     final, ys = jax.lax.scan(step, 0.0 * u.angstrom, xs, length=3)
     assert val(final) == 6.0 and list(ys.value) == [0.0, 1.0, 3.0]
     jfinal, _ = jit(run)(0.0 * u.angstrom, xs)
     assert val(jfinal) == 6.0
+    g = units.grad(total)(xs)
+    assert list(g) == [1.0, 1.0, 1.0]  # d(m)/d(m) is dimensionless -> plain array
     # length inferred from xs's leading axis
     inferred, _ = jax.lax.scan(step, 0.0 * u.angstrom, xs)
     assert val(inferred) == 6.0
@@ -185,6 +587,14 @@ def test_cond_and_switch():
         jax.vmap(lambda a, b: jax.lax.switch(a, [lambda x: x, lambda x: x * 2], b))
     )(arr([0, 1, 1]), state["r"])
     assert list(chosen.to(u.angstrom)) == [1.0, 4.0, 6.0]
+    # the derivative flows through the branch that ran
+    pull = units.grad(
+        lambda q: (
+            jax.lax.cond(False, lambda x: x, lambda x: x * 2, q)
+            * (1.0 * u.eV / u.angstrom)
+        ).sum()
+    )(state["r"])
+    assert list(pull.to(u.eV / u.angstrom)) == [2.0, 2.0, 2.0]
     # a branch may close over a batched quantity: select_n sees the magnitudes
     closed = jax.vmap(lambda p, q: jax.lax.cond(p, lambda: q, lambda: q * 2))(
         arr([True, False, True]), state["r"]
@@ -227,6 +637,15 @@ def test_stop_gradient():
     assert units.dim_of(tree["r"]) == units.dim_of(u.angstrom)
     assert not units.is_quantity(tree["n"])
 
+    def energy(x: Length) -> Energy:
+        # only the live half of the sum carries a derivative
+        return ((x + jax.lax.stop_gradient(x)) ** 2).sum() * (
+            1.0 * u.eV / u.angstrom**2
+        )
+
+    g = jax.jit(units.grad(energy))(r)
+    npt.assert_allclose(g.to(u.eV / u.angstrom), [4.0, 8.0])
+
 
 def test_checkpoint():
     def energy(r: Length) -> Energy:
@@ -247,3 +666,138 @@ def test_checkpoint():
     # untraced, remat returns the same type the function itself returns
     assert ty(ck(r)) == ty(energy(r))
     assert float(ck(r).to(u.eV)) == 14.0
+    # grad through the checkpoint is labelled as usual
+    g = units.grad(ck)(r)
+    assert units.dim_of(g) == units.dim_of(u.eV / u.angstrom)
+    npt.assert_allclose(g.to(u.eV / u.angstrom), [2.0, 4.0, 6.0])
+
+
+def test_grad_across_bases():
+    # an output in another base than the primal is rebased into the primal's
+    k = 2.0 * u.eV / u.angstrom**2
+
+    def energy(x: Length) -> Energy:
+        return (0.5 * k * x**2).sum()
+
+    with units.base(units.SI):
+        r = arr([1.0, 2.0]) * u.angstrom
+    g = units.grad(energy)(r)
+    assert units.base_of(energy(r)) == units.ATOMISTIC
+    assert units.base_of(g) == units.SI
+    npt.assert_allclose(g.to(u.eV / u.angstrom), [2.0, 4.0], rtol=1e-12)
+
+
+def test_derivative_labels_per_argument():
+    def spring(k: Stiffness, x: Length) -> Energy:
+        return 0.5 * k * x**2
+
+    k, x = 2.0 * u.eV / u.angstrom**2, 3.0 * u.angstrom
+    dk, dx = units.grad(spring, (0, 1))(k, x)
+    assert units.dim_of(dk) == units.dim_of(u.angstrom**2)
+    assert float(dk.to(u.angstrom**2)) == pytest.approx(4.5)
+    assert float(dx.to(u.eV / u.angstrom)) == pytest.approx(6.0)
+    energy, (dk2, _) = units.value_and_grad(spring, (0, 1))(k, x)
+    assert float(energy.to(u.eV)) == pytest.approx(9.0)
+    assert units.dim_of(dk2) == units.dim_of(u.angstrom**2)
+    # cross terms carry dim(out) / (dim(a) dim(b)), in a nested tuple
+    h = units.hessian(spring, (0, 1))(k, x)
+    assert units.dim_of(h[0][1]) == units.dim_of(u.angstrom)
+    assert float(h[0][1].to(u.angstrom)) == pytest.approx(3.0)
+    assert float(h[1][1].to(u.eV / u.angstrom**2)) == pytest.approx(2.0)
+    assert units.dim_of(h[0][0]) == units.dim_of(u.angstrom**4 / u.eV)
+
+
+def test_cotangent_seeds():
+    r = arr([1.0, 2.0]) * u.angstrom
+
+    def energy(x: Length) -> Energy:
+        return (x * x).sum() * (1.0 * u.eV / u.angstrom**2)
+
+    _, pull = units.vjp(energy, r)
+    with units.base(units.SI):
+        seed = 1.0 * u.eV
+    # a seed from another base is rebased to the output's
+    npt.assert_allclose(
+        pull(seed)[0].to(u.eV**2 / u.angstrom),
+        pull(1.0 * u.eV)[0].to(u.eV**2 / u.angstrom),
+    )
+    # a plain output takes a labelled seed too, which labels the result
+    _, plain_pull = units.vjp(lambda p: p.sum() / (1.0 * u.angstrom), r)
+    npt.assert_allclose(plain_pull(2.0 * u.eV)[0].to(u.eV / u.angstrom), [2.0, 2.0])
+    # grad names itself when the output mixes dimensions
+    with pytest.raises(units.DimensionError, match=r"^units\.grad: the output"):
+        units.grad(lambda p: (p.sum(), (p * p).sum()))(r)
+
+
+def test_relabel_base():
+    length = units.dim_of(u.angstrom)
+    assert units.base_of(units.relabel(arr([1.0]), length, units.SI)) == units.SI
+    leaf = arr([1.0]) * u.angstrom
+    assert units.base_of(units.relabel(leaf, length)) == units.ATOMISTIC
+    moved = units.relabel(leaf, length, units.SI)
+    assert units.base_of(moved) == units.SI and float(moved.value[0]) == 1.0
+
+
+def test_grad_refuses_complex_output():
+    with pytest.raises(TypeError, match="real floating output, got complex128"):
+        units.grad(lambda x: (x / (1.0 * u.angstrom)).sum() * (1 + 1j))(
+            arr([1.0]) * u.angstrom
+        )
+
+
+def test_hessian_labels_per_leaf():
+    # a pytree argument, a plain leaf and a primal in another base each get
+    # dim(out) / (dim(a) dim(b)) in the primal's base
+    k = 2.0 * u.eV / u.angstrom**2
+
+    def energy(p: dict[str, Any]) -> Energy:
+        return 0.5 * k * p["x"] ** 2 * p["n"] ** 2
+
+    with units.base(units.SI):
+        x = 3.0 * u.angstrom
+    h = units.hessian(energy)({"x": x, "n": arr(1.0)})
+    xx, xn, nn = h["x"]["x"], h["x"]["n"], h["n"]["n"]
+    assert units.base_of(xx) == units.SI
+    assert float(xx.to(u.eV / u.angstrom**2)) == pytest.approx(2.0)
+    assert units.dim_of(xn) == units.dim_of(u.eV / u.angstrom)
+    assert float(xn.to(u.eV / u.angstrom)) == pytest.approx(12.0)
+    assert float(nn.to(u.eV)) == pytest.approx(18.0)
+
+
+def test_vjp_does_not_depend_on_the_base():
+    # one physical function, written in two bases, pulls one physical cotangent
+    # back to one physical result
+    r = arr([1.0, 2.0]) * u.angstrom
+    seed = 3.0 * u.eV
+
+    def energy(x: Length) -> Energy:
+        return (x * x).sum() * (1.0 * u.eV / u.angstrom**2)
+
+    want = units.vjp(energy, r)[1](seed)[0].to(u.eV**2 / u.angstrom)
+    npt.assert_allclose(want, [6.0, 12.0])
+    with units.base(units.SI):
+        si_r = r.rebase()
+        in_si = units.vjp(energy, si_r)[1](seed)[0]
+    # the output is atomistic and the primal SI, so the result is rebased
+    mixed = units.vjp(energy, si_r)[1](seed)[0]
+    for got in (in_si, mixed):
+        assert units.base_of(got) == units.SI
+        npt.assert_allclose(got.to(u.eV**2 / u.angstrom), want, rtol=1e-12)
+
+
+def test_grad_refuses_integer_inputs():
+    def f(n: jax.Array) -> jax.Array:
+        return jnp.sum(n.astype(float) ** 2)
+
+    for transform in (units.grad, units.value_and_grad):
+        with pytest.raises(TypeError, match="real- or complex-valued inputs"):
+            transform(f)(jnp.arange(3))
+
+
+def test_relabel_attaches_plain_leaves_like_from_dim():
+    length = units.dim_of(u.m)
+    relabelled = units.relabel(3.0, length)
+    assert not relabelled.value.weak_type
+    assert (relabelled.value * jnp.ones(2, jnp.bfloat16)).dtype == jnp.float64
+    with pytest.raises(TypeError, match="must be a BaseSystem"):
+        units.relabel(3.0, length, "SI")  # pyrefly: ignore[bad-argument-type]
