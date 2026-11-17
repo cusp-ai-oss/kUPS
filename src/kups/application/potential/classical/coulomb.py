@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
-from jax import Array
-
+from kups.core import units
 from kups.core.cell import Vacuum
 from kups.core.data import Table
 from kups.core.lens import Lens, const_lens
@@ -60,7 +59,7 @@ class IsCoulombVacuumState(IsCoulombVacuumGraphState, Protocol):
     """:class:`IsCoulombVacuumGraphState` that also carries the cutoff on the state."""
 
     @property
-    def coulomb_cutoff(self) -> Table[SystemId, Array]: ...
+    def coulomb_cutoff(self) -> Table[SystemId, units.Length]: ...
 
 
 @overload
@@ -80,9 +79,9 @@ def make_coulomb_vacuum_from_state[State](
     probe: None = None,
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -102,9 +101,9 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
     parameters: None = None,
-    gradient: Lens[Geometry, PositionsAndCell],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumState] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 @overload
@@ -112,7 +111,7 @@ def make_coulomb_vacuum_from_state[State](
     state: Lens[State, IsCoulombVacuumGraphState],
     probe: None = None,
     *,
-    parameters: Table[SystemId, Array],
+    parameters: Table[SystemId, units.Length],
     gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, Patch[Any]]: ...
@@ -123,10 +122,10 @@ def make_coulomb_vacuum_from_state[State](
     state: Lens[State, IsCoulombVacuumGraphState],
     probe: None = None,
     *,
-    parameters: Table[SystemId, Array],
-    gradient: Lens[Geometry, PositionsAndCell],
+    parameters: Table[SystemId, units.Length],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, Patch[Any]]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
 @overload
@@ -134,7 +133,7 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     state: Lens[State, IsCoulombVacuumGraphState],
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
-    parameters: Table[SystemId, Array],
+    parameters: Table[SystemId, units.Length],
     gradient: None = None,
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
@@ -145,18 +144,18 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
     state: Lens[State, IsCoulombVacuumGraphState],
     probe: Probe[State, P, IsGraphProbe[IsCoulombGraphParticles, Literal[2]]],
     *,
-    parameters: Table[SystemId, Array],
-    gradient: Lens[Geometry, PositionsAndCell],
+    parameters: Table[SystemId, units.Length],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     neighborlist_factory: NeighborListFactory[IsCoulombVacuumGraphState] = ...,
-) -> Potential[State, PositionsAndCell, EmptyType, P]: ...
+) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
 def make_coulomb_vacuum_from_state(
     state: Any,
     probe: Any = None,
     *,
-    parameters: Table[SystemId, Array] | None = None,
-    gradient: Lens[Geometry, PositionsAndCell] | None = None,
+    parameters: Table[SystemId, units.Length] | None = None,
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
     neighborlist_factory: NeighborListFactory[Any] = AdaptiveNeighborList.from_state,
 ) -> Any:
     """Create a Coulomb vacuum potential from a typed state, optionally with incremental updates.

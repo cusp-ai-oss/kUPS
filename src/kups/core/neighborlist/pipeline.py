@@ -17,7 +17,6 @@ import jax.numpy as jnp
 from jax import Array
 
 from kups.core.data import Index, Table
-from kups.core.lens import bind
 from kups.core.neighborlist.compact import ReduceCompactor
 from kups.core.neighborlist.edges import Edges
 from kups.core.neighborlist.masks import (
@@ -32,6 +31,7 @@ from kups.core.neighborlist.types import (
     CandidateBatch,
     CandidateSelector,
     Compactor,
+    FractionalPoints,
     Mask,
     NeighborListPoints,
     NeighborListSystems,
@@ -39,7 +39,7 @@ from kups.core.neighborlist.types import (
     Postprocessor,
     SelectableNeighborList,
 )
-from kups.core.typing import ParticleId, SystemId
+from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
 from kups.core.utils.jax import dataclass, field
 
 
@@ -155,6 +155,23 @@ def select_candidates[D: int](
     return batch, keep, ctx
 
 
+@dataclass
+class _FractionalParticles:
+    """The particle fields a pipeline reads, with positions in fractional coords.
+
+    Attributes:
+        positions: Cell-relative positions, ``(n, 3)``.
+        system: System each particle belongs to.
+        inclusion: Inclusion group of each particle.
+        exclusion: Exclusion group of each particle.
+    """
+
+    positions: Array
+    system: Index[SystemId]
+    inclusion: Index[InclusionId]
+    exclusion: Index[ExclusionId]
+
+
 def _prepare(
     keys: Table[ParticleId, NeighborListPoints],
     queries: Table[ParticleId, NeighborListPoints] | None,
@@ -167,17 +184,23 @@ def _prepare(
         "Use queried_keys for self-graph updates, or queries for bipartite queries."
     )
     frames = systems.map_data(lambda s: s.cell.frame.materialize())
-    keys_frame = frames[keys.data.system]
-    keys = bind(keys, lambda x: x.data.positions).apply(keys_frame.to_fractional)
-    if queries is not None:
-        queries_frame = frames[queries.data.system]
-        queries = bind(queries, lambda x: x.data.positions).apply(
-            queries_frame.to_fractional
+
+    def fractional(
+        points: Table[ParticleId, NeighborListPoints],
+    ) -> Table[ParticleId, FractionalPoints]:
+        frame = frames[points.data.system]
+        return points.map_data(
+            lambda p: _FractionalParticles(
+                positions=frame.to_fractional(p.positions),
+                system=p.system,
+                inclusion=p.inclusion,
+                exclusion=p.exclusion,
+            )
         )
 
     return PipelineContext(
-        keys=keys,
-        queries=queries,
+        keys=fractional(keys),
+        queries=fractional(queries) if queries is not None else None,
         systems=systems,
         queried_keys=(
             queried_keys.update_labels(keys.keys) if queried_keys is not None else None

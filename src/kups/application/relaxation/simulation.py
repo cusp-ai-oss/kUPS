@@ -19,6 +19,7 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
+from kups.core import units
 from kups.core.data import Table
 from kups.core.lens import Lens, View, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
@@ -38,6 +39,8 @@ from kups.core.propagator import (
 from kups.core.result import as_result_function
 from kups.core.storage import HDF5StorageWriter
 from kups.core.typing import IsState, ParticleId, SystemId
+from kups.core.units import catalog as u
+from kups.core.units import magnitudes_of
 from kups.core.utils.jax import jit
 from kups.potential.common.geometry import (
     Geometry,
@@ -82,9 +85,9 @@ class IndexPrefixFn(Protocol):
 
 def make_relax_step[State, OptState](
     state_lens: Lens[State, IsRelaxState[OptState]],
-    potential: Potential[State, PositionsAndCell, EmptyType, Any],
-    optimizer: Optimizer[PositionsAndCell, OptState],
-    gradient: Lens[Geometry, PositionsAndCell],
+    potential: Potential[State, PositionsAndCell[units.Force], EmptyType, Any],
+    optimizer: Optimizer[PositionsAndCell[units.Length], OptState],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     *,
     accept: View[State, Table[SystemId, Array]] | None = None,
     index_prefix: IndexPrefixFn = relax_index_prefix,
@@ -123,7 +126,7 @@ def make_relax_step[State, OptState](
             sub.systems.map_data(lambda x: x.cell),
         )
 
-    def cached_out(s: State) -> PotentialOut[PositionsAndCell, EmptyType]:
+    def cached_out(s: State) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
         sub = state_lens.get(s)
         return PotentialOut(
             sub.systems.map_data(lambda x: x.potential_energy),
@@ -135,8 +138,12 @@ def make_relax_step[State, OptState](
         particles: Table[ParticleId, RelaxParticles],
         systems: Table[SystemId, RelaxSystems],
     ) -> OptState:
+        # The optimizer's memory holds magnitudes, as its update does: a
+        # transform mixes a parameter with its gradient, so dimensions live at
+        # the propagator boundary rather than inside the chain.
         return optimizer.init(
-            relax_parameters(particles, systems), index_prefix(particles, systems)
+            magnitudes_of(relax_parameters(particles, systems)),
+            index_prefix(particles, systems),
         )
 
     def system_index(s: State) -> PositionsAndCellIndex:
@@ -161,9 +168,9 @@ def make_relax_step[State, OptState](
 
 def make_relax_propagator[State, OptState](
     state_lens: Lens[State, IsRelaxState[OptState]],
-    potential: Potential[State, PositionsAndCell, EmptyType, Any],
-    optimizer: Optimizer[PositionsAndCell, OptState],
-    gradient: Lens[Geometry, PositionsAndCell],
+    potential: Potential[State, PositionsAndCell[units.Force], EmptyType, Any],
+    optimizer: Optimizer[PositionsAndCell[units.Length], OptState],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
 ) -> tuple[Propagator[State], OptInit[OptState]]:
     """Build a relaxation propagator with step counting and error recovery.
 
@@ -218,8 +225,10 @@ def run_relax[State: IsRelaxState[object]](
 
     @jit
     def _postfix_jit(s: State) -> dict[str, Array]:
-        e = jnp.asarray(s.systems.data.potential_energy).sum()
-        fmax = jnp.max(jnp.linalg.norm(s.particles.data.forces, axis=-1))
+        e = s.systems.data.potential_energy.to(u.eV).sum()
+        fmax = jnp.max(
+            units.norm(s.particles.data.forces, axis=-1).to(u.eV / u.angstrom)
+        )
         return {"E[eV]": e, "fmax[eV/Å]": fmax}
 
     def _postfix(s: State) -> dict[str, Any]:

@@ -9,6 +9,7 @@ import numpy.testing as npt
 import pytest
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.data.index import Index
 from kups.core.data.table import Table
@@ -17,8 +18,10 @@ from kups.core.patch import Accept, IdPatch, WithPatch
 from kups.core.potential import EmptyType, PotentialOut
 from kups.core.result import as_result_function
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import testing
 from kups.core.utils.jax import dataclass, field
 from kups.potential.classical.internal import InternalEnergies, MotifData
+from test.units import EV
 
 
 def _make_motifs(data: Array, system_ids: list[int]) -> Table[ParticleId, MotifData]:
@@ -31,7 +34,7 @@ class MockState:
     """Test state containing motifs and potential outputs."""
 
     motifs: Table[ParticleId, MotifData]
-    motif_potential_out: Array
+    motif_potential_out: units.Energy
     other_data: float = field(default=1.0)
 
 
@@ -52,7 +55,7 @@ class TestInternalEnergies:
         """Test basic internal energy calculation and result structure."""
         data = jnp.array([0, 1, 2, 3, 4])
         motifs = _make_motifs(data, [0, 0, 0, 1, 1])
-        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0]) * EV
         state = MockState(motifs=motifs, motif_potential_out=energies)
 
         result = internal_energies_potential(state)
@@ -66,7 +69,9 @@ class TestInternalEnergies:
         assert result.data.total_energies.data.ndim == 1
 
         # Check values: system 0 (10+20+30=60), system 1 (40+50=90)
-        npt.assert_array_equal(result.data.total_energies.data, jnp.array([60.0, 90.0]))
+        testing.assert_allclose(
+            result.data.total_energies.data, jnp.array([60.0, 90.0]), EV
+        )
 
     @pytest.mark.parametrize(
         "data,system_ids,energies,expected",
@@ -106,9 +111,9 @@ class TestInternalEnergies:
     ):
         """Test internal energy computation for various configurations."""
         motifs = _make_motifs(data, system_ids)
-        state = MockState(motifs=motifs, motif_potential_out=energies)
+        state = MockState(motifs=motifs, motif_potential_out=energies * EV)
         result = internal_energies_potential(state)
-        npt.assert_array_equal(result.data.total_energies.data, expected)
+        testing.assert_allclose(result.data.total_energies.data, expected, EV)
 
     def test_empty_motifs(self, internal_energies_potential):
         """Test behavior with empty motifs."""
@@ -120,49 +125,52 @@ class TestInternalEnergies:
             ),
             _cls=ParticleId,
         )
-        state = MockState(motifs=motifs, motif_potential_out=jnp.array([]))
+        state = MockState(motifs=motifs, motif_potential_out=jnp.array([]) * EV)
         result = internal_energies_potential(state)
-        npt.assert_array_equal(result.data.total_energies.data, jnp.array([]))
+        testing.assert_allclose(result.data.total_energies.data, jnp.array([]), EV)
 
     def test_jax_transformations(self, internal_energies_potential):
         """Test that InternalEnergies works with JAX transformations."""
         data = jnp.array([0, 1, 2, 3, 4])
         motifs = _make_motifs(data, [0, 0, 0, 1, 1])
-        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0]) * EV
         state = MockState(motifs=motifs, motif_potential_out=energies)
 
         def compute_energy(s):
-            return internal_energies_potential(s).data.total_energies.data.sum()
+            return units.sum(internal_energies_potential(s).data.total_energies.data)
 
         # JIT
-        npt.assert_allclose(jax.jit(compute_energy)(state), compute_energy(state))
+        testing.assert_allclose(
+            jax.jit(compute_energy)(state), compute_energy(state), EV
+        )
 
         # Grad
         def energy_fn(e):
             return compute_energy(MockState(motifs=motifs, motif_potential_out=e))
 
-        gradients = jax.grad(energy_fn)(energies)
-        npt.assert_array_equal(gradients, jnp.ones_like(energies))
+        gradients = units.grad(energy_fn)(energies)
+        npt.assert_array_equal(gradients, jnp.ones(energies.shape))
 
     def test_patch_application(self, internal_energies_potential):
         """Test that the patch= code path works with IdPatch."""
         data = jnp.array([0, 1, 2, 3, 4])
         motifs = _make_motifs(data, [0, 0, 0, 1, 1])
-        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0]) * EV
         state = MockState(motifs=motifs, motif_potential_out=energies)
 
         result_no_patch = internal_energies_potential(state)
         result_with_patch = internal_energies_potential(state, patch=IdPatch())
-        npt.assert_array_equal(
+        testing.assert_allclose(
             result_no_patch.data.total_energies.data,
             result_with_patch.data.total_energies.data,
+            EV,
         )
 
     def test_with_assertion_propagation(self, internal_energies_potential):
         """Test that assertions from patches are properly propagated."""
         data = jnp.array([0, 1, 2, 3, 4])
         motifs = _make_motifs(data, [0, 0, 0, 1, 1])
-        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        energies = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0]) * EV
         state = MockState(motifs=motifs, motif_potential_out=energies)
 
         @dataclass

@@ -12,6 +12,7 @@ from kups.core.cell import PeriodicCell, TriclinicFrame
 from kups.core.data.index import Index
 from kups.core.neighborlist.types import PipelineContext
 from kups.core.typing import ParticleId
+from test.units import A
 
 from ._builders import after, make_batch, make_lh, make_pipeline_ctx, make_systems
 
@@ -41,7 +42,8 @@ class TestPipelineContext:
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         rh = make_lh(jnp.zeros((2, 3)), jnp.zeros(2, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         with pytest.raises(
             AssertionError, match="cannot combine queries with queried_keys"
@@ -56,7 +58,8 @@ class TestPipelineContext:
     def test_allows_queried_keys_without_rh(self):
         lh = make_lh(jnp.zeros((3, 3)), jnp.zeros(3, dtype=int))
         systems, _ = make_systems(
-            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None])), jnp.array([1.0])
+            PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3)[None] * A)),
+            jnp.array([1.0]),
         )
         queried_keys = Index(lh.keys, jnp.array([0, 2]))
         ctx = PipelineContext(

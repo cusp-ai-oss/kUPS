@@ -10,6 +10,10 @@ behavior, essential for accurate phase equilibria and grand canonical Monte Carl
 Currently implements the Peng-Robinson cubic equation of state, which provides good
 accuracy for hydrocarbons and many other fluids. The framework supports extension to
 other equations of state (e.g., Soave-Redlich-Kwong, virial equations).
+
+Fugacities are returned as a [units.Log][kups.core.units.Log] referenced to
+pascal; ``log_fugacity.exp()`` recovers the fugacity, convertible to any pressure
+unit.
 """
 
 from typing import NamedTuple
@@ -17,6 +21,8 @@ from typing import NamedTuple
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
+from kups.core.units import catalog as u
 from kups.core.utils.jax import jit, vectorize
 from kups.core.utils.math import cubic_roots
 
@@ -25,12 +31,12 @@ class LogFugacityResult(NamedTuple):
     """Result of fugacity calculation.
 
     Attributes:
-        log_fugacity: Natural logarithm of fugacity for each component, in the
-            unit of the pressure passed in
+        log_fugacity: Fugacity of each component, in the log domain against
+            pascal.
         compressibility: Compressibility factor Z = PV/(nRT) [-]
     """
 
-    log_fugacity: Array
+    log_fugacity: units.Log[units.PressureUnit]
     compressibility: Array
 
 
@@ -130,10 +136,10 @@ def _peng_robinson_log_coefficient(
 
 
 def peng_robinson_log_fugacity(
-    pressure: Array,
-    temperature: Array,
-    critical_pressure: Array,
-    critical_temperature: Array,
+    pressure: units.Pressure,
+    temperature: units.Temperature,
+    critical_pressure: units.Pressure,
+    critical_temperature: units.Temperature,
     acentric_factor: Array,
     composition: Array = jnp.ones((1,)),
     interaction: Array = jnp.zeros((1, 1)),
@@ -148,10 +154,10 @@ def peng_robinson_log_fugacity(
     acentric factor. Batched inputs are vectorized over.
 
     Args:
-        pressure: System pressure, in the unit of ``critical_pressure``
-        temperature: System temperature [K]
+        pressure: System pressure
+        temperature: System temperature
         critical_pressure: Critical pressure for each component, shape `(n,)`
-        critical_temperature: Critical temperature for each component [K], shape `(n,)`
+        critical_temperature: Critical temperature for each component, shape `(n,)`
         acentric_factor: Acentric factor for each component [-], shape `(n,)`
         composition: Mole fraction of each component [-], shape `(n,)`. Default: pure component
         interaction: Binary interaction parameters [-], shape `(n, n)`. Default: ideal mixing
@@ -163,18 +169,24 @@ def peng_robinson_log_fugacity(
         ```python
         # CO2 at 10 bar and 300 K
         result = peng_robinson_log_fugacity(
-            1e6, 300.0, jnp.array([7.38e6]), jnp.array([304.2]), jnp.array([0.228])
+            10.0 * u.bar,
+            300.0 * u.K,
+            jnp.array([7.38e6]) * u.Pa,
+            jnp.array([304.2]) * u.K,
+            jnp.array([0.228]),
         )
         ```
     """
-    pressure = jnp.asarray(pressure)
     log_coefficient, compressibility = _peng_robinson_log_coefficient(
         pressure[..., None] / critical_pressure,
-        jnp.asarray(temperature)[..., None] / critical_temperature,
+        temperature[..., None] / critical_temperature,
         acentric_factor,
         composition,
         interaction,
     )
-    # f_i = phi_i * y_i * P
-    log_fugacity = log_coefficient + jnp.log(pressure)[..., None] + jnp.log(composition)
-    return LogFugacityResult(log_fugacity, compressibility)
+    # f_i = phi_i * y_i * P; only P carries a unit, so it sets the log reference.
+    log_pressure = units.Log.of(pressure, u.Pa).log[..., None]
+    return LogFugacityResult(
+        units.Log(log_pressure + (log_coefficient + jnp.log(composition)), u.Pa),
+        compressibility,
+    )

@@ -33,7 +33,8 @@ Model:
   ``dim(out) / dim(arg)``, times the cotangent's dimension for ``vjp``. The array
   and linear algebra functions here cover the cases ``jnp`` rejects; ``apply``
   wraps any other function and ``relabel`` states a dimension the type algebra
-  cannot compute.
+  cannot compute. ``Log`` holds ``log(x / ref)`` with a static reference unit, for
+  values spanning many decades.
 
 Caveats:
   * ``jax.grad`` gives a gradient the primal's dimension. This is silently wrong
@@ -137,6 +138,7 @@ from kups.core.units._linalg import (
     inv,
     qr,
 )
+from kups.core.units._log import Log
 from kups.core.units._transforms import (
     grad,
     hessian,
@@ -190,6 +192,7 @@ __all__ = [
     "Quantity",
     "Measured",
     "Unit",
+    "Log",
     "Dimensionless",
     "DimensionError",
     "OddExponentRoot",

@@ -103,6 +103,9 @@ def get_transformations(
 def make_optimizer(transformations: TransformationConfig) -> Optimizer[Any, Any]:
     """Create a chained optimizer from a list of transform configs.
 
+    Hyperparameters are magnitudes in the parameters' base; see
+    [RelaxationPropagator][kups.relaxation.propagator.RelaxationPropagator].
+
     Args:
         transformations: List of transform specifications.
 

@@ -15,6 +15,7 @@ from typing import override
 
 from jax import Array
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Index, Sliceable, Table
 from kups.core.typing import (
@@ -74,7 +75,7 @@ class Edges[Degree: int](Sliceable):
         self,
         particles: Table[ParticleId, HasPositionsAndSystemIndex],
         systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    ) -> Array:
+    ) -> units.Length:
         """Compute difference vectors between connected particles.
 
         For each edge, computes the vector from the first particle to each
@@ -96,7 +97,7 @@ class Edges[Degree: int](Sliceable):
         self,
         particles: Table[ParticleId, HasPositionsAndSystemIndex],
         systems: Table[SystemId, HasCell[AnyPeriodicity]],
-    ) -> Array:
+    ) -> units.Length:
         """Compute absolute shift vectors for all particles in each edge.
 
         Converts relative shifts to absolute Cartesian shift vectors.

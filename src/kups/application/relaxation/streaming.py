@@ -31,6 +31,7 @@ from kups.application.relaxation.simulation import (
     make_relax_step,
 )
 from kups.application.utils.particles import Particles, default_exclusion
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.data import Buffered, Index, Table
 from kups.core.lens import LambdaLens, Lens, bind
@@ -44,6 +45,7 @@ from kups.core.propagator import (
 )
 from kups.core.stream import slot_owners, slot_rows_lens, slot_system_index
 from kups.core.typing import Label, ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, tree_concat, tree_map
 from kups.potential.common.geometry import (
     Geometry,
@@ -81,7 +83,7 @@ class RelaxPayload:
     """
 
     particles: Particles
-    position_gradients: Array
+    position_gradients: units.Force
     systems: RelaxSystems
     step: Array
     ordinal: Array
@@ -250,7 +252,7 @@ def payload_from_structures(
     rows: list[RelaxPayload] = []
     for (particles, cell), ordinal in zip(structures, ordinals, strict=True):
         if cell.vectors.shape != (3, 3) or bool(
-            jnp.any(jnp.triu(cell.vectors, 1) != 0)
+            jnp.any(jnp.triu(units.magnitudes(cell.vectors), 1) != 0)
         ):
             raise ValueError(f"Structure {ordinal} needs one lower-triangular cell.")
         if cell.periodic != periodic:
@@ -291,7 +293,9 @@ def payload_from_structures(
                     .set(slot_system_index(padded.system.valid_mask)),
                     is_leaf=lambda x: isinstance(x, Index),
                 ),
-                position_gradients=jnp.zeros((1, capacity, 3), dtype),
+                position_gradients=units.zeros(
+                    (1, capacity, 3), u.eV / u.angstrom, dtype
+                ),
                 systems=relax_systems(cell, jnp.asarray([n], dtype)),
                 step=jnp.zeros((1,), int),
                 ordinal=jnp.asarray([ordinal], int),
@@ -306,26 +310,27 @@ def idle_payload(
     capacity: int,
     species: Sequence[Label],
     periodic: AnyPeriodicity,
-    cutoff: float,
+    cutoff: units.Length,
     dtype: DTypeLike = float,
 ) -> RelaxPayload:
     """An unoccupied slot (ordinal -1) in a finite cubic placeholder cell.
 
-    The cell side is ``max(2 * cutoff, 1.0)``, so a neighbor list sees one image
+    The cell side is ``max(2 * cutoff, 1 Å)``, so a neighbor list sees one image
     per axis and a handful of cells; a degenerate cell would produce NaNs or huge
     candidate counts.
     """
-    side = max(2.0 * float(cutoff), 1.0)
+    side = max(2.0 * float(cutoff.to(u.angstrom)), 1.0)
     cell = Cell.from_pbc(
-        TriclinicFrame.from_matrix(jnp.eye(3, dtype=dtype) * side), periodic
+        TriclinicFrame.from_matrix(jnp.eye(3, dtype=dtype) * side * u.angstrom),
+        periodic,
     )
     particles: Table[ParticleId, Particles] = Table(
         (),
         Particles(
-            positions=jnp.zeros((0, 3), dtype),
-            masses=jnp.zeros((0,), dtype),
+            positions=units.zeros((0, 3), u.angstrom, dtype),
+            masses=units.zeros((0,), u.amu, dtype),
             atomic_numbers=jnp.zeros((0,), int),
-            charges=jnp.zeros((0,), dtype),
+            charges=units.zeros((0,), u.e, dtype),
             labels=Index(tuple(species), jnp.zeros((0,), int), _cls=Label),
             system=Index.integer(jnp.zeros((0,), int), n=1, label=SystemId),
         ),
@@ -351,7 +356,11 @@ def make_streaming_relax_state[OptState](
             bind(particle_data)
             .focus(lambda p: p.system)
             .set(slot_owners(slots).data.apply_mask(jnp.zeros(n_rows, bool))),
-            position_gradients=jnp.zeros_like(particle_data.positions),
+            position_gradients=units.zeros(
+                particle_data.positions.shape,
+                u.eV / u.angstrom,
+                particle_data.positions.dtype,
+            ),
             exclusion=default_exclusion(n_rows),
         ),
     )
@@ -373,7 +382,7 @@ def estimate_neighborlist_params(
     sample: Sequence[Structure],
     capacity: int,
     species: Sequence[Label],
-    cutoff: Table[SystemId, Array],
+    cutoff: Table[SystemId, units.Length],
     *,
     multiplier: float = 1.5,
 ) -> UniversalNeighborlistParameters:
@@ -409,12 +418,12 @@ def estimate_neighborlist_params(
 
 def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
     state_lens: Lens[State, IsStreamingRelaxState[OptState]],
-    potential: Potential[State, PositionsAndCell, EmptyType, P],
-    optimizer: Resettable[PositionsAndCell, OptState],
-    gradient: Lens[Geometry, PositionsAndCell],
+    potential: Potential[State, PositionsAndCell[units.Force], EmptyType, P],
+    optimizer: Resettable[PositionsAndCell[units.Length], OptState],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
     slots: Table[SystemId, Index[ParticleId]],
     *,
-    force_tolerance: float,
+    force_tolerance: units.Force,
     max_steps: int,
     include_cell: bool = True,
 ) -> tuple[Propagator[State], OptInit[OptState], OptReset[OptState]]:
@@ -459,7 +468,7 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
             ``slots`` is not two-dimensional or, when concrete, reserves a row
             twice; see [slot_owners][kups.core.stream.slot_owners].
     """
-    if max_steps < 0 or force_tolerance < 0:
+    if max_steps < 0 or units.magnitudes(force_tolerance) < 0:
         raise ValueError("max_steps and force_tolerance must be non-negative.")
 
     def finished(s: State) -> Table[SystemId, Array]:

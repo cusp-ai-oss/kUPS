@@ -17,9 +17,12 @@ import numpy as np
 from jax import Array
 from jax.typing import ArrayLike
 
+from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame, to_lower_triangular
 from kups.core.data import Index, Table
 from kups.core.typing import ExclusionId, InclusionId, Label, ParticleId, SystemId
+from kups.core.units import E_A, E_K, E_KG, E_M, E_S, Measured
+from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 
 
@@ -29,17 +32,17 @@ class Particles:
 
     Attributes:
         positions: Cartesian coordinates in the lower-triangular frame, shape (n_atoms, 3).
-        masses: Atomic masses (amu), shape (n_atoms,).
+        masses: Atomic masses, shape (n_atoms,).
         atomic_numbers: Atomic numbers, shape (n_atoms,).
         charges: Partial charges, shape (n_atoms,).
         labels: Per-atom string labels.
         system: Index mapping each particle to a system.
     """
 
-    positions: Array
-    masses: Array
+    positions: units.Length
+    masses: units.Mass
     atomic_numbers: Array
-    charges: Array
+    charges: units.Charge
     labels: Index[Label]
     system: Index[SystemId]
 
@@ -63,17 +66,19 @@ def default_exclusion(n: int) -> Index[ExclusionId]:
 
 def particles_from_arrays(
     *,
-    positions: ArrayLike,
-    cell_vectors: ArrayLike,
+    positions: units.Length,
+    cell_vectors: units.Length,
     periodicity: (
         Sequence[bool | np.bool_ | Array] | np.ndarray[Any, np.dtype[np.bool_]] | Array
     ),
-    masses: ArrayLike,
+    masses: units.Mass,
     atomic_numbers: ArrayLike,
     labels: Sequence[str],
-    charges: ArrayLike | None = None,
+    charges: units.Charge | None = None,
 ) -> tuple[
-    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+    Table[ParticleId, Particles],
+    Cell[AnyPeriodicity],
+    Callable[[units.Length], units.Length],
 ]:
     """Build particle data and cell from source-neutral arrays.
 
@@ -81,16 +86,16 @@ def particles_from_arrays(
     preservation is not guaranteed.
 
     Args:
-        positions: Cartesian positions in Å, shape ``(n, 3)``, expressed in the
+        positions: Cartesian positions, shape ``(n, 3)``, expressed in the
             same Cartesian coordinate frame as ``cell_vectors``.
-        cell_vectors: Three cell vectors in Å stored row-wise, shape ``(3, 3)``.
+        cell_vectors: Three cell vectors stored row-wise, shape ``(3, 3)``.
             The caller must provide a valid cell or bounding frame.
         periodicity: Three boolean values selecting periodic axes.
-        masses: Particle masses in amu, shape ``(n,)``.
+        masses: Particle masses, shape ``(n,)``.
         atomic_numbers: Integer atomic numbers, shape ``(n,)``.
         labels: Non-string sequence of string labels, one per particle.
-        charges: Partial charges in elementary-charge units, shape ``(n,)``.
-            Omitted charges default to floating zeros.
+        charges: Partial charges, shape ``(n,)``. Omitted charges default to
+            zeros.
 
     Returns:
         Tuple of ``(particles, cell, uc_transform)`` where ``uc_transform``
@@ -98,35 +103,31 @@ def particles_from_arrays(
 
     Raises:
         ValueError: If an input shape or particle/label count is invalid.
-        TypeError: If conversion fails or an input has an invalid type or dtype.
+        TypeError: If a dimensioned input is plain magnitudes, or another input
+            fails to convert or has an invalid type or dtype.
+        units.DimensionError: If a quantity input has the wrong dimension.
     """
-    positions_array = _as_jax_array("positions", positions)
-    cell_vectors_array = _as_jax_array("cell_vectors", cell_vectors)
-    masses_array = _as_jax_array("masses", masses)
+    _require_dimension("positions", positions, u.angstrom)
+    _require_dimension("cell_vectors", cell_vectors, u.angstrom)
+    _require_dimension("masses", masses, u.amu)
     atomic_numbers_array = _as_jax_array("atomic_numbers", atomic_numbers)
-    charges_array = None if charges is None else _as_jax_array("charges", charges)
 
-    _require_real_dtype("positions", positions_array)
-    _require_real_dtype("cell_vectors", cell_vectors_array)
-    _require_real_dtype("masses", masses_array)
     _require_integer_dtype("atomic_numbers", atomic_numbers_array)
-    if charges_array is not None:
-        _require_real_dtype("charges", charges_array)
 
-    if positions_array.ndim != 2 or positions_array.shape[1] != 3:
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(f"positions must have shape (n, 3); got {positions.shape}.")
+    if cell_vectors.shape != (3, 3):
         raise ValueError(
-            f"positions must have shape (n, 3); got {positions_array.shape}."
-        )
-    if cell_vectors_array.shape != (3, 3):
-        raise ValueError(
-            f"cell_vectors must have shape (3, 3); got {cell_vectors_array.shape}."
+            f"cell_vectors must have shape (3, 3); got {cell_vectors.shape}."
         )
 
-    n_particles = positions_array.shape[0]
-    _require_particle_shape("masses", masses_array, n_particles)
+    n_particles = positions.shape[0]
+    if charges is None:
+        charges = units.zeros(n_particles, u.e)
+    _require_dimension("charges", charges, u.e)
+    _require_particle_shape("masses", masses, n_particles)
     _require_particle_shape("atomic_numbers", atomic_numbers_array, n_particles)
-    if charges_array is not None:
-        _require_particle_shape("charges", charges_array, n_particles)
+    _require_particle_shape("charges", charges, n_particles)
 
     if isinstance(labels, (str, bytes)):
         raise TypeError("labels must be a non-string sequence of strings.")
@@ -142,21 +143,14 @@ def particles_from_arrays(
         raise TypeError("labels must contain only strings.")
 
     periodicity_tuple = _normalize_periodicity(periodicity)
-    positions_array = _promote_integer_to_float(positions_array)
-    cell_vectors_array = _promote_integer_to_float(cell_vectors_array)
-    masses_array = _promote_integer_to_float(masses_array)
-    if charges_array is None:
-        charges_array = jnp.zeros(n_particles, dtype=jnp.result_type(float))
-    else:
-        charges_array = _promote_integer_to_float(charges_array)
 
     return _build_particles_and_cell(
-        positions=positions_array,
-        cell_vectors=cell_vectors_array,
+        positions=positions,
+        cell_vectors=cell_vectors,
         periodicity=periodicity_tuple,
-        masses=masses_array,
+        masses=masses,
         atomic_numbers=atomic_numbers_array,
-        charges=charges_array,
+        charges=charges,
         labels=list(map(Label, label_values)),
     )
 
@@ -164,7 +158,9 @@ def particles_from_arrays(
 def particles_from_ase(
     atoms: ase.Atoms | str | Path,
 ) -> tuple[
-    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+    Table[ParticleId, Particles],
+    Cell[AnyPeriodicity],
+    Callable[[units.Length], units.Length],
 ]:
     """Build particle data and cell from an ASE Atoms object or file path.
 
@@ -187,7 +183,9 @@ def particles_from_ase(
 def _particles_from_path(
     path: str | Path,
 ) -> tuple[
-    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+    Table[ParticleId, Particles],
+    Cell[AnyPeriodicity],
+    Callable[[units.Length], units.Length],
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
     return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
@@ -201,15 +199,31 @@ def _as_jax_array(name: str, value: ArrayLike) -> Array:
         raise TypeError(f"{name} could not be converted to a JAX array.") from error
 
 
-def _require_real_dtype(name: str, value: Array) -> None:
-    """Require a real integer or floating dtype."""
-    if not (
-        jnp.issubdtype(value.dtype, jnp.integer)
-        or jnp.issubdtype(value.dtype, jnp.floating)
-    ):
+def _require_dimension(
+    name: str,
+    value: units.Quantity[E_M, E_KG, E_S, E_A, E_K],
+    unit: units.Unit[E_M, E_KG, E_S, E_A, E_K],
+) -> None:
+    """Require ``value`` to be a quantity of ``unit``'s dimension.
+
+    Args:
+        name: Argument name for error messages.
+        value: The argument as passed.
+        unit: A unit of the expected dimension.
+
+    Raises:
+        TypeError: If ``value`` is plain magnitudes.
+        units.DimensionError: If ``value`` carries another dimension.
+    """
+    if not units.is_quantity(value):
         raise TypeError(
-            f"{name} must have a real integer or floating dtype; got {value.dtype}."
+            f"{name} must be a quantity of {unit}'s dimension; multiply plain "
+            "magnitudes by their unit."
         )
+    try:
+        units.require_dim(value, unit)
+    except units.DimensionError as err:
+        raise units.DimensionError(f"{name}: {err}") from None
 
 
 def _require_integer_dtype(name: str, value: Array) -> None:
@@ -218,7 +232,7 @@ def _require_integer_dtype(name: str, value: Array) -> None:
         raise TypeError(f"{name} must have an integer dtype; got {value.dtype}.")
 
 
-def _require_particle_shape(name: str, value: Array, n_particles: int) -> None:
+def _require_particle_shape(name: str, value: Measured, n_particles: int) -> None:
     """Require a one-dimensional per-particle field."""
     if value.shape != (n_particles,):
         raise ValueError(f"{name} must have shape ({n_particles},); got {value.shape}.")
@@ -251,24 +265,19 @@ def _normalize_periodicity(
     )
 
 
-def _promote_integer_to_float(value: Array) -> Array:
-    """Promote integer inputs to JAX's active default floating dtype."""
-    if jnp.issubdtype(value.dtype, jnp.integer):
-        return value.astype(jnp.result_type(float))
-    return value
-
-
 def _build_particles_and_cell(
     *,
-    positions: Array,
-    cell_vectors: Array,
+    positions: units.Length,
+    cell_vectors: units.Length,
     periodicity: AnyPeriodicity,
-    masses: Array,
+    masses: units.Mass,
     atomic_numbers: Array,
-    charges: Array,
+    charges: units.Charge,
     labels: list[Label],
 ) -> tuple[
-    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+    Table[ParticleId, Particles],
+    Cell[AnyPeriodicity],
+    Callable[[units.Length], units.Length],
 ]:
     """Build particle data and cell from extracted source data."""
     L, uc_transform = to_lower_triangular(cell_vectors)
@@ -292,7 +301,9 @@ def _build_particles_and_cell(
 def _particles_from_atoms(
     atoms: ase.Atoms,
 ) -> tuple[
-    Table[ParticleId, Particles], Cell[AnyPeriodicity], Callable[[Array], Array]
+    Table[ParticleId, Particles],
+    Cell[AnyPeriodicity],
+    Callable[[units.Length], units.Length],
 ]:
     """Build particle data and cell from an ASE Atoms object."""
     cell_vectors = jnp.asarray(atoms.cell.array)
@@ -310,11 +321,11 @@ def _particles_from_atoms(
         map(Label, atoms.info.get("_atom_site_label", atoms.get_chemical_symbols()))
     )
     return _build_particles_and_cell(
-        positions=positions,
-        cell_vectors=cell_vectors,
+        positions=positions * u.angstrom,
+        cell_vectors=cell_vectors * u.angstrom,
         periodicity=pbc,
-        masses=masses,
+        masses=masses * u.amu,
         atomic_numbers=atomic_numbers,
-        charges=charges,
+        charges=charges * u.e,
         labels=labels,
     )

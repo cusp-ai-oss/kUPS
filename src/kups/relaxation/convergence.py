@@ -7,6 +7,8 @@ ASE's ``fmax`` criterion per system: a system converges when its largest
 DOF-gradient norm is below the tolerance. The helpers take ``PositionsAndCell``
 gradients and a ``PositionsAndCellIndex`` that assigns each particle row and
 cell to its system, so each system in a batch is judged as if it ran alone.
+As in ASE, position gradients in eV/Å and cell gradients in eV share one
+tolerance in eV/Å, whatever base the gradients carry.
 
 ASE's cell filters append the ``3x3`` cell DOFs to the forces as three extra
 atoms, one per row, and compare each row's length with ``fmax``. kUPS deforms
@@ -21,11 +23,17 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.assertion import runtime_assert
 from kups.core.data.table import Table
 from kups.core.typing import SystemId
+from kups.core.units import catalog as u
 from kups.core.utils.segmented_tree import tree_segment_max
-from kups.potential.common.geometry import PositionsAndCell, PositionsAndCellIndex
+from kups.potential.common.geometry import (
+    PositionsAndCell,
+    PositionsAndCellIndex,
+    PositionsAndCellTree,
+)
 
 
 def _cell_leaf_norms(leaf: Array) -> Array:
@@ -41,20 +49,26 @@ def _cell_leaf_norms(leaf: Array) -> Array:
     return jnp.abs(leaf)
 
 
-def _gradient_norm_per_row(gradients: PositionsAndCell) -> PositionsAndCell:
+def _gradient_norm_per_row(
+    gradients: PositionsAndCell[units.Force],
+) -> PositionsAndCell[Array]:
     """Per-row gradient magnitudes: ``|∂E/∂r_i|`` per particle, ASE rows per cell."""
-    return PositionsAndCell(
+    gradients = units.tree_map(
+        lambda g: g.rebase(units.ATOMISTIC).value if units.is_quantity(g) else g,
+        gradients,
+    )
+    return PositionsAndCellTree(
         gradients.positions.map_data(lambda g: jnp.linalg.norm(g, axis=-1)),
         gradients.cell.map_data(lambda c: jax.tree.map(_cell_leaf_norms, c)),
     )
 
 
 def fmax_per_system(
-    gradients: PositionsAndCell,
+    gradients: PositionsAndCell[units.Force],
     index_prefix: PositionsAndCellIndex,
     *,
     include_cell: bool = True,
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Force]:
     """Largest DOF-gradient norm of each system (ASE ``fmax``).
 
     Non-finite gradients count as ``inf``. Rows with an out-of-bounds system
@@ -80,13 +94,13 @@ def fmax_per_system(
         result = result.map_data(
             lambda positions: jnp.maximum(positions, cell_max.data)
         )
-    return result
+    return result.map_data(lambda m: m * (u.eV / u.angstrom))
 
 
 def converged_per_system(
-    gradients: PositionsAndCell,
+    gradients: PositionsAndCell[units.Force],
     index_prefix: PositionsAndCellIndex,
-    tolerance: float,
+    tolerance: units.Force,
     *,
     include_cell: bool = True,
 ) -> Table[SystemId, Array]:
@@ -98,6 +112,7 @@ def converged_per_system(
     """
     maximum = fmax_per_system(gradients, index_prefix, include_cell=include_cell)
     runtime_assert(
-        ~jnp.any(jnp.isposinf(maximum.data)), "Non-finite relaxation gradients."
+        ~jnp.any(jnp.isposinf(units.magnitudes(maximum.data))),
+        "Non-finite relaxation gradients.",
     )
     return maximum.map_data(lambda m: m < tolerance)

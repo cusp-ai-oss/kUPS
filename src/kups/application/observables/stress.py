@@ -14,6 +14,7 @@ from typing import Protocol
 
 from jax import Array
 
+from kups.core import units
 from kups.core.data import Table
 from kups.core.typing import GroupId, HasSystemIndex, IsState, SystemId
 from kups.observables.stress import (
@@ -36,7 +37,7 @@ class IsMolecularVirialState(
 
 def virial_stress_from_state(
     key: Array, state: IsState[IsVirialParticles, IsVirialSystems]
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Pressure]:
     """Compute atomic virial stress from a state."""
     del key
     return stress_via_virial_theorem(state.particles, state.systems)
@@ -44,7 +45,7 @@ def virial_stress_from_state(
 
 def molecular_virial_stress_from_state(
     key: Array, state: IsMolecularVirialState
-) -> Table[SystemId, Array]:
+) -> Table[SystemId, units.Pressure]:
     """Compute molecular virial stress from a state."""
     del key
     return molecular_stress_via_virial_theorem(

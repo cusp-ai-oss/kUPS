@@ -21,6 +21,7 @@ from kups.core.cell import DeformedFrame, MatrixLogFrame
 from kups.core.data import Index, Table
 from kups.core.lens import bind
 from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.potential.common.geometry import PositionsAndCellIndex
 
 
@@ -44,12 +45,15 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
     npt.assert_array_equal(prefix.cell.value, systems.index.value)
     assert relaxed.keys == particles.keys
     assert systems.keys == keys
+    vectors = cell.vectors.to(u.angstrom)
     npt.assert_array_equal(
-        systems[relaxed.data.system].cell.vectors,
-        cell.vectors if batched else jnp.repeat(cell.vectors[None], 2, axis=0),
+        systems[relaxed.data.system].cell.vectors.to(u.angstrom),
+        vectors if batched else jnp.repeat(vectors[None], 2, axis=0),
     )
-    npt.assert_array_equal(relaxed.data.positions, particles.data.positions)
-    npt.assert_array_equal(relaxed.data.position_gradients, 0)
+    npt.assert_array_equal(
+        relaxed.data.positions.to(u.angstrom), particles.data.positions.to(u.angstrom)
+    )
+    npt.assert_array_equal(relaxed.data.position_gradients.to(u.eV / u.angstrom), 0)
     npt.assert_array_equal(relaxed.data.system.counts.data, [1, 1] if batched else [2])
     frame = systems.data.cell.frame
     assert isinstance(frame, DeformedFrame)
@@ -59,7 +63,7 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
         frame.deformation.cell_factor[:, 0, 0], [1, 1] if batched else [2]
     )
     npt.assert_array_equal(
-        frame.vectors, cell.vectors if batched else cell.vectors[None]
+        frame.vectors.to(u.angstrom), vectors if batched else vectors[None]
     )
 
 

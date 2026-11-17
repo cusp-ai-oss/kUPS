@@ -944,7 +944,7 @@ def test_mirror_surface():
         "ones_like", "qr", "relabel", "require_dim", "sqrt", "stack", "tree_map",
         "value_and_grad", "vectorize", "vjp", "where", "zeros_like",
         "Dim", "dmul", "E_M", "E_KG", "E_S", "E_A", "E_K", "F_M", "F_KG", "F_S", "F_A",
-        "F_K", "absolute", "clip", "full", "max", "mean", "min", "ones", "prod",
+        "F_K", "Log", "absolute", "clip", "full", "max", "mean", "min", "ones", "prod",
         "select_n", "sum", "tree_flatten", "tree_leaves", "zeros", "Measured",
         "magnitudes", "magnitudes_of",
     }  # fmt: skip
@@ -1054,3 +1054,24 @@ def test_unit_fills_are_not_weak():
     ):
         assert not out.value.weak_type
         assert (out + arr([1.0], dtype=jnp.float32) * u.angstrom).dtype == jnp.float64
+
+
+def test_log():
+    p = arr([1.0, 10.0]) * u.bar
+    log = units.Log.of(p, u.Pa)
+    npt.assert_allclose(log.log, jnp.log(arr([1e5, 1e6])))
+    npt.assert_allclose(log.exp().to(u.bar), [1.0, 10.0], rtol=1e-12)
+    assert jax.tree.leaves(log) == [log.log]
+    assert jit(lambda x: x)(log).ref == u.Pa
+    assert log[1:].shape == (1,)
+    untyped: Any = p  # untyped: the checker refuses the mismatch
+    with pytest.raises(units.DimensionError):
+        units.Log.of(untyped, u.eV)
+    # the static ref compares by its factors, so equal units share a tree structure
+    x = arr([1.0, 2.0]) * u.eV
+    for ref in (
+        (u.eV / u.angstrom) * u.angstrom,
+        (u.eV / u.angstrom**2) * u.angstrom**2,
+    ):
+        both = jax.tree.map(jnp.add, units.Log.of(x, u.eV), units.Log.of(x, ref))
+        npt.assert_allclose(both.log, 2 * jnp.log(arr([1.0, 2.0])))

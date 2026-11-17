@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from jax import Array
-
 from kups.application.md.data import MDParticles, MDSystems
+from kups.core import units
 from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
@@ -53,15 +52,15 @@ class MDStepData:
         internal_kinetic_energy: Kinetic energy per system with center-of-mass
             motion removed (used for temperature).
         stress_tensor: Virial stress tensor per system.
-        volume: Cell volume per system (A^3).
+        volume: Cell volume per system.
     """
 
     atoms: Table[ParticleId, MDParticles]
-    potential_energy: Array
-    kinetic_energy: Array
-    internal_kinetic_energy: Array
-    stress_tensor: Array
-    volume: Array
+    potential_energy: units.Energy
+    kinetic_energy: units.Energy
+    internal_kinetic_energy: units.Energy
+    stress_tensor: units.Pressure
+    volume: units.Volume
 
     @staticmethod
     def from_state(state: HasMDData) -> MDStepData:

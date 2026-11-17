@@ -15,14 +15,20 @@ from typing import Any
 import jax.numpy as jnp
 from jax import Array
 
+from kups.core import units
 from kups.core.data.table import Table
 from kups.core.lens import Lens, View
 from kups.core.patch import IndexLensPatch
 from kups.core.potential import Potential
 from kups.core.propagator import Propagator
 from kups.core.typing import SystemId
+from kups.core.units import magnitudes_of
 from kups.core.utils.jax import dataclass, field
-from kups.relaxation.optimizer import Optimizer, apply_updates
+from kups.relaxation.optimizer import (
+    Optimizer,
+    apply_updates,
+    relabel_like,
+)
 
 
 @dataclass(kw_only=True)
@@ -47,14 +53,22 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
     points, which line searches use and other transforms ignore. Applying the
     potential's patch each step lets it update state such as neighbor lists.
 
+    The optimizer runs on magnitudes: parameters, gradients and energies enter
+    it in the parameters' base (that of the first quantity leaf, ATOMISTIC by
+    default: Å, eV, amu), and the step it returns is relabelled with each
+    parameter's dimension before it is applied. Numeric hyperparameters of the
+    transforms are read in the same base.
+
     Type Parameters:
         State: Simulation state.
-        Params: Optimized parameters (must match the potential's gradient type).
+        Params: Optimized parameters.
         OptState: State type of ``optimizer``.
         Indices: Index prefix returned by the optional update mask.
 
     Attributes:
-        potential: Potential that computes energy and gradients of type Params
+        potential: Potential computing ``∂E/∂`` of the property, structured like
+            it with each leaf in energy over that leaf's dimension (e.g.
+            ``PositionsAndCell[units.Force]`` for ``PositionsAndCell[units.Length]``).
         property: Lens to get/set the property being optimized
         opt_state: Lens to get/set the optimizer state
         optimizer: Gradient transformation
@@ -64,24 +78,9 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
             ``property.set(s, property.get(s))`` round-trips exactly (under
             ``FRECHET_FILTER`` positions move by round-off). The optimizer state
             of rejected systems still advances; reset it before they update again.
-
-    Example:
-        ```python
-        propagator = RelaxationPropagator(
-            potential=my_potential,
-            property=positions_lens,
-            opt_state=lens(lambda s: s.opt_state),
-            optimizer=chain(
-                ScaleByAseLbfgs(memory_size=10),
-                optax.scale(-1.0),
-                ScaleByMoreThuenteLinesearch(),
-            ),
-        )
-        state = propagator(key, state)
-        ```
     """
 
-    potential: Potential[State, Params, Any, Any] = field(static=True)
+    potential: Potential[State, Any, Any, Any] = field(static=True)
     property: Lens[State, Params] = field(static=True)
     opt_state: Lens[State, OptState] = field(static=True)
     optimizer: Optimizer[Params, OptState] = field(static=True)
@@ -90,10 +89,23 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
     def __call__(self, key: Array, state: State) -> State:
         del key
         params = self.property.get(state)
+        bs = next(
+            (
+                units.base_of(x)
+                for x in units.tree_leaves(params)
+                if units.is_quantity(x)
+            ),
+            units.active_base(),
+        )
+        params_in_bs = _rebased(params, bs)
 
-        def value_and_grad_fn(p: Params) -> tuple[Table[SystemId, Array], Params]:
-            out = self.potential(self.property.set(state, p)).data
-            return out.total_energies, out.gradients
+        def value_and_grad_fn(p: Params) -> tuple[Any, Params]:
+            trial = relabel_like(params_in_bs, p)
+            out = self.potential(self.property.set(state, trial)).data
+            return (
+                magnitudes_of(_rebased(out.total_energies, bs)),
+                magnitudes_of(_rebased(out.gradients, bs)),
+            )
 
         potential_out = self.potential(state)
         grad = potential_out.data.gradients
@@ -108,16 +120,17 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
         # grad, energies (the current per-system energies) and value_and_grad_fn
         # are the per-system objective the line-search transforms read; standard
         # transforms ignore them.
+        mag_grad = magnitudes_of(_rebased(grad, bs))
         updates, new_opt_state = self.optimizer.update(
-            grad,
+            mag_grad,
             opt_state_current,
-            params,
-            grad=grad,
-            energies=energies,
+            magnitudes_of(params_in_bs),
+            grad=mag_grad,
+            energies=energies.map_data(lambda e: units.magnitudes(e.rebase(bs))),
             value_and_grad_fn=value_and_grad_fn,
         )
 
-        new_params = apply_updates(params, updates)
+        new_params = apply_updates(params, relabel_like(params_in_bs, updates))
         if self.mask is None:
             state = self.property.set(state, new_params)
         else:
@@ -126,3 +139,8 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
             )(state, self.mask.accept(state))
         state = self.opt_state.set(state, new_opt_state)
         return state
+
+
+def _rebased[T](tree: T, bs: units.BaseSystem) -> T:
+    """Express every quantity leaf of ``tree`` in base ``bs``."""
+    return units.tree_map(lambda x: x.rebase(bs) if units.is_quantity(x) else x, tree)
