@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""``Index``, the foreign-key column that references a set of unique keys."""
+
 from __future__ import annotations
 
 import itertools

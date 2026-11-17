@@ -78,6 +78,9 @@ class RelaxPayload:
     ``(rows, capacity, ...)``; the other leaves have shape ``(rows, ...)``.
 
     Attributes:
+        particles: Particle data of each row.
+        position_gradients: Position gradients of each row's particles.
+        systems: System data of each row.
         step: Number of optimizer updates of each row's job.
         ordinal: Job ordinal of each row, ``-1`` for an idle row.
     """
@@ -117,6 +120,10 @@ class StreamingRelaxState[OptState]:
     ``systems`` one row per slot.
 
     Attributes:
+        particles: Reserved particle rows of every slot, padding included.
+        systems: System data, one row per slot.
+        neighborlist_params: Capacity hints for the neighbor list.
+        opt_state: Optimizer state.
         step: Per-slot count of the current job's optimizer updates.
         ordinal: Job ordinal of each slot, ``-1`` while the slot is idle.
         finished: Per-slot refill request.

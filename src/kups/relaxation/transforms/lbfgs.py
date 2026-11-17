@@ -89,8 +89,15 @@ class LbfgsReset[PerSystem, PerLeaf]:
 
     ``PerSystem`` is a table or system index; ``PerLeaf`` is a list of arrays or
     matching indices. History indices broadcast over the leading memory axis.
-    Field meanings match :class:`ScaleByAseLbfgsState`; the shared ring cursor
-    ``count`` is deliberately excluded.
+    The shared ring cursor ``count`` is deliberately excluded.
+
+    Attributes:
+        steps: Per-system step counter.
+        weights_memory: Per-system per-slot ``ρᵢ`` weights.
+        params: Last seen parameter leaves.
+        updates: Last seen gradient/update leaves.
+        diff_params_memory: Per leaf, stacked past parameter differences.
+        diff_updates_memory: Per leaf, stacked past update differences.
     """
 
     steps: PerSystem

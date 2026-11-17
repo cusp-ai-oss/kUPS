@@ -98,7 +98,18 @@ type EnergyPerChargeSquared = units.Quantity[2, 1, -4, -2, 0]
 
 @dataclass
 class EwaldCache[Gradient, Hessian]:
-    """Compensated structure factors, prefactors and component outputs for updates."""
+    """Compensated structure factors, prefactors and component outputs for updates.
+
+    Attributes:
+        structure_factor: Compensated real and imaginary structure factors,
+            shape ``(n_systems, n_kvecs, 2)``.
+        prefactor: Reciprocal weights ``P(k)``, shape ``(n_systems, n_kvecs)``.
+        short_range: Compensated real-space potential output.
+        long_range: Compensated reciprocal-space potential output.
+        self_interaction: Compensated self-interaction potential output.
+        net_charge: Compensated neutralizing-background potential output.
+        exclusion: Compensated excluded-pair correction output.
+    """
 
     structure_factor: KahanSummand[units.Charge]  # (n_groups, n_kvecs, 2)
     prefactor: units.Wavenumber  # (n_groups, n_kvecs)
@@ -142,7 +153,15 @@ class EwaldCache[Gradient, Hessian]:
 
 @dataclass
 class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
-    """Accept or reject each system's structure factor and prefactor."""
+    """Accept or reject each system's structure factor and prefactor.
+
+    Attributes:
+        new_structure_factor: Proposed compensated structure factors, shape
+            ``(n_systems, n_kvecs, 2)``.
+        new_prefactor: Proposed reciprocal weights, shape ``(n_systems, n_kvecs)``.
+        system_idx: System of each row of the proposed arrays.
+        lens: Lens to the Ewald cache in the state.
+    """
 
     new_structure_factor: KahanSummand[units.Charge]
     new_prefactor: units.Wavenumber
@@ -172,7 +191,14 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
 
 @dataclass
 class EwaldCacheDeltaPatch[State, Gradient, Hessian](Patch[State]):
-    """Add each accepted system's structure-factor change to the compensated cache."""
+    """Add each accepted system's structure-factor change to the compensated cache.
+
+    Attributes:
+        structure_factor_delta: New-minus-old structure factors, shape
+            ``(n_systems, n_kvecs, 2)``.
+        system_idx: System of each row of the delta.
+        lens: Lens to the Ewald cache in the state.
+    """
 
     structure_factor_delta: units.Charge
     system_idx: Index[SystemId]
@@ -213,8 +239,15 @@ type EwaldSelfInput = GraphPotentialInput[
 class EwaldLongRangeInput[State]:
     """Current particles and optional changed rows for a cached update.
 
-    ``changes_from_prev`` holds the previous and current values of the changed
-    rows; energy-only evaluation reads only these, derivatives ``point_cloud``.
+    Attributes:
+        point_cloud: Current particles and periodic cells.
+        parameters: Ewald screening, cutoffs and reciprocal shifts.
+        cache: Cached structure factors and prefactors; required with
+            ``changes_from_prev``.
+        cache_lens: Lens to the cache in the state; without it the energy
+            returns an identity patch.
+        changes_from_prev: Previous and current values of the changed rows;
+            energy-only evaluation reads only these, derivatives ``point_cloud``.
     """
 
     point_cloud: PointCloud[IsEwaldPointData, HasCell[Periodic3D]]
@@ -787,7 +820,16 @@ class EwaldLongRangeComposer[
     State,
     Ptch: Patch[Any],
 ]:
-    """Build current particles and retain previous values for incremental updates."""
+    """Build current particles and retain previous values for incremental updates.
+
+    Attributes:
+        particles: View of the particle table with charges and positions.
+        systems: View of the system table with periodic cells.
+        probe: Returns the particle rows a patch changes; ``None`` disables
+            incremental updates.
+        parameters: View of the Ewald parameters.
+        cache: Lens to the structure-factor cache; ``None`` disables caching.
+    """
 
     particles: View[State, Table[ParticleId, IsEwaldPointData]] = field(static=True)
     systems: View[State, Table[SystemId, HasCell[Periodic3D]]] = field(static=True)

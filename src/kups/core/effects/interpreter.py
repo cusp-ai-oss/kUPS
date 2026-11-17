@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""A jaxpr interpreter that threads a context through effect handlers."""
+
 from __future__ import annotations
 
 import warnings

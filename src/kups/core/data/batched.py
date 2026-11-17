@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Dataclasses whose leaves share a leading batch dimension, with ``.at`` slicing."""
+
 from typing import Any, Self
 
 import jax

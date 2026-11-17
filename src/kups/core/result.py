@@ -40,6 +40,10 @@ class Result[State, Return]:
     A result of a computation, containing the actual result and a sequence of runtime
     assertions that will be checked after the computation is done (outside of
     JIT-compiled functions).
+
+    Attributes:
+        value: Return value of the computation.
+        assertions: Assertions to check on the host after the computation.
     """
 
     value: Return

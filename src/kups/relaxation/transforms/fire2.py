@@ -92,7 +92,11 @@ class ScaleByFire2State:
 
 @dataclass(kw_only=True)
 class Fire2Reset[Velocity, PerSystem](FireReset[Velocity, PerSystem]):
-    """FIRE reset fields plus the per-system warmup counter ``n_total``."""
+    """FIRE reset fields plus the per-system warmup counter ``n_total``.
+
+    Attributes:
+        n_total: Per-system warmup step counter, or its system index.
+    """
 
     n_total: PerSystem
 

@@ -259,6 +259,10 @@ class MCMCParticles(Particles):
 
     Attributes:
         group: Index mapping each particle to its molecular group.
+        motif: Index mapping each particle to its template atom in the motif
+            table.
+        position_gradients: Energy gradient w.r.t. positions, shape
+            ``(n_particles, 3)``; zeros unless filled by a stress evaluation.
     """
 
     group: Index[GroupId]
