@@ -67,9 +67,11 @@ class _IdentityGradModel:
     """
 
     def call(self, input: dict[str, Array]) -> dict[str, Array]:
+        n_sys = input["cell"].shape[0]
         return {
-            "energy": jnp.zeros(input["cell"].shape[0], dtype=input["pos"].dtype),
+            "energy": jnp.zeros(n_sys, dtype=input["pos"].dtype),
             "position_gradients": input["pos"],
+            "cell_gradients": jnp.zeros((n_sys, 3, 3), dtype=input["pos"].dtype),
         }
 
 
@@ -127,5 +129,5 @@ def test_unsort_recovers_original_atom_order():
         inp = GraphPotentialInput(parameters=cast(Any, _IdentityGradModel()), graph=g)
         return torch_mliap_model_fn(inp).data.gradients
 
-    pos_grad = run(graph)
+    pos_grad = run(graph).positions.data
     np.testing.assert_array_equal(np.asarray(pos_grad), np.asarray(positions))
