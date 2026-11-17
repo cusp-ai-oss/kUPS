@@ -28,6 +28,7 @@ def test_unit_catalogue():
     assert len({x.name for x in u.CATALOG}) == len(u.CATALOG)
     spelled = {"Å": "angstrom"}  # the one display name that is not an identifier
     assert all(getattr(u, spelled.get(x.name, x.name)) is x for x in u.CATALOG)
+    assert u.SI_BASE == (u.m, u.kg, u.s, u.A, u.K)
     # unit algebra stays Unit, including a cancelled dimension
     assert isinstance(u.eV / u.angstrom, Unit)
     assert (u.eV / u.angstrom).dim == (1, 1, -2, 0, 0)
