@@ -10,7 +10,7 @@ while the runtime raises with guidance, and those hidden blocks are pinned here.
 
 import ast
 import pathlib
-from typing import TypeAliasType
+from typing import TypeAliasType, cast
 
 from kups.core import units
 
@@ -84,6 +84,8 @@ def aliases() -> dict[tuple[int, ...], str]:
         if not isinstance(node, ast.TypeAlias) or not isinstance(node.name, ast.Name):
             continue
         v = node.value
+        if isinstance(v, ast.Subscript) and ast.unparse(v.value) == "Annotated":
+            v = cast(ast.Tuple, v.slice).elts[0]  # the metadata is pydantic's
         if (
             isinstance(v, ast.Subscript)
             and isinstance(v.slice, ast.Tuple)

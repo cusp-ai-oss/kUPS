@@ -59,6 +59,7 @@ dependencies = [
     "nanoargs>=0.1.1",
     "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
     "hdf5plugin>=6.0.0",
+    "pydantic>=2.13",
     "typing-extensions>=4.10",
 ]
 
@@ -184,6 +185,7 @@ coul = "coul"           # Coulomb energy subscript
 equil = "equil"         # equilibration steps
 Nd = "Nd"               # TypedNdArray
 sems = "sems"           # standard errors of the mean
+ser = "ser"             # pydantic-core *_ser_schema
 writeable = "writeable" # numpy array flag
 
 [tool.importlinter]
