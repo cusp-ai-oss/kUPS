@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Scatter and gather indices for selecting elements by segment."""
+
 from __future__ import annotations
 
 import jax.numpy as jnp

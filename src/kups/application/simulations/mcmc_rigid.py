@@ -196,6 +196,22 @@ class MCMCStateBase:
     Holds buffered particle/group arrays, motif templates, system
     thermodynamic data, neighbor lists, potential parameters with
     caches, and per-move adaptive step-size schedulers.
+
+    Attributes:
+        particles: Host and adsorbate particles, with free adsorbate slots.
+        groups: Adsorbate molecules, with free slots for insertions.
+        motifs: Adsorbate template atoms used to build inserted molecules.
+        systems: Per-system cell, temperature, energy, and fugacities.
+        neighborlist_params: Capacity hints for the LJ and Ewald neighbor list.
+        lj_parameters: Lennard-Jones parameters with the per-system energy cache.
+        ewald_parameters: Ewald parameters with the per-system energy cache.
+        blocking_spheres_parameters: Blocking-sphere centers and radii.
+        blocking_spheres_neighborlist_params: Capacity hints for the
+            blocking-sphere neighbor list.
+        translation_params: Per-system translation step-width scheduler.
+        rotation_params: Per-system rotation step-width scheduler.
+        reinsertion_params: Per-system reinsertion acceptance tracker.
+        exchange_params: Per-system insertion/deletion acceptance tracker.
     """
 
     particles: Buffered[ParticleId, MCMCParticles]
@@ -247,7 +263,12 @@ class MCMCStateBase:
 
 @dataclass
 class MCMCState(MCMCStateBase):
-    """Rigid-body MCMC state with an initialized persistent pair cache."""
+    """Rigid-body MCMC state with an initialized persistent pair cache.
+
+    Attributes:
+        cell_tables: Persistent cache of the fused LJ and Ewald short-range pair
+            terms.
+    """
 
     cell_tables: FusedPotentialCache[tuple[Index[Label] | units.Charge, ...]]
 
@@ -258,6 +279,10 @@ class MCMCStateUpdate:
 
     Calling an instance applies the update conditionally on ``accept``.
     With ``positions_only``, only particle positions are written.
+
+    Attributes:
+        groups: Proposed group rows and the buffer indices they replace.
+        positions_only: Whether the move only changes particle positions.
     """
 
     _particles: WithIndices[ParticleId, Buffered[ParticleId, MCMCParticles]]

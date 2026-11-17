@@ -54,6 +54,8 @@ class RelaxParticles(Particles):
             relaxation filter's output), shape ``(n_atoms, 3)``: ``∂E/∂q`` under
             ``cell_filter`` (reference-cartesian) or ``∂E/∂r`` under
             ``positions_only``. The force source and ASE-fmax convergence quantity.
+        exclusion: Exclusion group of each particle; defaults to one group per
+            particle.
     """
 
     position_gradients: units.Force
@@ -72,17 +74,21 @@ class RelaxParticles(Particles):
 
 @dataclass
 class RelaxSystems:
-    """System-level data for structure relaxation."""
+    """System-level data for structure relaxation.
+
+    Attributes:
+        cell: Cell geometry, one row per system.
+        cell_gradients: Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the
+            relaxation filter's output), stored on :attr:`cell`'s frame (the
+            matrix-log deformation under ``cell_filter``). The ASE-fmax
+            convergence quantity for the cell; the atoms-ride-the-cell coupling
+            is already folded in by the filter pullback.
+        potential_energy: Potential energy per system, shape ``(n_systems,)``.
+    """
 
     cell: Cell[AnyPeriodicity]
-    """Cell geometry, one row per system."""
     cell_gradients: Cell[AnyPeriodicity]
-    """Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the relaxation filter's output),
-    stored on :attr:`cell`'s frame (the matrix-log deformation under
-    ``cell_filter``). The ASE-fmax convergence quantity for the cell; the
-    atoms-ride-the-cell coupling is already folded in by the filter pullback."""
     potential_energy: units.Energy
-    """Potential energy per system, shape ``(n_systems,)``."""
 
 
 @dataclass
@@ -91,6 +97,13 @@ class RelaxState[OptState]:
 
     The potential is built with its parameters at construction time (via the
     adapters' ``parameters=``), so no force-field field lives on the state.
+
+    Attributes:
+        particles: Per-particle positions and position gradients.
+        systems: Per-system cell, cell gradients, and energy.
+        neighborlist_params: Capacity hints for the neighbor list.
+        opt_state: Optimizer state.
+        step: Optimizer step counter, shape ``(1,)``.
     """
 
     particles: Table[ParticleId, RelaxParticles]

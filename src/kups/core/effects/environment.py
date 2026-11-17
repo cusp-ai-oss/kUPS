@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Variable storage for the jaxpr interpreter."""
+
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any, Protocol, override, runtime_checkable

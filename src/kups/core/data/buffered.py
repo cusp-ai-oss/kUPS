@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""``Table``s with spare rows, so entities come and go without changing shapes."""
+
 from __future__ import annotations
 
 from collections.abc import Callable

@@ -44,6 +44,15 @@ class DirectPotential[
     For models providing precomputed gradients (e.g., PyTorch force fields).
     Passes through whatever gradients and Hessians the model provides
     (typically Hessians=EmptyType).
+
+    Attributes:
+        direct_potential_fn: Model mapping one input to its potential output and
+            state patch.
+        composer: Plans the weighted inputs to evaluate from state and patch.
+        cache_lens: Lens to the compensated cached output; required for
+            incremental updates.
+        patch_idx_view: Index structure for cache updates; required with
+            ``cache_lens``.
     """
 
     direct_potential_fn: DirectPotentialFunction[State, Input, Gradients, Hessians] = (

@@ -126,3 +126,28 @@ def test_tracer_isinstance():
     assert codes("isinstance(x, jax.core.Tracer)\n") == ["KUP010"]
     assert codes("isinstance(x, jax.core.Tracer)\n", "src/kups/core/utils/jax.py") == []
     assert codes("isinstance(x, Array)\n") == []
+
+
+@pytest.mark.parametrize(
+    ("doc", "expected"),
+    [
+        ('"""A."""', ["KUP011"]),
+        ('"""A.\n\n    Attributes:\n        x: An int.\n    """', ["KUP011"]),
+        (
+            '"""A.\n\n    Attributes:\n        x: An int.\n        y: A str.\n    """',
+            [],
+        ),
+        (
+            '"""A.\n\n    Attributes:\n        x (int): An int.\n        y: A str.\n    """',
+            [],
+        ),
+    ],
+)
+def test_dataclass_attributes(doc: str, expected: list[str]):
+    fields = "    x: int\n    y: str\n    _z: int\n    n: ClassVar[int] = 0\n"
+    assert codes(JAX_DC + f"@dataclass\nclass A:\n    {doc}\n{fields}") == expected
+
+
+def test_dataclass_attributes_skip_private_and_plain_classes():
+    assert codes(JAX_DC + '@dataclass\nclass _A:\n    """A."""\n    x: int\n') == []
+    assert codes('class A:\n    """A."""\n    x: int\n') == []
