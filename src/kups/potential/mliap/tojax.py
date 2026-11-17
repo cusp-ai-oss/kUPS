@@ -155,8 +155,7 @@ type JaxifiedInput = GraphPotentialInput[
 ]
 
 
-def _omol_field(systems: Any, name: str, default: int, n_real: int) -> Array:
-    value = getattr(systems, name, None)
+def _omol_field(value: Array | None, name: str, default: int, n_real: int) -> Array:
     if value is None:
         value = jnp.full((n_real,), default, dtype=int)
     value = jnp.asarray(value)
@@ -167,10 +166,17 @@ def _omol_field(systems: Any, name: str, default: int, n_real: int) -> Array:
     return value
 
 
-def _omol_charge_spin(systems: Any, n_real: int) -> tuple[Array, Array]:
+def _omol_charge_spin(
+    systems: HasCell[AnyPeriodicity], n_real: int
+) -> tuple[Array, Array]:
     """Charge and multiplicity per system, plus 0 and 1 for the padding system."""
-    charge = _omol_field(systems, "total_charge", 0, n_real)
-    spin = _omol_field(systems, "spin_multiplicity", 1, n_real)
+    # Systems tables may lack either field; each missing one gets its default.
+    charge = _omol_field(
+        getattr(systems, "total_charge", None), "total_charge", 0, n_real
+    )
+    spin = _omol_field(
+        getattr(systems, "spin_multiplicity", None), "spin_multiplicity", 1, n_real
+    )
     # One assertion for both fields: Result cannot combine a vmapped
     # predicate with an unbatched one.
     runtime_assert(
