@@ -13,7 +13,6 @@ from typing import Any, Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
-import numpy.testing as npt
 import pytest
 from jax import Array, export
 
@@ -43,7 +42,7 @@ from kups.potential.mliap.tojax import (
     make_tojaxed_potential,
     tojaxed_energy,
 )
-from test.units import EV, A, as_length
+from test.units import EV, FORCE, A, allclose, as_length
 
 # --- Data structures ---
 
@@ -257,7 +256,7 @@ class TestMakeJaxifiedPotential:
 
 @dataclass
 class _GraphAtoms:
-    positions: Array
+    positions: units.Length
     atomic_numbers: Array
     system: Index[SystemId]
 
@@ -289,7 +288,7 @@ _SQ_SUMS = np.array([14.37, 9.24, 19.63])
 
 def _cell(n_sys: int = 3) -> Cell:
     return Cell.from_pbc(
-        TriclinicFrame.from_matrix(jnp.tile(jnp.eye(3)[None] * 20, (n_sys, 1, 1))),
+        TriclinicFrame.from_matrix(jnp.tile(jnp.eye(3)[None] * 20, (n_sys, 1, 1)) * A),
         (False, False, False),
     )
 
@@ -302,7 +301,7 @@ def _metadata_graph(systems: Any) -> HyperGraph[Any, Any, Literal[2]]:
     """Interleaved atoms with unequal counts and non-consecutive system keys."""
     atoms = Table.arange(
         _GraphAtoms(
-            jnp.arange(24, dtype=float).reshape(8, 3) / 10,
+            as_length(jnp.arange(24, dtype=float).reshape(8, 3) / 10),
             jnp.ones(8, dtype=int),
             Index(_KEYS, jnp.array([1, 0, 1, 0, 2, 1, 0, 2])),
         ),
@@ -355,7 +354,7 @@ def metadata_exported() -> export.Exported:
 
 def _model(exported: export.Exported, task_name: Any = "omol") -> TojaxedMliap:
     return TojaxedMliap(
-        cutoff=Table((SystemId(0),), jnp.array([5.0])),
+        cutoff=Table((SystemId(0),), jnp.array([5.0]) * A),
         params=[jnp.array(1.0)],
         model=exported,
         task_name=task_name,
@@ -363,17 +362,19 @@ def _model(exported: export.Exported, task_name: Any = "omol") -> TojaxedMliap:
 
 
 def _energy_fn(model: TojaxedMliap):
-    def energy(graph: HyperGraph[Any, Any, Literal[2]]) -> Table[SystemId, Array]:
+    def energy(
+        graph: HyperGraph[Any, Any, Literal[2]],
+    ) -> Table[SystemId, units.Energy]:
         return tojaxed_energy(GraphPotentialInput(model, graph)).data
 
     return energy
 
 
-def _energies(model: TojaxedMliap, systems: Any) -> np.ndarray:
+def _energies(model: TojaxedMliap, systems: Any) -> units.Energy:
     result = as_result_function(_energy_fn(model))(_metadata_graph(systems))
     result.raise_assertion()
     assert result.value.keys == _KEYS
-    return np.asarray(result.value.data)
+    return result.value.data
 
 
 def _weights(charge, spin) -> np.ndarray:
@@ -386,7 +387,7 @@ class TestOmolSystemMetadata:
         model = _model(metadata_exported)
         systems = _meta_systems(_CHARGE.astype(dtype), _SPIN.astype(dtype))
         energies = _energies(model, systems)
-        npt.assert_allclose(energies, [79.035, 55.44, 206.115], rtol=1e-12)
+        testing.assert_allclose(energies, [79.035, 55.44, 206.115], EV, rtol=1e-12)
 
     @pytest.mark.parametrize(
         "systems",
@@ -395,12 +396,12 @@ class TestOmolSystemMetadata:
     )
     def test_omol_defaults_without_fields(self, metadata_exported, systems):
         energies = _energies(_model(metadata_exported), systems)
-        npt.assert_allclose(energies, [79.035, 50.82, 107.965], rtol=1e-12)
+        testing.assert_allclose(energies, [79.035, 50.82, 107.965], EV, rtol=1e-12)
 
     def test_omol_field_defaults_are_independent(self, metadata_exported):
         systems = _ChargeOnlySystems(_cell(), total_charge=_CHARGE)
         energies = _energies(_model(metadata_exported), systems)
-        npt.assert_allclose(energies, 0.5 * _weights(_CHARGE, 1) * _SQ_SUMS)
+        testing.assert_allclose(energies, 0.5 * _weights(_CHARGE, 1) * _SQ_SUMS, EV)
 
     @pytest.mark.parametrize("task_name", [None, "omat"])
     def test_generic_ignores_system_metadata(self, metadata_exported, task_name):
@@ -408,7 +409,7 @@ class TestOmolSystemMetadata:
             charge=jnp.array([0.5, 1.0, 0.0]), spin=jnp.array([0, 0, 0])
         )
         energies = _energies(_model(metadata_exported, task_name), systems)
-        npt.assert_allclose(energies, [7.185, 4.62, 9.815], rtol=1e-12)
+        testing.assert_allclose(energies, [7.185, 4.62, 9.815], EV, rtol=1e-12)
 
     @pytest.mark.parametrize(
         ("systems", "weights"),
@@ -420,7 +421,7 @@ class TestOmolSystemMetadata:
     )
     def test_omol_padding_row_is_neutral_singlet(self, systems, weights):
         model = _model(_make_metadata_exported(leak_padding=True))
-        npt.assert_allclose(_energies(model, systems), 0.5 * weights * _SQ_SUMS)
+        testing.assert_allclose(_energies(model, systems), 0.5 * weights * _SQ_SUMS, EV)
 
     def test_omol_metadata_is_traced(self, metadata_exported):
         traces = []
@@ -433,7 +434,7 @@ class TestOmolSystemMetadata:
         first = energy(_metadata_graph(_meta_systems()))
         second = energy(_metadata_graph(_meta_systems(charge=jnp.array([1, 1, 0]))))
         assert len(traces) == 1
-        assert not np.allclose(first, second)
+        assert not allclose(first, second, EV)
 
     @pytest.mark.parametrize("dtype", [jnp.uint8, jnp.bool_, jnp.float64])
     @pytest.mark.parametrize("field", ["total_charge", "spin_multiplicity"])
@@ -511,7 +512,7 @@ class TestTojaxedPotentialMetadata:
             neighborlist=AllDenseNearestNeighborList(
                 avg_edges=FixedCapacity(n_atoms * n_atoms),
                 avg_image_candidates=FixedCapacity(n_atoms * n_atoms),
-                cutoffs=Table(_KEYS, jnp.full((3,), 5.0)),
+                cutoffs=Table(_KEYS, jnp.full((3,), 5.0) * A),
             ),
         )
         positions_and_cell = lens(
@@ -536,18 +537,26 @@ class TestTojaxedPotentialMetadata:
 
         weights = _weights(_CHARGE, _SPIN)
         q = np.asarray(_CHARGE + _SPIN, dtype=float)
-        npt.assert_allclose(
-            out.total_energies.data, 0.5 * weights * _SQ_SUMS + q * 60.0, rtol=1e-12
+        testing.assert_allclose(
+            out.total_energies.data,
+            0.5 * weights * _SQ_SUMS + q * 60.0,
+            EV,
+            rtol=1e-12,
         )
         system_rows = np.asarray(state.atoms.data.system.raw_indices)
-        npt.assert_allclose(
+        testing.assert_allclose(
             out.gradients.positions.data,
-            weights[system_rows, None] * np.asarray(state.atoms.data.positions),
+            weights[system_rows, None] * np.asarray(state.atoms.data.positions.to(A)),
+            FORCE,
             rtol=1e-12,
         )
         cell_gradients = state.systems.data.cell.frame.vectors_gradient(
             out.gradients.cell.data.frame
         )
-        npt.assert_allclose(
-            cell_gradients, q[:, None, None] * np.eye(3)[None], rtol=1e-12, atol=1e-12
+        testing.assert_allclose(
+            cell_gradients,
+            q[:, None, None] * np.eye(3)[None],
+            FORCE,
+            rtol=1e-12,
+            atol=1e-12,
         )
