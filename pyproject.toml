@@ -201,8 +201,6 @@ layers = [
     "kups.observables",
     "kups.core",
 ]
-# Convergence reads the relaxation geometry type.
-ignore_imports = ["kups.relaxation.convergence -> kups.potential.common.geometry"]
 
 [tool.pyrefly]
 infer-with-first-use = false

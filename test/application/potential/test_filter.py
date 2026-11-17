@@ -23,14 +23,14 @@ from kups.core.cell import (
 )
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.lens import Lens
-from kups.core.typing import ParticleId, SystemId
-from kups.core.units import testing
-from kups.potential.common.geometry import (
+from kups.core.geometry import (
     Geometry,
     PositionsAndCellTree,
     PositionsAndSystemIndex,
 )
+from kups.core.lens import Lens
+from kups.core.typing import ParticleId, SystemId
+from kups.core.units import testing
 from test.units import EV, FORCE, A, as_length
 
 jax.config.update("jax_enable_x64", True)

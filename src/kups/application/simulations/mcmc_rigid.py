@@ -55,6 +55,11 @@ from kups.core.capacity import Capacity, FixedCapacity
 from kups.core.data import Buffered, Table, WithCache, WithIndices
 from kups.core.data.buffered import add_buffers, system_view
 from kups.core.data.index import Index, unify_keys_by_cls
+from kups.core.geometry import (
+    PositionsAndCell,
+    PositionsAndCellTree,
+    position_and_cell_idx_view,
+)
 from kups.core.lens import bind, identity_lens, lens
 from kups.core.neighborlist import (
     DenseNearestNeighborList,
@@ -117,11 +122,6 @@ from kups.potential.classical.lennard_jones import (
     lennard_jones_pair,
 )
 from kups.potential.common.fused import FusedPotentialCache, fuse_pair_potentials
-from kups.potential.common.geometry import (
-    PositionsAndCell,
-    PositionsAndCellTree,
-    position_and_cell_idx_view,
-)
 from kups.potential.common.graph import PointCloud
 from kups.potential.common.pair import PairEnergy, PairEnergySum
 

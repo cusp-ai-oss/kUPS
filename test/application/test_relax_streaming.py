@@ -38,6 +38,7 @@ from kups.application.utils.propagate import make_cycle_function
 from kups.core import units
 from kups.core.cell import Cell, MatrixLogFrame, OrthogonalFrame
 from kups.core.data import Index, Table
+from kups.core.geometry import PositionsAndCell
 from kups.core.lens import Lens, bind, identity_lens
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
@@ -55,7 +56,6 @@ from kups.core.units import testing
 from kups.core.utils.jax import dataclass as state_dataclass
 from kups.core.utils.jax import jit, tree_concat, tree_map
 from kups.potential.classical.lennard_jones import LennardJonesParameters
-from kups.potential.common.geometry import PositionsAndCell
 from kups.relaxation.optimizer import (
     ChainOptState,
     ResettableChain,

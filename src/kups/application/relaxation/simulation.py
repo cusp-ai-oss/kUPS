@@ -21,6 +21,13 @@ from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
 from kups.core import units
 from kups.core.data import Table
+from kups.core.geometry import (
+    Geometry,
+    PositionsAndCell,
+    PositionsAndCellIndex,
+    PositionsAndSystemIndex,
+    position_and_cell_idx_view,
+)
 from kups.core.lens import Lens, View, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.potential import (
@@ -42,13 +49,6 @@ from kups.core.typing import IsState, ParticleId, SystemId
 from kups.core.units import catalog as u
 from kups.core.units import magnitudes_of
 from kups.core.utils.jax import jit
-from kups.potential.common.geometry import (
-    Geometry,
-    PositionsAndCell,
-    PositionsAndCellIndex,
-    PositionsAndSystemIndex,
-    position_and_cell_idx_view,
-)
 from kups.relaxation.convergence import converged_per_system
 from kups.relaxation.optimizer import Optimizer
 from kups.relaxation.propagator import RelaxationPropagator, UpdateMask

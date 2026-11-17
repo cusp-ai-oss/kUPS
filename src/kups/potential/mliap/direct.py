@@ -33,6 +33,7 @@ from typing import Any, Literal, Protocol
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
+from kups.core.geometry import Geometry, PositionsAndCell
 from kups.core.lens import Lens, View
 from kups.core.neighborlist import NeighborList, NeighborListPoints
 from kups.core.patch import Patch, WithPatch
@@ -46,7 +47,6 @@ from kups.core.typing import (
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.direct import DirectPotential
 from kups.potential.common.energy import FullSumComposer
-from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.common.graph import (
     GraphConstructor,
     GraphInputConstructor,

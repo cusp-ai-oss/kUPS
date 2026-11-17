@@ -10,14 +10,14 @@ import pytest
 
 from kups.core.cell import MatrixLogFrame, PeriodicCell, TriclinicFrame
 from kups.core.data import Index, Table
-from kups.core.result import as_result_function
-from kups.core.typing import ParticleId, SystemId
-from kups.core.units import catalog as u
-from kups.potential.common.geometry import (
+from kups.core.geometry import (
     PositionsAndCell,
     PositionsAndCellIndex,
     PositionsAndCellTree,
 )
+from kups.core.result import as_result_function
+from kups.core.typing import ParticleId, SystemId
+from kups.core.units import catalog as u
 from kups.relaxation.convergence import converged_per_system, fmax_per_system
 
 FORCE = u.eV / u.angstrom

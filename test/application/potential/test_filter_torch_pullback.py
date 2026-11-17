@@ -31,14 +31,14 @@ from kups.core.cell import (
 )
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.typing import ParticleId, SystemId
-from kups.core.units import testing
-from kups.potential.common.geometry import (
+from kups.core.geometry import (
     Geometry,
     PositionsAndCell,
     PositionsAndCellTree,
     PositionsAndSystemIndex,
 )
+from kups.core.typing import ParticleId, SystemId
+from kups.core.units import testing
 from kups.potential.common.graph import GRAPH_GEOMETRY
 from kups.potential.mliap.direct import filter_pullback
 from test.units import EV, FORCE, as_length

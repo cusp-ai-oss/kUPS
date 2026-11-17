@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol, overload
 
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
+from kups.core.geometry import Geometry, PositionsAndCell
 from kups.core.lens import Lens, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
@@ -30,7 +31,6 @@ from kups.core.neighborlist import (
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import HasCell, IsState
-from kups.potential.common.geometry import Geometry, PositionsAndCell
 from kups.potential.mliap.torch.interface import (
     IsTorchMliapParticles,
     TorchMliap,
