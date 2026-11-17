@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Containers that pair data with a selecting ``Index`` or with a cache."""
+
 from __future__ import annotations
 
 from collections.abc import Callable

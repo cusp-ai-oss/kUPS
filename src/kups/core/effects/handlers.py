@@ -1,6 +1,12 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
+"""Default effect handlers for primitives and control flow.
+
+Control flow covers ``jit``, ``scan``, ``while``, ``cond``, ``checkpoint`` and
+``shard_map``.
+"""
+
 from collections.abc import Callable
 from functools import partial
 from typing import Any
