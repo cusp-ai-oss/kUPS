@@ -39,13 +39,13 @@ from kups.core.utils.jax import no_post_init
 def _config():
     """Return a deterministic MD configuration without sampled momenta."""
     return MdParameters(
-        temperature=300,
-        time_step=1,
-        friction_coefficient=0.01,
-        thermostat_time_constant=100,
-        target_pressure=1e5,
-        pressure_coupling_time=1000,
-        compressibility=4.5e-10,
+        temperature="300 K",
+        time_step="1 fs",
+        friction_coefficient="0.01 1/fs",
+        thermostat_time_constant="100 fs",
+        target_pressure="1e5 Pa",
+        pressure_coupling_time="1e3 fs",
+        compressibility="4.5e-10 1/Pa",
         minimum_scale_factor=0.9,
         integrator="verlet",
     )
@@ -164,7 +164,9 @@ def test_file_geometry_and_metadata_share_cached_read(tmp_path, monkeypatch):
     assert particles_from_ase(path) is first
     for build in (lambda p: md_state_from_ase(p, _config()), relax_state_from_ase):
         particles, systems = build(path)
-        npt.assert_array_equal(particles.data.positions, first[0].data.positions)
+        npt.assert_array_equal(
+            particles.data.positions.value, first[0].data.positions.value
+        )
         npt.assert_array_equal(systems.data.total_charge, [1])
         npt.assert_array_equal(systems.data.spin_multiplicity, [2])
     assert calls == [(path, {"index": -1, "store_tags": True})]
@@ -209,9 +211,9 @@ def test_noncanonical_md_system_identity():
     )
     assert result.keys == particles.keys
     assert systems.keys == (SystemId(91),)
-    npt.assert_array_equal(result.data.positions, particles.data.positions)
+    npt.assert_array_equal(result.data.positions.value, particles.data.positions.value)
     npt.assert_array_equal(systems.data.total_charge, [2])
-    npt.assert_array_equal(systems.data.cell.vectors[0], cell.vectors)
+    npt.assert_array_equal(systems.data.cell.vectors[0].value, cell.vectors.value)
 
 
 def test_noncanonical_relax_systems_keep_per_system_metadata():

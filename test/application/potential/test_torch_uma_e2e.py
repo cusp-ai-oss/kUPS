@@ -406,10 +406,12 @@ def test_omol_pipeline_matches_fairchem_uma(tmp_path, name, charge, spin):
     result = evaluate(state, None)
     result.raise_assertion()
     output = result.value.data
-    energy = np.asarray(output.total_energies.data).sum()
-    _, transform = to_lower_triangular(jnp.asarray(atoms.cell.array))
-    rotation = np.asarray(transform(jnp.eye(3)))
-    forces = -np.asarray(output.gradients.positions.data) @ rotation.T
+    energy = float(output.total_energies.data.to(EV).sum())
+    _, transform = to_lower_triangular(jnp.asarray(atoms.cell.array) * A)
+    rotation = np.asarray(
+        jnp.stack([transform(jnp.eye(3)[i] * A).to(A) for i in range(3)], axis=0)
+    )
+    forces = -np.asarray(output.gradients.positions.data.to(FORCE)) @ rotation.T
     assert np.isfinite(energy)
     assert np.isfinite(forces).all()
     assert all(

@@ -25,11 +25,14 @@ import pytest
 torch = pytest.importorskip("torch", minversion="2.0.0")
 
 from kups.application.relaxation.data import RelaxSystems  # noqa: E402
-from kups.core.cell import Cell, TriclinicFrame  # noqa: E402
+from kups.core import units  # noqa: E402
+from kups.core.cell import Cell, TriclinicFrame, zero_gradient_cell  # noqa: E402
 from kups.core.data import Index, Table  # noqa: E402
 from kups.core.neighborlist import Edges  # noqa: E402
 from kups.core.typing import ParticleId, SystemId  # noqa: E402
-from kups.core.utils.jax import dataclass, no_post_init, tree_zeros_like  # noqa: E402
+from kups.core.units import catalog as u  # noqa: E402
+from kups.core.units import testing  # noqa: E402
+from kups.core.utils.jax import dataclass, no_post_init  # noqa: E402
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph  # noqa: E402
 from kups.potential.mliap.torch.interface import (  # noqa: E402
     TorchMliap,
@@ -269,7 +272,7 @@ class TestLoadUMA:
 
 @dataclass
 class _GraphAtoms:
-    positions: jax.Array
+    positions: units.Length
     atomic_numbers: jax.Array
     system: Index[SystemId]
 
@@ -283,12 +286,14 @@ def _metadata_graph(legacy=False):
     """Build interleaved atoms with unequal counts and noncanonical system keys."""
     keys = (SystemId(12), SystemId(37), SystemId(91))
     cell = Cell.from_pbc(
-        TriclinicFrame.from_matrix(jnp.tile(jnp.eye(3)[None] * 20, (3, 1, 1))),
+        TriclinicFrame.from_matrix(
+            jnp.tile(jnp.eye(3)[None] * 20, (3, 1, 1)) * u.angstrom
+        ),
         (False, False, False),
     )
     atoms = Table.arange(
         _GraphAtoms(
-            jnp.arange(24, dtype=float).reshape(8, 3) / 10,
+            jnp.arange(24, dtype=float).reshape(8, 3) / 10 * u.angstrom,
             jnp.ones(8, dtype=int),
             Index(keys, jnp.array([1, 0, 1, 0, 2, 1, 0, 2])),
         ),
@@ -299,8 +304,8 @@ def _metadata_graph(legacy=False):
         if legacy
         else RelaxSystems(
             cell,
-            tree_zeros_like(cell),
-            jnp.zeros(3),
+            zero_gradient_cell(cell),
+            units.zeros(3, u.eV),
             total_charge=jnp.array([0, 1, 0]),
             spin_multiplicity=jnp.array([1, 1, 2]),
         )
@@ -370,7 +375,7 @@ def test_omol_graph_to_output_metadata_and_unsorting(
     predictor = _MetadataPredictUnit()
     module = UMAModule(predictor, "omol", compute_cell_gradients=True)
     model = TorchMliap.from_module(
-        module, 6, True, input_builder=module._prepare_inputs
+        module, 6 * u.angstrom, True, input_builder=module._prepare_inputs
     )
     output = torch_mliap_model_fn(GraphPotentialInput(model, graph)).data
     charge = [0, 0, 0] if legacy else [0, 1, 0]
@@ -382,14 +387,22 @@ def test_omol_graph_to_output_metadata_and_unsorting(
     assert output.gradients.positions.keys == graph.particles.keys
     # Hand-derived sums of squared coordinates by system: 14.37, 9.24, 19.63.
     expected_energy = [8.185, 5.62, 10.815] if legacy else [8.185, 24.86, 21.63]
-    np.testing.assert_allclose(output.total_energies.data, expected_energy, rtol=1e-6)
+    testing.assert_allclose(
+        output.total_energies.data, jnp.array(expected_energy), u.eV, rtol=1e-6
+    )
     factors = np.ones(8) if legacy else np.array([3, 1, 3, 1, 2, 3, 1, 2])
-    np.testing.assert_allclose(
+    testing.assert_allclose(
         output.gradients.positions.data,
-        np.asarray(graph.particles.data.positions) * factors[:, None],
+        graph.particles.data.positions.to(u.angstrom) * factors[:, None],
+        u.eV / u.angstrom,
         rtol=1e-6,
     )
-    np.testing.assert_allclose(output.gradients.cell.data.vectors, 0, atol=1e-6)
+    testing.assert_allclose(
+        output.gradients.cell.data.vectors,
+        jnp.zeros((3, 3, 3)),
+        u.eV / u.angstrom,
+        atol=1e-6,
+    )
 
 
 @pytest.mark.parametrize("task", [None, "omat", "odac", "oc20", "omc"])
@@ -399,14 +412,14 @@ def test_generic_and_nonmolecular_zero_conditioning(stub_fairchem, cpu_transport
     predictor = _MetadataPredictUnit()
     module = UMAModule(predictor, task or "omat", compute_cell_gradients=True)
     builder = None if task is None else module._prepare_inputs
-    model = TorchMliap.from_module(module, 6, True, input_builder=builder)
+    model = TorchMliap.from_module(module, 6 * u.angstrom, True, input_builder=builder)
     result = torch_mliap_model_fn(GraphPotentialInput(model, graph)).data
     for field in ("charge", "spin"):
         values = model.wrapper.inputs[field]
         assert jnp.issubdtype(values.dtype, jnp.floating)
         np.testing.assert_array_equal(values, [0, 0, 0])
     assert result.total_energies.keys == graph.systems.keys
-    np.testing.assert_array_equal(result.total_energies.data, [0, 0, 0])
+    np.testing.assert_array_equal(result.total_energies.data.to(u.eV), [0, 0, 0])
 
 
 @pytest.mark.parametrize(
@@ -508,11 +521,11 @@ def test_unsigned_metadata_survives_transport(stub_fairchem, cpu_transport, dtyp
     )
     module = UMAModule(_MetadataPredictUnit(), "omol", compute_cell_gradients=True)
     model = TorchMliap.from_module(
-        module, 6, True, input_builder=module._prepare_inputs
+        module, 6 * u.angstrom, True, input_builder=module._prepare_inputs
     )
     output = torch_mliap_model_fn(GraphPotentialInput(model, graph)).data
     np.testing.assert_allclose(
-        output.total_energies.data, [8.185, 24.86, 21.63], rtol=1e-6
+        output.total_energies.data.to(u.eV), [8.185, 24.86, 21.63], rtol=1e-6
     )
 
 
@@ -530,7 +543,7 @@ def test_unsigned_overflow_cannot_wrap_into_valid_metadata(
     predictor = _FakePredictUnit()
     module = UMAModule(predictor, "omol", compute_cell_gradients=True)
     model = TorchMliap.from_module(
-        module, 6, True, input_builder=module._prepare_inputs
+        module, 6 * u.angstrom, True, input_builder=module._prepare_inputs
     )
     with pytest.raises(ValueError, match="must be in"):
         torch_mliap_model_fn(GraphPotentialInput(model, graph))
@@ -572,5 +585,5 @@ def test_load_uma_binds_task_input_builder(
     model = load_uma(path, device="cpu", task_name="omol", compute_cell_gradients=True)
     output = torch_mliap_model_fn(GraphPotentialInput(model, _metadata_graph())).data
     np.testing.assert_allclose(
-        output.total_energies.data, [8.185, 24.86, 21.63], rtol=1e-6
+        output.total_energies.data.to(u.eV), [8.185, 24.86, 21.63], rtol=1e-6
     )
