@@ -12,7 +12,7 @@ exact adjoint.
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, cast
+from typing import Any, cast, overload
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,9 @@ from jax.extend.core import Primitive
 from jax.extend.mlir.dialects import stablehlo
 from jax.interpreters import ad, batching, mlir, xla
 from jax.typing import ArrayLike, DTypeLike
+
+from kups.core import units
+from kups.core.units import E_A, E_K, E_KG, E_M, E_S
 
 type Zero = ad.Zero
 type Undefined = ad.UndefinedPrimal
@@ -460,42 +463,26 @@ ad.primitive_transposes[segment_take_p] = _segment_take_transpose
 batching.primitive_batchers[segment_take_p] = _segment_take_batcher
 
 
-def segment_sum(
+def _segment_sum(
     data: Array,
     segment_ids: Array,
     num_segments: int,
     *,
     mode: Mode | str | None = None,
 ) -> Array:
-    """Sum into bins, using a native reduction for one bin and wider scatters otherwise.
-
-    Drop-in replacement for ``jax.ops.segment_sum`` with the same value in exact
-    arithmetic. A single segment uses a masked ``jnp.sum`` in `data`'s dtype.
-    Otherwise floating data accumulates one float wider (f32 in f64, f16 and
-    bf16 in f32) and converts back once, so each bin rounds once rather than
-    once per contribution; integer and empty data use the plain scatter.
-    `segment_ids` may cover several leading axes of `data`. Differentiable in
-    `data` to any order, with
-    [segment_take][kups.core.utils.segment.segment_take] as its exact adjoint.
+    """Magnitude kernel for [segment_sum][kups.core.utils.segment.segment_sum].
 
     Args:
         data: Contributions of shape ``(*segment_ids.shape, *feature_dims)``.
-        segment_ids: Integral bin index per contribution, of any shape that is a
-            prefix of `data`'s.
+        segment_ids: Bin index per contribution.
         num_segments: Number of output bins.
-        mode: How to treat ids outside ``[0, num_segments)``: a
-            ``jax.lax.GatherScatterMode`` or ``"drop"``, ``"fill"`` or ``"clip"``.
-            ``None`` drops them; ``"clip"`` clamps them into the first or last
-            bin, which is slow when many ids are out of range.
-            ``"promise_in_bounds"`` and ``"one_hot"`` are rejected.
+        mode: How to treat ids outside ``[0, num_segments)``.
 
     Returns:
-        Bin sums of shape ``(num_segments, *feature_dims)`` with `data`'s dtype.
+        Summed bins of shape ``(num_segments, *feature_dims)``.
 
     Raises:
-        ValueError: If `data` is scalar, `segment_ids` is scalar, not integral, or
-            its shape is not a prefix of `data`'s, or `mode` is unknown or
-            unsupported.
+        ValueError: If the inputs are scalar or the ids are not integral.
     """
     if data.ndim == 0:
         raise ValueError(f"data must be at least 1-D, got shape {data.shape}.")
@@ -525,6 +512,64 @@ def segment_sum(
     return segment_sum_p.bind(data, segment_ids, num_segments=num_segments)
 
 
+@overload
+def segment_sum(
+    data: units.Quantity[E_M, E_KG, E_S, E_A, E_K],
+    segment_ids: Array,
+    num_segments: int,
+    *,
+    mode: Mode | str | None = None,
+) -> units.Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+@overload
+def segment_sum(
+    data: Array,
+    segment_ids: Array,
+    num_segments: int,
+    *,
+    mode: Mode | str | None = None,
+) -> Array: ...
+def segment_sum(
+    data: units.Quantity[E_M, E_KG, E_S, E_A, E_K] | Array,
+    segment_ids: Array,
+    num_segments: int,
+    *,
+    mode: Mode | str | None = None,
+) -> units.Quantity[E_M, E_KG, E_S, E_A, E_K] | Array:
+    """Sum into bins, using a native reduction for one bin and wider scatters otherwise.
+
+    A quantity keeps its dimension: the bins hold sums of `data`'s own unit.
+
+    Drop-in replacement for ``jax.ops.segment_sum`` with the same value in exact
+    arithmetic. A single segment uses a masked ``jnp.sum`` in `data`'s dtype.
+    Otherwise floating data accumulates one float wider (f32 in f64, f16 and
+    bf16 in f32) and converts back once, so each bin rounds once rather than
+    once per contribution; integer and empty data use the plain scatter.
+    `segment_ids` may cover several leading axes of `data`. Differentiable in
+    `data` to any order, with
+    [segment_take][kups.core.utils.segment.segment_take] as its exact adjoint.
+
+    Args:
+        data: Contributions of shape ``(*segment_ids.shape, *feature_dims)``.
+        segment_ids: Integral bin index per contribution, of any shape that is a
+            prefix of `data`'s.
+        num_segments: Number of output bins.
+        mode: How to treat ids outside ``[0, num_segments)``: a
+            ``jax.lax.GatherScatterMode`` or ``"drop"``, ``"fill"`` or ``"clip"``.
+            ``None`` drops them; ``"clip"`` clamps them into the first or last
+            bin, which is slow when many ids are out of range.
+            ``"promise_in_bounds"`` and ``"one_hot"`` are rejected.
+
+    Returns:
+        Bin sums of shape ``(num_segments, *feature_dims)`` with `data`'s dtype.
+
+    Raises:
+        ValueError: If `data` is scalar, `segment_ids` is scalar, not integral, or
+            its shape is not a prefix of `data`'s, or `mode` is unknown or
+            unsupported.
+    """
+    return units.apply(_segment_sum, data, segment_ids, num_segments, mode=mode)
+
+
 @partial(jax.jit, static_argnames=("length",))
 def bincount(x: Array, *, length: int) -> Array:
     """Count flattened integer indices into a fixed number of bins.
@@ -536,14 +581,81 @@ def bincount(x: Array, *, length: int) -> Array:
     return segment_sum(jnp.ones(x.size, dtype=int), jnp.maximum(x.ravel(), 0), length)
 
 
-def segment_take(
+def _segment_take(
     data: Array,
     segment_ids: Array,
     *,
     mode: Mode | str | None = None,
     fill_value: ArrayLike | None = None,
 ) -> Array:
+    """Magnitude kernel for [segment_take][kups.core.utils.segment.segment_take].
+
+    Args:
+        data: Rows to gather from, shape ``(num_segments, *feature_dims)``.
+        segment_ids: Row index per output.
+        mode: How to treat ids outside ``[0, len(data))``.
+        fill_value: Value the out-of-range outputs take.
+
+    Returns:
+        Gathered rows of shape ``(*segment_ids.shape, *feature_dims)``.
+
+    Raises:
+        ValueError: If the inputs are scalar, `mode` is unsupported, or a nonzero
+            `fill_value` meets ``mode="clip"``.
+    """
+    if data.ndim == 0:
+        raise ValueError(f"data must be at least 1-D, got shape {data.shape}.")
+    if segment_ids.ndim == 0:
+        raise ValueError("segment_ids must be at least 1-D, got shape ().")
+    fill_value = 0 if fill_value is None else fill_value
+    known_fill = _static_fill(fill_value)
+    clipped = _resolve_mode(mode) is _CLIP
+    if clipped:
+        if known_fill is not None and known_fill.any():
+            raise ValueError(
+                "a nonzero fill_value is meaningless under mode='clip', which "
+                "clamps every id into range instead of filling; drop it or pass "
+                "mode='fill'."
+            )
+        segment_ids = _clip_ids(segment_ids, data.shape[0])
+    if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
+        rows = _gather(data, segment_ids)
+    else:
+        flat = segment_take_p.bind(data, segment_ids.reshape(-1))
+        rows = flat.reshape(*segment_ids.shape, *data.shape[1:])
+    # Clamped ids leave nothing out of range, so only the default mode fills.
+    if clipped or (known_fill is not None and not known_fill.any()):
+        return rows
+    return _fill_out_of_range(rows, segment_ids, data.shape[0], fill_value)
+
+
+@overload
+def segment_take(
+    data: units.Quantity[E_M, E_KG, E_S, E_A, E_K],
+    segment_ids: Array,
+    *,
+    mode: Mode | str | None = None,
+    fill_value: units.Quantity[E_M, E_KG, E_S, E_A, E_K] | None = None,
+) -> units.Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+@overload
+def segment_take(
+    data: Array,
+    segment_ids: Array,
+    *,
+    mode: Mode | str | None = None,
+    fill_value: ArrayLike | None = None,
+) -> Array: ...
+def segment_take(
+    data: units.Quantity[E_M, E_KG, E_S, E_A, E_K] | Array,
+    segment_ids: Array,
+    *,
+    mode: Mode | str | None = None,
+    fill_value: units.Quantity[E_M, E_KG, E_S, E_A, E_K] | ArrayLike | None = None,
+) -> units.Quantity[E_M, E_KG, E_S, E_A, E_K] | Array:
     """Gather rows of `data` by segment id, summing the cotangents stably.
+
+    A quantity keeps its dimension, and `fill_value` then carries the same
+    dimension as `data`.
 
     The forward pass is an exact gather. The reverse pass sums the cotangents
     of each row through [segment_sum][kups.core.utils.segment.segment_sum]
@@ -572,28 +684,18 @@ def segment_take(
         ValueError: If `data` or `segment_ids` is scalar, `mode` is unknown or
             unsupported, or `fill_value` is known at trace time to be nonzero
             under ``mode="clip"``.
+        DimensionError: If `fill_value` measures something other than `data`,
+            a plain fill next to a quantity included.
     """
-    if data.ndim == 0:
-        raise ValueError(f"data must be at least 1-D, got shape {data.shape}.")
-    if segment_ids.ndim == 0:
-        raise ValueError("segment_ids must be at least 1-D, got shape ().")
-    fill_value = 0 if fill_value is None else fill_value
-    known_fill = _static_fill(fill_value)
-    clipped = _resolve_mode(mode) is _CLIP
-    if clipped:
-        if known_fill is not None and known_fill.any():
-            raise ValueError(
-                "a nonzero fill_value is meaningless under mode='clip', which "
-                "clamps every id into range instead of filling; drop it or pass "
-                "mode='fill'."
-            )
-        segment_ids = _clip_ids(segment_ids, data.shape[0])
-    if data.shape[0] == 0 or not jnp.issubdtype(data.dtype, jnp.inexact):
-        rows = _gather(data, segment_ids)
-    else:
-        flat = segment_take_p.bind(data, segment_ids.reshape(-1))
-        rows = flat.reshape(*segment_ids.shape, *data.shape[1:])
-    # Clamped ids leave nothing out of range, so only the default mode fills.
-    if clipped or (known_fill is not None and not known_fill.any()):
-        return rows
-    return _fill_out_of_range(rows, segment_ids, data.shape[0], fill_value)
+    if fill_value is not None and units.dim_of(fill_value) != units.dim_of(data):
+        raise units.DimensionError(
+            "segment_take: fill_value must have data's dimension."
+        )
+    return units.apply(
+        _segment_take,
+        data,
+        segment_ids,
+        mode=mode,
+        fill_value=fill_value,
+        dim=units.dim_of(data),
+    )
