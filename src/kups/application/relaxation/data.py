@@ -17,9 +17,10 @@ from pydantic import BaseModel
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
-    _electronic_metadata,
-    _prepare_ase,
     default_exclusion,
+    electronic_metadata,
+    electronic_metadata_from_ase,
+    particles_from_ase,
 )
 from kups.core import units
 from kups.core.cell import (
@@ -86,16 +87,20 @@ class RelaxSystems:
             convergence quantity for the cell; the atoms-ride-the-cell coupling
             is already folded in by the filter pullback.
         potential_energy: Potential energy per system, shape ``(n_systems,)``.
+        total_charge: Integer total charge per system, shape ``(n_systems,)``;
+            zeros when omitted.
+        spin_multiplicity: Integer spin multiplicity per system, shape
+            ``(n_systems,)``; ones when omitted.
     """
 
     cell: Cell[AnyPeriodicity]
     cell_gradients: Cell[AnyPeriodicity]
     potential_energy: units.Energy
 
-    total_charge: Array = field(default=None, kw_only=True)  # type: ignore
-    """Integer total charge per system, defaulting to zero."""
-    spin_multiplicity: Array = field(default=None, kw_only=True)  # type: ignore
-    """Integer spin multiplicity per system, defaulting to one."""
+    # pyrefly: ignore[bad-assignment]
+    total_charge: Array = field(default=None, kw_only=True)
+    # pyrefly: ignore[bad-assignment]
+    spin_multiplicity: Array = field(default=None, kw_only=True)
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
@@ -183,13 +188,7 @@ class RelaxRunConfig(BaseModel):
     """Whether to also relax lattice vectors."""
 
 
-def relax_systems(
-    cell: Cell[AnyPeriodicity],
-    n_atoms: Array,
-    *,
-    total_charge: Array | None = None,
-    spin_multiplicity: Array | None = None,
-) -> RelaxSystems:
+def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
     """System rows with zeroed caches and cells in the log-deformation frame.
 
     ``cell_factor = n_atoms`` (ASE's ``exp_cell_factor``) balances the extensive
@@ -200,10 +199,6 @@ def relax_systems(
         cell: Cells with a plain frame, one per system; an unbatched cell gains
             a leading axis.
         n_atoms: Atom count per system, shape ``(n_systems,)``.
-        total_charge: Integer total charge per system, shape ``(n_systems,)``;
-            None gives zeros.
-        spin_multiplicity: Integer spin multiplicity per system, shape
-            ``(n_systems,)``; None gives ones.
     """
     if cell.vectors.ndim == 2:
         cell = cell[None]
@@ -219,8 +214,6 @@ def relax_systems(
         potential_energy=units.zeros(
             cell.vectors.shape[0], u.eV, dtype=cell.vectors.dtype
         ),
-        total_charge=total_charge,
-        spin_multiplicity=spin_multiplicity,
     )
 
 
@@ -268,17 +261,19 @@ def relax_state_from_particles_and_cell(
         particles: Particles of one or more systems. Keys are preserved;
             out-of-bounds system references denote padding.
         cell: Their cells in system-key order, unbatched for a single system.
-        total_charge: Integer total charge per system in system-key order,
-            defaulting to zero.
-        spin_multiplicity: Nonnegative integer multiplicity per system in
-            system-key order, defaulting to one.
+        total_charge: Integer total charge, a scalar for every system or one
+            value per system in system-key order. Defaults to zero.
+        spin_multiplicity: Nonnegative integer multiplicity, a scalar for every
+            system or one value per system in system-key order. Defaults to one.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
 
     Raises:
+        TypeError: If electronic metadata are not integers.
         ValueError: If the system index does not have one entry per particle,
-            or ``cell`` does not hold one cell per system.
+            ``cell`` does not hold one cell per system, or electronic metadata
+            have invalid shapes or values.
     """
     system = particles.data.system
     if system.shape != (len(particles),):
@@ -291,15 +286,13 @@ def relax_state_from_particles_and_cell(
             f"Expected cell vectors with shape {expected_shape}, "
             f"got {cell.vectors.shape}."
         )
-    n_atoms = system.counts.data.astype(particles.data.positions.dtype)
-    systems = relax_systems(
-        cell,
-        n_atoms,
-        total_charge=None if total_charge is None else jnp.asarray(total_charge),
-        spin_multiplicity=(
-            None if spin_multiplicity is None else jnp.asarray(spin_multiplicity)
-        ),
+    charge, spin = electronic_metadata(
+        total_charge, spin_multiplicity, system.num_labels
     )
+    n_atoms = system.counts.data.astype(particles.data.positions.dtype)
+    systems = relax_systems(cell, n_atoms)
+    systems = bind(systems, lambda s: s.total_charge).set(charge)
+    systems = bind(systems, lambda s: s.spin_multiplicity).set(spin)
     return (
         particles.map_data(relax_particles),
         Table(system.keys, systems, _cls=SystemId),
@@ -331,8 +324,10 @@ def relax_state_from_ase(
         TypeError: If selected electronic metadata are not integers.
         ValueError: If selected metadata have invalid shapes or values.
     """
-    (p, cell, _), info = _prepare_ase(atoms)
-    charge, spin = _electronic_metadata(total_charge, spin_multiplicity, info)
+    particles, cell, _ = particles_from_ase(atoms)
+    charge, spin = electronic_metadata_from_ase(
+        atoms, total_charge=total_charge, spin_multiplicity=spin_multiplicity
+    )
     return relax_state_from_particles_and_cell(
-        p, cell, total_charge=charge[None], spin_multiplicity=spin[None]
+        particles, cell, total_charge=charge, spin_multiplicity=spin
     )

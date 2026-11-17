@@ -19,7 +19,10 @@ from kups.application.md.data import (
     md_state_from_ase,
     md_state_from_particles_and_cell,
 )
-from kups.application.relaxation.data import relax_state_from_ase
+from kups.application.relaxation.data import (
+    relax_state_from_ase,
+    relax_state_from_particles_and_cell,
+)
 from kups.application.utils.particles import particles_from_ase
 from kups.core.data import Index, Table
 from kups.core.lens import view
@@ -118,7 +121,7 @@ def test_selected_source_precedence(builder):
         (np.array(2.0), TypeError),
         (1j, TypeError),
         ("1", TypeError),
-        ([1], ValueError),
+        ([1, 2], ValueError),
         (np.array([[1]]), ValueError),
         (2**100, ValueError),
         (np.uint64(2**64 - 1), ValueError),
@@ -209,6 +212,38 @@ def test_noncanonical_md_system_identity():
     npt.assert_array_equal(result.data.positions, particles.data.positions)
     npt.assert_array_equal(systems.data.total_charge, [2])
     npt.assert_array_equal(systems.data.cell.vectors[0], cell.vectors)
+
+
+def test_noncanonical_relax_systems_keep_per_system_metadata():
+    """The source-neutral relax builder aligns per-system metadata with system keys."""
+    first, first_cell, _ = particles_from_ase(_atoms(2))
+    second, second_cell, _ = particles_from_ase(_atoms(3))
+    particles, cells = Table.union(
+        [first, second],
+        [
+            Table((SystemId(0),), first_cell[None]),
+            Table((SystemId(0),), second_cell[None]),
+        ],
+    )
+    keys = (SystemId(12), SystemId(91))
+    particles = particles.set_data(
+        replace(particles.data, system=Index(keys, jnp.array([0, 0, 1, 1, 1])))
+    )
+    _, systems = relax_state_from_particles_and_cell(
+        particles, cells.data, total_charge=[-1, 2], spin_multiplicity=np.array([2, 3])
+    )
+    assert systems.keys == keys
+    npt.assert_array_equal(systems.data.total_charge, [-1, 2])
+    npt.assert_array_equal(systems.data.spin_multiplicity, [2, 3])
+    _, systems = relax_state_from_particles_and_cell(
+        particles, cells.data, total_charge=1
+    )
+    npt.assert_array_equal(systems.data.total_charge, [1, 1])
+    npt.assert_array_equal(systems.data.spin_multiplicity, [1, 1])
+    with pytest.raises(ValueError, match="total_charge"):
+        relax_state_from_particles_and_cell(
+            particles, cells.data, total_charge=[0, 1, 2]
+        )
 
 
 @pytest.mark.parametrize("builder", [md_state_from_ase, relax_state_from_ase])

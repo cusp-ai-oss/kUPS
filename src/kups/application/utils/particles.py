@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -177,6 +177,78 @@ def particles_from_ase(
     return _prepare_ase(atoms)[0]
 
 
+def electronic_metadata(
+    total_charge: ArrayLike | None,
+    spin_multiplicity: ArrayLike | None,
+    n_systems: int,
+) -> tuple[Array, Array]:
+    """Validate per-system total charge and spin multiplicity.
+
+    Values are checked before conversion to the active JAX integer dtype, so
+    floats, booleans and out-of-range integers cannot coerce silently. Zero
+    spin is accepted as the convention of non-molecular models.
+
+    Args:
+        total_charge: Integer scalar for every system, or integers of shape
+            ``(n_systems,)``. None gives zero.
+        spin_multiplicity: Nonnegative integer scalar for every system, or
+            integers of shape ``(n_systems,)``. None gives one.
+        n_systems: Number of systems.
+
+    Returns:
+        Tuple of ``(total_charge, spin_multiplicity)``, each of shape
+        ``(n_systems,)``.
+
+    Raises:
+        TypeError: If a value does not have an integer dtype.
+        ValueError: If a value has another shape, does not fit the active JAX
+            integer dtype, or the multiplicity is negative.
+    """
+    charge = 0 if total_charge is None else total_charge
+    spin = 1 if spin_multiplicity is None else spin_multiplicity
+    return (
+        _electronic_values("total_charge", charge, n_systems),
+        _electronic_values("spin_multiplicity", spin, n_systems),
+    )
+
+
+def electronic_metadata_from_ase(
+    atoms: ase.Atoms | str | Path,
+    *,
+    total_charge: ArrayLike | None = None,
+    spin_multiplicity: ArrayLike | None = None,
+) -> tuple[Array, Array]:
+    """Select and validate the total charge and multiplicity of one ASE system.
+
+    A non-None keyword overrides ``atoms.info["charge"]`` or
+    ``atoms.info["spin"]``, each on its own, and only the selected source is
+    validated. Missing info gives 0 and 1. A file is read once, together with
+    its geometry in [particles_from_ase][kups.application.utils.particles.particles_from_ase].
+
+    Args:
+        atoms: ASE Atoms object, or a file path (str/Path) readable by
+            ``ase.io.read``.
+        total_charge: Integer total charge overriding ``atoms.info``.
+        spin_multiplicity: Nonnegative integer multiplicity overriding
+            ``atoms.info``.
+
+    Returns:
+        Tuple of ``(total_charge, spin_multiplicity)``, each of shape ``(1,)``.
+
+    Raises:
+        TypeError: If a selected value does not have an integer dtype.
+        ValueError: If a selected value is not a scalar, does not fit the active
+            JAX integer dtype, or the multiplicity is negative.
+    """
+    info = _prepare_ase(atoms)[1]
+    charge = info.get("charge", 0) if total_charge is None else total_charge
+    spin = info.get("spin", 1) if spin_multiplicity is None else spin_multiplicity
+    return (
+        _electronic_values("total_charge", charge, 1),
+        _electronic_values("spin_multiplicity", spin, 1),
+    )
+
+
 def _prepare_ase(
     atoms: ase.Atoms | str | Path,
 ) -> tuple[
@@ -185,7 +257,7 @@ def _prepare_ase(
         Cell[AnyPeriodicity],
         Callable[[units.Length], units.Length],
     ],
-    dict[str, Any],
+    Mapping[str, object],
 ]:
     """Read geometry and metadata from the same ASE object."""
     if isinstance(atoms, (str, Path)):
@@ -202,47 +274,34 @@ def _particles_from_path(
         Cell[AnyPeriodicity],
         Callable[[units.Length], units.Length],
     ],
-    dict[str, Any],
+    Mapping[str, object],
 ]:
     """Cache geometry and metadata from one read of the last file frame."""
     atoms = next(ase.io.iread(path, index=-1, store_tags=True))
     return _particles_from_atoms(atoms), atoms.info
 
 
-def _electronic_metadata(
-    total_charge: ArrayLike | None,
-    spin_multiplicity: ArrayLike | None,
-    info: dict[str, Any],
-) -> tuple[Array, Array]:
-    """Resolve and validate only the selected per-system metadata sources."""
-    charge = info.get("charge", 0) if total_charge is None else total_charge
-    spin = info.get("spin", 1) if spin_multiplicity is None else spin_multiplicity
-    return (
-        _electronic_scalar("total_charge", charge),
-        _electronic_scalar("spin_multiplicity", spin),
-    )
-
-
-def _electronic_scalar(name: str, value: Any) -> Array:
-    """Validate integer scalars before conversion to the active JAX dtype."""
+def _electronic_values(name: str, value: object, n_systems: int) -> Array:
+    """Validate an integer scalar or per-system integers, shape ``(n_systems,)``."""
     if isinstance(value, int) and not isinstance(value, bool):
-        integer = value
+        shape, integers = (), [value]
     else:
         array = np.asarray(value)
-        if array.shape != ():
+        if array.shape not in ((), (n_systems,)):
             raise ValueError(
-                f"{name} must be an integer scalar; got shape {array.shape}."
+                f"{name} must be an integer scalar or have shape ({n_systems},); "
+                f"got shape {array.shape}."
             )
         if not np.issubdtype(array.dtype, np.integer):
             raise TypeError(f"{name} must have an integer dtype; got {array.dtype}.")
-        integer = int(array)
+        shape, integers = array.shape, [int(v) for v in array.ravel()]
     bounds = np.iinfo(jnp.asarray(0).dtype)
-    if integer < bounds.min or integer > bounds.max:
+    if any(v < bounds.min or v > bounds.max for v in integers):
         raise ValueError(f"{name} is outside the active JAX integer range.")
-    # Keep zero for non-molecular tasks; UMA omol requires a positive multiplicity.
-    if name == "spin_multiplicity" and integer < 0:
+    if name == "spin_multiplicity" and any(v < 0 for v in integers):
         raise ValueError("spin_multiplicity must be nonnegative.")
-    return jnp.asarray(integer, dtype=int)
+    values = jnp.asarray(np.reshape(integers, shape), dtype=int)
+    return jnp.broadcast_to(values, (n_systems,))
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:

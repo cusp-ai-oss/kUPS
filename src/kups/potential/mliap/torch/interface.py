@@ -32,7 +32,8 @@ Requires the ``torch_dev`` dependency group: ``uv sync --group torch_dev``.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, Protocol, TypedDict, overload
+from collections.abc import Callable
+from typing import Any, Literal, Protocol, TypedDict, overload
 
 import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
@@ -80,6 +81,7 @@ __all__ = [
     "TorchMliapForward",
     "lattice_gradient_from_virial",
     "make_torch_mliap_potential",
+    "prepare_torch_inputs",
     "torch_mliap_model_fn",
 ]
 
@@ -257,7 +259,7 @@ type TorchMliapInput[
 ] = GraphPotentialInput[TorchMliap, P, S, Literal[2]]
 
 
-def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:  # noqa: ANN401
+def prepare_torch_inputs(graph: Any) -> AtomGraphInput:  # noqa: ANN401
     """Convert a sorted kUPS graph to ``AtomGraphInput``.
 
     Unlike the JAX-exported [tojax][kups.potential.mliap.tojax] path — which
@@ -341,9 +343,7 @@ def torch_mliap_model_fn[
         .set(jnp.arange(n, dtype=sort_order.dtype))
     )
 
-    input_builder = (
-        getattr(inp.parameters, "input_builder", None) or _prepare_torch_inputs
-    )
+    input_builder = inp.parameters.input_builder or prepare_torch_inputs
     input_dict = input_builder(graph)
     result = inp.parameters.call(input_dict)
 

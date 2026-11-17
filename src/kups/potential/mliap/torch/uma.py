@@ -42,8 +42,8 @@ from kups.core.units import catalog as u
 from kups.potential.mliap.torch.interface import (
     AtomGraphInput,
     TorchMliap,
-    _prepare_torch_inputs,
     lattice_gradient_from_virial,
+    prepare_torch_inputs,
 )
 
 __all__ = ["UMAInferenceSettings", "UMAModule", "UMATaskName", "load_uma"]
@@ -105,9 +105,9 @@ class UMAModule(torch.nn.Module):
         self.task_name = str(task_name)
         self.compute_cell_gradients = compute_cell_gradients
 
-    def _prepare_inputs(self, graph: Any) -> AtomGraphInput:
+    def _prepare_inputs(self, graph: Any) -> AtomGraphInput:  # noqa: ANN401
         """Select molecular metadata without changing generic model inputs."""
-        inputs = _prepare_torch_inputs(graph)
+        inputs = prepare_torch_inputs(graph)
         if self.task_name != "omol":
             return inputs
         n_sys = inputs["cell"].shape[0]

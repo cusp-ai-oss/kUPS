@@ -545,3 +545,10 @@ def test_noncontiguous_reservations_and_nondefault_keys() -> None:
     for before, after in zip(expected, actual, strict=True):
         for a, b in zip(jax.tree.leaves(before), jax.tree.leaves(after), strict=True):
             npt.assert_allclose(a, b, atol=1e-12)
+
+
+def test_streamed_systems_default_electronic_metadata() -> None:
+    """Streamed rows carry the default total charge 0 and multiplicity 1."""
+    payload = payload_from_structures(_structures(), CAPACITY, SPECIES, [0, 1, 2])
+    npt.assert_array_equal(payload.systems.total_charge, [0, 0, 0])
+    npt.assert_array_equal(payload.systems.spin_multiplicity, [1, 1, 1])

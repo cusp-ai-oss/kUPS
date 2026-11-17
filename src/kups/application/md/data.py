@@ -18,9 +18,10 @@ from pydantic import BaseModel
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
-    _electronic_metadata,
-    _prepare_ase,
     default_exclusion,
+    electronic_metadata,
+    electronic_metadata_from_ase,
+    particles_from_ase,
 )
 from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, zero_gradient_cell
@@ -207,6 +208,10 @@ class MDSystems:
             integrators that drive cell dynamics via an explicit conjugate
             momentum (e.g. BAOAB NPT Langevin); zero otherwise.
         potential_energy: Total potential energy per system, shape ``(n_systems,)``.
+        total_charge: Integer total charge per system, shape ``(n_systems,)``;
+            zeros when omitted.
+        spin_multiplicity: Integer spin multiplicity per system, shape
+            ``(n_systems,)``; ones when omitted.
     """
 
     cell: Cell[Any]
@@ -215,10 +220,10 @@ class MDSystems:
     cell_momentum: units.Momentum
     potential_energy: units.Energy
 
-    total_charge: Array = field(default=None, kw_only=True)  # type: ignore
-    """Integer total charge per system, defaulting to zero."""
-    spin_multiplicity: Array = field(default=None, kw_only=True)  # type: ignore
-    """Integer spin multiplicity per system, defaulting to one."""
+    # pyrefly: ignore[bad-assignment]
+    total_charge: Array = field(default=None, kw_only=True)
+    # pyrefly: ignore[bad-assignment]
+    spin_multiplicity: Array = field(default=None, kw_only=True)
 
     @skip_post_init_if_disabled
     def __post_init__(self) -> None:
@@ -317,8 +322,10 @@ def md_state_from_particles_and_cell(
             thermostat/barostat parameters.
         key: JAX PRNG key for Maxwell-Boltzmann momenta initialisation. If None,
             momenta are set to zero.
-        total_charge: Integer total charge, defaulting to zero.
-        spin_multiplicity: Nonnegative integer multiplicity, defaulting to one.
+        total_charge: Integer total charge, a scalar or shape ``(1,)``,
+            defaulting to zero.
+        spin_multiplicity: Nonnegative integer multiplicity, a scalar or shape
+            ``(1,)``, defaulting to one.
 
     Returns:
         MD particle and system tables preserving the input particle keys and
@@ -330,7 +337,7 @@ def md_state_from_particles_and_cell(
             ``particles`` is empty or lacks one valid system reference per
             particle, or ``cell.vectors`` does not have shape ``(3, 3)``.
     """
-    charge, spin = _electronic_metadata(total_charge, spin_multiplicity, {})
+    charge, spin = electronic_metadata(total_charge, spin_multiplicity, 1)
     p = particles.data
     n_particles = len(particles)
     if n_particles == 0:
@@ -388,8 +395,8 @@ def md_state_from_particles_and_cell(
                 batched_cell.vectors.shape, u.amu * u.angstrom / u.fs
             ),
             potential_energy=units.zeros((1,), u.eV),
-            total_charge=charge[None],
-            spin_multiplicity=spin[None],
+            total_charge=charge,
+            spin_multiplicity=spin,
         ),
     )
 
@@ -427,8 +434,10 @@ def md_state_from_ase(
         TypeError: If selected electronic metadata are not integers.
         ValueError: If selected metadata have invalid shapes or values.
     """
-    (particles, cell, _), info = _prepare_ase(atoms)
-    charge, spin = _electronic_metadata(total_charge, spin_multiplicity, info)
+    particles, cell, _ = particles_from_ase(atoms)
+    charge, spin = electronic_metadata_from_ase(
+        atoms, total_charge=total_charge, spin_multiplicity=spin_multiplicity
+    )
     return md_state_from_particles_and_cell(
         particles, cell, config, key=key, total_charge=charge, spin_multiplicity=spin
     )

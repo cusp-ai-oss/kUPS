@@ -228,11 +228,20 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
     expected = (object(), object())
     calls: list[tuple[object, ...]] = []
 
-    def fake_prepare_ase(
+    def fake_particles_from_ase(
         atoms: ase.Atoms | str | Path,
-    ):
+    ) -> tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity], object]:
         calls.append(("adapter", atoms))
-        return (particles, cell, object()), {"charge": -1, "spin": 2}
+        return particles, cell, object()
+
+    def fake_electronic_metadata_from_ase(
+        atoms: ase.Atoms | str | Path,
+        *,
+        total_charge: object = None,
+        spin_multiplicity: object = None,
+    ) -> tuple[jax.Array, jax.Array]:
+        calls.append(("metadata", atoms, total_charge, spin_multiplicity))
+        return jnp.array([-1]), jnp.array([2])
 
     def fake_md_state_from_particles_and_cell(
         actual_particles: Table[ParticleId, Particles],
@@ -250,24 +259,28 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
                 actual_cell,
                 actual_config,
                 key,
-                int(total_charge),
-                int(spin_multiplicity),
+                int(total_charge[0]),
+                int(spin_multiplicity[0]),
             )
         )
         return expected
 
-    monkeypatch.setattr(md_data, "_prepare_ase", fake_prepare_ase)
+    monkeypatch.setattr(md_data, "particles_from_ase", fake_particles_from_ase)
+    monkeypatch.setattr(
+        md_data, "electronic_metadata_from_ase", fake_electronic_metadata_from_ase
+    )
     monkeypatch.setattr(
         md_data,
         "md_state_from_particles_and_cell",
         fake_md_state_from_particles_and_cell,
     )
 
-    actual = md_state_from_ase("input.cif", md_config, key=key)
+    actual = md_state_from_ase("input.cif", md_config, key=key, total_charge=-1)
 
     assert actual is expected
     assert calls == [
         ("adapter", "input.cif"),
+        ("metadata", "input.cif", -1, None),
         ("builder", particles, cell, md_config, key, -1, 2),
     ]
 
