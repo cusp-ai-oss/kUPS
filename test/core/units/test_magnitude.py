@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for conversions, cross-base arithmetic and serialisation."""
+"""Tests for conversions, cross-base arithmetic, float32 guards and serialisation."""
 
 import math
 from fractions import Fraction
@@ -227,3 +227,25 @@ def test_arraylike_magnitudes():
     npt.assert_allclose(n.at[0].set(1.0 * u.angstrom).to(u.angstrom), [1.0, 0.0, 0.0])
     plus_one = jax.jit(lambda x: (x + 1.0 * u.angstrom).sum())
     npt.assert_allclose(plus_one(n).to(u.angstrom), 3.0)
+
+
+def test_unit_operand_dtype():
+    # a Unit operand is checked against the dtype the operands promote to, not
+    # jax's default float64, or the float32 band would go unguarded
+    v32 = arr(1.0, dtype=jnp.float32) * u.angstrom**6  # 1 here, so the attach is free
+    for build in (
+        lambda: v32 * u.m**6,
+        lambda: v32 / u.m**6,
+        lambda: v32 < u.m**6,  # same dimension: only the size refuses
+        lambda: jax.jit(lambda q: q * u.m**6)(v32),
+        lambda: v32.at[()].set(u.m**6),
+        lambda: v32.at[()].add(u.m**6),
+        lambda: v32.reshape(1).take(arr([0, 5]), mode="fill", fill_value=u.m**6),
+    ):
+        with pytest.raises(units.DimensionError, match="not a normal float32"):
+            build()
+    with pytest.raises(units.DimensionError, match=r"wider than float32"):
+        v32 * u.m**6  # with x64 already on, the advice is to widen the dtype
+    # float64 magnitudes can hold the factor
+    v64 = (arr(1.0) * u.angstrom**6) * u.m**6
+    assert float(v64.to(u.angstrom**6 * u.m**6)) == pytest.approx(1.0)
