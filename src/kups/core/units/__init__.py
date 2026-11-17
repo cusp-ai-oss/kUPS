@@ -1,24 +1,45 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Physical units, checked at runtime and in the type system.
+"""Physical units for JAX, checked at runtime and in the type system.
 
+    >>> from kups.core import units
     >>> from kups.core.units import catalog as u
-    >>> u.eV / u.angstrom
-    eV/Å
+    >>> 1 * u.nm + 5 * u.angstrom
+    15.0 Å
+    >>> with units.base(units.SI):
+    ...     1 * u.km + 5 * u.m
+    1005.0 m
 
 Model:
   A ``Unit`` is a named multiple of a dimension, five rational exponents over
-  ``(m, kg, s, A, K)``; ``mol`` is dimensionless with scale ``N_A``. A
-  ``BaseSystem`` fixes the units magnitudes are expressed in: ``ATOMISTIC`` (Å,
-  amu, eV, e, K) unless a ``with base(...)`` scope chooses another, such as
-  ``SI``.
+  ``(m, kg, s, A, K)``; ``mol`` is dimensionless with scale ``N_A``. Multiplying
+  magnitudes by a unit gives a ``Quantity`` whose magnitudes are stored in the
+  active base: ``ATOMISTIC`` (Å, amu, eV, e, K) unless a ``with base(...)``
+  scope chooses another, such as ``SI``. A dimensionless result decays to a
+  plain ``jax.Array``.
 
-  ``Unit`` is generic over symbolic integer exponents, so pyrefly tracks
-  dimensions through unit algebra. ``E_M``, ``E_KG``, ``E_S``, ``E_A`` and ``E_K``
-  are those exponents as type variables, for signatures generic over the
-  dimension, such as ``Unit[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a
-  second operand's.
+  A quantity is a pytree whose only leaf is its magnitudes; the dimension and base
+  live in the treedef, so ``jax.jit``, ``jax.vmap`` and ``jax.lax.scan`` take
+  quantities unchanged and lower to the same HLO as plain arrays. ``Unit`` and
+  ``Quantity`` are generic over symbolic integer exponents, so pyrefly tracks
+  dimensions through arithmetic; at runtime any mismatch raises ``DimensionError``.
+  ``E_M``, ``E_KG``, ``E_S``, ``E_A`` and ``E_K`` are those exponents as type
+  variables, for signatures generic over the dimension, such as
+  ``Quantity[E_M, E_KG, E_S, E_A, E_K]``; ``F_M`` to ``F_K`` name a second
+  operand's.
+
+  ``apply`` runs a function on the magnitudes and labels its result.
+
+Caveats:
+  * ``jax.tree.map`` over a single tree treats a quantity as a node, so a nonlinear
+    function mislabels it: ``jax.tree.map(jnp.sqrt, 4.0 * u.angstrom**2)`` gives
+    ``2.0 Å^2``. Use ``units.tree_map``, or pass ``is_leaf=units.is_leaf``.
+  * A plain number never stands in for a dimensioned operand, zero included:
+    ``q + 0`` and ``q > 0`` raise. Write the zero with its unit, ``0.0 * u.eV``.
+  * Quantities never become arrays implicitly, and ``==`` raises. Use
+    ``q.to(unit)``, ``q.value``, ``float(q)`` or ``q.item()``, and compare with
+    ``kups.core.units.testing``.
 """
 
 from kups.core.units import catalog as catalog
@@ -28,6 +49,51 @@ from kups.core.units._base import (
     BaseSystem,
     active_base,
     base,
+)
+from kups.core.units._core import (
+    Acceleration,
+    Action,
+    Area,
+    Charge,
+    Compressibility,
+    CoulombConstant,
+    Current,
+    Density,
+    DipoleMoment,
+    Energy,
+    Entropy,
+    Force,
+    Frequency,
+    Length,
+    Mass,
+    Measured,
+    Momentum,
+    NumberDensity,
+    OddExponentRoot,
+    Permittivity,
+    Power,
+    Pressure,
+    Quantity,
+    Stiffness,
+    Temperature,
+    Time,
+    Velocity,
+    Voltage,
+    Volume,
+    Wavenumber,
+    apply,
+    base_of,
+    dim_of,
+    dim_str,
+    from_dim,
+    is_leaf,
+    is_quantity,
+    magnitudes,
+    magnitudes_of,
+    require_dim,
+    tree_flatten,
+    tree_leaves,
+    tree_map,
 )
 from kups.core.units._typed import E_A, E_K, E_KG, E_M, E_S, F_A, F_K, F_KG, F_M, F_S
 from kups.core.units._unit import (
@@ -70,9 +136,40 @@ __all__ = [
     # submodules
     "catalog",
     # core types
+    "Quantity",
+    "Measured",
     "Unit",
     "Dimensionless",
     "DimensionError",
+    "OddExponentRoot",
+    # dimension aliases
+    "Acceleration",
+    "Action",
+    "Area",
+    "Charge",
+    "Compressibility",
+    "CoulombConstant",
+    "Current",
+    "Density",
+    "DipoleMoment",
+    "Energy",
+    "Entropy",
+    "Force",
+    "Frequency",
+    "Length",
+    "Mass",
+    "Momentum",
+    "NumberDensity",
+    "Permittivity",
+    "Power",
+    "Pressure",
+    "Stiffness",
+    "Temperature",
+    "Time",
+    "Velocity",
+    "Voltage",
+    "Volume",
+    "Wavenumber",
     # unit aliases
     "AccelerationUnit",
     "ActionUnit",
@@ -107,7 +204,20 @@ __all__ = [
     "ATOMISTIC",
     "base",
     "active_base",
+    # pytree helpers
+    "is_quantity",
+    "is_leaf",
+    "magnitudes",
+    "magnitudes_of",
+    "tree_map",
+    "tree_leaves",
+    "tree_flatten",
     # dimensions
+    "dim_of",
+    "require_dim",
+    "base_of",
+    "dim_str",
+    "from_dim",
     "ONE",
     "Dim",
     "dmul",
@@ -122,4 +232,6 @@ __all__ = [
     "F_S",
     "F_A",
     "F_K",
+    # transforms
+    "apply",
 ]

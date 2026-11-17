@@ -1,12 +1,18 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the unit catalogue."""
+"""Tests for the unit catalogue and assertions."""
 
 import math
+import pathlib
 import re
 from fractions import Fraction
+from typing import Any
 
+import jax
+import jax.numpy as jnp
+import numpy as np
+import numpy.testing as npt
 import pytest
 
 from kups.core import units
@@ -14,8 +20,14 @@ from kups.core.units import (
     Unit,
 )
 from kups.core.units import catalog as u
+from kups.core.units import testing as ut
 from kups.core.units._unit import Atom
 from kups.core.units.catalog import angstrom, eV
+
+from ._helpers import (
+    arr,
+    val,
+)
 
 
 def test_unit_catalogue():
@@ -39,6 +51,28 @@ def test_unit_catalogue():
     assert str(1 / (u.eV * u.angstrom)) == "1/(eV.Å)"  # one slash, one group
     assert str(u.eV / u.eV) == "1" and (u.eV / u.eV).dim == (0, 0, 0, 0, 0)
     assert type(u.m / u.m) is Unit and type(u.mol) is Unit
+    # unit times magnitudes attaches, in either order, and so does the quotient
+    assert val(u.angstrom * 3.0) == 3.0 and val(3.0 * u.angstrom) == 3.0
+    assert list((u.angstrom * arr([1.0, 2.0])).value) == [1.0, 2.0]
+    assert val(u.angstrom / 4.0) == 0.25 and val(4.0 / u.angstrom) == 4.0
+    q = 3.0 * u.eV
+    assert val(u.eV * q) == val(q * u.eV) and float(u.eV / q) == pytest.approx(1 / 3)
+
+    class Scaled:
+        def __rmul__(self, other: object) -> str:
+            return f"scaled by {other}"
+
+    assert u.m * Scaled() == "scaled by m"  # an unrecognised operand defers
+
+    seqs: list[Any] = [[1.0, 2.0], (1.0, 2.0), "x"]  # sequences defer
+    for seq in seqs:
+        for unit in (u.m, u.mol):  # dimensionless units too
+            with pytest.raises(TypeError, match="can't multiply sequence"):
+                _ = unit * seq
+            with pytest.raises(TypeError, match="can't multiply sequence"):
+                _ = seq * unit
+            with pytest.raises(TypeError, match="unsupported operand"):
+                _ = seq / unit
 
 
 def test_unit_identity():
@@ -61,17 +95,17 @@ def test_unit_identity():
 
 
 def test_reciprocal_unit():
+    # 1/u.eV is the reciprocal unit itself; any other numerator is a quantity
+    inverse = 1.0 / (1.0 * u.eV)
     assert 1 / u.eV == u.eV**-1  # the two spellings agree
     assert isinstance(1 / u.eV, units.Unit)
-    # a number is not a unit, so 1 / unit is the only mixed form
-    for build in (
-        lambda: 2 / u.eV,
-        lambda: 1.0 / u.eV,
-        lambda: u.eV * 2,
-        lambda: u.eV / 2,
-    ):
-        with pytest.raises(TypeError):
-            build()
+    assert float(inverse.to(1 / u.eV)) == 1.0
+    # only Literal[1] declares a unit
+    assert float((2 / u.eV).to(u.eV**-1)) == 2.0
+    assert float((1.0 / u.eV).to(u.eV**-1)) == 1.0
+    assert not isinstance(1 / u.mol, units.Unit)  # an empty dimension stays a number
+    with pytest.raises(TypeError, match=r"must be a Unit.*without magnitudes"):
+        inverse.to(2 / u.eV)  # pyrefly: ignore[bad-argument-type]
 
 
 def test_si_prefixes():
@@ -133,3 +167,83 @@ def test_overflowing_scales():
     big = Atom("big", u.m.dim, 1e300)
     assert Unit(((huge, Fraction(1)),)).scale == math.inf
     assert Unit(((huge, Fraction(1)), (big, Fraction(2)))).scale == math.inf
+
+
+def test_testing_assertions():
+    # tolerances are over magnitudes in a unit the caller names, never raw magnitudes,
+    # which would mean a different distance in each base
+    r = arr([1.0, 2.0]) * u.angstrom
+    ut.assert_allclose(r, arr([0.1, 0.2]) * u.nm, u.angstrom)
+    ut.assert_allclose(r, arr([1.0, 2.0]), u.angstrom)  # magnitudes
+    ut.assert_allclose(2.0 * u.eV, 2.0 + 1e-9, u.eV)
+    ut.assert_array_equal(r, r.rebase(units.SI), u.angstrom)
+    ut.assert_array_equal(arr([1.0, 2.0]), r, u.angstrom)
+    with pytest.raises(AssertionError, match="magnitudes in Å"):
+        ut.assert_allclose(r, arr([1.0, 2.1]) * u.angstrom, u.angstrom)
+    with pytest.raises(AssertionError, match=r"2\.1e-10"):
+        # both sides are quoted in the unit the caller named, not in the base
+        ut.assert_array_equal(r, arr([1.0, 2.1]) * u.angstrom, u.m)
+    ut.assert_allclose(r, arr([1.0, 2.1]) * u.angstrom, u.angstrom, rtol=0.1)
+    ut.assert_allclose(r, arr([1.0, 2.1]) * u.angstrom, u.angstrom, rtol=0.0, atol=0.2)
+    # a dimension mismatch is caught on the way in, by .to(unit) itself
+    with pytest.raises(units.DimensionError, match="cannot express"):
+        ut.assert_allclose(r, r, u.eV)  # pyrefly: ignore[bad-argument-type]
+    with pytest.raises(units.DimensionError, match="neither side carries"):
+        ut.assert_allclose(arr([1.0]), arr([1.0]), u.angstrom)
+    # a dimensionless unit with a scale cannot tell which side it measures
+    with pytest.raises(units.DimensionError, match="whether it is in deg"):
+        ut.assert_allclose(90 * u.deg, 90.0, u.deg)
+    ut.assert_allclose(jnp.arange(3), jnp.arange(3), u.rad)  # integer magnitudes
+    # the float32 side sets the tolerance, even against a float64 expectation
+    ut.assert_allclose(jnp.ones(1, jnp.float32), np.array([1.0 + 1.5e-7]), u.rad)
+    with pytest.raises(TypeError, match=r"must be a units\.Unit"):
+        ut.assert_allclose(r, r, "angstrom")  # pyrefly: ignore[bad-argument-type]
+    # numpy's own assertion refuses a quantity and points at units.testing
+    with pytest.raises(units.DimensionError, match=r"units\.testing"):
+        npt.assert_allclose(r, r)
+
+
+def test_deferred_annotations():
+    # the exponents in the signatures only exist under TYPE_CHECKING, so the
+    # annotations must stay strings
+    hints = ut.assert_allclose.__annotations__
+    assert hints and all(isinstance(h, str) for h in hints.values())
+
+
+def test_no_jax_patching():
+    # structural check that kups.core.units does not reach into or modify jax
+    src = pathlib.Path(units.__file__).parent
+    assert not [
+        f.name
+        for f in src.glob("*.py")
+        if any(
+            line.lstrip().startswith(("from jax._src", "import jax._src"))
+            for line in f.read_text().splitlines()
+        )
+    ]
+    # every jax attribute is jax's own object, not a kups.core.units wrapper
+    for mod in (jax, jnp, jax.lax, jax.tree, jax.tree_util):
+        for name in dir(mod):
+            got = getattr(getattr(mod, name, None), "__module__", "") or ""
+            assert not got.startswith("kups.core.units"), (
+                f"{mod.__name__}.{name} is kups.core.units'"
+            )
+    for cls in (jax.core.ShapedArray, jax.Array):
+        for name in dir(cls):
+            got = getattr(getattr(cls, name, None), "__module__", "") or ""
+            assert not got.startswith("kups.core.units"), (
+                f"{cls.__name__}.{name} is kups.core.units'"
+            )
+
+
+def test_charge_and_dipole_units():
+    # e, rydberg, invcm and debye, each against its defining expression
+    assert u.e.scale == 1.602176634e-19  # SI-2019 exact, as eV is
+    assert u.rydberg.scale == pytest.approx(u.hartree.scale / 2, rel=1e-14)
+    assert u.debye.scale == 1e-21 / 299792458.0
+    assert units.dim_of(u.debye) == units.dim_of(u.e * u.angstrom)
+    assert u.invcm.dim == u.rydberg.dim == u.eV.dim
+    assert float((1.0 * u.invcm).to(u.eV)) == pytest.approx(1.2398419843320023e-4)
+    assert float((1.0 * u.debye).to(u.e * u.angstrom)) == pytest.approx(
+        0.20819433270935594
+    )
