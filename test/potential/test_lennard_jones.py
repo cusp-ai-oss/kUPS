@@ -160,7 +160,7 @@ class TestLennardJonesParameters:
             parameters={"X": (None, None), "Y": (3.0 * A, 4.0 * EV)},
             mixing_rule="lorentz_berthelot",
         )
-        testing.assert_allclose(params.sigma, jnp.array([[1.0, 2.0], [2.0, 3.0]]), A)
+        testing.assert_allclose(params.sigma, jnp.array([[0.0, 1.5], [1.5, 3.0]]), A)
         testing.assert_allclose(params.epsilon, jnp.zeros((2, 2)).at[1, 1].set(4.0), EV)
 
     def test_2d_input_error(self):

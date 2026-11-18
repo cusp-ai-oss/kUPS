@@ -48,7 +48,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.potential.common.energy import (
     EnergyFunction,
@@ -120,11 +119,15 @@ class BlockingSpheresParameters:
                     positions_list.append(sphere.center)
                     system_list.append(SystemId(sys_idx))
                     motif_list.append(MotifId(motif_idx))
-        radii = units.stack(radii_list) if radii_list else units.zeros((0,), u.angstrom)
+        radii = (
+            units.stack(radii_list)
+            if radii_list
+            else units.from_dim(jnp.zeros((0,)), units.LENGTH)
+        )
         positions = (
             units.stack(positions_list)
             if positions_list
-            else units.zeros((0, 3), u.angstrom)
+            else units.from_dim(jnp.zeros((0, 3)), units.LENGTH)
         )
         system = Index.new(system_list, label=SystemId).populate_max_count()
         motif = Index.new(motif_list, label=MotifId).populate_max_count()
@@ -222,11 +225,8 @@ def blocking_spheres_energy(
     group_motif_idx, sph_motif_idx = Index.match(
         inp.groups[particles.group].motif, sphere.motif
     )
-    raw_energies = units.where(
-        (dists < sphere.radii) & (group_motif_idx == sph_motif_idx),
-        jnp.inf * u.eV,
-        0.0 * u.eV,
-    )
+    blocked = (dists < sphere.radii) & (group_motif_idx == sph_motif_idx)
+    raw_energies = units.from_dim(jnp.where(blocked, jnp.inf, 0.0), units.ENERGY)
     energies = particle_sys.sum_over(raw_energies)
     return WithPatch(energies, IdPatch[Any]())
 
@@ -288,7 +288,9 @@ class BlockingSpheresSumComposer[State, Ptch: Patch[Any]](
         # systems that carry spheres); systems without spheres get a zero cutoff.
         sphere_system = parameters.system.update_labels(tuple(systems.keys))
         max_radii = sphere_system.max_over(parameters.radii).data
-        cutoffs = Table(systems.keys, units.maximum(max_radii, 0.0 * u.angstrom))
+        cutoffs = Table(
+            systems.keys, units.maximum(max_radii, units.zeros_like(max_radii))
+        )
 
         nnlist_particles = particles.map_data(
             lambda p: _BlockingSpherePoints(

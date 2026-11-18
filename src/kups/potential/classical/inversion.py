@@ -55,7 +55,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -165,12 +164,19 @@ def inversion_energy(
     # Normal to the plane k-j-l
     n = units.cross(r_jk, r_jl)  # (n_edges, 3)
     n_norm = units.norm(n, axis=-1, keepdims=True)
-    n_unit = n / (n_norm + jnp.asarray(1e-10, n_norm.dtype) * u.angstrom**2)
+    # Floors relative to the bond lengths keep degenerate geometries finite.
+    eps = jnp.finfo(n_norm.dtype).eps
+    length = (
+        units.norm(r_ji, axis=-1, keepdims=True)
+        + units.norm(r_jk, axis=-1, keepdims=True)
+        + units.norm(r_jl, axis=-1, keepdims=True)
+    )
+    n_unit = n / (n_norm + eps * length**2)
 
     # Out-of-plane angle: sin(omega) = (r_ji . n) / |r_ji|
     r_ji_norm = units.norm(r_ji, axis=-1)
     sin_omega = units.einsum("ij,ij->i", r_ji, n_unit) / (
-        r_ji_norm + jnp.asarray(1e-10, r_ji_norm.dtype) * u.angstrom
+        r_ji_norm + eps * length[..., 0]
     )
     sin_omega = jnp.clip(sin_omega, -1.0, 1.0)
     omega = jnp.arcsin(sin_omega)  # radians

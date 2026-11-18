@@ -7,8 +7,9 @@ ASE's ``fmax`` criterion per system: a system converges when its largest
 DOF-gradient norm is below the tolerance. The helpers take ``PositionsAndCell``
 gradients and a ``PositionsAndCellIndex`` that assigns each particle row and
 cell to its system, so each system in a batch is judged as if it ran alone.
-As in ASE, position gradients in eV/Å and cell gradients in eV share one
-tolerance in eV/Å, whatever base the gradients carry.
+Cell gradients are forces too: cell vectors are lengths, and a log-deformation
+with a length ``cell_factor`` is one. ASE compares ``virial / n_atoms`` in eV
+with forces in eV/Å, which is ``cell_factor = n_atoms × 1 Å``.
 
 ASE's cell filters append the ``3x3`` cell DOFs to the forces as three extra
 atoms, one per row, and compare each row's length with ``fmax``. kUPS deforms
@@ -19,24 +20,23 @@ transpose: ASE's rows are its columns, and those column lengths are what count.
 
 from __future__ import annotations
 
-import jax
+from typing import Any
+
 import jax.numpy as jnp
 from jax import Array
 
 from kups.core import units
 from kups.core.assertion import runtime_assert
+from kups.core.cell import Cell
 from kups.core.data.table import Table
 from kups.core.geometry import (
     PositionsAndCell,
     PositionsAndCellIndex,
-    PositionsAndCellTree,
 )
 from kups.core.typing import SystemId
-from kups.core.units import catalog as u
-from kups.core.utils.segmented_tree import tree_segment_max
 
 
-def _cell_leaf_norms(leaf: Array) -> Array:
+def _cell_leaf_norms(leaf: units.Force) -> units.Force:
     """ASE-style magnitudes of one cell-gradient leaf.
 
     A ``(..., 3, 3)`` leaf (the matrix-log deformation the relaxation builders
@@ -45,22 +45,20 @@ def _cell_leaf_norms(leaf: Array) -> Array:
     count per entry.
     """
     if leaf.shape[-2:] == (3, 3):
-        return jnp.linalg.norm(leaf, axis=-2)
-    return jnp.abs(leaf)
+        return units.norm(leaf, axis=-2)
+    return units.absolute(leaf)
 
 
-def _gradient_norm_per_row(
-    gradients: PositionsAndCell[units.Force],
-) -> PositionsAndCell[Array]:
-    """Per-row gradient magnitudes: ``|∂E/∂r_i|`` per particle, ASE rows per cell."""
-    gradients = units.tree_map(
-        lambda g: g.rebase(units.ATOMISTIC).value if units.is_quantity(g) else g,
-        gradients,
-    )
-    return PositionsAndCellTree(
-        gradients.positions.map_data(lambda g: jnp.linalg.norm(g, axis=-1)),
-        gradients.cell.map_data(lambda c: jax.tree.map(_cell_leaf_norms, c)),
-    )
+def _cell_row_max(cell: Cell[Any]) -> units.Force:
+    """Largest ASE-style cell-gradient row of each cell, across all its leaves."""
+    norms = map(_cell_leaf_norms, units.tree_leaves(cell))
+    rows = [units.max(n, axis=tuple(range(1, n.ndim))) for n in norms]
+    return units.max(units.stack(rows, axis=-1), axis=-1)
+
+
+def _inf_if_nonfinite(x: units.Force) -> units.Force:
+    """``x`` with NaN and ``±inf`` raised to ``inf``; a segment max may drop NaNs."""
+    return units.apply(lambda m: jnp.where(jnp.isfinite(m), m, jnp.inf), x)
 
 
 def fmax_per_system(
@@ -83,18 +81,13 @@ def fmax_per_system(
         Maximum per system, shape ``(n_systems,)``. A system without particles
         is ``-inf`` when cell gradients are excluded.
     """
-    # Segment max may drop NaNs, so map non-finite norms to inf first.
-    norms = jax.tree.map(
-        lambda x: jnp.where(jnp.isfinite(x), x, jnp.inf),
-        _gradient_norm_per_row(gradients),
-    )
-    result = index_prefix.positions.max_over(norms.positions.data)
+    positions = units.norm(gradients.positions.data, axis=-1)
+    result = index_prefix.positions.max_over(_inf_if_nonfinite(positions))
     if include_cell:
-        cell_max = tree_segment_max(norms.cell, index_prefix.cell)
-        result = result.map_data(
-            lambda positions: jnp.maximum(positions, cell_max.data)
-        )
-    return result.map_data(lambda m: m * (u.eV / u.angstrom))
+        cell = _cell_row_max(gradients.cell.data)
+        cell_max = index_prefix.cell.max_over(_inf_if_nonfinite(cell))
+        result = result.map_data(lambda p: units.maximum(p, cell_max.data))
+    return result
 
 
 def converged_per_system(

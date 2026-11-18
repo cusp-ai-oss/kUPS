@@ -45,7 +45,6 @@ from kups.core.neighborlist.types import (
     PipelineContext,
 )
 from kups.core.typing import ParticleId, SystemId
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass
 
 
@@ -60,16 +59,16 @@ def num_cells(
     Args:
         systems: Systems whose cells are binned, batched ``(n_sys,)``.
         cutoff: Cutoff per system, ``(n_sys,)``.
-        eps: Reciprocal face length in 1/Å below which an axis counts as degenerate.
+        eps: Ratio of cutoff to face length below which an axis counts as
+            degenerate and gets one bin.
 
     Returns:
         Bin counts of shape ``(n_sys, 3)``, at least one per axis.
     """
     # Reciprocal vectors are the columns of inverse_vectors (row-vector lattices).
-    inv_norms = units.norm(systems.cell.inverse_vectors, axis=-2).to(1 / u.angstrom)
-    # A degenerate axis falls back to a 1 Å face rather than dividing by ~0.
-    face_lengths = 1.0 / jnp.where(inv_norms < eps, 1.0, inv_norms)
-    bins = face_lengths / cutoff[..., None].to(u.angstrom)
+    # cutoff / face length, dimensionless.
+    ratio = cutoff[..., None] * units.norm(systems.cell.inverse_vectors, axis=-2)
+    bins = 1.0 / jnp.where(ratio < eps, 1.0, ratio)
     return jnp.maximum(bins.astype(int), 1)
 
 
