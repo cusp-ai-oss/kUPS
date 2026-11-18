@@ -2297,7 +2297,7 @@ requires-dist = [
     { name = "h5py", specifier = ">=3.15.0" },
     { name = "hdf5plugin", specifier = ">=6.0.0" },
     { name = "huggingface-hub", marker = "extra == 'hf'", specifier = ">=1.11.0" },
-    { name = "jax", specifier = ">=0.7.2" },
+    { name = "jax", specifier = ">=0.7.2,<0.12.1" },
     { name = "jax", extras = ["cuda"], marker = "sys_platform == 'linux' and extra == 'cuda'", specifier = ">=0.7.2" },
     { name = "jsonargparse", specifier = ">=4.41.0" },
     { name = "lark", specifier = ">=1.2" },
