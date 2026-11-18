@@ -20,8 +20,16 @@ on:
 
 permissions: {}
 
+# One review per PR at a time. A newer run replaces a pending one, so comments
+# other than `/review` get a group of their own and cannot displace a review.
 concurrency:
-  group: claude-review-${{ inputs.pr || github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha }}
+  group: >-
+    claude-review-${{
+    (github.event_name == 'issue_comment' && !startsWith(github.event.comment.body, '/review'))
+    && github.run_id
+    || inputs.pr || github.event.pull_request.number || github.event.issue.number
+    || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha
+    }}
   cancel-in-progress: false
 
 jobs:
@@ -209,10 +217,21 @@ jobs:
           path: found
       - name: Merge findings
         id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.plan.outputs.pr }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          BASE: ${{ needs.plan.outputs.base }}
         run: |
           shopt -s nullglob
           files=(found/*/findings.json)
-          [ ${#files[@]} -gt 0 ] || { echo "no findings"; exit 0; }
+          if [ ${#files[@]} -eq 0 ]; then
+            # Nothing to verify; still mark the commit reviewed.
+            jq -n --arg sha "$SHA" --arg base "$BASE" '{commit_id: $sha, event: "COMMENT",
+              body: "LGTM\n<!-- kups-review:\($sha) base:\($base) -->"}' \
+              | gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" --input - > /dev/null
+            exit 0
+          fi
           jq -s '{escalate: ([.[].escalate | select(.)] | join(" ") | if . == "" then null else . end),
             body: [.[].body[]], comments: [.[].comments[]]}' "${files[@]}" > findings.json
       - if: hashFiles('findings.json') != ''
