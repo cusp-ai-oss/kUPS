@@ -1,0 +1,59 @@
+{
+  "findings": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["escalate", "body", "comments"],
+    "properties": {
+      "escalate": {"type": ["string", "null"]},
+      "body": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": {"enum": ["gate", "bug", "untested", "duplicate", "dead"]},
+            "text": {"type": "string"}
+          }
+        }
+      },
+      "comments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path", "line", "side", "body"],
+          "properties": {
+            "kind": {"enum": ["gate", "bug", "untested", "duplicate", "dead"]},
+            "path": {"type": "string"},
+            "line": {"type": "integer", "minimum": 1},
+            "side": {"enum": ["LEFT", "RIGHT"]},
+            "body": {"type": "string"}
+          }
+        }
+      }
+    }
+  },
+  "review": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["body", "comments"],
+    "properties": {
+      "body": {"type": "string"},
+      "comments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "line", "side", "body"],
+          "properties": {
+            "path": {"type": "string"},
+            "line": {"type": "integer", "minimum": 1},
+            "side": {"enum": ["LEFT", "RIGHT"]},
+            "body": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}
