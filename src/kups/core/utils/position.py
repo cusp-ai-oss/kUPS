@@ -20,7 +20,6 @@ from kups.core.typing import (
     HasWeights,
     ParticleId,
 )
-from kups.core.units import magnitudes
 from kups.core.utils.jax import jit
 
 
@@ -67,21 +66,18 @@ def center_of_mass[P: HasPositionsAndGroupIndex](
     # Index the first particle of each group
     ref_idx = group.select_per_label(jnp.zeros(num_groups, dtype=int))
     positions = particles.data.positions
-    # A weight only sets a particle's relative importance and divides out again,
-    # so mass magnitudes are enough.
-    if isinstance(particles.data, HasWeights):
-        weight = particles.data.weights[:, None]
-    elif isinstance(particles.data, HasMasses):
-        weight = magnitudes(particles.data.masses)[:, None]
+    # Each particle's share of its group's total weight.
+    data = particles.data
+    if isinstance(data, HasWeights):
+        share = data.weights / group.sum_over(data.weights)[group]
+    elif isinstance(data, HasMasses):
+        share = data.masses / group.sum_over(data.masses)[group]
     else:
-        weight = jnp.ones_like(magnitudes(positions)[:, 0])[:, None]
+        share = 1 / group.counts[group].astype(positions.dtype)
     offsets = positions[ref_idx]
     rel_positions = positions - Table(group.keys, offsets)[group]
     rel_positions = batched_cells.wrap(rel_positions)
-    center_of_masses = group.sum_over(rel_positions * weight).data
-    center_of_masses /= group.sum_over(weight).data
-    center_of_masses += offsets
-    return cells.wrap(center_of_masses)
+    return cells.wrap(group.sum_over(rel_positions * share[:, None]).data + offsets)
 
 
 @jit
