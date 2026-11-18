@@ -86,8 +86,8 @@ jobs:
           for wf in ci.yaml gpu.yaml; do
             conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$sha" \
               --jq '.workflow_runs[0].conclusion // "pending"')
-            if [ "$conclusion" = pending ] && $manual; then
-              # The automatic run after CI picks the request up.
+            if [ "$conclusion" = pending ] && [ "$EVENT" = issue_comment ]; then
+              # The automatic run after CI picks the `/review` comment up.
               { echo "deferred=true"; echo "pr=$pr"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
             fi
             [ "$conclusion" = success ] || skip "$wf is $conclusion on $sha"
