@@ -3,6 +3,8 @@
 
 """System electronic metadata survives ingestion, batching, and storage."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 
 import ase
@@ -49,14 +51,28 @@ def _config():
     )
 
 
-def _atoms(n=2):
+_PBCS = ((False, False, False), (True, True, False), (True, True, True))
+
+
+def _atoms(n=2, pbc=_PBCS[0]):
     """Use unequal molecule sizes and a finite skewed cell."""
     return ase.Atoms(
         "H" * n,
         positions=np.arange(n * 3).reshape(n, 3) * 0.2,
         cell=[[8, 0, 0], [1, 9, 0], [0.5, 0.25, 10]],
-        pbc=False,
+        pbc=pbc,
     )
+
+
+@contextmanager
+def _x64(enabled: bool) -> Iterator[None]:
+    """Scoped x64 toggle; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
 
 
 @pytest.fixture(params=["md", "relax", "particles"])
@@ -74,19 +90,22 @@ def build(request):
     return from_particles
 
 
-def test_defaults_and_integer_scalars(build):
+@pytest.mark.parametrize("pbc", _PBCS, ids=["free", "slab", "bulk"])
+@pytest.mark.parametrize("x64", [True, False], ids=["x64", "x32"])
+def test_defaults_and_integer_scalars(build, x64, pbc):
     """Omitted metadata defaults to 0/1 and integer scalars survive ingestion."""
-    _, systems = build(_atoms())
-    npt.assert_array_equal(systems.data.total_charge, [0])
-    npt.assert_array_equal(systems.data.spin_multiplicity, [1])
-    _, systems = build(
-        _atoms(), total_charge=np.array(-2), spin_multiplicity=jnp.array(3)
-    )
-    npt.assert_array_equal(systems.data.total_charge, [-2])
-    npt.assert_array_equal(systems.data.spin_multiplicity, [3])
-    assert systems.data.total_charge.dtype == jnp.asarray(0).dtype
-    _, systems = build(_atoms(), spin_multiplicity=0)
-    npt.assert_array_equal(systems.data.spin_multiplicity, [0])
+    with _x64(x64):
+        _, systems = build(_atoms(pbc=pbc))
+        npt.assert_array_equal(systems.data.total_charge, [0])
+        npt.assert_array_equal(systems.data.spin_multiplicity, [1])
+        _, systems = build(
+            _atoms(pbc=pbc), total_charge=np.array(-2), spin_multiplicity=jnp.array(3)
+        )
+        npt.assert_array_equal(systems.data.total_charge, [-2])
+        npt.assert_array_equal(systems.data.spin_multiplicity, [3])
+        assert systems.data.total_charge.dtype == jnp.asarray(0).dtype
+        _, systems = build(_atoms(pbc=pbc), spin_multiplicity=0)
+        npt.assert_array_equal(systems.data.spin_multiplicity, [0])
 
 
 @pytest.mark.parametrize("builder", [md_state_from_ase, relax_state_from_ase])
@@ -140,7 +159,7 @@ def test_negative_spin_rejected(build):
 
 def test_active_integer_width_overflow(build):
     """Int64 values cannot wrap when the active JAX integer width is int32."""
-    with jax.enable_x64(False):
+    with _x64(False):
         with pytest.raises(ValueError, match="total_charge"):
             build(_atoms(), total_charge=np.int64(2**31))
 
@@ -214,10 +233,11 @@ def test_noncanonical_md_system_identity():
     npt.assert_array_equal(systems.data.cell.vectors[0].value, cell.vectors.value)
 
 
-def test_noncanonical_relax_systems_keep_per_system_metadata():
+@pytest.mark.parametrize("pbc", _PBCS, ids=["free", "slab", "bulk"])
+def test_noncanonical_relax_systems_keep_per_system_metadata(pbc):
     """The source-neutral relax builder aligns per-system metadata with system keys."""
-    first, first_cell, _ = particles_from_ase(_atoms(2))
-    second, second_cell, _ = particles_from_ase(_atoms(3))
+    first, first_cell, _ = particles_from_ase(_atoms(2, pbc))
+    second, second_cell, _ = particles_from_ase(_atoms(3, pbc))
     particles, cells = Table.union(
         [first, second],
         [

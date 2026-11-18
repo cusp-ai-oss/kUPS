@@ -14,6 +14,8 @@ Requires the torch_dev dependency group: `uv sync --group torch_dev`.
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from types import ModuleType
 
@@ -282,14 +284,28 @@ class _LegacySystems:
     cell: Cell
 
 
-def _metadata_graph(legacy=False):
+_PBCS = ((False, False, False), (True, True, False), (True, True, True))
+
+
+@contextmanager
+def _x64(enabled: bool) -> Iterator[None]:
+    """Scoped x64 toggle; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
+
+
+def _metadata_graph(legacy=False, pbc=_PBCS[0]):
     """Build interleaved atoms with unequal counts and noncanonical system keys."""
     keys = (SystemId(12), SystemId(37), SystemId(91))
     cell = Cell.from_pbc(
         TriclinicFrame.from_matrix(
             jnp.tile(jnp.eye(3)[None] * 20, (3, 1, 1)) * u.angstrom
         ),
-        (False, False, False),
+        pbc,
     )
     atoms = Table.arange(
         _GraphAtoms(
@@ -366,12 +382,13 @@ def cpu_transport(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("pbc", _PBCS, ids=["free", "slab", "bulk"])
 @pytest.mark.parametrize("legacy", [False, True])
 def test_omol_graph_to_output_metadata_and_unsorting(
-    stub_fairchem, cpu_transport, legacy
+    stub_fairchem, cpu_transport, legacy, pbc
 ):
     """Selected metadata changes real outputs while keys and atom order survive."""
-    graph = _metadata_graph(legacy)
+    graph = _metadata_graph(legacy, pbc)
     predictor = _MetadataPredictUnit()
     module = UMAModule(predictor, "omol", compute_cell_gradients=True)
     model = TorchMliap.from_module(
@@ -495,14 +512,17 @@ def test_omol_inclusive_bounds_and_model_precision(stub_fairchem):
     assert predictor.last_data["charge"].dtype == torch.float32
 
 
-def test_omol_preparation_is_jittable():
+@pytest.mark.parametrize("x64", [True, False], ids=["x64", "x32"])
+def test_omol_preparation_is_jittable(x64):
     """Preparation keeps integer metadata as dynamic leaves without host conversion."""
-    graph = _metadata_graph().sorted_by_system()
-    prepare = jax.jit(UMAModule(_FakePredictUnit(), "omol")._prepare_inputs)
-    inputs = prepare(graph)
-    np.testing.assert_array_equal(inputs["charge"], [0, 1, 0])
-    np.testing.assert_array_equal(inputs["spin"], [1, 1, 2])
-    assert inputs["cell"].shape[0] == 3
+    with _x64(x64):
+        graph = _metadata_graph().sorted_by_system()
+        prepare = jax.jit(UMAModule(_FakePredictUnit(), "omol")._prepare_inputs)
+        inputs = prepare(graph)
+        np.testing.assert_array_equal(inputs["charge"], [0, 1, 0])
+        np.testing.assert_array_equal(inputs["spin"], [1, 1, 2])
+        assert inputs["charge"].dtype == jnp.asarray(0).dtype
+        assert inputs["cell"].shape[0] == 3
 
 
 @pytest.mark.parametrize("dtype", [jnp.uint8, jnp.uint16, jnp.uint32, jnp.uint64])
