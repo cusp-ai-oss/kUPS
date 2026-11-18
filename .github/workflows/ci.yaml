@@ -76,7 +76,7 @@ jobs:
           key: testmon-${{ steps.get-main-hash.outputs.main_hash }}-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.resolution }}
       - name: Reset an oversized JAX cache
         if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        run: if [ "$(du -sm /tmp/jax_cache | cut -f1)" -gt 1000 ]; then rm -rf /tmp/jax_cache/*; fi
+        run: if [ "$(du -sm /tmp/jax_cache | cut -f1)" -gt 1000 ]; then find /tmp/jax_cache -mindepth 1 -delete; fi
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
