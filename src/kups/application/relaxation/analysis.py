@@ -9,7 +9,10 @@ from dataclasses import dataclass as plain_dataclass
 from pathlib import Path
 from typing import Protocol
 
+import numpy as np
+
 from kups.application.relaxation.logging import RelaxLoggedData
+from kups.application.relaxation.streaming import StreamingRelaxLoggedData
 from kups.core import units
 from kups.core.data import Table
 from kups.core.storage import HDF5StorageReader
@@ -110,3 +113,39 @@ def analyze_relax_file(
         )
 
     return _analyze_relax(system_keys, final_energy, final_max_force, n_steps)
+
+
+def analyze_streaming_relax_file(
+    hdf5_path: str | Path,
+) -> dict[int, RelaxAnalysisResult]:
+    """Analyse streaming relaxation results from an HDF5 file.
+
+    Reads every step's per-slot ``ordinal``, ``step``, ``potential_energy`` and
+    ``max_force``, leaving the per-atom trajectory on disk.
+
+    Args:
+        hdf5_path: Path to HDF5 output from
+            [run_streaming_relax][kups.application.relaxation.streaming.run_streaming_relax].
+
+    Returns:
+        Per-structure results keyed by ordinal, the structure's position in the
+        input. ``n_steps`` counts the structure's own optimizer updates.
+    """
+    with HDF5StorageReader[StreamingRelaxLoggedData](hdf5_path) as reader:
+        n_logged = int(reader.file.attrs["actual_steps"])
+        ordinal, step, energy, max_force = reader.focus_group(lambda s: s.step).read(
+            slice(n_logged),
+            select=lambda d: (d.ordinal, d.step, d.potential_energy, d.max_force),
+        )
+    # A structure's last record is the one before its slot changes structure.
+    following = np.concatenate([ordinal[1:], np.full_like(ordinal[:1], -1)])
+    cycles, slots = np.nonzero((ordinal >= 0) & (ordinal != following))
+    results = {
+        int(ordinal[cycle, slot]): RelaxAnalysisResult(
+            final_energy=energy[cycle, slot],
+            final_max_force=max_force[cycle, slot],
+            n_steps=int(step[cycle, slot]),
+        )
+        for cycle, slot in zip(cycles, slots, strict=True)
+    }
+    return dict(sorted(results.items()))

@@ -14,7 +14,12 @@ from typing import Any
 
 import optax
 
-from kups.relaxation.optimizer import Optimizer, chain
+from kups.relaxation.optimizer import (
+    Resettable,
+    ResettableChain,
+    Stateless,
+    resettable_chain,
+)
 from kups.relaxation.transforms.clip_by_global_norm import ClipByGlobalNorm
 from kups.relaxation.transforms.fire import ScaleByFire
 from kups.relaxation.transforms.fire2 import ScaleByFire2
@@ -51,7 +56,7 @@ per-system propagator does not supply) mapped to the kups transform(s) to use.""
 
 def get_transform(
     transform: Transform,
-) -> optax.GradientTransformation | Optimizer[Any, Any]:
+) -> optax.GradientTransformation | Resettable[Any, Any]:
     """Convert a transform config entry to an Optax GradientTransformation.
 
     Args:
@@ -88,7 +93,7 @@ def get_transform(
 
 def get_transformations(
     transformations: TransformationConfig,
-) -> list[optax.GradientTransformation | Optimizer[Any, Any]]:
+) -> list[optax.GradientTransformation | Resettable[Any, Any]]:
     """Convert a list of transform configs to Optax GradientTransformations.
 
     Args:
@@ -100,17 +105,19 @@ def get_transformations(
     return [get_transform(t) for t in transformations]
 
 
-def make_optimizer(transformations: TransformationConfig) -> Optimizer[Any, Any]:
-    """Create a chained optimizer from a list of transform configs.
+def make_optimizer(transformations: TransformationConfig) -> ResettableChain[Any]:
+    """Create a chained, per-system resettable optimizer from a list of transform configs.
 
     Hyperparameters are magnitudes in the parameters' base; see
     [RelaxationPropagator][kups.relaxation.propagator.RelaxationPropagator].
 
     Args:
-        transformations: List of transform specifications.
+        transformations: List of transform specifications. Optax transforms are
+            wrapped in [Stateless][kups.relaxation.optimizer.Stateless], whose
+            ``init`` rejects the ones that keep state, such as ``scale_by_adam``.
 
     Returns:
-        Chained Optax GradientTransformation.
+        The transforms chained in order.
 
     Example:
         >>> config = [
@@ -119,4 +126,9 @@ def make_optimizer(transformations: TransformationConfig) -> Optimizer[Any, Any]
         ... ]
         >>> optimizer = make_optimizer(config)
     """
-    return chain(*get_transformations(transformations))
+    return resettable_chain(
+        *(
+            Stateless(t) if isinstance(t, optax.GradientTransformation) else t
+            for t in get_transformations(transformations)
+        )
+    )

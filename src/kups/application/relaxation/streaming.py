@@ -1,9 +1,11 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""Streaming relaxation: slot packing, slot replacement and the relaxation step.
+"""Streaming relaxation: slot packing, slot replacement, the step and its runner.
 
-Host input and output live in the caller's ``refill`` callback of
+[run_streaming_relax][kups.application.relaxation.streaming.run_streaming_relax]
+relaxes a sequence of structures and logs every step. The parts below it take
+host input and output through the caller's ``refill`` callback of
 [RefillGate][kups.core.stream.RefillGate].
 """
 
@@ -14,23 +16,27 @@ from typing import Any, Protocol
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jax.typing import DTypeLike
 
 from kups.application.relaxation.data import (
     RelaxParticles,
+    RelaxRunConfig,
     RelaxSystems,
     relax_gradients,
     relax_index_prefix,
     relax_particles,
     relax_systems,
 )
+from kups.application.relaxation.logging import RelaxStepData
 from kups.application.relaxation.simulation import (
     IsRelaxState,
     OptInit,
     make_relax_step,
 )
 from kups.application.utils.particles import Particles, default_exclusion
+from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
 from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.data import Buffered, Index, Table
@@ -40,7 +46,8 @@ from kups.core.geometry import (
     PositionsAndCell,
     PositionsAndCellIndex,
 )
-from kups.core.lens import LambdaLens, Lens, bind
+from kups.core.lens import LambdaLens, Lens, bind, identity_lens
+from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.patch import IndexLensPatch, Patch
 from kups.core.potential import EmptyType, Potential
@@ -49,10 +56,17 @@ from kups.core.propagator import (
     ResetOnErrorPropagator,
     SequentialPropagator,
 )
-from kups.core.stream import slot_owners, slot_rows_lens, slot_system_index
+from kups.core.storage import EveryNStep, HDF5StorageWriter, WriterGroupConfig
+from kups.core.stream import (
+    RefillGate,
+    reserve_slots,
+    slot_owners,
+    slot_rows_lens,
+    slot_system_index,
+)
 from kups.core.typing import Label, ParticleId, SystemId
 from kups.core.units import catalog as u
-from kups.core.utils.jax import dataclass, tree_concat, tree_map
+from kups.core.utils.jax import dataclass, jit, tree_concat, tree_map
 from kups.relaxation.convergence import converged_per_system
 from kups.relaxation.optimizer import Resettable
 
@@ -540,4 +554,177 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
         ResetOnErrorPropagator(SequentialPropagator((step, count_and_flag))),
         init,
         reset,
+    )
+
+
+@dataclass
+class StreamingRelaxStepData(RelaxStepData):
+    """Per-step snapshot of every slot for the HDF5 log.
+
+    The inherited fields have one row per slot, and ``atoms`` holds every
+    reserved particle row. A structure's last record is its final geometry
+    with that geometry's energy and gradients.
+
+    Attributes:
+        ordinal: Structure held by each slot, as its position in the input;
+            ``-1`` for an idle slot.
+        step: Optimizer updates of each slot's structure so far.
+    """
+
+    ordinal: Array
+    step: Array
+
+    @staticmethod
+    def from_slots(state: IsStreamingRelaxState[object]) -> StreamingRelaxStepData:
+        """Extract per-step logging data from a streaming relaxation state."""
+        data = RelaxStepData.from_state(state)
+        return StreamingRelaxStepData(
+            atoms=data.atoms,
+            potential_energy=data.potential_energy,
+            max_force=data.max_force,
+            stress_tensor=data.stress_tensor,
+            ordinal=state.ordinal,
+            step=state.step,
+        )
+
+
+@dataclass
+class StreamingRelaxLoggedData:
+    """HDF5 writer configuration for streaming relaxation.
+
+    Attributes:
+        step: Writer for the per-step snapshot of every slot.
+    """
+
+    step: WriterGroupConfig[IsStreamingRelaxState[object], StreamingRelaxStepData] = (
+        WriterGroupConfig(StreamingRelaxStepData.from_slots, EveryNStep(1))
+    )
+
+
+def run_streaming_relax[OptState](
+    key: Array,
+    structures: Sequence[Structure],
+    potential: Potential[
+        StreamingRelaxState[OptState],
+        PositionsAndCell[units.Force],
+        EmptyType,
+        Patch[Any],
+    ],
+    cutoff: Table[SystemId, units.Length],
+    optimizer: Resettable[PositionsAndCell[units.Length], OptState],
+    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+    config: RelaxRunConfig,
+    *,
+    neighborlist_multiplier: float = 1.5,
+) -> StreamingRelaxState[OptState]:
+    """Relax ``structures`` in ``config.batch_size`` slots, logging every step.
+
+    A structure takes a free slot in input order and leaves it once it has
+    converged to ``config.force_tolerance`` or taken ``config.max_steps``
+    updates. Each structure relaxes as it would alone. Slots hold as many rows
+    as the largest structure has atoms.
+
+    Args:
+        key: JAX PRNG key.
+        structures: Structures to relax; see
+            [payload_from_structures][kups.application.relaxation.streaming.payload_from_structures]
+            for what they must share.
+        potential: Potential reporting the DOF gradient, built on an identity
+            lens with the same ``gradient`` filter.
+        cutoff: The potential's cutoff, which sizes the neighbor list.
+        optimizer: Optimizer whose state is reset when a slot changes structure.
+        gradient: Relaxation filter selecting the optimizer DOFs.
+        config: Run configuration.
+        neighborlist_multiplier: Headroom of the neighbor-list buffers.
+
+    Returns:
+        The final state, with every slot idle.
+
+    Raises:
+        ValueError: If ``structures`` cannot be packed into one stream.
+    """
+    state_lens = identity_lens(StreamingRelaxState[OptState])
+    capacity = max(len(particles) for particles, _ in structures)
+    species = sorted(
+        {k for particles, _ in structures for k in particles.data.labels.keys}
+    )
+    slots = reserve_slots(min(config.batch_size, len(structures)), capacity)
+    step, opt_init, reset = make_streaming_relax_propagator(
+        state_lens,
+        potential,
+        optimizer,
+        gradient,
+        slots,
+        force_tolerance=config.force_tolerance,
+        max_steps=config.max_steps,
+        include_cell=config.optimize_cell,
+    )
+    idle = idle_payload(
+        capacity,
+        species,
+        structures[0][1].periodic,
+        units.max(cutoff.data),
+        structures[0][0].data.positions.dtype,
+    )
+    # Packs every structure once, so an invalid one raises before the run.
+    neighborlist_params = estimate_neighborlist_params(
+        structures, capacity, species, cutoff, multiplier=neighborlist_multiplier
+    )
+    state = make_streaming_relax_state(slots, idle, opt_init, neighborlist_params)
+
+    @jit
+    def install(
+        s: StreamingRelaxState[OptState],
+        payload: RelaxPayload,
+        mask: Table[SystemId, Array],
+    ) -> StreamingRelaxState[OptState]:
+        return replace_slots(
+            s, payload, mask, state_lens=state_lens, slots=slots, reset=reset
+        )
+
+    n_started = 0
+
+    def refill(
+        s: StreamingRelaxState[OptState], requested: Table[SystemId, Array]
+    ) -> StreamingRelaxState[OptState]:
+        nonlocal n_started
+        ordinal = n_started
+        rows: list[RelaxPayload] = []
+        for flagged in np.asarray(requested.data):
+            if flagged and ordinal < len(structures):
+                rows.append(
+                    payload_from_structures(
+                        [structures[ordinal]], capacity, species, [ordinal]
+                    )
+                )
+                ordinal += 1
+            else:
+                rows.append(idle)
+        s = install(s, tree_concat(*rows), requested)
+        n_started = ordinal
+        return s
+
+    def n_running(s: StreamingRelaxState[OptState]) -> int:
+        return int((np.asarray(s.ordinal) >= 0).sum())
+
+    def progress(s: StreamingRelaxState[OptState]) -> dict[str, str]:
+        return {"finished": f"{n_started - n_running(s)}/{len(structures)}"}
+
+    cycle = make_cycle_function(
+        SequentialPropagator((RefillGate(lambda s: s.finished, refill), step))
+    )
+    # Every cycle but the last evaluates at least one structure, and a structure
+    # is evaluated once per update and once more to finish.
+    n_cycles = len(structures) * (config.max_steps + 1) + 1
+    logger = CompositeLogger(
+        TqdmLogger(n_cycles, postfix=progress),
+        HDF5StorageWriter(config.out_file, StreamingRelaxLoggedData(), state, n_cycles),
+    )
+    return run_simulation_cycles(
+        key,
+        cycle,
+        state,
+        n_cycles,
+        logger,
+        convergence_fn=lambda s: n_running(s) == 0,
     )
