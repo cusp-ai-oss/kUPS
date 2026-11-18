@@ -161,8 +161,8 @@ class RelaxRunConfig(BaseModel):
     """
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
-    batch_size: int = 16
-    """Structures relaxed at once; further ones wait for a free slot."""
+    batch_size: int | None = None
+    """Structures relaxed at once; further ones wait for a free slot. None relaxes all at once."""
 
 
 def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:

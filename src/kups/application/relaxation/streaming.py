@@ -619,6 +619,8 @@ def run_streaming_relax[OptState](
 ) -> StreamingRelaxState[OptState]:
     """Relax ``structures`` in ``config.batch_size`` slots, logging every step.
 
+    Without a batch size, every structure gets its own slot.
+
     A structure takes a free slot in input order and leaves it once it has
     converged to ``config.force_tolerance`` or taken ``config.max_steps``
     updates. Each structure relaxes as it would alone. Slots hold as many rows
@@ -648,7 +650,10 @@ def run_streaming_relax[OptState](
     species = sorted(
         {k for particles, _ in structures for k in particles.data.labels.keys}
     )
-    slots = reserve_slots(min(config.batch_size, len(structures)), capacity)
+    n_slots = len(structures)
+    if config.batch_size is not None:
+        n_slots = min(config.batch_size, n_slots)
+    slots = reserve_slots(n_slots, capacity)
     step, opt_init, reset = make_streaming_relax_propagator(
         state_lens,
         potential,

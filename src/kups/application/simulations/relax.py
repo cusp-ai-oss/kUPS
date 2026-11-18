@@ -6,7 +6,7 @@
 The force field is selected by the ``potential`` config (LJ / tojax-MLFF /
 torch-MLFF). The potential is built directly with its parameters, so a single
 force-field-agnostic ``StreamingRelaxState`` and driver serve every backend.
-The input structures stream through ``run.batch_size`` slots.
+The input structures relax at once, or stream through ``run.batch_size`` slots.
 """
 
 from __future__ import annotations
