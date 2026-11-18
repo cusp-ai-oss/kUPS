@@ -756,12 +756,13 @@ class TestStructureFactorCache:
         moved = random.randint(random.key(2), (self.N_STEPS,), 0, n)
         deltas = random.normal(random.key(1), (self.N_STEPS, 3), self.DTYPE) * 1e-4
 
-        def step(
-            carry: tuple[KahanSummand[units.Charge], units.Length],
-            move: tuple[Array, Array],
-        ) -> tuple[tuple[KahanSummand[units.Charge], units.Length], None]:
-            sk, pos = carry
-            idx, delta = move
+        @jax.jit
+        def move(
+            sk: KahanSummand[units.Charge],
+            pos: units.Length,
+            idx: Array,
+            delta: Array,
+        ) -> tuple[KahanSummand[units.Charge], units.Length]:
             previous = WithIndices(
                 Index.integer(idx[None], n=n, label=ParticleId),
                 jax.tree.map(lambda x: x[idx][None], particles.data),
@@ -773,16 +774,14 @@ class TestStructureFactorCache:
                 sk = KahanSummand.init(sk.value)
             new_pos = pos.at[idx].add(delta * A)
             sk, _ = structure_factor(make_input(new_pos, self._cache(sk), previous))
-            return (sk, new_pos), None
+            return sk, new_pos
 
-        @jax.jit
-        def walk(
-            positions: units.Length,
-        ) -> tuple[KahanSummand[units.Charge], units.Length]:
-            sk0, _ = structure_factor(make_input(positions))
-            return jax.lax.scan(step, (sk0, positions), (moved, deltas))[0]
-
-        sk, pos = walk(particles.data.positions)
+        pos = particles.data.positions
+        sk, _ = structure_factor(make_input(pos))
+        # A host loop, not lax.scan: with jaxlib 0.12 the XLA CPU backend
+        # miscompiles the scanned walk once the moves are runtime inputs.
+        for idx, delta in zip(np.asarray(moved), np.asarray(deltas), strict=True):
+            sk, pos = move(sk, pos, idx, delta)
         # Without compensation only the running sum survives, as before this change.
         return (sk.total if compensated else sk.value), pos
 
