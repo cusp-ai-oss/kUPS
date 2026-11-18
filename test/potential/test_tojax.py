@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -15,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax import Array, export
+from jax.typing import DTypeLike
 
 from kups.core import units
 from kups.core.capacity import FixedCapacity
@@ -223,7 +226,8 @@ class TestTojaxedMliapFromZipFile:
             TojaxedMliap.from_zip_file(zip_path, task_name="omol").task_name == "omol"
         )
         with pytest.raises(ValueError, match="omoll"):
-            TojaxedMliap.from_zip_file(zip_path, task_name="omoll")  # type: ignore[arg-type]
+            # pyrefly: ignore[bad-argument-type]
+            TojaxedMliap.from_zip_file(zip_path, task_name="omoll")
 
 
 class TestJaxifiedEnergy:
@@ -286,11 +290,30 @@ _SPIN = jnp.array([1, 1, 2])
 _SQ_SUMS = np.array([14.37, 9.24, 19.63])
 
 
-def _cell(n_sys: int = 3) -> Cell:
+_PBCS = ((False, False, False), (True, True, False), (True, True, True))
+
+
+def _cell(n_sys: int = 3, pbc: tuple[bool, bool, bool] = _PBCS[0]) -> Cell:
     return Cell.from_pbc(
         TriclinicFrame.from_matrix(jnp.tile(jnp.eye(3)[None] * 20, (n_sys, 1, 1)) * A),
-        (False, False, False),
+        pbc,
     )
+
+
+def _tol(dtype: DTypeLike = jnp.float64) -> float:
+    """A few ulps of ``dtype``; the mock sums squares over at most three atoms."""
+    return 8 * float(jnp.finfo(dtype).eps)
+
+
+@contextmanager
+def _x64(enabled: bool) -> Iterator[None]:
+    """Scoped x64 toggle; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
 
 
 def _meta_systems(charge=_CHARGE, spin=_SPIN) -> _MetaSystems:
@@ -324,7 +347,8 @@ def _make_metadata_exported(
     ``leak_padding`` adds ``1e3 * (charge_pad**2 + (spin_pad - 1)**2)`` to every
     system, so any padding row other than charge 0, spin 1 shows in real
     energies.
-    Avals follow the UMA exporter: integer ``charge``, ``spin`` and indices.
+    Avals follow the UMA exporter: integer ``charge``, ``spin`` and indices,
+    in the float and integer width of the active JAX precision.
     """
 
     def fn(params: list[Array], x: dict[str, Array]) -> Array:
@@ -343,8 +367,10 @@ def _make_metadata_exported(
             energy = energy + 1e3 * (charge[-1] ** 2 + (spin[-1] - 1.0) ** 2)
         return energy
 
-    params = [np.array(1.0, dtype=np.float64)]
-    return _export(fn, params, np.float64, np.int64, np.int64)
+    float_dtype = jax.dtypes.canonicalize_dtype(np.float64)
+    int_dtype = jax.dtypes.canonicalize_dtype(np.int64)
+    params = [np.array(1.0, dtype=float_dtype)]
+    return _export(fn, params, float_dtype, int_dtype, int_dtype)
 
 
 @pytest.fixture(scope="module")
@@ -387,7 +413,27 @@ class TestOmolSystemMetadata:
         model = _model(metadata_exported)
         systems = _meta_systems(_CHARGE.astype(dtype), _SPIN.astype(dtype))
         energies = _energies(model, systems)
-        testing.assert_allclose(energies, [79.035, 55.44, 206.115], EV, rtol=1e-12)
+        testing.assert_allclose(energies, [79.035, 55.44, 206.115], EV, rtol=_tol())
+
+    @pytest.mark.parametrize("pbc", _PBCS, ids=["free", "slab", "bulk"])
+    @pytest.mark.parametrize("x64", [True, False], ids=["x64", "x32"])
+    def test_omol_forwards_in_every_precision_and_periodicity(self, x64, pbc):
+        with _x64(x64):
+            float_dtype = jax.dtypes.canonicalize_dtype(np.float64)
+            # Built inside the toggle, so x32 runs on int32 and float32 arrays.
+            systems = _MetaSystems(
+                _cell(pbc=pbc),
+                total_charge=jnp.asarray(np.asarray(_CHARGE)),
+                spin_multiplicity=jnp.asarray(np.asarray(_SPIN)),
+            )
+            energies = _energies(_model(_make_metadata_exported()), systems)
+            assert energies.to(EV).dtype == float_dtype
+            testing.assert_allclose(
+                energies,
+                0.5 * _weights(_CHARGE, _SPIN) * _SQ_SUMS,
+                EV,
+                rtol=_tol(float_dtype),
+            )
 
     @pytest.mark.parametrize(
         "systems",
@@ -396,12 +442,14 @@ class TestOmolSystemMetadata:
     )
     def test_omol_defaults_without_fields(self, metadata_exported, systems):
         energies = _energies(_model(metadata_exported), systems)
-        testing.assert_allclose(energies, [79.035, 50.82, 107.965], EV, rtol=1e-12)
+        testing.assert_allclose(energies, [79.035, 50.82, 107.965], EV, rtol=_tol())
 
     def test_omol_field_defaults_are_independent(self, metadata_exported):
         systems = _ChargeOnlySystems(_cell(), total_charge=_CHARGE)
         energies = _energies(_model(metadata_exported), systems)
-        testing.assert_allclose(energies, 0.5 * _weights(_CHARGE, 1) * _SQ_SUMS, EV)
+        testing.assert_allclose(
+            energies, 0.5 * _weights(_CHARGE, 1) * _SQ_SUMS, EV, rtol=_tol()
+        )
 
     @pytest.mark.parametrize("task_name", [None, "omat"])
     def test_generic_ignores_system_metadata(self, metadata_exported, task_name):
@@ -409,7 +457,7 @@ class TestOmolSystemMetadata:
             charge=jnp.array([0.5, 1.0, 0.0]), spin=jnp.array([0, 0, 0])
         )
         energies = _energies(_model(metadata_exported, task_name), systems)
-        testing.assert_allclose(energies, [7.185, 4.62, 9.815], EV, rtol=1e-12)
+        testing.assert_allclose(energies, [7.185, 4.62, 9.815], EV, rtol=_tol())
 
     @pytest.mark.parametrize(
         ("systems", "weights"),
@@ -421,7 +469,9 @@ class TestOmolSystemMetadata:
     )
     def test_omol_padding_row_is_neutral_singlet(self, systems, weights):
         model = _model(_make_metadata_exported(leak_padding=True))
-        testing.assert_allclose(_energies(model, systems), 0.5 * weights * _SQ_SUMS, EV)
+        testing.assert_allclose(
+            _energies(model, systems), 0.5 * weights * _SQ_SUMS, EV, rtol=_tol()
+        )
 
     def test_omol_metadata_is_traced(self, metadata_exported):
         traces = []
@@ -541,14 +591,14 @@ class TestTojaxedPotentialMetadata:
             out.total_energies.data,
             0.5 * weights * _SQ_SUMS + q * 60.0,
             EV,
-            rtol=1e-12,
+            rtol=_tol(),
         )
         system_rows = np.asarray(state.atoms.data.system.raw_indices)
         testing.assert_allclose(
             out.gradients.positions.data,
             weights[system_rows, None] * np.asarray(state.atoms.data.positions.to(A)),
             FORCE,
-            rtol=1e-12,
+            rtol=_tol(),
         )
         cell_gradients = state.systems.data.cell.frame.vectors_gradient(
             out.gradients.cell.data.frame
@@ -557,6 +607,6 @@ class TestTojaxedPotentialMetadata:
             cell_gradients,
             q[:, None, None] * np.eye(3)[None],
             FORCE,
-            rtol=1e-12,
-            atol=1e-12,
+            rtol=_tol(),
+            atol=_tol(),
         )

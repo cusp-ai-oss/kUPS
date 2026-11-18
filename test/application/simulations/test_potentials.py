@@ -48,7 +48,8 @@ def test_tojax_config_forwards_task(tmp_path, monkeypatch):
         {"model_path": str(model_path), "task_name": "omol"}
     )
 
-    potential, _ = config.build(state_lens=None, gradient=None)  # type: ignore[arg-type]
+    # pyrefly: ignore[bad-argument-type]
+    potential, _ = config.build(state_lens=None, gradient=None)
 
     assert potential == "potential"
     assert seen["parameters"].task_name == "omol"
