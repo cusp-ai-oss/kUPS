@@ -64,15 +64,22 @@ kups_relax relax_torch_mace.yaml   # native MACE .model checkpoint
 kups_relax relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 ```
 
+`inp_files` may list several structures. `run.batch_size` of them (default 16) relax at once, each in its own *slot*, and the next one takes a slot as soon as it is free. A structure leaves its slot once its largest force is below `run.force_tolerance` or after `run.max_steps` updates, and it relaxes as it would alone. All structures must share periodicity, and every slot reserves as many particle rows as the largest structure has atoms.
+
+The HDF5 file has one record per step, covering every slot. `ordinal` gives the structure in each slot as its position in `inp_files` (`-1` for an idle slot) and `step` its number of updates so far. [`analyze_streaming_relax_file`][kups.application.relaxation.analysis.analyze_streaming_relax_file] returns the final energy, largest force and step count per structure.
+
 **Optimizers:**
 
 - **FIRE** — fast inertial relaxation engine. Adaptive timestep, robust for rough energy landscapes.
 - **L-BFGS** — limited-memory quasi-Newton method. Fast convergence near the minimum.
-- Any **Optax** optimizer (Adam, SGD, etc.) can be plugged in via the same interface.
-
-Relaxation converges when the maximum force on any atom drops below a configurable tolerance.
+- Stateless **Optax** transforms (`scale`, `sgd`, ...) chain with them. Transforms that keep state, such as `scale_by_adam`, are rejected: their state cannot be reset when a slot changes structure.
 
 ### Streaming batches as a library
+
+`kups_relax` calls
+[`run_streaming_relax`][kups.application.relaxation.streaming.run_streaming_relax],
+which takes all structures up front. The parts below it serve applications
+that bring their own input queue and output.
 
 Streaming relaxation keeps a fixed number of *slots* on the device, one
 structure per slot, and refills a slot from the host once its structure has
