@@ -62,7 +62,9 @@ class TestFmaxPerSystem:
         # largest kUPS row (0.04 each) would both pass an fmax of 0.05. The
         # stop-gradient cell_factor carries a zero gradient.
         log_matrix = jnp.array([[[0.04, 0.0, 0.0], [0.04, 0.0, 0.0], [0.0, 0.0, 0.0]]])
-        cell = PeriodicCell(MatrixLogFrame(log_matrix * u.eV, jnp.zeros((1, 1, 1))))
+        cell = PeriodicCell(
+            MatrixLogFrame(log_matrix * FORCE, jnp.zeros((1, 1, 1)) * FORCE)
+        )
         system_index = Index.integer(jnp.array([0]), n=1, label=SystemId)
         cells = Table.arange(cell, label=SystemId)
         grads = PositionsAndCellTree(

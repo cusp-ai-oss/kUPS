@@ -122,7 +122,7 @@ def test_evaluate_ewald_potential_rock_salt_madelung(systems):
     r0 = 2.8
     cloud = _rock_salt(r0, systems)
     parameters = EwaldParameters.make(
-        cloud.particles, cloud.systems, real_cutoff=5.0 * A
+        cloud.particles, cloud.systems, 1e-8 * u.e**2 / A, real_cutoff=5.0 * A
     )
     result = evaluate_ewald_potential(
         cloud, parameters, gradient_lens=lens(lambda x: x.particles.data.positions)

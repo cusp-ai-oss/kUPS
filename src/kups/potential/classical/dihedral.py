@@ -42,7 +42,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.energy import (
@@ -136,7 +135,7 @@ class DihedralParameters:
 
         # The UFF torsion cases fix some barriers to a literal value the paper
         # states in kcal/mol.
-        kcal_per_mol = u.kcal / u.mol
+        kcal_per_mol = units.catalog.kcal / units.catalog.mol  # noqa: KUP012
 
         # Torsional parameters broadcast to 4D
         V_j = torsion_sp3[None, :, None, None]
@@ -252,16 +251,20 @@ def dihedral_energy(
     n1_norm = units.norm(n1, axis=-1, keepdims=True)
     n2_norm = units.norm(n2, axis=-1, keepdims=True)
 
-    eps_area = jnp.asarray(1e-10, n1_norm.dtype) * u.angstrom**2
-    n1_normalized = n1 / (n1_norm + eps_area)
-    n2_normalized = n2 / (n2_norm + eps_area)
+    # Floors relative to the bond lengths keep collinear atoms finite.
+    r_jk_norm = units.norm(r_jk, axis=-1, keepdims=True)
+    eps = jnp.finfo(r_jk_norm.dtype).eps
+    length = (
+        units.norm(r_ij, axis=-1, keepdims=True)
+        + r_jk_norm
+        + units.norm(r_kl, axis=-1, keepdims=True)
+    )
+    n1_normalized = n1 / (n1_norm + eps * length**2)
+    n2_normalized = n2 / (n2_norm + eps * length**2)
 
     # Compute dihedral angle using atan2 for proper sign
     cos_phi = jnp.sum(n1_normalized * n2_normalized, axis=-1)
-    r_jk_norm = units.norm(r_jk, axis=-1, keepdims=True)
-    r_jk_normalized = r_jk / (
-        r_jk_norm + jnp.asarray(1e-10, r_jk_norm.dtype) * u.angstrom
-    )
+    r_jk_normalized = r_jk / (r_jk_norm + eps * length)
     sin_phi = jnp.sum(
         units.cross(n1_normalized, n2_normalized) * r_jk_normalized, axis=-1
     )

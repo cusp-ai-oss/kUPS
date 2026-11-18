@@ -1143,6 +1143,22 @@ class TestDeformedFrame:
         ).tril
         testing.assert_allclose(g4, g1 / 4.0, EV, atol=1e-6)
 
+    @pytest.mark.parametrize("deformation", [LogTriclinicFrame, MatrixLogFrame])
+    def test_length_cell_factor_makes_the_gradient_a_force(self, deformation):
+        """A length ``cell_factor`` makes ``A`` a length: the frame is unchanged
+        and the parameter gradient is the plain one divided by that length."""
+        base = TriclinicFrame.from_matrix(_M_TRICLINIC * A)
+        plain = DeformedFrame.from_frame(base, cell_factor=4.0, deformation=deformation)
+        length = DeformedFrame.from_frame(
+            base, cell_factor=4.0 * A, deformation=deformation
+        )
+        testing.assert_allclose(length.vectors, plain.vectors, A, atol=1e-6)
+        g_plain, g_length = (
+            units.tree_leaves(f.parameter_gradient(_CELL_GRAD).deformation)[0]
+            for f in (plain, length)
+        )
+        testing.assert_allclose(g_length, g_plain / A, FORCE, atol=1e-6)
+
     def test_per_system_cell_factor(self):
         """A per-system ``cell_factor`` array threads through ``from_frame`` and
         ``vectors``, deforming each system by its own factor."""

@@ -44,7 +44,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.units import catalog as u
 from kups.core.utils.functools import constant, pipe
 from kups.core.utils.jax import (
     astype_floating,
@@ -136,13 +135,17 @@ class EwaldCache[Gradient, Hessian]:
             Structure-factor, prefactor and component-output caches set to zero.
         """
         out = PotentialOut(
-            Table.arange(units.zeros(n_sys, u.eV, dtype=float), label=SystemId),
+            Table.arange(
+                units.from_dim(jnp.zeros(n_sys, float), units.ENERGY), label=SystemId
+            ),
             gradient,
             hessian,
         )
         return EwaldCache(
-            KahanSummand.init(units.zeros((n_sys, n_kvecs, 2), u.e, dtype=float)),
-            units.zeros((n_sys, n_kvecs), 1 / u.angstrom, dtype=float),
+            KahanSummand.init(
+                units.from_dim(jnp.zeros((n_sys, n_kvecs, 2), float), units.CHARGE)
+            ),
+            units.from_dim(jnp.zeros((n_sys, n_kvecs), float), units.WAVENUMBER),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
             KahanSummand.init(tree_zeros_like(out)),
@@ -339,9 +342,7 @@ def ewald_short_range_pair_kernel(
         # Direct erfc crashes the GPU fused kernel compiler.
         screened = (1.0 - jax.lax.erf(argument)) / dists
     elif argument.dtype == jnp.float64:
-        screened = units.apply(
-            erfc_over, argument, dists, dim=units.dim_of(1 / u.angstrom)
-        )
+        screened = units.apply(erfc_over, argument, dists, dim=units.WAVENUMBER)
     else:
         screened = jax.lax.erfc(argument) / dists
     return units.constants.k_e * charges_i * charges_j * screened
@@ -1254,17 +1255,16 @@ def _exclusion_coefficients[State](
     half_height = systems.data.cell.perpendicular_lengths.min() / 2
     usable = (diameter < half_height) & ~fixed_exclusions
     mask = same_motif & ~jnp.eye(len(distance), dtype=bool)
-    pair_energy = units.where(
-        mask,
-        coulomb_pair_energy(
-            templates.charges[:, None],
-            templates.charges,
-            units.where(mask, distance, units.ones_like(distance)),
-        ),
-        0.0 * u.eV,
+    pair_energy = coulomb_pair_energy(
+        templates.charges[:, None],
+        templates.charges,
+        units.where(mask, distance, units.ones_like(distance)),
     )
+    pair_energy = units.where(mask, pair_energy, units.zeros_like(pair_energy))
     per_motif = motif.sum_over(pair_energy.sum(axis=1)).data / 2
-    coefficients = units.zeros((len(systems), 1 + motif.num_labels), u.eV)
+    coefficients = units.zeros_like(
+        per_motif, shape=(len(systems), 1 + motif.num_labels)
+    )
     return coefficients.at[:, 1:].set(per_motif), usable
 
 

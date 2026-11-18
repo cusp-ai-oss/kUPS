@@ -49,6 +49,7 @@ CHARGE: Dim = (0, 0, 1, 1, 0)
 FREQUENCY: Dim = (0, 0, -1, 0, 0)
 VOLTAGE: Dim = (2, 1, -3, -1, 0)
 POWER: Dim = (2, 1, -3, 0, 0)
+WAVENUMBER: Dim = (-1, 0, 0, 0, 0)
 
 
 class DimensionError(TypeError):

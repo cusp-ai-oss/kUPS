@@ -59,6 +59,8 @@ from kups.potential.classical.ewald.reciprocal import (
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph, PointCloud
 from test.units import CHARGE, EV, FORCE, A, as_length, as_unit
 
+EPS = 1e-8 * CHARGE**2 / A
+
 
 @dataclass
 class PointCloudParticles:
@@ -345,7 +347,7 @@ class TestEwald:
         # The exclusion-correction identity is independent of Ewald precision
         # (e_excl is checked analytically), so a coarse k-space suffices here.
         estimates = estimate_ewald_parameters(
-            as_unit(charges, CHARGE), cell, epsilon_total=1e-3
+            as_unit(charges, CHARGE), cell, epsilon_total=1e-3 * CHARGE**2 / A
         )
         params = _parameters(
             cell, estimates.alpha, estimates.real_cutoff, estimates.k_max
@@ -410,7 +412,9 @@ class TestEwald:
         )
 
         with npt.assert_raises(ValueError):
-            estimate_ewald_parameters(as_unit(charges, CHARGE), cell, epsilon_total=eps)
+            estimate_ewald_parameters(
+                as_unit(charges, CHARGE), cell, epsilon_total=eps * CHARGE**2 / A
+            )
 
         # The cell needs to be at least as large as the cutoff
         REPEATS = 5
@@ -418,7 +422,7 @@ class TestEwald:
             cell, REPEATS, (as_length(positions), charges), lens(lambda x: x[0])
         )
         estimates = estimate_ewald_parameters(
-            as_unit(charges, CHARGE), cell, epsilon_total=eps
+            as_unit(charges, CHARGE), cell, epsilon_total=eps * CHARGE**2 / A
         )
         assert estimates.error_real < eps * CHARGE**2 / A, (
             f"Real space target accuracy cannot be reached. {estimates.error_real}"
@@ -553,7 +557,7 @@ class TestEwaldParametersMake:
             ),
             label=SystemId,
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=4.0 * A)
+        params = EwaldParameters.make(particles, systems, EPS, real_cutoff=4.0 * A)
         assert params.reciprocal_particle_chunk_size == expected
         direct = EwaldParameters(
             params.alpha, params.cutoff, params.reciprocal_lattice_shifts, params.k_max
@@ -581,7 +585,7 @@ class TestEwaldParametersMake:
             SystemData(cell=cell, cutoff=jnp.array([4.0]) * A),
             label=SystemId,
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=4.0 * A)
+        params = EwaldParameters.make(particles, systems, EPS, real_cutoff=4.0 * A)
         assert params.alpha.data.shape == (1,)
         assert float(params.alpha.data[0]) > 0
         assert len(params.cutoff.keys) == 1
@@ -617,7 +621,7 @@ class TestEwaldParametersMake:
                 cutoff=jnp.array([4.0, 4.0]) * A,
             ),
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=4.0 * A)
+        params = EwaldParameters.make(particles, systems, EPS, real_cutoff=4.0 * A)
         assert params.alpha.data.shape == (2,)
         assert len(params.cutoff.keys) == 2
         assert params.k_max.data.shape == (2,)
@@ -649,7 +653,10 @@ class TestEwaldParametersMake:
             )
         )
         params = EwaldParameters.make(
-            particles, _make_systems(cell, jnp.array([4.0, 4.0])), real_cutoff=4.0 * A
+            particles,
+            _make_systems(cell, jnp.array([4.0, 4.0])),
+            EPS,
+            real_cutoff=4.0 * A,
         )
         assert estimated == [[1.0, -1.0, 0.5, -0.5], [2.0, -2.0]]
         assert params.alpha.data.shape == (2,)
@@ -666,7 +673,7 @@ class TestEwaldParametersMake:
             SystemData(cell=cell, cutoff=jnp.array([2.0]) * A),
             label=SystemId,
         )
-        params = EwaldParameters.make(particles, systems, real_cutoff=2.0 * A)
+        params = EwaldParameters.make(particles, systems, EPS, real_cutoff=2.0 * A)
         testing.assert_allclose(params.cutoff.data[0], 2.0, A)
 
 

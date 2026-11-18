@@ -23,6 +23,7 @@ from kups.core.geometry import PositionsAndCellIndex
 from kups.core.lens import bind
 from kups.core.typing import ParticleId, SystemId
 from kups.core.units import catalog as u
+from kups.core.units import testing
 
 
 @pytest.mark.parametrize("batched", [False, True])
@@ -58,9 +59,11 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
     frame = systems.data.cell.frame
     assert isinstance(frame, DeformedFrame)
     assert isinstance(frame.deformation, MatrixLogFrame)
-    # ASE's exp_cell_factor: one atom count per system.
-    npt.assert_array_equal(
-        frame.deformation.cell_factor[:, 0, 0], [1, 1] if batched else [2]
+    # ASE's exp_cell_factor: one atom count per system, times 1 Å.
+    testing.assert_allclose(
+        frame.deformation.cell_factor[:, 0, 0],
+        jnp.array([1.0, 1.0] if batched else [2.0]),
+        u.angstrom,
     )
     npt.assert_array_equal(
         frame.vectors.to(u.angstrom), vectors if batched else vectors[None]

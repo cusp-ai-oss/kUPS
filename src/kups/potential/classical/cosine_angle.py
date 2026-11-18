@@ -44,7 +44,6 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.uff_utils import compute_uff_bond_length
@@ -136,8 +135,9 @@ class CosineAngleParameters:
         Z_i = effective_charge[:, None, None]
         Z_k = effective_charge[None, None, :]
         term = 3 * r_ij * r_jk * (1 - cos_theta0**2) - r_ik_sq * cos_theta0
+        angstrom_sq = units.catalog.angstrom**2  # noqa: KUP012
         K = units.absolute(
-            2 * units.constants.k_e * u.angstrom**2 * Z_i * Z_k * term / r_ik**5
+            2 * units.constants.k_e * angstrom_sq * Z_i * Z_k * term / r_ik**5
         )
 
         return cls(

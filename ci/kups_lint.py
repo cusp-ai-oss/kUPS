@@ -20,6 +20,8 @@ Codes:
     KUP010  ``isinstance(x, jax.core.Tracer)`` outside ``kups.core.utils.jax``.
     KUP011  Public dataclass field missing from the class docstring's
             ``Attributes:`` section.
+    KUP012  Explicit unit or base system outside the packages that face users
+            or external models (``UNIT_PACKAGES``).
 """
 
 import ast
@@ -43,6 +45,11 @@ HISTORY = re.compile(
 )
 SUPPRESSION = re.compile(r"#\s*(type:\s*ignore|pyrefly:\s*ignore(?!\s*\[))")
 BANNER = re.compile(r"([-=*#~_])\1{3,}")
+# Packages that may name units: the units themselves, the user-facing layer and
+# external models fixed to their training units. Elsewhere code is unit-agnostic.
+UNIT_PACKAGES = ("kups.core.units", "kups.application", "kups.potential.mliap")
+# Names in kups.core.units that pick a concrete unit or base system.
+UNIT_CHOICES = frozenset({"catalog", "SI", "ATOMISTIC", "base"})
 NOQA = re.compile(r"#\s*noqa:\s*(?P<codes>[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)")
 
 MESSAGES = {
@@ -57,6 +64,7 @@ MESSAGES = {
     "KUP009": "banner comment; structure code with functions and modules, not separators",
     "KUP010": "use `kups.core.utils.jax.is_traced` instead of checking for `Tracer` directly",
     "KUP011": "document {names} under `Attributes:` in the class docstring",
+    "KUP012": "`{name}` picks a unit; work with dimensions and quantities, units belong in kups.application",
 }
 
 
@@ -167,6 +175,9 @@ class _Visitor(ast.NodeVisitor):
     def __init__(self, path: Path, tree: ast.Module) -> None:
         self.path = path
         self.module = _module_name(path)
+        self.unit_free = self.module is not None and not any(
+            self.module == p or self.module.startswith(f"{p}.") for p in UNIT_PACKAGES
+        )
         self.origins = _dataclass_origins(tree)
         self.findings: list[Finding] = []
 
@@ -210,8 +221,29 @@ class _Visitor(ast.NodeVisitor):
             self.report(node, "KUP010")
         self.generic_visit(node)
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if (
+            self.unit_free
+            and node.attr in UNIT_CHOICES
+            and ast.unparse(node.value).split(".")[-1] == "units"
+        ):
+            self.report(node, "KUP012", name=f"units.{node.attr}")
+        self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names if self.unit_free else ():
+            if alias.name.startswith("kups.core.units.catalog"):
+                self.report(node, "KUP012", name=alias.name)
+
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
+        if self.unit_free:
+            if module.startswith("kups.core.units.catalog"):
+                self.report(node, "KUP012", name=module)
+            elif module == "kups.core.units":
+                for alias in node.names:
+                    if alias.name in UNIT_CHOICES:
+                        self.report(node, "KUP012", name=f"units.{alias.name}")
         if node.level or module.split(".")[0] != "kups" or module == self.module:
             return
         own_package = self.module is not None and self.module.startswith(f"{module}.")

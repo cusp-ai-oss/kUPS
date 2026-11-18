@@ -151,3 +151,33 @@ def test_dataclass_attributes(doc: str, expected: list[str]):
 def test_dataclass_attributes_skip_private_and_plain_classes():
     assert codes(JAX_DC + '@dataclass\nclass _A:\n    """A."""\n    x: int\n') == []
     assert codes('class A:\n    """A."""\n    x: int\n') == []
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from kups.core.units import catalog as u\n", ["KUP012"]),
+        ("from kups.core.units.catalog import eV\n", ["KUP012"]),
+        ("import kups.core.units.catalog\n", ["KUP012"]),
+        ("from kups.core.units import ATOMISTIC\n", ["KUP012"]),
+        ("x = units.catalog.angstrom\n", ["KUP012"]),
+        ("with units.base(units.SI):\n    pass\n", ["KUP012", "KUP012"]),
+        ("x = units.catalog.angstrom  # noqa: KUP012\n", []),
+        ("from kups.core import units\nx = units.constants.k_B\n", []),
+        ("x = units.from_dim(0.0, units.ENERGY)\n", []),
+    ],
+)
+def test_explicit_units(source: str, expected: list[str]):
+    assert codes(source, "src/kups/potential/classical/mod.py") == expected
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/kups/core/units/mod.py",
+        "src/kups/application/mcmc/mod.py",
+        "src/kups/potential/mliap/mod.py",
+    ],
+)
+def test_explicit_units_allowed_at_the_boundary(path: str):
+    assert codes("from kups.core.units import catalog as u\n", path) == []

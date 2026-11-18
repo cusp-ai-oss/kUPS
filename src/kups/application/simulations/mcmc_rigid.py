@@ -116,6 +116,7 @@ from kups.potential.classical.ewald import (
     EwaldParameters,
     ewald_short_range_pair,
 )
+from kups.potential.classical.ewald.parameters import SquaredChargePerLength
 from kups.potential.classical.lennard_jones import (
     GlobalTailCorrectedLennardJonesParameters,
     MixingRule,
@@ -169,10 +170,20 @@ class LJConfig(BaseModel):
 
 
 class EwaldConfig(BaseModel):
-    """Ewald summation configuration."""
+    """Ewald summation configuration.
+
+    Attributes:
+        real_cutoff: Real-space cutoff.
+        precision: Target Ewald error in e²/Å.
+    """
 
     real_cutoff: Annotated[units.Length, Scalar]
     precision: float
+
+    @property
+    def epsilon_total(self) -> SquaredChargePerLength:
+        """The target error as a quantity."""
+        return self.precision * u.e**2 / u.angstrom
 
 
 class Config(BaseModel):
@@ -513,7 +524,7 @@ def init_state(key: Array, config: Config) -> MCMCState:
     ewald_params = EwaldParameters.make(
         particles,
         system,
-        epsilon_total=config.ewald.precision,
+        epsilon_total=config.ewald.epsilon_total,
         real_cutoff=config.ewald.real_cutoff,
         reciprocal_dtype=config.kernel_dtype,
     )

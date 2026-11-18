@@ -37,7 +37,7 @@ from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 from kups.relaxation.convergence import fmax_per_system
 from kups.relaxation.optimizer import ChainOptState
-from test.units import EV, FORCE, A
+from test.units import FORCE, A
 
 
 def _ar_cif(rattle: float) -> str:
@@ -216,7 +216,7 @@ class TestCellRelaxation:
         # The only non-zero cell-gradient leaf is the matrix-log deformation; ASE's
         # rows are its columns.
         deformation = stepped.systems.data.cell_gradients.frame.deformation
-        cell_max = jnp.max(jnp.linalg.norm(deformation.log_matrix.to(EV), axis=-2))
+        cell_max = jnp.max(jnp.linalg.norm(deformation.log_matrix.to(FORCE), axis=-2))
         assert cell_max > 0
         gradients = relax_gradients(stepped)
         npt.assert_allclose(

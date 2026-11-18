@@ -34,6 +34,9 @@ line.
   or a named type reads better.
 
 ## Numerics
+- Physical quantities are typed with their dimension (`units.Length`,
+  `units.Energy`, ...), never bare `Array`. Only `kups.application` and
+  `kups.potential.mliap` name concrete units; elsewhere work with dimensions.
 - Take tolerances from `jnp.finfo`.
 - Out-of-bounds indices equal the axis size, never `-1`.
 - Performance changes keep behavior, values and gradients 1:1, with a test.

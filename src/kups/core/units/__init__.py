@@ -149,7 +149,13 @@ from kups.core.units._transforms import (
 )
 from kups.core.units._typed import E_A, E_K, E_KG, E_M, E_S, F_A, F_K, F_KG, F_M, F_S
 from kups.core.units._unit import (
+    CHARGE,
+    ENERGY,
+    FORCE,
+    LENGTH,
     ONE,
+    PRESSURE,
+    WAVENUMBER,
     AccelerationUnit,
     ActionUnit,
     AreaUnit,
@@ -273,6 +279,12 @@ __all__ = [
     "dim_str",
     "from_dim",
     "ONE",
+    "CHARGE",
+    "ENERGY",
+    "FORCE",
+    "LENGTH",
+    "PRESSURE",
+    "WAVENUMBER",
     "Dim",
     "dmul",
     # exponent type variables
