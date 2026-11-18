@@ -190,6 +190,42 @@ class TestPotentialFromEnergy:
             result.hessians.positions, k * jnp.ones((4, 1)), EV / A**2
         )
 
+    def test_off_diagonal_and_out_of_range_hessian_entries(self):
+        """Hessian entries match units.hessian; out-of-range indices give zero."""
+        c, k = 2.0 * EV / A**3, 3.0 * EV / A**2
+
+        def energy(x):
+            return c * units.sum(x**3) + k * units.sum(x[0] * x[1])
+
+        class CoupledEnergy:
+            def __call__(self, inp):
+                return WithPatch(
+                    Table.arange(units.stack([energy(inp.positions)]), label=SystemId),
+                    IdPatch(),
+                )
+
+        pairs = jnp.array([(a, b) for a in range(4) for b in range(4)])
+        padded = jnp.concatenate([pairs, jnp.array([[9, 0], [0, 9]])])
+        lenses = MockLenses()
+        potential = PotentialFromEnergy(
+            energy_fn=CoupledEnergy(),
+            composer=MockSumComposer(),
+            gradient_lens=lenses.gradient_lens(),
+            hessian_lens=lenses.hessian_lens(),
+            hessian_idx_view=view(
+                lambda s: ExampleHessians(positions=padded[:, :, None])
+            ),
+            cache_lens=None,
+            patch_idx_view=None,
+        )
+        positions = jnp.array([[1.0, 2.0], [3.0, 4.0]]) * A
+        result = potential(ExampleState(positions=positions)).data.hessians.positions
+        want = units.hessian(energy)(positions).reshape((4, 4))[
+            pairs[:, 0], pairs[:, 1]
+        ]
+        testing.assert_allclose(result[:16, 0], want, EV / A**2)
+        testing.assert_allclose(result[16:, 0], jnp.zeros(2) * EV / A**2, EV / A**2)
+
     def test_empty_plan_assertion(self):
         """Test that empty plans raise assertion error."""
         lenses = MockLenses()

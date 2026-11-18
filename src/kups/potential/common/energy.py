@@ -308,10 +308,9 @@ class PotentialFromEnergy[
                 patches.append(energy_result.patch)
                 continue
             h_inp = self.hessian_lens.get(g_inp)
-            h_tree = tree_structure(h_inp)
-            h_inp_list = h_tree.flatten_up_to(h_inp)
             # One entry per differentiated array; a quantity is a single entry.
             q_tree = tree_structure(h_inp, is_leaf=units.is_leaf)
+            h_inp_list = q_tree.flatten_up_to(h_inp)
 
             # We need two nested functions here, the outer one is for Hessians
             # which must be a subset of the gradients.
@@ -327,7 +326,7 @@ class PotentialFromEnergy[
                     energy_out = self.energy_fn(patched_input)
                     return energy_out.data, energy_out
 
-                h_inp = h_tree.unflatten(h_inp_list)
+                h_inp = q_tree.unflatten(h_inp_list)
                 patched_g_inp = self.hessian_lens.set(g_inp, h_inp)
                 energies, vjp_fn, energy_result = units.vjp(
                     _potential, patched_g_inp, has_aux=True
@@ -335,9 +334,7 @@ class PotentialFromEnergy[
                 # A plain seed pulls back dim(E)/dim(x).
                 seed = units.tree_map(lambda e: jnp.ones(e.shape, e.dtype), energies)
                 gradients = vjp_fn(seed)[0]
-                # Gradients carry dim(E)/dim(x); linearize their raw magnitudes and
-                # relabel the Hessian blocks below.
-                flat_out = jax.tree.leaves(self.hessian_lens.get(gradients))
+                flat_out = q_tree.flatten_up_to(self.hessian_lens.get(gradients))
                 return flat_out, (gradients, energy_result)
 
             # Energy and gradients computation + Hessian linearization
@@ -345,41 +342,28 @@ class PotentialFromEnergy[
                 _potential_and_grad, h_inp_list, has_aux=True
             )
 
-            # Hessian computation
+            # Hessian computation: a tangent of one unit of x at entry a gives the
+            # gradient's change per unit of x, so each block has dim(E)/dim(x)^2.
             h_vals: list[Array] = []
-            for i, idx in enumerate(q_tree.flatten_up_to(h_idx)):
+            for i, (x, pairs) in enumerate(
+                zip(h_inp_list, q_tree.flatten_up_to(h_idx), strict=True)
+            ):
+                ids = jnp.arange(x.size)
+                step = units.ones_like(x)
 
                 @jax.vmap
                 def hessian_vec_fn(idx: Array) -> Array:
                     a, b = idx
-                    tangent = list(map(jnp.zeros_like, h_inp_list))
-                    # Set a 1 to the specific element in the flattened input
-                    tangent[i] = (
-                        tangent[i]
-                        .ravel()
-                        .at[a]
-                        .set(1, mode="drop")
-                        .reshape(tangent[i].shape)
-                    )
-                    out = hessian_row_fn(tangent)[i]
-                    return out.ravel().at[b].get(mode="fill", fill_value=0)
+                    tangent = list(map(units.zeros_like, h_inp_list))
+                    hit = jnp.isin(ids, a).reshape(x.shape)
+                    tangent[i] = units.where(hit, step, tangent[i])
+                    lead = (-1, *(1,) * b.ndim)
+                    col = (hessian_row_fn(tangent)[i] / step).reshape(lead)
+                    pick = ids.reshape(lead) == b
+                    return units.sum(units.where(pick, col, units.zeros_like(col)), 0)
 
-                h_vals.append(hessian_vec_fn(idx))
-            # Each d2E/dx2 block has dimension dim(E) / dim(x)^2.
-            energy_dim = units.dim_of(energy_result.data.data)
-            hessians = q_tree.unflatten(
-                [
-                    units.relabel(
-                        h,
-                        tuple(
-                            e - 2 * d
-                            for e, d in zip(energy_dim, units.dim_of(x), strict=True)
-                        ),
-                        units.base_of(x) if units.is_quantity(x) else None,
-                    )
-                    for h, x in zip(h_vals, q_tree.flatten_up_to(h_inp), strict=True)
-                ]
-            )
+                h_vals.append(hessian_vec_fn(pairs))
+            hessians = q_tree.unflatten(h_vals)
 
             # Output
             out = PotentialOut(energy_result.data, gradients, hessians)
