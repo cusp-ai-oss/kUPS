@@ -1,8 +1,8 @@
 name: Claude Review
 
 # Reviews a ready (non-draft) PR once CI and GPU validation have passed on its
-# head commit. Runs automatically once per commit, or on demand with a
-# `/review` comment or a manual run.
+# head commit. Runs automatically once per PR; later commits and restacks are
+# reviewed on demand with a `/review` comment or a manual run.
 on:
   workflow_run:
     workflows: [CI, GPU Validation]
@@ -50,6 +50,7 @@ jobs:
       contents: read
       actions: read  # CI status
       pull-requests: read
+      issues: read  # `/review` requests
     env:
       GH_TOKEN: ${{ github.token }}
       EVENT: ${{ github.event_name }}
@@ -57,6 +58,7 @@ jobs:
       PR_INPUT: ${{ inputs.pr || github.event.pull_request.number || github.event.issue.number }}
     outputs:
       ready: ${{ steps.split.outputs.ready || steps.gate.outputs.ready }}
+      deferred: ${{ steps.gate.outputs.deferred }}
       pr: ${{ steps.gate.outputs.pr }}
       sha: ${{ steps.gate.outputs.sha }}
       base: ${{ steps.gate.outputs.base }}
@@ -80,15 +82,26 @@ jobs:
           [ "$state" = OPEN ] || skip "PR #$pr is $state"
           [ "$draft" = false ] || skip "PR #$pr is a draft"
           [ -z "$RUN_SHA" ] || [ "$RUN_SHA" = "$sha" ] || skip "$RUN_SHA is no longer the head of #$pr"
+          case "$EVENT" in workflow_run|pull_request_target) manual=false ;; *) manual=true ;; esac
           for wf in ci.yaml gpu.yaml; do
             conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$sha" \
               --jq '.workflow_runs[0].conclusion // "pending"')
+            if [ "$conclusion" = pending ] && $manual; then
+              # The automatic run after CI picks the request up.
+              { echo "deferred=true"; echo "pr=$pr"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
+            fi
             [ "$conclusion" = success ] || skip "$wf is $conclusion on $sha"
           done
-          # Automatic triggers review each commit once; manual ones always run.
-          if [ "$EVENT" = workflow_run ] || [ "$EVENT" = pull_request_target ]; then
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" --jq '.[].body' \
-              | grep -q "kups-review:$sha" && skip "$sha already reviewed"
+          # Automatic triggers review a PR once, or carry out a `/review` that came
+          # before CI passed; manual ones always run.
+          if ! $manual; then
+            reviewed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
+              --jq '.[] | select(.body | contains("kups-review:")) | .submitted_at' | sort | tail -1)
+            asked=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+              --jq '.[] | select((.body | startswith("/review"))
+                and (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR"))) | .created_at' \
+              | sort | tail -1)
+            [ -z "$reviewed" ] || [[ "$asked" > "$reviewed" ]] || skip "#$pr already reviewed; /review for more"
           fi
           { echo "ready=true"; echo "pr=$pr"; echo "sha=$sha"; echo "base=$base"; echo "repo=$repo"; } >> "$GITHUB_OUTPUT"
 
@@ -146,6 +159,22 @@ jobs:
         with:
           name: facts
           path: facts.md
+
+  # Tells a `/review` that arrived before CI finished when it will run.
+  defer:
+    needs: plan
+    if: needs.plan.outputs.deferred == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ needs.plan.outputs.pr }}
+      SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - run: |
+          gh pr comment "$PR" -R "$GITHUB_REPOSITORY" \
+            --body "CI is still running on $SHA; the review starts once it passes."
 
   find:
     needs: plan
