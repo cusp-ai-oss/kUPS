@@ -96,7 +96,7 @@ def _config(
     optimize_cell: bool = False,
     max_steps: int = 5,
     force_tolerance: str = "0.5 eV/angstrom",
-    batch_size: int = 16,
+    batch_size: int | None = None,
 ) -> Config:
     return Config(
         run=RelaxRunConfig(
@@ -141,7 +141,7 @@ class TestRun:
         repeats = ((2, 2, 2), (3, 2, 2), (2, 3, 2))
         return tuple(_ar_cif(0.1, r, seed) for seed, r in enumerate(repeats))
 
-    def _run(self, inp_files: tuple[str, ...], batch_size: int) -> str:
+    def _run(self, inp_files: tuple[str, ...], batch_size: int | None) -> str:
         out = _tmp_h5()
         run(
             _config(
@@ -161,6 +161,16 @@ class TestRun:
     @pytest.fixture(scope="class")
     def one_slot(self, inp_files: tuple[str, ...]) -> str:
         return self._run(inp_files, batch_size=1)
+
+    def test_all_structures_relax_at_once_by_default(
+        self, inp_files: tuple[str, ...], one_slot: str
+    ):
+        out = self._run(inp_files, batch_size=None)
+        ordinal, _, _ = _streamed(out)
+        npt.assert_array_equal(ordinal[0], [0, 1, 2])
+        alone = analyze_streaming_relax_file(one_slot)
+        for job, result in analyze_streaming_relax_file(out).items():
+            _assert_same_result(result, alone[job])
 
     def test_analyzer_reports_every_structure(self, two_slots: str):
         results = analyze_streaming_relax_file(two_slots)
