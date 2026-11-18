@@ -166,7 +166,8 @@ class UMAModule(torch.nn.Module):
         # ``_lazy_init`` prepares the model on cpu before moving it to its
         # device, so the first call needs cpu data or the MOLE merge mixes cuda
         # indices with cpu weights. ``predict`` moves data back for the forward.
-        if not getattr(self.predict_unit, "lazy_model_initialized", True):
+        # The flag name is fairchem's spelling.
+        if not getattr(self.predict_unit, "lazy_model_intialized", True):
             pos = pos.cpu()
             species = species.cpu()
             cell = cell.cpu()

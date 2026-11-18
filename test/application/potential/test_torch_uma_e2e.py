@@ -17,8 +17,8 @@ The module is skipped at collection time when ``fairchem-core`` isn't
 installed (default kUPS dev environment), so dedicated CI is required:
 install the ``uma`` extra and run the file directly, e.g.
 ``uv run --extra uma pytest test/application/potential/test_torch_uma_e2e.py``.
-Also skipped when JAX is on a CPU backend — kUPS's torch wrapper uses
-``torch.cuda.ExternalStream`` and only runs on GPU.
+The pipeline test is also skipped when JAX is on a CPU backend — kUPS's torch
+wrapper uses ``torch.cuda.ExternalStream`` and only runs on GPU.
 
 If ``KUPS_UMA_MODEL`` is set (or ``examples/uma-s-1p2.pt`` exists), that
 checkpoint is used. Otherwise a tiny non-MoE ``eSCNMDBackbone`` is constructed
@@ -333,3 +333,54 @@ def test_kups_pipeline_matches_fairchem_uma(tmp_path):
     np.testing.assert_allclose(kups_energy, fc_energy, atol=1e-5, rtol=1e-6)
     np.testing.assert_allclose(kups_forces, fc_forces, atol=1e-4, rtol=1e-4)
     np.testing.assert_allclose(kups_stress, fc_stress, atol=1e-5, rtol=1e-4)
+
+
+class _AttributeSpy:
+    """Records the attributes read from a predict unit and forwards them to it."""
+
+    def __init__(self, predict_unit):
+        self.predict_unit = predict_unit
+        self.names_read: list[str] = []
+
+    def __getattr__(self, name: str):
+        self.names_read.append(name)
+        return getattr(self.predict_unit, name)
+
+    def predict(self, data, undo_element_references: bool = True):
+        n_sys = data.cell.shape[0]
+        return {"energy": torch.zeros(n_sys), "forces": torch.zeros_like(data.pos)}
+
+
+def test_uma_module_reads_only_attributes_the_predict_unit_defines(tmp_path):
+    """``UMAModule`` reads fairchem's lazy-init flag under fairchem's name.
+
+    The flag is probed with a default, so a misspelt name silently skips the
+    first-call move to cpu, and UMA's MOLE merge then fails on CUDA inputs.
+    Needs neither CUDA nor a JAX GPU backend.
+    """
+    from fairchem.core.units.mlip_unit import load_predict_unit
+
+    from kups.potential.mliap.torch import UMAModule
+
+    model_path = _build_random_uma_checkpoint(
+        tmp_path / "uma_random.pt", task_name="omat", cutoff=6.0, seed=0
+    )
+    predict_unit = load_predict_unit(path=str(model_path), device="cpu")
+    spy = _AttributeSpy(predict_unit)
+    module = UMAModule(spy, task_name="omat")
+    module(
+        {
+            "pos": torch.tensor([[0.0, 0.0, 0.0], [1.8, 1.8, 0.0]]),
+            "atomic_numbers": torch.tensor([29, 29]),
+            "cell": 3.6 * torch.eye(3).unsqueeze(0),
+            "pbc": torch.ones(1, 3, dtype=torch.bool),
+            "edge_index": torch.tensor([[0, 1], [1, 0]]),
+            "cell_offsets": torch.zeros(2, 3),
+            "batch": torch.zeros(2, dtype=torch.int64),
+            "charge": torch.zeros(1),
+            "spin": torch.zeros(1),
+        }
+    )
+
+    assert spy.names_read
+    assert [n for n in spy.names_read if not hasattr(predict_unit, n)] == []
