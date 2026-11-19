@@ -2,7 +2,9 @@ name: Claude Review
 
 # Reviews a ready (non-draft) PR once CI and GPU validation have passed on its
 # head commit. Runs automatically once per PR; later commits and restacks are
-# reviewed on demand with a `/review` comment or a manual run.
+# reviewed on demand with a `/review` comment or a manual run. A PR by someone
+# who cannot push to the repository is reviewed only when a maintainer asks
+# that way after its head commit was pushed.
 on:
   workflow_run:
     workflows: [CI, GPU Validation]
@@ -68,41 +70,67 @@ jobs:
     steps:
       - name: Check that the PR is ready, CI passed and the commit is unreviewed
         id: gate
+        env:
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_AT: ${{ github.event.comment.created_at }}
         run: |
           skip() { echo "$1, skipping"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          # Whether $1 can push here. The repository permission, unlike
+          # author_association, does not hide private org members.
+          trusted() {
+            case $(gh api "repos/$GITHUB_REPOSITORY/collaborators/$1/permission" --jq .permission) in
+              admin|write) ;;
+              *) false ;;
+            esac
+          }
           pr=$PR_INPUT
           if [ -z "$pr" ]; then
             pr=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "$RUN_SHA" \
               --json number --jq '.[0].number // empty')
           fi
           [ -n "$pr" ] || skip "no open PR for $RUN_SHA"
-          read -r state draft sha base repo < <(gh pr view "$pr" -R "$GITHUB_REPOSITORY" \
-            --json state,isDraft,headRefOid,baseRefOid,headRepository,headRepositoryOwner \
-            --jq '[.state, .isDraft, .headRefOid, .baseRefOid, "\(.headRepositoryOwner.login)/\(.headRepository.name)"] | @tsv')
+          read -r state draft sha base repo author < <(gh pr view "$pr" -R "$GITHUB_REPOSITORY" \
+            --json state,isDraft,headRefOid,baseRefOid,headRepository,headRepositoryOwner,author \
+            --jq '[.state, .isDraft, .headRefOid, .baseRefOid, "\(.headRepositoryOwner.login)/\(.headRepository.name)", .author.login] | @tsv')
           [ "$state" = OPEN ] || skip "PR #$pr is $state"
           [ "$draft" = false ] || skip "PR #$pr is a draft"
           [ -z "$RUN_SHA" ] || [ "$RUN_SHA" = "$sha" ] || skip "$RUN_SHA is no longer the head of #$pr"
-          case "$EVENT" in workflow_run|pull_request_target) manual=false ;; *) manual=true ;; esac
+          # When $sha was pushed: GitHub, not the author, dates the newest CI run on it.
+          pushed=
           for wf in ci.yaml gpu.yaml; do
-            conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$sha" \
-              --jq '.workflow_runs[0].conclusion // "pending"')
+            read -r conclusion created < <(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$sha" \
+              --jq '.workflow_runs[0] | "\(.conclusion // "pending") \(.created_at)"')
             if [ "$conclusion" = pending ] && [ "$EVENT" = issue_comment ]; then
               # The automatic run after CI picks the `/review` comment up.
               { echo "deferred=true"; echo "pr=$pr"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
             fi
             [ "$conclusion" = success ] || skip "$wf is $conclusion on $sha"
+            [[ "$created" < "$pushed" ]] || pushed=$created
           done
-          # Automatic triggers review a PR once, or carry out a `/review` that came
-          # before CI passed; manual ones always run.
-          if ! $manual; then
-            reviewed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
-              --jq '.[] | select(.body | contains("kups-review:")) | .submitted_at' | sort | tail -1)
-            asked=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
-              --jq '.[] | select((.body | startswith("/review"))
-                and (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR"))) | .created_at' \
-              | sort | tail -1)
-            [ -z "$reviewed" ] || [[ "$asked" > "$reviewed" ]] || skip "#$pr already reviewed; /review for more"
-          fi
+          # When someone who can push here asked for this review: a `/review`
+          # comment or a manual run.
+          asked=
+          case "$EVENT" in
+            issue_comment)
+              if trusted "$COMMENTER"; then asked=$COMMENT_AT; fi ;;
+            workflow_dispatch)
+              asked=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at) ;;
+            *)
+              # Automatic triggers review a PR once, or carry out a `/review` that
+              # came before CI passed.
+              asked=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+                --jq '.[] | select(.body | startswith("/review")) | "\(.created_at) \(.user.login)"' \
+                | sort -r | awk '!seen[$2]++' \
+                | while read -r at who; do if trusted "$who"; then echo "$at"; break; fi; done) || true
+              reviewed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
+                --jq '.[] | select(.body | contains("kups-review:")) | .submitted_at' | sort | tail -1)
+              [ -z "$reviewed" ] || [[ "$asked" > "$reviewed" ]] || skip "#$pr already reviewed; /review for more" ;;
+          esac
+          # The review hands the PR to Claude with the API key in reach, so a PR by
+          # someone who cannot push here waits until one who can asks for a review
+          # of this very commit. An earlier `/review` does not cover later pushes.
+          trusted "$author" || [[ "$asked" > "$pushed" ]] \
+            || skip "#$pr is by $author, who cannot push here, and no maintainer has asked to review $sha since it was pushed"
           { echo "ready=true"; echo "pr=$pr"; echo "sha=$sha"; echo "base=$base"; echo "repo=$repo"; } >> "$GITHUB_OUTPUT"
 
       - if: steps.gate.outputs.ready == 'true'
@@ -125,6 +153,8 @@ jobs:
           BASE: ${{ steps.gate.outputs.base }}
         run: |
           echo "model=$(jq -r .code_review.model .github/config/models.json)" >> "$GITHUB_OUTPUT"
+          # Claude gets no shell, so the PR's description and diff go to it as files.
+          gh pr view "$PR" -R "$GITHUB_REPOSITORY" > pr.md
           # The API refuses diffs over 20000 lines; the checkout has the history for both ends.
           if ! gh pr diff "$PR" -R "$GITHUB_REPOSITORY" > pr.diff; then
             git -C pr-head fetch -q origin "$BASE" || true
@@ -158,7 +188,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: facts
-          path: facts.md
+          path: |
+            facts.md
+            pr.md
+            pr.diff
 
   # Tells a `/review` that arrived before CI finished when it will run.
   defer:
@@ -200,7 +233,13 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: facts
-      - uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+      - id: schema
+        run: echo "json=$(jq -c .findings .github/config/review-schema.json)" >> "$GITHUB_OUTPUT"
+      # Claude reads files and nothing else: no shell, no edits, no GitHub API.
+      # The PR may try to instruct it, so it answers in a fixed JSON shape that
+      # the next steps handle.
+      - id: claude
+        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
@@ -213,7 +252,14 @@ jobs:
             --model ${{ needs.plan.outputs.model }}
             --max-turns 80
             --add-dir pr-head
-            --allowedTools "Read,Grep,Glob,Edit(findings.json),Bash(gh pr view:*),Bash(gh pr diff:*)"
+            --allowedTools "Read,Grep,Glob"
+            --json-schema '${{ steps.schema.outputs.json }}'
+      - name: Keep the findings
+        env:
+          FINDINGS: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          jq 'select(.escalate or (.body + .comments | length > 0))' <<< "$FINDINGS" > findings.json
+          [ -s findings.json ] || rm findings.json
       - if: hashFiles('findings.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -228,7 +274,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      pull-requests: write
+      pull-requests: read
+    outputs:
+      review: ${{ steps.claude.outputs.structured_output || steps.merge.outputs.review }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -246,34 +294,57 @@ jobs:
           path: found
       - name: Merge findings
         id: merge
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ needs.plan.outputs.pr }}
-          SHA: ${{ needs.plan.outputs.sha }}
-          BASE: ${{ needs.plan.outputs.base }}
         run: |
           shopt -s nullglob
           files=(found/*/findings.json)
           if [ ${#files[@]} -eq 0 ]; then
             # Nothing to verify; still mark the commit reviewed.
-            jq -n --arg sha "$SHA" --arg base "$BASE" '{commit_id: $sha, event: "COMMENT",
-              body: "LGTM\n<!-- kups-review:\($sha) base:\($base) -->"}' \
-              | gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" --input - > /dev/null
+            echo 'review={"body": "LGTM", "comments": []}' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           jq -s '{escalate: ([.[].escalate | select(.)] | join(" ") | if . == "" then null else . end),
             body: [.[].body[]], comments: [.[].comments[]]}' "${files[@]}" > findings.json
+          echo "schema=$(jq -c .review .github/config/review-schema.json)" >> "$GITHUB_OUTPUT"
       - if: hashFiles('findings.json') != ''
+        id: claude
         uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           classify_inline_comments: false
           prompt: |
-            REPO=${{ github.repository }} PR=${{ needs.plan.outputs.pr }} SHA=${{ needs.plan.outputs.sha }} BASE=${{ needs.plan.outputs.base }}
+            REPO=${{ github.repository }} PR=${{ needs.plan.outputs.pr }} SHA=${{ needs.plan.outputs.sha }}
             Follow .github/prompts/code-review-verify.md.
           claude_args: >-
             --model ${{ needs.plan.outputs.model }}
             --max-turns 60
             --add-dir pr-head
-            --allowedTools "Read,Grep,Glob,Edit(review.json),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api:*)"
+            --allowedTools "Read,Grep,Glob"
+            --json-schema '${{ steps.merge.outputs.schema }}'
+
+  # Posts what verify returned. The only job that can write to the PR, and it
+  # neither runs Claude nor holds the API key.
+  post:
+    needs: [plan, verify]
+    if: needs.verify.outputs.review
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVIEW: ${{ needs.verify.outputs.review }}
+      PR: ${{ needs.plan.outputs.pr }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      BASE: ${{ needs.plan.outputs.base }}
+    steps:
+      - name: Post the review on the reviewed commit
+        run: |
+          review() {
+            jq --arg sha "$SHA" --arg mark "<!-- kups-review:$SHA base:$BASE -->" \
+              "{commit_id: \$sha, event: \"COMMENT\", $1}" <<< "$REVIEW" \
+              | gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" --input - > /dev/null
+          }
+          review 'body: "\(.body)\n\($mark)", comments: [.comments[] | {path, line, side, body}]' && exit 0
+          # GitHub refuses the whole review if one comment is off the diff; then
+          # the comments go in the body instead.
+          review 'body: ([.body] + [.comments[] | "- `\(.path):\(.line)`: \(.body)"] + [$mark] | join("\n"))'
