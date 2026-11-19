@@ -35,6 +35,8 @@ line.
 - No inline comments that restate the code or justify a cast, annotation or
   branch the surrounding types already explain. Comment only what a reader
   can't get from the code.
+- Mark a workaround with `# WORKAROUND: <issue>` and keep its code in one
+  block, not spread over several places.
 
 ## Numerics
 - Physical quantities are typed with their dimension (`units.Length`,
