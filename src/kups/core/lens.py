@@ -413,7 +413,6 @@ class BaseLens(Lens[S, R], abc.ABC):
 
     @override
     def focus[B](self, where: Callable[[R], B]) -> Lens[S, B]:
-        # pyrefly: ignore [bad-argument-type]
         return NestedLens(self, SimpleLens(view(where)))
 
     @override
@@ -429,7 +428,6 @@ class BaseLens(Lens[S, R], abc.ABC):
     @override
     def at(self, idxs: Any, *, args: ScatterArgs | None = None) -> Lens[S, R]:
         """Create a lens that slices the focused pytree at the given indices."""
-        # pyrefly: ignore [bad-argument-type]
         return IndexLens(self, idxs, args=args if args is not None else {})
 
     @override

@@ -59,7 +59,7 @@ dependencies = [
     "msgpack>=1.1.2",
     "lark>=1.2",
     "nanoargs>=0.1.1",
-    "matplotlib>=3.10.5",   # python 3.14 support - ASE depends on matplotlib
+    "matplotlib>=3.10.5",      # python 3.14 support - ASE depends on matplotlib
     "hdf5plugin>=6.0.0",
     "pydantic>=2.13",
     "typing-extensions>=4.10",
@@ -147,23 +147,23 @@ venv = ".venv"
 
 [tool.ruff.lint]
 extend-select = [
-    "ANN401",  # explicit Any
-    "B905",    # zip states strict=
-    "C4",      # no needless comprehensions or dict()/map() calls
-    "D100",    # public modules have docstrings
-    "D101",    # public classes have docstrings
-    "D103",    # public functions have docstrings
-    "D417",    # every argument documented
-    "RET504",  # no assignment just to return it
-    "T20",     # no print in library code
-    "TID251",  # banned APIs, see below
-    "UP",      # modern syntax for the supported Pythons
+    "ANN401", # explicit Any
+    "B905",   # zip states strict=
+    "C4",     # no needless comprehensions or dict()/map() calls
+    "D100",   # public modules have docstrings
+    "D101",   # public classes have docstrings
+    "D103",   # public functions have docstrings
+    "D417",   # every argument documented
+    "RET504", # no assignment just to return it
+    "T20",    # no print in library code
+    "TID251", # banned APIs, see below
+    "UP",     # modern syntax for the supported Pythons
 ]
 ignore = [
     "E741",
-    "UP046",  # PEP 695 classes infer variance; ours declare it on the TypeVars
+    "UP046", # PEP 695 classes infer variance; ours declare it on the TypeVars
 ]
-external = ["KUP"]  # ci/kups_lint.py
+external = ["KUP"] # ci/kups_lint.py
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -176,9 +176,23 @@ convention = "google"
 "src/kups/core/lens.py" = ["ANN401", "TID251"]
 "src/kups/core/assertion/*" = ["ANN401"]
 "src/kups/core/effects/*" = ["ANN401"]
-"src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = ["ANN401"]
+"src/kups/core/utils/{jax,_jax_compat,torch,msgpack,functools,segment}.py" = [
+    "ANN401",
+]
 "src/kups/core/units/*" = ["ANN401"]
-"!src/**" = ["ANN401", "B905", "C4", "D100", "D101", "D103", "D417", "RET504", "T20", "TID251", "UP"]
+"!src/**" = [
+    "ANN401",
+    "B905",
+    "C4",
+    "D100",
+    "D101",
+    "D103",
+    "D417",
+    "RET504",
+    "T20",
+    "TID251",
+    "UP",
+]
 
 [tool.typos.default.extend-words]
 # Domain abbreviations, not misspellings.
