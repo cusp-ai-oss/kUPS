@@ -135,6 +135,26 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         data = first_true_indices(~self.occupation, n, len(self.keys))
         return Index(self.keys, data)
 
+    @overload
+    @classmethod
+    # pyrefly: ignore[bad-override]  # without `view`, data needs a `.system` index
+    def arange[L: SupportsSorting, D: HasSystemIndex](
+        cls,
+        data: D,
+        *,
+        num_occupied: int | None = None,
+        label: Callable[[int], L] = int,
+    ) -> Buffered[L, D]: ...
+    @overload
+    @classmethod
+    def arange[L: SupportsSorting, D](
+        cls,
+        data: D,
+        *,
+        num_occupied: int | None = None,
+        label: Callable[[int], L] = int,
+        view: Callable[[D], Index[Any]],
+    ) -> Buffered[L, D]: ...
     @classmethod
     @override
     def arange[L: SupportsSorting, D](
@@ -143,7 +163,7 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         *,
         num_occupied: int | None = None,
         label: Callable[[int], L] = int,
-        view: Callable[[D], Index[Any]] = system_view,
+        view: Callable[[Any], Index[Any]] = system_view,
     ) -> Buffered[L, D]:
         """Create a ``Buffered`` with integer labels ``(0, 1, ..., n-1)``.
 
@@ -173,9 +193,19 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             index, data, view, _cls=label if isinstance(label, type) else None
         )
 
+    @overload
+    @classmethod
+    def full[D: HasSystemIndex](
+        cls, table: Table[TLabel, D]
+    ) -> Buffered[TLabel, D]: ...
+    @overload
     @classmethod
     def full[D](
-        cls, table: Table[TLabel, D], *, view: Callable[[D], Index[Any]] = system_view
+        cls, table: Table[TLabel, D], *, view: Callable[[D], Index[Any]]
+    ) -> Buffered[TLabel, D]: ...
+    @classmethod
+    def full[D](
+        cls, table: Table[TLabel, D], *, view: Callable[[Any], Index[Any]] = system_view
     ) -> Buffered[TLabel, D]:
         """Create a fully-occupied ``Buffered`` from a ``Table``.
 
@@ -188,13 +218,23 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         """
         return Buffered(table.keys, table.data, view)
 
+    @overload
+    @classmethod
+    def pad[L: int, D: HasSystemIndex](
+        cls, table: Table[L, D], num_free: int
+    ) -> Buffered[L, D]: ...
+    @overload
+    @classmethod
+    def pad[L: int, D](
+        cls, table: Table[L, D], num_free: int, *, view: Callable[[D], Index[Any]]
+    ) -> Buffered[L, D]: ...
     @classmethod
     def pad[L: int, D](
         cls,
         table: Table[L, D],
         num_free: int,
         *,
-        view: Callable[[D], Index[Any]] = system_view,
+        view: Callable[[Any], Index[Any]] = system_view,
     ) -> Buffered[L, D]:
         """Convert a ``Table`` to a ``Buffered`` with extra free rows.
 
