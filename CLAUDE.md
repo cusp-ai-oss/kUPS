@@ -32,6 +32,9 @@ line.
   vocabulary (keys and queries, `_params`, `_lens`) instead of new synonyms.
 - Plain code over clever code: no bit tricks or walrus chains where a loop
   or a named type reads better.
+- No inline comments that restate the code or justify a cast, annotation or
+  branch the surrounding types already explain. Comment only what a reader
+  can't get from the code.
 
 ## Numerics
 - Physical quantities are typed with their dimension (`units.Length`,
