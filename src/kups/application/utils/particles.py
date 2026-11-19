@@ -196,7 +196,7 @@ def _particles_from_path(
 @cache
 def _read_last_frame(path: str | Path) -> ase.Atoms:
     """The last frame of an ASE-readable file, with CIF tags kept in ``info``."""
-    if ase.io.formats.filetype(path) == "cif":
+    if ase.io.formats.filetype(str(path)) == "cif":
         return next(ase.io.iread(path, index=-1, store_tags=True))
     return next(ase.io.iread(path, index=-1))
 

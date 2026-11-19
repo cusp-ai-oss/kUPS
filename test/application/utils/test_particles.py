@@ -195,9 +195,10 @@ class TestParticlesFromAse:
         atoms = Atoms("Ar", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
         path = tmp_path / name
         write(str(path), atoms)
-        particles, cell, uc_transform = particles_from_ase(str(path))
-        assert len(particles) == 1
-        npt.assert_allclose(particles.data.atomic_numbers, jnp.array([18]))
+        for source in (str(path), path):
+            particles, _, _ = particles_from_ase(source)
+            assert len(particles) == 1
+            npt.assert_allclose(particles.data.atomic_numbers, jnp.array([18]))
 
     def test_uc_transform_produces_lower_triangular(self):
         from ase.build import bulk
