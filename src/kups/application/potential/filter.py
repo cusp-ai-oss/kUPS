@@ -31,25 +31,6 @@ POSITIONS_AND_CELL: Lens[Geometry, PositionsAndCell[units.Length]] = lens(
 """Positions + cell DOFs with atoms pinned (today's default cell gradient)."""
 
 
-def _positions_only_set(g: Geometry, value: PositionsAndCell[units.Length]) -> Geometry:
-    particles = g.particles.map_data(
-        lambda p: PositionsAndSystemIndex(value.positions.data, p.system)
-    )
-    cell = jax.lax.stop_gradient(value.cell.data)
-    return Geometry(particles, g.systems.set_data(cell))
-
-
-POSITIONS_ONLY: Lens[Geometry, PositionsAndCell[units.Length]] = LambdaLens(
-    lambda g: PositionsAndCellTree(
-        g.particles.map_data(lambda p: p.positions), g.systems
-    ),
-    _positions_only_set,
-)
-"""Positions-only DOFs (``optimize_cell=False``): the cell rides along in the
-``PositionsAndCell`` codomain but is stop-gradiented on set, so ``∂E/∂cell`` is zero
-while the DOF pytree matches the cell filters."""
-
-
 def _frechet_filter_get(g: Geometry) -> PositionsAndCell[units.Length]:
     cell = g.systems.data
     inverse, reference = g.systems.set_data(
@@ -66,11 +47,20 @@ def _frechet_filter_set(g: Geometry, value: PositionsAndCell[units.Length]) -> G
     m = jnp.array(cell.periodic)[:, None]
     h = cell.vectors
     h_eff = m * h + (1 - m) * jax.lax.stop_gradient(h)
-    reference_inv, h_eff = value.cell.set_data((reference_inv, h_eff))[
+    dh = h_eff - g.systems.data.vectors
+    reference_inv, h_eff, dh = value.cell.set_data((reference_inv, h_eff, dh))[
         g.particles.data.system
     ]
-    s = units.einsum("ni,nij->nj", value.positions.data, reference_inv)
-    positions = units.einsum("ni,nij->nj", s, h_eff)
+    # r = (q R^-1) h, written as an increment on g: unchanged DOFs return g's
+    # positions exactly, with the same map and derivative at u = get(g).
+    q = _frechet_filter_get(g).positions.data
+    dq = units.einsum("ni,nij->nj", value.positions.data - q, reference_inv)
+    s = units.einsum("ni,nij->nj", q, reference_inv)
+    positions = (
+        g.particles.data.positions
+        + units.einsum("ni,nij->nj", dq, h_eff)
+        + units.einsum("ni,nij->nj", s, dh)
+    )
     particles = g.particles.map_data(
         lambda p: PositionsAndSystemIndex(positions, p.system)
     )

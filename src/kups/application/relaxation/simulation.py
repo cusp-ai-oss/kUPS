@@ -118,10 +118,10 @@ def make_relax_step[State, OptState](
 
     The optimizer and its line searches see the potential's gradients through
     :func:`~kups.application.relaxation.data.constrain_gradients`, while the
-    cache keeps them unconstrained. A zero gradient holds a fixed particle for
-    every transform that maps it to a zero update; transforms that read the
-    parameters themselves, such as ``add_decayed_weights`` or ``add_noise``,
-    can still move it.
+    cache keeps them unconstrained. A zero gradient holds a fixed particle or
+    cell for every transform that maps it to a zero update; transforms that
+    read the parameters themselves, such as ``add_decayed_weights`` or
+    ``add_noise``, can still move it.
 
     Returns:
         Tuple of ``(step, opt_init)``. ``step`` does not count steps or roll back

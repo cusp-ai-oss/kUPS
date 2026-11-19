@@ -230,6 +230,8 @@ def payload_from_structures(
     capacity: int,
     species: Sequence[Label],
     ordinals: Sequence[int],
+    *,
+    fixed_cell: bool = True,
 ) -> RelaxPayload:
     """Pack host structures into payload rows (leading axis ``len(structures)``).
 
@@ -240,6 +242,7 @@ def payload_from_structures(
     [Cell.from_pbc][kups.core.cell.Cell.from_pbc] on a ``TriclinicFrame``, so
     cells that differ only in frame type or cell class can share a stream. All
     structures of a stream, its idle rows included, must share periodicity.
+    ``fixed_cell`` holds the cells fixed, or lets them relax.
 
     Raises:
         ValueError: If ``structures`` is empty or not as long as ``ordinals``,
@@ -303,7 +306,9 @@ def payload_from_structures(
                 position_gradients=units.zeros(
                     (1, capacity, 3), u.eV / u.angstrom, dtype
                 ),
-                systems=relax_systems(cell, jnp.asarray([n], dtype)),
+                systems=relax_systems(
+                    cell, jnp.asarray([n], dtype), fixed_cell=fixed_cell
+                ),
                 step=jnp.zeros((1,), int),
                 ordinal=jnp.asarray([ordinal], int),
             )

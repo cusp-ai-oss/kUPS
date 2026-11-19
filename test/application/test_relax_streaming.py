@@ -18,7 +18,7 @@ from jax import Array
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
-from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
+from kups.application.potential.filter import FRECHET_FILTER
 from kups.application.relaxation.simulation import OptInit
 from kups.application.relaxation.streaming import (
     OptReset,
@@ -108,7 +108,7 @@ def _setup(
     if reservations is None:
         reservations = reserve_slots(n_slots, CAPACITY)
     state_lens = identity_lens(StreamingRelaxState[ChainOptState])
-    gradient = FRECHET_FILTER if optimize_cell else POSITIONS_ONLY
+    gradient = FRECHET_FILTER
     parameters = (
         bind(LJ)
         .focus(lambda p: p.cutoff)
@@ -205,7 +205,11 @@ def _run(
                 if ordinal < len(structures):
                     rows.append(
                         payload_from_structures(
-                            [structures[ordinal]], CAPACITY, SPECIES, [ordinal]
+                            [structures[ordinal]],
+                            CAPACITY,
+                            SPECIES,
+                            [ordinal],
+                            fixed_cell=not optimize_cell,
                         )
                     )
                     ordinal += 1
@@ -410,13 +414,13 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
     setup = _setup(structures, 2, 3, 0.0, "sgd")
     state_lens = identity_lens(WrappedState).focus(lambda s: s.batch)
     potential = make_lennard_jones_from_state(
-        state_lens, parameters=LJ, gradient=POSITIONS_ONLY
+        state_lens, parameters=LJ, gradient=FRECHET_FILTER
     )
     step, _, reset = make_streaming_relax_propagator(
         state_lens,
         potential,
         resettable_chain(Stateless(optax.scale(-0.1))),
-        POSITIONS_ONLY,
+        FRECHET_FILTER,
         setup.slots,
         force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
@@ -469,13 +473,13 @@ def test_factory_preserves_native_optimizer_state_type() -> None:
     setup = _setup(_structures(), 2, 3, 0.0, "sgd")
     state_lens = identity_lens(StreamingRelaxState[ScaleByFireState])
     potential = make_lennard_jones_from_state(
-        state_lens, parameters=LJ, gradient=POSITIONS_ONLY
+        state_lens, parameters=LJ, gradient=FRECHET_FILTER
     )
     _, init, reset = make_streaming_relax_propagator(
         state_lens,
         potential,
         ScaleByFire[PositionsAndCell[units.Length]](),
-        POSITIONS_ONLY,
+        FRECHET_FILTER,
         setup.slots,
         force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
@@ -510,7 +514,7 @@ def _rejected_by_the_type_checker(setup: Setup) -> None:
         identity_lens(StreamingRelaxState[ChainOptState]),
         setup.potential,
         chain(Stateless(optax.scale(-1.0))),  # pyrefly: ignore[bad-argument-type]
-        POSITIONS_ONLY,
+        FRECHET_FILTER,
         setup.slots,
         force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,
@@ -520,7 +524,7 @@ def _rejected_by_the_type_checker(setup: Setup) -> None:
         setup.potential,
         # pyrefly: ignore[bad-argument-type]
         ScaleByFire[PositionsAndCell[units.Length]](),
-        POSITIONS_ONLY,
+        FRECHET_FILTER,
         setup.slots,
         force_tolerance=0.0 * u.eV / u.angstrom,
         max_steps=3,

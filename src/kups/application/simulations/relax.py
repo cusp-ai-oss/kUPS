@@ -24,7 +24,7 @@ import rich.logging
 from nanoargs import NanoArgs
 from pydantic import BaseModel
 
-from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
+from kups.application.potential.filter import FRECHET_FILTER
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxParticles,
@@ -70,17 +70,18 @@ def run(config: Config) -> None:
     key = jax.random.key(config.run.seed or time.time_ns())
     state_lens = identity_lens(RelaxState[ChainOptState])
     optimizer = make_optimizer(config.run.optimizer)
-    gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
-    potential, cutoff = config.potential.build(state_lens, gradient)
+    potential, cutoff = config.potential.build(state_lens, FRECHET_FILTER)
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, gradient
+        state_lens, potential, optimizer, FRECHET_FILTER
     )
 
     all_particles: list[Table[ParticleId, RelaxParticles]] = []
     all_systems: list[Table[SystemId, RelaxSystems]] = []
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
-        particles_i, systems_i = relax_state_from_ase(inp_file)
+        particles_i, systems_i = relax_state_from_ase(
+            inp_file, fixed_cell=not config.run.optimize_cell
+        )
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
