@@ -5,7 +5,8 @@
 
 The force field is selected by the ``potential`` config (LJ / tojax-MLFF /
 torch-MLFF). The potential is built directly with its parameters, so a single
-force-field-agnostic ``RelaxState`` and driver serve every backend.
+force-field-agnostic ``StreamingRelaxState`` and driver serve every backend.
+The input structures relax at once, or stream through ``run.batch_size`` slots.
 """
 
 from __future__ import annotations
@@ -18,31 +19,26 @@ from pathlib import Path
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")  # for torch backends
 
 import jax
-import jax.numpy as jnp
 import rich
 import rich.logging
 from nanoargs import NanoArgs
 from pydantic import BaseModel
 
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
-from kups.application.relaxation.analysis import analyze_relax_file
-from kups.application.relaxation.data import (
-    RelaxParticles,
-    RelaxRunConfig,
-    RelaxState,
-    RelaxSystems,
-    relax_state_from_ase,
+from kups.application.relaxation.analysis import analyze_streaming_relax_file
+from kups.application.relaxation.data import RelaxRunConfig
+from kups.application.relaxation.streaming import (
+    StreamingRelaxState,
+    Structure,
+    run_streaming_relax,
 )
-from kups.application.relaxation.simulation import make_relax_propagator, run_relax
 from kups.application.simulations.potentials import (
     MaceConfig,
     PotentialConfig,
     UmaConfig,
 )
-from kups.core.data import Table
+from kups.application.utils.particles import particles_from_ase
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
-from kups.core.typing import ParticleId, SystemId
 from kups.relaxation.config import make_optimizer
 from kups.relaxation.optimizer import ChainOptState
 
@@ -68,38 +64,30 @@ class Config(BaseModel):
 def run(config: Config) -> None:
     """Run a structure relaxation for the configured force field."""
     key = jax.random.key(config.run.seed or time.time_ns())
-    state_lens = identity_lens(RelaxState[ChainOptState])
+    state_lens = identity_lens(StreamingRelaxState[ChainOptState])
     optimizer = make_optimizer(config.run.optimizer)
     gradient = FRECHET_FILTER if config.run.optimize_cell else POSITIONS_ONLY
     potential, cutoff = config.potential.build(state_lens, gradient)
-    propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, gradient
-    )
 
-    all_particles: list[Table[ParticleId, RelaxParticles]] = []
-    all_systems: list[Table[SystemId, RelaxSystems]] = []
+    structures: list[Structure] = []
     for inp_file in config.inp_files:
         logging.info(f"Loading structure from {inp_file}")
-        particles_i, systems_i = relax_state_from_ase(inp_file)
-        all_particles.append(particles_i)
-        all_systems.append(systems_i)
-    particles, systems = Table.union(all_particles, all_systems)
+        particles, cell, _ = particles_from_ase(inp_file)
+        structures.append((particles, cell))
 
     # Torch MLFF models need extra neighbor-list capacity headroom.
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
-    neighborlist_params = UniversalNeighborlistParameters.estimate(
-        particles.data.system.counts, systems, cutoff, multiplier=multiplier
-    )
-    opt_state = opt_init(particles, systems)
-    state = RelaxState(
-        particles=particles,
-        systems=systems,
-        neighborlist_params=neighborlist_params,
-        opt_state=opt_state,
-        step=jnp.array([0]),
-    )
     logging.info("Starting relaxation")
-    run_relax(key, propagator, state, config.run)
+    run_streaming_relax(
+        key,
+        structures,
+        potential,
+        cutoff,
+        optimizer,
+        gradient,
+        config.run,
+        neighborlist_multiplier=multiplier,
+    )
 
 
 def main() -> None:
@@ -108,7 +96,7 @@ def main() -> None:
     config = cli.parse()
     rich.print(config.model_dump())
     run(config)
-    rich.print(analyze_relax_file(config.run.out_file))
+    rich.print(analyze_streaming_relax_file(config.run.out_file))
 
 
 if __name__ == "__main__":

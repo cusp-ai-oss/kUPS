@@ -148,7 +148,7 @@ class RelaxRunConfig(BaseModel):
     out_file: str | Path
     """Path to the HDF5 output file."""
     max_steps: int
-    """Maximum number of optimisation steps."""
+    """Maximum number of optimisation steps per structure."""
     seed: int | None
     """Random seed. None for time-based."""
     force_tolerance: Annotated[units.Force, Scalar]
@@ -161,6 +161,8 @@ class RelaxRunConfig(BaseModel):
     """
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
+    batch_size: int | None = None
+    """Structures relaxed at once; further ones wait for a free slot. None relaxes all at once."""
 
 
 def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
