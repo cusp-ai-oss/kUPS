@@ -70,19 +70,22 @@ def test_no_constraint_fixes_nothing() -> None:
 
 
 @pytest.mark.parametrize("columns", [1, 3])
-def test_extxyz_move_mask(columns: int) -> None:
+def test_extxyz_move_mask(tmp_path, columns: int) -> None:
+    # Written by hand: older ASE extxyz writers do not emit move_mask. With three
+    # columns the reader makes one FixCartesian per atom, all-False for free atoms.
     atoms = _atoms()
-    if columns == 3:  # written as one FixCartesian per atom, all-False for free atoms
-        atoms.set_constraint(
-            [FixCartesian(i, mask=[i in FIXED] * 3) for i in range(len(atoms))]
-        )
-    with tempfile.NamedTemporaryFile(suffix=".extxyz", delete=False) as f:
-        path = f.name
-    ase.io.write(path, atoms, format="extxyz")
-    try:
-        assert np.flatnonzero(fixed_from_ase(path)).tolist() == FIXED
-    finally:
-        os.unlink(path)
+    lattice = " ".join(f"{x:.6f}" for x in atoms.cell.array.ravel())
+    lines = [
+        str(len(atoms)),
+        f'Lattice="{lattice}" Properties=species:S:1:pos:R:3:move_mask:L:{columns} '
+        'pbc="T T T"',
+    ]
+    for i, (x, y, z) in enumerate(atoms.positions):
+        movable = " ".join(["F" if i in FIXED else "T"] * columns)
+        lines.append(f"Ar {x:.6f} {y:.6f} {z:.6f} {movable}")
+    path = tmp_path / "slab.extxyz"
+    path.write_text("\n".join(lines) + "\n")
+    assert np.flatnonzero(fixed_from_ase(path)).tolist() == FIXED
 
 
 def test_poscar_selective_dynamics() -> None:
