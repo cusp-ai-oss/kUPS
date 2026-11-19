@@ -60,9 +60,13 @@ comments.
   ("fix: indices_in keeps every out-of-range id out of range"), not the
   activity ("fix bug in indices_in").
 - The description scales with the PR: one or two sentences of what and why
-  for a small change. For larger ones also say what changes for users,
-  which tests pin it, when the new path does *not* apply, and the stack
-  position ("Part 3/5").
+  for a small change, and at most about 150 words for a large one. A large
+  PR also says what changes for users, which tests pin it, when the new path
+  does *not* apply, and the stack position ("Part 3/5"), each in a clause
+  rather than its own section.
+- Link the issue and the commits instead of repeating them, and leave out
+  how the PR evolved. A description that fits on one screen needs no
+  headings or bullet lists.
 - Say whether results change. If values move, say by how much and why.
 
 ### Performance PRs
