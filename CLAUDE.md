@@ -32,6 +32,8 @@ line.
   vocabulary (keys and queries, `_params`, `_lens`) instead of new synonyms.
 - Plain code over clever code: no bit tricks or walrus chains where a loop
   or a named type reads better.
+- Mark a workaround with `# WORKAROUND: <issue>` and keep its code in one
+  block, not spread over several places.
 
 ## Numerics
 - Physical quantities are typed with their dimension (`units.Length`,
