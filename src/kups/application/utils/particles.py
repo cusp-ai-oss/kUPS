@@ -12,6 +12,7 @@ from typing import Any
 
 import ase
 import ase.io
+import ase.io.formats
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -188,7 +189,15 @@ def _particles_from_path(
     Callable[[units.Length], units.Length],
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+    return _particles_from_atoms(_read_last_frame(path))
+
+
+@cache
+def _read_last_frame(path: str | Path) -> ase.Atoms:
+    """The last frame of an ASE-readable file, with CIF tags kept in ``info``."""
+    if ase.io.formats.filetype(path) == "cif":
+        return next(ase.io.iread(path, index=-1, store_tags=True))
+    return next(ase.io.iread(path, index=-1))
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:

@@ -183,14 +183,17 @@ class TestParticlesFromAse:
         particles, _, _ = particles_from_ase(atoms)
         testing.assert_allclose(particles.data.charges, jnp.asarray(charges), CHARGE)
 
-    def test_from_file_path(self, tmp_path):
+    @pytest.mark.parametrize(
+        "name", ["test.cif", "test.extxyz", "test.xyz", "test.traj", "POSCAR"]
+    )
+    def test_from_file_path(self, tmp_path, name):
         from ase import Atoms
         from ase.io import write
 
         from kups.application.utils.particles import particles_from_ase
 
         atoms = Atoms("Ar", positions=[[0, 0, 0]], cell=[10, 10, 10], pbc=True)
-        path = tmp_path / "test.cif"
+        path = tmp_path / name
         write(str(path), atoms)
         particles, cell, uc_transform = particles_from_ase(str(path))
         assert len(particles) == 1
