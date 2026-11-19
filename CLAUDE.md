@@ -62,8 +62,13 @@ comments.
 - The description says what changed, why, whether results change (if
   values differ, by how much and why) and which APIs break, in at most 100
   words. Formatting is fine, but every line serves one of these points.
-- Leave out test names, walkthroughs of the diff and anything else a
-  reviewer sees in the code. Only describe high-level ideas.
+- Explain only what the PR itself does not make clear. Leave out test
+  names, walkthroughs of the diff and anything else a reviewer sees in the
+  code. Only describe high-level ideas.
+- Keep it ADHD-friendly and in Simple Technical English: the key point
+  first, short sentences with one idea each, common words, active voice.
+  Show, don't tell: a before/after value or a one-line example instead of a
+  paragraph about it.
 
 ### Performance PRs
 - Always include a table: one row (or column) per benchmark config, before
