@@ -17,7 +17,7 @@ from kups.core.data import Table
 from kups.core.storage import EveryNStep, Once, WriterGroupConfig
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import dataclass
-from kups.observables.stress import stress_via_virial_theorem
+from kups.observables.stress import stress_via_total_lattice_gradient
 from kups.relaxation.convergence import fmax_per_system
 
 
@@ -68,9 +68,7 @@ class RelaxStepData:
             atoms=state.particles,
             potential_energy=state.systems.data.potential_energy,
             max_force=max_force.data,
-            stress_tensor=stress_via_virial_theorem(
-                state.particles, state.systems
-            ).data,
+            stress_tensor=stress_via_total_lattice_gradient(state.systems).data,
         )
 
 

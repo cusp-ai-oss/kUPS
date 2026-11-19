@@ -25,7 +25,7 @@ from ase.optimize import LBFGS
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
-from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
+from kups.application.potential.filter import FRECHET_FILTER
 from kups.application.relaxation.data import (
     RelaxState,
     relax_gradients,
@@ -34,9 +34,7 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.simulation import make_relax_propagator
 from kups.application.utils.particles import fixed_from_ase
-from kups.core import units
-from kups.core.geometry import Geometry, PositionsAndCell
-from kups.core.lens import Lens, identity_lens
+from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import TransformationConfig, make_optimizer
@@ -94,7 +92,8 @@ def _atoms() -> ase.Atoms:
 def _relax(
     atoms: ase.Atoms,
     optimizer: TransformationConfig,
-    gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+    *,
+    fixed_cell: bool,
     steps: int,
 ) -> tuple[RelaxState, RelaxState]:
     """Relax ``atoms`` with Lennard-Jones for ``steps`` steps; returns (first, last)."""
@@ -105,12 +104,12 @@ def _relax(
     )
     state_lens = identity_lens(RelaxState)
     potential = make_lennard_jones_from_state(
-        state_lens, parameters=lj, gradient=gradient
+        state_lens, parameters=lj, gradient=FRECHET_FILTER
     )
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, make_optimizer(optimizer), gradient
+        state_lens, potential, make_optimizer(optimizer), FRECHET_FILTER
     )
-    particles, systems = relax_state_from_ase(atoms)
+    particles, systems = relax_state_from_ase(atoms, fixed_cell=fixed_cell)
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
     )
@@ -176,7 +175,7 @@ class TestLoading:
 class TestRelaxation:
     @pytest.mark.parametrize("name", OPTIMIZERS)
     def test_fixed_atoms_do_not_move(self, name: str) -> None:
-        first, last = _relax(_atoms(), OPTIMIZERS[name], POSITIONS_ONLY, steps=5)
+        first, last = _relax(_atoms(), OPTIMIZERS[name], fixed_cell=True, steps=5)
         r0 = np.asarray(first.particles.data.positions.to(A))
         r1 = np.asarray(last.particles.data.positions.to(A))
         np.testing.assert_array_equal(r1[FIXED], r0[FIXED])
@@ -184,7 +183,7 @@ class TestRelaxation:
         assert np.abs(r1[free] - r0[free]).max() > 1e-4
 
     def test_fixed_atoms_ride_the_cell(self) -> None:
-        first, last = _relax(_atoms(), LBFGS_CONFIG, FRECHET_FILTER, steps=5)
+        first, last = _relax(_atoms(), LBFGS_CONFIG, fixed_cell=False, steps=5)
 
         def fractional(s: RelaxState) -> tuple[np.ndarray, np.ndarray]:
             r = np.asarray(s.particles.data.positions.to(A))
@@ -197,7 +196,7 @@ class TestRelaxation:
         np.testing.assert_allclose(s1[FIXED], s0[FIXED], rtol=0, atol=1e-12)
 
     def test_cache_keeps_the_force_and_convergence_ignores_it(self) -> None:
-        _, last = _relax(_atoms(), LBFGS_CONFIG, POSITIONS_ONLY, steps=1)
+        _, last = _relax(_atoms(), LBFGS_CONFIG, fixed_cell=True, steps=1)
         cached = np.asarray(last.particles.data.position_gradients.to(FORCE))
         seen = np.asarray(relax_gradients(last).positions.data.to(FORCE))
         assert np.abs(cached[FIXED]).max() > 0
@@ -220,7 +219,7 @@ class TestAseParity:
             damping=1.0,
             memory=10,
         ).run(steps=n_steps, fmax=1e-30)
-        _, last = _relax(atoms, LBFGS_CONFIG, FRECHET_FILTER, steps=n_steps)
+        _, last = _relax(atoms, LBFGS_CONFIG, fixed_cell=False, steps=n_steps)
         np.testing.assert_allclose(
             np.asarray(last.systems.data.cell.vectors[0].to(A)),
             np.asarray(reference.cell),
@@ -240,7 +239,7 @@ class TestAseParity:
         reference.calc = AseLJ(sigma=SIGMA, epsilon=EPS, rc=RC)
         # A zero-length step fills the gradient cache at the input geometry.
         zero_step: TransformationConfig = [{"transform": "scale", "step_size": 0.0}]
-        _, last = _relax(atoms, zero_step, POSITIONS_ONLY, steps=1)
+        _, last = _relax(atoms, zero_step, fixed_cell=True, steps=1)
         fmax = fmax_per_system(
             relax_gradients(last),
             relax_index_prefix(last.particles, last.systems),

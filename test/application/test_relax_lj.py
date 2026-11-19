@@ -15,7 +15,7 @@ import pytest
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
-from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
+from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_AND_CELL
 from kups.application.relaxation.analysis import analyze_relax_file
 from kups.application.relaxation.data import (
     RelaxRunConfig,
@@ -24,6 +24,7 @@ from kups.application.relaxation.data import (
     relax_index_prefix,
     relax_state_from_ase,
 )
+from kups.application.relaxation.logging import RelaxStepData
 from kups.application.relaxation.simulation import make_relax_propagator, run_relax
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
@@ -32,7 +33,7 @@ from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.units import catalog as u
 from kups.core.units import testing
-from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
+from kups.observables.stress import stress_via_virial_theorem
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.relaxation.config import make_optimizer
 from kups.relaxation.convergence import fmax_per_system
@@ -122,25 +123,32 @@ class TestRun:
         assert result.n_steps >= 1
 
 
-def _build_propagator(optimize_cell: bool):
-    """Build an LJ relaxation propagator and its initial state."""
-    config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
+def _lj(config: Config) -> LennardJonesParameters:
     assert isinstance(config.potential, LjPotentialConfig)
-    lj = LennardJonesParameters.from_dict(
+    return LennardJonesParameters.from_dict(
         cutoff=config.potential.cutoff,
         parameters=config.potential.parameters,
         mixing_rule=config.potential.mixing_rule,
     )
+
+
+def _build_propagator(optimize_cell: bool, optimizer=None):
+    """Build an LJ relaxation propagator and its initial state."""
+    config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
+    lj = _lj(config)
     state_lens = identity_lens(RelaxState[ChainOptState])
-    optimizer = make_optimizer(config.run.optimizer)
-    gradient = FRECHET_FILTER if optimize_cell else POSITIONS_ONLY
     potential = make_lennard_jones_from_state(
-        state_lens, parameters=lj, gradient=gradient
+        state_lens, parameters=lj, gradient=FRECHET_FILTER
     )
     propagator, opt_init = make_relax_propagator(
-        state_lens, potential, optimizer, gradient
+        state_lens,
+        potential,
+        make_optimizer(optimizer or config.run.optimizer),
+        FRECHET_FILTER,
     )
-    particles, systems = relax_state_from_ase(config.inp_files[0])
+    particles, systems = relax_state_from_ase(
+        config.inp_files[0], fixed_cell=not optimize_cell
+    )
     nlp = UniversalNeighborlistParameters.estimate(
         particles.data.system.counts, systems, lj.cutoff
     )
@@ -195,13 +203,20 @@ class TestCellRelaxation:
         )
 
     def test_converged_value_matches_fmax(self, position_step):
-        # POSITIONS_ONLY: the cached gradient is the optimizer DOF gradient ∂E/∂u,
-        # which equals the physical ∂E/∂r, so max|∂E/∂u| is exactly ASE's fmax.
+        # Fixed cell: the reference basis is the cell, so ∂E/∂q == ∂E/∂r and
+        # max|∂E/∂u| is ASE's fmax. The cached cell gradient (kept for the
+        # stress) is hidden from convergence.
         _, stepped = position_step
-        dof = stepped.particles.data.position_gradients  # ∂E/∂u == ∂E/∂r here
+        gradients = relax_gradients(stepped)
+        prefix = relax_index_prefix(stepped.particles, stepped.systems)
         fmax = units.max(units.norm(stepped.particles.data.forces, axis=-1))
-        max_dof = units.max(units.norm(dof, axis=-1))
-        testing.assert_allclose(max_dof, fmax, FORCE, atol=1e-12)
+        testing.assert_allclose(
+            fmax_per_system(gradients, prefix).data[0], fmax, FORCE, atol=1e-12
+        )
+        log_matrix = stepped.systems.data.cell_gradients.frame.deformation.log_matrix
+        assert jnp.abs(log_matrix.to(FORCE)).max() > 0
+        hidden = gradients.cell.data.frame.deformation.log_matrix
+        npt.assert_array_equal(hidden.to(FORCE), 0.0)
 
     def test_cell_gradients_enter_per_system_fmax(self, cell_step):
         _, stepped = cell_step
@@ -226,35 +241,38 @@ class TestCellRelaxation:
             fmax_per_system(gradients, prefix, include_cell=False).data.to(FORCE), [0.0]
         )
 
-    def test_stress_not_double_counted(self, cell_step):
-        # cell_gradients caches the *partial* dE/dh|_r, the correct stress source.
-        # Feeding the *total* lattice gradient to the virial theorem re-adds the
-        # position virial -- the bug the filter design removes.
-        _, stepped = cell_step
-        sigma_partial = stress_via_virial_theorem(
-            stepped.particles, stepped.systems
-        ).data
-
-        total = total_lattice_gradient(
-            stepped.particles.data.positions,
-            stepped.particles.data.position_gradients,
-            stepped.systems.map_data(lambda s: s.cell),
-            stepped.systems.map_data(lambda s: s.cell_gradients),
-            stepped.particles.data.system,
+    @pytest.mark.parametrize("optimize_cell", [False, True])
+    def test_logged_stress_is_the_virial_stress(self, cell_step, optimize_cell):
+        # Start from a moved cell (non-identity deformation) and take a
+        # zero-length step, so the cached gradients belong to the logged geometry.
+        _, moved = cell_step
+        moved = (
+            bind(moved)
+            .focus(lambda s: s.systems.data.fixed_cell)
+            .set(jnp.full(1, not optimize_cell))
         )
-        sys_total = stepped.systems.set_data(
-            dataclasses.replace(stepped.systems.data, cell_gradients=total.data)
+        prop, state = _build_propagator(
+            optimize_cell, optimizer=[{"transform": "scale", "step_size": 0.0}]
         )
-        sigma_total = stress_via_virial_theorem(stepped.particles, sys_total).data
-        gpa = u.GPa
-        assert not jnp.allclose(sigma_partial.to(gpa), sigma_total.to(gpa))
+        opt_state = state.opt_state
+        state = dataclasses.replace(moved, opt_state=opt_state)
+        evaluated = jax.jit(lambda s: prop(jax.random.key(0), s))(state)
+        logged = RelaxStepData.from_state(evaluated).stress_tensor
 
-        # The difference is exactly the position-virial term (notebook section 9).
-        positions = stepped.particles.data.positions
-        g_r = stepped.particles.data.position_gradients
-        system = stepped.particles.data.system
-        volume = stepped.systems.data.cell.volume[:, None, None]
-        outer = units.einsum("ni,nj->nij", positions, g_r)
-        low = units.apply(jnp.tril, system.sum_over(outer).data)
-        pos_term = -(low + low.swapaxes(-1, -2) - low * jnp.eye(3)) / volume
-        testing.assert_allclose(sigma_total - sigma_partial, pos_term, gpa, atol=1e-10)
+        # Reference: the virial theorem on raw ∂E/∂r and partial ∂E/∂h|_r.
+        config = _config(_tmp_h5(), "unused")
+        raw = make_lennard_jones_from_state(
+            identity_lens(RelaxState),
+            parameters=_lj(config),
+            gradient=POSITIONS_AND_CELL,
+        )
+        g = raw(evaluated).data.gradients
+        particles = evaluated.particles.map_data(
+            lambda p: dataclasses.replace(p, position_gradients=g.positions.data)
+        )
+        systems = evaluated.systems.map_data(
+            lambda s: dataclasses.replace(s, cell_gradients=g.cell.data)
+        )
+        expected = stress_via_virial_theorem(particles, systems).data
+        assert jnp.abs(expected.to(u.GPa)).max() > 1e-3
+        testing.assert_allclose(logged, expected, u.GPa, atol=1e-10)

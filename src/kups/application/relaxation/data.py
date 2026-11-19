@@ -52,12 +52,12 @@ class RelaxParticles(Particles):
     (forces, inclusion/exclusion indices) needed by relaxation propagators.
 
     Attributes:
-        position_gradients: Optimizer position-DOF gradient ``∂E/∂u_pos`` (the
-            relaxation filter's output), shape ``(n_atoms, 3)``: ``∂E/∂q`` under
-            ``cell_filter`` (reference-cartesian) or ``∂E/∂r`` under
-            ``positions_only``. The force source, kept unconstrained: fixed
-            particles report their real force, which :func:`relax_gradients`
-            zeroes for convergence.
+        position_gradients: Optimizer position-DOF gradient ``∂E/∂q`` (the
+            ``FRECHET_FILTER`` output, reference-cartesian), shape
+            ``(n_atoms, 3)``; equal to ``∂E/∂r`` while the cell is at its
+            reference, so always for a fixed cell. The force source, kept
+            unconstrained: fixed particles report their real force, which
+            :func:`relax_gradients` zeroes for convergence.
         fixed: Whether the particle is held in place, shape ``(n_atoms,)``.
         exclusion: Exclusion group of each particle; defaults to one group per
             particle.
@@ -84,17 +84,19 @@ class RelaxSystems:
 
     Attributes:
         cell: Cell geometry, one row per system.
-        cell_gradients: Optimizer cell-DOF gradient ``∂E/∂u_cell`` (the
-            relaxation filter's output), stored on :attr:`cell`'s frame (the
-            matrix-log deformation under ``cell_filter``). The ASE-fmax
-            convergence quantity for the cell; the atoms-ride-the-cell coupling
-            is already folded in by the filter pullback.
+        cell_gradients: Total cell gradient, with atoms riding the cell at fixed
+            fractional coordinates (the ``FRECHET_FILTER`` output), stored on
+            :attr:`cell`'s frame (the matrix-log deformation). Kept
+            unconstrained, so a fixed cell still has its stress, which
+            :func:`relax_gradients` zeroes for convergence.
         potential_energy: Potential energy per system, shape ``(n_systems,)``.
+        fixed_cell: Whether the cell is held fixed, shape ``(n_systems,)``.
     """
 
     cell: Cell[AnyPeriodicity]
     cell_gradients: Cell[AnyPeriodicity]
     potential_energy: units.Energy
+    fixed_cell: Array
 
 
 @dataclass
@@ -143,23 +145,30 @@ def relax_index_prefix(
 def constrain_gradients(
     state: HasRelaxData, gradients: PositionsAndCell[units.Force]
 ) -> PositionsAndCell[units.Force]:
-    """``gradients`` with the rows of fixed particles zeroed.
+    """``gradients`` with the rows of fixed particles and fixed cells zeroed.
 
     The one place constraints act: the optimizer, its line searches and
-    convergence see these gradients, so a fixed particle receives no update.
+    convergence see these gradients, so a fixed particle or cell receives no
+    update.
 
     Args:
-        state: Relaxation state whose particles say which rows are fixed.
-        gradients: DOF gradients with one position row per particle of ``state``.
+        state: Relaxation state whose particles and systems say which rows are
+            fixed.
+        gradients: DOF gradients with one position row per particle and one
+            cell row per system of ``state``.
 
     Returns:
         ``gradients`` with fixed rows set to zero.
     """
-    fixed = state.particles.data.fixed
-    return gradients._replace(
-        positions=gradients.positions.map_data(
-            lambda g: where_broadcast_last(fixed, units.zeros_like(g), g)
-        )
+    particles, systems = state.particles.data, state.systems.data
+    zero_cell = zero_gradient_cell(systems.cell)
+    return PositionsAndCellTree(
+        gradients.positions.map_data(
+            lambda g: where_broadcast_last(particles.fixed, units.zeros_like(g), g)
+        ),
+        gradients.cell.map_data(
+            lambda g: where_broadcast_last(systems.fixed_cell, zero_cell, g)
+        ),
     )
 
 
@@ -193,7 +202,9 @@ class RelaxRunConfig(BaseModel):
     """Whether to also relax lattice vectors."""
 
 
-def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
+def relax_systems(
+    cell: Cell[AnyPeriodicity], n_atoms: Array, *, fixed_cell: bool = True
+) -> RelaxSystems:
     """System rows with zeroed caches and cells in the log-deformation frame.
 
     ``cell_factor = n_atoms × 1 Å`` is ASE's ``exp_cell_factor``: it balances the
@@ -205,6 +216,7 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
         cell: Cells with a plain frame, one per system; an unbatched cell gains
             a leading axis.
         n_atoms: Atom count per system, shape ``(n_systems,)``.
+        fixed_cell: Whether the cells are held fixed.
     """
     if cell.vectors.ndim == 2:
         cell = cell[None]
@@ -220,6 +232,7 @@ def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:
         potential_energy=units.zeros(
             cell.vectors.shape[0], u.eV, dtype=cell.vectors.dtype
         ),
+        fixed_cell=jnp.full(cell.vectors.shape[0], fixed_cell),
     )
 
 
@@ -268,6 +281,7 @@ def relax_state_from_particles_and_cell(
     cell: Cell[AnyPeriodicity],
     *,
     fixed: Array | None = None,
+    fixed_cell: bool = True,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system tables from plain particles and a cell.
 
@@ -276,6 +290,7 @@ def relax_state_from_particles_and_cell(
             out-of-bounds system references denote padding.
         cell: Their cells in system-key order, unbatched for a single system.
         fixed: Whether each particle is held in place; none by default.
+        fixed_cell: Whether the cells are held fixed.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
@@ -298,12 +313,16 @@ def relax_state_from_particles_and_cell(
     n_atoms = system.counts.data.astype(particles.data.positions.dtype)
     return (
         particles.map_data(lambda p: relax_particles(p, fixed=fixed)),
-        Table(system.keys, relax_systems(cell, n_atoms), _cls=SystemId),
+        Table(
+            system.keys,
+            relax_systems(cell, n_atoms, fixed_cell=fixed_cell),
+            _cls=SystemId,
+        ),
     )
 
 
 def relax_state_from_ase(
-    atoms: ase.Atoms | str | Path,
+    atoms: ase.Atoms | str | Path, *, fixed_cell: bool = True
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system data from an ASE Atoms object or file.
 
@@ -313,6 +332,7 @@ def relax_state_from_ase(
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
+        fixed_cell: Whether the cell is held fixed.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
@@ -322,4 +342,6 @@ def relax_state_from_ase(
             atoms in place.
     """
     p, cell, _ = particles_from_ase(atoms)
-    return relax_state_from_particles_and_cell(p, cell, fixed=fixed_from_ase(atoms))
+    return relax_state_from_particles_and_cell(
+        p, cell, fixed=fixed_from_ase(atoms), fixed_cell=fixed_cell
+    )

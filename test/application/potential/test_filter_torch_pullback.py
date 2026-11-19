@@ -19,7 +19,6 @@ from jax import Array
 from kups.application.potential.filter import (
     FRECHET_FILTER,
     POSITIONS_AND_CELL,
-    POSITIONS_ONLY,
 )
 from kups.core import units
 from kups.core.cell import (
@@ -194,16 +193,6 @@ def test_frechet_pullback_matches_total_lattice_gradient(name: str):
     out_deformation = out_frame.deformation
     assert isinstance(out_deformation, LogTriclinicFrame)
     testing.assert_allclose(out_deformation.tril, truth, EV, atol=1e-8)
-
-
-@pytest.mark.parametrize("name", _CASES)
-def test_positions_only_pullback_equals_force(name: str):
-    """POSITIONS_ONLY pullback returns dE/dr unchanged (no cell coupling)."""
-    inp, g_r, dE_dh = _CASES[name]()
-    g_u = filter_pullback(
-        GRAPH_GEOMETRY.get(inp), _gradients_for(inp, g_r, dE_dh), POSITIONS_ONLY
-    )
-    testing.assert_allclose(g_u.positions.data, g_r, FORCE, atol=1e-9)
 
 
 @pytest.mark.parametrize("name", _CASES)

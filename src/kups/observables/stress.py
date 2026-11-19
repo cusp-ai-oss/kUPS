@@ -177,6 +177,31 @@ def stress_via_virial_theorem(
     return Table(systems.keys, stress)
 
 
+def stress_via_total_lattice_gradient(
+    systems: Table[SystemId, IsVirialSystems],
+) -> Table[SystemId, units.Pressure]:
+    """Stress from the *total* lattice gradient, ``σ = -1/V sym[h^T · dE/dh]``.
+
+    The total gradient is taken with atoms riding the cell at fixed fractional
+    coordinates, so it already holds the position virial (see
+    [total_lattice_gradient][kups.observables.stress.total_lattice_gradient]);
+    adding ``Σ_i r_i ⊗ ∂U/∂r_i`` as
+    [stress_via_virial_theorem][kups.observables.stress.stress_via_virial_theorem]
+    does would count it twice. Relaxation caches this gradient.
+
+    Args:
+        systems: Per-system cell and total cell gradients.
+
+    Returns:
+        Symmetric stress tensor per system, shape ``(n_systems, 3, 3)``.
+    """
+    cell = systems.data.cell
+    gradient = cell.frame.vectors_gradient(systems.data.cell_gradients.frame)
+    lower = _lower_sym_cell_virial(cell.vectors, gradient)
+    sigma = _symmetrize_from_lower(-lower / cell.volume[..., None, None])
+    return Table(systems.keys, sigma * _periodic_mask(cell))
+
+
 def total_lattice_gradient[C: Cell[AnyPeriodicity]](
     positions: units.Length,
     position_gradients: units.Force,
@@ -189,7 +214,9 @@ def total_lattice_gradient[C: Cell[AnyPeriodicity]](
     A potential reports the *partial* gradient ``∂E/∂h|_r``, taken at fixed
     Cartesian positions. Variable-cell relaxation needs the *total* derivative,
     with atoms riding the cell at fixed fractional coordinates; this adds the
-    position-virial term ``h⁻ᵀ·Σ_i r_i ⊗ ∂E/∂r_i``. Stress is unchanged either way.
+    position-virial term ``h⁻ᵀ·Σ_i r_i ⊗ ∂E/∂r_i``. The stress then comes from the
+    cell term alone, see
+    [stress_via_total_lattice_gradient][kups.observables.stress.stress_via_total_lattice_gradient].
 
     Non-periodic axes carry no atoms -- a slab/vacuum basis vector is a
     bounding-box edge, not a translation -- so their coupling rows are dropped via

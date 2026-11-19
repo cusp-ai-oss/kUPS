@@ -5,13 +5,13 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
+import numpy.testing as npt
 import pytest
 from jax import Array
 
 from kups.application.potential.filter import (
     FRECHET_FILTER,
     POSITIONS_AND_CELL,
-    POSITIONS_ONLY,
 )
 from kups.core import units
 from kups.core.cell import (
@@ -90,7 +90,7 @@ _GEOMETRIES = {"single": _single, "multi": _multi, "slab": _slab}
 
 
 @pytest.mark.parametrize("name", _GEOMETRIES)
-@pytest.mark.parametrize("filt", [POSITIONS_AND_CELL, POSITIONS_ONLY, FRECHET_FILTER])
+@pytest.mark.parametrize("filt", [POSITIONS_AND_CELL, FRECHET_FILTER])
 def test_lens_law_roundtrip(name: str, filt: Lens[Geometry, Any]):
     """get/set round-trips: set(g, get(g)) leaves the Geometry unchanged."""
     g = _GEOMETRIES[name]()
@@ -100,6 +100,16 @@ def test_lens_law_roundtrip(name: str, filt: Lens[Geometry, Any]):
     )
     testing.assert_allclose(
         g2.systems.data.vectors, g.systems.data.vectors, A, atol=1e-12
+    )
+
+
+@pytest.mark.parametrize("name", _GEOMETRIES)
+def test_frechet_set_of_get_is_exact(name: str):
+    """Unchanged DOFs give back the positions bit for bit, so pinned rows stay put."""
+    g = _GEOMETRIES[name]()
+    g2 = FRECHET_FILTER.set(g, FRECHET_FILTER.get(g))
+    npt.assert_array_equal(
+        g2.particles.data.positions.to(A), g.particles.data.positions.to(A)
     )
 
 
