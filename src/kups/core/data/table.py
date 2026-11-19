@@ -433,7 +433,10 @@ class Table(Batched, Generic[TKey, TData]):
 
     def __iter__(self):
         def data_slice(i: int) -> TData:
-            return tree_map(lambda x: x[i], self.data)
+            def take_row(x: Array) -> Array:
+                return x[i]
+
+            return tree_map(take_row, self.data)
 
         yield from ((key, data_slice(i)) for i, key in enumerate(self.keys))
 
@@ -448,7 +451,11 @@ class Table(Batched, Generic[TKey, TData]):
             step: Step size (default 1).
         """
         s = slice(start, end, step)
-        data = tree_map(lambda x: x[s], self.data)
+
+        def take_slice(x: Array) -> Array:
+            return x[s]
+
+        data = tree_map(take_slice, self.data)
         index = self.keys[s]
         return Table(index, data, _cls=self.cls)
 
@@ -638,14 +645,13 @@ class Table(Batched, Generic[TKey, TData]):
         )
 
         new_index = tuple(map(cls, range(max_size)))
+
+        def broadcast_rows(y: Array) -> Array:
+            return jnp.broadcast_to(y, (max_size, *y.shape[1:]))
+
         result = [
             bind(i, lambda x: (x.keys, x.data)).set(
-                (
-                    new_index,
-                    tree_map(
-                        lambda y: jnp.broadcast_to(y, (max_size, *y.shape[1:])), i.data
-                    ),
-                )
+                (new_index, tree_map(broadcast_rows, i.data))
             )
             for i in items
         ]
@@ -781,7 +787,9 @@ class Table(Batched, Generic[TKey, TData]):
             leaves = cast(tuple[Array, ...], leaves)
             return jnp.concatenate(leaves, axis=0)
 
-        is_index = lambda x: isinstance(x, Index)  # noqa: E731
+        def is_index(x: object) -> bool:
+            return isinstance(x, Index)
+
         results: list[Table[Any, Any]] = []
         for group in groups:
             lt = _key_type(group)

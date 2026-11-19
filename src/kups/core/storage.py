@@ -402,8 +402,12 @@ def _init_group_writers[S, WC](
     Returns:
         One ``GroupWriters`` per config leaf, in leaf order.
     """
+
+    def is_group_config(x: object) -> bool:
+        return isinstance(x, WriterGroupConfig)
+
     confs_and_paths, conf_structure = jax.tree.flatten_with_path(
-        config, is_leaf=lambda x: isinstance(x, WriterGroupConfig)
+        config, is_leaf=is_group_config
     )
     confs_and_paths: list[tuple[tuple[int, ...], WriterGroupConfig[S, Any]]]
     assert all(isinstance(c[1], WriterGroupConfig) for c in confs_and_paths), (

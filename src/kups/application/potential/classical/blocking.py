@@ -15,7 +15,7 @@ constant lens and the state need not carry a parameter field.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, overload
+from typing import Any, Protocol, cast, overload
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
@@ -101,8 +101,8 @@ def make_blocking_spheres_from_state[State, P: Patch[Any]](
 ) -> Potential[State, EmptyType, EmptyType, P]: ...
 
 
-def make_blocking_spheres_from_state(
-    state: Any,
+def make_blocking_spheres_from_state[State](
+    state: Lens[State, IsBlockingSpheresGraphState],
     probe: Any = None,
     *,
     parameters: BlockingSpheresParameters | None = None,
@@ -133,9 +133,10 @@ def make_blocking_spheres_from_state(
     if parameters is not None:
         param_view: Any = const_lens(parameters)
     else:
-        param_view = state.focus(lambda x: x.blocking_spheres_parameters)
+        param_state = cast(Lens[State, IsBlockingSpheresState], state)
+        param_view = param_state.focus(lambda x: x.blocking_spheres_parameters)
 
-    def neighborlist_view(s: object) -> BlockingSpheresNeighborListFactory:
+    def neighborlist_view(s: State) -> BlockingSpheresNeighborListFactory:
         return lambda cutoffs: neighborlist_factory(state(s), cutoffs)
 
     return make_blocking_spheres_potential(

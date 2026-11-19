@@ -157,7 +157,11 @@ def select_n[T](which: Array, *cands: T) -> T:
     """
     if all(c is cands[0] for c in cands[1:]):
         return cands[0]
-    return units.tree_map(lambda *c: units.select_n(which, *c), *cands)
+
+    def select(*c: units.Measured) -> units.Measured:
+        return units.select_n(which, *c)
+
+    return units.tree_map(select, *cands)
 
 
 # Block width when reducing long masks to per-block occupancy.

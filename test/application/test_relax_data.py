@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
+from jax import Array
 
 from kups.application.relaxation.data import (
     relax_index_prefix,
@@ -37,7 +38,11 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
         bind(particles.data).focus(lambda p: p.system).set(Index(keys, references)),
     )
     if batched:
-        cell = jax.tree.map(lambda x: jnp.repeat(x[None], 2, axis=0), cell)
+
+        def stack_twice(x: Array) -> Array:
+            return jnp.repeat(x[None], 2, axis=0)
+
+        cell = jax.tree.map(stack_twice, cell)
     relaxed, systems = relax_state_from_particles_and_cell(particles, cell)
     index_prefix: IndexPrefixFn = relax_index_prefix
     prefix = index_prefix(particles=relaxed, systems=systems)
@@ -73,7 +78,9 @@ def test_builder_preserves_keys_geometry_and_system_counts(batched: bool) -> Non
 def test_builder_rejects_mismatched_cell_count() -> None:
     atoms = ase.Atoms("Ar", cell=[4, 5, 6], pbc=True)
     particles, cell, _ = particles_from_ase(atoms)
+
+    def stack_twice(x: Array) -> Array:
+        return jnp.repeat(x[None], 2, axis=0)
+
     with pytest.raises(ValueError, match="cell vectors"):
-        relax_state_from_particles_and_cell(
-            particles, jax.tree.map(lambda x: jnp.repeat(x[None], 2, axis=0), cell)
-        )
+        relax_state_from_particles_and_cell(particles, jax.tree.map(stack_twice, cell))

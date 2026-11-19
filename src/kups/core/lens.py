@@ -951,7 +951,9 @@ def bind[S](obj: S) -> BoundLens[S, S]: ...
 def bind[S, R](obj: S, where: Callable[[S], R]) -> BoundLens[S, R]: ...
 
 
-def bind[S, R](obj: S, where: Callable[[S], R] | None = None) -> BoundLens[S, R]:
+def bind[S, R](
+    obj: S, where: Callable[[S], R] | None = None
+) -> BoundLens[S, R] | BoundLens[S, S]:
     """Create a bound lens from a getter function and a data structure.
 
     This is a convenience function that creates a lens and immediately binds
@@ -965,7 +967,7 @@ def bind[S, R](obj: S, where: Callable[[S], R] | None = None) -> BoundLens[S, R]
         A BoundLens that operates on the given object
     """
     if where is None:
-        return SimpleBoundLens(lens(lambda x: x), obj)
+        return SimpleBoundLens(lens(identity, cls=type(obj)), obj)
     return SimpleBoundLens(lens(where), obj)
 
 

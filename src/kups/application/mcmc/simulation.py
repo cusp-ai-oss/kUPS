@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 import jax
+import numpy as np
 from jax import Array
 
 from kups.application.mcmc.data import RunConfig
@@ -57,10 +58,12 @@ def run_mcmc[State: IsMCMCState](
         config.cycles_per_call,
     )
     logging.info("Production run (%d cycles)...", config.num_cycles)
+
+    def copy_array(array: np.ndarray) -> np.ndarray:
+        return array.copy()
+
     # The fixed snapshot must outlive donation of the simulation buffers.
-    fixed = jax.tree.map(
-        lambda array: array.copy(), jax.device_get(logged_data.fixed.view(state))
-    )
+    fixed = jax.tree.map(copy_array, jax.device_get(logged_data.fixed.view(state)))
     sample_config = MCMCLoggedData[MCMCStepData](
         fixed=WriterGroupConfig(
             lambda _: fixed,

@@ -300,7 +300,11 @@ def test_relabel_and_apply_updates_keep_dimensions():
         jnp.array([1.0, 2.0]) * u.angstrom,
         units.Log(jnp.zeros(2), 1 / u.angstrom**3),
     )
-    steps = jax.tree.map(lambda x: jnp.full_like(x, 0.5), magnitudes_of(params))
+
+    def half_step(x: jax.Array) -> jax.Array:
+        return jnp.full_like(x, 0.5)
+
+    steps = jax.tree.map(half_step, magnitudes_of(params))
     new_x, new_log = apply_updates(params, relabel_like(params, steps))
     testing.assert_allclose(new_x, jnp.array([1.5, 2.5]) * u.angstrom, u.angstrom)
     npt.assert_allclose(new_log.log, jnp.full(2, 0.5))

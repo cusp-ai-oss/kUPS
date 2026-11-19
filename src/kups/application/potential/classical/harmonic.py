@@ -18,7 +18,7 @@ parameters, the cache is read from a conventional ``harmonic_bond_cache`` /
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
@@ -185,8 +185,8 @@ def make_harmonic_bond_from_state[State, P: Patch[Any]](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
-def make_harmonic_bond_from_state(
-    state: Any,
+def make_harmonic_bond_from_state[State](
+    state: Lens[State, IsHarmonicBondGraphState],
     probe: Any = None,
     *,
     parameters: HarmonicBondParameters | None = None,
@@ -224,10 +224,12 @@ def make_harmonic_bond_from_state(
     if gradient is not None:
         gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
+    param_state = cast(Lens[State, IsHarmonicBondState[Any]], state)
+    cache_state = cast(Lens[State, IsCachedHarmonicBondState[Any]], state)
     if parameters is not None:
         param_view = const_lens(parameters)
     else:
-        param_view = state.focus(
+        param_view = param_state.focus(
             lambda x: (
                 x.harmonic_bond_parameters.data
                 if isinstance(x.harmonic_bond_parameters, HasCache)
@@ -237,10 +239,10 @@ def make_harmonic_bond_from_state(
     cache_view = None
     if probe is not None:
         if parameters is None:
-            param_view = state.focus(lambda x: x.harmonic_bond_parameters.data)
-            cache_view = state.focus(lambda x: x.harmonic_bond_parameters.cache)
+            param_view = param_state.focus(lambda x: x.harmonic_bond_parameters.data)
+            cache_view = param_state.focus(lambda x: x.harmonic_bond_parameters.cache)
         else:
-            cache_view = state.focus(lambda x: x.harmonic_bond_cache)
+            cache_view = cache_state.focus(lambda x: x.harmonic_bond_cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_harmonic_bond_potential(
         state.focus(lambda x: x.particles),
@@ -387,8 +389,8 @@ def make_harmonic_angle_from_state[State, P: Patch[Any]](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
-def make_harmonic_angle_from_state(
-    state: Any,
+def make_harmonic_angle_from_state[State](
+    state: Lens[State, IsHarmonicAngleGraphState],
     probe: Any = None,
     *,
     parameters: HarmonicAngleParameters | None = None,
@@ -426,10 +428,12 @@ def make_harmonic_angle_from_state(
     if gradient is not None:
         gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
+    param_state = cast(Lens[State, IsHarmonicAngleState[Any]], state)
+    cache_state = cast(Lens[State, IsCachedHarmonicAngleState[Any]], state)
     if parameters is not None:
         param_view = const_lens(parameters)
     else:
-        param_view = state.focus(
+        param_view = param_state.focus(
             lambda x: (
                 x.harmonic_angle_parameters.data
                 if isinstance(x.harmonic_angle_parameters, HasCache)
@@ -439,10 +443,10 @@ def make_harmonic_angle_from_state(
     cache_view = None
     if probe is not None:
         if parameters is None:
-            param_view = state.focus(lambda x: x.harmonic_angle_parameters.data)
-            cache_view = state.focus(lambda x: x.harmonic_angle_parameters.cache)
+            param_view = param_state.focus(lambda x: x.harmonic_angle_parameters.data)
+            cache_view = param_state.focus(lambda x: x.harmonic_angle_parameters.cache)
         else:
-            cache_view = state.focus(lambda x: x.harmonic_angle_cache)
+            cache_view = cache_state.focus(lambda x: x.harmonic_angle_cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_harmonic_angle_potential(
         state.focus(lambda x: x.particles),

@@ -264,11 +264,15 @@ def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
     rij, r2 = jax.lax.optimization_barrier((rij, (rij**2).sum(-1)))
     pairs = PairBatch(rij, r2, system, valid, inclusion, exclusion)
     features = graph.particles.map_data(pair.features)[graph.edges.indices]
+
+    def first(x: Array) -> Array:
+        return x[:, 0]
+
+    def second(x: Array) -> Array:
+        return x[:, 1]
+
     return pair.evaluate(
-        parameters,
-        tree_map(lambda x: x[:, 0], features),
-        tree_map(lambda x: x[:, 1], features),
-        pairs,
+        parameters, tree_map(first, features), tree_map(second, features), pairs
     )
 
 
@@ -336,9 +340,9 @@ POINTCLOUD_GEOMETRY = lens(_pointcloud_geometry)
 """Geometry adapter shared by graph, fused, and reciprocal-space inputs."""
 
 
-GRAPH_GEOMETRY: Lens[IsGraphInput, Geometry] = lens(lambda inp: inp.graph).nest(
-    POINTCLOUD_GEOMETRY
-)
+GRAPH_GEOMETRY: Lens[IsGraphInput, Geometry] = lens(
+    lambda inp: inp.graph, cls=IsGraphInput
+).nest(POINTCLOUD_GEOMETRY)
 """Adapter from a graph-bearing potential input to ``Geometry``."""
 
 

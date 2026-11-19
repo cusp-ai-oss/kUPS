@@ -58,7 +58,11 @@ def _cell_row_max(cell: Cell[Any]) -> units.Force:
 
 def _inf_if_nonfinite(x: units.Force) -> units.Force:
     """``x`` with NaN and ``±inf`` raised to ``inf``; a segment max may drop NaNs."""
-    return units.apply(lambda m: jnp.where(jnp.isfinite(m), m, jnp.inf), x)
+
+    def raise_nonfinite(m: Array) -> Array:
+        return jnp.where(jnp.isfinite(m), m, jnp.inf)
+
+    return units.apply(raise_nonfinite, x)
 
 
 def fmax_per_system(

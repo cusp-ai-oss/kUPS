@@ -17,7 +17,7 @@ updates with constant parameters, the cache is read from a conventional
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
@@ -172,8 +172,8 @@ def make_morse_bond_from_state[State, P: Patch[Any]](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
-def make_morse_bond_from_state(
-    state: Any,
+def make_morse_bond_from_state[State](
+    state: Lens[State, IsMorseBondGraphState],
     probe: Any = None,
     *,
     parameters: MorseBondParameters | None = None,
@@ -204,10 +204,12 @@ def make_morse_bond_from_state(
     if gradient is not None:
         gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
+    param_state = cast(Lens[State, IsMorseBondState[Any]], state)
+    cache_state = cast(Lens[State, IsCachedMorseBondGraphState[Any]], state)
     if parameters is not None:
         param_view = const_lens(parameters)
     else:
-        param_view = state.focus(
+        param_view = param_state.focus(
             lambda x: (
                 x.morse_bond_parameters.data
                 if isinstance(x.morse_bond_parameters, HasCache)
@@ -217,10 +219,10 @@ def make_morse_bond_from_state(
     cache_view = None
     if probe is not None:
         if parameters is None:
-            param_view = state.focus(lambda x: x.morse_bond_parameters.data)
-            cache_view = state.focus(lambda x: x.morse_bond_parameters.cache)
+            param_view = param_state.focus(lambda x: x.morse_bond_parameters.data)
+            cache_view = param_state.focus(lambda x: x.morse_bond_parameters.cache)
         else:
-            cache_view = state.focus(lambda x: x.morse_bond_cache)
+            cache_view = cache_state.focus(lambda x: x.morse_bond_cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
     return make_morse_bond_potential(
         state.focus(lambda x: x.particles),

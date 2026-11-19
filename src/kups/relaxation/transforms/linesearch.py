@@ -70,7 +70,11 @@ from kups.core.data.table import Table
 from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
-from kups.core.utils.segmented_tree import tree_scale_per_row, tree_vdot
+from kups.core.utils.segmented_tree import (
+    single_segment_prefix,
+    tree_scale_per_row,
+    tree_vdot,
+)
 from kups.relaxation.optimizer import ResetLayout, Resettable
 
 # Maps trial params to ``(per-system energies, gradient pytree)``.
@@ -96,7 +100,7 @@ class LineSearchState:
 
 def _init_state(parameters: PyTree, index_prefix: PyTree | None) -> LineSearchState:
     if index_prefix is None:
-        index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
+        index_prefix = single_segment_prefix(parameters)
     leaves = jax.tree.leaves(index_prefix, is_leaf=lambda x: isinstance(x, Index))
     keys = next(leaf for leaf in leaves if isinstance(leaf, Index)).keys
     return LineSearchState(

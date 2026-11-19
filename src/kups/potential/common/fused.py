@@ -103,16 +103,23 @@ def sum_chunks[Rows, Out: (Array, units.Energy)](
         raise ValueError("chunk_size must be positive")
     # Reuse the consumer trace for shape discovery and chunk evaluation.
     consume = jax.jit(consume)
-    chunks = jax.tree.map(
-        lambda x: x.reshape(x.shape[0] // chunk_size, chunk_size, *x.shape[1:]), rows
-    )
 
-    sample = jax.tree.map(
-        lambda x: jax.ShapeDtypeStruct((chunk_size, *x.shape[1:]), x.dtype), rows
-    )
+    def to_chunks(x: Array) -> Array:
+        return x.reshape(x.shape[0] // chunk_size, chunk_size, *x.shape[1:])
+
+    chunks = jax.tree.map(to_chunks, rows)
+
+    def chunk_shape(x: Array) -> jax.ShapeDtypeStruct:
+        return jax.ShapeDtypeStruct((chunk_size, *x.shape[1:]), x.dtype)
+
+    sample = jax.tree.map(chunk_shape, rows)
     output = jax.eval_shape(consume, sample)
+
+    def zeros_of(x: jax.ShapeDtypeStruct) -> Array:
+        return jnp.zeros(x.shape, x.dtype)
+
     # Map over the output's leaves so a quantity keeps its dimension.
-    initial: Out = jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), output)
+    initial: Out = jax.tree.map(zeros_of, output)
     if jax.tree.leaves(rows)[0].shape[0] == 0:
         return initial
 
@@ -305,9 +312,19 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                 ctx.edge_query_table.keys, allow_missing=True
             )
             return query_idx.sum_over(energies.astype(dtype)).data
-        pairs = tree_map(lambda x: x.reshape(*index.shape, *x.shape[1:]), pairs)
-        left = tree_map(lambda x: x[:, None], rows.data)
-        right = tree_map(lambda x: x[index], key_rows.data)
+
+        def to_query_lanes(x: Array) -> Array:
+            return x.reshape(*index.shape, *x.shape[1:])
+
+        def as_column(x: Array) -> Array:
+            return x[:, None]
+
+        def gather(x: Array) -> Array:
+            return x[index]
+
+        pairs = tree_map(to_query_lanes, pairs)
+        left = tree_map(as_column, rows.data)
+        right = tree_map(gather, key_rows.data)
         energies = self.pair.evaluate(parameters, left, right, pairs)
         return energies.astype(dtype).sum(-1)
 
@@ -357,15 +374,23 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         rij = units.stack(real, axis=-1)
         key_inclusion, query_inclusion = Index.match(keys.inclusion, rows.inclusion)
         key_exclusion, query_exclusion = Index.match(keys.exclusion, rows.exclusion)
+
+        def broadcast_keys(x: Array) -> Array:
+            return jnp.broadcast_to(x[None], valid.shape)
+
         pairs = PairBatch(
             rij,
             r2,
-            jax.tree.map(lambda x: jnp.broadcast_to(x[None], valid.shape), keys.system),
+            jax.tree.map(broadcast_keys, keys.system),
             valid,
             key_inclusion[None] == query_inclusion[:, None],
             key_exclusion[None] != query_exclusion[:, None],
         )
-        left = jax.tree.map(lambda x: x[:, None], rows.data)
+
+        def as_column(x: Array) -> Array:
+            return x[:, None]
+
+        left = jax.tree.map(as_column, rows.data)
         energies = self.pair.evaluate(parameters, left, keys.data, pairs)
         return energies.astype(dtype).sum(-1)
 
@@ -384,7 +409,11 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
         neighbor pipeline, which keeps the evaluation in few fused kernels.
         """
         matrix = inp.cloud.systems[rows.system].cell.vectors
-        gathered = jax.tree.map(lambda x: x[index], keys)
+
+        def gather(x: Array) -> Array:
+            return x[index]
+
+        gathered = jax.tree.map(gather, keys)
 
         def row(
             query: CellRows[Feat],
@@ -392,7 +421,10 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             usable: Array,
             matrix: units.Length,
         ) -> units.Energy:
-            query = jax.tree.map(lambda x: x[None], query)
+            def add_axis(x: Array) -> Array:
+                return x[None]
+
+            query = jax.tree.map(add_axis, query)
             return self._block_energies(inp, query, key, usable[None], matrix[None])[0]
 
         return jax.vmap(row)(rows, gathered, usable, matrix)
@@ -458,7 +490,10 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
             return jnp.any(jax.vmap(row)(jnp.arange(span.start, span.stop)), axis=0)
 
         def traverse(span: slice, mask: Array) -> units.Energy:
-            sub = jax.tree.map(lambda x: x[span], rows)
+            def in_span(x: Array) -> Array:
+                return x[span]
+
+            sub = jax.tree.map(in_span, rows)
             matrix = geometry.matrix[span]
             blocks = compact_indices(mask, n_batches * batch)
 
@@ -466,23 +501,28 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
                 chunk = jax.lax.dynamic_slice(blocks, (i * batch,), (batch,))
                 present = chunk < n_blocks
                 chunk = jnp.minimum(chunk, n_blocks - 1)
-                keys = jax.tree.map(
-                    lambda x: x.reshape(batch_rows, *x.shape[2:]),
-                    table.block_rows(chunk),
-                )
+
+                def flatten_blocks(x: Array) -> Array:
+                    return x.reshape(batch_rows, *x.shape[2:])
+
+                keys = jax.tree.map(flatten_blocks, table.block_rows(chunk))
                 usable = (present[:, None] & ~removed[chunk]).reshape(1, -1)
                 return self._block_energies(inp, sub, keys, usable, matrix)
 
             total = evaluate(0)
             if n_batches == 1:
                 return total
+
+            def add_batch(i: Array, acc: units.Energy) -> units.Energy:
+                return acc + evaluate(i)
+
             # The loop costs throughput even without iterations.
             return jax.lax.cond(
                 blocks[batch] < n_blocks,
                 lambda: jax.lax.fori_loop(
                     1,
                     (jnp.sum(mask) + batch - 1) // batch,
-                    lambda i, total: total + evaluate(i),
+                    add_batch,
                     total,
                 ),
                 lambda: total,
@@ -652,10 +692,14 @@ class FusedNeighborEnergy[State, Params, Part: NeighborListPoints, Feat]:
     def _full(self, inp: FusedFullInput[Params, Part, Feat]) -> units.Energy:
         table = self.build_cell_list_cache(inp.parameters, inp.cloud)
         n = table.sentinel_slot
+
+        def drop_sentinel(x: Array) -> Array:
+            return x[:n]
+
         return self._sum_environment(
             inp,
             table,
-            jax.tree.map(lambda x: x[:n], table.rows),
+            jax.tree.map(drop_sentinel, table.rows),
             jnp.arange(n),
             jnp.zeros(n + 1, bool),
             jnp.full(n, 0.5),
@@ -809,8 +853,8 @@ class FusedInputConstructor[
         update = self.probe(state, patch)
         old = particles.subset(update.indices)
         # Padded proposal targets are inactive regardless of their payload.
-        data = lens(lambda p: p.inclusion, cls=type(update.data)).apply(
-            update.data, lambda index: index.apply_mask(update.indices.valid_mask)
+        data = bind(update.data, lambda p: p.inclusion).apply(
+            lambda index: index.apply_mask(update.indices.valid_mask)
         )
         new = Table(old.keys, data, _cls=old.cls)
         return FusedLocalInput(

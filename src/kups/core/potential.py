@@ -128,10 +128,16 @@ class PotentialOut[Gradients, Hessians]:
         return jax.tree.map(jnp.subtract, self, other)
 
     def __mul__(self, other: float) -> PotentialOut[Gradients, Hessians]:
-        return jax.tree.map(lambda x: other * x, self)
+        def scale(x: Array) -> Array:
+            return other * x
+
+        return jax.tree.map(scale, self)
 
     def __rmul__(self, other: float) -> PotentialOut[Gradients, Hessians]:
-        return jax.tree.map(lambda x: other * x, self)
+        def scale(x: Array) -> Array:
+            return other * x
+
+        return jax.tree.map(scale, self)
 
     @property
     def as_tuple(self) -> tuple[Table[SystemId, units.Energy], Gradients, Hessians]:
@@ -508,12 +514,12 @@ class CachedPotential[State, Gradients, Hessians, StatePatch: Patch[Any]](
                 "patch_idx_view must be provided for multi-system potentials"
             )
             sys_keys = summand.value.total_energies.keys
+
+            def zero_index(x: units.Measured) -> Index[SystemId]:
+                return Index(sys_keys, jnp.zeros(x.shape, dtype=int))
+
             # Stop at each quantity so it gets one Index, not one per magnitude leaf.
-            patch_idx = tree_map(
-                lambda x: Index(sys_keys, jnp.zeros(x.shape, dtype=int)),
-                summand.value,
-                is_leaf=units.is_leaf,
-            )
+            patch_idx = tree_map(zero_index, summand.value, is_leaf=units.is_leaf)
         patches: list[Patch[State]] = [
             result.patch,
             IndexLensPatch(summand.value, patch_idx, self.cache),

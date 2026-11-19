@@ -16,7 +16,7 @@ constant parameters, the cache is read from a conventional ``lj_cache`` attribut
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from jax import Array
 
@@ -203,8 +203,8 @@ def make_lennard_jones_from_state[State, P: Patch[Any]](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
-def make_lennard_jones_from_state(
-    state: Any,
+def make_lennard_jones_from_state[State](
+    state: Lens[State, IsLJGraphState],
     probe: Any = None,
     *,
     parameters: LennardJonesParameters | None = None,
@@ -234,10 +234,12 @@ def make_lennard_jones_from_state(
     if gradient is not None:
         gradient_lens = GRAPH_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
+    param_state = cast(Lens[State, IsLJState[Any]], state)
+    cache_state = cast(Lens[State, IsCachedLJGraphState[Any]], state)
     if parameters is not None:
         param_view = const_lens(parameters)
     else:
-        param_view = state.focus(
+        param_view = param_state.focus(
             lambda x: (
                 x.lj_parameters.data
                 if isinstance(x.lj_parameters, HasCache)
@@ -247,13 +249,13 @@ def make_lennard_jones_from_state(
     cache_view = None
     if probe is not None:
         if parameters is None:
-            param_view = state.focus(lambda x: x.lj_parameters.data)
-            cache_view = state.focus(lambda x: x.lj_parameters.cache)
+            param_view = param_state.focus(lambda x: x.lj_parameters.data)
+            cache_view = param_state.focus(lambda x: x.lj_parameters.cache)
         else:
-            cache_view = state.focus(lambda x: x.lj_cache)
+            cache_view = cache_state.focus(lambda x: x.lj_cache)
         patch_idx_view = patch_idx_view or empty_patch_idx_view
 
-    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_lennard_jones_potential(
@@ -324,8 +326,8 @@ def make_lennard_jones_tail_correction_from_state[State](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
-def make_lennard_jones_tail_correction_from_state(
-    state: Any,
+def make_lennard_jones_tail_correction_from_state[State](
+    state: Lens[State, IsLJGraphState],
     *,
     parameters: GlobalTailCorrectedLennardJonesParameters | None = None,
     gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
@@ -350,10 +352,11 @@ def make_lennard_jones_tail_correction_from_state(
     gradient_lens: Any = EMPTY_LENS
     if gradient is not None:
         gradient_lens = GRAPH_GEOMETRY.nest(gradient)
+    param_state = cast(Lens[State, IsLJState[Any]], state)
     if parameters is not None:
         param_view: Any = const_lens(parameters)
     else:
-        param_view = state.focus(
+        param_view = param_state.focus(
             lambda x: (
                 x.lj_parameters.data
                 if isinstance(x.lj_parameters, HasCache)

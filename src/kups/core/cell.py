@@ -452,8 +452,12 @@ class BaseFrame(Frame, abc.ABC):
         def single(frame: Frame, grad: Frame) -> Array:
             theta, unravel = ravel_pytree(frame)
             g_theta, _ = ravel_pytree(grad)
+
             # ``vectors`` labels its result, and jacfwd differentiates magnitudes.
-            jac = jax.jacfwd(lambda p: magnitudes(unravel(p).vectors.rebase()))(theta)
+            def vector_magnitudes(p: Array) -> Array:
+                return magnitudes(unravel(p).vectors.rebase())
+
+            jac = jax.jacfwd(vector_magnitudes)(theta)
             # vec(∂E/∂h) = (Jᵀ)⁺·∂E/∂θ; lstsq on the wide ``Jᵀ`` gives the
             # min-norm solution, i.e. the pseudo-inverse.
             vec_grad = jnp.linalg.lstsq(jac.reshape(9, theta.shape[0]).T, g_theta)[0]
@@ -498,7 +502,11 @@ def _active_base[T](tree: T) -> T:
     Returns:
         The same structure; plain leaves pass through.
     """
-    return units.tree_map(lambda x: x.rebase() if units.is_quantity(x) else x, tree)
+
+    def rebase_leaf(x: object) -> object:
+        return x.rebase() if units.is_quantity(x) else x
+
+    return units.tree_map(rebase_leaf, tree)
 
 
 def _require_length(name: str, value: units.Length) -> None:
@@ -1538,18 +1546,19 @@ def make_supercell[T, T2, C: Cell[Any]](
 
     new_cell: C = bind(cell, lambda c: c.frame).set(cell.frame.tile(clamped))
 
-    replicated = jax.tree.map(
-        lambda x: jnp.repeat(x[None], n_reps, axis=0).reshape(-1, *x.shape[1:]),
-        to_replicate,
-    )
+    def repeat_leaf(x: Array) -> Array:
+        return jnp.repeat(x[None], n_reps, axis=0).reshape(-1, *x.shape[1:])
+
+    replicated = jax.tree.map(repeat_leaf, to_replicate)
+
+    def shift_leaf(x: units.Length) -> units.Length:
+        return new_cell.wrap(
+            x + real_shifts.repeat(x.shape[0] // n_reps, axis=0).reshape((-1, 3))
+        )
+
     replicated = to_shift.apply(
         replicated,
-        lambda y: units.tree_map(
-            lambda x: new_cell.wrap(
-                x + real_shifts.repeat(x.shape[0] // n_reps, axis=0).reshape((-1, 3))
-            ),
-            y,
-        ),
+        lambda y: units.tree_map(shift_leaf, y),
     )
     return new_cell, replicated
 
@@ -1620,7 +1629,11 @@ def to_lower_triangular(vecs: units.Length) -> tuple[units.Length, TriclinicMap]
     """
     vecs = units.apply(jnp.asarray, vecs)
     Q, R = units.qr(vecs.T)
-    signs = units.apply(lambda r: jnp.sign(jnp.diagonal(r)), R, dim=units.ONE)
+
+    def diagonal_sign(r: Array) -> Array:
+        return jnp.sign(jnp.diagonal(r))
+
+    signs = units.apply(diagonal_sign, R, dim=units.ONE)
     signs = jnp.where(signs == 0, 1.0, signs)
     R = R * signs[:, None]
     Q = Q * signs[None, :]

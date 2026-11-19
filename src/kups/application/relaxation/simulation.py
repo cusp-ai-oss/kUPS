@@ -233,7 +233,11 @@ def run_relax[State: IsRelaxState[object]](
 
     def _postfix(s: State) -> dict[str, Any]:
         data = _postfix_jit(s)
-        return jax.tree.map(lambda x: f"{float(x):.4e}", data)
+
+        def format_value(x: Array) -> str:
+            return f"{float(x):.4e}"
+
+        return jax.tree.map(format_value, data)
 
     logger = CompositeLogger(
         TqdmLogger(config.max_steps, postfix=_postfix),
