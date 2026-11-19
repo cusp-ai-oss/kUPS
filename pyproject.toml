@@ -191,6 +191,10 @@ sems = "sems"           # standard errors of the mean
 ser = "ser"             # pydantic-core *_ser_schema
 writeable = "writeable" # numpy array flag
 
+[tool.typos.default.extend-identifiers]
+# Third-party names, spelled as their library spells them.
+lazy_model_intialized = "lazy_model_intialized"  # fairchem MLIPPredictUnit
+
 [tool.importlinter]
 root_package = "kups"
 
