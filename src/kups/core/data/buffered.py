@@ -100,7 +100,6 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
             from the data.
     """
 
-    # pyrefly: ignore [invalid-variance]
     view: Callable[[TData], Index[Any]] = field(static=True)
 
     # Flattened leaves are already sanitized, so unflatten runs only the
