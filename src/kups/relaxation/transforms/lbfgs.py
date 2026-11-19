@@ -35,6 +35,7 @@ from kups.core.utils.jax import (
 )
 from kups.core.utils.segmented_tree import (
     layout_and_leaves,
+    single_segment_prefix,
     tree_scale_per_row,
     tree_vdot,
     tree_where_per_row,
@@ -189,7 +190,7 @@ class ScaleByAseLbfgs[Params](Resettable[Params, ScaleByAseLbfgsState[Params]]):
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ScaleByAseLbfgsState[Params]:
         if index_prefix is None:
-            index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
+            index_prefix = single_segment_prefix(parameters)
         # Flatten params to raw leaves with an Index aligned to each (DFS order),
         # matching ``jax.tree.leaves`` so ``update`` can flatten the same way.
         index_leaves, (param_leaves,) = layout_and_leaves(index_prefix, parameters)

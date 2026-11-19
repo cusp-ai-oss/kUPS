@@ -55,6 +55,7 @@ from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
 from kups.core.utils.segmented_tree import (
+    single_segment_prefix,
     tree_clip_per_row,
     tree_scale_per_row,
     tree_segment_max,
@@ -180,7 +181,7 @@ class ScaleByFire2[Params](Resettable[Params, ScaleByFire2State]):
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ScaleByFire2State:
         if index_prefix is None:
-            index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
+            index_prefix = single_segment_prefix(parameters)
         idx_leaves = jax.tree.leaves(
             index_prefix, is_leaf=lambda x: isinstance(x, Index)
         )

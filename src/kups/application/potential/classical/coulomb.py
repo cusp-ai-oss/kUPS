@@ -14,7 +14,7 @@ state need not carry a cutoff field.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core import units
 from kups.core.cell import Vacuum
@@ -150,8 +150,8 @@ def make_coulomb_vacuum_from_state[State, P: Patch[Any]](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
-def make_coulomb_vacuum_from_state(
-    state: Any,
+def make_coulomb_vacuum_from_state[State](
+    state: Lens[State, IsCoulombVacuumGraphState],
     probe: Any = None,
     *,
     parameters: Table[SystemId, units.Length] | None = None,
@@ -188,12 +188,13 @@ def make_coulomb_vacuum_from_state(
         patch_idx_view = position_and_cell_idx_view
     if probe is not None:
         patch_idx_view = patch_idx_view or empty_patch_idx_view
+    param_state = cast(Lens[State, IsCoulombVacuumState], state)
     if parameters is not None:
         cutoff_view: Any = const_lens(parameters)
     else:
-        cutoff_view = state.focus(lambda x: x.coulomb_cutoff)
+        cutoff_view = param_state.focus(lambda x: x.coulomb_cutoff)
 
-    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), cutoff_view(s))
 
     return make_coulomb_vacuum_potential(

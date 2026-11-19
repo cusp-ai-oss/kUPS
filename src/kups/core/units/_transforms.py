@@ -346,8 +346,12 @@ def _vjp(
         """Pull back an output cotangent to one cotangent per primal."""
         seed, cdim = _cotangent(name, cotangents, out, obs)
         rdim = dmul(cdim, odim)
+
+        def relabel_leaf(c: AnyQuantity | ArrayLike, p: object) -> object:
+            return _relabel(c, p, rdim, obs)
+
         return tuple(
-            tree_map(lambda c, p: _relabel(c, p, rdim, obs), ct, primal)
+            tree_map(relabel_leaf, ct, primal)
             for ct, primal in zip(raw(seed), primals, strict=True)
         )
 

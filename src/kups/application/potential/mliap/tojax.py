@@ -93,8 +93,8 @@ def make_tojaxed_from_state[State, Focus: IsTojaxedGraphState](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
-def make_tojaxed_from_state(
-    state: Any,
+def make_tojaxed_from_state[State](
+    state: Lens[State, IsTojaxedGraphState],
     *,
     parameters: TojaxedMliap | None = None,
     gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
@@ -122,9 +122,10 @@ def make_tojaxed_from_state(
     if parameters is not None:
         model_view = const_lens(parameters)
     else:
-        model_view = state.focus(lambda x: x.jaxified_model)
+        model_state = cast(Lens[State, IsTojaxedState], state)
+        model_view = model_state.focus(lambda x: x.jaxified_model)
 
-    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_view(s).cutoff)
 
     return make_tojaxed_potential(

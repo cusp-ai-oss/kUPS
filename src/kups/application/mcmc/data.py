@@ -382,9 +382,13 @@ def _make_molecule(
     rot = Quaternion.random(next(chain))
     tpl = motifs[motif_index]
     n_a = len(tpl.positions)
+
+    def rotate(p: Array) -> Array:
+        return p @ rot
+
     particles = Table.arange(
         MCMCParticles(
-            positions=units.apply(lambda p: p @ rot, tpl.positions) + com[None, :],
+            positions=units.apply(rotate, tpl.positions) + com[None, :],
             masses=tpl.masses,
             atomic_numbers=tpl.atomic_numbers,
             charges=tpl.charges,

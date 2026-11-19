@@ -318,8 +318,12 @@ def _merge_loop_assertion(
     old: RuntimeAssertion[Any, Any], new: RuntimeAssertion[Any, Any]
 ) -> RuntimeAssertion[Any, Any]:
     combine = old.loop_merge.combine
+
+    def merge_leaf(o: Array, n: Array) -> Array:
+        return combine(old.predicate, o, new.predicate, n)
+
     fmt_args, fix_args = jax.tree.map(
-        lambda o, n: combine(old.predicate, o, new.predicate, n),
+        merge_leaf,
         (old.fmt_args, old.fix_args),
         (new.fmt_args, new.fix_args),
     )
@@ -435,11 +439,14 @@ def shard_map_handler(
 ) -> HandlerResult[AssertionContext]:
     """Reinterpret a ``shard_map`` equation with every context leaf sharded as ``context_sharding``."""
 
+    def leaf_spec(_: object) -> jax.sharding.PartitionSpec | None:
+        return context_sharding
+
     def declare_ctx_in_specs(ctx: AssertionContext) -> AssertionContext:
-        return jax.tree.map(lambda _: context_sharding, ctx)
+        return jax.tree.map(leaf_spec, ctx)
 
     def declare_ctx_out_specs(ctx: AssertionContext) -> AssertionContext:
-        return jax.tree.map(lambda _: context_sharding, ctx)
+        return jax.tree.map(leaf_spec, ctx)
 
     return default_shard_map_handler(
         interpreter,

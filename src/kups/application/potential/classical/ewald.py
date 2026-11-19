@@ -16,7 +16,7 @@ updates with constant parameters, the cache is read from a conventional
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core import units
 from kups.core.cell import Periodic3D
@@ -206,8 +206,8 @@ def make_ewald_from_state[State, P: Patch[Any]](
 ) -> EwaldPotential[State, PositionsAndCell[units.Force], EmptyType, P]: ...
 
 
-def make_ewald_from_state(
-    state: Any,
+def make_ewald_from_state[State](
+    state: Lens[State, IsEwaldGraphState],
     probe: Any = None,
     *,
     parameters: EwaldParameters | None = None,
@@ -247,14 +247,16 @@ def make_ewald_from_state(
         self-energy, and (optionally) exclusion-correction terms.
     """
     gradient_lens: Any = EMPTY_LENS
-    patch_idx_view = empty_patch_idx_view
+    patch_idx_view: Any = empty_patch_idx_view
     if gradient is not None:
         gradient_lens = POINTCLOUD_GEOMETRY.nest(gradient)
         patch_idx_view = position_and_cell_idx_view
+    param_state = cast(Lens[State, IsEwaldState[Any]], state)
+    cache_state = cast(Lens[State, IsCachedEwaldGraphState[Any]], state)
     if parameters is not None:
         param_view = const_lens(parameters)
     else:
-        param_view = state.focus(
+        param_view = param_state.focus(
             lambda x: (
                 x.ewald_parameters.data
                 if isinstance(x.ewald_parameters, HasCache)
@@ -264,12 +266,12 @@ def make_ewald_from_state(
     cache_view = None
     if probe is not None:
         if parameters is None:
-            param_view = state.focus(lambda x: x.ewald_parameters.data)
-            cache_view = state.focus(lambda x: x.ewald_parameters.cache)
+            param_view = param_state.focus(lambda x: x.ewald_parameters.data)
+            cache_view = param_state.focus(lambda x: x.ewald_parameters.cache)
         else:
-            cache_view = state.focus(lambda x: x.ewald_cache)
+            cache_view = cache_state.focus(lambda x: x.ewald_cache)
 
-    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), param_view(s).cutoff)
 
     return make_ewald_potential(

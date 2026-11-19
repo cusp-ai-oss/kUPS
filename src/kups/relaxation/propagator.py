@@ -147,4 +147,8 @@ class RelaxationPropagator[State, Params, OptState, Indices](Propagator[State]):
 
 def _rebased[T](tree: T, bs: units.BaseSystem) -> T:
     """Express every quantity leaf of ``tree`` in base ``bs``."""
-    return units.tree_map(lambda x: x.rebase(bs) if units.is_quantity(x) else x, tree)
+
+    def rebase_leaf(x: object) -> object:
+        return x.rebase(bs) if units.is_quantity(x) else x
+
+    return units.tree_map(rebase_leaf, tree)

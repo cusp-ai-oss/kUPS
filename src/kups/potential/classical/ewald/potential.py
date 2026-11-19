@@ -184,11 +184,13 @@ class EwaldCachePatch[State, Gradient, Hessian](Patch[State]):
         """
         mask = accept[self.system_idx]
         update = (self.new_structure_factor, self.new_prefactor)
+
+        def select(new: Array, old: Array) -> Array:
+            return where_broadcast_last(mask, new, old)
+
         return self.lens.focus(lambda c: (c.structure_factor, c.prefactor)).apply(
             state,
-            lambda current: jax.tree.map(
-                lambda new, old: where_broadcast_last(mask, new, old), update, current
-            ),
+            lambda current: jax.tree.map(select, update, current),
         )
 
 
@@ -219,13 +221,13 @@ class EwaldCacheDeltaPatch[State, Gradient, Hessian](Patch[State]):
         """
         mask = accept[self.system_idx]
         delta = self.structure_factor_delta
+
+        def select(new: Array, old: Array) -> Array:
+            return where_broadcast_last(mask, new, old)
+
         return self.lens.focus(lambda cache: cache.structure_factor).apply(
             state,
-            lambda old_sf: jax.tree.map(
-                lambda new, old: where_broadcast_last(mask, new, old),
-                old_sf + delta,
-                old_sf,
-            ),
+            lambda old_sf: jax.tree.map(select, old_sf + delta, old_sf),
         )
 
 
@@ -953,7 +955,9 @@ def make_ewald_short_range_potential[
                 parameter_view=parameter_view,
             )
         ),
-        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+        gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).nest(
+            gradient_lens
+        ),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens,
         hessian_idx_view=hessian_idx_view,
@@ -1004,7 +1008,9 @@ def make_ewald_long_range_potential[
             parameters=parameter_lens,
             cache=cache_lens,
         ),
-        gradient_lens=lens(lambda x: x.point_cloud).nest(gradient_lens),
+        gradient_lens=lens(lambda x: x.point_cloud, cls=EwaldLongRangeInput).nest(
+            gradient_lens
+        ),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens.focus(lambda x: x.long_range) if cache_lens else None,
         hessian_idx_view=hessian_idx_view,
@@ -1075,7 +1081,9 @@ def make_ewald_self_interaction_potential[
                 parameter_view=parameter_view,
             )
         ),
-        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+        gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).nest(
+            gradient_lens
+        ),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens,
         hessian_idx_view=hessian_idx_view,
@@ -1149,7 +1157,9 @@ def make_ewald_net_charge_potential[
                 parameter_view=parameter_view,
             )
         ),
-        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+        gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).nest(
+            gradient_lens
+        ),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens,
         hessian_idx_view=hessian_idx_view,
@@ -1246,9 +1256,11 @@ def _exclusion_coefficients[State](
         templates.positions[:, None] - templates.positions[None, :], axis=-1
     )
     same_motif = jnp.equal(*Index.match(motif[:, None], motif[None, :]))
-    diameter = units.apply(
-        lambda d: jnp.where(same_motif, d, 0).max(initial=0), distance
-    )
+
+    def largest_in_motif(d: Array) -> Array:
+        return jnp.where(same_motif, d, 0).max(initial=0)
+
+    diameter = units.apply(largest_in_motif, distance)
     fixed_exclusions = (
         composition.fixed_system.valid_mask & particles.exclusion.valid_mask
     ).any()
@@ -1334,7 +1346,9 @@ def make_ewald_exclusion_correction_potential[
     exclusion_correction = PotentialFromEnergy(
         energy_fn=pairwise_coulomb_energy,
         composer=LocalSumComposer(GraphInputConstructor(excl_rg, lambda x: None)),
-        gradient_lens=lens(lambda x: x.graph).nest(gradient_lens),
+        gradient_lens=lens(lambda x: x.graph, cls=GraphPotentialInput).nest(
+            gradient_lens
+        ),
         hessian_lens=hessian_lens,
         cache_lens=cache_lens,
         hessian_idx_view=hessian_idx_view,

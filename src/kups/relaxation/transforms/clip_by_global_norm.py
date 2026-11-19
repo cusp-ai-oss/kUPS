@@ -19,13 +19,12 @@ from __future__ import annotations
 
 from typing import Any, override
 
-import jax
 import jax.numpy as jnp
 
-from kups.core.data.index import Index
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
 from kups.core.utils.segmented_tree import (
+    single_segment_prefix,
     tree_scale_per_row,
     tree_segment_norm,
 )
@@ -76,7 +75,7 @@ class ClipByGlobalNorm[Params](Resettable[Params, ClipByGlobalNormState]):
         del params, kwargs
         index_prefix = state.index_prefix
         if index_prefix is None:
-            index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), updates)
+            index_prefix = single_segment_prefix(updates)
         norm = tree_segment_norm(updates, index_prefix)
         scale = norm.map_data(lambda x: jnp.minimum(1.0, self.max_norm / (x + 1e-12)))
         return tree_scale_per_row(updates, scale, index_prefix), state

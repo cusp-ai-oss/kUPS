@@ -460,10 +460,11 @@ def _build_integrator_params(
             kappa = config.compressibility[None]
             gamma = config.friction_coefficient[None]
             barostat_mass = _gao_barostat_mass(cell.vectors, kappa, tau_P)
-            barostat_friction = units.apply(
-                lambda g: jnp.tril(jnp.broadcast_to(g, barostat_mass.shape)),
-                gamma[..., None, None],
-            )
+
+            def lower_triangle(g: Array) -> Array:
+                return jnp.tril(jnp.broadcast_to(g, barostat_mass.shape))
+
+            barostat_friction = units.apply(lower_triangle, gamma[..., None, None])
             return BAOABNPTLangevinParams(
                 time_step=time_step,
                 temperature=temperature,
