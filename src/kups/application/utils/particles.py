@@ -204,10 +204,11 @@ def _read_last_frame(path: str | Path) -> ase.Atoms:
 def fixed_from_ase(atoms: ase.Atoms | str | Path) -> Array:
     """Per-atom mask of the atoms ASE constraints hold in place.
 
-    Reads ``FixAtoms`` and the ``FixCartesian``/``FixScaled`` constraints that
-    fix all three components, which is how extxyz ``move_mask`` and POSCAR
-    selective dynamics load. All-free ``FixCartesian`` constraints, which the
-    extxyz reader writes for every movable atom, are skipped.
+    ``FixAtoms`` holds whole atoms. ``FixCartesian`` and ``FixScaled`` hold
+    chosen Cartesian or fractional components; with all three held they hold
+    the whole atom too, which is how extxyz ``move_mask`` and POSCAR selective
+    dynamics (``F F F``) load. The extxyz reader also writes an all-free
+    ``FixCartesian`` for every movable atom, which holds nothing.
 
     Args:
         atoms: ASE Atoms object, or a file path readable by ``ase.io.read``.
@@ -216,8 +217,8 @@ def fixed_from_ase(atoms: ase.Atoms | str | Path) -> Array:
         Boolean mask, shape ``(n_atoms,)``.
 
     Raises:
-        ValueError: For any other constraint, or one that fixes only some
-            components of an atom.
+        ValueError: For a constraint that holds only some components of an
+            atom, or any other kind of constraint.
     """
     if isinstance(atoms, (str, Path)):
         atoms = _read_last_frame(atoms)

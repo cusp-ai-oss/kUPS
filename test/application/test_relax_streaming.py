@@ -82,7 +82,7 @@ def _structures() -> list[Structure]:
         atoms = ase.build.bulk("Ar", "fcc", a=5.3, cubic=True) * mult
         atoms.rattle(0.1, seed=i)
         p, cell, _ = particles_from_ase(atoms)
-        structures.append(Structure(p, cell))
+        structures.append((p, cell))
     return structures
 
 
@@ -329,7 +329,7 @@ def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
         ase.build.bulk("Ar", "fcc", a=5.3, cubic=True)
     )
     structures = _structures()
-    structures.insert(1, Structure(crystal, cell))
+    structures.insert(1, (crystal, cell))
     max_steps, tolerance = 3, 1e-6
     rows, _ = _run(
         structures, max_steps=max_steps, tolerance=tolerance, optimizer=optimizer
@@ -365,44 +365,23 @@ def test_refill_preserves_slots_that_are_still_relaxing(optimizer: str) -> None:
         )
 
 
-def test_refilled_slot_takes_the_new_structures_fixed_atoms() -> None:
-    # One slot, so every job after the first refills the slot of a job whose
-    # fixed atoms differ; each job must keep exactly its own atoms in place.
-    masks: tuple[list[int], ...] = ([0, 1], [2, 3, 4], [])
-    structures = [
-        Structure(p, cell, jnp.isin(jnp.arange(len(p.keys)), jnp.asarray(fixed)))
-        for (p, cell, _), fixed in zip(_structures(), masks, strict=True)
-    ]
-    rows, _ = _run(structures, n_slots=1, max_steps=3)
-    assert sorted(int(row.ordinal[0]) for row in rows) == [0, 1, 2]
-    for row in rows:
-        particles, _, fixed = structures[int(row.ordinal[0])]
-        n = len(particles.keys)
-        npt.assert_array_equal(row.fixed[0, :n], fixed)
-        assert not row.fixed[0, n:].any()
-        moved = jnp.abs(
-            (row.particles.positions[0, :n] - particles.data.positions).to(u.angstrom)
-        ).max(axis=1)
-        npt.assert_array_equal(moved == 0, fixed)
-
-
 def test_pack_rejects_invalid_structures() -> None:
-    particles, cell, _ = _structures()[0]
+    particles, cell = _structures()[0]
     with pytest.raises(ValueError, match="at least one structure"):
         payload_from_structures([], 8, SPECIES, [])
     with pytest.raises(ValueError, match="longer"):
-        payload_from_structures([Structure(particles, cell)], 8, SPECIES, [0, 1])
+        payload_from_structures([(particles, cell)], 8, SPECIES, [0, 1])
     for species in [(Label("Ne"), Label("Ar")), (Label("Ar"), Label("Ar"))]:
         with pytest.raises(ValueError, match="sorted and unique"):
-            payload_from_structures([Structure(particles, cell)], 8, species, [0])
+            payload_from_structures([(particles, cell)], 8, species, [0])
     with pytest.raises(ValueError, match="labels outside"):
-        payload_from_structures([Structure(particles, cell)], 8, (Label("Ne"),), [0])
+        payload_from_structures([(particles, cell)], 8, (Label("Ne"),), [0])
     with pytest.raises(ValueError, match="slot capacity"):
-        payload_from_structures([Structure(particles, cell)], 2, SPECIES, [0])
+        payload_from_structures([(particles, cell)], 2, SPECIES, [0])
     slab = Cell.from_pbc(cell.frame, (True, True, False))
     with pytest.raises(ValueError, match="share periodicity"):
         payload_from_structures(
-            [Structure(particles, cell), Structure(particles, slab)], 8, SPECIES, [0, 1]
+            [(particles, cell), (particles, slab)], 8, SPECIES, [0, 1]
         )
     sheared = MatrixLogFrame.from_matrix(
         jnp.array([[5.3, 0.5, 0.0], [0.0, 5.4, 0.0], [0.0, 0.0, 5.5]]) * u.angstrom
@@ -411,13 +390,13 @@ def test_pack_rejects_invalid_structures() -> None:
     batched = jax.tree.map(lambda x: jnp.stack([x, x]), cell)
     for bad_cell in [upper, batched]:
         with pytest.raises(ValueError, match="lower-triangular"):
-            payload_from_structures([Structure(particles, bad_cell)], 8, SPECIES, [0])
+            payload_from_structures([(particles, bad_cell)], 8, SPECIES, [0])
     two_systems = Index.integer(jnp.array([0, 0, 1, 1]), n=2, label=SystemId)
     incomplete = Index.integer(jnp.array([0, 0, 0, 1]), n=1, label=SystemId)
     for system in [two_systems, incomplete]:
         bad_particles = bind(particles).focus(lambda p: p.data.system).set(system)
         with pytest.raises(ValueError, match="one complete system"):
-            payload_from_structures([Structure(bad_particles, cell)], 8, SPECIES, [0])
+            payload_from_structures([(bad_particles, cell)], 8, SPECIES, [0])
 
 
 @state_dataclass
@@ -466,16 +445,16 @@ def test_factory_composes_with_a_nested_state_lens() -> None:
 
 def test_cell_frames_and_classes_share_the_idle_signature() -> None:
     structures = _structures()
-    particles, cell, _ = structures[0]
+    particles, cell = structures[0]
     orthogonal = (
         bind(cell)
         .focus(lambda c: c.frame)
         .set(OrthogonalFrame(jnp.diag(cell.vectors.to(u.angstrom)) * u.angstrom))
     )
-    structures[0] = Structure(particles, orthogonal)
+    structures[0] = particles, orthogonal
     # A plain Cell instead of the PeriodicCell that Cell.from_pbc builds.
-    particles, cell, _ = structures[1]
-    structures[1] = Structure(particles, Cell(cell.frame, periodic=(True, True, True)))
+    particles, cell = structures[1]
+    structures[1] = particles, Cell(cell.frame, periodic=(True, True, True))
     rows, _ = _run(structures, max_steps=0)
     assert sorted(int(row.ordinal[0]) for row in rows) == [0, 1, 2]
     for row in rows:

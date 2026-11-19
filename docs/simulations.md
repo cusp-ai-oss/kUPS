@@ -72,7 +72,7 @@ kups_relax relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 
 Relaxation converges when the maximum force on any atom drops below a configurable tolerance.
 
-Atoms fixed in the input file stay in place: ASE `FixAtoms`, extxyz `move_mask` and POSCAR selective dynamics (`F F F`) are read, and with `optimize_cell` fixed atoms keep their fractional coordinates as the cell relaxes. Their forces are reported as zero and do not count towards convergence. Constraints on single components, or of any other kind, are rejected.
+Atoms fixed in the input file stay in place: ASE `FixAtoms`, extxyz `move_mask` and POSCAR selective dynamics (`F F F`) are read, and with `optimize_cell` fixed atoms keep their fractional coordinates as the cell relaxes. Their forces are logged unchanged but do not count towards convergence. Constraints on single components, or of any other kind, are rejected.
 
 ### Streaming batches as a library
 
