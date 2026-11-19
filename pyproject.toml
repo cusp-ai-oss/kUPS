@@ -47,7 +47,9 @@ dependencies = [
     "etils>=1.13.0",
     "flatbuffers>=25.2.10",
     "h5py>=3.15.0",
-    "jax>=0.7.2",
+    # 0.12.1 passes captured constants as jit arguments, which puts the Ewald drift test on a loop
+    # the XLA CPU backend miscompiles (see #549). Lift once that is resolved.
+    "jax>=0.7.2,<0.12.1",
     "jsonargparse>=4.41.0",
     "optax>=0.2.6",
     "packaging>=24.2",
