@@ -32,6 +32,9 @@ line.
   vocabulary (keys and queries, `_params`, `_lens`) instead of new synonyms.
 - Plain code over clever code: no bit tricks or walrus chains where a loop
   or a named type reads better.
+- No inline comments that restate the code or justify a cast, annotation or
+  branch the surrounding types already explain. Comment only what a reader
+  can't get from the code.
 
 ## Numerics
 - Physical quantities are typed with their dimension (`units.Length`,
@@ -51,6 +54,10 @@ comments.
 - Short and plain, in full sentences, the way a colleague would say it.
   No filler ("This PR addresses…", "comprehensive", "robust"), no padded
   bullet lists, no AI or tool attribution.
+- ADHD-friendly, in Simple Technical English: the key point first, short
+  sentences with one idea each, common words, active voice. Show, don't
+  tell: a before/after value or a one-line example instead of a paragraph
+  about it.
 - Code and docs describe what the code does now. History and measurements
   go in the commit message or PR description.
 - Docs pages start with a runnable example, then the details.
@@ -59,11 +66,12 @@ comments.
 - Titles are `type(scope): …` and state the resulting behaviour
   ("fix: indices_in keeps every out-of-range id out of range"), not the
   activity ("fix bug in indices_in").
-- The description scales with the PR: one or two sentences of what and why
-  for a small change. For larger ones also say what changes for users,
-  which tests pin it, when the new path does *not* apply, and the stack
-  position ("Part 3/5").
-- Say whether results change. If values move, say by how much and why.
+- The description says what changed, why, whether results change (if
+  values differ, by how much and why) and which APIs break, in at most 100
+  words. Formatting is fine, but every line serves one of these points.
+- Explain only what the PR itself does not make clear. Leave out test
+  names, walkthroughs of the diff and anything else a reviewer sees in the
+  code. Only describe high-level ideas.
 
 ### Performance PRs
 - Always include a table: one row (or column) per benchmark config, before
