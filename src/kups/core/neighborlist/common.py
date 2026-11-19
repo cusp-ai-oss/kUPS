@@ -210,8 +210,17 @@ def _get_candidate_images(
         .get()
     )
     per_candidate = jnp.prod(images, axis=-1)
-    out_size = out_size.generate_assertion(per_candidate.sum())
     num_cands = candidates.key_idx.size
+    required = per_candidate.sum()
+    if out_size.size <= num_cands:
+        # A buffer no larger than the candidates keeps only the minimum image
+        # (below), which is exact only while no candidate reaches a second image.
+        # Otherwise require more room than there are candidates, so the fix grows
+        # the buffer into the replication path instead of dropping images.
+        required = jnp.where(
+            (per_candidate > 1).any(), jnp.maximum(required, num_cands + 1), required
+        )
+    out_size = out_size.generate_assertion(required)
     if num_cands == 0 or out_size.size <= num_cands:
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         return jnp.arange(num_cands), offset
