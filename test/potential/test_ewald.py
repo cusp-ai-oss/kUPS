@@ -775,14 +775,13 @@ class TestStructureFactorCache:
             sk, _ = structure_factor(make_input(new_pos, self._cache(sk), previous))
             return (sk, new_pos), None
 
-        @jax.jit
-        def walk(
-            positions: units.Length,
-        ) -> tuple[KahanSummand[units.Charge], units.Length]:
-            sk0, _ = structure_factor(make_input(positions))
-            return jax.lax.scan(step, (sk0, positions), (moved, deltas))[0]
-
-        sk, pos = walk(particles.data.positions)
+        # WORKAROUND: https://github.com/jax-ml/jax/issues/42758
+        # XLA miscompiles the moves as one lax.scan, so they loop on the host.
+        jit_step = jax.jit(step)
+        pos = particles.data.positions
+        sk, _ = structure_factor(make_input(pos))
+        for move in zip(np.asarray(moved), np.asarray(deltas), strict=True):
+            (sk, pos), _ = jit_step((sk, pos), move)
         # Without compensation only the running sum survives, as before this change.
         return (sk.total if compensated else sk.value), pos
 
