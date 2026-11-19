@@ -13,6 +13,7 @@ from kups.application.relaxation.data import (
     RelaxParticles,
     RelaxRunConfig,
     RelaxSystems,
+    constrain_gradients,
     relax_gradients,
     relax_index_prefix,
     relax_parameters,
@@ -25,6 +26,7 @@ from kups.core.geometry import (
     Geometry,
     PositionsAndCell,
     PositionsAndCellIndex,
+    PositionsAndCellTree,
     PositionsAndSystemIndex,
     position_and_cell_idx_view,
 )
@@ -34,6 +36,8 @@ from kups.core.potential import (
     EMPTY,
     CachedPotential,
     EmptyType,
+    LinearMappedPotential,
+    LinearMappedPotentialInput,
     Potential,
     PotentialOut,
 )
@@ -112,6 +116,13 @@ def make_relax_step[State, OptState](
             ``optimizer.init`` and the update mask. Streaming may use a fixed
             row-to-slot mapping.
 
+    The optimizer and its line searches see the potential's gradients through
+    :func:`~kups.application.relaxation.data.constrain_gradients`, while the
+    cache keeps them unconstrained. A zero gradient holds a fixed particle for
+    every transform that maps it to a zero update; transforms that read the
+    parameters themselves, such as ``add_decayed_weights`` or ``add_noise``,
+    can still move it.
+
     Returns:
         Tuple of ``(step, opt_init)``. ``step`` does not count steps or roll back
         on failed runtime assertions; :func:`make_relax_propagator` adds both.
@@ -130,7 +141,10 @@ def make_relax_step[State, OptState](
         sub = state_lens.get(s)
         return PotentialOut(
             sub.systems.map_data(lambda x: x.potential_energy),
-            relax_gradients(sub),
+            PositionsAndCellTree(
+                sub.particles.map_data(lambda p: p.position_gradients),
+                sub.systems.map_data(lambda x: x.cell_gradients),
+            ),
             EMPTY,
         )
 
@@ -150,12 +164,22 @@ def make_relax_step[State, OptState](
         sub = state_lens.get(s)
         return index_prefix(sub.particles, sub.systems)
 
+    def constrain(
+        inp: LinearMappedPotentialInput[
+            State, PositionsAndCell[units.Force], EmptyType
+        ],
+    ) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
+        out = inp.potential_out
+        gradients = constrain_gradients(state_lens.get(inp.state), out.gradients)
+        return PotentialOut(out.total_energies, gradients, out.hessians)
+
+    cached = CachedPotential(
+        potential,
+        lens(cached_out),
+        lambda s: position_and_cell_idx_view(to_geometry(s)),
+    )
     step = RelaxationPropagator(
-        potential=CachedPotential(
-            potential,
-            lens(cached_out),
-            lambda s: position_and_cell_idx_view(to_geometry(s)),
-        ),
+        potential=LinearMappedPotential(cached, constrain),
         property=lens(to_geometry).nest(gradient),
         opt_state=state_lens.focus(lambda x: x.opt_state),
         optimizer=optimizer,
@@ -226,9 +250,8 @@ def run_relax[State: IsRelaxState[object]](
     @jit
     def _postfix_jit(s: State) -> dict[str, Array]:
         e = s.systems.data.potential_energy.to(u.eV).sum()
-        fmax = jnp.max(
-            units.norm(s.particles.data.forces, axis=-1).to(u.eV / u.angstrom)
-        )
+        forces = relax_gradients(s).positions.data
+        fmax = jnp.max(units.norm(forces, axis=-1).to(u.eV / u.angstrom))
         return {"E[eV]": e, "fmax[eV/Å]": fmax}
 
     def _postfix(s: State) -> dict[str, Any]:
