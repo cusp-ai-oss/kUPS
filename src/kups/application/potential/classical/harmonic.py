@@ -59,7 +59,7 @@ class IsHarmonicBondGraphState(HasBondedParticlesAndSystems, Protocol):
     """Particles, systems, and bond indices for a harmonic bond graph (no parameters)."""
 
     @property
-    def harmonic_bond_indices(self) -> Index[ParticleId]: ...
+    def bond_edge_indices(self) -> Index[ParticleId]: ...
 
 
 class IsHarmonicBondState[Params](IsHarmonicBondGraphState, Protocol):
@@ -260,7 +260,7 @@ class IsHarmonicAngleGraphState(HasBondedParticlesAndSystems, Protocol):
     """Particles, systems, and angle indices for a harmonic angle graph (no parameters)."""
 
     @property
-    def harmonic_angle_indices(self) -> Index[ParticleId]: ...
+    def angle_edge_indices(self) -> Index[ParticleId]: ...
 
 
 class IsHarmonicAngleState[Params](IsHarmonicAngleGraphState, Protocol):
