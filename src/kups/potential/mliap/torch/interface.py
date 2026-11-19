@@ -32,6 +32,7 @@ Requires the ``torch_dev`` dependency group: ``uv sync --group torch_dev``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal, Protocol, TypedDict, overload
 
 import jax.numpy as jnp
@@ -80,6 +81,7 @@ __all__ = [
     "TorchMliapForward",
     "lattice_gradient_from_virial",
     "make_torch_mliap_potential",
+    "prepare_torch_inputs",
     "torch_mliap_model_fn",
 ]
 
@@ -207,17 +209,23 @@ class TorchMliap:
         cutoff: Per-system cutoff radius.
         wrapper: ``TorchModuleWrapper`` over the MLFF module.
         compute_cell_gradients: Whether the module returns ``"cell_gradients"``.
+        input_builder: Optional preparation hook for a graph sorted by system.
     """
 
     cutoff: Table[SystemId, units.Length]
     wrapper: TorchModuleWrapper = field(static=True)
     compute_cell_gradients: bool = field(static=True, default=False)
+    input_builder: Callable[[Any], AtomGraphInput] | None = field(
+        static=True, default=None, kw_only=True
+    )
 
     @staticmethod
     def from_module(
         module: torch.nn.Module,
         cutoff: units.Length,
         compute_cell_gradients: bool = False,
+        *,
+        input_builder: Callable[[Any], AtomGraphInput] | None = None,
     ) -> TorchMliap:
         """Wrap a torch.nn.Module that returns energy and gradients.
 
@@ -226,6 +234,8 @@ class TorchMliap:
             cutoff: Interaction cutoff radius.
             compute_cell_gradients: Whether the module returns
                 ``"cell_gradients"`` for stress computation.
+            input_builder: Graph preparation hook. None keeps generic inputs,
+                including floating-point zero charge and spin.
 
         Returns:
             Configured ``TorchMliap`` ready for use with the kUPS interface.
@@ -235,6 +245,7 @@ class TorchMliap:
             cutoff=Table((SystemId(0),), units.stack([cutoff])),
             wrapper=wrapper,
             compute_cell_gradients=compute_cell_gradients,
+            input_builder=input_builder,
         )
 
     def call(self, input: AtomGraphInput) -> dict[str, Array]:
@@ -248,7 +259,7 @@ type TorchMliapInput[
 ] = GraphPotentialInput[TorchMliap, P, S, Literal[2]]
 
 
-def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:  # noqa: ANN401
+def prepare_torch_inputs(graph: Any) -> AtomGraphInput:  # noqa: ANN401
     """Convert a sorted kUPS graph to ``AtomGraphInput``.
 
     Unlike the JAX-exported [tojax][kups.potential.mliap.tojax] path — which
@@ -332,7 +343,8 @@ def torch_mliap_model_fn[
         .set(jnp.arange(n, dtype=sort_order.dtype))
     )
 
-    input_dict = _prepare_torch_inputs(graph)
+    input_builder = inp.parameters.input_builder or prepare_torch_inputs
+    input_dict = input_builder(graph)
     result = inp.parameters.call(input_dict)
 
     # Torch backends may run at a different (typically lower) precision than
@@ -352,7 +364,7 @@ def torch_mliap_model_fn[
     # silently clamps to a real system, contaminating its virial.
     valid = inp.graph.particles.data.system.valid_mask
     pos_grad = units.where(valid[:, None], pos_grad, units.zeros_like(pos_grad))
-    energy_table = Table.arange(energy, label=SystemId)
+    energy_table = graph.systems.set_data(energy)
 
     cell_grad = result["cell_gradients"].astype(out_dtype) * (u.eV / u.angstrom)
     # Project the raw ∂E/∂h onto the input frame's parameter space,

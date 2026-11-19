@@ -12,12 +12,15 @@ import ase
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import ArrayLike
 from pydantic import BaseModel
 
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
     default_exclusion,
+    electronic_metadata,
+    electronic_metadata_from_ase,
     particles_from_ase,
 )
 from kups.core import units
@@ -26,7 +29,7 @@ from kups.core.data import Index, Table
 from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.units import catalog as u
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, skip_post_init_if_disabled
 from kups.md.integrators import Integrator
 from kups.md.observables import particle_kinetic_energy, remove_center_of_mass_momentum
 
@@ -205,6 +208,10 @@ class MDSystems:
             integrators that drive cell dynamics via an explicit conjugate
             momentum (e.g. BAOAB NPT Langevin); zero otherwise.
         potential_energy: Total potential energy per system, shape ``(n_systems,)``.
+        total_charge: Integer total charge per system, shape ``(n_systems,)``;
+            zeros when omitted.
+        spin_multiplicity: Integer spin multiplicity per system, shape
+            ``(n_systems,)``; ones when omitted.
     """
 
     cell: Cell[Any]
@@ -212,6 +219,24 @@ class MDSystems:
     cell_gradients: Cell[Any]
     cell_momentum: units.Momentum
     potential_energy: units.Energy
+
+    # pyrefly: ignore[bad-assignment]
+    total_charge: Array = field(default=None, kw_only=True)
+    # pyrefly: ignore[bad-assignment]
+    spin_multiplicity: Array = field(default=None, kw_only=True)
+
+    @skip_post_init_if_disabled
+    def __post_init__(self) -> None:
+        if self.total_charge is None:
+            object.__setattr__(
+                self, "total_charge", jnp.zeros(self.cell.vectors.shape[:-2], dtype=int)
+            )
+        if self.spin_multiplicity is None:
+            object.__setattr__(
+                self,
+                "spin_multiplicity",
+                jnp.ones(self.cell.vectors.shape[:-2], dtype=int),
+            )
 
 
 @dataclass
@@ -281,6 +306,8 @@ def md_state_from_particles_and_cell(
     config: MdParameters,
     *,
     key: Array | None = None,
+    total_charge: ArrayLike | None = None,
+    spin_multiplicity: ArrayLike | None = None,
 ) -> tuple[Table[ParticleId, MDParticles], Table[SystemId, MDSystems]]:
     """Build one-system MD particle and system tables from source-neutral data.
 
@@ -295,16 +322,22 @@ def md_state_from_particles_and_cell(
             thermostat/barostat parameters.
         key: JAX PRNG key for Maxwell-Boltzmann momenta initialisation. If None,
             momenta are set to zero.
+        total_charge: Integer total charge, a scalar or shape ``(1,)``,
+            defaulting to zero.
+        spin_multiplicity: Nonnegative integer multiplicity, a scalar or shape
+            ``(1,)``, defaulting to one.
 
     Returns:
         MD particle and system tables preserving the input particle keys and
         referenced ``SystemId``.
 
     Raises:
-        ValueError: If ``particles`` is empty, does not contain one valid
-            system reference per particle, or if ``cell.vectors`` does not
-            have shape ``(3, 3)``.
+        TypeError: If electronic metadata are not integers.
+        ValueError: If electronic metadata have invalid shapes or values,
+            ``particles`` is empty or lacks one valid system reference per
+            particle, or ``cell.vectors`` does not have shape ``(3, 3)``.
     """
+    charge, spin = electronic_metadata(total_charge, spin_multiplicity, 1)
     p = particles.data
     n_particles = len(particles)
     if n_particles == 0:
@@ -362,6 +395,8 @@ def md_state_from_particles_and_cell(
                 batched_cell.vectors.shape, u.amu * u.angstrom / u.fs
             ),
             potential_energy=units.zeros((1,), u.eV),
+            total_charge=charge,
+            spin_multiplicity=spin,
         ),
     )
 
@@ -373,8 +408,14 @@ def md_state_from_ase(
     config: MdParameters,
     *,
     key: Array | None = None,
+    total_charge: ArrayLike | None = None,
+    spin_multiplicity: ArrayLike | None = None,
 ) -> tuple[Table[ParticleId, MDParticles], Table[SystemId, MDSystems]]:
     """Build MD particles and system data from an ASE Atoms object or file.
+
+    Non-None metadata keywords override ``atoms.info["charge"]`` and
+    ``atoms.info["spin"]`` independently. Missing info defaults to 0/1;
+    present invalid values raise unless overridden. Partial charges are unchanged.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
@@ -383,12 +424,23 @@ def md_state_from_ase(
             parameters.
         key: JAX PRNG key for Maxwell-Boltzmann momenta initialisation. If None,
             momenta are set to zero.
+        total_charge: Integer total charge, defaulting to zero.
+        spin_multiplicity: Nonnegative integer multiplicity, defaulting to one.
 
     Returns:
         Tuple of (particles, systems) ready for use with MD integrators.
+
+    Raises:
+        TypeError: If selected electronic metadata are not integers.
+        ValueError: If selected metadata have invalid shapes or values.
     """
     particles, cell, _ = particles_from_ase(atoms)
-    return md_state_from_particles_and_cell(particles, cell, config, key=key)
+    charge, spin = electronic_metadata_from_ase(
+        atoms, total_charge=total_charge, spin_multiplicity=spin_multiplicity
+    )
+    return md_state_from_particles_and_cell(
+        particles, cell, config, key=key, total_charge=charge, spin_multiplicity=spin
+    )
 
 
 def _gao_barostat_mass(

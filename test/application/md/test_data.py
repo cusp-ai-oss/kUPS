@@ -123,9 +123,14 @@ def test_public_builder_signature_and_export() -> None:
         "cell",
         "config",
         "key",
+        "total_charge",
+        "spin_multiplicity",
     )
     assert signature.parameters["key"].kind is inspect.Parameter.KEYWORD_ONLY
     assert signature.parameters["key"].default is None
+    for name in ("total_charge", "spin_multiplicity"):
+        assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert signature.parameters[name].default is None
     assert "md_state_from_particles_and_cell" in md_data.__all__
 
 
@@ -229,29 +234,54 @@ def test_ase_wrapper_delegates_to_source_neutral_builder(
         calls.append(("adapter", atoms))
         return particles, cell, object()
 
+    def fake_electronic_metadata_from_ase(
+        atoms: ase.Atoms | str | Path,
+        *,
+        total_charge: object = None,
+        spin_multiplicity: object = None,
+    ) -> tuple[jax.Array, jax.Array]:
+        calls.append(("metadata", atoms, total_charge, spin_multiplicity))
+        return jnp.array([-1]), jnp.array([2])
+
     def fake_md_state_from_particles_and_cell(
         actual_particles: Table[ParticleId, Particles],
         actual_cell: Cell[AnyPeriodicity],
         actual_config: MdParameters,
         *,
         key: jax.Array | None = None,
+        total_charge=None,
+        spin_multiplicity=None,
     ) -> tuple[object, object]:
-        calls.append(("builder", actual_particles, actual_cell, actual_config, key))
+        calls.append(
+            (
+                "builder",
+                actual_particles,
+                actual_cell,
+                actual_config,
+                key,
+                int(total_charge[0]),
+                int(spin_multiplicity[0]),
+            )
+        )
         return expected
 
     monkeypatch.setattr(md_data, "particles_from_ase", fake_particles_from_ase)
+    monkeypatch.setattr(
+        md_data, "electronic_metadata_from_ase", fake_electronic_metadata_from_ase
+    )
     monkeypatch.setattr(
         md_data,
         "md_state_from_particles_and_cell",
         fake_md_state_from_particles_and_cell,
     )
 
-    actual = md_state_from_ase("input.cif", md_config, key=key)
+    actual = md_state_from_ase("input.cif", md_config, key=key, total_charge=-1)
 
     assert actual is expected
     assert calls == [
         ("adapter", "input.cif"),
-        ("builder", particles, cell, md_config, key),
+        ("metadata", "input.cif", -1, None),
+        ("builder", particles, cell, md_config, key, -1, 2),
     ]
 
 
@@ -507,7 +537,9 @@ def test_builder_initial_zero_state_and_pytree_contract(
     particle_leaves, particle_structure = units.tree_flatten(md_particles.data)
     system_leaves, system_structure = units.tree_flatten(systems.data)
     assert len(particle_leaves) == 9
-    assert len(system_leaves) == 5
+    assert len(system_leaves) == 7
+    npt.assert_array_equal(systems.data.total_charge, [0])
+    npt.assert_array_equal(systems.data.spin_multiplicity, [1])
     assert (
         type(jax.tree_util.tree_unflatten(particle_structure, particle_leaves))
         is MDParticles
