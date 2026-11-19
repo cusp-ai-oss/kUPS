@@ -51,6 +51,10 @@ comments.
 - Short and plain, in full sentences, the way a colleague would say it.
   No filler ("This PR addresses…", "comprehensive", "robust"), no padded
   bullet lists, no AI or tool attribution.
+- ADHD-friendly, in Simple Technical English: the key point first, short
+  sentences with one idea each, common words, active voice. Show, don't
+  tell: a before/after value or a one-line example instead of a paragraph
+  about it.
 - Code and docs describe what the code does now. History and measurements
   go in the commit message or PR description.
 - Docs pages start with a runnable example, then the details.
@@ -65,10 +69,6 @@ comments.
 - Explain only what the PR itself does not make clear. Leave out test
   names, walkthroughs of the diff and anything else a reviewer sees in the
   code. Only describe high-level ideas.
-- Keep it ADHD-friendly and in Simple Technical English: the key point
-  first, short sentences with one idea each, common words, active voice.
-  Show, don't tell: a before/after value or a one-line example instead of a
-  paragraph about it.
 
 ### Performance PRs
 - Always include a table: one row (or column) per benchmark config, before
