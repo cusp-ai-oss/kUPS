@@ -18,10 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol, overload
 
-import jax.numpy as jnp
-
 from kups.core.cell import AnyPeriodicity
-from kups.core.lens import Lens, bind, const_lens
+from kups.core.lens import Lens, View, const_lens
 from kups.core.neighborlist import (
     AdaptiveNeighborList,
     IsNeighborListState,
@@ -30,7 +28,12 @@ from kups.core.neighborlist import (
     NeighborListFactory,
 )
 from kups.core.patch import Patch, Probe
-from kups.core.potential import EMPTY_LENS, Potential, PotentialOut
+from kups.core.potential import (
+    EMPTY_LENS,
+    Potential,
+    PotentialOut,
+    empty_patch_idx_view,
+)
 from kups.core.typing import HasCache, HasCell, IsState, MaybeCached
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.common.graph import IsGraphProbe
@@ -98,8 +101,7 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     ] = ...,
     hessian_lens: Lens[Gradient, Hessian] = ...,
     hessian_idx_view: Lens[State, Hessian] = ...,
-    out_idx_view: Lens[State, KahanSummand[PotentialOut[Gradient, Hessian]]]
-    | None = None,
+    out_idx_view: View[State, PotentialOut[Gradient, Hessian]] | None = None,
     *,
     parameters: None = None,
     neighborlist_factory: NeighborListFactory[
@@ -139,8 +141,7 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
     ] = ...,
     hessian_lens: Lens[Gradient, Hessian] = ...,
     hessian_idx_view: Lens[State, Hessian] = ...,
-    out_idx_view: Lens[State, KahanSummand[PotentialOut[Gradient, Hessian]]]
-    | None = None,
+    out_idx_view: View[State, PotentialOut[Gradient, Hessian]] | None = None,
     *,
     parameters: LocalMLIAPData,
     neighborlist_factory: NeighborListFactory[
@@ -178,8 +179,8 @@ def make_local_mliap_from_state(
         hessian_lens: Specifies which Hessians to compute.
         hessian_idx_view: Index structure for Hessian updates.
         out_idx_view: Index into the cached output for partial updates. Only used when
-            ``probe`` is not ``None``. Defaults to full re-indexing of the cached
-            ``total_energies``.
+            ``probe`` is not ``None``. Defaults to ``empty_patch_idx_view``, which
+            covers ``total_energies`` per system and no gradients or Hessians.
         parameters: Constant MLIAP model. When given it is bound with a constant
             lens and the state need not carry ``local_mliap_model``; with a
             ``probe``, the cache is read from ``state.local_mliap_cache``.
@@ -225,11 +226,7 @@ def make_local_mliap_from_state(
         cache_view = state.focus(lambda x: x.local_mliap_model.cache)
 
     if out_idx_view is None:
-        out_idx_view = cache_view.focus(
-            lambda c: bind(c, lambda x: x.total_energies.data).apply(
-                lambda x: jnp.arange(x.size, dtype=int)
-            )
-        )
+        out_idx_view = empty_patch_idx_view
 
     def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_lens(s).cutoff)
