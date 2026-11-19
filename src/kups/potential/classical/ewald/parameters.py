@@ -308,9 +308,10 @@ def estimate_ewald_parameters(
 
     if fixed_cutoff is not None:
         # erfc(alpha * cutoff) = cutoff * target fixes alpha for this cutoff.
-        result = scipy.optimize.minimize_scalar(
-            lambda z: abs(erfc(z) - fixed_cutoff * target)
-        )
+        def erfc_residual(z: float) -> float:
+            return abs(erfc(z) - fixed_cutoff * target)
+
+        result = scipy.optimize.minimize_scalar(erfc_residual)
         if not result.success:
             raise ValueError("Failed to find alpha for given real space cutoff.")
         alpha_opt = result.x / fixed_cutoff

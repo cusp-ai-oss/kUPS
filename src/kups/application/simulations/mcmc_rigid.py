@@ -93,6 +93,7 @@ from kups.core.typing import (
     SystemId,
 )
 from kups.core.units import catalog as u
+from kups.core.utils.functools import identity
 from kups.core.utils.jax import (
     dataclass,
     enable_unrolled_threefry,
@@ -418,18 +419,29 @@ def init_cell_tables(
     dtype: DTypeLike = jnp.float64,
 ) -> FusedPotentialCache[tuple[Index[Label] | units.Charge, ...]]:
     """Initialize the shared pair cache from the simulation's input data."""
+
+    def select_lj(
+        p: tuple[GlobalTailCorrectedLennardJonesParameters, EwaldParameters],
+    ) -> GlobalTailCorrectedLennardJonesParameters:
+        return p[0]
+
+    def select_ewald(
+        p: tuple[GlobalTailCorrectedLennardJonesParameters, EwaldParameters],
+    ) -> EwaldParameters:
+        return p[1]
+
     lj: PairEnergy[
         tuple[GlobalTailCorrectedLennardJonesParameters, EwaldParameters],
         MCMCParticles,
         Index[Label],
-    ] = lennard_jones_pair.with_particles(lambda p: p).with_parameters(lambda p: p[0])
+    ] = lennard_jones_pair.with_particles(identity).with_parameters(select_lj)
     parameters = (lj_parameters, ewald_parameters)
     cloud = PointCloud(particles, systems)
     if _is_charged(particles, motifs):
         return FusedPotentialCache.create(
             lj
-            + ewald_short_range_pair.with_particles(lambda p: p).with_parameters(
-                lambda p: p[1]
+            + ewald_short_range_pair.with_particles(identity).with_parameters(
+                select_ewald
             ),
             parameters,
             cloud,

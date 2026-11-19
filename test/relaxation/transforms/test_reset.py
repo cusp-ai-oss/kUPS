@@ -392,7 +392,11 @@ def test_resettable_chain_matches_explicit_layout(name: str) -> None:
     fresh = opt.init(X0, PREFIX)
     explicit = _layout(name).reset(state, fresh, MASK)
     composed = opt.reset_layout.reset(state, fresh, MASK)
-    compiled = jax.jit(lambda s: opt.reset_layout.reset(s, fresh, MASK))(state)
+
+    def reset_masked(s: ChainOptState) -> ChainOptState:
+        return opt.reset_layout.reset(s, fresh, MASK)
+
+    compiled = jax.jit(reset_masked)(state)
     assert jax.tree.structure(composed) == jax.tree.structure(explicit)
     for a, b, c in zip(
         jax.tree.leaves(explicit),
@@ -421,14 +425,16 @@ def test_stateless_rejects_stateful_optax_transforms() -> None:
         Stateless(optax.adam(0.1)).init(X0, PREFIX)
 
 
+def select_leaf(_: jax.Array) -> bool:
+    return True
+
+
 @pytest.mark.parametrize(
     "make",
     [
         lambda: optax.sgd(0.1),
         lambda: optax.chain(optax.clip(1.0), optax.scale(-1.0)),
-        lambda: optax.masked(
-            optax.scale(-1.0), lambda p: jax.tree.map(lambda _: True, p)
-        ),
+        lambda: optax.masked(optax.scale(-1.0), lambda p: jax.tree.map(select_leaf, p)),
     ],
     ids=["sgd", "chain", "masked"],
 )

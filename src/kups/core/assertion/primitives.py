@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import traceback
+from collections.abc import Sequence
 from typing import Any, Final
 
 import jax
@@ -34,14 +35,19 @@ _TRACEBACK_MARKER: Final[str] = "\nAssertion created at:\n"
 def _make_noop_primitive(name: str) -> Primitive:
     primitive = Primitive(name)
     primitive.multiple_results = True
-    primitive.def_impl(lambda *args, **kwargs: args)
-    primitive.def_abstract_eval(lambda *args, **kwargs: args)
-    mlir.register_lowering(
-        primitive,
-        lambda ctx, *args, **kwargs: mlir.lower_fun(
-            lambda *args: args, multiple_results=True
-        )(ctx, *args),
-    )
+
+    def passthrough[T](*args: T, **kwargs: object) -> tuple[T, ...]:
+        return args
+
+    primitive.def_impl(passthrough)
+    primitive.def_abstract_eval(passthrough)
+
+    def noop_p_lowering(
+        ctx: mlir.LoweringRuleContext, *args: object, **kwargs: object
+    ) -> Sequence[mlir.ir.Value[mlir.ir.Type]]:
+        return mlir.lower_fun(passthrough, multiple_results=True)(ctx, *args)
+
+    mlir.register_lowering(primitive, noop_p_lowering)
 
     def noop_p_jvp(
         primals: tuple[Any, ...], tangents: tuple[Any, ...], **kwargs: Any
@@ -82,12 +88,19 @@ def _scalar_bool(x: ShapedArray) -> ShapedArray:
 def _make_constant_primitive(name: str) -> Primitive:
     primitive = Primitive(name)
     primitive.multiple_results = False
-    primitive.def_impl(lambda x: jnp.ones_like(x, shape=(), dtype=jnp.bool))
+
+    def scalar_true(x: Array) -> Array:
+        return jnp.ones_like(x, shape=(), dtype=jnp.bool)
+
+    primitive.def_impl(scalar_true)
     primitive.def_abstract_eval(_scalar_bool)
-    mlir.register_lowering(
-        primitive,
-        lambda ctx, *args, **kwargs: [mlir.ir_constant(True, aval=ctx.avals_out[0])],
-    )
+
+    def constant_p_lowering(
+        ctx: mlir.LoweringRuleContext, *args: object, **kwargs: object
+    ) -> list[mlir.ir.Value[mlir.ir.Type]]:
+        return [mlir.ir_constant(True, aval=ctx.avals_out[0])]
+
+    mlir.register_lowering(primitive, constant_p_lowering)
 
     def constant_p_jvp(
         primals: tuple[Any, ...], tangents: tuple[Any, ...]

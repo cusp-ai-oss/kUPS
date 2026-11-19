@@ -128,7 +128,10 @@ class FixedCapacity[Value]:
         return self
 
     def multiply(self, factor: int) -> FixedCapacity[Value]:
-        return FixedCapacity(tree_map(lambda x: x * factor, self.size), self.error_msg)
+        def scale(x: int) -> int:
+            return x * factor
+
+        return FixedCapacity(tree_map(scale, self.size), self.error_msg)
 
 
 @dataclass
@@ -274,7 +277,11 @@ class MultipliedCapacity[Value]:
     @property
     def size(self) -> Value:
         """Effective capacity: each element of base_capacity.size * factor."""
-        return tree_map(lambda x: x * self.factor, self.base_capacity.size)
+
+        def scale(x: int) -> int:
+            return x * self.factor
+
+        return tree_map(scale, self.base_capacity.size)
 
     def generate_assertion(self, required_capacity: Array) -> Capacity[Value]:
         """Generate assertion by delegating to base with scaled requirement."""

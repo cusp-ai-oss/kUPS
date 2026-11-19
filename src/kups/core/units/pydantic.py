@@ -136,9 +136,11 @@ def _serialize(quantity: AnyQuantity) -> str | dict[str, object]:
     unit = _DISPLAY.get(dim) or units.active_base().unit(dim)
     magnitudes = quantity.to(unit)
     digits = jnp.finfo(magnitudes.dtype).precision
-    values = np.vectorize(lambda x: float(f"{x:.{digits}g}"), otypes=[float])(
-        magnitudes
-    ).tolist()
+
+    def rounded(x: np.floating) -> float:
+        return float(f"{x:.{digits}g}")
+
+    values = np.vectorize(rounded, otypes=[float])(magnitudes).tolist()
     if magnitudes.ndim == 0:
         return f"{values} {unit}"
     return {str(unit): values}

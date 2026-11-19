@@ -10,6 +10,7 @@ from typing import assert_type
 import ase.build
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import optax
 import pytest
@@ -41,7 +42,7 @@ from kups.core.data import Index, Table
 from kups.core.geometry import PositionsAndCell
 from kups.core.lens import Lens, bind, identity_lens
 from kups.core.patch import Patch
-from kups.core.potential import EmptyType, Potential
+from kups.core.potential import EmptyType, Potential, PotentialOut
 from kups.core.propagator import (
     LoopPropagator,
     Propagator,
@@ -201,7 +202,11 @@ def _run(
         for i in range(n_slots):
             if requested[i]:
                 if int(old.ordinal[i]) >= 0:
-                    emitted.append(tree_map(lambda x: x[i : i + 1].copy(), old))
+
+                    def copy_slot_row(x: np.ndarray) -> np.ndarray:
+                        return x[i : i + 1].copy()
+
+                    emitted.append(tree_map(copy_slot_row, old))
                 if ordinal < len(structures):
                     rows.append(
                         payload_from_structures(
@@ -249,7 +254,13 @@ def test_refill_exhaustion_and_evaluated_results(
     assert not bool(setup.state.finished.data.any())
     assert not bool(setup.state.particles.data.system.valid_mask.any())
     payload_lens: Lens[Batch, RelaxPayload] = slot_payload_lens(setup.slots)
-    evaluate = jit(as_result_function(lambda s: setup.potential(s).data))
+
+    def potential_out(
+        s: Batch,
+    ) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
+        return setup.potential(s).data
+
+    evaluate = jit(as_result_function(potential_out))
     for row in rows:
         assert int(row.step[0]) == (0 if tolerance else max_steps)
         state = payload_lens.set(
@@ -387,7 +398,11 @@ def test_pack_rejects_invalid_structures() -> None:
         jnp.array([[5.3, 0.5, 0.0], [0.0, 5.4, 0.0], [0.0, 0.0, 5.5]]) * u.angstrom
     )
     upper = bind(cell).focus(lambda c: c.frame).set(sheared)
-    batched = jax.tree.map(lambda x: jnp.stack([x, x]), cell)
+
+    def stack_twice(x: Array) -> Array:
+        return jnp.stack([x, x])
+
+    batched = jax.tree.map(stack_twice, cell)
     for bad_cell in [upper, batched]:
         with pytest.raises(ValueError, match="lower-triangular"):
             payload_from_structures([(particles, bad_cell)], 8, SPECIES, [0])

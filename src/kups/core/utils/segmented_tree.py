@@ -25,6 +25,8 @@ The helpers below operate per segment instead:
   — clip each row of every leaf to its segment's limit.
 * [tree_where_per_row][kups.core.utils.segmented_tree.tree_where_per_row]
   — select rows from one of two trees by a per-segment boolean table.
+* [single_segment_prefix][kups.core.utils.segmented_tree.single_segment_prefix]
+  — the prefix that puts every row in one segment.
 
 The reductions are built on
 [Index.sum_over][kups.core.data.index.Index.sum_over] /
@@ -55,6 +57,23 @@ from kups.core.utils.jax import tree_structure
 
 def _is_index(x: object) -> bool:
     return isinstance(x, Index)
+
+
+def single_segment_prefix(tree: PyTree) -> PyTree:
+    """Index prefix that puts every row of every leaf of ``tree`` in one segment.
+
+    Args:
+        tree: Pytree whose leaves have a leading row axis.
+
+    Returns:
+        Pytree with ``tree``'s structure whose leaves are ``Index`` objects
+        labelling all rows ``0``.
+    """
+
+    def one_segment(x: Array) -> Index[int]:
+        return Index.new((0,) * len(x))
+
+    return jax.tree.map(one_segment, tree)
 
 
 def layout_and_leaves(

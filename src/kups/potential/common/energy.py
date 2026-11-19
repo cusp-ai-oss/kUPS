@@ -331,8 +331,12 @@ class PotentialFromEnergy[
                 energies, vjp_fn, energy_result = units.vjp(
                     _potential, patched_g_inp, has_aux=True
                 )
+
+                def plain_ones(e: units.Energy) -> Array:
+                    return jnp.ones(e.shape, e.dtype)
+
                 # A plain seed pulls back dim(E)/dim(x).
-                seed = units.tree_map(lambda e: jnp.ones(e.shape, e.dtype), energies)
+                seed = units.tree_map(plain_ones, energies)
                 gradients = vjp_fn(seed)[0]
                 flat_out = q_tree.flatten_up_to(self.hessian_lens.get(gradients))
                 return flat_out, (gradients, energy_result)

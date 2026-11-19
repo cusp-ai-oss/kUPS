@@ -187,12 +187,20 @@ def _structure_factor_grid(
         return sf.reshape(n_systems, -1, 2).astype(dtype)
 
     if num_chunks == 1:
-        sf = grid(jax.tree.map(lambda t: t[0], tiles))
+
+        def first_tile(t: Array) -> Array:
+            return t[0]
+
+        sf = grid(jax.tree.map(first_tile, tiles))
     else:
+
+        def add_tile(
+            acc: Array, tile: tuple[Array, Array, Index[SystemId]]
+        ) -> tuple[Array, None]:
+            return acc + grid(tile), None
+
         sf, _ = jax.lax.scan(
-            jax.checkpoint(
-                lambda acc, tile: (acc + grid(tile), None), prevent_cse=False
-            ),
+            jax.checkpoint(add_tile, prevent_cse=False),
             jnp.zeros((n_systems, len(rows) * n_z, 2), dtype),
             tiles,
         )
@@ -338,14 +346,16 @@ def _sorted_particle_tiles(
         axis=1,
     )
     local_ids = jnp.cumsum(starts, axis=1, dtype=jnp.int32) - 1
+
     # A tile touches at most min(systems, particles) valid systems.
-    destinations = jax.vmap(
-        lambda ids, groups: (
+    def tile_destinations(ids: Array, groups: Array) -> Array:
+        return (
             jnp.full(min(n_systems, chunk), n_systems, dtype=jnp.int32)
             .at[groups]
             .set(ids, mode="drop")
         )
-    )(system_ids, local_ids)
+
+    destinations = jax.vmap(tile_destinations)(system_ids, local_ids)
     return _ParticleTiles(positions, charges, system_ids, local_ids, destinations)
 
 
@@ -353,15 +363,19 @@ def _accumulate_structure_factor(
     acc: KahanSummand[Array], partial: Array, destinations: Array
 ) -> KahanSummand[Array]:
     """Add a tile's partial sums to its distinct, valid system destinations."""
-    old = jax.tree.map(lambda a: a.at[destinations].get(mode="fill", fill_value=0), acc)
+
+    def gather(a: Array) -> Array:
+        return a.at[destinations].get(mode="fill", fill_value=0)
+
+    old = jax.tree.map(gather, acc)
     updated = old + partial
     # Compensation has zero tangent; stopping it avoids retaining every accumulator.
     updated = KahanSummand(updated.value, jax.lax.stop_gradient(updated.compensate))
-    return jax.tree.map(
-        lambda a, u: a.at[destinations].set(u, mode="drop", unique_indices=True),
-        acc,
-        updated,
-    )
+
+    def scatter(a: Array, u: Array) -> Array:
+        return a.at[destinations].set(u, mode="drop", unique_indices=True)
+
+    return jax.tree.map(scatter, acc, updated)
 
 
 def _structure_factor_tiled(

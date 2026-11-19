@@ -15,7 +15,7 @@ lens and the state need not carry a model field.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
@@ -73,8 +73,8 @@ def make_torch_mliap_from_state[State, Focus: IsTorchMliapGraphState](
 ) -> Potential[State, PositionsAndCell[units.Force], EmptyType, Patch[Any]]: ...
 
 
-def make_torch_mliap_from_state(
-    state: Any,
+def make_torch_mliap_from_state[State](
+    state: Lens[State, IsTorchMliapGraphState],
     *,
     parameters: TorchMliap | None = None,
     gradient: Lens[Geometry, PositionsAndCell[units.Length]] | None = None,
@@ -99,9 +99,10 @@ def make_torch_mliap_from_state(
     if parameters is not None:
         model_view = const_lens(parameters)
     else:
-        model_view = state.focus(lambda x: x.torch_mliap_model)
+        model_state = cast(Lens[State, IsTorchMliapState], state)
+        model_view = model_state.focus(lambda x: x.torch_mliap_model)
 
-    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_view(s).cutoff)
 
     particles_view = state.focus(lambda x: x.particles)

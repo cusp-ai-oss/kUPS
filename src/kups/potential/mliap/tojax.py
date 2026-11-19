@@ -20,7 +20,7 @@ from jax import Array, export
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
 from kups.core.data import Table
-from kups.core.lens import Lens, View
+from kups.core.lens import Lens, View, const_lens
 from kups.core.neighborlist import (
     NeighborList,
     NeighborListPoints,
@@ -113,10 +113,14 @@ class TojaxedMliap:
         args = (self.params, input)
         kwargs: dict[str, Any] = {}
         leafes = self.model.in_tree.flatten_up_to((args, kwargs))
+
+        def aval_dtype(x: jax.core.ShapedArray) -> jnp.dtype:
+            return x.dtype
+
         leafes = jax.tree.map(
             jax.lax.convert_element_type,
             leafes,
-            jax.tree.map(lambda x: x.dtype, list(self.model.in_avals)),
+            jax.tree.map(aval_dtype, list(self.model.in_avals)),
         )
         args, kwargs = self.model.in_tree.unflatten(leafes)
         return self.model.call(*args, **kwargs)
@@ -209,7 +213,7 @@ def make_tojaxed_potential[State, Gradients, Hessians](
     Returns:
         Jaxified potential.
     """
-    model_view = (lambda _: model) if isinstance(model, TojaxedMliap) else model
+    model_view = const_lens(model) if isinstance(model, TojaxedMliap) else model
     radius_graph_fn = GraphConstructor(
         particles=particles_view,
         systems=systems_view,

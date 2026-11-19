@@ -253,7 +253,11 @@ class Buffered(Table[TLabel, TData], Generic[TLabel, TData]):
         n = len(table)
         L_t = table.cls
         new_idx = tuple(map(L_t, range(n, num_free + n)))
-        new_data = jax.tree.map(lambda x: pad_axis(x, (0, num_free), 0), table.data)
+
+        def pad_rows(x: Array) -> Array:
+            return pad_axis(x, (0, num_free), 0)
+
+        new_data = jax.tree.map(pad_rows, table.data)
         # Ensure the viewed leaf has OOB for padded entries.
         if num_free > 0:
             mask = jnp.arange(n + num_free) < n
@@ -416,9 +420,11 @@ def add_buffers(
         item: tuple[Table[Any, Any], int, Callable[[Any], Index[Any]]],
     ) -> Table[Any, Any]:
         idx, pad, _view = item
-        empty = tree_map(
-            lambda x: jnp.zeros_like(x, shape=(pad, *x.shape[1:])), idx.data
-        )
+
+        def zero_rows(x: Array) -> Array:
+            return jnp.zeros_like(x, shape=(pad, *x.shape[1:]))
+
+        empty = tree_map(zero_rows, idx.data)
         return Table.arange(empty, label=idx.cls)
 
     def to_buffered(
@@ -438,12 +444,16 @@ def add_buffers(
     padded = list(map(generate_padding, normalized))
     # Set keys for padded tables to match their sizes.
     keys = {t.cls: t.keys for t in padded}
-    padded = tree_map(
-        lambda x: (
+
+    def relabel(x: object) -> object:
+        return (
             x.update_labels(keys[x.cls], allow_missing=True)
             if isinstance(x, Index) and x.cls in keys
             else x
-        ),
+        )
+
+    padded = tree_map(
+        relabel,
         padded,
         is_leaf=lambda x: isinstance(x, Index),
     )

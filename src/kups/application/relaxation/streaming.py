@@ -34,6 +34,7 @@ from kups.application.utils.particles import Particles, default_exclusion
 from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.data import Buffered, Index, Table
+from kups.core.data.index import SupportsSorting
 from kups.core.geometry import (
     Geometry,
     PositionsAndCell,
@@ -291,10 +292,14 @@ def payload_from_structures(
             ) from error
         padded = Buffered.pad(relabeled, capacity - n).data
         dtype = padded.positions.dtype
+
+        def add_batch_axis[K: SupportsSorting](x: Array | Index[K]) -> Array | Index[K]:
+            return x[None]
+
         rows.append(
             RelaxPayload(
                 particles=jax.tree.map(
-                    lambda x: x[None],
+                    add_batch_axis,
                     bind(padded)
                     .focus(lambda p: p.system)
                     .set(slot_system_index(padded.system.valid_mask)),
@@ -308,9 +313,13 @@ def payload_from_structures(
                 ordinal=jnp.asarray([ordinal], int),
             )
         )
+
+    def strong_dtype(x: Array) -> Array:
+        return x.astype(x.dtype)
+
     # Canonical (strong) dtypes: a weakly typed leaf would change the compiled
     # signature of the state once it is installed in a slot.
-    return jax.tree.map(lambda x: x.astype(x.dtype), tree_concat(*rows))
+    return jax.tree.map(strong_dtype, tree_concat(*rows))
 
 
 def idle_payload(
@@ -354,9 +363,11 @@ def make_streaming_relax_state[OptState](
 ) -> StreamingRelaxState[OptState]:
     """Create idle slots requesting their initial refill."""
     n_rows = len(slots.data.keys)
-    particle_data = tree_map(
-        lambda x: jnp.repeat(x[0, :1], n_rows, axis=0), idle.particles
-    )
+
+    def repeat_first_row(x: Array) -> Array:
+        return jnp.repeat(x[0, :1], n_rows, axis=0)
+
+    particle_data = tree_map(repeat_first_row, idle.particles)
     particles = Table(
         slots.data.keys,
         relax_particles(
@@ -371,9 +382,11 @@ def make_streaming_relax_state[OptState](
             exclusion=default_exclusion(n_rows),
         ),
     )
-    systems = Table(
-        slots.keys, tree_map(lambda x: jnp.repeat(x, len(slots), axis=0), idle.systems)
-    )
+
+    def repeat_per_slot(x: Array) -> Array:
+        return jnp.repeat(x, len(slots), axis=0)
+
+    systems = Table(slots.keys, tree_map(repeat_per_slot, idle.systems))
     return StreamingRelaxState(
         particles=particles,
         systems=systems,

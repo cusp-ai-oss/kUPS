@@ -313,12 +313,11 @@ class LocalMLIAPPatch[State](Patch[State]):
         """
         new_cache = self.cache
         mask = accept[self.system_idx]
-        return self.lens.apply(
-            state,
-            lambda cache: tree_map(
-                lambda a, b: where_broadcast_last(mask, a, b), new_cache, cache
-            ),
-        )
+
+        def select(a: Array, b: Array) -> Array:
+            return where_broadcast_last(mask, a, b)
+
+        return self.lens.apply(state, lambda cache: tree_map(select, new_cache, cache))
 
 
 def local_mliap_energy_full[
