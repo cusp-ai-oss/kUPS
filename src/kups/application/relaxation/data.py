@@ -17,6 +17,7 @@ from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
     Particles,
     default_exclusion,
+    fixed_from_ase,
     particles_from_ase,
 )
 from kups.core import units
@@ -39,6 +40,7 @@ from kups.core.neighborlist import UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, IsState, ParticleId, SystemId
 from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
+from kups.core.utils.ops import where_broadcast_last
 from kups.relaxation.config import TransformationConfig
 
 
@@ -54,11 +56,16 @@ class RelaxParticles(Particles):
             relaxation filter's output), shape ``(n_atoms, 3)``: ``∂E/∂q`` under
             ``cell_filter`` (reference-cartesian) or ``∂E/∂r`` under
             ``positions_only``. The force source and ASE-fmax convergence quantity.
+            Zero for fixed particles, as ASE reports constrained forces.
+        fixed: Whether ASE constraints hold the particle in place, shape
+            ``(n_atoms,)``. The relaxation step zeroes its position gradient and
+            keeps its position DOF, so under a cell filter it rides the cell.
         exclusion: Exclusion group of each particle; defaults to one group per
             particle.
     """
 
     position_gradients: units.Force
+    fixed: Array
     # pyrefly: ignore[bad-assignment]
     exclusion: Index[ExclusionId] = field(default=None, kw_only=True)
 
@@ -70,6 +77,15 @@ class RelaxParticles(Particles):
     def forces(self) -> units.Force:
         """Atomic forces, the negative position gradient."""
         return -self.position_gradients
+
+    def pin_fixed[Q: units.Measured](self, value: Q, reference: Q) -> Q:
+        """``value`` with the rows of fixed particles taken from ``reference``.
+
+        The single place a constraint acts on per-particle DOF data: the
+        relaxation step pins gradients to zero and positions to their current
+        value with it.
+        """
+        return where_broadcast_last(self.fixed, reference, value)
 
 
 @dataclass
@@ -197,9 +213,13 @@ def relax_particles(
     particles: Particles,
     *,
     position_gradients: units.Force | None = None,
+    fixed: Array | None = None,
     exclusion: Index[ExclusionId] | None = None,
 ) -> RelaxParticles:
-    """Relaxation particle rows from plain particles, gradients zeroed by default."""
+    """Relaxation particle rows from plain particles.
+
+    Gradients are zeroed and no particle is fixed by default.
+    """
     return RelaxParticles(
         positions=particles.positions,
         masses=particles.masses,
@@ -216,6 +236,9 @@ def relax_particles(
             if position_gradients is None
             else position_gradients
         ),
+        fixed=(
+            jnp.zeros(len(particles.positions), dtype=bool) if fixed is None else fixed
+        ),
         exclusion=(
             default_exclusion(len(particles.positions))
             if exclusion is None
@@ -225,7 +248,10 @@ def relax_particles(
 
 
 def relax_state_from_particles_and_cell(
-    particles: Table[ParticleId, Particles], cell: Cell[AnyPeriodicity]
+    particles: Table[ParticleId, Particles],
+    cell: Cell[AnyPeriodicity],
+    *,
+    fixed: Array | None = None,
 ) -> tuple[Table[ParticleId, RelaxParticles], Table[SystemId, RelaxSystems]]:
     """Build relaxation particle and system tables from plain particles and a cell.
 
@@ -233,6 +259,7 @@ def relax_state_from_particles_and_cell(
         particles: Particles of one or more systems. Keys are preserved;
             out-of-bounds system references denote padding.
         cell: Their cells in system-key order, unbatched for a single system.
+        fixed: Per-particle mask of atoms held in place; none by default.
 
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
@@ -254,7 +281,7 @@ def relax_state_from_particles_and_cell(
         )
     n_atoms = system.counts.data.astype(particles.data.positions.dtype)
     return (
-        particles.map_data(relax_particles),
+        particles.map_data(lambda p: relax_particles(p, fixed=fixed)),
         Table(system.keys, relax_systems(cell, n_atoms), _cls=SystemId),
     )
 
@@ -268,8 +295,14 @@ def relax_state_from_ase(
         atoms: ASE Atoms object, or a file path (str/Path) readable by
             ``ase.io.read``.
 
+    Whole-atom ASE constraints are kept (see
+    [fixed_from_ase][kups.application.utils.particles.fixed_from_ase]).
+
     Returns:
         Tuple of ``(particles, systems)`` ready for relaxation propagators.
+
+    Raises:
+        ValueError: If ``atoms`` carries a constraint relaxation does not support.
     """
     p, cell, _ = particles_from_ase(atoms)
-    return relax_state_from_particles_and_cell(p, cell)
+    return relax_state_from_particles_and_cell(p, cell, fixed=fixed_from_ase(atoms))

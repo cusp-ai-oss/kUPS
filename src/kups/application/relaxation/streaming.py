@@ -10,7 +10,7 @@ Host input and output live in the caller's ``refill`` callback of
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import jax
 import jax.numpy as jnp
@@ -55,7 +55,19 @@ from kups.core.utils.jax import dataclass, tree_concat, tree_map
 from kups.relaxation.convergence import converged_per_system
 from kups.relaxation.optimizer import Resettable
 
-type Structure = tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity]]
+
+class Structure(NamedTuple):
+    """One host structure to relax.
+
+    Attributes:
+        particles: Particles of one complete system.
+        cell: Its unbatched, lower-triangular cell.
+        fixed: Per-particle mask of atoms held in place; none by default.
+    """
+
+    particles: Table[ParticleId, Particles]
+    cell: Cell[AnyPeriodicity]
+    fixed: Array | None = None
 
 
 class OptReset[OptState](Protocol):
@@ -80,6 +92,7 @@ class RelaxPayload:
     Attributes:
         particles: Particle data of each row.
         position_gradients: Position gradients of each row's particles.
+        fixed: Whether each row's particles are held in place.
         systems: System data of each row.
         step: Number of optimizer updates of each row's job.
         ordinal: Job ordinal of each row, ``-1`` for an idle row.
@@ -87,6 +100,7 @@ class RelaxPayload:
 
     particles: Particles
     position_gradients: units.Force
+    fixed: Array
     systems: RelaxSystems
     step: Array
     ordinal: Array
@@ -165,6 +179,7 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
                 system=p.system,
             ),
             position_gradients=p.position_gradients,
+            fixed=p.fixed,
             systems=s.systems.data,
             step=s.step,
             ordinal=s.ordinal,
@@ -177,6 +192,8 @@ def slot_payload_lens[State: IsStreamingRelaxState[object]](
         particles = relax_particles(
             value.particles,
             position_gradients=value.position_gradients,
+            # From the payload, not the old rows: a refill brings its own mask.
+            fixed=value.fixed,
             exclusion=s.particles[slots.data].exclusion,
         )
         return (
@@ -255,9 +272,9 @@ def payload_from_structures(
         raise ValueError(
             f"The species vocabulary {vocabulary} must be sorted and unique."
         )
-    periodic = structures[0][1].periodic
+    periodic = structures[0].cell.periodic
     rows: list[RelaxPayload] = []
-    for (particles, cell), ordinal in zip(structures, ordinals, strict=True):
+    for (particles, cell, fixed), ordinal in zip(structures, ordinals, strict=True):
         if cell.vectors.shape != (3, 3) or bool(
             jnp.any(jnp.triu(units.magnitudes(cell.vectors), 1) != 0)
         ):
@@ -303,6 +320,9 @@ def payload_from_structures(
                 position_gradients=units.zeros(
                     (1, capacity, 3), u.eV / u.angstrom, dtype
                 ),
+                fixed=jnp.zeros((1, capacity), bool)
+                if fixed is None
+                else jnp.pad(fixed, (0, capacity - n))[None],
                 systems=relax_systems(cell, jnp.asarray([n], dtype)),
                 step=jnp.zeros((1,), int),
                 ordinal=jnp.asarray([ordinal], int),
@@ -343,7 +363,9 @@ def idle_payload(
         ),
         _cls=ParticleId,
     )
-    return payload_from_structures([(particles, cell)], capacity, species, [-1])
+    return payload_from_structures(
+        [Structure(particles, cell)], capacity, species, [-1]
+    )
 
 
 def make_streaming_relax_state[OptState](
@@ -413,7 +435,7 @@ def estimate_neighborlist_params(
         raise ValueError("Need at least one structure to size the neighbor list.")
     payload = payload_from_structures(sample, capacity, species, range(len(sample)))
     systems = Table.arange(payload.systems, label=SystemId)
-    n_atoms = jnp.asarray([len(p.keys) for p, _ in sample])
+    n_atoms = jnp.asarray([len(s.particles.keys) for s in sample])
     occupancy = float(n_atoms.mean()) / capacity
     return UniversalNeighborlistParameters.estimate(
         Table.arange(n_atoms, label=SystemId),

@@ -28,12 +28,14 @@ from kups.core.geometry import (
     PositionsAndSystemIndex,
     position_and_cell_idx_view,
 )
-from kups.core.lens import Lens, View, lens
+from kups.core.lens import LambdaLens, Lens, View, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
     EmptyType,
+    LinearMappedPotential,
+    LinearMappedPotentialInput,
     Potential,
     PotentialOut,
 )
@@ -112,6 +114,10 @@ def make_relax_step[State, OptState](
             ``optimizer.init`` and the update mask. Streaming may use a fixed
             row-to-slot mapping.
 
+    Fixed particles (``RelaxParticles.fixed``) get a zero position gradient,
+    which the cache, convergence and line searches all see, and keep their
+    position DOF on every set, so ``get(set(s, u)) != u`` on their rows.
+
     Returns:
         Tuple of ``(step, opt_init)``. ``step`` does not count steps or roll back
         on failed runtime assertions; :func:`make_relax_propagator` adds both.
@@ -150,13 +156,38 @@ def make_relax_step[State, OptState](
         sub = state_lens.get(s)
         return index_prefix(sub.particles, sub.systems)
 
+    def pin_fixed_gradients(
+        inp: LinearMappedPotentialInput[
+            State, PositionsAndCell[units.Force], EmptyType
+        ],
+    ) -> PotentialOut[PositionsAndCell[units.Force], EmptyType]:
+        # Linear, so it also holds for the Kahan compensation.
+        particles = state_lens.get(inp.state).particles.data
+        out = inp.potential_out
+        positions = out.gradients.positions.map_data(
+            lambda g: particles.pin_fixed(g, units.zeros_like(g))
+        )
+        return PotentialOut(
+            out.total_energies,
+            out.gradients._replace(positions=positions),
+            out.hessians,
+        )
+
+    dofs = lens(to_geometry).nest(gradient)
+
+    def set_dofs(s: State, value: PositionsAndCell[units.Length]) -> State:
+        particles = state_lens.get(s).particles.data
+        current = dofs.get(s).positions.data
+        positions = value.positions.map_data(lambda q: particles.pin_fixed(q, current))
+        return dofs.set(s, value._replace(positions=positions))
+
     step = RelaxationPropagator(
         potential=CachedPotential(
-            potential,
+            LinearMappedPotential(potential, pin_fixed_gradients),
             lens(cached_out),
             lambda s: position_and_cell_idx_view(to_geometry(s)),
         ),
-        property=lens(to_geometry).nest(gradient),
+        property=LambdaLens(dofs.get, set_dofs),
         opt_state=state_lens.focus(lambda x: x.opt_state),
         optimizer=optimizer,
         mask=None
