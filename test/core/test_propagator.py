@@ -3,6 +3,8 @@
 
 """Tests for propagator functionality."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 
 import jax
@@ -49,6 +51,17 @@ from kups.core.utils.jax import dataclass, field, key_chain
 
 
 # Test fixtures and helpers
+@contextmanager
+def _float32() -> Iterator[None]:
+    """Scoped float32; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", False)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
+
+
 @dataclass
 class ExampleState:
     """Simple test state for propagator testing."""
@@ -356,7 +369,7 @@ class TestMCMCPropagator:
         A move whose log acceptance ratio is far below the smallest nonzero draw must
         still be rejected; ``log(0) = -inf`` accepted every finite ratio.
         """
-        with jax.enable_x64(False):
+        with _float32():
             key = jax.random.key(3155069)
             chain = key_chain(key)
             next(chain), next(chain)  # proposal and patch keys
