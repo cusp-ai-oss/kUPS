@@ -3,6 +3,8 @@
 
 """Tests for propagator functionality."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 
 import jax
@@ -45,10 +47,21 @@ from kups.core.schedule import (
     PropertyScheduler,
 )
 from kups.core.typing import SystemId
-from kups.core.utils.jax import dataclass, field
+from kups.core.utils.jax import dataclass, field, key_chain
 
 
 # Test fixtures and helpers
+@contextmanager
+def _float32() -> Iterator[None]:
+    """Scoped float32; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", False)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
+
+
 @dataclass
 class ExampleState:
     """Simple test state for propagator testing."""
@@ -346,6 +359,37 @@ class TestMCMCPropagator:
         key = jax.random.key(12345)
         result2 = propagator2(key, simple_state)
         npt.assert_array_equal(result1.value, result2.value)
+
+    @pytest.mark.parametrize("log_ratio", [-20.0, -1e8, -1e30])
+    def test_zero_uniform_draw_rejects_a_hopeless_move(
+        self, simple_state, parameter_scheduler, log_ratio
+    ):
+        """In float32, seed 3155069 makes system 0's acceptance draw exactly 0.0.
+
+        A move whose log acceptance ratio is far below the smallest nonzero draw must
+        still be rejected; ``log(0) = -inf`` accepted every finite ratio.
+        """
+        with _float32():
+            key = jax.random.key(3155069)
+            chain = key_chain(key)
+            next(chain), next(chain)  # proposal and patch keys
+            assert jax.random.uniform(next(chain), (2,))[0] == 0
+
+            def changes(key, state, /):
+                return jnp.array(1.0), Table.arange(jnp.zeros(2), label=SystemId)
+
+            def density(state, patch):
+                return WithPatch(
+                    Table.arange(jnp.full(2, log_ratio), label=SystemId), IdPatch()
+                )
+
+            propagator = MCMCPropagator(
+                self._patch_fn, (changes,), density, (parameter_scheduler,)
+            )
+            result = propagator(key, simple_state)
+        accepted = result.scheduler_params.data.history.values[:, 0]
+        npt.assert_array_equal(accepted, False)
+        npt.assert_array_equal(result.value, simple_state.value)
 
     @pytest.mark.parametrize("log_ratio", [0.0, -jnp.inf])
     def test_noop_skips_density_but_updates_acceptance(

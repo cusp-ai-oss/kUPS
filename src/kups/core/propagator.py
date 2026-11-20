@@ -402,9 +402,12 @@ class MCMCPropagator[State, Changes, Move: Patch[Any]](Propagator[State]):
             accept_key = next(chain)
 
             def accept_ratio(log_ratio: LogProbabilityRatio) -> Accept:
-                return log_ratio > jnp.log(
-                    jax.random.uniform(accept_key, (len(log_ratio),))
+                # log(1 - u) is finite for u in [0, 1); log(u) is -inf at u = 0, which
+                # would accept every finite ratio.
+                threshold = jnp.log1p(
+                    -jax.random.uniform(accept_key, (len(log_ratio),))
                 )
+                return log_ratio.map_data(lambda ratio: ratio >= threshold)
 
             patch = self.patch_fn(patch_key, state, changes)
             if self.is_noop is None:
