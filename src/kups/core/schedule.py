@@ -156,7 +156,11 @@ class IncrementSchedule[Value](Schedule[Any, Value]):
 
     def __call__(self, input: object, current: Value) -> Value:
         del input  # Unused
-        return jax.tree.map(lambda c, i: c + i, current, self.increment)
+
+        def add(c: Array, i: Array) -> Array:
+            return c + i
+
+        return jax.tree.map(add, current, self.increment)
 
 
 @dataclass
@@ -204,7 +208,11 @@ class LinearSchedule[Value](Schedule[Array, Value]):
     def __call__(self, input: Array, current: Value) -> Value:
         del current  # Unused - linear schedule ignores current value
         t = jnp.clip(input / self.total_steps, 0.0, 1.0)
-        return jax.tree.map(lambda s, e: s + (e - s) * t, self.start, self.end)
+
+        def interpolate(s: Array, e: Array) -> Array:
+            return s + (e - s) * t
+
+        return jax.tree.map(interpolate, self.start, self.end)
 
 
 @dataclass
@@ -241,7 +249,11 @@ class ExponentialSchedule[Value](Schedule[Array, Value]):
 
     def __call__(self, input: Array, current: Value) -> Value:
         del input  # Unused - exponential schedule only uses current
-        new = jax.tree.map(lambda c: c * self.rate, current)
+
+        def scale(c: Array) -> Array:
+            return c * self.rate
+
+        new = jax.tree.map(scale, current)
         min_val, max_val = self.bounds
         if min_val is not None:
             new = jax.tree.map(jnp.maximum, new, min_val)
@@ -324,11 +336,11 @@ class CosineAnnealingSchedule[Value](Schedule[Array, Value]):
         del current  # Unused - cosine schedule ignores current value
         t = jnp.clip(input / self.total_steps, 0.0, 1.0)
         cos_factor = 0.5 * (1 + jnp.cos(jnp.pi * t))
-        return jax.tree.map(
-            lambda min_v, max_v: min_v + (max_v - min_v) * cos_factor,
-            self.min_value,
-            self.max_value,
-        )
+
+        def anneal(min_v: Array, max_v: Array) -> Array:
+            return min_v + (max_v - min_v) * cos_factor
+
+        return jax.tree.map(anneal, self.min_value, self.max_value)
 
 
 @dataclass
@@ -373,11 +385,11 @@ class ComposedSchedule[Value](Schedule[Array, Value]):
     def __call__(self, input: Array, current: Value) -> Value:
         first_result = self.first(input, current)
         second_result = self.second(input - self.transition_input, current)
-        return jax.tree.map(
-            lambda f, s: jnp.where(input < self.transition_input, f, s),
-            first_result,
-            second_result,
-        )
+
+        def select(f: Array, s: Array) -> Array:
+            return jnp.where(input < self.transition_input, f, s)
+
+        return jax.tree.map(select, first_result, second_result)
 
 
 @dataclass

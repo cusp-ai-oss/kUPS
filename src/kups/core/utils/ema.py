@@ -102,7 +102,10 @@ class EMA[PyTree]:
 
 @jit
 def _ema_update[PyTree](ema: EMA[PyTree], new_data: PyTree) -> EMA[PyTree]:
-    decayed = jax.tree.map(lambda x: ema.alpha * x, ema.data)
+    def decay(x: Array) -> Array:
+        return ema.alpha * x
+
+    decayed = jax.tree.map(decay, ema.data)
     data, compensate = kahan_summation(decayed, new_data, compensate=ema._compensate)
     weight = ema.weight * ema.alpha
     weight, weight_compensate = kahan_summation(
@@ -113,4 +116,7 @@ def _ema_update[PyTree](ema: EMA[PyTree], new_data: PyTree) -> EMA[PyTree]:
 
 @jit
 def _ema_get[PyTree](ema: EMA[PyTree]) -> PyTree:
-    return jax.tree.map(lambda x: x / ema.weight, ema.data)
+    def normalize(x: Array) -> Array:
+        return x / ema.weight
+
+    return jax.tree.map(normalize, ema.data)

@@ -303,21 +303,31 @@ class CellRows[Data](NamedTuple):
 
     def pad(self, padding: int, *, sentinel_cell: int) -> Self:
         """Append inactive rows with finite geometry and zero-filled payloads."""
+
+        def zero(_: Array) -> Array:
+            return jnp.array(0)
+
+        def inclusion_sentinel(_: Array) -> Array:
+            return jnp.array(self.inclusion.num_labels)
+
+        def exclusion_sentinel(_: Array) -> Array:
+            return jnp.array(self.exclusion.num_labels)
+
         fills = CellRows(
             jnp.array(0.0),
-            tree_map(lambda _: jnp.array(0), self.system),
-            tree_map(lambda _: jnp.array(self.inclusion.num_labels), self.inclusion),
-            tree_map(lambda _: jnp.array(self.exclusion.num_labels), self.exclusion),
-            tree_map(lambda _: jnp.array(0), self.data),
+            tree_map(zero, self.system),
+            tree_map(inclusion_sentinel, self.inclusion),
+            tree_map(exclusion_sentinel, self.exclusion),
+            tree_map(zero, self.data),
             jnp.array(sentinel_cell),
         )
-        return jax.tree.map(
-            lambda x, fill: jnp.concatenate(
+
+        def append_fill(x: Array, fill: Array) -> Array:
+            return jnp.concatenate(
                 [x, jnp.full((padding, *x.shape[1:]), fill, dtype=x.dtype)]
-            ),
-            self,
-            fills,
-        )
+            )
+
+        return jax.tree.map(append_fill, self, fills)
 
 
 def cell_rows[Data](
@@ -398,10 +408,11 @@ class CellListCache[Data](NamedTuple):
         """
         size = self.block_size
         n = self.sentinel_slot
-        return jax.tree.map(
-            lambda x: x[:n].reshape(n // size, size, *x.shape[1:])[blocks],
-            self.rows,
-        )
+
+        def take_blocks(x: Array) -> Array:
+            return x[:n].reshape(n // size, size, *x.shape[1:])[blocks]
+
+        return jax.tree.map(take_blocks, self.rows)
 
     @property
     def sentinel_slot(self) -> int:
@@ -773,7 +784,10 @@ def build_cell_list_cache[Data](
         .set(n_pad)
     )
 
-    sorted_rows: CellRows[Data] = jax.tree.map(lambda x: x[order], rows)
+    def reorder(x: Array) -> Array:
+        return x[order]
+
+    sorted_rows: CellRows[Data] = jax.tree.map(reorder, rows)
     padded_rows = sorted_rows.pad(n_pad + 1 - n, sentinel_cell=n_cells)
     bounds = BlockBounds.of(
         padded_rows.frac[:n_pad],
@@ -898,10 +912,12 @@ class CellListCacheUpdatePatch[State, Data](Patch[State]):
                 touched.cell.reshape(-1) != n_cells,
                 size,
             )
+
+            def set_block(o: Array, n: Array) -> Array:
+                return o.at[:, block].set(n, mode="drop")
+
             return bind(table, lambda t: t.block_bounds).apply(
-                lambda old: jax.tree.map(
-                    lambda o, n: o.at[:, block].set(n, mode="drop"), old, bounds
-                )
+                lambda old: jax.tree.map(set_block, old, bounds)
             )
 
         table = skip_on_cpu(jnp.any(ok), apply, lambda table: table, table)

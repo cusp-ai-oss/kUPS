@@ -53,9 +53,11 @@ class PairBatch(NamedTuple):
         """
         keys, queries = ctx.endpoints(batch)
         if query_lanes is not None:
-            queries = jax.tree.map(
-                lambda x: jnp.repeat(x, query_lanes, axis=0), ctx.edge_query_table.data
-            )
+
+            def repeat_lanes(x: Array) -> Array:
+                return jnp.repeat(x, query_lanes, axis=0)
+
+            queries = jax.tree.map(repeat_lanes, ctx.edge_query_table.data)
         key_system, query_system = Index.match(keys.system, queries.system)
         valid = InBoundsMask()(batch, ctx) & (key_system == query_system)
         delta = keys.positions - queries.positions - batch.edges.shifts[:, 0]
@@ -67,12 +69,14 @@ class PairBatch(NamedTuple):
         else:
             query_table = ctx.edge_query_table
             delta = delta.reshape(query_table.size, query_lanes, 3)
+
+            def add_lane_axis(x: Array) -> Array:
+                return x[:, None]
+
             # Keep the frame's diagonal/triangular structure and share it across
             # lanes. A dense batched matmul can become a separate GPU BLAS call,
             # materializing pair vectors instead of fusing with the pair kernel.
-            query_frames = jax.tree.map(
-                lambda x: x[:, None], frames[query_table.data.system]
-            )
+            query_frames = jax.tree.map(add_lane_axis, frames[query_table.data.system])
             rij = query_frames.to_real(delta).reshape((-1, 3))
         r2 = units.sum(rij**2, axis=-1)
         return cls(

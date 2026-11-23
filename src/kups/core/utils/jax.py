@@ -411,10 +411,11 @@ def enable_unrolled_threefry() -> None:
 
 def astype_floating[T](tree: T, dtype: DTypeLike) -> T:
     """Cast the floating-point leaves of ``tree`` to ``dtype``."""
-    return jax.tree.map(
-        lambda x: x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x,
-        tree,
-    )
+
+    def to_dtype(x: Array) -> Array:
+        return x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x
+
+    return jax.tree.map(to_dtype, tree)
 
 
 def key_chain(rng: Array, shape: tuple[int, ...] = ()) -> Generator[Array, None, None]:
@@ -1085,7 +1086,11 @@ def tree_concat[T](*trees: T) -> T:
     Returns:
         Pytree with each leaf concatenated along axis 0.
     """
-    return tree_map(lambda *x: jnp.concatenate(x), *trees)
+
+    def concat(*x: Array) -> Array:
+        return jnp.concatenate(x)
+
+    return tree_map(concat, *trees)
 
 
 def tree_stack[T](*trees: T) -> T:
@@ -1097,7 +1102,11 @@ def tree_stack[T](*trees: T) -> T:
     Returns:
         Pytree with each leaf stacked along a new leading axis.
     """
-    return tree_map(lambda *x: jnp.stack(x), *trees)
+
+    def stack(*x: Array) -> Array:
+        return jnp.stack(x)
+
+    return tree_map(stack, *trees)
 
 
 def tree_zeros_like[T](tree: T) -> T:

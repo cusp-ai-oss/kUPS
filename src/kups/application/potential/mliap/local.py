@@ -16,7 +16,7 @@ attribute.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, cast, overload
 
 from kups.core.cell import AnyPeriodicity
 from kups.core.lens import Lens, View, const_lens
@@ -150,8 +150,8 @@ def make_local_mliap_from_state[State, Ptch: Patch[Any], Gradient, Hessian](
 ) -> Potential[State, Gradient, Hessian, Ptch]: ...
 
 
-def make_local_mliap_from_state(
-    state: Any,
+def make_local_mliap_from_state[State](
+    state: Lens[State, IsLocalMLIAPGraphState],
     probe: Any = None,
     gradient_lens: Any = EMPTY_LENS,
     hessian_lens: Any = EMPTY_LENS,
@@ -196,13 +196,15 @@ def make_local_mliap_from_state(
         m = x.local_mliap_model
         return m.data if isinstance(m, HasCache) else m
 
+    model_state = cast(Lens[State, IsLocalMLIAPState[Any]], state)
+    cache_state = cast(Lens[State, IsCachedLocalMLIAPState[Any]], state)
     if probe is None:
         if parameters is not None:
             model_lens = const_lens(parameters)
         else:
-            model_lens = state.focus(_model)
+            model_lens = model_state.focus(_model)
 
-        def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+        def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
             return neighborlist_factory(state(s), model_lens(s).cutoff)
 
         return make_local_mliap_potential(
@@ -220,15 +222,15 @@ def make_local_mliap_from_state(
 
     if parameters is not None:
         model_lens = const_lens(parameters)
-        cache_view = state.focus(lambda x: x.local_mliap_cache)
+        cache_view = cache_state.focus(lambda x: x.local_mliap_cache)
     else:
-        model_lens = state.focus(lambda x: x.local_mliap_model.data)
-        cache_view = state.focus(lambda x: x.local_mliap_model.cache)
+        model_lens = model_state.focus(lambda x: x.local_mliap_model.data)
+        cache_view = model_state.focus(lambda x: x.local_mliap_model.cache)
 
     if out_idx_view is None:
         out_idx_view = empty_patch_idx_view
 
-    def neighborlist_view(s: object) -> NeighborList[Literal[2]]:
+    def neighborlist_view(s: State) -> NeighborList[Literal[2]]:
         return neighborlist_factory(state(s), model_lens(s).cutoff)
 
     return make_local_mliap_potential(

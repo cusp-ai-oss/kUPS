@@ -172,7 +172,7 @@ def make_md_step_from_state[State](
 
 
 def make_md_step_from_state[State](
-    state: Lens[State, Any],
+    state: Lens[State, IsState[MDParticleData, HasCell[Periodic3D]]],
     derivative_computation: Propagator[State],
     integrator: Integrator,
     *,

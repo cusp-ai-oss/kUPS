@@ -30,6 +30,7 @@ from typing import Any
 
 import jax.numpy as jnp
 from jax import Array
+from jax.typing import ArrayLike
 
 from kups.core import units
 from kups.core.utils.jax import dataclass, field, tree_map
@@ -147,7 +148,10 @@ class ParameterSchedulerState[V]:
         """
 
         def full[T](x: T) -> T:
-            return tree_map(lambda leaf: jnp.full((n_systems,), leaf), x)
+            def fill(leaf: ArrayLike) -> Array:
+                return jnp.full((n_systems,), leaf)
+
+            return tree_map(fill, x)
 
         return cls(
             value=full(initial_value),

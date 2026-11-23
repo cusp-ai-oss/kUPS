@@ -54,6 +54,7 @@ from kups.core.lens import lens
 from kups.core.typing import PyTree
 from kups.core.utils.jax import dataclass, field, tree_copy
 from kups.core.utils.segmented_tree import (
+    single_segment_prefix,
     tree_scale_per_row,
     tree_segment_norm,
     tree_vdot,
@@ -175,7 +176,7 @@ class ScaleByFire[Params](Resettable[Params, ScaleByFireState]):
         self, parameters: Params, index_prefix: PyTree | None = None
     ) -> ScaleByFireState:
         if index_prefix is None:
-            index_prefix = jax.tree.map(lambda x: Index.new((0,) * len(x)), parameters)
+            index_prefix = single_segment_prefix(parameters)
         idx_leaves = jax.tree.leaves(
             index_prefix, is_leaf=lambda x: isinstance(x, Index)
         )
@@ -204,7 +205,7 @@ class ScaleByFire[Params](Resettable[Params, ScaleByFireState]):
         # ``updates`` IS the force F = -∇L (optax convention); see module
         # docstring. v <- v + dt[s] · F (per-system dt broadcast per particle).
         velocity = jax.tree.map(
-            lambda v, sf: v + sf,
+            jnp.add,
             state.velocity,
             tree_scale_per_row(updates, state.dt, idx),
         )
@@ -222,7 +223,7 @@ class ScaleByFire[Params](Resettable[Params, ScaleByFireState]):
         v_scale = state.alpha.set_data(1.0 - state.alpha.data)
         f_scale = state.alpha.set_data(state.alpha.data * v_norm.data / safe_f_norm)
         mixed_velocity = jax.tree.map(
-            lambda a, b: a + b,
+            jnp.add,
             tree_scale_per_row(velocity, v_scale, idx),
             tree_scale_per_row(updates, f_scale, idx),
         )

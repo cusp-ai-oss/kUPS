@@ -19,6 +19,7 @@ from jax.typing import ArrayLike, DTypeLike
 from kups.core.units._base import active_base
 from kups.core.units._core import (
     AnyQuantity,
+    Measured,
     Quantity,
     agree,
     apply,
@@ -612,6 +613,8 @@ def select_n(which: ArrayLike, *cases: ArrayLike) -> jax.Array: ...
 def select_n(
     which: ArrayLike, *cases: Quantity[E_M, E_KG, E_S, E_A, E_K]
 ) -> Quantity[E_M, E_KG, E_S, E_A, E_K]: ...
+@overload
+def select_n(which: ArrayLike, *cases: Measured) -> Measured: ...
 def select_n(
     which: ArrayLike, *cases: ArrayLike | AnyQuantity
 ) -> jax.Array | AnyQuantity:

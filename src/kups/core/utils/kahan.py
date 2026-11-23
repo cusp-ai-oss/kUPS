@@ -126,8 +126,12 @@ class KahanSummand[T]:
             return (a_part - a) + (b_part - b)
 
         value = jax.tree.map(jnp.add, self.value, other.value)
+
+        def add_compensation(c: Array, o: Array, e: Array) -> Array:
+            return c + o + e
+
         compensate = jax.tree.map(
-            lambda c, o, e: c + o + e,
+            add_compensation,
             self.compensate,
             other.compensate,
             jax.tree.map(excess, value, self.value, other.value),
@@ -155,7 +159,11 @@ class KahanSummand[T]:
         Returns:
             A summand representing `other` times the accumulated sum.
         """
-        return jax.tree.map(lambda x: other * x, self)
+
+        def scale(x: Array) -> Array:
+            return other * x
+
+        return jax.tree.map(scale, self)
 
     def __rmul__(self, other: float) -> KahanSummand[T]:
         """Scale from the left, see [__mul__][kups.core.utils.kahan.KahanSummand.__mul__]."""
