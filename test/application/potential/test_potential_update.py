@@ -3,7 +3,7 @@
 
 """Tests that _from_state factories work correctly.
 
-For each classical potential the tests verify:
+For each potential the tests verify:
 1. _from_state produces finite energy.
 2. Energy changes when positions are perturbed.
 3. Incremental energy matches full recomputation across multiple perturbation
@@ -30,6 +30,7 @@ from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
 from kups.application.potential.classical.morse import make_morse_bond_from_state
+from kups.application.potential.mliap.local import make_local_mliap_from_state
 from kups.core import units
 from kups.core.capacity import FixedCapacity
 from kups.core.cell import Cell, PeriodicCell, TriclinicFrame
@@ -61,6 +62,7 @@ from kups.potential.classical.harmonic import (
 from kups.potential.classical.inversion import InversionParameters
 from kups.potential.classical.lennard_jones import LennardJonesParameters
 from kups.potential.classical.morse import MorseBondParameters
+from kups.potential.mliap.local import LocalMLIAPCache, LocalMLIAPData
 from test.units import EV, A, allclose
 
 # ---------------------------------------------------------------------------
@@ -69,6 +71,7 @@ from test.units import EV, A, allclose
 
 N_SPECIES = 2
 N_PARTICLES = 4
+_EMBED_DIM = 4
 _LABELS = ("A", "B")
 _PARTICLE_INDEX = tuple(ParticleId(i) for i in range(N_PARTICLES))
 
@@ -117,6 +120,7 @@ class State:
     dihedral_parameters: WithCache[DihedralParameters, EmptyCache]
     inversion_edge_indices: Index[ParticleId]
     inversion_parameters: WithCache[InversionParameters, EmptyCache]
+    local_mliap_model: WithCache[LocalMLIAPData, EmptyCache]
 
     def neighborlist(
         self, cutoffs: Table[SystemId, units.Length]
@@ -208,6 +212,7 @@ class _CommonParts(NamedTuple):
     ca: CosineAngleParameters
     dh: DihedralParameters
     inv: InversionParameters
+    mliap: LocalMLIAPData
 
 
 def _build_common(positions: units.Length | None = None) -> _CommonParts:
@@ -264,6 +269,32 @@ def _build_common(positions: units.Length | None = None) -> _CommonParts:
             omega0=jnp.zeros((ns, ns, ns, ns)),
             k=jnp.ones((ns, ns, ns, ns)) * 6.0 * EV,
         ),
+        mliap=_make_mliap(),
+    )
+
+
+def _make_mliap() -> LocalMLIAPData:
+    embedding = jnp.linspace(0.1, 0.4, 9 * _EMBED_DIM).reshape(9, _EMBED_DIM)
+
+    def init_function(atomic_numbers: Array) -> Array:
+        return embedding[atomic_numbers]
+
+    def edge_function(node1: Array, node2: Array, difference_vectors: Array) -> Array:
+        dist = jnp.linalg.norm(difference_vectors, axis=-1, keepdims=True)
+        return node2 / (dist + 1.0)
+
+    def readout_function(node_emb: Array, msg_sum: Array) -> Array:
+        return (node_emb * msg_sum).sum(-1)
+
+    return LocalMLIAPData(
+        cutoff=Table((SystemId(0),), jnp.array([5.0]) * A),
+        init_function=init_function,
+        edge_function=edge_function,
+        readout_function=readout_function,
+        cache=LocalMLIAPCache(
+            node_init=jnp.zeros((N_PARTICLES, _EMBED_DIM)),
+            msg_sum=jnp.zeros((N_PARTICLES, _EMBED_DIM)),
+        ),
     )
 
 
@@ -286,6 +317,7 @@ def _make_state(positions: units.Length | None = None) -> State:
         dihedral_parameters=WithCache(c.dh, ec),
         inversion_edge_indices=c.inversion_edge_indices,
         inversion_parameters=WithCache(c.inv, ec),
+        local_mliap_model=WithCache(c.mliap, ec),
     )
 
 
@@ -340,8 +372,15 @@ def _lj_from_state(state: Any, probe: Any = None) -> Any:
     )
 
 
+def _local_mliap_from_state(state: Any, probe: Any = None) -> Any:
+    return make_local_mliap_from_state(
+        state, probe, neighborlist_factory=_test_nl_factory
+    )
+
+
 _POTENTIALS: list[PotentialConfig] = [
     PotentialConfig("lennard_jones", _lj_from_state, None, None),
+    PotentialConfig("local_mliap", _local_mliap_from_state, None, None),
     PotentialConfig(
         "harmonic_bond", make_harmonic_bond_from_state, 2, "bond_edge_indices"
     ),
