@@ -43,15 +43,16 @@ _BIG = 9.0 * np.eye(3)
 _N_BIG = 36
 
 
-def _batch():
+def _batch(dtype=jnp.float64):
     big_frac = np.asarray(jax.random.uniform(jax.random.key(0), (_N_BIG, 3)))
     fracs = [big_frac, _FCC]
     matrices = [_BIG, _SMALL]
-    positions = jnp.asarray(np.concatenate([f @ m for f, m in zip(fracs, matrices)]))
+    positions = np.concatenate([f @ m for f, m in zip(fracs, matrices)])
     system_ids = jnp.repeat(jnp.arange(2), jnp.array([_N_BIG, len(_FCC)]))
-    lh = make_lh(positions * A, system_ids)
+    lh = make_lh(jnp.asarray(positions, dtype=dtype) * A, system_ids)
     systems, cutoffs = systems_from_lvecs(
-        jnp.asarray(np.stack(matrices)), jnp.array([_CUTOFF, _CUTOFF])
+        jnp.asarray(np.stack(matrices), dtype=dtype),
+        jnp.array([_CUTOFF, _CUTOFF], dtype=dtype),
     )
     return lh, systems, cutoffs, fracs, matrices
 
@@ -69,6 +70,25 @@ def _brute_force(fracs, matrices) -> set[tuple[int, int, tuple[int, ...]]]:
     return edges
 
 
+def _fixed_edges(nl_cls, state, cutoffs):
+    """Run the fix loop, then return the final state and its directed edges."""
+    lh, systems = state.particles, state.systems
+    for _ in range(5):
+        result = run_nl(nl_cls.from_state(state, cutoffs), lh, systems)
+        if not result.failed_assertions:
+            break
+        state = result.fix_or_raise(state)
+    result.raise_assertion()
+    edges = result.value
+    keep = np.asarray(edges.indices.valid_mask.all(axis=-1))
+    shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)[keep]
+    got = [
+        (int(i), int(j), tuple(int(s) for s in sh))
+        for (i, j), sh in zip(valid_ids(edges.indices), shifts)
+    ]
+    return state, got
+
+
 @pytest.mark.parametrize("nl_cls", [DenseNearestNeighborList, CellListNeighborList])
 def test_batch_keeps_images_when_capacities_are_equal(nl_cls):
     lh, systems, cutoffs, fracs, matrices = _batch()
@@ -81,21 +101,27 @@ def test_batch_keeps_images_when_capacities_are_equal(nl_cls):
     state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
     first = run_nl(nl_cls.from_state(state, cutoffs), lh, systems)
     assert first.failed_assertions, "dropping the images must not pass silently"
-    for _ in range(5):
-        result = run_nl(nl_cls.from_state(state, cutoffs), lh, systems)
-        if not result.failed_assertions:
-            break
-        state = result.fix_or_raise(state)
-    result.raise_assertion()
+    state, got = _fixed_edges(nl_cls, state, cutoffs)
     assert state.neighborlist_params.avg_image_candidates > 64
-    edges = result.value
-    keep = np.asarray(edges.indices.valid_mask.all(axis=-1))
-    shifts = np.rint(np.asarray(edges.shifts[:, 0, :])).astype(int)[keep]
-    got = {
-        (int(i), int(j), tuple(int(s) for s in sh))
-        for (i, j), sh in zip(valid_ids(edges.indices), shifts)
-    }
-    assert got == _brute_force(fracs, matrices)
+    assert set(got) == _brute_force(fracs, matrices)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("nl_cls", [DenseNearestNeighborList, CellListNeighborList])
+def test_replication_with_padding_rows_matches_brute_force(nl_cls, dtype):
+    # Replicated rows per candidate: one in the big cell, eight in the fcc
+    # cell, none for padding candidates; the image buffer holds four times the
+    # candidates, so rows past the last image are padding.
+    lh, systems, cutoffs, fracs, matrices = _batch(dtype)
+    params = UniversalNeighborlistParameters(
+        avg_edges=64, avg_candidates=64, avg_image_candidates=256, cells=8
+    )
+    state = EvalState(particles=lh, systems=systems, neighborlist_params=params)
+    state, got = _fixed_edges(nl_cls, state, cutoffs)
+    p = state.neighborlist_params
+    assert p.avg_image_candidates > p.avg_candidates
+    assert len(got) == len(set(got))
+    assert set(got) == _brute_force(fracs, matrices)
 
 
 def test_replicate_rejects_a_candidate_sized_buffer_with_padding():
