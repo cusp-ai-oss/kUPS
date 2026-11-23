@@ -38,6 +38,7 @@ from kups.application.relaxation.simulation import (
 from kups.application.utils.particles import Particles, default_exclusion
 from kups.application.utils.propagate import make_cycle_function, run_simulation_cycles
 from kups.core import units
+from kups.core.assertion import runtime_assert
 from kups.core.cell import AnyPeriodicity, Cell, TriclinicFrame
 from kups.core.data import Buffered, Index, Table
 from kups.core.data.index import SupportsSorting
@@ -67,7 +68,7 @@ from kups.core.stream import (
 from kups.core.typing import Label, ParticleId, SystemId
 from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, jit, tree_concat, tree_map
-from kups.relaxation.convergence import converged_per_system
+from kups.relaxation.convergence import fmax_per_system
 from kups.relaxation.optimizer import Resettable
 
 type Structure = tuple[Table[ParticleId, Particles], Cell[AnyPeriodicity]]
@@ -485,8 +486,8 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
             and
             [make_streaming_relax_state][kups.application.relaxation.streaming.make_streaming_relax_state].
         force_tolerance: A job converges once its largest DOF gradient norm is
-            below this; a non-finite gradient fails an unfixable assertion (see
-            [converged_per_system][kups.relaxation.convergence.converged_per_system]).
+            below this; a non-finite gradient fails an unfixable assertion that
+            names the job's ordinal, the highest one if several are affected.
         max_steps: Optimizer updates a job may take before it finishes
             unconverged.
         include_cell: Whether cell gradients count towards convergence.
@@ -507,14 +508,20 @@ def make_streaming_relax_propagator[State, OptState, P: Patch[Any]](
 
     def finished(s: State) -> Table[SystemId, Array]:
         sub = state_lens.get(s)
-        converged = converged_per_system(
+        maximum = fmax_per_system(
             relax_gradients(sub),
             relax_index_prefix(sub.particles, sub.systems),
-            force_tolerance,
             include_cell=include_cell,
         )
-        return converged.set_data(
-            (sub.ordinal >= 0) & (converged.data | (sub.step >= max_steps))
+        nonfinite = jnp.isposinf(units.magnitudes(maximum.data))
+        runtime_assert(
+            ~jnp.any(nonfinite),
+            "Non-finite relaxation gradients in structure {ordinal}.",
+            fmt_args={"ordinal": jnp.max(jnp.where(nonfinite, sub.ordinal, -1))},
+        )
+        converged = maximum.data < force_tolerance
+        return maximum.set_data(
+            (sub.ordinal >= 0) & (converged | (sub.step >= max_steps))
         )
 
     def accept(s: State) -> Table[SystemId, Array]:
@@ -562,17 +569,23 @@ class StreamingRelaxStepData(RelaxStepData):
     """Per-step snapshot of every slot for the HDF5 log.
 
     The inherited fields have one row per slot, and ``atoms`` holds every
-    reserved particle row. A structure's last record is its final geometry
-    with that geometry's energy and gradients.
+    reserved particle row. ``atoms`` is the geometry after the step's update,
+    while ``potential_energy``, ``max_force`` and ``stress_tensor`` were
+    evaluated before it: they belong to the previous record's geometry, and in
+    a structure's first record to its input geometry. A structure's last
+    record has no update, so it is the final geometry with that geometry's
+    energy and gradients.
 
     Attributes:
         ordinal: Structure held by each slot, as its position in the input;
             ``-1`` for an idle slot.
         step: Optimizer updates of each slot's structure so far.
+        finished: Whether this is the last record of the slot's structure.
     """
 
     ordinal: Array
     step: Array
+    finished: Array
 
     @staticmethod
     def from_slots(state: IsStreamingRelaxState[object]) -> StreamingRelaxStepData:
@@ -585,6 +598,7 @@ class StreamingRelaxStepData(RelaxStepData):
             stress_tensor=data.stress_tensor,
             ordinal=state.ordinal,
             step=state.step,
+            finished=state.finished.data,
         )
 
 

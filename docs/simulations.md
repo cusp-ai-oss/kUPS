@@ -64,9 +64,9 @@ kups_relax relax_torch_mace.yaml   # native MACE .model checkpoint
 kups_relax relax_torch_uma.yaml    # native UMA .pt checkpoint (fairchem)
 ```
 
-`inp_files` may list several structures. By default they all relax at once, each in its own *slot*. With `run.batch_size` set, that many relax at once and the next one takes a slot as soon as it is free. A structure leaves its slot once its largest force is below `run.force_tolerance` or after `run.max_steps` updates, and it relaxes as it would alone. All structures must share periodicity, and every slot reserves as many particle rows as the largest structure has atoms.
+`inp_files` may list several structures with the same periodicity. They all relax at once, or `run.batch_size` at a time: the next one starts as soon as one converges or reaches `run.max_steps`.
 
-The HDF5 file has one record per step, covering every slot. `ordinal` gives the structure in each slot as its position in `inp_files` (`-1` for an idle slot) and `step` its number of updates so far. [`analyze_streaming_relax_file`][kups.application.relaxation.analysis.analyze_streaming_relax_file] returns the final energy, largest force and step count per structure.
+The HDF5 file has one record per step; [`StreamingRelaxStepData`][kups.application.relaxation.streaming.StreamingRelaxStepData] describes its fields. Energies and forces belong to the previous record's geometry, except in a structure's last record. [`analyze_streaming_relax_file`][kups.application.relaxation.analysis.analyze_streaming_relax_file] returns the result of every structure that finished.
 
 **Optimizers:**
 

@@ -11,7 +11,7 @@ from typing import Annotated
 import ase
 import jax.numpy as jnp
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
@@ -161,7 +161,7 @@ class RelaxRunConfig(BaseModel):
     """
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
-    batch_size: int | None = None
+    batch_size: int | None = Field(default=None, gt=0)
     """Structures relaxed at once; further ones wait for a free slot. None relaxes all at once."""
 
 

@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
+import pydantic
 import pytest
 
 from kups.application.potential.classical.lennard_jones import (
@@ -30,9 +31,15 @@ from kups.application.relaxation.data import (
 )
 from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.relaxation.simulation import make_relax_propagator, run_relax
-from kups.application.relaxation.streaming import StreamingRelaxLoggedData
+from kups.application.relaxation.streaming import (
+    StreamingRelaxLoggedData,
+    StreamingRelaxState,
+    Structure,
+    run_streaming_relax,
+)
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
+from kups.application.utils.particles import particles_from_ase
 from kups.core import units
 from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
@@ -217,6 +224,71 @@ class TestRun:
         npt.assert_allclose(
             energy[ordinal == 0], fixed.to(u.eV)[:, 0], rtol=0, atol=1e-12
         )
+
+
+class TestAbortedRun:
+    """Two slots, three inputs: converged on entry, slow, and coincident atoms.
+
+    Structure 0 leaves its slot after the first cycle. Structure 2 takes it and
+    aborts the run while structure 1 is still relaxing.
+    """
+
+    @pytest.fixture(scope="class")
+    def aborted(self) -> tuple[str, str]:
+        """Output file and error message of the aborted run.
+
+        The structures are built in memory: the CIF reader drops an atom that
+        coincides with another.
+        """
+        structures: list[Structure] = []
+        for rattle in (0.0, 0.1, 0.1):
+            atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
+            atoms.rattle(rattle, seed=1)
+            particles, cell, _ = particles_from_ase(atoms)
+            structures.append((particles, cell))
+        last = structures[-1][0]
+        structures[-1] = (
+            bind(last)
+            .focus(lambda p: p.data.positions)
+            .apply(lambda r: r.at[1].set(r[0])),
+            structures[-1][1],
+        )
+        out = _tmp_h5()
+        config = _config(
+            out,
+            "unused",
+            max_steps=30,
+            force_tolerance="1e-6 eV/angstrom",
+            batch_size=2,
+        )
+        potential, cutoff = config.potential.build(
+            identity_lens(StreamingRelaxState[ChainOptState]), POSITIONS_ONLY
+        )
+        with pytest.raises(AssertionError) as error:
+            run_streaming_relax(
+                jax.random.key(0),
+                structures,
+                potential,
+                cutoff,
+                make_optimizer(config.run.optimizer),
+                POSITIONS_ONLY,
+                config.run,
+            )
+        return out, str(error.value)
+
+    def test_error_names_the_structure(self, aborted: tuple[str, str]):
+        assert "Non-finite relaxation gradients in structure 2." in aborted[1]
+
+    def test_analyzer_leaves_out_unfinished_structures(self, aborted: tuple[str, str]):
+        ordinal, _, _ = _streamed(aborted[0])
+        assert 1 in ordinal[-1]  # still in its slot when the run stopped
+        assert list(analyze_streaming_relax_file(aborted[0])) == [0]
+
+
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_batch_size_must_be_positive(batch_size: int) -> None:
+    with pytest.raises(pydantic.ValidationError, match="batch_size"):
+        _config(_tmp_h5(), "unused", batch_size=batch_size)
 
 
 def _assert_same_result(a: RelaxAnalysisResult, b: RelaxAnalysisResult) -> None:

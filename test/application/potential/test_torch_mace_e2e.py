@@ -284,3 +284,63 @@ def test_padding_rows_and_idle_slots_do_not_change_results(tmp_path):
     atoms = ase.build.bulk("Cu", "fcc", a=3.6, cubic=True)
     atoms.rattle(0.05, seed=0)
     assert_padding_and_idle_slots_do_not_change_results(mliap, atoms)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    _REQUIRES_GPU,
+    reason="kUPS torch wrapper requires JAX on CUDA",
+)
+def test_relax_run_does_not_depend_on_batch_size(tmp_path):
+    """``kups_relax`` relaxes a 4-atom and an 8-atom cell together as one by one."""
+    import ase.build
+    import ase.io
+
+    from kups.application.relaxation.analysis import analyze_streaming_relax_file
+    from kups.application.relaxation.data import RelaxRunConfig
+    from kups.application.simulations.potentials import MaceConfig
+    from kups.application.simulations.relax import Config, run
+    from kups.core.units import testing
+
+    model_path, _ = _resolve_or_create_mace_checkpoint(tmp_path)
+    inp_files: list[str] = []
+    for seed, repeat in enumerate(((1, 1, 1), (2, 1, 1))):
+        atoms = ase.build.bulk("Cu", "fcc", a=3.6, cubic=True) * repeat
+        atoms.rattle(0.05, seed=seed)
+        inp_files.append(str(tmp_path / f"cu_{seed}.cif"))
+        ase.io.write(inp_files[-1], atoms)
+
+    def relax(batch_size: int | None):
+        out_file = str(tmp_path / f"relax_{batch_size}.h5")
+        run(
+            Config(
+                run=RelaxRunConfig(
+                    out_file=out_file,
+                    max_steps=3,
+                    seed=0,
+                    force_tolerance="0 eV/angstrom",
+                    optimizer=[
+                        {"transform": "scale_by_ase_lbfgs", "memory_size": 10},
+                        {"transform": "max_step_size", "max_step_size": 0.05},
+                        {"transform": "scale", "step_size": -1},
+                    ],
+                    optimize_cell=True,
+                    batch_size=batch_size,
+                ),
+                potential=MaceConfig(model_path=model_path),
+                inp_files=tuple(inp_files),
+            )
+        )
+        return analyze_streaming_relax_file(out_file)
+
+    together = relax(None)
+    alone = relax(1)
+    assert list(together) == list(alone) == [0, 1]
+    for job, result in together.items():
+        assert result.n_steps == alone[job].n_steps == 3
+        testing.assert_allclose(
+            result.final_energy, alone[job].final_energy, EV, atol=1e-4
+        )
+        testing.assert_allclose(
+            result.final_max_force, alone[job].final_max_force, FORCE, atol=1e-3
+        )

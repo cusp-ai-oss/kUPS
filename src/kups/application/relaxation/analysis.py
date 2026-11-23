@@ -120,8 +120,9 @@ def analyze_streaming_relax_file(
 ) -> dict[int, RelaxAnalysisResult]:
     """Analyse streaming relaxation results from an HDF5 file.
 
-    Reads every step's per-slot ``ordinal``, ``step``, ``potential_energy`` and
-    ``max_force``, leaving the per-atom trajectory on disk.
+    Reads every step's per-slot ``ordinal``, ``step``, ``finished``,
+    ``potential_energy`` and ``max_force``, leaving the per-atom trajectory on
+    disk.
 
     Args:
         hdf5_path: Path to HDF5 output from
@@ -129,17 +130,24 @@ def analyze_streaming_relax_file(
 
     Returns:
         Per-structure results keyed by ordinal, the structure's position in the
-        input. ``n_steps`` counts the structure's own optimizer updates.
+        input. ``n_steps`` counts the structure's own optimizer updates. A
+        structure that had not finished when the run stopped is left out.
     """
     with HDF5StorageReader[StreamingRelaxLoggedData](hdf5_path) as reader:
         n_logged = int(reader.file.attrs["actual_steps"])
-        ordinal, step, energy, max_force = reader.focus_group(lambda s: s.step).read(
+        ordinal, step, finished, energy, max_force = reader.focus_group(
+            lambda s: s.step
+        ).read(
             slice(n_logged),
-            select=lambda d: (d.ordinal, d.step, d.potential_energy, d.max_force),
+            select=lambda d: (
+                d.ordinal,
+                d.step,
+                d.finished,
+                d.potential_energy,
+                d.max_force,
+            ),
         )
-    # A structure's last record is the one before its slot changes structure.
-    following = np.concatenate([ordinal[1:], np.full_like(ordinal[:1], -1)])
-    cycles, slots = np.nonzero((ordinal >= 0) & (ordinal != following))
+    cycles, slots = np.nonzero(finished)
     results = {
         int(ordinal[cycle, slot]): RelaxAnalysisResult(
             final_energy=energy[cycle, slot],
