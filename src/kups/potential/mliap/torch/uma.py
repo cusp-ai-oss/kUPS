@@ -120,7 +120,7 @@ class UMAModule(torch.nn.Module):
         pos = input["pos"].to(dtype=inf_dtype)
         species = input["atomic_numbers"].to(dtype=torch.int64)
         cell = input["cell"].to(dtype=inf_dtype)
-        batch = input["batch"].to(dtype=torch.int64).clone()
+        batch = input["batch"].to(dtype=torch.int64)
         edge_index = input["edge_index"].to(dtype=torch.int64)
         cell_offsets = -input["cell_offsets"].to(dtype=inf_dtype)
         pbc = input["pbc"]
@@ -148,20 +148,6 @@ class UMAModule(torch.nn.Module):
                     n_sys, 3, 3, dtype=out_dtype, device=dev
                 )
             return result
-
-        # kUPS's neighbor list is a fixed-size buffer; ``indices_in`` maps
-        # unused slots to the OOB sentinel ``len(keys) == n_atoms``. Drop
-        # those padded edges before handing the graph to UMA — otherwise the
-        # species/position gather hits true out-of-bounds indices and CUDA
-        # asserts.
-        valid_edge = (edge_index < n_atoms).all(dim=0)
-        edge_index = edge_index[:, valid_edge]
-        cell_offsets = cell_offsets[valid_edge]
-
-        # Pin the last atom to the last system so ``batch.max() + 1 == n_sys``
-        # (validates AtomicData). For ``sorted_by_system`` real input this is
-        # a no-op (the last atom is already in the last system).
-        batch[-1] = n_sys - 1
 
         # ``_lazy_init`` prepares the model on cpu before moving it to its
         # device, so the first call needs cpu data or the MOLE merge mixes cuda

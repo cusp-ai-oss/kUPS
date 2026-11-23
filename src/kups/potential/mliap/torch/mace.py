@@ -107,15 +107,7 @@ class MACEModule(torch.nn.Module):
         edge_index = input["edge_index"]
         cell_offsets = input["cell_offsets"].to(model_dtype)
 
-        n_atoms = pos.shape[0]
         n_sys = cell.shape[0]
-
-        # kUPS's neighbor list is a fixed-size buffer; ``indices_in`` maps
-        # unused slots to the OOB sentinel ``len(keys) == n_atoms``. Drop
-        # padded edges before indexing into atom-shaped tensors.
-        valid_edge = (edge_index < n_atoms).all(dim=0)
-        edge_index = edge_index[:, valid_edge]
-        cell_offsets = cell_offsets[valid_edge]
 
         counts = torch.bincount(batch, minlength=n_sys)
         ptr = torch.cat([batch.new_zeros(1), counts.cumsum(0)])
