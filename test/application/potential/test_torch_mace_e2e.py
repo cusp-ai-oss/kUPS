@@ -261,3 +261,26 @@ def test_kups_pipeline_matches_mace_calculator(tmp_path):
     np.testing.assert_allclose(kups_energy, mc_energy, atol=1e-5, rtol=1e-6)
     np.testing.assert_allclose(kups_forces, mc_forces, atol=1e-4, rtol=1e-4)
     np.testing.assert_allclose(kups_stress, mc_stress, atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    _REQUIRES_GPU,
+    reason="kUPS torch wrapper requires JAX on CUDA",
+)
+def test_padding_rows_and_idle_slots_do_not_change_results(tmp_path):
+    """A structure in a padded slot next to an idle slot evaluates as it does alone."""
+    import ase.build
+
+    from kups.potential.mliap.torch import load_mace
+    from test.application.potential.torch_padding import (
+        assert_padding_and_idle_slots_do_not_change_results,
+    )
+
+    model_path, _ = _resolve_or_create_mace_checkpoint(tmp_path)
+    mliap = load_mace(
+        model_path, device="cuda", dtype="float32", compute_cell_gradients=True
+    )
+    atoms = ase.build.bulk("Cu", "fcc", a=3.6, cubic=True)
+    atoms.rattle(0.05, seed=0)
+    assert_padding_and_idle_slots_do_not_change_results(mliap, atoms)

@@ -194,7 +194,7 @@ class TestLoadMACE:
 
         mliap = load_mace(model_path, device="cpu", compute_cell_gradients=True)
         assert isinstance(mliap, TorchMliap)
-        assert isinstance(mliap.wrapper.module, MACEModule)
+        assert isinstance(mliap.wrapper.module.module, MACEModule)
         assert mliap.compute_cell_gradients
         testing.assert_allclose(mliap.cutoff.data, jnp.array([4.5]), A)
 

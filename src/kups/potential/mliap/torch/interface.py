@@ -32,7 +32,7 @@ Requires the ``torch_dev`` dependency group: ``uv sync --group torch_dev``.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol, TypedDict, overload
+from typing import Any, Literal, Protocol, TypedDict, overload, override
 
 import jax.numpy as jnp
 import torch  # pyright: ignore[reportMissingImports]
@@ -160,8 +160,8 @@ class AtomGraphInput(TypedDict):
     """Universal input schema shared by all torch MLFF backends.
 
     Mirrors the JAX [AtomGraphInput][kups.potential.mliap.tojax.AtomGraphInput].
-    Shapes use ``N`` atoms, ``B`` systems, and ``E`` edges (each padded by one
-    extra atom/system to work around backends that cannot handle empty graphs).
+    Shapes use ``N`` atoms, ``B`` systems, and ``E`` edges. A backend module
+    receives only occupied systems, their atoms and the edges between them.
     Positions and cells are magnitudes in Å.
     """
 
@@ -199,6 +199,60 @@ class IsTorchMliapParticles(NeighborListPoints, HasAtomicNumbers, Protocol):
     ...
 
 
+class _OccupiedGraph(torch.nn.Module):
+    """Evaluates a backend module on the occupied part of an ``AtomGraphInput``.
+
+    An atom whose system index is out of range is padding. Padding atoms, edges
+    that touch one, unused edge-buffer entries and systems without atoms do not
+    reach the module, and their outputs are zero. Without any atom the module
+    is not called. Outputs have the device and dtype of ``pos``.
+    """
+
+    def __init__(self, module: torch.nn.Module, compute_cell_gradients: bool) -> None:
+        super().__init__()
+        self.module = module
+        self.compute_cell_gradients = compute_cell_gradients
+
+    @override
+    # pyrefly: ignore[bad-override]  # nn.Module is untyped without the optional torch
+    def forward(self, input: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        pos, batch, edge_index = input["pos"], input["batch"], input["edge_index"]
+        n_sys = input["cell"].shape[0]
+        atom = batch < n_sys
+        system = torch.bincount(batch[atom], minlength=n_sys) > 0
+        result = {
+            "energy": pos.new_zeros(n_sys),
+            "position_gradients": torch.zeros_like(pos),
+        }
+        if self.compute_cell_gradients:
+            result["cell_gradients"] = pos.new_zeros(n_sys, 3, 3)
+        if not system.any():
+            return result
+
+        # Unused edge-buffer entries point one past the last atom.
+        edge = torch.cat([atom, atom.new_zeros(1)])[edge_index].all(dim=0)
+        new_atom = torch.cumsum(atom, 0) - 1
+        new_system = torch.cumsum(system, 0) - 1
+        out = self.module(
+            {
+                "pos": pos[atom],
+                "atomic_numbers": input["atomic_numbers"][atom],
+                "cell": input["cell"][system],
+                "pbc": input["pbc"][system],
+                "edge_index": new_atom[edge_index[:, edge]].to(edge_index.dtype),
+                "cell_offsets": input["cell_offsets"][edge],
+                "batch": new_system[batch[atom]].to(batch.dtype),
+                "charge": input["charge"][system],
+                "spin": input["spin"][system],
+            }
+        )
+        result["energy"][system] = out["energy"].to(pos)
+        result["position_gradients"][atom] = out["position_gradients"].to(pos)
+        if self.compute_cell_gradients:
+            result["cell_gradients"][system] = out["cell_gradients"].to(pos)
+        return result
+
+
 @dataclass
 class TorchMliap:
     """Container for a torch MLFF wired into JAX.
@@ -230,7 +284,9 @@ class TorchMliap:
         Returns:
             Configured ``TorchMliap`` ready for use with the kUPS interface.
         """
-        wrapper = TorchModuleWrapper(module, requires_grad=True)
+        wrapper = TorchModuleWrapper(
+            _OccupiedGraph(module, compute_cell_gradients), requires_grad=True
+        )
         return TorchMliap(
             cutoff=Table((SystemId(0),), units.stack([cutoff])),
             wrapper=wrapper,
@@ -251,18 +307,15 @@ type TorchMliapInput[
 def _prepare_torch_inputs(graph: Any) -> AtomGraphInput:  # noqa: ANN401
     """Convert a sorted kUPS graph to ``AtomGraphInput``.
 
-    Unlike the JAX-exported [tojax][kups.potential.mliap.tojax] path — which
-    pads to keep symbolic shapes stable across calls — the torch bridge
-    operates on the raw real-system data. Torch handles dynamic shapes
-    natively (no XLA-style recompilation per shape), and several backends
-    (notably UMA's ``merge_mole`` mode) reject any padding-introduced phantom
-    system because it changes the per-batch composition.
+    Padding atoms, unused edge entries and empty systems pass through with
+    their out-of-range indices; ``TorchMliap`` drops them on the torch side,
+    where shapes may change between calls.
 
     Args:
         graph: ``HyperGraph`` already sorted by system.
 
     Returns:
-        Prepared inputs in the universal schema (no padding).
+        Prepared inputs in the universal schema.
     """
     n_sys = graph.systems.data.cell.vectors.shape[0]
     positions = graph.particles.data.positions.to(u.angstrom)

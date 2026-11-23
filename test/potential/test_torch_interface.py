@@ -31,7 +31,10 @@ from kups.core.typing import (  # noqa: E402
 from kups.core.units import testing  # noqa: E402
 from kups.core.utils.jax import dataclass  # noqa: E402
 from kups.potential.common.graph import GraphPotentialInput, HyperGraph  # noqa: E402
-from kups.potential.mliap.torch.interface import torch_mliap_model_fn  # noqa: E402
+from kups.potential.mliap.torch.interface import (  # noqa: E402
+    TorchMliap,
+    torch_mliap_model_fn,
+)
 from test.units import FORCE, A  # noqa: E402
 
 
@@ -133,3 +136,93 @@ def test_unsort_recovers_original_atom_order():
 
     pos_grad = run(graph).positions.data
     testing.assert_allclose(pos_grad, positions * FORCE, FORCE, rtol=0, atol=0)
+
+
+class _SumOfSquares(torch.nn.Module):
+    """Stand-in MLFF with ``E = Σ r²`` per system that keeps its last input."""
+
+    def forward(self, input: dict[str, Any]) -> dict[str, Any]:
+        self.seen = input
+        pos, cell = input["pos"], input["cell"]
+        energy = pos.new_zeros(cell.shape[0]).index_add(
+            0, input["batch"], (pos**2).sum(-1)
+        )
+        return {
+            "energy": energy,
+            "position_gradients": 2 * pos,
+            "cell_gradients": cell + 1,
+        }
+
+
+class _NeverCalled(torch.nn.Module):
+    """Stand-in MLFF that fails when it is evaluated."""
+
+    def forward(self, input: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("The model was called on an input without atoms.")
+
+
+def _padded_input() -> dict[str, Any]:
+    """Three systems, the middle one empty, followed by two padding atoms.
+
+    The edges are two real pairs in system 0, a self-image pair in system 2, an
+    unused buffer entry and a pair of padding atoms.
+    """
+    return {
+        "pos": torch.arange(15.0).reshape(5, 3),
+        "atomic_numbers": torch.tensor([29, 29, 29, 0, 0]),
+        "cell": torch.eye(3) * torch.tensor([4.0, 5.0, 6.0]).view(3, 1, 1),
+        "pbc": torch.tensor([[True] * 3, [False] * 3, [True, True, False]]),
+        "edge_index": torch.tensor([[0, 1, 2, 5, 3], [1, 0, 2, 5, 4]]),
+        "cell_offsets": torch.tensor(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0], [0, 0, 1]]
+        ),
+        "batch": torch.tensor([0, 0, 2, 3, 3]),
+        "charge": torch.tensor([0.0, 1.0, 2.0]),
+        "spin": torch.tensor([3.0, 4.0, 5.0]),
+    }
+
+
+def test_model_sees_only_occupied_systems_and_their_atoms():
+    model = _SumOfSquares()
+    inp = _padded_input()
+    TorchMliap.from_module(model, 5.0 * A).wrapper.module(inp)
+    seen = model.seen
+    assert seen["pos"].tolist() == inp["pos"][:3].tolist()
+    assert seen["atomic_numbers"].tolist() == [29, 29, 29]
+    assert seen["batch"].tolist() == [0, 0, 1]
+    assert seen["cell"].tolist() == inp["cell"][[0, 2]].tolist()
+    assert seen["pbc"].tolist() == inp["pbc"][[0, 2]].tolist()
+    assert seen["edge_index"].tolist() == [[0, 1, 2], [1, 0, 2]]
+    assert seen["cell_offsets"].tolist() == [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
+    assert seen["charge"].tolist() == [0.0, 2.0]
+    assert seen["spin"].tolist() == [3.0, 5.0]
+
+
+def test_padding_rows_and_empty_systems_get_zeros():
+    inp = _padded_input()
+    mliap = TorchMliap.from_module(
+        _SumOfSquares(), 5.0 * A, compute_cell_gradients=True
+    )
+    out = mliap.wrapper.module(inp)
+    assert out["energy"].tolist() == [55.0, 0.0, 149.0]
+    assert out["position_gradients"][:3].tolist() == (2 * inp["pos"][:3]).tolist()
+    assert out["position_gradients"][3:].tolist() == [[0.0] * 3] * 2
+    assert out["cell_gradients"][[0, 2]].tolist() == (inp["cell"][[0, 2]] + 1).tolist()
+    assert out["cell_gradients"][1].tolist() == [[0.0] * 3] * 3
+
+
+@pytest.mark.parametrize("compute_cell_gradients", [False, True])
+def test_input_without_atoms_gives_zeros_without_a_model_call(
+    compute_cell_gradients: bool,
+):
+    inp = _padded_input()
+    inp["batch"] = torch.full((5,), 3)
+    mliap = TorchMliap.from_module(
+        _NeverCalled(), 5.0 * A, compute_cell_gradients=compute_cell_gradients
+    )
+    out = mliap.wrapper.module(inp)
+    assert out["energy"].tolist() == [0.0] * 3
+    assert out["position_gradients"].tolist() == [[0.0] * 3] * 5
+    assert ("cell_gradients" in out) == compute_cell_gradients
+    if compute_cell_gradients:
+        assert out["cell_gradients"].tolist() == [[[0.0] * 3] * 3] * 3
