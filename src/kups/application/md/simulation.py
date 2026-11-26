@@ -156,8 +156,7 @@ def run_md[State: IsMdState](
     state = run_warmup_cycles(next(chain), cycle_fn, state, config.num_warmup_steps)
 
     logging.info("Starting MD simulation")
-    # Each cycle fuses block_size steps into one dispatch and saves its final frame, so the
-    # trajectory keeps num_steps // block_size frames (block_size=1 = one step per cycle).
+    # Each cycle runs block_size steps in one compiled call and logs its final state.
     cycle_fn = make_cycle_function(LoopPropagator(propagator, config.block_size))
     num_cycles = config.num_steps // config.block_size
     logger = CompositeLogger(

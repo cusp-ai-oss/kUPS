@@ -5,6 +5,7 @@ run:
   out_file: ../../md_npt_lj_argon_baoab.h5
   num_warmup_steps: 5_000
   num_steps: 5_000
+  block_size: 1
   seed: 42
 
 md:

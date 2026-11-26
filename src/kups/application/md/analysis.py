@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 import numpy as np
+from jax import Array
 
 from kups.application.md.logging import MDLoggedData
 from kups.core import units
@@ -40,6 +41,9 @@ class IsMDStepData(HasPotentialEnergy, HasStressTensor, Protocol):
     """Contract for the step reader group."""
 
     @property
+    def step(self) -> Array: ...
+
+    @property
     def kinetic_energy(self) -> units.Energy: ...
 
     @property
@@ -58,12 +62,12 @@ class MDAnalysisResult:
         kinetic_energy: Average kinetic energy with SEM.
         total_energy: Average total energy with SEM.
         temperature: Average temperature with SEM.
-        energy_drift: Linear drift rate of the total energy, per step.
+        energy_drift: Linear drift rate of the total energy, per MD step.
         energy_drift_per_atom: Energy drift per step and atom.
         pressure: Average pressure with SEM.
         volume: Average cell volume with SEM.
         n_atoms: Number of atoms in this system.
-        n_steps: Number of simulation steps analyzed.
+        n_steps: Number of logged rows analyzed, one per block of steps.
     """
 
     potential_energy: BlockAverageResult[units.Energy]
@@ -79,6 +83,7 @@ class MDAnalysisResult:
 
 
 def _analyze_single_system(
+    step: Array,
     potential_energy: units.Energy,
     kinetic_energy: units.Energy,
     internal_kinetic_energy: units.Energy,
@@ -90,6 +95,7 @@ def _analyze_single_system(
     """Block-average one system's time series into thermodynamic averages.
 
     Args:
+        step: MD step counter of each row, shape ``(n_steps,)``.
         potential_energy: Potential energy, shape ``(n_steps,)``.
         kinetic_energy: Total kinetic energy, shape ``(n_steps,)``.
         internal_kinetic_energy: Center-of-mass-projected kinetic energy used for
@@ -114,9 +120,7 @@ def _analyze_single_system(
         pressure_result = block_average(pressure, n_blocks=n_blocks)
 
     # polyfit runs on plain numbers.
-    slope, _ = np.polyfit(
-        np.arange(len(total_energy)), np.asarray(total_energy.to(u.eV)), 1
-    )
+    slope, _ = np.polyfit(np.asarray(step), np.asarray(total_energy.to(u.eV)), 1)
     drift = float(slope) * u.eV
 
     return MDAnalysisResult(
@@ -135,6 +139,7 @@ def _analyze_single_system(
 
 def _analyze_md_systems(
     system: Index[SystemId],
+    step: Array,
     potential_energy: units.Energy,
     kinetic_energy: units.Energy,
     internal_kinetic_energy: units.Energy,
@@ -146,6 +151,7 @@ def _analyze_md_systems(
 
     Args:
         system: Per-atom system index supplying keys and atom counts.
+        step: MD step counter of each row, shape ``(n_steps, 1)``.
         potential_energy: Potential energy, shape ``(n_steps, n_systems)``.
         kinetic_energy: Total kinetic energy, shape ``(n_steps, n_systems)``.
         internal_kinetic_energy: Center-of-mass-projected kinetic energy, shape
@@ -160,6 +166,7 @@ def _analyze_md_systems(
     n_atoms_per_system = system.counts.data
     return {
         sys_id: _analyze_single_system(
+            step[:, 0],
             potential_energy[:, i],
             kinetic_energy[:, i],
             internal_kinetic_energy[:, i],
@@ -184,7 +191,8 @@ def analyze_md(
 
     Args:
         init_data: Initial simulation state providing the per-atom system index.
-        step_data: Per-step thermodynamic data with shape ``(n_steps, n_systems)``.
+        step_data: Logged thermodynamic data with shape ``(n_steps, n_systems)`` and
+            the MD step counter of each row.
         n_blocks: Number of blocks for error estimation. ``None`` auto-selects via
             ``optimal_block_average``.
 
@@ -193,6 +201,7 @@ def analyze_md(
     """
     return _analyze_md_systems(
         init_data.atoms.data.system,
+        step_data.step,
         step_data.potential_energy,
         step_data.kinetic_energy,
         step_data.internal_kinetic_energy,
@@ -208,9 +217,9 @@ def analyze_md_file(
 ) -> dict[SystemId, MDAnalysisResult]:
     """Analyze MD simulation results from an HDF5 file.
 
-    Reads only the per-step thermodynamic scalars (energies, stress, volume) and
+    Reads only the logged step counter and thermodynamic scalars (energies, stress, volume) and
     the initial system index, leaving the per-atom trajectory on disk. Internal
-    kinetic energy is logged per step, so no momenta are read here.
+    kinetic energy is logged, so no momenta are read here.
 
     Args:
         hdf5_path: Path to HDF5 file from MD simulation.
@@ -224,19 +233,26 @@ def analyze_md_file(
         system = reader.focus_group(lambda s: s.init).read(
             select=lambda d: d.atoms.data.system
         )
-        potential_energy, kinetic_energy, internal_kinetic_energy, stress, volume = (
-            reader.focus_group(lambda s: s.step).read(
-                select=lambda d: (
-                    d.potential_energy,
-                    d.kinetic_energy,
-                    d.internal_kinetic_energy,
-                    d.stress_tensor,
-                    d.volume,
-                )
+        (
+            step,
+            potential_energy,
+            kinetic_energy,
+            internal_kinetic_energy,
+            stress,
+            volume,
+        ) = reader.focus_group(lambda s: s.step).read(
+            select=lambda d: (
+                d.step,
+                d.potential_energy,
+                d.kinetic_energy,
+                d.internal_kinetic_energy,
+                d.stress_tensor,
+                d.volume,
             )
         )
     return _analyze_md_systems(
         system,
+        step,
         potential_energy,
         kinetic_energy,
         internal_kinetic_energy,

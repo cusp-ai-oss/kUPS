@@ -12,7 +12,7 @@ import ase
 import jax
 import jax.numpy as jnp
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
@@ -240,14 +240,24 @@ class MdRunConfig(BaseModel):
     out_file: str | Path
     """Path to the output HDF5 file."""
     num_steps: int
-    """Number of production steps."""
+    """Number of production steps, a multiple of ``block_size``."""
     num_warmup_steps: int
     """Number of warmup steps before production."""
-    block_size: int = 1
-    """Production steps fused per on-device dispatch (1 = per-step). Only the last frame of
-    each block is saved, so the trajectory has num_steps // block_size frames."""
+    block_size: int = Field(default=100, ge=1)
+    """Production steps per compiled call. The output has one row per block, written
+    after the block's last step."""
     seed: int | None
     """Random seed for reproducibility. None for time-based."""
+
+    @model_validator(mode="after")
+    def _check_whole_blocks(self) -> MdRunConfig:
+        """Reject a production length that is not a whole number of blocks."""
+        if self.num_steps % self.block_size:
+            raise ValueError(
+                f"run.num_steps ({self.num_steps}) must be a multiple of "
+                f"run.block_size ({self.block_size}): production runs in whole blocks."
+            )
+        return self
 
 
 class MdParameters(BaseModel):

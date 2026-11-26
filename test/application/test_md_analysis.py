@@ -44,8 +44,9 @@ class MockInitData:
 
 @dataclass
 class MockStepData:
-    """Mock satisfying IsMDStepData (per-step thermodynamic scalars)."""
+    """Mock satisfying IsMDStepData (step counter and thermodynamic scalars)."""
 
+    step: Array
     potential_energy: units.Energy
     kinetic_energy: units.Energy
     stress_tensor: units.Pressure
@@ -90,9 +91,11 @@ def _make_step(
     stress: Array,
     volume: Array | None = None,
     internal_ke: Array | None = None,
+    steps_per_row: int = 1,
 ) -> MockStepData:
     """Create mock step data; internal KE defaults to the logged KE."""
     return MockStepData(
+        step=steps_per_row * jnp.arange(1, len(pe) + 1)[:, None],
         potential_energy=as_unit(pe, EV),
         kinetic_energy=as_unit(ke, EV),
         stress_tensor=as_unit(stress, PRESSURE),
@@ -192,6 +195,19 @@ class TestAnalyzeMD:
         assert r.energy_drift_per_atom.to(EV) == pytest.approx(slope / 10, rel=1e-6)
         assert r.n_steps == n_steps
 
+    def test_energy_drift_is_per_md_step(self):
+        """Rows logged every 5 MD steps give a drift per step, not per row."""
+        n_rows, steps_per_row, slope = 100, 5, 0.001
+        pe = (jnp.arange(n_rows, dtype=jnp.float64) * steps_per_row * slope)[:, None]
+        ke = jnp.zeros((n_rows, 1))
+        stress = jnp.zeros((n_rows, 1, 3, 3))
+
+        step = _make_step(pe, ke, stress, steps_per_row=steps_per_row)
+        r = analyze_md(_make_init(), step, n_blocks=10)[SystemId(0)]
+
+        assert r.energy_drift.to(EV) == pytest.approx(slope, rel=1e-6)
+        assert r.n_steps == n_rows
+
     def test_multi_system(self):
         """Per-system analysis with two independent systems."""
         n_steps = 100
@@ -223,6 +239,7 @@ def _trajectory(
     base = jnp.arange(n_systems, dtype=jnp.float64)
     steps = [
         MockStepData(
+            step=jnp.array([3 * (t + 1)]),
             potential_energy=(base + 0.1 * t) * EV,
             kinetic_energy=(0.5 * base + 0.01 * t + 1.0) * EV,
             stress_tensor=jnp.eye(3) * (0.2 * t + base[:, None, None]) * PRESSURE,
@@ -237,6 +254,7 @@ def _trajectory(
 def _stack_steps(steps: list[MockStepData]) -> MockStepData:
     """Stack per-step states into one trajectory object (leading time axis)."""
     return MockStepData(
+        step=jnp.stack([s.step for s in steps]),
         potential_energy=units.stack([s.potential_energy for s in steps]),
         kinetic_energy=units.stack([s.kinetic_energy for s in steps]),
         stress_tensor=units.stack([s.stress_tensor for s in steps]),
