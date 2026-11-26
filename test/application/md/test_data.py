@@ -524,6 +524,7 @@ def test_builder_initial_zero_state_and_pytree_contract(
         ("baoab_langevin", BAOABLangevinParams),
         ("csvr", CSVRParams),
         ("csvr_npt", CSVRNPTParams),
+        ("csvr_npt_euler", CSVRNPTParams),
         ("baoab_npt_langevin", BAOABNPTLangevinParams),
     ],
 )

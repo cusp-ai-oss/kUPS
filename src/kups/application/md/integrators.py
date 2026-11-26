@@ -109,7 +109,7 @@ def make_md_step_from_state[State](
 def make_md_step_from_state[State](
     state: Lens[State, IsState[MDParticleData, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
-    integrator: Literal["csvr_npt"],
+    integrator: Literal["csvr_npt", "csvr_npt_euler"],
     *,
     parameters: None = None,
 ) -> Propagator[State]: ...
@@ -149,7 +149,7 @@ def make_md_step_from_state[State](
 def make_md_step_from_state[State](
     state: Lens[State, IsState[MDParticleData, IsMDSystemNPTBase]],
     derivative_computation: Propagator[State],
-    integrator: Literal["csvr_npt"],
+    integrator: Literal["csvr_npt", "csvr_npt_euler"],
     *,
     parameters: IsCSVRNPTParams,
 ) -> Propagator[State]: ...
@@ -185,7 +185,10 @@ def make_md_step_from_state[State](
     ``"verlet"`` (NVE), ``"baoab_langevin"`` or ``"csvr"`` (NVT),
     ``"csvr_npt"`` or ``"baoab_npt_langevin"`` (NPT; the latter needs a
     :class:`~kups.core.cell.TriclinicFrame` cell). The overloads give the state
-    protocol each choice requires.
+    protocol each choice requires. ``"csvr_npt_euler"`` is ``"csvr_npt"`` with the
+    Euler barostat integrator, one force evaluation per step; see
+    ``refresh_after_barostat`` of
+    [make_csvr_npt_step][kups.md.integrators.make_csvr_npt_step].
 
     Args:
         state: Lens into the sub-state with ``particles`` and ``systems``.
@@ -228,9 +231,13 @@ def make_md_step_from_state[State](
             return make_csvr_step(
                 particles_lens, systems_lens, derivative_computation, flow
             )
-        case "csvr_npt":
+        case "csvr_npt" | "csvr_npt_euler":
             return make_csvr_npt_step(
-                particles_lens, systems_lens, derivative_computation, flow
+                particles_lens,
+                systems_lens,
+                derivative_computation,
+                flow,
+                refresh_after_barostat=integrator == "csvr_npt",
             )
         case "baoab_npt_langevin":
             return make_baoab_npt_langevin_step(

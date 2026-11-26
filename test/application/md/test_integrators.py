@@ -7,8 +7,11 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
+import pytest
 from jax import Array
+from jax.typing import DTypeLike
 
+from kups.application.md.integrators import make_md_step_from_state
 from kups.core import units
 from kups.core.cell import (
     Cell,
@@ -18,11 +21,11 @@ from kups.core.cell import (
 )
 from kups.core.data.index import Index
 from kups.core.data.table import Table
-from kups.core.lens import HasLensFields, LensField, lens
+from kups.core.lens import HasLensFields, LensField, bind, identity_lens, lens
 from kups.core.propagator import CachePropagator, Propagator
 from kups.core.typing import ParticleId, SystemId
 from kups.core.units import testing
-from kups.core.utils.jax import dataclass, jit
+from kups.core.utils.jax import astype_floating, dataclass, jit, key_chain
 from kups.md.integrators import (
     CellMomentumKick,
     CellPositionStep,
@@ -795,6 +798,136 @@ class TestCSVRNPTPhysics:
             FORCE,
             rtol=1e-6,
         )
+
+
+class _CountingDerivatives(Propagator[NPTState]):
+    """The forces $-r$ in the dtype of the positions, counting their evaluations."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, key: Array, state: NPTState) -> NPTState:
+        self.calls += 1
+        forces = -(state.particles.data.positions * (EV / A**2))
+        return bind(
+            state,
+            lambda s: (s.particles.data.forces, s.particles.data.position_gradients),
+        ).set((forces, -forces))
+
+
+def _manual_csvr_npt_euler_step(
+    key: Array, state: NPTState
+) -> tuple[Array, Array, Array, Array]:
+    """One CSVR NPT Euler step for one cubic system with the forces $-r$, written
+    out on magnitudes in float64. The noise is drawn in the state's dtype.
+
+    Returns:
+        Positions, momenta, forces and the box length after the step.
+    """
+    particles, params = state.particles.data, state.systems.data.integrator_params
+    dtype = particles.positions.dtype
+    r, p, f, m = (
+        units.magnitudes(x).astype(jnp.float64)
+        for x in (
+            particles.positions,
+            particles.momenta,
+            particles.forces,
+            particles.masses,
+        )
+    )
+    box = units.magnitudes(state.systems.data.cell.vectors)[0, 0, 0].astype(jnp.float64)
+    dt, tau_t, p_target, tau_p, beta, mu_min = (
+        units.magnitudes(x)[0].astype(jnp.float64)
+        for x in (
+            params.time_step,
+            params.thermostat_time_constant,
+            params.target_pressure,
+            params.pressure_coupling_time,
+            params.compressibility,
+            params.minimum_scale_factor,
+        )
+    )
+    kT = units.magnitudes(units.constants.k_B * params.temperature)[0]
+    # One key per propagator of the step; the barostat is the sixth.
+    keys = key_chain(key)
+    key_gaussian, key_chi_squared = jax.random.split(next(keys))
+    key_barostat = [next(keys) for _ in range(5)][-1]
+
+    # Thermostat: α² = c₁ + c₂(R₁² + R₂) + 2R₁√(c₁c₂), R₂ ~ χ²(N_dof − 1)
+    dof = 3 * len(m) - 3
+    kinetic = (p**2 / (2 * m[:, None])).sum()
+    gaussian = jax.random.normal(key_gaussian, dtype=dtype)
+    normals = jax.random.normal(key_chi_squared, (len(m), 3), dtype)
+    chi_squared = (normals.reshape(-1)[: dof - 1] ** 2).sum()
+    c1 = jnp.exp(-dt / tau_t)
+    c2 = (1 - c1) * (dof * kT / 2) / (kinetic * dof)
+    p = p * jnp.sqrt(
+        c1 + c2 * (gaussian**2 + chi_squared) + 2 * gaussian * jnp.sqrt(c1 * c2)
+    )
+
+    # Velocity Verlet with the forces stored in the state for the first kick
+    p = p + f * dt / 2
+    r = r + p / m[:, None] * dt
+    f = -r
+    p = p + f * dt / 2
+
+    # Barostat: dε = (Δt/τP)·β·(P − P₀) + √(2kT·β·Δt/(τP·V))·R, μ = exp(dε/3)
+    volume = box**3
+    kinetic = (p**2 / (2 * m[:, None])).sum()
+    pressure = (2 * kinetic + (f * r).sum()) / (3 * volume)
+    depsilon = (dt / tau_p) * beta * (pressure - p_target) + jnp.sqrt(
+        2 * kT * beta * dt / (tau_p * volume)
+    ) * jax.random.normal(key_barostat, dtype=dtype)
+    mu = jnp.clip(jnp.exp(depsilon / 3), mu_min, 1 / mu_min)
+    # The forces stay those of the positions before the rescale.
+    return mu * r, p, f, mu * box
+
+
+class TestCSVRNPTEuler:
+    @pytest.mark.parametrize("dtype", [jnp.float64])
+    def test_step_matches_manual_reference(self, dtype: DTypeLike):
+        """A step is the hand-written update, keeps the state's dtypes and
+        evaluates the forces once."""
+        state = astype_floating(
+            create_npt_system(n_particles=3, target_pressure=0.02, tau_p=0.5), dtype
+        )
+        derivatives = _CountingDerivatives()
+        step = make_csvr_npt_step(
+            particles=NPTState.particles,
+            systems=NPTState.systems,
+            derivative_computation=derivatives,
+            flow=euclidean_flow,
+            refresh_after_barostat=False,
+        )
+        key = jax.random.key(7)
+
+        out = step(key, state)
+
+        assert derivatives.calls == 1
+        assert [x.dtype for x in jax.tree.leaves(out)] == [
+            x.dtype for x in jax.tree.leaves(state)
+        ]
+        positions, momenta, forces, box = _manual_csvr_npt_euler_step(key, state)
+        tol = 100 * float(jnp.finfo(dtype).eps)
+        for actual, expected, unit in (
+            (out.particles.data.positions, positions, A),
+            (out.particles.data.momenta, momenta, MOMENTUM),
+            (out.particles.data.forces, forces, FORCE),
+            (out.systems.data.cell.vectors[0], box * jnp.eye(3), A),
+        ):
+            testing.assert_allclose(actual, expected, unit, rtol=tol, atol=tol)
+        # The reference tells the two integrators apart only if the box moved.
+        assert abs(box / 5.0 - 1) > 1e-4
+
+    @pytest.mark.parametrize(
+        ("integrator", "evaluations"), [("csvr_npt", 2), ("csvr_npt_euler", 1)]
+    )
+    def test_force_evaluations_per_step(self, integrator: str, evaluations: int):
+        """The MD step built for the integrator evaluates the forces this often."""
+        derivatives = _CountingDerivatives()
+        step = make_md_step_from_state(identity_lens(NPTState), derivatives, integrator)
+        step(jax.random.key(0), create_npt_system(n_particles=3))
+        assert derivatives.calls == evaluations
 
 
 # ============================================================================
