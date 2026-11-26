@@ -93,8 +93,11 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     state_lens: Lens[State, State],
     integrator: Integrator,
     potential: Potential[State, Grad, EmptyType, Any],
-) -> Propagator[State]:
-    """Build a single MD propagator step with error recovery and step counting.
+) -> tuple[Propagator[State], Propagator[State]]:
+    """Build the MD force evaluation and one MD step with step counting.
+
+    States start without forces, so evaluate them once before the first step.
+    A failed evaluation or step leaves the state as it was.
 
     Args:
         state_lens: Lens focusing on the MD sub-state within the full state.
@@ -102,7 +105,8 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         potential: Potential energy function providing forces and gradients.
 
     Returns:
-        Propagator that advances the state by one MD step.
+        The force evaluation, and the propagator that advances the state by one
+        MD step.
     """
     mapped_potential = LinearMappedPotential(potential, potential_map)
     derivative_computation = PotentialAsPropagator(
@@ -130,8 +134,11 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         state_lens, derivative_computation, integrator
     )
     step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
-    return ResetOnErrorPropagator(
-        SequentialPropagator((md_propagator, step_count_propagator))
+    return (
+        ResetOnErrorPropagator(derivative_computation),
+        ResetOnErrorPropagator(
+            SequentialPropagator((md_propagator, step_count_propagator))
+        ),
     )
 
 
@@ -142,8 +149,8 @@ def run_md[State: IsMdState](
 
     Args:
         key: JAX PRNG key.
-        propagator: MD propagator produced by `make_md_propagator`.
-        state: Initial simulation state.
+        propagator: MD step produced by `make_md_propagator`.
+        state: Initial simulation state, with its forces evaluated.
         config: Run configuration (steps, output file, seed).
 
     Returns:
