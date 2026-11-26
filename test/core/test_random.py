@@ -26,3 +26,11 @@ def test_segment_chi_squared_zero_dof():
     system = Index((SystemId(0), SystemId(1)), jnp.array([0, 1, 1]))
     out = segment_chi_squared(jax.random.key(1), system, jnp.array([0, -1]))
     np.testing.assert_array_equal(out, [0.0, 0.0])
+
+
+def test_segment_chi_squared_dtype():
+    system = Index((SystemId(0), SystemId(1)), jnp.array([0, 1, 1]))
+    out = segment_chi_squared(
+        jax.random.key(1), system, jnp.array([3, 5]), dtype=jnp.float32
+    )
+    assert out.dtype == jnp.float32

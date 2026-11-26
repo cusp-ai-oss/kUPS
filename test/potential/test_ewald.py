@@ -31,7 +31,7 @@ from kups.core.neighborlist import AllDenseNearestNeighborList, Edges
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
 from kups.core.units import testing
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import astype_floating, dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.potential.classical.coulomb import coulomb_vacuum_energy
 from kups.potential.classical.ewald import (
@@ -470,6 +470,27 @@ class TestEwald:
         Q, V = 2.5 * CHARGE, (L * A) ** 3
         expected = -jnp.pi / (2 * V * (alpha / A) ** 2) * Q**2 * units.constants.k_e
         testing.assert_allclose(e_net, expected, EV, rtol=1e-6)
+
+    def test_terms_keep_the_dtype_of_float32_positions(self):
+        """With float64 parameters, every term of float32 inputs is float32."""
+        positions = jnp.array([[0.0, 0.0, 0.0], [3.0, 3.0, 3.0], [6.0, 6.0, 6.0]])
+        charges = jnp.array([1.0, 1.0, 0.5])
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * 10.0 * A))
+        params = _parameters(cell, 0.4, 5.0, 1.5)
+        particles = Table.arange(_make_particle_data(positions, charges))
+        systems = _make_systems(cell[None], jnp.array([5.0]) * A)
+        edges = _build_neighborlist(particles, systems, len(charges))
+        graph = astype_floating(HyperGraph(particles, systems, edges), jnp.float32)
+        short_range = GraphPotentialInput(params, graph)
+        cloud = PointCloud(graph.particles, graph.systems)
+        energies = {
+            "short range": ewald_short_range_energy(short_range),
+            "long range": ewald_long_range_energy(EwaldLongRangeInput(cloud, params)),
+            "self": ewald_self_interaction_energy(short_range),
+            "net charge": ewald_net_charge_energy(short_range),
+        }
+        dtypes = {name: energy.data.data.dtype for name, energy in energies.items()}
+        assert dtypes == dict.fromkeys(energies, jnp.float32)
 
     def test_zero_kvector_excluded(self):
         """The k=0 reciprocal mode is excluded (prefactor 0); net charge replaces it."""

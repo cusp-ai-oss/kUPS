@@ -82,7 +82,7 @@ def _symmetrize_from_lower(lower: units.Pressure) -> units.Pressure:
     triangle. Returns ``lower + lower^T − diag(lower)`` so the diagonal
     is not double-counted.
     """
-    return lower + lower.swapaxes(-1, -2) - lower * jnp.eye(3)
+    return lower + lower.swapaxes(-1, -2) - lower * jnp.eye(3, dtype=lower.dtype)
 
 
 def _lower_sym_cell_virial(

@@ -25,7 +25,7 @@ from kups.core.potential import PotentialOut
 from kups.core.result import as_result_function
 from kups.core.typing import ExclusionId, InclusionId, ParticleId, SystemId
 from kups.core.units import testing
-from kups.core.utils.jax import dataclass
+from kups.core.utils.jax import astype_floating, dataclass
 from kups.core.utils.kahan import KahanSummand
 from kups.core.utils.msgpack import serialize as msgpack_serialize
 from kups.potential.common.energy import PotentialFromEnergy
@@ -213,6 +213,21 @@ class TestJaxifiedEnergy:
         testing.assert_allclose(
             result.value.data.total_energies.data, jnp.array([36.0]) * EV, EV
         )
+
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+    def test_energy_in_the_dtype_of_the_positions(
+        self, simple_system, potential, dtype
+    ):
+        """The exported model runs in float32; energies come back in the dtype of
+        the positions."""
+        state = astype_floating(simple_system, dtype)
+        potential_fn = as_result_function(potential)
+
+        state = potential_fn(state).fix_or_raise(state)
+        energies = potential_fn(state).value.data.total_energies.data
+
+        assert energies.dtype == dtype
+        testing.assert_allclose(energies, jnp.array([36.0]) * EV, EV)
 
 
 class TestMakeJaxifiedPotential:

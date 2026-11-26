@@ -47,7 +47,7 @@ from kups.core.typing import (
     ParticleId,
     SystemId,
 )
-from kups.core.utils.jax import dataclass, field, jit, tree_map
+from kups.core.utils.jax import astype_floating, dataclass, field, jit, tree_map
 from kups.potential.common.energy import InputConstructor
 from kups.potential.common.pair import PairBatch, PairEnergy, PairTerm
 
@@ -250,7 +250,10 @@ def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
     inclusion: Array,
     exclusion: Array,
 ) -> units.Energy:
-    """Evaluate pair terms on compacted edges with their remaining group masks."""
+    """Evaluate pair terms on compacted edges with their remaining group masks.
+
+    Pairs are evaluated in the dtype of the positions.
+    """
     particles = graph.particles[graph.edges.indices]
     system = particles.system[:, 0]
     valid = (
@@ -272,7 +275,10 @@ def graph_pair_energies[Params, Part: HasPositionsAndSystemIndex, Feat](
         return x[:, 1]
 
     return pair.evaluate(
-        parameters, tree_map(first, features), tree_map(second, features), pairs
+        astype_floating(parameters, graph.particles.data.positions.dtype),
+        tree_map(first, features),
+        tree_map(second, features),
+        pairs,
     )
 
 

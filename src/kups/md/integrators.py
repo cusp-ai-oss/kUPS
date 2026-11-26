@@ -68,6 +68,11 @@ type Integrator = Literal[
 _GAO_CHI: int = 1
 
 
+def _thermal_energy(temperature: units.Temperature) -> units.Energy:
+    """Thermal energy $k_B T$ in the dtype of the temperature."""
+    return units.constants.k_B.astype(temperature.dtype) * temperature
+
+
 @runtime_checkable
 class Flow[State, PyTree](Protocol):
     """Protocol for position update flows with boundary conditions.
@@ -429,7 +434,7 @@ class StochasticStep[State](Propagator[State]):
         particles = particle_lens.get()
         sys = self.system(state)[particles.data.system]
         # kT: thermal energy
-        thermal_energy_per_particle = units.constants.k_B * sys.temperature
+        thermal_energy_per_particle = _thermal_energy(sys.temperature)
         # Ornstein-Uhlenbeck coefficients
         # c₁ = e^(-γΔt)
         damping_factor = jax.numpy.exp(-sys.friction_coefficient * sys.time_step)
@@ -587,7 +592,7 @@ class CSVRStep[State](Propagator[State]):
         # Δt: timestep
         timestep = system.data.time_step
         # kT: thermal energy
-        target_thermal_energy = units.constants.k_B * system.data.temperature
+        target_thermal_energy = _thermal_energy(system.data.temperature)
         # τ: thermostat time constant
         thermostat_timescale = system.data.thermostat_time_constant
         # N_dof: degrees of freedom
@@ -607,11 +612,14 @@ class CSVRStep[State](Propagator[State]):
         # Generate random numbers for scaling
         key1, key2 = jax.random.split(key)
         # R₁ ~ N(0,1)
-        gaussian_noise = jax.random.normal(key1, dtype=float)
+        gaussian_noise = jax.random.normal(key1, dtype=kinetic_energy_current.dtype)
 
         # R₂ ~ χ²(N_dof-1)
         chi_squared_noise = segment_chi_squared(
-            key2, particles.data.system, degrees_of_freedom - 1
+            key2,
+            particles.data.system,
+            degrees_of_freedom - 1,
+            dtype=kinetic_energy_current.dtype,
         )
 
         # CSVR scaling coefficients
@@ -781,7 +789,7 @@ class StochasticCellRescalingStep[State](Propagator[State]):
         # Δt: timestep
         timestep = params.time_step
         # kT: thermal energy
-        thermal_energy = units.constants.k_B * params.temperature
+        thermal_energy = _thermal_energy(params.temperature)
         # P₀: target pressure
         target_pressure = params.target_pressure
         # τP: barostat time constant
@@ -1019,10 +1027,10 @@ class CellMomentumKick[State](Propagator[State]):
 
         V_inv = sys.data.cell.inverse_vectors  # lower-tri
         V_det = sys.data.cell.volume  # (n,)
-        chi_kT = _GAO_CHI * units.constants.k_B * params.temperature  # (n,)
+        chi_kT = _GAO_CHI * _thermal_energy(params.temperature)  # (n,)
         P_target = params.target_pressure  # (n,)
         P_ins = instantaneous_pressure_tensor(par, sys)  # (n, 3, 3) symmetric
-        P_diff = P_ins - P_target[..., None, None] * jnp.eye(3)
+        P_diff = P_ins - P_target[..., None, None] * jnp.eye(3, dtype=P_ins.dtype)
 
         # Paper-side kick = det(h)·(P_diff @ V_inv) − χkT·V_inv.
         # kUPS-side kick = (paper kick)^T  (since kUPS p^h = paper p^h transposed).
@@ -1105,7 +1113,7 @@ class CellStochasticStep[State](Propagator[State]):
         params = sys.data.integrator_params
         gamma = params.barostat_friction
         M = params.barostat_mass
-        kT = units.constants.k_B * params.temperature
+        kT = _thermal_energy(params.temperature)
         dt = params.time_step
         damp = jnp.exp(-gamma * dt[..., None, None])
         noise_amp = units.sqrt(M * kT[..., None, None] * (1.0 - damp**2))
