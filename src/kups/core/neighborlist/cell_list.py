@@ -309,7 +309,7 @@ class CellListNeighborList:
                 params.avg_image_candidates,
                 lens.focus(lambda x: x.avg_image_candidates),
             ),
-            cells=LensCapacity(params.cells, lens.focus(lambda x: x.cells), base=1),
+            cells=LensCapacity(params.cells, lens.focus(lambda x: x.cells)),
             cutoffs=cutoffs,
         )
 
