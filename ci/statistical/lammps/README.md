@@ -11,10 +11,8 @@ shape as `ci/statistical/expected/*.yaml`: `simulation_type`, `hdf5_output`,
 and `observables` with `unit`, `expected_mean` and `expected_sem`, the unit
 naming what the two numbers are read in. SEMs are computed
 with the same fixed 5-block average used by kUPS expected-value
-generation. LAMMPS `press` is total
-pressure; the analyzer subtracts `2K/(3V)` before writing `pressure`, so the
-YAML matches the current kUPS MD configurational-pressure definition
-(`trace(stress_tensor) / 3`, in `eV/A^3`).
+generation. LAMMPS `press` is the total pressure, as is kUPS MD `pressure`
+(kinetic plus virial); the analyzer converts it from bar to `eV/A^3`.
 
 To regenerate the YAML references on a machine with `lmp` installed, run:
 

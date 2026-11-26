@@ -19,8 +19,8 @@ observables:
     expected_sem: 0.14980225947769107
   pressure:
     unit: eV/angstrom^3
-    expected_mean: 7.235073496411954e-05
-    expected_sem: 1.0219889763900042e-05
+    expected_mean: 0.000274801813037048
+    expected_sem: 1.0229022163228524e-05
   volume:
     unit: angstrom^3
     expected_mean: 10824.547975981077

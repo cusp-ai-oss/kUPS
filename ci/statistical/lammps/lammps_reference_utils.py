@@ -35,7 +35,7 @@ OUTPUT_DIR = ROOT / "outputs" / "reference"
 KUPS_EXPECTED_DIR = ROOT.parent / "expected"
 
 PRESSURE_COLUMN = "press_bar"
-CONFIG_PRESSURE_COLUMN = "pressure_config"
+TOTAL_PRESSURE_COLUMN = "press"
 N_BLOCKS = 5
 
 OBSERVABLE_UNITS: dict[str, str] = {
@@ -90,7 +90,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -98,7 +98,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
     },
@@ -115,7 +115,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -123,7 +123,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
     },
@@ -139,7 +139,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -147,7 +147,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
     },
@@ -163,7 +163,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
         "compare_observables": {
@@ -171,7 +171,7 @@ CASES: dict[str, CaseConfig] = {
             "ke": "kinetic_energy",
             "etotal": "total_energy",
             "temp": "temperature",
-            "pressure_config": "pressure",
+            "press": "pressure",
             "volume": "volume",
         },
     },
@@ -206,8 +206,8 @@ def analyze_output(path: Path) -> dict[str, dict[str, float]]:
         path: Fix-print table with a header row of column names.
 
     Returns:
-        Mean and SEM per column, with the total pressure column replaced by the
-        configurational pressure.
+        Mean and SEM per column, with the total pressure column converted from
+        bar to eV/Å³.
 
     Raises:
         ValueError: If the table has no pressure column.
@@ -216,10 +216,8 @@ def analyze_output(path: Path) -> dict[str, dict[str, float]]:
     cols = arr.dtype.names or ()
     if PRESSURE_COLUMN not in cols:
         raise ValueError(f"{path} is missing required {PRESSURE_COLUMN!r} column")
-    kinetic_pressure = 2.0 * arr["ke"] / (3.0 * arr["volume"])
-    config_pressure = arr[PRESSURE_COLUMN] * _BAR - kinetic_pressure
     series = {name: arr[name] for name in cols if name not in ("step", PRESSURE_COLUMN)}
-    series[CONFIG_PRESSURE_COLUMN] = config_pressure
+    series[TOTAL_PRESSURE_COLUMN] = arr[PRESSURE_COLUMN] * _BAR
 
     return {name: block_stats(values, N_BLOCKS) for name, values in series.items()}
 
