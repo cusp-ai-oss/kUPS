@@ -97,7 +97,9 @@ def lift_query_candidates(candidates: Candidates, ctx: PipelineContext) -> Candi
     return Candidates(candidates.key_idx, queried[candidates.query_idx])
 
 
-def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.Array:
+def _generate_image_offsets(
+    images: jax.Array, out_size: Capacity[int]
+) -> tuple[jax.Array, jax.Array]:
     """Generate 0-based coordinate ramps from per-row window widths.
 
     Each row of ``images`` gives a per-axis width; the output enumerates that
@@ -106,17 +108,21 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     the minimum image leads, giving a stable tie-break downstream).
 
     Args:
-        images: Array of shape (n, 3) of per-axis window widths (>= 1).
+        images: Array of shape (n, 3) of per-axis window widths; a row
+            with a zero width emits no output rows.
         out_size: Total number of output rows (sum of products of each row in images).
 
     Returns:
-        Array of shape (m, 3) with 0-based window coordinates.
+        ``(rows, coords)``: ``rows`` of shape (m,) maps each output row to its
+        row in ``images``, with ``n`` for padding rows; ``coords`` of shape
+        (m, 3) holds the 0-based window coordinates.
 
     Example:
         ```python
         images = jnp.array([[3, 3, 1], [1, 1, 1]])
         out_size = FixedCapacity(10)  # 3*3*1 + 1*1*1 = 10
-        coords = _generate_image_offsets(images, out_size)
+        rows, coords = _generate_image_offsets(images, out_size)
+        # rows: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
         # First 9 rows (3x3x1 window, center (1,1,0) first):
         # [[1, 1, 0],  # center first
         #  [2, 1, 0],
@@ -138,7 +144,9 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
 
     # Map each output index to its corresponding row in images
     indices = jnp.arange(out_size.size)
-    row_indices = jnp.searchsorted(cumsum, indices, side="right")
+    row_indices = jnp.arange(counts.size + 1).repeat(
+        jnp.pad(counts, (0, 1)), total_repeat_length=out_size.size
+    )
     prev_cumsum = jnp.concatenate([jnp.zeros(1, dtype=counts.dtype), cumsum[:-1]])
     local_indices = indices - prev_cumsum[row_indices]
     dims = images[row_indices]
@@ -156,7 +164,7 @@ def _generate_image_offsets(images: jax.Array, out_size: Capacity[int]) -> jax.A
     j = (shifted // a) % dims[:, 1]
     k = shifted // ab
 
-    return jnp.stack([i, j, k], axis=1)
+    return row_indices, jnp.stack([i, j, k], axis=1)
 
 
 def candidate_image_counts(cells: Cell[AnyPeriodicity], cutoffs: units.Length) -> Array:
@@ -225,10 +233,7 @@ def _get_candidate_images(
         offset = jnp.zeros((num_cands, 3), dtype=keys.data.positions.dtype)
         return jnp.arange(num_cands), offset
 
-    window = _generate_image_offsets(images, out_size)
-    idx = jnp.arange(num_cands + 1).repeat(
-        jnp.pad(per_candidate, (0, 1)), total_repeat_length=out_size.size
-    )
+    idx, window = _generate_image_offsets(images, out_size)
     separation = key_points.positions - queries[candidates.query_idx].positions
     # Anchor each window at ceil(separation - ratio) so it brackets every in-range
     # image of the pair. Where the ratio is non-finite (infinite cutoff or

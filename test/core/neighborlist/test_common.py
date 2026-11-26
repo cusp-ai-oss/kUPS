@@ -55,7 +55,8 @@ class TestNumCells:
 class TestGenerateImageOffsets:
     def test_matches_documented_example(self):
         images = jnp.array([[3, 3, 1], [1, 1, 1]])
-        coords = _generate_image_offsets(images, FixedCapacity(10))
+        rows, coords = _generate_image_offsets(images, FixedCapacity(10))
+        npt.assert_array_equal(np.asarray(rows), [0] * 9 + [1])
         expected = np.array(
             [
                 [1, 1, 0],  # center first
@@ -71,6 +72,25 @@ class TestGenerateImageOffsets:
             ]
         )
         npt.assert_array_equal(np.asarray(coords), expected)
+
+    @pytest.mark.parametrize(
+        "images, out_size",
+        [
+            ([[2, 1, 1], [0, 1, 1], [3, 2, 1], [1, 1, 1]], 9),
+            ([[0, 2, 2], [2, 2, 1], [0, 0, 0], [1, 3, 1], [0, 1, 1]], 12),
+            ([[0, 1, 1], [0, 1, 1]], 3),
+        ],
+    )
+    def test_rows_match_searchsorted_with_empty_and_padding_rows(
+        self, images, out_size
+    ):
+        # Rows with no images are skipped, and output rows past the last image
+        # map to len(images), as searchsorted(side="right") on the cumsum does.
+        images = np.array(images)
+        rows, _ = _generate_image_offsets(jnp.asarray(images), FixedCapacity(out_size))
+        cumsum = np.cumsum(images.prod(axis=1))
+        expected = np.searchsorted(cumsum, np.arange(out_size), side="right")
+        npt.assert_array_equal(np.asarray(rows), expected)
 
 
 class TestCandidateImageCounts:
@@ -231,9 +251,11 @@ class TestReplicateForImages:
         min_shift = np.asarray(batch.edges.shifts[batch.is_minimum_image][:, 0, :])
         npt.assert_array_equal(min_shift, [[-1.0, 0.0, 0.0]])
 
-    def test_multi_system_replicates_per_system(self):
+    @pytest.mark.parametrize("capacity", [9, 16])
+    def test_multi_system_replicates_per_system(self, capacity):
         # System 0 (box 10, cutoff 2): ratio 0.2 -> 1 copy. System 1 (box 1,
         # cutoff 0.8): ratio 0.8 -> 8 copies. One call, mixed per-system depth.
+        # At capacity 16 the last candidate is real and 7 rows are padding.
         systems, _ = systems_from_lvecs(
             jnp.stack([jnp.eye(3) * 10.0, jnp.eye(3) * 1.0]), jnp.array([2.0, 0.8])
         )
@@ -258,19 +280,16 @@ class TestReplicateForImages:
             lh,
             systems,
             cutoff_table(jnp.array([2.0, 0.8]) * A),
-            FixedCapacity(9),
+            FixedCapacity(capacity),
         )
-        assert len(batch.edges) == 9
+        assert len(batch.edges) == capacity
+        assert not np.asarray(batch.key_idx.valid_mask[9:]).any()
+        assert not np.asarray(batch.is_minimum_image[9:]).any()
+        key_idx, query_idx = batch.key_idx[:9], batch.query_idx[:9]
         # First row is the lone system-0 copy; the rest expand the system-1 pair.
-        assert (
-            int(batch.key_idx.value[0]),
-            int(batch.query_idx.value[0]),
-        ) == (
-            0,
-            1,
-        )
-        npt.assert_array_equal(np.asarray(batch.key_idx[1:]), np.full(8, 2))
-        npt.assert_array_equal(np.asarray(batch.query_idx[1:]), np.full(8, 3))
+        assert (int(key_idx.value[0]), int(query_idx.value[0])) == (0, 1)
+        npt.assert_array_equal(np.asarray(key_idx[1:]), np.full(8, 2))
+        npt.assert_array_equal(np.asarray(query_idx[1:]), np.full(8, 3))
         # One minimum image per candidate: the system-0 copy plus system-1's.
         assert int(batch.is_minimum_image.sum()) == 2
         assert bool(batch.is_minimum_image[0])

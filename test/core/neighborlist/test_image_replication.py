@@ -359,9 +359,8 @@ class TestGenerateImageOffsets:
     def test_enumerates_exact_cartesian_product_per_block(self, images):
         images = np.array(images)
         total = int(images.prod(axis=1).sum())
-        coords = np.asarray(
-            _generate_image_offsets(jnp.asarray(images), FixedCapacity(total))
-        )
+        _, coords = _generate_image_offsets(jnp.asarray(images), FixedCapacity(total))
+        coords = np.asarray(coords)
         assert coords.shape == (total, 3)
         cursor = 0
         for w, expected in zip(images, self._blocks(images)):
@@ -376,9 +375,8 @@ class TestGenerateImageOffsets:
 
     def test_padding_rows_are_appended_not_interleaved(self):
         images = np.array([[2, 2, 1]])  # 4 real rows
-        coords = np.asarray(
-            _generate_image_offsets(jnp.asarray(images), FixedCapacity(8))
-        )
+        _, coords = _generate_image_offsets(jnp.asarray(images), FixedCapacity(8))
+        coords = np.asarray(coords)
         assert coords.shape == (8, 3)
         real = {tuple(int(c) for c in row) for row in coords[:4]}
         assert real == self._blocks(images)[0]
