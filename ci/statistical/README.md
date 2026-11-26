@@ -98,10 +98,9 @@ The MD LJ Argon statistical suite also keeps LAMMPS same-force-field reference
 inputs and committed per-case kUPS-format YAML stats under `lammps/`.
 Generated `.dat` output tables live under `lammps/outputs/` and are ignored.
 The YAML SEMs use the same fixed 5-block average
-calculation as kUPS expected-value generation. LAMMPS `press` is converted
-from total pressure to the configurational pressure currently stored as kUPS MD
-`pressure` by subtracting the kinetic contribution, then converted from bar to
-`eV/angstrom^3`, the unit the YAML then names. CI compares the committed LAMMPS
+calculation as kUPS expected-value generation. LAMMPS `press` is the total
+pressure (kinetic plus virial), as is kUPS MD `pressure`, and is converted from
+bar to `eV/angstrom^3`, the unit the YAML then names. CI compares the committed LAMMPS
 YAML stats to the kUPS MD NVE, NVT, and NPT references without requiring LAMMPS
 or `.dat` tables to be present, and refuses to compare two observables written
 in different units.
