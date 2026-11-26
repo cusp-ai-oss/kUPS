@@ -49,7 +49,7 @@ from kups.core.typing import (
 )
 from kups.core.utils.jax import dataclass, field, jit, tree_map
 from kups.potential.common.energy import InputConstructor
-from kups.potential.common.pair import PairBatch, PairEnergy, PairTerm
+from kups.potential.common.pair import PairBatch, PairTerm
 
 Params = TypeVar("Params", covariant=True)
 Part = TypeVar("Part", covariant=True, bound=HasPositionsAndSystemIndex)
@@ -291,10 +291,10 @@ class GraphPairEnergy[
     other pair terms.
 
     Attributes:
-        pair: Pair term evaluated on each directed edge.
+        pair: Pair term evaluated on each directed edge, one energy or a sum.
     """
 
-    pair: PairEnergy[Params, Part, Feat] = field(static=True)
+    pair: PairTerm[Params, Part, Feat] = field(static=True)
 
     @jit
     def edge_energies(
