@@ -80,7 +80,9 @@ The state structurally satisfies `IsMdState` and carries no force-field field; p
 ```python
 state_lens = identity_lens(MdState)
 potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+evaluate_forces, propagator = make_md_propagator(
+    state_lens, config.md.integrator, potential
+)
 ```
 
 For the LJ backend, `build` delegates to [make_lennard_jones_from_state][kups.application.potential.classical.lennard_jones.make_lennard_jones_from_state], wiring particles, systems, and the LJ parameters through the state lens and returning the cutoff used to size the neighbor list. [make_md_propagator][kups.application.md.simulation.make_md_propagator] composes a [PotentialAsPropagator][kups.core.potential.PotentialAsPropagator], the integrator's momentum and position steps, a step counter, and a [ResetOnErrorPropagator][kups.core.propagator.ResetOnErrorPropagator] inside one [SequentialPropagator][kups.core.propagator.SequentialPropagator].
@@ -99,10 +101,11 @@ neighborlist_params = UniversalNeighborlistParameters.estimate(
 **Running.** The loop lives on the host side.
 
 ```python
+state = propagate_and_fix(make_cycle_function(evaluate_forces), next(chain), state)
 state = run_md(next(chain), propagator, state, config.run)
 ```
 
-`run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
+The state starts without forces, so they are evaluated once before the first step. `run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
 
 ## Where to go next
 

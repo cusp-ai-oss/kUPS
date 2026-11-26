@@ -41,9 +41,11 @@ from kups.application.simulations.potentials import (
     TojaxPotentialConfig,
     UmaConfig,
 )
+from kups.application.utils.propagate import make_cycle_function
 from kups.core.data import Table
 from kups.core.lens import identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.propagator import propagate_and_fix
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -73,7 +75,9 @@ def run(config: Config) -> None:
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
     potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
+    evaluate_forces, propagator = make_md_propagator(
+        state_lens, config.md.integrator, potential
+    )
 
     all_particles: list[Table[ParticleId, MDParticles]] = []
     all_systems: list[Table[SystemId, MDSystems]] = []
@@ -96,6 +100,7 @@ def run(config: Config) -> None:
         neighborlist_params=neighborlist_params,
         step=jnp.array([0]),
     )
+    state = propagate_and_fix(make_cycle_function(evaluate_forces), next(chain), state)
     run_md(next(chain), propagator, state, config.run)
 
 
