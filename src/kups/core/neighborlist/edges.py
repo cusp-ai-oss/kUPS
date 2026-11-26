@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import override
 
-from jax import Array
+from jax import Array, lax
 
 from kups.core import units
 from kups.core.cell import AnyPeriodicity
@@ -110,7 +110,17 @@ class Edges[Degree: int](Sliceable):
             Array of shape `(n_edges, Degree-1, 3)` containing absolute shift vectors.
         """
         lattice = systems.map_data(lambda x: x.cell.materialize())
-        cells = lattice[particles[self.indices[:, 0]].system][:, None]
+        if systems.size == 1:
+            # Broadcast, so the reverse pass is a reduction and not a scatter.
+            real = lattice.data[:, None].frame.to_real(self.shifts)
+            # As a gather does, an edge of a particle outside the system
+            # passes no gradient to the cell.
+            inside = particles[self.indices[:, 0]].system.valid_mask
+            return units.where(inside[:, None, None], real, lax.stop_gradient(real))
+        # Gathered per particle first: the reverse pass then sums an edge's
+        # cotangent into its particle before it reaches the system.
+        per_particle = particles.set_data(lattice[particles.data.system])
+        cells = per_particle[self.indices[:, 0]][:, None]
         return cells.frame.to_real(self.shifts)
 
     @property
