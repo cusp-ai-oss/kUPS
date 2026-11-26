@@ -14,6 +14,7 @@ import ase
 import ase.io
 import jax.numpy as jnp
 import numpy as np
+from ase.io.formats import filetype
 from jax import Array
 from jax.typing import ArrayLike
 
@@ -164,7 +165,10 @@ def particles_from_ase(
 ]:
     """Build particle data and cell from an ASE Atoms object or file path.
 
-    Results are cached when ``atoms`` is a file path.
+    Results are cached when ``atoms`` is a file path. Files ending in ``.data``
+    are read as LAMMPS data files. Charges come from the CIF tags
+    ``_atom_type_partial_charge`` or ``_atom_site_charge``, else from the atoms'
+    initial charges.
 
     Args:
         atoms: ASE Atoms object, or a file path (str/Path) readable by
@@ -188,7 +192,15 @@ def _particles_from_path(
     Callable[[units.Length], units.Length],
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+    if Path(path).suffix == ".data":
+        # ASE cannot detect LAMMPS data and reads .data files as RuNNer data
+        frames = ase.io.iread(path, index=-1, format="lammps-data")
+    elif filetype(str(path)) == "cif":
+        # store_tags keeps the CIF tags, charges among them; other readers reject it
+        frames = ase.io.iread(path, index=-1, store_tags=True)
+    else:
+        frames = ase.io.iread(path, index=-1)
+    return _particles_from_atoms(next(frames))
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:
@@ -314,7 +326,7 @@ def _particles_from_atoms(
     charges = jnp.asarray(
         atoms.info.get(
             "_atom_type_partial_charge",
-            atoms.info.get("_atom_site_charge", jnp.zeros((len(positions),))),
+            atoms.info.get("_atom_site_charge", atoms.get_initial_charges()),
         )
     )
     labels = list(

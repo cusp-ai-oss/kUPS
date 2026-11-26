@@ -183,6 +183,32 @@ class TestParticlesFromAse:
         particles, _, _ = particles_from_ase(atoms)
         testing.assert_allclose(particles.data.charges, jnp.asarray(charges), CHARGE)
 
+    def test_initial_charges_without_charge_tags(self, tmp_path):
+        """Initial charges load from atoms and from extxyz files; a tag wins."""
+        from ase import Atoms
+        from ase.io import write
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "NaCl",
+            positions=[[0, 0, 0], [2.8, 0, 0]],
+            cell=[5.6, 5.6, 5.6],
+            pbc=True,
+            charges=[1.0, -1.0],
+        )
+        write(str(tmp_path / "nacl.extxyz"), atoms)
+        for source in (atoms, tmp_path / "nacl.extxyz"):
+            particles, _, _ = particles_from_ase(source)
+            testing.assert_allclose(
+                particles.data.charges, jnp.asarray([1.0, -1.0]), CHARGE
+            )
+        atoms.info["_atom_site_charge"] = np.array([0.5, -0.5])
+        particles, _, _ = particles_from_ase(atoms)
+        testing.assert_allclose(
+            particles.data.charges, jnp.asarray([0.5, -0.5]), CHARGE
+        )
+
     def test_from_file_path(self, tmp_path):
         from ase import Atoms
         from ase.io import write
@@ -195,6 +221,50 @@ class TestParticlesFromAse:
         particles, cell, uc_transform = particles_from_ase(str(path))
         assert len(particles) == 1
         npt.assert_allclose(particles.data.atomic_numbers, jnp.array([18]))
+
+    @pytest.mark.parametrize("name", ["test.xyz", "test.traj", "test.vasp"])
+    def test_from_files_of_other_formats(self, tmp_path, name):
+        """Files that are not CIF load the same structure."""
+        from ase import Atoms
+        from ase.io import write
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "ArKr", positions=[[0, 0, 0], [1.5, 2, 2.5]], cell=[10, 11, 12], pbc=True
+        )
+        path = tmp_path / name
+        write(str(path), atoms)
+        particles, cell, _ = particles_from_ase(path)
+        expected, expected_cell, _ = particles_from_ase(atoms)
+        testing.assert_allclose(particles.data.positions, expected.data.positions, A)
+        npt.assert_array_equal(particles.data.atomic_numbers, [18, 36])
+        testing.assert_allclose(cell.vectors, expected_cell.vectors, A)
+
+    def test_from_lammps_data_file(self, tmp_path):
+        """A .data file loads as LAMMPS data, with its species and charges."""
+        from ase import Atoms
+        from ase.io import write
+
+        from kups.application.utils.particles import particles_from_ase
+
+        atoms = Atoms(
+            "ArKr",
+            positions=[[0, 0, 0], [1.5, 2, 2.5]],
+            cell=[10, 11, 12],
+            pbc=True,
+            charges=[0.5, -0.5],
+        )
+        path = tmp_path / "test.data"
+        write(str(path), atoms, format="lammps-data", atom_style="charge", masses=True)
+        particles, cell, _ = particles_from_ase(path)
+        expected, expected_cell, _ = particles_from_ase(atoms)
+        testing.assert_allclose(particles.data.positions, expected.data.positions, A)
+        npt.assert_array_equal(particles.data.atomic_numbers, [18, 36])
+        testing.assert_allclose(
+            particles.data.charges, jnp.asarray([0.5, -0.5]), CHARGE
+        )
+        testing.assert_allclose(cell.vectors, expected_cell.vectors, A)
 
     def test_uc_transform_produces_lower_triangular(self):
         from ase.build import bulk
