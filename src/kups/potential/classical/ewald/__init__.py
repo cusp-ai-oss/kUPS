@@ -5,6 +5,7 @@
 
 ``parameters`` prepares cutoffs and lattice shifts, ``reciprocal`` implements
 the numerical kernels, and ``potential`` composes energies and cache updates.
+``pme`` replaces the reciprocal sum by a particle mesh for whole-system updates.
 """
 
 from .parameters import (
@@ -12,12 +13,21 @@ from .parameters import (
     EwaldParameterEstimates,
     EwaldParameters,
     IsEwaldPointData,
+    IsEwaldScreening,
+    PMEParameters,
     ReciprocalGridBound,
     estimate_ewald_parameters,
+    estimate_pme_mesh,
     kvecs_from_kmax,
     reciprocal_grid_bound,
     reciprocal_grid_index,
     reciprocal_grid_shifts,
+)
+from .pme import (
+    PMEInput,
+    make_pme_long_range_potential,
+    make_pme_potential,
+    pme_long_range_energy,
 )
 from .potential import (
     EwaldCache,
@@ -52,7 +62,10 @@ __all__ = [
     "EwaldParameterEstimates",
     "EwaldParameters",
     "IsEwaldPointData",
+    "IsEwaldScreening",
+    "PMEParameters",
     "estimate_ewald_parameters",
+    "estimate_pme_mesh",
     "kvecs_from_kmax",
     "reciprocal_grid_bound",
     "reciprocal_grid_index",
@@ -81,4 +94,8 @@ __all__ = [
     "make_ewald_net_charge_potential",
     "make_ewald_self_interaction_potential",
     "make_ewald_potential",
+    "PMEInput",
+    "pme_long_range_energy",
+    "make_pme_long_range_potential",
+    "make_pme_potential",
 ]
