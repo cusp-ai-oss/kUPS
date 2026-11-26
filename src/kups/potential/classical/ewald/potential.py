@@ -299,15 +299,15 @@ def ewald_self_interaction_energy(
         inp: Particle graph and per-system screening parameters.
 
     Returns:
-        Per-system self-interaction energies and an identity patch.
+        Per-system self-interaction energies, in the dtype of the positions, and
+        an identity patch.
     """
     sys_idx = inp.graph.systems.index
+    particles = inp.graph.particles.data
     energies = _self_energy(
-        inp.graph.particles.data.system.sum_over(inp.graph.particles.data.charges**2)[
-            sys_idx
-        ],
+        particles.system.sum_over(particles.charges**2)[sys_idx],
         inp.parameters.alpha[sys_idx],
-    )
+    ).astype(particles.positions.dtype)
     return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
 
 
@@ -347,7 +347,8 @@ def ewald_short_range_pair_kernel(
         screened = units.apply(erfc_over, argument, dists, dim=units.WAVENUMBER)
     else:
         screened = jax.lax.erfc(argument) / dists
-    return units.constants.k_e * charges_i * charges_j * screened
+    k_e = units.constants.k_e.astype(screened.dtype)
+    return k_e * charges_i * charges_j * screened
 
 
 ewald_short_range_pair = PairEnergy[EwaldParameters, IsEwaldPointData, units.Charge](
@@ -779,7 +780,8 @@ def ewald_net_charge_energy(
         inp: Particle graph and per-system screening parameters.
 
     Returns:
-        Per-system neutralizing-background energies and an identity patch.
+        Per-system neutralizing-background energies, in the dtype of the
+        positions, and an identity patch.
     """
     sys_idx = inp.graph.systems.index
     particles = inp.graph.particles.data
@@ -789,7 +791,7 @@ def ewald_net_charge_energy(
             inp.parameters.alpha[sys_idx], inp.graph.systems.data.cell.volume
         )
         * net_charge**2
-    )
+    ).astype(particles.positions.dtype)
     return WithPatch(Table.arange(energies, label=SystemId), IdPatch[Any]())
 
 
@@ -802,7 +804,8 @@ def ewald_long_range_energy[State](
         inp: Current particles, reciprocal parameters and optional incremental cache.
 
     Returns:
-        Per-system energies with the structure-factor acceptance patch.
+        Per-system energies, in the dtype of the positions, with the
+        structure-factor acceptance patch.
     """
     if inp.changes_from_prev is not None and inp.cache is not None:
         delta = structure_factor_delta(inp)
@@ -815,7 +818,8 @@ def ewald_long_range_energy[State](
     assert energy.shape == (inp.point_cloud.batch_size,), (
         f"Expected energy shape {(inp.point_cloud.batch_size,)} but got {energy.shape}."
     )
-    return WithPatch(Table.arange(energy, label=SystemId), patch)
+    dtype = inp.point_cloud.particles.data.positions.dtype
+    return WithPatch(Table.arange(energy.astype(dtype), label=SystemId), patch)
 
 
 @dataclass
