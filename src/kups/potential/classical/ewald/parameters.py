@@ -233,6 +233,11 @@ def estimate_ewald_parameters(
     Split ``epsilon_total`` equally between real and reciprocal error targets.
     The search runs on magnitudes in the charges' base.
 
+    A fixed real cutoff sets the screening from the real-space target alone,
+    ``erfc(alpha r_c) / r_c`` per squared charge, and the reciprocal cutoff
+    ``2 alpha^2 r_c``, where both sums have the same RMS force error (Kolafa
+    and Perram, Mol. Simul. 9, 351, 1992).
+
     Args:
         charges: Charges of one system, shaped ``(n_particles,)``.
         cell: Single simulation cell.
@@ -316,7 +321,8 @@ def estimate_ewald_parameters(
             raise ValueError("Failed to find alpha for given real space cutoff.")
         alpha_opt = result.x / fixed_cutoff
         rc_opt = fixed_cutoff
-        kc_opt = 2 * alpha_opt * np.sqrt(-np.log(target))
+        # Both sums then have the same Kolafa-Perram RMS force error.
+        kc_opt = 2 * alpha_opt**2 * rc_opt
     else:
         alpha_opt = (
             _minimize_on_grid(total_cost, (0.001 / scale, 2 / scale), samples=400)
