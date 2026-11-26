@@ -210,6 +210,17 @@ class TestMakePropagator:
         assert callable(production)
 
 
+def test_seed_zero_is_a_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` seeds the run with 0, not with the clock."""
+
+    def stop_at_key(seed: int) -> None:
+        raise RuntimeError(f"seed {seed}")
+
+    monkeypatch.setattr(jax.random, "key", stop_at_key)
+    with pytest.raises(RuntimeError, match="^seed 0$"):
+        run(_config(_host(_write_cubic_ar_cif())))
+
+
 class TestRun:
     """End-to-end smoke: a short run writes an HDF5 file the analyzer can read."""
 

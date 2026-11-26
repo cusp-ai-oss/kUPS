@@ -6,6 +6,7 @@
 import tempfile
 
 import ase.build
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -114,3 +115,16 @@ def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> No
     run(_config(_tmp_h5(), inp).model_copy(update={"inp_files": (inp, inp)}))
     first, second = np.split(np.asarray(captured["s"].particles.data.momenta.value), 2)
     assert not np.allclose(first, second)
+
+
+def test_seed_zero_is_a_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` seeds the run with 0, not with the clock."""
+
+    def stop_at_key(seed: int) -> None:
+        raise RuntimeError(f"seed {seed}")
+
+    monkeypatch.setattr(jax.random, "key", stop_at_key)
+    config = _config(_tmp_h5(), _ar_cif())
+    seeded = config.run.model_copy(update={"seed": 0})
+    with pytest.raises(RuntimeError, match="^seed 0$"):
+        run(config.model_copy(update={"run": seeded}))

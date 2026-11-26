@@ -69,7 +69,7 @@ class Config(BaseModel):
 
 def run(config: Config) -> None:
     """Run a molecular-dynamics simulation for the configured force field."""
-    seed = config.run.seed or time.time_ns()
+    seed = time.time_ns() if config.run.seed is None else config.run.seed
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
     potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
