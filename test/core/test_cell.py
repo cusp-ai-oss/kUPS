@@ -44,6 +44,18 @@ from kups.core.utils.math import GeneralSquareMatrix, LowerTriangularSquareMatri
 from test.units import EV, FORCE, A
 
 
+def _round_trip_wrap(cell: Cell, r: Array) -> Array:
+    """Wrap positions in Å by a round trip through fractional coordinates."""
+    frac = cell.frame.to_fractional(r * A)
+    wrapped = jnp.where(jnp.array(cell.periodic), (frac + 0.5) % 1 - 0.5, frac)
+    return cell.frame.to_real(wrapped).to(A)
+
+
+def _wrap(cell: Cell, r: Array) -> Array:
+    """`Cell.wrap` on positions in Å."""
+    return cell.wrap(r * A).to(A)
+
+
 class TestTriclinicFrame:
     def test_from_matrix(self):
         # cubic
@@ -170,6 +182,39 @@ class TestTriclinicFrame:
         r = jnp.array([0.3, -0.2, 0.1])
         grad = jax.grad(lambda r: units.sum(cell.wrap(r * A)).to(A))(r)
         npt.assert_allclose(grad, jnp.array([1.0, 1.0, 1.0]), atol=1e-6)
+
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+    def test_wrap_subtracts_the_image_shift(self, dtype):
+        """Random skewed cells: coordinates inside come back bitwise; images of them
+        match the fractional round trip to round-off, with the same gradients."""
+        k1, k2, k3, k4 = jax.random.split(jax.random.key(0), 4)
+        lower = jnp.tril(jax.random.uniform(k1, (4, 3, 3), dtype, -4.0, 4.0), -1)
+        diagonal = jax.vmap(jnp.diag)(jax.random.uniform(k2, (4, 3), dtype, 8.0, 20.0))
+        cells = PeriodicCell(TriclinicFrame.from_matrix((lower + diagonal) * A))
+        system = jnp.arange(1000) % 4
+        cell = cells[system]
+        frac = jax.random.uniform(k3, (1000, 3), dtype, -0.49, 0.49)
+        inside = cell.frame.to_real(frac).to(A)
+        npt.assert_array_equal(_wrap(cell, inside), inside)
+        fractional = CoordinateSpace.FRACTIONAL
+        npt.assert_array_equal(
+            cell.wrap(frac, input_space=fractional, output_space=fractional), frac
+        )
+        images = jax.random.randint(k4, (1000, 3), -3, 4).astype(dtype)
+        outside = inside + cell.frame.to_real(images).to(A)
+        atol = 32 * jnp.finfo(dtype).eps * jnp.abs(outside).max()
+        npt.assert_allclose(_wrap(cell, outside), inside, atol=atol)
+        npt.assert_allclose(
+            _wrap(cell, outside), _round_trip_wrap(cell, outside), atol=atol
+        )
+
+        def total(wrap: Callable[[Cell, Array], Array], r: Array, cells: Cell):
+            return jnp.sum(jnp.sin(wrap(cells[system], r)))
+
+        new = jax.grad(total, argnums=(1, 2))(_wrap, outside, cells)
+        old = jax.grad(total, argnums=(1, 2))(_round_trip_wrap, outside, cells)
+        for a, b in zip(jax.tree.leaves(new), jax.tree.leaves(old), strict=True):
+            npt.assert_allclose(a, b, atol=atol * jnp.abs(b).max())
 
     def test_min_multiplicity(self):
         cell = PeriodicCell(TriclinicFrame.from_matrix((jnp.eye(3) * 10.0) * A))
