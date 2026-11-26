@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Cusp AI
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end smoke test for the Lennard-Jones relaxation entry point."""
+"""End-to-end tests for the Lennard-Jones relaxation entry point."""
 
 import dataclasses
 import tempfile
@@ -9,14 +9,19 @@ import tempfile
 import ase.build
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
+import pydantic
 import pytest
 
 from kups.application.potential.classical.lennard_jones import (
     make_lennard_jones_from_state,
 )
 from kups.application.potential.filter import FRECHET_FILTER, POSITIONS_ONLY
-from kups.application.relaxation.analysis import analyze_relax_file
+from kups.application.relaxation.analysis import (
+    RelaxAnalysisResult,
+    analyze_streaming_relax_file,
+)
 from kups.application.relaxation.data import (
     RelaxRunConfig,
     RelaxState,
@@ -24,12 +29,21 @@ from kups.application.relaxation.data import (
     relax_index_prefix,
     relax_state_from_ase,
 )
+from kups.application.relaxation.logging import RelaxLoggedData
 from kups.application.relaxation.simulation import make_relax_propagator, run_relax
+from kups.application.relaxation.streaming import (
+    StreamingRelaxLoggedData,
+    StreamingRelaxState,
+    Structure,
+    run_streaming_relax,
+)
 from kups.application.simulations.potentials import LjPotentialConfig
 from kups.application.simulations.relax import Config, run
+from kups.application.utils.particles import particles_from_ase
 from kups.core import units
 from kups.core.lens import bind, identity_lens
 from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.storage import HDF5StorageReader
 from kups.core.units import catalog as u
 from kups.core.units import testing
 from kups.observables.stress import stress_via_virial_theorem, total_lattice_gradient
@@ -40,14 +54,16 @@ from kups.relaxation.optimizer import ChainOptState
 from test.units import FORCE, A
 
 
-def _ar_cif(rattle: float) -> str:
+def _ar_cif(
+    rattle: float, repeat: tuple[int, int, int] = (2, 2, 2), seed: int = 1
+) -> str:
     """Write a rattled fcc-argon supercell as a P1 CIF with uniform ``Ar`` labels.
 
     The rattle gives the optimizer nonzero forces to act on; uniform labels
     keep them matching the LJ parameter table (ASE's writer would uniquify).
     """
-    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
-    atoms.rattle(rattle, seed=1)
+    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * repeat
+    atoms.rattle(rattle, seed=seed)
     a, b, c, al, be, ga = atoms.cell.cellpar()
     rows = "\n".join(
         f"Ar Ar {x:.6f} {y:.6f} {z:.6f}" for x, y, z in atoms.get_scaled_positions()
@@ -81,50 +97,209 @@ def _tmp_h5() -> str:
     return f.name
 
 
-def _config(out_file: str, inp_file: str, *, optimize_cell: bool = False) -> Config:
+def _config(
+    out_file: str,
+    *inp_files: str,
+    optimize_cell: bool = False,
+    max_steps: int = 5,
+    force_tolerance: str = "0.5 eV/angstrom",
+    batch_size: int | None = None,
+) -> Config:
     return Config(
         run=RelaxRunConfig(
             out_file=out_file,
-            max_steps=5,
+            max_steps=max_steps,
             seed=42,
-            force_tolerance="0.5 eV/angstrom",
+            force_tolerance=force_tolerance,
             optimizer=[
                 {"transform": "scale_by_ase_lbfgs", "memory_size": 10, "alpha": 70},
                 {"transform": "max_step_size", "max_step_size": 0.2},
                 {"transform": "scale", "step_size": -1},
             ],
             optimize_cell=optimize_cell,
+            batch_size=batch_size,
         ),
         potential=LjPotentialConfig(
             cutoff="5 angstrom",
             parameters={"Ar": ("3.405 angstrom", "0.010326 eV")},
             mixing_rule="lorentz_berthelot",
         ),
-        inp_files=(inp_file,),
+        inp_files=inp_files,
     )
 
 
+def _streamed(out_file: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every logged step's per-slot ``(ordinal, step, potential energy in eV)``."""
+    with HDF5StorageReader[StreamingRelaxLoggedData](out_file) as reader:
+        n_logged = int(reader.file.attrs["actual_steps"])
+        ordinal, step, energy = reader.focus_group(lambda s: s.step).read(
+            slice(n_logged), select=lambda d: (d.ordinal, d.step, d.potential_energy)
+        )
+    return ordinal, step, np.asarray(energy.to(u.eV))
+
+
 class TestRun:
-    """A short relaxation writes an HDF5 file the analyzer can read."""
+    """``run`` streams three structures of 8, 12 and 12 atoms through slots."""
+
+    TOLERANCE = "0.01 eV/angstrom"
 
     @pytest.fixture(scope="class")
-    def out_file(self) -> str:
+    def inp_files(self) -> tuple[str, ...]:
+        repeats = ((2, 2, 2), (3, 2, 2), (2, 3, 2))
+        return tuple(_ar_cif(0.1, r, seed) for seed, r in enumerate(repeats))
+
+    def _run(self, inp_files: tuple[str, ...], batch_size: int | None) -> str:
         out = _tmp_h5()
-        run(_config(out, _ar_cif(rattle=0.1)))
+        run(
+            _config(
+                out,
+                *inp_files,
+                max_steps=30,
+                force_tolerance=self.TOLERANCE,
+                batch_size=batch_size,
+            )
+        )
         return out
 
-    def test_analyzer_reads_back_physical_outputs(self, out_file: str):
-        results = analyze_relax_file(out_file)
-        assert len(results) == 1
-        result = next(iter(results.values()))
-        assert jnp.isfinite(result.final_energy.to(u.eV)).item()
-        assert jnp.isfinite(result.final_max_force.to(FORCE)).item()
-        assert result.n_steps >= 1
+    @pytest.fixture(scope="class")
+    def two_slots(self, inp_files: tuple[str, ...]) -> str:
+        return self._run(inp_files, batch_size=2)
+
+    @pytest.fixture(scope="class")
+    def one_slot(self, inp_files: tuple[str, ...]) -> str:
+        return self._run(inp_files, batch_size=1)
+
+    def test_all_structures_relax_at_once_by_default(
+        self, inp_files: tuple[str, ...], one_slot: str
+    ):
+        out = self._run(inp_files, batch_size=None)
+        ordinal, _, _ = _streamed(out)
+        npt.assert_array_equal(ordinal[0], [0, 1, 2])
+        alone = analyze_streaming_relax_file(one_slot)
+        for job, result in analyze_streaming_relax_file(out).items():
+            _assert_same_result(result, alone[job])
+
+    def test_analyzer_reports_every_structure(self, two_slots: str):
+        results = analyze_streaming_relax_file(two_slots)
+        assert list(results) == [0, 1, 2]
+        steps = [result.n_steps for result in results.values()]
+        assert len(set(steps)) > 1  # the structures finish at different times
+        for result in results.values():
+            assert jnp.isfinite(result.final_energy.to(u.eV)).item()
+            assert result.final_max_force.to(FORCE) < 0.01
+            assert 1 <= result.n_steps < 30
+
+    def test_log_names_the_structure_in_every_slot(self, two_slots: str):
+        ordinal, step, _ = _streamed(two_slots)
+        assert ordinal.shape[1] == 2
+        npt.assert_array_equal(ordinal[0], [0, 1])
+        npt.assert_array_equal(ordinal[-1], [-1, -1])
+        for job, result in analyze_streaming_relax_file(two_slots).items():
+            # One record per update, and a last one that only evaluates.
+            npt.assert_array_equal(
+                step[ordinal == job], [*range(1, result.n_steps + 1), result.n_steps]
+            )
+
+    def test_results_do_not_depend_on_batch_size(self, two_slots: str, one_slot: str):
+        together = analyze_streaming_relax_file(two_slots)
+        alone = analyze_streaming_relax_file(one_slot)
+        assert list(alone) == [0, 1, 2]
+        for job, result in together.items():
+            _assert_same_result(result, alone[job])
+
+    def test_first_structure_matches_fixed_batch(
+        self, inp_files: tuple[str, ...], one_slot: str
+    ):
+        config = _config(
+            _tmp_h5(), inp_files[0], max_steps=30, force_tolerance=self.TOLERANCE
+        ).run
+        propagator, state = _build_propagator(inp_files[0], optimize_cell=False)
+        run_relax(jax.random.key(0), propagator, state, config)
+        with HDF5StorageReader[RelaxLoggedData](config.out_file) as reader:
+            n_logged = int(reader.file.attrs["actual_steps"])
+            fixed = reader.focus_group(lambda s: s.step).read(
+                slice(n_logged), select=lambda d: d.potential_energy
+            )
+        ordinal, _, energy = _streamed(one_slot)
+        npt.assert_allclose(
+            energy[ordinal == 0], fixed.to(u.eV)[:, 0], rtol=0, atol=1e-12
+        )
 
 
-def _build_propagator(optimize_cell: bool):
-    """Build an LJ relaxation propagator and its initial state."""
-    config = _config(_tmp_h5(), _ar_cif(rattle=0.1), optimize_cell=optimize_cell)
+class TestAbortedRun:
+    """Two slots, three inputs: converged on entry, slow, and coincident atoms.
+
+    Structure 0 leaves its slot after the first cycle. Structure 2 takes it and
+    aborts the run while structure 1 is still relaxing.
+    """
+
+    @pytest.fixture(scope="class")
+    def aborted(self) -> tuple[str, str]:
+        """Output file and error message of the aborted run.
+
+        The structures are built in memory: the CIF reader drops an atom that
+        coincides with another.
+        """
+        structures: list[Structure] = []
+        for rattle in (0.0, 0.1, 0.1):
+            atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
+            atoms.rattle(rattle, seed=1)
+            particles, cell, _ = particles_from_ase(atoms)
+            structures.append((particles, cell))
+        last = structures[-1][0]
+        structures[-1] = (
+            bind(last)
+            .focus(lambda p: p.data.positions)
+            .apply(lambda r: r.at[1].set(r[0])),
+            structures[-1][1],
+        )
+        out = _tmp_h5()
+        config = _config(
+            out,
+            "unused",
+            max_steps=30,
+            force_tolerance="1e-6 eV/angstrom",
+            batch_size=2,
+        )
+        potential, cutoff = config.potential.build(
+            identity_lens(StreamingRelaxState[ChainOptState]), POSITIONS_ONLY
+        )
+        with pytest.raises(AssertionError) as error:
+            run_streaming_relax(
+                jax.random.key(0),
+                structures,
+                potential,
+                cutoff,
+                make_optimizer(config.run.optimizer),
+                POSITIONS_ONLY,
+                config.run,
+            )
+        return out, str(error.value)
+
+    def test_error_names_the_structure(self, aborted: tuple[str, str]):
+        assert "Non-finite relaxation gradients in structure 2." in aborted[1]
+
+    def test_analyzer_leaves_out_unfinished_structures(self, aborted: tuple[str, str]):
+        ordinal, _, _ = _streamed(aborted[0])
+        assert 1 in ordinal[-1]  # still in its slot when the run stopped
+        assert list(analyze_streaming_relax_file(aborted[0])) == [0]
+
+
+@pytest.mark.parametrize("batch_size", [0, -1])
+def test_batch_size_must_be_positive(batch_size: int) -> None:
+    with pytest.raises(pydantic.ValidationError, match="batch_size"):
+        _config(_tmp_h5(), "unused", batch_size=batch_size)
+
+
+def _assert_same_result(a: RelaxAnalysisResult, b: RelaxAnalysisResult) -> None:
+    assert a.n_steps == b.n_steps
+    testing.assert_allclose(a.final_energy, b.final_energy, u.eV, atol=1e-12)
+    testing.assert_allclose(a.final_max_force, b.final_max_force, FORCE, atol=1e-12)
+
+
+def _build_propagator(inp_file: str, optimize_cell: bool):
+    """Build the fixed-batch LJ relaxation propagator and its initial state."""
+    config = _config(_tmp_h5(), inp_file, optimize_cell=optimize_cell)
     assert isinstance(config.potential, LjPotentialConfig)
     lj = LennardJonesParameters.from_dict(
         cutoff=config.potential.cutoff,
@@ -150,7 +325,7 @@ def _build_propagator(optimize_cell: bool):
 
 
 def test_nonfinite_gradients_abort_run() -> None:
-    _, state = _build_propagator(optimize_cell=False)
+    _, state = _build_propagator(_ar_cif(rattle=0.1), optimize_cell=False)
     state = (
         bind(state)
         .focus(lambda s: s.particles.data.position_gradients)
@@ -166,12 +341,12 @@ class TestCellRelaxation:
 
     @pytest.fixture(scope="class")
     def position_step(self) -> tuple[RelaxState, RelaxState]:
-        prop, state = _build_propagator(optimize_cell=False)
+        prop, state = _build_propagator(_ar_cif(rattle=0.1), optimize_cell=False)
         return state, jax.jit(lambda s: prop(jax.random.key(0), s))(state)
 
     @pytest.fixture(scope="class")
     def cell_step(self) -> tuple[RelaxState, RelaxState]:
-        prop, state = _build_propagator(optimize_cell=True)
+        prop, state = _build_propagator(_ar_cif(rattle=0.1), optimize_cell=True)
         return state, jax.jit(lambda s: prop(jax.random.key(0), s))(state)
 
     def test_cell_moves_only_when_optimizing_cell(self, cell_step, position_step):

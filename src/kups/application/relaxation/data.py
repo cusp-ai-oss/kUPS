@@ -11,7 +11,7 @@ from typing import Annotated
 import ase
 import jax.numpy as jnp
 from jax import Array
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kups.application.utils.data import Scalar
 from kups.application.utils.particles import (
@@ -148,7 +148,7 @@ class RelaxRunConfig(BaseModel):
     out_file: str | Path
     """Path to the HDF5 output file."""
     max_steps: int
-    """Maximum number of optimisation steps."""
+    """Maximum number of optimisation steps per structure."""
     seed: int | None
     """Random seed. None for time-based."""
     force_tolerance: Annotated[units.Force, Scalar]
@@ -161,6 +161,8 @@ class RelaxRunConfig(BaseModel):
     """
     optimize_cell: bool
     """Whether to also relax lattice vectors."""
+    batch_size: int | None = Field(default=None, gt=0)
+    """Structures relaxed at once; further ones wait for a free slot. None relaxes all at once."""
 
 
 def relax_systems(cell: Cell[AnyPeriodicity], n_atoms: Array) -> RelaxSystems:

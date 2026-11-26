@@ -12,7 +12,7 @@ from kups.relaxation.config import (
     get_transformations,
     make_optimizer,
 )
-from kups.relaxation.optimizer import ChainOptimizer
+from kups.relaxation.optimizer import ResettableChain
 from kups.relaxation.transforms import (
     ClipByGlobalNorm,
     MaxStepSize,
@@ -108,9 +108,15 @@ class TestGetTransformations:
 
 
 class TestMakeOptimizer:
-    def test_returns_chain_optimizer(self):
+    def test_returns_resettable_chain(self):
         opt = make_optimizer(["identity"])
-        assert isinstance(opt, ChainOptimizer)
+        assert isinstance(opt, ResettableChain)
+
+    def test_stateful_optax_transform_rejected(self):
+        """A per-system reset could not restore an optax transform's state."""
+        opt = make_optimizer(["scale_by_adam"])
+        with pytest.raises(ValueError, match="only transforms without state"):
+            opt.init(jnp.array([1.0, 2.0]))
 
     def test_chained_with_only_custom_transforms(self):
         opt = make_optimizer(
@@ -119,7 +125,7 @@ class TestMakeOptimizer:
                 {"transform": "scale_by_fire"},
             ]
         )
-        assert isinstance(opt, ChainOptimizer)
+        assert isinstance(opt, ResettableChain)
 
     def test_chained_optimizer_produces_finite_updates(self):
         opt = make_optimizer(
