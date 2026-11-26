@@ -677,6 +677,86 @@ class TestEwaldParametersMake:
         testing.assert_allclose(params.cutoff.data[0], 2.0, A)
 
 
+def _direct_ewald_forces(
+    positions: np.ndarray,
+    charges: np.ndarray,
+    length: float,
+    alpha: float,
+    cutoff: float,
+    k_max: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Real and reciprocal Ewald forces over ``k_e`` by direct sums in a cubic box."""
+    delta = positions[:, None] - positions[None]
+    delta -= length * np.round(delta / length)
+    r = np.linalg.norm(delta, axis=-1)
+    r[r == 0] = np.inf
+    gauss = 2 * alpha / np.sqrt(np.pi) * np.exp(-((alpha * r) ** 2))
+    pair = np.where(r < cutoff, erfc(alpha * r) / r**3 + gauss / r**2, 0.0)
+    real = charges[:, None] * np.einsum("ij,ijx->ix", charges * pair, delta)
+    n = int(k_max * length / (2 * np.pi))
+    m = np.stack(np.meshgrid(*[np.arange(-n, n + 1)] * 3, indexing="ij"), -1)
+    # The first half of the cube holds one vector of every pair (k, -k).
+    k = 2 * np.pi / length * m.reshape(-1, 3)[: m.size // 6]
+    k2 = np.sum(k**2, axis=-1)
+    k, k2 = k[k2 <= k_max**2], k2[k2 <= k_max**2]
+    phase = positions @ k.T
+    cos, sin = np.cos(phase), np.sin(phase)
+    weight = 8 * np.pi / length**3 * np.exp(-k2 / (4 * alpha**2)) / k2
+    structure = sin * (charges @ cos) - cos * (charges @ sin)
+    return real, charges[:, None] * ((weight * structure) @ k)
+
+
+def _rms(forces: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.sum(forces**2, axis=-1))))
+
+
+class TestFixedCutoffForceError:
+    """A fixed real cutoff gets a reciprocal cutoff of the same RMS force error."""
+
+    @pytest.mark.parametrize("eps", [1e-4, 1e-6])
+    @pytest.mark.parametrize("ordered", [False, True])
+    def test_reciprocal_error_matches_real_space_error(self, eps, ordered):
+        # 216 ions on a rattled rock-salt lattice, as a crystal or with shuffled charges.
+        rng = np.random.default_rng(4)
+        length, cutoff = 16.92, 8.0
+        sites = np.stack(np.meshgrid(*[np.arange(6)] * 3, indexing="ij"), -1)
+        sites = sites.reshape(-1, 3)
+        charges = np.where(sites.sum(-1) % 2 == 0, 1.0, -1.0)
+        if not ordered:
+            charges = rng.permutation(charges)
+        positions = sites * length / 6 + rng.normal(0, 0.1, sites.shape)
+        cell = PeriodicCell(TriclinicFrame.from_matrix(jnp.eye(3) * length * A))
+        estimates = estimate_ewald_parameters(
+            as_unit(jnp.asarray(charges), CHARGE),
+            cell,
+            real_cutoff=cutoff * A,
+            epsilon_total=eps * CHARGE**2 / A,
+        )
+        alpha = float(estimates.alpha.to(1 / A))
+        k_max = float(estimates.k_max.to(1 / A))
+        npt.assert_allclose(erfc(alpha * cutoff) / cutoff, eps / 2, rtol=1e-4)
+
+        def forces(alpha, cutoff, k_max):
+            return _direct_ewald_forces(
+                positions, charges, length, alpha, cutoff, k_max
+            )
+
+        # Converged sums: the minimum-image sphere with erfc(5.5) and exp(-32) tails.
+        wide = 5.5 / (length / 2)
+        reference = np.add(*forces(wide, length / 2, 2 * wide * np.sqrt(32)))
+        real, reciprocal = forces(alpha, cutoff, k_max)
+        converged = forces(alpha, cutoff, 2 * alpha * np.sqrt(32))[1]
+        real_error = _rms(real + converged - reference)
+        reciprocal_error = _rms(reciprocal - converged)
+        # Kolafa and Perram's estimate of the real-space error.
+        n, volume = len(charges), length**3
+        estimate = 2 * np.sqrt(n / (cutoff * volume)) * np.exp(-((alpha * cutoff) ** 2))
+        npt.assert_allclose(real_error, estimate, rtol=0.3)
+        # Neither sum dominates the error nor is converged far beyond the other.
+        assert 0.1 * real_error < reciprocal_error < 2 * real_error
+        assert _rms(real + reciprocal - reference) < 2 * estimate
+
+
 class TestStructureFactorCache:
     """Tests for the compensated structure factor cache used by incremental MC."""
 
