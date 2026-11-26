@@ -39,7 +39,7 @@ from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
 from kups.core.typing import SystemId
 from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
-from kups.potential.mliap.tojax import TojaxedMliap
+from kups.potential.mliap.tojax import TojaxedMliap, UMATaskName
 
 if TYPE_CHECKING:
     # Type-only: referencing this in annotations never triggers a torch import
@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 
 # Inlined here (not imported from kups.potential.mliap.torch.uma) so this module
 # stays importable without the optional ``torch`` dependency.
-type UMATaskName = Literal["omat", "omol", "oc20", "odac", "omc"]
 type UMAInferenceSettings = Literal["default", "turbo", "turbo_f64"]
 
 # ``(potential, cutoff)``; the cutoff sizes the neighbor list.
@@ -101,6 +100,9 @@ class TojaxPotentialConfig(BaseModel):
 
     backend: Literal["tojax"] = "tojax"
     model_path: str | Path
+    # UMA task of the export. "omol" reads total_charge and spin_multiplicity
+    # from the systems table, defaulting to 0 and 1.
+    task_name: UMATaskName | None = None
 
     def build[State, Focus: IsTojaxedGraphState](
         self,
@@ -111,7 +113,9 @@ class TojaxPotentialConfig(BaseModel):
         ] = AdaptiveNeighborList.from_state,
     ) -> BuiltPotential[State]:
         """Build the jaxified potential from the exported model."""
-        model = TojaxedMliap.from_zip_file(get_model_path(self.model_path))
+        model = TojaxedMliap.from_zip_file(
+            get_model_path(self.model_path), task_name=self.task_name
+        )
         potential = make_tojaxed_from_state(
             state_lens,
             parameters=model,
