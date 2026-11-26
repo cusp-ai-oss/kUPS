@@ -12,8 +12,10 @@ from typing import Any
 
 import ase
 import ase.io
+import ase.io.formats
 import jax.numpy as jnp
 import numpy as np
+from ase.constraints import FixAtoms, FixCartesian, FixScaled
 from jax import Array
 from jax.typing import ArrayLike
 
@@ -188,7 +190,53 @@ def _particles_from_path(
     Callable[[units.Length], units.Length],
 ]:
     """Read an ASE-readable file and build cached particle data and cell."""
-    return _particles_from_atoms(next(ase.io.iread(path, index=-1, store_tags=True)))
+    return _particles_from_atoms(_read_last_frame(path))
+
+
+@cache
+def _read_last_frame(path: str | Path) -> ase.Atoms:
+    """The last frame of an ASE-readable file, with CIF tags kept in ``info``."""
+    if ase.io.formats.filetype(str(path)) == "cif":
+        return next(ase.io.iread(path, index=-1, store_tags=True))
+    return next(ase.io.iread(path, index=-1))
+
+
+def fixed_from_ase(atoms: ase.Atoms | str | Path) -> Array:
+    """Per-atom mask of the atoms ASE constraints hold in place.
+
+    ``FixAtoms`` holds whole atoms. ``FixCartesian`` and ``FixScaled`` hold
+    chosen Cartesian or fractional components; with all three held they hold
+    the whole atom too, which is how extxyz ``move_mask`` and POSCAR selective
+    dynamics (``F F F``) load. The extxyz reader also writes an all-free
+    ``FixCartesian`` for every movable atom, which holds nothing.
+
+    Args:
+        atoms: ASE Atoms object, or a file path readable by ``ase.io.read``.
+
+    Returns:
+        Boolean mask, shape ``(n_atoms,)``.
+
+    Raises:
+        ValueError: For a constraint that holds only some components of an
+            atom, or any other kind of constraint.
+    """
+    if isinstance(atoms, (str, Path)):
+        atoms = _read_last_frame(atoms)
+    fixed = np.zeros(len(atoms), dtype=bool)
+    for constraint in atoms.constraints:
+        match constraint:
+            case FixAtoms():
+                fixed[constraint.index] = True
+            case FixCartesian() | FixScaled() if constraint.mask.all():
+                fixed[constraint.index] = True
+            case FixCartesian() if not constraint.mask.any():
+                pass
+            case _:
+                raise ValueError(
+                    f"Unsupported constraint {constraint!r}: only whole atoms "
+                    "can be fixed."
+                )
+    return jnp.asarray(fixed)
 
 
 def _as_jax_array(name: str, value: ArrayLike) -> Array:
