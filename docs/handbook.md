@@ -102,7 +102,7 @@ neighborlist_params = UniversalNeighborlistParameters.estimate(
 state = run_md(next(chain), propagator, state, config.run)
 ```
 
-`run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each step is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the step allocates nothing new.
+`run_md` has two phases. Warmup calls [propagate_and_fix][kups.core.propagator.propagate_and_fix] until buffer capacities stabilize. Production runs the compiled propagator with an HDF5 logger and a progress bar. Each block of `run.block_size` steps is one JIT call, and [buffer donation](https://docs.jax.dev/en/latest/faq.html#buffer-donation) lets JAX reuse the input state's memory for the output so the call allocates nothing new.
 
 ## Where to go next
 

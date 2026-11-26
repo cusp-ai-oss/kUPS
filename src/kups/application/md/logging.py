@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from jax import Array
+
 from kups.application.md.data import MDParticles, MDSystems
 from kups.core import units
 from kups.core.data import Table
@@ -22,6 +24,7 @@ class HasMDData(Protocol):
 
     particles: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
+    step: Array
 
 
 @dataclass
@@ -43,9 +46,10 @@ class InitData:
 
 @dataclass
 class MDStepData:
-    """Per-step MD data logged at each production step.
+    """MD data logged after each block of production steps.
 
     Attributes:
+        step: MD step counter, shape ``(1,)``.
         atoms: Indexed particle data.
         potential_energy: Potential energy per system.
         kinetic_energy: Total kinetic energy per system.
@@ -55,6 +59,7 @@ class MDStepData:
         volume: Cell volume per system.
     """
 
+    step: Array
     atoms: Table[ParticleId, MDParticles]
     potential_energy: units.Energy
     kinetic_energy: units.Energy
@@ -68,6 +73,7 @@ class MDStepData:
         system = particles.data.system
         momenta, masses = particles.data.momenta, particles.data.masses
         return MDStepData(
+            step=state.step,
             atoms=particles,
             potential_energy=state.systems.data.potential_energy,
             kinetic_energy=system_kinetic_energy(momenta, masses, system),
@@ -85,7 +91,7 @@ class MDLoggedData:
 
     Attributes:
         init: Logs initial state once at step 0.
-        step: Logs thermodynamic data every step.
+        step: Logs thermodynamic data after every block of steps.
     """
 
     init: WriterGroupConfig[HasMDData, InitData] = WriterGroupConfig(

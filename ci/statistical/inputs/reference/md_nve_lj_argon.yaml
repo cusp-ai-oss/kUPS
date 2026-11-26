@@ -5,6 +5,7 @@ run:
   out_file: ../../md_nve_lj_argon_ref.h5
   num_warmup_steps: 10_000
   num_steps: 20_000
+  block_size: 1
   seed: 42
 
 md:

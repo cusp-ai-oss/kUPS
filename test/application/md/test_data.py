@@ -24,6 +24,7 @@ from kups.application.md.data import (
     CSVRParams,
     MdParameters,
     MDParticles,
+    MdRunConfig,
     MDSystems,
     VerletParams,
     md_state_from_ase,
@@ -650,3 +651,17 @@ def test_integrator_parameters_and_unit_conversions(
             )
         case _:
             pytest.fail(f"Unexpected integrator parameters: {type(params).__name__}")
+
+
+def test_run_config_defaults_to_blocks_of_100_steps() -> None:
+    config = MdRunConfig(out_file="md.h5", num_steps=200, num_warmup_steps=0, seed=0)
+    assert config.block_size == 100
+
+
+def test_run_config_rejects_partial_block() -> None:
+    with pytest.raises(ValueError, match=r"run\.num_steps.*run\.block_size"):
+        MdRunConfig(out_file="md.h5", num_steps=5, num_warmup_steps=0, seed=0)
+    with pytest.raises(ValueError):
+        MdRunConfig(
+            out_file="md.h5", num_steps=5, num_warmup_steps=0, seed=0, block_size=0
+        )

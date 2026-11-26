@@ -8,14 +8,18 @@ import tempfile
 import ase.build
 import jax.numpy as jnp
 import numpy as np
+import numpy.testing as npt
 import pytest
 
 from kups.application.md.analysis import analyze_md_file
 from kups.application.md.data import MdParameters, MdRunConfig
+from kups.application.md.logging import MDLoggedData
 from kups.application.simulations import md
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
+from kups.core.storage import HDF5StorageReader
 from kups.core.units import catalog as u
+from kups.md.integrators import Integrator
 from test.units import EV
 
 
@@ -61,9 +65,21 @@ def _tmp_h5() -> str:
     return f.name
 
 
-def _config(out_file: str, inp_file: str) -> Config:
+def _config(
+    out_file: str,
+    inp_file: str,
+    num_steps: int = 5,
+    block_size: int = 1,
+    integrator: Integrator = "baoab_langevin",
+) -> Config:
     return Config(
-        run=MdRunConfig(out_file=out_file, num_steps=5, num_warmup_steps=0, seed=42),
+        run=MdRunConfig(
+            out_file=out_file,
+            num_steps=num_steps,
+            num_warmup_steps=0,
+            block_size=block_size,
+            seed=42,
+        ),
         md=MdParameters(
             temperature="100 K",
             time_step="2 fs",
@@ -73,7 +89,7 @@ def _config(out_file: str, inp_file: str) -> Config:
             pressure_coupling_time="1.0e10 fs",
             compressibility="4.5e-5 1/Pa",
             minimum_scale_factor=1.0,
-            integrator="baoab_langevin",
+            integrator=integrator,
             initialize_momenta=True,
         ),
         potential=LjPotentialConfig(
@@ -102,6 +118,32 @@ class TestRun:
         kelvin = result.temperature.mean.to(u.K)
         assert jnp.isfinite(kelvin).all().item()
         assert (kelvin >= 0.0).all().item()
+
+
+def _logged_steps_and_positions(block_size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Run 4 NVE steps; return the logged step counter and positions of every row."""
+    config = _config(
+        _tmp_h5(),
+        _ar_cif(rattle=0.05),
+        num_steps=4,
+        block_size=block_size,
+        integrator="verlet",
+    )
+    run(config)
+    with HDF5StorageReader[MDLoggedData](config.run.out_file) as reader:
+        step, positions = reader.focus_group(lambda s: s.step).read(
+            select=lambda d: (d.step, d.atoms.data.positions)
+        )
+    return np.asarray(step), np.asarray(positions.value)
+
+
+def test_block_logs_one_row_and_keeps_the_trajectory() -> None:
+    """Blocks of 2 steps log every second state of the per-step NVE trajectory."""
+    step, positions = _logged_steps_and_positions(block_size=1)
+    block_step, block_positions = _logged_steps_and_positions(block_size=2)
+    npt.assert_array_equal(step[:, 0], [1, 2, 3, 4])
+    npt.assert_array_equal(block_step[:, 0], [2, 4])
+    npt.assert_allclose(block_positions, positions[1::2], rtol=1e-12, atol=1e-12)
 
 
 def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> None:
