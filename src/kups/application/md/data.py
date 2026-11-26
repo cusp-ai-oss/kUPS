@@ -23,7 +23,7 @@ from kups.application.utils.particles import (
 from kups.core import units
 from kups.core.cell import AnyPeriodicity, Cell, zero_gradient_cell
 from kups.core.data import Index, Table
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import SkinList, UniversalNeighborlistParameters
 from kups.core.typing import ExclusionId, ParticleId, SystemId
 from kups.core.units import catalog as u
 from kups.core.utils.jax import dataclass, field
@@ -225,12 +225,14 @@ class MdState:
         particles: Per-particle positions, momenta, and gradients.
         systems: Per-system cell, integrator parameters, and energy.
         neighborlist_params: Capacity hints for the neighbor list.
+        skin_list: Neighbor pairs kept across steps.
         step: Integration step counter, shape ``(1,)``.
     """
 
     particles: Table[ParticleId, MDParticles]
     systems: Table[SystemId, MDSystems]
     neighborlist_params: UniversalNeighborlistParameters
+    skin_list: SkinList
     step: Array
 
 
@@ -273,6 +275,10 @@ class MdParameters(BaseModel):
     """Integration algorithm to use."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
+    skin: Annotated[units.Length, Scalar] = 1.0 * u.angstrom
+    """Verlet skin of the neighbor list. Pairs within cutoff + skin are listed
+    once and listed again when motion could have brought a missing pair within
+    the cutoff. The skin changes speed, not results."""
 
 
 def md_state_from_particles_and_cell(
