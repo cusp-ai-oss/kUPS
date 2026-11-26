@@ -297,6 +297,19 @@ def _assert_same_result(a: RelaxAnalysisResult, b: RelaxAnalysisResult) -> None:
     testing.assert_allclose(a.final_max_force, b.final_max_force, FORCE, atol=1e-12)
 
 
+def test_seed_zero_is_a_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` seeds the run with 0, not with the clock."""
+
+    def stop_at_key(seed: int) -> None:
+        raise RuntimeError(f"seed {seed}")
+
+    monkeypatch.setattr(jax.random, "key", stop_at_key)
+    config = _config(_tmp_h5(), _ar_cif(rattle=0.1))
+    seeded = config.run.model_copy(update={"seed": 0})
+    with pytest.raises(RuntimeError, match="^seed 0$"):
+        run(config.model_copy(update={"run": seeded}))
+
+
 def _build_propagator(inp_file: str, optimize_cell: bool):
     """Build the fixed-batch LJ relaxation propagator and its initial state."""
     config = _config(_tmp_h5(), inp_file, optimize_cell=optimize_cell)

@@ -137,3 +137,16 @@ class TestRunGCMC:
             jax.tree.leaves(frames[0]), jax.tree.leaves(frames[1]), strict=True
         ):
             npt.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+
+
+def test_seed_zero_is_a_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``seed: 0`` seeds the run with 0, not with the clock."""
+
+    def stop_at_key(seed: int) -> None:
+        raise RuntimeError(f"seed {seed}")
+
+    monkeypatch.setattr(jax.random, "key", stop_at_key)
+    config = co2_config(exchange_prob=0.0, init_adsorbates=(2,), charged=False)
+    seeded = config.run.model_copy(update={"seed": 0})
+    with pytest.raises(RuntimeError, match="^seed 0$"):
+        run(config.model_copy(update={"run": seeded}))
