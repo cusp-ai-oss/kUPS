@@ -270,7 +270,9 @@ class MdParameters(BaseModel):
     minimum_scale_factor: float
     """Minimum allowed box scaling factor per barostat step (dimensionless)."""
     integrator: Integrator
-    """Integration algorithm to use."""
+    """Integration algorithm to use. ``"csvr_npt_euler"`` is ``"csvr_npt"`` with the
+    Euler barostat integrator of Bernetti & Bussi (2020, Sec. II.4): one force
+    evaluation per step instead of two, for slow barostats."""
     initialize_momenta: bool = False
     """If True, initialize momenta from Maxwell-Boltzmann distribution."""
 
@@ -445,7 +447,7 @@ def _build_integrator_params(
                 temperature=temperature,
                 thermostat_time_constant=config.thermostat_time_constant[None],
             )
-        case "csvr_npt":
+        case "csvr_npt" | "csvr_npt_euler":
             return CSVRNPTParams(
                 time_step=time_step,
                 temperature=temperature,

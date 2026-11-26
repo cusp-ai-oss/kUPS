@@ -60,7 +60,12 @@ from kups.md.observables import (
 from kups.observables.stress import stress_via_virial_theorem
 
 type Integrator = Literal[
-    "verlet", "baoab_langevin", "csvr", "csvr_npt", "baoab_npt_langevin"
+    "verlet",
+    "baoab_langevin",
+    "csvr",
+    "csvr_npt",
+    "csvr_npt_euler",
+    "baoab_npt_langevin",
 ]
 
 # χ constant in the Gao-Fang-Wang NPT Langevin barostat-pressure term
@@ -866,6 +871,7 @@ def make_csvr_npt_step[State](
     systems: Lens[State, Table[SystemId, IsMDSystemNPT]],
     derivative_computation: Propagator[State],
     flow: Flow[State, units.Length],
+    refresh_after_barostat: bool = True,
 ) -> SequentialPropagator[State]:
     r"""Create NPT integrator for isothermal-isobaric (NPT) ensemble sampling.
 
@@ -883,7 +889,7 @@ def make_csvr_npt_step[State](
         - Compute $\mathbf{F}(t+\Delta t)$ — force evaluation
         - $\mathbf{p}(t+\Delta t) = \mathbf{p}(t+\Delta t/2) + \mathbf{F}(t+\Delta t) \cdot \Delta t/2$ — half momentum step
     3. Stochastic cell rescaling (pressure control)
-    4. Recompute forces and stress after box/position scaling
+    4. Recompute forces and stress after box/position scaling, if ``refresh_after_barostat``
 
     Args:
         particles: Lens to get/set indexed particle data (momenta $\\mathbf{p}$, positions $\\mathbf{r}$,
@@ -894,6 +900,8 @@ def make_csvr_npt_step[State](
             degrees of freedom $N_{\\text{dof}}$, thermostat time constant $\\tau_T$)
         derivative_computation: Propagator to compute forces $\\mathbf{F}$ and stress tensor $\\mathbf{W}$ from state
         flow: Flow operator for position updates (handles boundary conditions)
+        refresh_after_barostat: If False, skip step 4. This is the Euler integrator of Bernetti & Bussi
+            (2020, Sec. II.4): one derivative evaluation per step, for slow barostats ($\tau_P \gg \Delta t$)
 
     Returns:
         SequentialPropagator implementing the CSVR-NPT algorithm
@@ -920,7 +928,10 @@ def make_csvr_npt_step[State](
             derivative_computation,
             MomentumStep(particles, params_half),
             StochasticCellRescalingStep(particles, systems),
-            derivative_computation,
+            # Without the refresh the next step's first half kick uses the forces from
+            # before the rescale: their error grows with |μ - 1| and the step is not
+            # time-reversible.
+            *((derivative_computation,) if refresh_after_barostat else ()),
         )
     )
 
