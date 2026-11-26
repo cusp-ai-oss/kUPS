@@ -24,20 +24,31 @@ from kups.application.potential.classical.lennard_jones import (
     IsLJGraphState,
     make_lennard_jones_from_state,
 )
+from kups.application.potential.classical.lennard_jones_ewald import (
+    IsLJEwaldGraphState,
+    make_lennard_jones_ewald_from_state,
+)
 from kups.application.potential.mliap.tojax import (
     IsTojaxedGraphState,
     make_tojaxed_from_state,
 )
+from kups.application.simulations.mcmc_rigid import EwaldConfig
 from kups.application.utils.data import Scalar
 from kups.application.utils.path import get_model_path
 from kups.core import units
+from kups.core.cell import Periodic3D
 from kups.core.data import Table
 from kups.core.geometry import Geometry, PositionsAndCell
 from kups.core.lens import Lens
 from kups.core.neighborlist import AdaptiveNeighborList, NeighborListFactory
 from kups.core.patch import Patch
 from kups.core.potential import EmptyType, Potential
-from kups.core.typing import SystemId
+from kups.core.typing import HasCell, ParticleId, SystemId
+from kups.potential.classical.ewald import (
+    EwaldParameters,
+    IsEwaldPointData,
+    PMEParameters,
+)
 from kups.potential.classical.lennard_jones import LennardJonesParameters, MixingRule
 from kups.potential.mliap.tojax import TojaxedMliap
 
@@ -94,6 +105,69 @@ class LjPotentialConfig(BaseModel):
             neighborlist_factory=neighborlist_factory,
         )
         return potential, params.cutoff
+
+
+class LjEwaldPotentialConfig(BaseModel):
+    """Lennard-Jones plus the Coulomb interactions of the input charges."""
+
+    backend: Literal["lj_ewald"] = "lj_ewald"
+    cutoff: Annotated[units.Length, Scalar]
+    parameters: dict[
+        str,
+        tuple[
+            Annotated[units.Length, Scalar] | None,
+            Annotated[units.Energy, Scalar] | None,
+        ],
+    ]
+    """Mapping label -> (sigma, epsilon); a null pair means no interaction."""
+    mixing_rule: MixingRule
+    ewald: EwaldConfig
+    reciprocal: Literal["pme", "ewald"] = "pme"
+    """Reciprocal sum on a particle mesh (``pme``) or over k-vectors (``ewald``)."""
+
+    def build[State, Focus: IsLJEwaldGraphState](
+        self,
+        state_lens: Lens[State, Focus],
+        gradient: Lens[Geometry, PositionsAndCell[units.Length]],
+        particles: Table[ParticleId, IsEwaldPointData],
+        systems: Table[SystemId, HasCell[Periodic3D]],
+        neighborlist_factory: NeighborListFactory[
+            Focus
+        ] = AdaptiveNeighborList.from_state,
+    ) -> BuiltPotential[State]:
+        """Build both potentials with their parameters bound in.
+
+        Screening, cutoffs and the mesh are estimated once from ``particles``
+        and ``systems``, the loaded input. They do not follow a changing cell.
+
+        Raises:
+            ValueError: If the input has no charges.
+        """
+        if not units.absolute(particles.data.charges).sum().value > 0:
+            raise ValueError(
+                "The lj_ewald backend needs charges; CIF files give them as "
+                "_atom_site_charge."
+            )
+        lj = LennardJonesParameters.from_dict(
+            cutoff=self.cutoff,
+            parameters=self.parameters,
+            mixing_rule=self.mixing_rule,
+        )
+        make = PMEParameters.make if self.reciprocal == "pme" else EwaldParameters.make
+        ewald = make(
+            particles, systems, self.ewald.epsilon_total, self.ewald.real_cutoff
+        )
+        potential = make_lennard_jones_ewald_from_state(
+            state_lens,
+            lennard_jones=lj,
+            ewald=ewald,
+            gradient=gradient,
+            neighborlist_factory=neighborlist_factory,
+        )
+        cutoff = units.maximum(
+            Table.broadcast_to(lj.cutoff, ewald.cutoff).data, ewald.cutoff.data
+        )
+        return potential, ewald.cutoff.set_data(cutoff)
 
 
 class TojaxPotentialConfig(BaseModel):
@@ -195,5 +269,15 @@ class UmaConfig(BaseModel):
 
 type PotentialConfig = Annotated[
     LjPotentialConfig | TojaxPotentialConfig | MaceConfig | UmaConfig,
+    Field(discriminator="backend"),
+]
+
+# ``kups_md`` builds its potential from the loaded input, as Ewald needs.
+type MdPotentialConfig = Annotated[
+    LjPotentialConfig
+    | LjEwaldPotentialConfig
+    | TojaxPotentialConfig
+    | MaceConfig
+    | UmaConfig,
     Field(discriminator="backend"),
 ]
