@@ -27,6 +27,7 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble with `kups_
 | `potential.backend` | Force Field | Description |
 |---------------------|-------------|-------------|
 | `lj` | Lennard-Jones | Classical pair potential with configurable mixing rules |
+| `lj_ewald` | Lennard-Jones and Coulomb | Adds the Coulomb interactions of the input charges, with the reciprocal sum on a particle mesh (`reciprocal: pme`) or over k-vectors (`ewald`) |
 | `tojax` | MACE, UMA, ORB | Machine-learned interatomic potentials loaded via [Tojax](https://github.com/cusp-ai-oss/tojax) |
 | `mace`, `uma` | MACE, UMA | Native PyTorch MLFFs bridged into JAX (see [Direct PyTorch Bridge](#direct-pytorch-bridge)) |
 
@@ -34,6 +35,7 @@ Run molecular dynamics trajectories in the NVE, NVT, or NPT ensemble with `kups_
 cd examples
 kups_md md_lj_argon_nvt.yaml
 kups_md md_lj_argon_nve.yaml
+kups_md md_lj_ewald_nacl.yaml
 kups_md md_mace.yaml
 kups_md md_orb.yaml
 ```

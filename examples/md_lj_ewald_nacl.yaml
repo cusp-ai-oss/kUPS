@@ -1,0 +1,35 @@
+# NVT Molecular Dynamics for rock salt: Lennard-Jones plus Ewald electrostatics
+# The charges come from the _atom_site_charge column of the input file
+
+run:
+  out_file: md_nvt_lj_ewald_nacl.h5
+  num_steps: 5_000
+  num_warmup_steps: 1_000
+  seed: 42
+
+md:
+  temperature: "300.0 K"
+  time_step: "1.0 fs"
+  friction_coefficient: "0.01 1/fs"
+  thermostat_time_constant: "100.0 fs"
+  target_pressure: "1.0 Pa"
+  pressure_coupling_time: "1.0e10 fs"   # Disabled (NVT, not NPT)
+  compressibility: "4.5e-5 1/Pa"
+  minimum_scale_factor: 1.0
+  integrator: "csvr"
+  initialize_momenta: true
+
+potential:
+  backend: lj_ewald
+  cutoff: "8.0 angstrom"
+  parameters:   # Joung and Cheatham, J. Phys. Chem. B 112, 9020 (2008), SPC/E set
+    Na: ["2.160 angstrom", "0.01530 eV"]
+    Cl: ["4.830 angstrom", "0.00055 eV"]
+  mixing_rule: "lorentz_berthelot"
+  ewald:
+    real_cutoff: "8.0 angstrom"
+    precision: 1.0e-5
+  reciprocal: pme   # or "ewald" for the direct sum over k-vectors
+
+inp_files:
+  - host/nacl.cif

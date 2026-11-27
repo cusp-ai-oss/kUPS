@@ -3,9 +3,9 @@
 
 """Unified molecular-dynamics entry point.
 
-The force field is selected by the ``potential`` config (LJ / tojax-MLFF /
-torch-MLFF). The potential is built directly with its parameters, so a single
-force-field-agnostic ``MdState`` and driver serve every backend.
+The force field is selected by the ``potential`` config (LJ / LJ with Ewald /
+tojax-MLFF / torch-MLFF). The potential is built directly with its parameters,
+so a single force-field-agnostic ``MdState`` and driver serve every backend.
 """
 
 from __future__ import annotations
@@ -36,8 +36,9 @@ from kups.application.md.data import (
 from kups.application.md.simulation import make_md_propagator, run_md
 from kups.application.potential.filter import POSITIONS_AND_CELL
 from kups.application.simulations.potentials import (
+    LjEwaldPotentialConfig,
     MaceConfig,
-    PotentialConfig,
+    MdPotentialConfig,
     TojaxPotentialConfig,
     UmaConfig,
 )
@@ -63,7 +64,7 @@ class Config(BaseModel):
 
     run: MdRunConfig
     md: MdParameters
-    potential: PotentialConfig
+    potential: MdPotentialConfig
     inp_files: tuple[str | Path, ...]
 
 
@@ -72,8 +73,6 @@ def run(config: Config) -> None:
     seed = config.run.seed or time.time_ns()
     chain = key_chain(jax.random.key(seed))
     state_lens = identity_lens(MdState)
-    potential, cutoff = config.potential.build(state_lens, POSITIONS_AND_CELL)
-    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
     all_particles: list[Table[ParticleId, MDParticles]] = []
     all_systems: list[Table[SystemId, MDSystems]] = []
@@ -84,6 +83,20 @@ def run(config: Config) -> None:
         all_particles.append(particles_i)
         all_systems.append(systems_i)
     particles, systems = Table.union(all_particles, all_systems)
+
+    if isinstance(config.potential, LjEwaldPotentialConfig):
+        potential, cutoff = config.potential.build(
+            state_lens,
+            POSITIONS_AND_CELL,
+            particles,
+            systems,
+        )
+    else:
+        potential, cutoff = config.potential.build(
+            state_lens,
+            POSITIONS_AND_CELL,
+        )
+    propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
     base = 1 if isinstance(config.potential, TojaxPotentialConfig) else 2
     multiplier = 2.0 if isinstance(config.potential, MaceConfig | UmaConfig) else 1.0
