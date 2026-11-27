@@ -25,6 +25,11 @@ from kups.core.cell import AnyPeriodicity, Cell
 from kups.core.data import Table
 from kups.core.lens import Lens, lens
 from kups.core.logging import CompositeLogger, TqdmLogger
+from kups.core.neighborlist import (
+    IsUniversalNeighborlistParams,
+    SkinList,
+    SkinListUpdate,
+)
 from kups.core.potential import (
     EMPTY,
     CachedPotential,
@@ -69,10 +74,16 @@ class IsMdState(IsState[MDParticles, MDSystems], Protocol):
         particles: Per-particle data (positions, momenta, forces, etc.).
         systems: Per-system data (cell, thermostat parameters, etc.).
         step: Current simulation step counter.
+        neighborlist_params: Capacity hints for the neighbor list.
+        skin_list: Neighbor pairs kept across steps.
     """
 
     @property
     def step(self) -> Array: ...
+    @property
+    def neighborlist_params(self) -> IsUniversalNeighborlistParams: ...
+    @property
+    def skin_list(self) -> SkinList: ...
 
 
 def potential_map[State: IsMdState, Grad: IsMdGradients](
@@ -95,6 +106,10 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
     potential: Potential[State, Grad, EmptyType, Any],
 ) -> Propagator[State]:
     """Build a single MD propagator step with error recovery and step counting.
+
+    The state's skin list is checked before each force evaluation and rebuilt
+    if its skin is used up, so ``potential`` reads it with
+    ``SkinNeighborList.from_state``.
 
     Args:
         state_lens: Lens focusing on the MD sub-state within the full state.
@@ -127,11 +142,14 @@ def make_md_propagator[State: IsMdState, Grad: IsMdGradients](
         )
     )
     md_propagator = make_md_step_from_state(
-        state_lens, derivative_computation, integrator
+        state_lens,
+        SequentialPropagator((SkinListUpdate(state_lens), derivative_computation)),
+        integrator,
     )
     step_count_propagator = step_counter_propagator(state_lens.focus(lambda x: x.step))
     return ResetOnErrorPropagator(
-        SequentialPropagator((md_propagator, step_count_propagator))
+        SequentialPropagator((md_propagator, step_count_propagator)),
+        keep=state_lens.focus(lambda x: x.skin_list),
     )
 
 

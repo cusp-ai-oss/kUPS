@@ -17,6 +17,7 @@ from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjEwaldPotentialConfig
 from kups.application.utils.propagate import make_cycle_function
 from kups.core.propagator import LoopPropagator, Propagator, propagate_and_fix
+from kups.core.units import catalog as u
 from test.units import EV, A
 
 
@@ -129,3 +130,33 @@ def test_run_writes_a_trajectory():
 def test_input_without_charges_raises():
     with pytest.raises(ValueError, match="needs charges"):
         run(_config("pme", _salt_cif(0.0)))
+
+
+def test_skin_does_not_change_the_trajectory(monkeypatch: pytest.MonkeyPatch):
+    """A list kept over many steps gives the positions of one built at every step."""
+    short = {
+        "cutoff": 4.0 * u.angstrom,
+        "ewald": EwaldConfig(real_cutoff="4 angstrom", precision=1e-4),
+    }
+    finals = []
+    for skin in (0.0, 1.0):
+        config = _config("pme", _salt_cif(0.4))
+        hot = {"temperature": 1000.0 * u.K, "skin": skin * u.angstrom}
+        propagator, state = _propagator_and_state(
+            monkeypatch,
+            config.model_copy(
+                update={
+                    "md": config.md.model_copy(update=hot),
+                    "potential": config.potential.model_copy(update=short),
+                }
+            ),
+        )
+        built_at = np.asarray(state.skin_list.reference.positions.to(A))
+        cycle = make_cycle_function(LoopPropagator(propagator, 40))
+        for key in jax.random.split(jax.random.key(0), 2):
+            state = propagate_and_fix(cycle, key, state)
+        finals.append(np.asarray(state.particles.data.positions.to(A)))
+        reference = np.asarray(state.skin_list.reference.positions.to(A))
+        assert np.abs(reference - built_at).max() > 0, "the list was never built again"
+    assert np.abs(finals[1] - reference).max() > 0, "the list was built at every step"
+    np.testing.assert_allclose(finals[1], finals[0], rtol=1e-9, atol=1e-9)

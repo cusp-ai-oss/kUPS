@@ -3,29 +3,34 @@
 
 """End-to-end smoke test for the Lennard-Jones MD entry point."""
 
+import dataclasses
 import tempfile
 
 import ase.build
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from kups.application.md.analysis import analyze_md_file
-from kups.application.md.data import MdParameters, MdRunConfig
+from kups.application.md.data import MdParameters, MdRunConfig, MdState
 from kups.application.simulations import md
 from kups.application.simulations.md import Config, run
 from kups.application.simulations.potentials import LjPotentialConfig
+from kups.application.utils.propagate import make_cycle_function
+from kups.core.neighborlist import SkinList
+from kups.core.propagator import LoopPropagator, Propagator, propagate_and_fix
 from kups.core.units import catalog as u
 from test.units import EV
 
 
-def _ar_cif(rattle: float = 0.0) -> str:
+def _ar_cif(rattle: float = 0.0, cubic: bool = False) -> str:
     """Write a small fcc-argon supercell (32 atoms, ~10.6 Å cube) as a P1 CIF.
 
     Labels are kept uniform (``Ar``) so they match the LJ parameter table;
     ASE's CIF writer would otherwise uniquify them to ``Ar1``, ``Ar2``, ...
     """
-    atoms = ase.build.bulk("Ar", "fcc", a=5.3) * (2, 2, 2)
+    atoms = ase.build.bulk("Ar", "fcc", a=5.3, cubic=cubic) * (2, 2, 2)
     if rattle:
         atoms.rattle(rattle, seed=1)
     a, b, c, al, be, ga = atoms.cell.cellpar()
@@ -114,3 +119,81 @@ def test_replicas_get_independent_momenta(monkeypatch: pytest.MonkeyPatch) -> No
     run(_config(_tmp_h5(), inp).model_copy(update={"inp_files": (inp, inp)}))
     first, second = np.split(np.asarray(captured["s"].particles.data.momenta.value), 2)
     assert not np.allclose(first, second)
+
+
+def _propagator_and_state(
+    monkeypatch: pytest.MonkeyPatch, skin: float = 1.0
+) -> tuple[Propagator[MdState], MdState]:
+    """What ``run`` hands to ``run_md`` for hot, rattled argon under NVE."""
+    captured = {}
+    monkeypatch.setattr(
+        md,
+        "run_md",
+        lambda key, propagator, state, config: captured.update(p=propagator, s=state),
+    )
+    config = _config(_tmp_h5(), _ar_cif(rattle=0.1, cubic=True))
+    hot = {
+        "integrator": "verlet",
+        "temperature": 300.0 * u.K,
+        "skin": skin * u.angstrom,
+    }
+    short = {"cutoff": 4.0 * u.angstrom}
+    run(
+        config.model_copy(
+            update={
+                "md": config.md.model_copy(update=hot),
+                "potential": config.potential.model_copy(update=short),
+            }
+        )
+    )
+    return captured["p"], captured["s"]
+
+
+def test_skin_does_not_change_the_trajectory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A list kept over many steps gives the positions of one built at every step."""
+    finals = []
+    for skin in (0.0, 1.0):
+        propagator, state = _propagator_and_state(monkeypatch, skin)
+        built_at = np.asarray(state.skin_list.reference.positions.to(u.angstrom))
+        cycle = make_cycle_function(LoopPropagator(propagator, 50))
+        for key in jax.random.split(jax.random.key(0), 4):
+            state = propagate_and_fix(cycle, key, state)
+        finals.append(np.asarray(state.particles.data.positions.to(u.angstrom)))
+        reference = np.asarray(state.skin_list.reference.positions.to(u.angstrom))
+        assert np.abs(reference - built_at).max() > 0, "the list was never built again"
+    assert np.abs(finals[1] - reference).max() > 0, "the list was built at every step"
+    np.testing.assert_allclose(finals[1], finals[0], rtol=1e-9, atol=1e-9)
+
+
+def test_step_repairs_a_skin_list_too_small_to_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rebuild that outgrows its capacities fails the step, which is then redone."""
+    propagator, state = _propagator_and_state(monkeypatch)
+    cycle = make_cycle_function(propagator)
+    key = jax.random.key(0)
+    # A list of the same particles three times as far apart holds few pairs.
+    dilute = SkinList.create(
+        state.particles.map_data(
+            lambda p: dataclasses.replace(p, positions=3.0 * p.positions)
+        ),
+        state.systems.map_data(lambda s: dataclasses.replace(s, cell=s.cell * 3.0)),
+        state.skin_list.cutoffs,
+        state.skin_list.skin,
+    )
+    assert dilute.parameters.avg_edges < state.skin_list.parameters.avg_edges
+    small = dataclasses.replace(jax.tree.map(jnp.copy, state), skin_list=dilute)
+    failed = cycle(key, jax.tree.map(jnp.copy, small))
+    assert failed.failed_assertions
+    np.testing.assert_array_equal(
+        failed.value.particles.data.positions.to(u.angstrom),
+        state.particles.data.positions.to(u.angstrom),
+    )
+    expected = propagate_and_fix(cycle, key, jax.tree.map(jnp.copy, state))
+    repaired = propagate_and_fix(cycle, key, small)
+    assert repaired.skin_list.parameters.avg_edges > dilute.parameters.avg_edges
+    np.testing.assert_allclose(
+        repaired.particles.data.positions.to(u.angstrom),
+        expected.particles.data.positions.to(u.angstrom),
+        rtol=1e-12,
+    )

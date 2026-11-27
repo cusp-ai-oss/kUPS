@@ -44,7 +44,11 @@ from kups.application.simulations.potentials import (
 )
 from kups.core.data import Table
 from kups.core.lens import identity_lens
-from kups.core.neighborlist import UniversalNeighborlistParameters
+from kups.core.neighborlist import (
+    SkinList,
+    SkinNeighborList,
+    UniversalNeighborlistParameters,
+)
 from kups.core.typing import ParticleId, SystemId
 from kups.core.utils.jax import key_chain
 
@@ -90,11 +94,13 @@ def run(config: Config) -> None:
             POSITIONS_AND_CELL,
             particles,
             systems,
+            SkinNeighborList.from_state,
         )
     else:
         potential, cutoff = config.potential.build(
             state_lens,
             POSITIONS_AND_CELL,
+            SkinNeighborList.from_state,
         )
     propagator = make_md_propagator(state_lens, config.md.integrator, potential)
 
@@ -107,6 +113,7 @@ def run(config: Config) -> None:
         particles=particles,
         systems=systems,
         neighborlist_params=neighborlist_params,
+        skin_list=SkinList.create(particles, systems, cutoff, config.md.skin),
         step=jnp.array([0]),
     )
     run_md(next(chain), propagator, state, config.run)
