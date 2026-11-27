@@ -3,6 +3,11 @@
 
 """Unit tests for ``kups.core.neighborlist.edges`` (the ``Edges`` dataclass)."""
 
+import dataclasses
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
@@ -22,6 +27,17 @@ from kups.core.utils.math import (
 from test.units import A
 
 from ._builders import make_lh, make_systems
+
+
+@contextmanager
+def _x64(enabled: bool) -> Iterator[None]:
+    """Scoped x64 toggle; `jax.enable_x64` only exists from jax 0.8."""
+    prev = jax.config.read("jax_enable_x64")
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", prev)
 
 
 class TestEdgesConstruction:
@@ -154,3 +170,107 @@ class TestAbsoluteShiftsStructure:
         # Dense RIGHT-side reference: shifts @ vecs per edge/Degree slot.
         ref = units.einsum("ji,nkj->nki", vecs, edges.shifts)
         testing.assert_allclose(new, ref, A, atol=1e-5)
+
+
+class TestDifferenceVectorGradients:
+    """The hand-written reverse pass of ``difference_vectors`` equals autodiff."""
+
+    @staticmethod
+    def _case(degree: int, n_sys: int, dtype: type):
+        rng = np.random.default_rng(degree + 10 * n_sys)
+        n, n_edges = 12, 40
+        system = jnp.arange(n) * n_sys // n
+        positions = jnp.asarray(rng.uniform(0, 6, (n, 3)), dtype)
+        vectors = np.tril(6 * np.eye(3) + rng.normal(0, 0.3, (n_sys, 3, 3)))
+        vectors = jnp.asarray(vectors, dtype)
+        # Edges stay inside one system; the last rows are padding.
+        first = rng.integers(0, n, n_edges)
+        others = rng.integers(0, n // n_sys, (n_edges, degree - 1))
+        others += (first * n_sys // n * (n // n_sys))[:, None]
+        raw = np.column_stack([first, others])
+        raw[-5:] = n
+        shifts = rng.integers(-1, 2, (n_edges, degree - 1, 3))
+        shifts[-5:] = 0
+        weights = jnp.asarray(rng.normal(size=(n_edges, degree - 1, 3)), dtype)
+        return (
+            positions,
+            vectors,
+            jnp.asarray(raw),
+            jnp.asarray(shifts),
+            system,
+            weights,
+        )
+
+    @staticmethod
+    def _through_edges(positions, vectors, raw, shifts, system, weights):
+        particles = make_lh(positions * A, system)
+        cell = PeriodicCell(TriclinicFrame.from_matrix(vectors * A))
+        systems, _ = make_systems(cell, jnp.ones(len(vectors)))
+        edges = Edges(Index(particles.keys, raw), shifts)
+        vectors_out = edges.difference_vectors(particles, systems).to(A)
+        return (weights * vectors_out**2).sum()
+
+    @staticmethod
+    def _plain(positions, vectors, raw, shifts, system, weights):
+        valid = (raw < len(positions))[..., None]
+        rows = jnp.where(valid, positions[jnp.minimum(raw, len(positions) - 1)], 0)
+        lattice = jnp.tril(vectors)[system[raw[:, 0] % len(system)]]
+        lattice = jnp.where(valid[:, :1], lattice, 0)
+        in_cell = jnp.einsum("edk,ekl->edl", shifts.astype(positions.dtype), lattice)
+        return (weights * (rows[:, 1:] - rows[:, :1] + in_cell) ** 2).sum()
+
+    @pytest.mark.parametrize("degree", [2, 3, 4])
+    @pytest.mark.parametrize("n_sys", [1, 3])
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+    def test_gradients_match_autodiff(self, degree, n_sys, dtype):
+        with _x64(dtype == jnp.float64):
+            case = self._case(degree, n_sys, dtype)
+            value, grads = jax.value_and_grad(self._through_edges, (0, 1))(*case)
+            expected, expected_grads = jax.value_and_grad(self._plain, (0, 1))(*case)
+            rtol = 50 * float(jnp.finfo(dtype).eps)
+            npt.assert_allclose(value, expected, rtol=rtol)
+            for got, want in zip(grads, expected_grads, strict=True):
+                assert got.dtype == dtype
+                npt.assert_allclose(got, want, rtol=rtol, atol=rtol * 10)
+
+    @pytest.mark.parametrize("n_sys", [1, 3])
+    def test_edges_outside_the_systems_pass_no_cell_gradient(self, n_sys):
+        """Padding and buffer particles keep their cotangent, even NaN, off the cell."""
+        with _x64(True):
+            positions, vectors, raw, shifts, system, weights = self._case(
+                2, n_sys, jnp.float64
+            )
+            n = len(positions)
+            # The last edges become padding and edges of a buffer particle.
+            raw = raw.at[-5:-2].set(n).at[-2:, 0].set(n - 1)
+            shifts = shifts.at[-5:].set(1)
+
+            def through_edges(vectors, raw, shifts, weights):
+                particles = make_lh(positions * A, system)
+                buffered = system.at[-1].set(n_sys)
+                data = dataclasses.replace(
+                    particles.data, system=Index(particles.data.system.keys, buffered)
+                )
+                cell = PeriodicCell(TriclinicFrame.from_matrix(vectors * A))
+                systems, _ = make_systems(cell, jnp.ones(n_sys))
+                edges = Edges(Index(particles.keys, raw), shifts)
+                out = edges.absolute_shifts(particles.set_data(data), systems).to(A)
+                return jnp.where(jnp.isnan(weights), jnp.nan, weights * out**2).sum()
+
+            gradient = jax.grad(through_edges)
+            expected = gradient(vectors, raw[:-5], shifts[:-5], weights[:-5])
+            got = gradient(vectors, raw, shifts, weights.at[-5:].set(jnp.nan))
+            assert float(jnp.abs(expected).max()) > 0
+            npt.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
+
+    def test_second_derivatives_match_autodiff(self):
+        with _x64(True):
+            case = self._case(2, 3, jnp.float64)
+            tangent = jnp.ones_like(case[0])
+
+            def hvp(fn):
+                gradient = jax.grad(fn)
+                return jax.jvp(lambda x: gradient(x, *case[1:]), (case[0],), (tangent,))
+
+            for got, want in zip(hvp(self._through_edges), hvp(self._plain)):
+                npt.assert_allclose(got, want, rtol=1e-12, atol=1e-12)

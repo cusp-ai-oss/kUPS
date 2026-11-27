@@ -309,10 +309,14 @@ class GraphPairEnergy[
         self,
         inp: GraphPotentialInput[Params, Part, HasCell[AnyPeriodicity], Literal[2]],
     ) -> WithPatch[Table[SystemId, units.Energy], IdPatch[State]]:
-        system = inp.graph.edge_batch_mask.update_labels(inp.graph.systems.keys).to_cls(
-            inp.graph.systems.cls
-        )
-        energies = system.sum_over(self.edge_energies(inp)) / 2
+        graph = inp.graph
+        energies, owner = self.edge_energies(inp), graph.edge_batch_mask
+        if graph.systems.size > 1:
+            # Summed per particle first, so no scatter piles all edges on a few rows.
+            energies = graph.edges.indices[:, 0].sum_over(energies).data
+            owner = graph.particles.data.system
+        system = owner.update_labels(graph.systems.keys).to_cls(graph.systems.cls)
+        energies = system.sum_over(energies) / 2
         return WithPatch(energies, IdPatch[State]())
 
 
