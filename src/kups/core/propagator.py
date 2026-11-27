@@ -37,7 +37,7 @@ from jax.tree_util import PyTreeDef
 
 from kups.core.assertion import check_assertions
 from kups.core.data.table import Table
-from kups.core.lens import Lens, Update, View
+from kups.core.lens import Lens, Update, View, const_lens
 from kups.core.patch import Accept, Addable, Patch, Probe, WithPatch
 from kups.core.result import Result, as_result_function
 from kups.core.schedule import IncrementSchedule, Schedule, Scheduler
@@ -621,6 +621,9 @@ class ResetOnErrorPropagator[State](Propagator[State]):
 
     Attributes:
         propagator: Base propagator to wrap with error handling
+        keep: Part of the state that keeps its new value on failure. Safe for
+            data whose readers check it against the rest of the state, such as
+            a skin list. Nothing by default.
 
     Example:
         ```python
@@ -637,11 +640,16 @@ class ResetOnErrorPropagator[State](Propagator[State]):
     """
 
     propagator: Propagator[State] = field(static=True)
+    keep: Lens[State, object] = field(static=True, default=const_lens(()))
 
     def __call__(self, key: Array, state: State) -> State:
         new_state = self.propagator(key, state)
         mask = check_assertions(jax.tree.leaves(new_state)[0])
-        return where_broadcast_last(mask, new_state, state)
+        # WORKAROUND: https://github.com/cusp-ai-oss/kUPS/issues/583
+        # A leaf the step may replace is otherwise selected against its old
+        # value, one copy per step. A kept leaf is the same array on both sides.
+        old_state = self.keep.set(state, self.keep.get(new_state))
+        return where_broadcast_last(mask, new_state, old_state)
 
 
 @dataclass
