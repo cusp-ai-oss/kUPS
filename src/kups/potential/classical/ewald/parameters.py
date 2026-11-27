@@ -50,6 +50,16 @@ class IsEwaldPointData(HasCharges, NeighborListPoints, Protocol):
     """Particle data required by Ewald: charges, positions, system/inclusion/exclusion indices."""
 
 
+class IsEwaldScreening(Protocol):
+    """Per-system split of the Coulomb sum into real and reciprocal space."""
+
+    @property
+    def alpha(self) -> Table[SystemId, units.Wavenumber]: ...
+
+    @property
+    def cutoff(self) -> Table[SystemId, units.Length]: ...
+
+
 @dataclass
 class EwaldParameters:
     """Per-system cutoffs and reciprocal shifts prepared before evaluation.
@@ -446,3 +456,204 @@ def prepare_reciprocal_shifts(
         return padded, (0, 0, 0)
     bx, by, bz = np.max([np.max(np.abs(s), axis=0) for s in shifts], axis=0)
     return padded, (int(bx), int(by), int(bz))
+
+
+# a_m of the P3M force error estimate per spline order, Deserno and Holm, J. Chem.
+# Phys. 109, 7694 (1998), for ik differentiation and the optimal influence function.
+_P3M_ERROR_COEFFICIENTS = {
+    4: (1 / 4320, 3 / 1936, 7601 / 2271360, 143 / 28800),
+    6: (
+        691 / 68140800,
+        13 / 57600,
+        47021 / 35512320,
+        9694607 / 2095994880,
+        733191589 / 59609088000,
+        326190917 / 11700633600,
+    ),
+}
+# PME's RMS force error per order: the P3M estimate with (h alpha)^(p-1) instead of
+# (h alpha)^p, times a pair factor, and each charge's self force times a self factor,
+# added in quadrature; the factors bound direct-Ewald errors of random systems.
+_PME_ERROR_FACTORS = {4: (1.8, 1.3), 6: (1.6, 1.0)}
+
+
+@dataclass
+class PMEParameters:
+    """Per-system screening and one particle mesh shared by all systems.
+
+    The mesh and the spline order are static, as FFT shapes must be. Rebuild
+    the parameters when a cell changes enough to need another mesh.
+
+    Attributes:
+        alpha: Screening parameter per system.
+        cutoff: Real-space cutoff per system, read by the real-space term.
+        mesh: Mesh points along each cell vector.
+        order: Even cardinal B-spline order, at most the smallest mesh size.
+        reciprocal_dtype: Precision of the charge mesh and its FFT.
+    """
+
+    alpha: Table[SystemId, units.Wavenumber]
+    cutoff: Table[SystemId, units.Length]
+    mesh: tuple[int, int, int] = field(static=True)
+    order: int = field(static=True, default=6)
+    reciprocal_dtype: DTypeLike = field(static=True, default=jnp.float64)
+
+    def __post_init__(self) -> None:
+        if self.order < 2 or self.order % 2 or min(self.mesh) < self.order:
+            raise ValueError(
+                "PME needs an even spline order of at most the mesh size; got order "
+                f"{self.order} and mesh {self.mesh}."
+            )
+
+    @classmethod
+    @no_jax_tracing
+    def make(
+        cls,
+        charges: Table[ParticleId, IsEwaldPointData],
+        cell: Table[SystemId, HasCell[Periodic3D]],
+        epsilon_total: SquaredChargePerLength,
+        real_cutoff: units.Length | None = None,
+        *,
+        reciprocal_dtype: DTypeLike = jnp.float64,
+    ) -> PMEParameters:
+        """Estimate screening, cutoffs, mesh and spline order from a target error.
+
+        Screening and cutoffs follow ``estimate_ewald_parameters``. The mesh is
+        about as accurate as the direct sum at the estimated ``k_max``; the
+        order is the cheaper of 4 and 6, and the mesh is the per-axis maximum
+        over systems.
+
+        Args:
+            charges: Particle table with charges and system assignments.
+            cell: System table with periodic cells.
+            epsilon_total: Target combined real-space and reciprocal-space error,
+                an energy over the Coulomb constant.
+            real_cutoff: Optional fixed real-space cutoff.
+            reciprocal_dtype: Precision of the charge mesh and its FFT.
+
+        Returns:
+            Parameters whose mesh meets the target in every system.
+        """
+        n_systems = len(cell.keys)
+        sys_idx = np.asarray(charges.data.system.indices_in(cell.keys))
+        charge_values = charges.data.charges
+        cell_list = [cell.data.cell[i] for i in range(n_systems)]
+        estimates = [
+            estimate_ewald_parameters(
+                charge_values[sys_idx == i],
+                system_cell,
+                real_cutoff=real_cutoff,
+                epsilon_total=epsilon_total,
+            )
+            for i, system_cell in enumerate(cell_list)
+        ]
+
+        def mesh(order: int) -> tuple[int, int, int]:
+            sizes = [
+                estimate_pme_mesh(
+                    charge_values[sys_idx == i],
+                    system_cell,
+                    est.alpha,
+                    est.k_max,
+                    order,
+                )
+                for i, (system_cell, est) in enumerate(
+                    zip(cell_list, estimates, strict=True)
+                )
+            ]
+            mx, my, mz = np.max(sizes, axis=0).tolist()
+            return mx, my, mz
+
+        def cost(order: int) -> float:
+            points = np.prod(mesh(order))
+            n_particles = np.sum(sys_idx < n_systems)
+            return n_particles * order**3 + n_systems * points * np.log2(points)
+
+        order = min(_PME_ERROR_FACTORS, key=cost)
+        return cls(
+            alpha=cell.set_data(units.stack([est.alpha for est in estimates])),
+            cutoff=cell.set_data(units.stack([est.real_cutoff for est in estimates])),
+            mesh=mesh(order),
+            order=order,
+            reciprocal_dtype=reciprocal_dtype,
+        )
+
+
+@no_jax_tracing
+def estimate_pme_mesh(
+    charges: units.Charge,
+    cell: Cell[AnyPeriodicity],
+    /,
+    alpha: units.Wavenumber,
+    k_max: units.Wavenumber,
+    order: int,
+) -> tuple[int, int, int]:
+    """Smallest 2-3-5 mesh about as accurate as the direct sum cut at ``k_max``.
+
+    Both are RMS force errors: the direct sum's from Kolafa and Perram, Mol.
+    Simul. 9, 351 (1992), the mesh's from the P3M estimate of Deserno and Holm
+    (1998), fitted to PME. The search runs on magnitudes in the charges' base.
+
+    Args:
+        charges: Charges of one system, shaped ``(n_particles,)``.
+        cell: Its cell, single or as a batch of one.
+        alpha: Screening parameter.
+        k_max: Reciprocal cutoff of the direct sum.
+        order: Spline order, 4 or 6.
+
+    Returns:
+        Mesh points along each cell vector, each at least ``order``.
+    """
+    bs = units.base_of(charges)
+
+    def host(q: units.Quantity[int, int, int, int, int]) -> np.ndarray:
+        return np.asarray(q.rebase(bs).value)
+
+    q = host(charges).astype(np.float64)
+    if not np.any(q):
+        return order, order, order
+    widths = host(cell.perpendicular_lengths).reshape(3)
+    volume = float(host(cell.volume).squeeze())
+    screening = float(host(alpha))
+    cutoff = float(host(k_max))
+    length = volume ** (1 / 3)
+    pair = q @ q / np.sqrt(q.size)
+    decay = np.exp(-(cutoff**2) / (4 * screening**2))
+    target = pair * screening * np.sqrt(8 / (volume * cutoff)) * decay
+    pair_factor, self_factor = _PME_ERROR_FACTORS[order]
+    scale = np.hypot(
+        pair_factor
+        * pair
+        * np.sqrt(screening * length * np.sqrt(2 * np.pi))
+        / length**2,
+        self_factor * np.sqrt(np.mean(q**4)) * screening**2,
+    )
+
+    def error(spacing: float) -> float:
+        x = spacing * screening
+        series = sum(
+            a * x ** (2 * m) for m, a in enumerate(_P3M_ERROR_COEFFICIENTS[order])
+        )
+        return scale * x ** (order - 1) * np.sqrt(series)
+
+    def excess(spacing: float) -> float:
+        return np.log(error(spacing) / target)
+
+    # The error grows with the spacing; the coarsest mesh has ``order`` points.
+    spacing = widths.min() / order
+    if error(spacing) > target:
+        spacing = scipy.optimize.brentq(excess, 1e-9 * spacing, spacing)
+    mx, my, mz = (_next_2_3_5(max(order, int(np.ceil(w / spacing)))) for w in widths)
+    return mx, my, mz
+
+
+def _next_2_3_5(n: int) -> int:
+    """Smallest integer of at least ``n`` without prime factors above 5."""
+    while True:
+        rest = n
+        for prime in (2, 3, 5):
+            while rest % prime == 0:
+                rest //= prime
+        if rest == 1:
+            return n
+        n += 1

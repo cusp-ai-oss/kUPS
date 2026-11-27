@@ -83,6 +83,7 @@ from kups.potential.common.rigid_body_composition import RigidBodyComposition
 from .parameters import (
     EwaldParameters,
     IsEwaldPointData,
+    IsEwaldScreening,
     ReciprocalGridBound,
     reciprocal_grid_index,
 )
@@ -93,6 +94,8 @@ type ChargeSquared = units.Quantity[0, 0, 2, 2, 0]
 
 # Dimension of an energy per squared charge.
 type EnergyPerChargeSquared = units.Quantity[2, 1, -4, -2, 0]
+
+type WavenumberSquared = units.Quantity[-2, 0, 0, 0, 0]
 
 
 @dataclass
@@ -232,11 +235,11 @@ class EwaldCacheDeltaPatch[State, Gradient, Hessian](Patch[State]):
 
 
 type EwaldShortRangeInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasCell[AnyPeriodicity], Literal[2]
+    IsEwaldScreening, IsEwaldPointData, HasCell[AnyPeriodicity], Literal[2]
 ]
 
 type EwaldSelfInput = GraphPotentialInput[
-    EwaldParameters, IsEwaldPointData, HasCell[Periodic3D], Literal[0]
+    IsEwaldScreening, IsEwaldPointData, HasCell[Periodic3D], Literal[0]
 ]
 
 
@@ -312,7 +315,7 @@ def ewald_self_interaction_energy(
 
 
 def ewald_short_range_pair_kernel(
-    parameters: EwaldParameters,
+    parameters: IsEwaldScreening,
     charges_i: units.Charge,
     charges_j: units.Charge,
     rij: units.Length,
@@ -350,7 +353,7 @@ def ewald_short_range_pair_kernel(
     return units.constants.k_e * charges_i * charges_j * screened
 
 
-ewald_short_range_pair = PairEnergy[EwaldParameters, IsEwaldPointData, units.Charge](
+ewald_short_range_pair = PairEnergy[IsEwaldScreening, IsEwaldPointData, units.Charge](
     kernel=ewald_short_range_pair_kernel,
     features=lambda p: p.charges,
     cutoffs=lambda p: p.cutoff,
@@ -426,17 +429,20 @@ def _prefactor(
     leading_zero: Array,
 ) -> units.Wavenumber:
     k_squared = units.sum(kvecs**2, axis=-1)
-    mask = k_squared.value > 0
-    mask &= k_squared <= k_max[:, None] ** 2
-    k_squared = units.where(mask, k_squared, units.ones_like(k_squared))
-    result = (
-        (2 * jnp.pi)
-        / volume[:, None]
-        * jnp.exp(-k_squared / (4 * alpha[:, None] ** 2))
-        / k_squared
-    )
-    result = (2 - leading_zero) * result
-    return units.where(mask, result, units.zeros_like(result))
+    inside = k_squared <= k_max[:, None] ** 2
+    result = (2 - leading_zero) * _influence(k_squared, alpha[:, None], volume[:, None])
+    return units.where(inside, result, units.zeros_like(result))
+
+
+def _influence(
+    k_squared: WavenumberSquared, alpha: units.Wavenumber, volume: units.Volume
+) -> units.Wavenumber:
+    """``2π/V exp(-k²/(4α²))/k²``, zero at ``k = 0``."""
+    nonzero = k_squared.value > 0
+    # A unit k² at k = 0 keeps the masked gradient finite.
+    k_squared = units.where(nonzero, k_squared, units.ones_like(k_squared))
+    result = (2 * jnp.pi) / volume * jnp.exp(-k_squared / (4 * alpha**2)) / k_squared
+    return units.where(nonzero, result, units.zeros_like(result))
 
 
 def _is_zero_tangent(tangent: object) -> bool:
@@ -915,7 +921,7 @@ def make_ewald_short_range_potential[
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
     neighborlist_view: View[State, NeighborList[Literal[2]]],
-    parameter_view: View[State, EwaldParameters],
+    parameter_view: View[State, IsEwaldScreening],
     probe: Probe[State, Ptch, IsParticleProbe[IsEwaldPointData]] | None,
     gradient_lens: Lens[PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients],
     hessian_lens: Lens[Gradients, Hessians],
@@ -1026,7 +1032,7 @@ def make_ewald_self_interaction_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
-    parameter_view: View[State, EwaldParameters],
+    parameter_view: View[State, IsEwaldScreening],
     gradient_lens: Lens[
         PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients
     ] = EMPTY_LENS,
@@ -1099,7 +1105,7 @@ def make_ewald_net_charge_potential[
 ](
     particles_view: View[State, Table[ParticleId, IsEwaldPointData]],
     systems_view: View[State, Table[SystemId, HasCell[Periodic3D]]],
-    parameter_view: View[State, EwaldParameters],
+    parameter_view: View[State, IsEwaldScreening],
     gradient_lens: Lens[
         PointCloud[IsEwaldPointData, HasCell[Periodic3D]], Gradients
     ] = EMPTY_LENS,
